@@ -8466,7 +8466,7 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
 
         // 8e-7: the pixel-probing replay declares its region readback of the
         // FinalLinear composite NOW (after the UI pass, before Execute);
-        // tickets are stamped by OnFrameSubmittedReadbacksRG below — no
+        // tickets are stamped by NotifyRenderGraphExecution below — no
         // abandon point exists between this seam and Execute.
         if (uiReplayWantsComposite && finalLinear.IsValid() && ctx->ui)
         {
@@ -8510,13 +8510,14 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
                 pool.Wait(counter);
             });
 
+        const uint64_t submittedFramesBefore = frame.SubmittedFrameCount();
         const auto tExec0 = MsNow();
         frame.Execute();
         result.rgExecuteMs = MsBetween(tExec0, MsNow());
         result.rgCompileMs = 0.0; // RenderGraph has no compile phase — declaration IS the build
-        if (auto* rs = MainRenderServices())
-            rs->Spine().OnFrameSubmittedRG(frame, frame.SubmissionToken());
-        Rendering::OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
+        auto* submittedFrameServices = MainRenderServices();
+        Engine::Renderer::NotifyRenderGraphExecution(
+            frame, submittedFramesBefore, submittedFrameServices ? &submittedFrameServices->Spine() : nullptr);
 
         // Phase C RG CSV sidecar (--bench-rg-csv): lazy-open on first frame,
         // then one row per frame. rgCompileMs is 0 in RenderGraph (declaration IS the
