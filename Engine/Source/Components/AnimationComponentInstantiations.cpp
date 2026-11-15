@@ -8,6 +8,7 @@
 
 #include "Components/Animation/HumanoidRetargeterComponent.h"
 #include "Components/Animation/SkeletonRef.h"
+#include "Components/Animation/BoneLOD.h"
 
 #include "ECS/ECSTemplates.h"
 
@@ -15,4 +16,5 @@ namespace GameEngine::ECS
 {
     GE_INSTANTIATE_ENGINE_COMPONENT(Components::HumanoidRetargeterComponent);
     GE_INSTANTIATE_ENGINE_COMPONENT(Components::SkeletonRef);
+    GE_INSTANTIATE_ENGINE_COMPONENT(Components::BoneLOD);
 } // namespace GameEngine::ECS

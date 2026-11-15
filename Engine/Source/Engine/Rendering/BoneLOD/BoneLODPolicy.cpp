@@ -41,11 +41,11 @@ void BoneLODPolicy::GatherViews(const ViewRegistry& views, uint64 worldId, float
 {
     for (const auto& view : views.GetViews())
     {
-        const uint32 mask = view.ActiveRenderLayerMask().Bits;
-        if (mask == 0u || (view.worldId != 0u && view.worldId != worldId))
+        const Rendering::RenderLayerMask layers = view.ActiveRenderLayerMask();
+        if (layers == Rendering::RenderLayerMask::None() || (view.worldId != 0u && view.worldId != worldId))
             continue;
         FrameView entry;
-        entry.LayerMask = mask;
+        entry.Layers = layers;
         if (const auto* camera = views.FindCameraData(view.cameraId))
         {
             entry.Eye = CameraEye(*camera);
@@ -157,7 +157,7 @@ void BoneLODPolicy::Accumulate(ECS::World& world, const AssetManager& assets, co
     }
     for (const auto& view : m_Views)
     {
-        if ((view.LayerMask & consumer.Mesh->renderLayerMask) == 0u)
+        if (!view.Layers.Intersects(consumer.Mesh->RenderLayers))
             continue;
         if (!view.Valid)
         {

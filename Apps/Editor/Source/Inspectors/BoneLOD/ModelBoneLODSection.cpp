@@ -56,13 +56,13 @@ ModelBoneLODSection::ModelBoneLODSection(const ModelAsset& model, UndoRedoServic
         return;
     }
     AddChild(std::move(layout));
-    m_Tree = dynamic_cast<TreeView*>(FindById("BoneLODTree"));
-    m_Status = dynamic_cast<Label*>(FindById("BoneLODStatus"));
-    auto* summary = dynamic_cast<Label*>(FindById("BoneLODSummary"));
-    auto* searchHost = FindById("BoneLODSearchHost");
-    auto* fields = FindById("BoneLODFields");
-    auto* clear = dynamic_cast<Button*>(FindById("BoneLODClear"));
-    auto* reset = dynamic_cast<Button*>(FindById("BoneLODReset"));
+    m_Tree = dynamic_cast<TreeView*>(FindById("BoneLODTree"_sid));
+    m_Status = dynamic_cast<Label*>(FindById("BoneLODStatus"_sid));
+    auto* summary = dynamic_cast<Label*>(FindById("BoneLODSummary"_sid));
+    auto* searchHost = FindById("BoneLODSearchHost"_sid);
+    auto* fields = FindById("BoneLODFields"_sid);
+    auto* clear = dynamic_cast<Button*>(FindById("BoneLODClear"_sid));
+    auto* reset = dynamic_cast<Button*>(FindById("BoneLODReset"_sid));
     if (!m_Tree || !m_Status || !summary || !searchHost || !fields || !clear || !reset)
     {
         Logger::Log::Error("Bone LOD settings layout is missing its fields, tree, search, summary, status, or actions.");

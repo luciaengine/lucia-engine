@@ -20,6 +20,7 @@ namespace GameEngine {
 
 class AssetManager;
 struct MeshClusterLODManifest;
+class ModelBoneLOD;
 struct ModelAssetFbxTestAccess;
 namespace Animation { struct SkeletonData; class AnimationClip; }
 struct AssetDecodeInput;
@@ -420,6 +421,7 @@ public:
     virtual ~ModelAsset();
 
     uint32 GetSkeletonId() const { return m_SkeletonId; }
+    const SharedPtr<const ModelBoneLOD>& GetBoneLOD() const { return m_BoneLOD; }
 
     /**
      * @brief Load model from file
@@ -668,6 +670,7 @@ protected:
 private:
     bool LoadClusterLOD(std::span<const uint8> data);
     bool ReloadFromData(std::span<const uint8> data) override;
+    void BuildBoneLOD();
 
     friend struct ModelAssetFbxTestAccess;
 
@@ -795,6 +798,7 @@ private:
     void SetExtras(std::shared_ptr<const ModelExtras> extras);
     uint32 m_TotalVertexCount;
     uint32 m_TotalIndexCount;
+    SharedPtr<const ModelBoneLOD> m_BoneLOD;
     uint32 m_SkeletonId = 0;
     uint64 m_SourceContentHash = 0;
     // Hash of the resolved format-specific parse options that shaped the parsed
