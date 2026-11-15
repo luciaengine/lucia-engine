@@ -275,4 +275,15 @@ TEST(EditorCommandLineTests, SessionLabel_EmptyEqualsValueReported)
     EXPECT_EQ(r.unrecognizedArgs, (std::vector<std::string>{"--session-label="}));
 }
 
+// --- Focus ---
+
+TEST(EditorCommandLineTests, NoFocusIsOffUnlessRequested)
+{
+    EXPECT_FALSE(Parse({"--debug-port", "9971"}).noFocus);
+    const auto r = Parse({"--no-focus", "--debug-port", "9971"});
+    EXPECT_TRUE(r.noFocus);
+    ASSERT_TRUE(r.debugPort.has_value());
+    EXPECT_TRUE(r.unrecognizedArgs.empty());
+}
+
 } // namespace GameEngine::Editor::Startup
