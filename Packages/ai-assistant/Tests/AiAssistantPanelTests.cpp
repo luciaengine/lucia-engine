@@ -58,6 +58,7 @@
 #include "UI/StyleProperties.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
+#include "FixedScalePlatform.h"
 #include "UIRgTestHarness.h"
 
 #include <gtest/gtest.h>
@@ -1373,6 +1374,32 @@ TEST(AiAssistantPanelTests, TheConversationTextFollowsTheTextScale)
     EXPECT_NEAR(replySizes[1], 21.0f, 0.01f) << "the reply follows the scale too";
 }
 
+// The prompt input and its placeholder grow with the conversation's text size, so what the user
+// types reads at the size of what they read.
+TEST(AiAssistantPanelTests, TheInputAndItsPlaceholderFollowTheTextScale)
+{
+    ConversationLayout layout;
+    if (!layout.Device)
+        GTEST_SKIP() << "No device";
+    const std::string built = BuildConversation(layout, 1200.0f, TurnWithALongReason("short"));
+    ASSERT_TRUE(built.empty()) << built;
+    auto input = std::make_unique<TextArea>();
+    const TextArea* field = input.get();
+    input->AddClass("prompt-panel-input");
+    input->SetValue("A legible prompt");
+    layout.List->AddChild(std::move(input));
+    auto placeholder = std::make_unique<Label>();
+    const Label* hint = placeholder.get();
+    placeholder->AddClass("prompt-panel-input-placeholder");
+    placeholder->SetText("Ask about the scene");
+    layout.List->AddChild(std::move(placeholder));
+    layout.List->Style().SetCustomNumber("--prompt_text_scale"_sid, 1.5f);
+    layout.List->MarkDirtySubtree(UIElement::StyleDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
+    layout.Ui->Update(0.016f, /*interactive=*/false);
+    EXPECT_NEAR(field->GetResolvedStyle().Visual.FontSize, 24.0f, 0.01f) << "scale 1.5 of the input's 16 px";
+    EXPECT_NEAR(hint->GetResolvedStyle().Visual.FontSize, 21.0f, 0.01f) << "scale 1.5 of the placeholder's 14 px";
+}
+
 // The conversation is a reading column in the middle of the panel: in a wide panel each card is
 // 800 px wide with equal space on both sides, and in a narrow one it keeps the list's 8 px gap on
 // each side.
@@ -1439,6 +1466,32 @@ TEST(AiAssistantPanelTests, TheConversationIsACentredColumn)
         EXPECT_NEAR(emptyRaw->GetLayoutX() - layout.List->GetLayoutX(), expected.RowX, 0.5f)
             << "the empty state sits in the column at " << expected.ListWidth;
     }
+}
+
+// A failed turn's status names its fix ("run `claude update`"): the status line is read-only, but
+// the user can select it and copy it.
+TEST(AiAssistantPanelTests, AFailedStatusIsReadOnlyButCanBeSelectedAndCopied)
+{
+    UITesting::FixedScalePlatform platform(1.0f);
+    ConversationLayout layout;
+    if (!layout.Device)
+        GTEST_SKIP() << "No device";
+    AgentConversationRowModel model = TurnWithALongReason("short");
+    model.Failed = true;
+    model.Status = "Claude Code needs an update: run `claude update`.";
+    const std::string built = BuildConversation(layout, 600.0f, model);
+    ASSERT_TRUE(built.empty()) << built;
+    layout.Ui->SetPlatform(&platform);
+    auto* status = dynamic_cast<TextArea*>(layout.Row->FindById(HashStringId("AgentRowStatusText:1")));
+    ASSERT_NE(status, nullptr);
+    EXPECT_TRUE(status->IsReadOnly());
+    EXPECT_TRUE(status->HasClass("agent-row-status-failed"));
+    EXPECT_TRUE(status->OnKey(Input::kKeyCode_A, Input::kModControl, &platform));
+    EXPECT_TRUE(status->OnKey(Input::kKeyCode_C, Input::kModControl, &platform));
+    EXPECT_EQ(platform.GetClipboardText(), model.Status);
+    status->OnChar('x');
+    status->OnKey(Input::kKeyCode_Backspace, 0, &platform);
+    EXPECT_EQ(status->GetValue(), model.Status) << "typing does not change the status";
 }
 
 // In a narrow panel the footer stacks: the status takes the card's whole line and the reply's
