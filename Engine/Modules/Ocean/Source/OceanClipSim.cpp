@@ -187,39 +187,42 @@ void OceanClipSim::FillParams(OceanClipParamsGPU& out)
     out = m_Params;
 }
 
-void OceanClipSim::RecordDispatch(IDevice* device, CommandList* cl,
-                                  BufferHandle paramsBuffer, uint64 paramsOffset)
+OceanPreparedDispatch OceanClipSim::PrepareDispatch(
+    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset) const
 {
-    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
-        return;
+    if (!m_Ready || !device || !paramsBuffer.IsValid())
+        return {};
 
     const TextureHandle clip = m_Clip.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
     if (!pipe)
-        return;
+        return {};
 
     // Sync is graph-derived: the pass declares Write on the cascade, the first
     // declared reader restores ShaderReadOnly, and MarkOutput covers reader-less
     // frames. No manual barriers in here.
-
-    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanClip_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
+    if (!ds.IsValid())
+        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanClipParamsGPU));
     device->UpdateStorageImageBinding(ds, 1, clip);
 
-    cl->BindDescriptorSet(0, ds, pipe);
-
     const uint32 g8 = (m_Resolution + 7u) / 8u;
-    cl->Dispatch(g8, g8, layers);
+    return {pipe, ds, g8, g8, layers, clip};
+}
 
+void OceanClipSim::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
+{
+    if (!RecordOceanPreparedDispatch(cl, dispatch))
+        return;
     m_DispatchDirty = false;
 }
 
