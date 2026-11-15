@@ -738,6 +738,11 @@ void SceneReflectionProbeEnvironmentSource::ScheduleBake(const EnvironmentBakeCo
     if (!EnsureViews()) return;
     if (!m_Staging) m_Staging = std::make_unique<ImageBasedLightingFeature>();
     if (!m_Staging->Initialize(input.Device)) return;
+    // An idle probe declares no bake this frame, so a readback that arrives between bakes copies
+    // the published cube as it rests, once.
+    if (m_CaptureState == CaptureState::Idle)
+        if (auto* irradianceReadback = m_Services->GetFeature<IrradianceReadbackFeature>())
+            irradianceReadback->DeclareRestingCopy(*input.Device, *input.Frame, *input.Feature);
     if (m_CaptureState == CaptureState::Idle)
     {
         if (!BakeDue()) return;
@@ -770,6 +775,15 @@ void SceneReflectionProbeEnvironmentSource::ScheduleBake(const EnvironmentBakeCo
         input.Feature->PublishCaptureFrom(feature);
         input.Feature->SetLastBakedDigest(m_SliceDigest);
         input.Feature->MarkBaked();
+        // The published cube lights the scene while the probe is active, so the readback follows it.
+        if (auto* irradianceReadback = m_Services->GetFeature<IrradianceReadbackFeature>())
+        {
+            const auto published = frame.ImportExternalTexture("IBL_Irradiance", input.Feature->GetIrradianceCube(),
+                ResourceState::ShaderResource, TextureFormat::R16G16B16A16_FLOAT, 1,
+                ImageBasedLightingFeature::kNumCaptureFaces);
+            irradianceReadback->DeclareCopy(*input.Device, frame, published, ImageBasedLightingFeature::kIrradianceSize,
+                                            m_SliceDigest);
+        }
         m_PublishedPosition = m_CaptureDesc.Position;
         ++m_CompletedBakes;
         m_AgeSeconds = m_WaitSeconds = 0;
