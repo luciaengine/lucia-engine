@@ -57,6 +57,12 @@ struct TextureUploadBatchTestAccess
         const auto prepared = TextureService::PrepareUpload(texture, std::move(resident), nullptr, false);
         return service.SubmitPreparedUpload(texture, *prepared);
     }
+    // Off makes every bindless registration return index 0, as a full bindless table does.
+    static void SetBindlessEnabled(TextureService& service, bool enabled)
+    {
+        service.m_BindlessEnabled.store(enabled, std::memory_order_relaxed);
+    }
+    static void HotSwap(TextureService& service, const GUID& texture) { service.HotSwapTexture(texture); }
     static TextureHandle Cached(TextureService& service, const GUID& texture)
     {
         TextureGPUCache::Entry entry;
@@ -250,6 +256,37 @@ class TextureUploadBatch : public testing::Test
         return Vector<uint8>(std::begin(bytes), std::end(bytes));
     }
 };
+
+// A hot swap whose new texture gets no bindless slot keeps the old texture: a material that
+// took the new one would sample bindless index 0, which holds undefined data.
+TEST_F(TextureUploadBatch, AHotSwapThatGetsNoBindlessSlotKeepsTheBoundTexture)
+{
+    if (m_Textures.GetMaterialIndexingMode() != Engine::Renderer::TextureService::MaterialIndexingMode::Bindless ||
+        !m_Textures.IsBindlessEnabled())
+        GTEST_SKIP() << "The device has no bindless material indexing";
+    const GUID texture = RegisterSvg();
+    const TextureHandle bound = m_Textures.GetOrUpload(texture);
+    ASSERT_TRUE(bound.IsValid());
+
+    const GUID materialGuid = GUID::Generate();
+    MaterialDocument doc{};
+    doc.schemaVersion = 3;
+    doc.materialName = "HotSwapRefused";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    Engine::Renderer::Material* material = m_Materials.Register(materialGuid, doc);
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    material->SetTexture(slot, bound);
+
+    Access::SetBindlessEnabled(m_Textures, false);
+    Access::HotSwap(m_Textures, texture);
+    Access::SetBindlessEnabled(m_Textures, true);
+
+    EXPECT_EQ(material->GetTexture(slot), bound);
+    EXPECT_EQ(Access::Cached(m_Textures, texture), bound);
+}
 
 TEST_F(TextureUploadBatch, AFlushCopiesEveryTextureWithOneCommandListAndOneSubmit)
 {
