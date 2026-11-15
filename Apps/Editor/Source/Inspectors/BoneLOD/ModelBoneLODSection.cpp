@@ -30,6 +30,8 @@ namespace
 {
 constexpr const char* kLayout = "UI/inspectors/BoneLOD/ModelBoneLODSection.uxml";
 constexpr const char* kStyle = "UI/inspectors/BoneLOD/ModelBoneLODSection.css";
+// Indent per tree level, smaller than the tree default so deep bones keep room for their names.
+constexpr float kBoneTreeIndentPx = 10.0f;
 
 void WriteSettings(const std::filesystem::path& path, const std::string& metadata)
 {
@@ -56,13 +58,13 @@ ModelBoneLODSection::ModelBoneLODSection(const ModelAsset& model, UndoRedoServic
         return;
     }
     AddChild(std::move(layout));
-    m_Tree = dynamic_cast<TreeView*>(FindById("BoneLODTree"));
-    m_Status = dynamic_cast<Label*>(FindById("BoneLODStatus"));
-    auto* summary = dynamic_cast<Label*>(FindById("BoneLODSummary"));
-    auto* searchHost = FindById("BoneLODSearchHost");
-    auto* fields = FindById("BoneLODFields");
-    auto* clear = dynamic_cast<Button*>(FindById("BoneLODClear"));
-    auto* reset = dynamic_cast<Button*>(FindById("BoneLODReset"));
+    m_Tree = dynamic_cast<TreeView*>(FindById("BoneLODTree"_sid));
+    m_Status = dynamic_cast<Label*>(FindById("BoneLODStatus"_sid));
+    auto* summary = dynamic_cast<Label*>(FindById("BoneLODSummary"_sid));
+    auto* searchHost = FindById("BoneLODSearchHost"_sid);
+    auto* fields = FindById("BoneLODFields"_sid);
+    auto* clear = dynamic_cast<Button*>(FindById("BoneLODClear"_sid));
+    auto* reset = dynamic_cast<Button*>(FindById("BoneLODReset"_sid));
     if (!m_Tree || !m_Status || !summary || !searchHost || !fields || !clear || !reset)
     {
         Logger::Log::Error("Bone LOD settings layout is missing its fields, tree, search, summary, status, or actions.");
@@ -105,6 +107,8 @@ ModelBoneLODSection::ModelBoneLODSection(const ModelAsset& model, UndoRedoServic
     search->AddClass("bone-lod-search");
     search->SetFieldId("BoneLODSearch");
     search->SetPlaceholder("Filter bone names");
+    m_Tree->SetShowRoot(true);
+    m_Tree->SetChildIndent(kBoneTreeIndentPx);
     m_Tree->SetDataProvider(m_Provider.get());
     m_Tree->SetVisibilityFilter([this](TreeId id) { return m_Provider->IsVisible(id); });
     m_Tree->SetOnRowBound([this](TreeId id, UIElement* row) { BindRow(id, row); });
@@ -127,9 +131,9 @@ void ModelBoneLODSection::BindRow(uint64 id, UIElement* row)
     {
         auto owned = MakeUnique<Checkbox>();
         owned->AddClass("bone-lod-pin");
-        owned->SetText("Keep");
         owned->SetTooltip("Keep animation for this bone and its ancestors in the reduced tier.");
         checkbox = owned.get();
+        row->AddClass("bone-lod-row");
         row->AddChild(std::move(owned));
     }
     const auto path = m_Provider->Path(id);

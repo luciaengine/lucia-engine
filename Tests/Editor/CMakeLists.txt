@@ -227,6 +227,10 @@ set(EDITOR_TEST_SOURCES
 	# so the rule an author reads is checkable without a running editor.
 	SubmeshLodProvenanceTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SubmeshLodProvenance.cpp
+	BoneLODTreeProviderTests.cpp
+	ModelBoneLODSectionTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/BoneLOD/BoneLODTreeProvider.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/BoneLOD/ModelBoneLODSection.cpp
 	# The sky's Day of year field: a typed date reads as the day it falls on.
 	DayOfYearTextTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/DayOfYearText.cpp
@@ -2409,6 +2413,9 @@ if(TARGET EditorTests)
 	ge_stage_test_asset(EditorTests
 	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/InspectorNotice/InspectorNotice.uxml"
 	    "Assets/UI/controls/InspectorNotice/InspectorNotice.uxml")
+	ge_stage_test_asset(EditorTests
+	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/inspectors/BoneLOD/ModelBoneLODSection.uxml"
+	    "Assets/UI/inspectors/BoneLOD/ModelBoneLODSection.uxml")
 
 	# EditorBuildStatus builds its two labels from its layout, read from the same install-assets root.
 	ge_stage_test_asset(EditorTests
