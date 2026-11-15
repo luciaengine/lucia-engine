@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <memory_resource>
 #include <string>
 #include <vector>
 #include "RenderServicesDetail.h"
@@ -158,10 +159,10 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
         SortedTransparentRunMaterialKey MatKey;
         SortedTransparentRunGeometryKey GeoKey;
     };
-    std::vector<RunKeyEntry> runKeys;
+    std::pmr::vector<RunKeyEntry> runKeys{&scratch.Resource()};
     // Per-unique-material key cache (materials repeat heavily across records).
-    std::vector<std::pair<const Material*, SortedTransparentRunMaterialKey>> matKeyCache;
-
+    std::pmr::vector<std::pair<const Material*, SortedTransparentRunMaterialKey>> matKeyCache{
+        &scratch.Resource()};
 
     std::pmr::vector<RenderSortKey> sortingKeys{&scratch.Resource()};
     std::pmr::vector<ECS::EntityHandle> sortingEntities{&scratch.Resource()};
