@@ -901,9 +901,9 @@ bool MeshGPURegistry::RewriteSubmeshVertices(MeshGPUHandle handle,
     // Pick the spare that aged longest. It may take new bytes once a full
     // frames-in-flight window passed since the entry stopped drawing from it,
     // the same rule that the deferred free follows.
-    std::vector<SpareVertexGroup>& spares = m_SpareVertexGroups.GetOrInsert(handle);
+    std::vector<SpareVertexGroup>* spares = m_SpareVertexGroups.Find(handle);
     SpareVertexGroup* target = nullptr;
-    for (SpareVertexGroup& group : spares)
+    for (SpareVertexGroup& group : spares ? std::span(*spares) : std::span<SpareVertexGroup>())
     {
         if (group.retiredFrame + kRetireDelay <= m_CurrentFrameIndex &&
             (!target || group.retiredFrame < target->retiredFrame))
@@ -913,14 +913,8 @@ bool MeshGPURegistry::RewriteSubmeshVertices(MeshGPUHandle handle,
     const bool newGroup = target == nullptr;
     if (newGroup)
     {
-        const auto refuse = [&]
-        {
-            if (spares.empty())
-                m_SpareVertexGroups.Erase(handle);
+        if (spares && spares->size() >= kMaxSpareVertexGroups)
             return false;
-        };
-        if (spares.size() >= kMaxSpareVertexGroups)
-            return refuse();
         SpareVertexGroup group;
         group.poolIndices.fill(kInvalidMeshGPUPoolIndex);
         std::array<VertexStreamRequest, kMeshGPUVertexStreamCount> requests{};
@@ -932,7 +926,7 @@ bool MeshGPURegistry::RewriteSubmeshVertices(MeshGPUHandle handle,
             const uint32_t stride = VertexStreamStride(stream, coreStride);
             const size_t bytes = static_cast<size_t>(vertexCount) * stride;
             if (stream != kCoreStream && stream != kTangentStream && MeshStreamBytes(source, stream).size() != bytes)
-                return refuse();
+                return false;
             const VertexStreamLayout& layout = kVertexStreamLayouts[stream];
             requests[requestCount++] = VertexStreamRequest{
                 &BucketVertexPools(bucket, stream), layout.initialCapacityBytes, stride, bytes,
@@ -940,33 +934,30 @@ bool MeshGPURegistry::RewriteSubmeshVertices(MeshGPUHandle handle,
         }
         if (!AllocateVertexGroup(std::span(requests.data(), requestCount), entry->vertexFlags,
                                  entry->StorageDomain))
-            return refuse();
-        spares.push_back(group);
-        target = &spares.back();
+            return false;
+        spares = &m_SpareVertexGroups.GetOrInsert(handle);
+        spares->push_back(group);
+        target = &spares->back();
     }
-
-    const auto writeStream = [&](uint32_t stream, const void* data, size_t bytes)
-    {
-        const MeshGPUStreamPool* pool = GetPool(BucketVertexPools(bucket, stream), target->poolIndices[stream]);
-        if (pool && pool->buffer.IsValid() && bytes != 0)
-            m_Device->UpdateBuffer(pool->buffer, target->allocs[stream].Offset, bytes, data);
-    };
 
     m_RewriteCoreBytes.resize(static_cast<size_t>(vertexCount) * coreStride);
     m_RewriteTangents.resize(hasTangent ? static_cast<size_t>(vertexCount) * 4u : 0u);
     PackCoreVertices(vertices, reinterpret_cast<std::byte*>(m_RewriteCoreBytes.data()),
                      hasTangent ? m_RewriteTangents.data() : nullptr);
-    writeStream(kCoreStream, m_RewriteCoreBytes.data(), m_RewriteCoreBytes.size());
-    writeStream(kTangentStream, m_RewriteTangents.data(), m_RewriteTangents.size() * sizeof(float));
-    if (newGroup)
+    // A new group takes every stream; a reused group already holds the streams
+    // outside the Vertex struct.
+    for (uint32_t stream = 0; stream < kMeshGPUVertexStreamCount; ++stream)
     {
-        for (uint32_t stream = kColorStream; stream < kMeshGPUVertexStreamCount; ++stream)
-        {
-            if (!target->allocs[stream].IsValid())
-                continue;
-            const std::span<const std::byte> bytes = MeshStreamBytes(source, stream);
-            writeStream(stream, bytes.data(), bytes.size());
-        }
+        std::span<const std::byte> bytes;
+        if (stream == kCoreStream)
+            bytes = std::as_bytes(std::span(m_RewriteCoreBytes));
+        else if (stream == kTangentStream)
+            bytes = std::as_bytes(std::span(m_RewriteTangents));
+        else if (newGroup)
+            bytes = MeshStreamBytes(source, stream);
+        if (target->allocs[stream].IsValid())
+            WritePoolStream(*m_Device, GetPool(BucketVertexPools(bucket, stream), target->poolIndices[stream]),
+                            target->allocs[stream].Offset, bytes.size(), bytes.data(), /*coherentMapped=*/false);
     }
 
     // The group the entry drew from becomes the spare, and the rewritten group
@@ -1988,7 +1979,7 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
 
     std::array<VertexStreamRequest, kMeshGPUVertexStreamCount> vertexStreamSlots{};
     size_t vertexStreamCount = 0;
-    auto addVertexStream = [&](uint32_t stream, size_t bytes, Memory::RangeAllocator::Allocation& alloc,
+    auto addVertexStream = [&vertexStreamSlots, &vertexStreamCount, &bucket, coreStride](uint32_t stream, size_t bytes, Memory::RangeAllocator::Allocation& alloc,
                                uint32_t& poolIndex)
     {
         if (bytes == 0)
