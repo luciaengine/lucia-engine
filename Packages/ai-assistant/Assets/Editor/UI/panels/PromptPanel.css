@@ -648,8 +648,8 @@
 	gap: 8px;
 }
 
-/* The status's parts (AgentConversationRow::ShowStatus) wrap between each other: a part
-   that fits a line is never broken, a longer one (an error) wraps on its own lines. */
+/* The status line (AgentConversationRow::ShowStatus): one read-only text area across the
+   footer, which wraps a long status (an error) and lets the user select and copy it. */
 .agent-row-status {
 	display: flex;
 	flex-direction: row;
@@ -662,11 +662,20 @@
 }
 
 .agent-row-status-part {
-	flex-shrink: 1;
+	width: 100%;
 	min-width: 0;
+	min-height: 0;
+	flex-shrink: 1;
+	padding: 0;
+	border-width: 0;
+	background-color: transparent;
+	box-shadow: none;
+	outline: none;
+	font-family: var(--ui_font_family);
 	font-size: calc(12px * var(--prompt_text_scale, 1));
 	color: var(--ui_color_text_secondary);
 	white-space: normal;
+	overflow-wrap: break-word;
 }
 
 /* A narrow panel (AgentConversationRow::SetCallsStacked): the footer stacks, the status on
