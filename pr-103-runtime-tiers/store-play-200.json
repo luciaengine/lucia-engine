@@ -1,0 +1,90 @@
+{
+  "primaryWorldId": 1,
+  "runtimeHighWaterMark": 3,
+  "runtimes": [
+    {
+      "atlasOwner": "gpu-skinning",
+      "atlasPaletteOffsetBones": 280,
+      "boneLOD": {
+        "error": "",
+        "evaluatedBones": 25,
+        "requestedBudget": 8,
+        "requiredBones": 1,
+        "selectionKnown": true,
+        "tier": "full",
+        "warning": ""
+      },
+      "firstNonIdentityJointIndex": -1,
+      "maxRotationOffDiagonal": 0,
+      "maxTranslationMag": 0,
+      "paletteMatrixCount": 24,
+      "paletteProbeIsStale": true,
+      "refCount": 1,
+      "runtimeId": 1,
+      "skeletonId": 1
+    },
+    {
+      "atlasOwner": "gpu-skinning",
+      "atlasPaletteOffsetBones": 256,
+      "boneLOD": {
+        "error": "",
+        "evaluatedBones": 8,
+        "requestedBudget": 8,
+        "requiredBones": 1,
+        "selectionKnown": true,
+        "tier": "reduced",
+        "warning": ""
+      },
+      "firstNonIdentityJointIndex": -1,
+      "maxRotationOffDiagonal": 0,
+      "maxTranslationMag": 0,
+      "paletteMatrixCount": 24,
+      "paletteProbeIsStale": true,
+      "refCount": 1,
+      "runtimeId": 2,
+      "skeletonId": 1
+    },
+    {
+      "atlasOwner": "cpu",
+      "atlasPaletteOffsetBones": 304,
+      "boneLOD": {
+        "error": "",
+        "evaluatedBones": 25,
+        "requestedBudget": 0,
+        "requiredBones": 0,
+        "selectionKnown": false,
+        "tier": "full",
+        "warning": ""
+      },
+      "firstNonIdentityJointIndex": -1,
+      "maxRotationOffDiagonal": 0,
+      "maxTranslationMag": 0,
+      "paletteMatrixCount": 24,
+      "paletteProbeIsStale": false,
+      "refCount": 1,
+      "runtimeId": 3,
+      "skeletonId": 1
+    }
+  ],
+  "skeletonCount": 3,
+  "skeletons": [
+    {
+      "boneCount": 26,
+      "id": 1,
+      "jointNodeCount": 24,
+      "skinJointCount": 24
+    },
+    {
+      "boneCount": 3,
+      "id": 2,
+      "jointNodeCount": 0,
+      "skinJointCount": 0
+    },
+    {
+      "boneCount": 4,
+      "id": 3,
+      "jointNodeCount": 0,
+      "skinJointCount": 0
+    }
+  ]
+}
