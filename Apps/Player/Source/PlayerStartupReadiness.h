@@ -17,13 +17,14 @@ SceneLoadRequest MakeStartupSceneLoadRequest(std::filesystem::path scene,
                                              std::function<void(SceneLoadInstantiated&)> onInstantiated);
 
 /// Whether the Player's startup scene is ready for its startup line and its --screenshot
-/// capture: the scene loader revealed it and its spline recipes are settled. The wait has no
-/// clock: each recipe's own hold budget bounds it.
+/// capture: the scene loader revealed it and, if the game config waits for them, its spline
+/// recipes are settled. The wait has no clock: each recipe's own hold budget bounds it.
 class PlayerStartupReadiness
 {
 public:
-    /// Starts the wait for the startup scene that just opened.
-    void Begin();
+    /// Starts the wait for the startup scene that just opened. Without `waitForSplineRecipes`
+    /// (GameConfig::waitForSplineRecipes), the reveal alone makes the scene ready.
+    void Begin(bool waitForSplineRecipes);
     /// Advances the wait by one frame. Returns true on the frame the scene becomes ready.
     bool Update(bool revealed, bool recipesSettled, float64 deltaSeconds);
 
@@ -33,6 +34,7 @@ public:
 
 private:
     bool m_Pending = false;
+    bool m_WaitForSplineRecipes = true;
     uint32 m_Frames = 0;
     float64 m_Seconds = 0.0;
 };
