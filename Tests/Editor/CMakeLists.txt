@@ -77,6 +77,9 @@ set(EDITOR_TEST_SOURCES
 	# The editor's posted refresh: once per burst, skipped after its owner is destroyed.
 	PostedRefreshTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/PostedRefresh.cpp
+	# The Physics Collider inspector's Physics Material row and its precedence over the inline rows.
+	PhysicsColliderInspectorTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/Physics/PhysicsColliderInspector.cpp
 	SplineNetworkUndoTests.cpp
 	DefaultSceneEntitiesTests.cpp
 	NewSceneSeedTests.cpp
@@ -1884,6 +1887,8 @@ add_executable(SceneViewportTests
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewport/SceneViewportRegistry.cpp
 )
 target_include_directories(SceneViewportTests PRIVATE
+	# TestTempDir.h, which UIRgTestHarness.h includes.
+	${CMAKE_SOURCE_DIR}/Tests
 	${CMAKE_SOURCE_DIR}/Engine/Source
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
