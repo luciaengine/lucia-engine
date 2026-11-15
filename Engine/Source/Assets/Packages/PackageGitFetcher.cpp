@@ -6,6 +6,7 @@
 #include "Assets/Packages/PackagesLockFile.h"
 #include "Engine/Build/CancellableShellProcess.h"
 #include "Logger/Logger.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -54,7 +55,7 @@ bool RunGit(const std::string& gitExe,
         commandText += arg;
     }
     outError = "'" + commandText + "' failed (exit " + std::to_string(result.exitCode) + ")";
-    const std::string trimmedOutput = Trimmed(result.output);
+    const std::string trimmedOutput = TrimWhitespace(result.output);
     if (!trimmedOutput.empty())
         outError += ": " + trimmedOutput;
     return false;
@@ -207,7 +208,7 @@ bool AcquireGitPackage(const std::string& gitExe,
         return false;
     if (!RunGit(gitExe, {"-C", checkoutDirText, "rev-parse", "HEAD"}, output, outError))
         return false;
-    const std::string commit = Trimmed(output);
+    const std::string commit = TrimWhitespace(output);
     if (commit.size() < 12)
     {
         outError = "package '" + packageName + "': git rev-parse returned no commit sha";
@@ -310,7 +311,7 @@ bool QueryGitRemoteRefCommit(const std::string& gitExe,
         if (tab == std::string::npos || tab < 40)
             continue;
         const std::string sha = line.substr(0, 40);
-        const std::string refName = Trimmed(line.substr(tab + 1));
+        const std::string refName = TrimWhitespace(line.substr(tab + 1));
         if (refName.size() >= 3 && refName.compare(refName.size() - 3, 3, "^{}") == 0)
             peeledSha = sha;
         else

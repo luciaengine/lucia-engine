@@ -285,6 +285,7 @@ struct OceanSurface
     // Draw a planar reflection capture over the reflected environment. On a frame
     // the capture does not run, the water shows the reflected environment alone.
     // @ge-tooltip Draws the objects a planar capture sees over the environment reflection. Where the capture drew nothing, the water shows the environment reflection.
+    // @ge-tooltip Uses a planar reflection capture when available, with sky as fallback.
     bool PlanarReflections = true;
 
     // How strongly the planar capture covers the reflected environment. 0 keeps the
@@ -293,6 +294,7 @@ struct OceanSurface
     // objects.
     // @ge-tooltip How strongly the planar capture covers the reflected environment; above 1 it brightens the captured objects.
     // @ge-range 0 3
+    // @ge-tooltip Blends the planar reflection capture over the procedural reflected sky.
     float32 PlanarReflectionStrength = 1.0f;
 
     // Resolution scale of the planar reflection capture relative to the main

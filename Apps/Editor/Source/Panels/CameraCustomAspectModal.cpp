@@ -2,6 +2,7 @@
 
 #include "Input/KeyCodes.h"
 #include "UI/ControlLayoutLoader.h"
+#include "UI/Controls/CollapsibleInfoCard.h"
 #include "UI/Controls/FloatField.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"

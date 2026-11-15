@@ -39,10 +39,11 @@ struct Grid2DPC
     float camDistance;
     float viewportH;
     float pad;
+    float cells[4]; // xy = cell origin, zw = cell size; z <= 0 = no authored cells
 };
 
 static_assert(sizeof(GridPC) == 112);
-static_assert(sizeof(Grid2DPC) == 112);
+static_assert(sizeof(Grid2DPC) == 128);
 
 // ---------------------------------------------------------------------------
 // Shader loading (cached, loaded once per process)
@@ -90,7 +91,8 @@ static bool LoadGrid2DShaderBytes(std::vector<uint8_t>& outVs, std::vector<uint8
 
 static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs,
                                                   const std::vector<uint8_t>& fs,
-                                                  const char* debugName)
+                                                  const char* debugName,
+                                                  uint32_t pushConstantBytes)
 {
     GraphicsPipelineDesc gd{};
     gd.Kind = GraphicsPipelineKind::VertexFragment;
@@ -119,7 +121,7 @@ static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs
     blend.dstAlphaBlendFactor = BlendFactor::OneMinusSrcAlpha;
     gd.ColorBlend.attachments = {blend};
 
-    gd.PushConstants.Size      = sizeof(GridPC);
+    gd.PushConstants.Size      = pushConstantBytes;
     gd.PushConstants.StageMask = kShaderStageFragment;
 
     return gd;
@@ -168,7 +170,8 @@ PipelineHandle SceneViewGridRenderer::PrepareRG(const RenderGraph::RGPrepareCont
         return {};
     const GraphicsPipelineId pipeline = device->InternGraphicsPipeline(
         BuildGridPipelineDesc(vertexShader, fragmentShader,
-                              is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid"));
+                              is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid",
+                              static_cast<uint32_t>(is2DMode ? sizeof(Grid2DPC) : sizeof(GridPC))));
     return context.PreparePipeline(pipeline);
 }
 
@@ -180,7 +183,8 @@ void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ct
                                       float camDistance,
                                       float viewportH,
                                       float gridOpacity,
-                                      uint32_t gridColor)
+                                      uint32_t gridColor,
+                                      const float cells2D[4])
 {
     if (!cam)
         return;
@@ -207,6 +211,8 @@ void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ct
                          gridOpacity, gridColor);
         pc.camDistance = camDistance;
         pc.viewportH = viewportH;
+        for (int i = 0; i < 4; ++i)
+            pc.cells[i] = cells2D[i];
         cl->SetPushConstants(pc);
     }
 

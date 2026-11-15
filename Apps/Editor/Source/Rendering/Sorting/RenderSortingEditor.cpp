@@ -6,7 +6,6 @@
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
 #include "Editor/Entities/EditorComponentTraits.h"
-#include "Editor/Registries/EditorPanelRegistry.h"
 #include "InspectorRegistry.h"
 #include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Rendering/Sorting/SortingLayerSettings.h"
@@ -58,10 +57,9 @@ void RegisterRenderSortingEditor()
     InspectorRegistry::Get().RegisterComponentInspector<Sorting>(BuildInspector);
     EditorComponentTraits traits;
     traits.DisplayName = "Render Sorting";
-    traits.Category = "Rendering";
-    traits.Tooltip = "Authored sorting layers and groups for alpha-blended artwork.";
+    traits.InspectorCategory = "Rendering";
+    traits.InspectorTooltip = "Authored sorting layers and groups for alpha-blended artwork.";
     EditorComponentTraitsRegistry::Get().Register(ECS::GetComponentTypeId<Sorting>(), std::move(traits));
     RegisterSortingLayerSettings();
-    EditorPanelRegistry::Get().RegisterEditorStyleSheet({"editor", "UI/panels/HierarchyLayerControls.css"});
 }
 }

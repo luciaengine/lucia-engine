@@ -714,6 +714,7 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                 float CamDistance = 0.0f;
                 float Opacity = 1.0f;
                 uint32_t Color = 0;
+                float Cells[4] = {0, 0, 0, 0};
             } grid;
             grid.Show = m_ShowGrid;
             grid.CamPos[0] = static_cast<float>(m_CamPos[0]);
@@ -721,6 +722,13 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
             grid.CamPos[2] = static_cast<float>(m_CamPos[2]);
             grid.Is2D = m_Is2DMode;
             grid.CamDistance = m_CamDistance;
+            if (m_Grid2DCells.Valid)
+            {
+                grid.Cells[0] = m_Grid2DCells.OriginX;
+                grid.Cells[1] = m_Grid2DCells.OriginY;
+                grid.Cells[2] = m_Grid2DCells.Width;
+                grid.Cells[3] = m_Grid2DCells.Height;
+            }
             grid.Opacity = m_Is2DMode ? svSettings.GetGridOpacity2D() : svSettings.GetGridOpacity3D();
             grid.Color = m_Is2DMode ? svSettings.GetGridColor2D() : svSettings.GetGridColor3D();
 
@@ -774,7 +782,7 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                     if (grid.Show)
                         gridRenderer->RecordRG(ctx, *gridPipeline, &cam, grid.CamPos, grid.Is2D,
                                                 grid.CamDistance, static_cast<float>(h),
-                                                grid.Opacity, grid.Color);
+                                                grid.Opacity, grid.Color, grid.Cells);
 
                     if (!camValid || (!lineDraws.size() && !triDraws.size()))
                         return;

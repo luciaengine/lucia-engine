@@ -241,7 +241,7 @@ class GridView : public UIElement
     /// Called when scroll position changes (scrollY, contentHeight, viewportHeight). Use for load-more-on-scroll.
     void SetOnScrollChanged(std::function<void(float scrollY, float contentHeight, float viewportHeight)> cb) { m_OnUserScrollChanged = std::move(cb); }
 
-    // IVirtualizedControl (C-8 per-frame provider change pump).
+    // IVirtualizedControl (per-frame provider change pump).
     uint64_t ProviderChangeVersion() const override { return m_Provider ? m_Provider->GetChangeVersion() : 0; }
     void EnqueuePumpWork(UIManager& ui) override;
 
@@ -295,7 +295,7 @@ class GridView : public UIElement
     uint64_t m_LastProviderChangeVersion = 0;
     // Last provider StructureVersion the consume path acted on. Movement means a
     // structural mutation (add/remove/reorder/regroup) that must fully rebind the
-    // window — see ChangeTrackingProviderBase's contract note (C-7).
+    // window — see ChangeTrackingProviderBase's contract note.
     uint64_t m_LastProviderStructureVersion = 0;
     GridChangeSet m_PendingChangeSet;
     bool m_PendingChangeSetValid = false;

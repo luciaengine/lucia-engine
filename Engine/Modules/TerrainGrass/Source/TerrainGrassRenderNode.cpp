@@ -10,6 +10,7 @@
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -118,7 +119,7 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
     // returns here nothing downstream runs (no forward contributor, no placement pass) -> total silence
     // on both the emit + dispatch traces. The counts are renderer-blind (the params SSBO the
     // extraction fills); log the slot + counts the node reads vs what the extraction reports.
-    static const bool kDbg = std::getenv("GE_TERRAIN_GRASS_DEBUG") != nullptr;
+    static const bool kDbg = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_GRASS_DEBUG", false);
     {
         static uint32 s_LastActive = 0xFFFFFFFFu, s_LastParams = 0xFFFFFFFFu;
         if (kDbg && (activeGrassCount != s_LastActive || terrainParamsCount != s_LastParams))

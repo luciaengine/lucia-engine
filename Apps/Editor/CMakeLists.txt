@@ -1,6 +1,47 @@
 # Editor application target
 
 set(EDITOR_SOURCES
+    # 2D editing: tile maps, tile sets, the tile palette, sprite traits and sorting layers.
+    Source/TileMap/TileLayerCommands.cpp
+    Source/TileMap/TileLayerEdits.cpp
+    Source/TileMap/TileMapEditCommand.cpp
+    Source/TileMap/TileMapEditContext.cpp
+    Source/TileMap/TileMapEditorIntegration.cpp
+    Source/TileMap/TileMapSourceImport.cpp
+    Source/TileMap/TileMapTerrainBrush.cpp
+    Source/TileMap/TileReplaceEdit.cpp
+    Source/TileMap/TileSetAtlasLookup.cpp
+    Source/TileMap/TileSetDocument.cpp
+    Source/Panels/TilePaletteBrushList.cpp
+    Source/Panels/TilePaletteGrid.cpp
+    Source/Panels/TilePaletteIntGridList.cpp
+    Source/Panels/TilePaletteLayerList.cpp
+    Source/Panels/TilePalettePanel.cpp
+    Source/Panels/TilePaletteTerrainList.cpp
+    Source/Panels/TileRulesEditorPanel.cpp
+    Source/Panels/TileSetCollisionEditor.cpp
+    Source/Panels/TileSetEditorPanel.cpp
+    Source/Panels/TileSetTerrainBitEditor.cpp
+    Source/SceneView/TileMapPaintOverlay.cpp
+    Source/SceneView/TileMapPaintTool.cpp
+    Source/SceneView/TileMapPaintToolStripEntry.cpp
+    Source/Thumbnails/TileMapThumbnailComposite.cpp
+    Source/Thumbnails/TileThumbnailHandler.cpp
+    Source/Thumbnails/ThumbnailImageCache.cpp
+    Source/Thumbnails/ThumbnailImageOps.cpp
+    Source/Thumbnails/SpriteFramesThumbnailHandler.cpp
+    Source/Inspectors/TileMapLayerInspector.cpp
+    Source/Inspectors/Sprite2DComponentTraits.cpp
+    Source/Rendering/Sorting/RenderSortingEditor.cpp
+    Source/Rendering/Sorting/SortingLayerSettings.cpp
+    Source/Rendering/Sorting/SortingLayerSettingsView.cpp
+    Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp
+    Source/Rendering/Sorting/RenderSortingDiagnostic.cpp
+    Source/Rendering/Sorting/RenderSortingEdit.cpp
+    Source/Rendering/Sorting/RenderSortingFields.cpp
+    Source/DebugServer/TileMapDebugHandlers.cpp
+    Source/DebugServer/TileMapRulesCommands.cpp
+    Source/DebugServer/TileMapRulesWindow.cpp
     Source/main.cpp
     Source/Editor/Application/BuildConfigStatus.cpp
     Source/Editor/Application/EditorVersion.cpp
@@ -142,7 +183,6 @@ set(EDITOR_SOURCES
     Source/Projects/SubprocessStream.cpp
     Source/Panels/SaveSceneAsModal.cpp
     Source/Panels/DownloadInProgressModal.cpp
-    Source/Panels/ConfirmActionModal.cpp
     Source/Panels/SaveSceneChangesModal.cpp
     Source/Panels/RestoreSceneBackupModal.cpp
     Source/Panels/RenameLayoutModal.cpp
@@ -231,7 +271,6 @@ set(EDITOR_SOURCES
 	Source/Thumbnails/ModelThumbnail/ModelThumbnailRenderLanes.cpp
 	Source/Thumbnails/TextureThumbnailHandler.cpp
 	Source/Thumbnails/VideoThumbnailHandler.cpp
-	Source/UI/InspectorSection.cpp
 	Source/UI/EditorSearchBars.cpp
 	Source/UI/UniversalSearchProvider.cpp
 	Source/Search/UniversalSearchController.cpp
@@ -1048,6 +1087,9 @@ set(EDITOR_HEADERS
 # registry instance across plugin DLLs, headless module hosting, a curated
 # export ABI — presupposes dynamic linking the target does not have.
 set(EDITOR_SDK_SOURCES
+	# Controls that the editor packages use as well as the editor panels.
+	Source/UI/InspectorSection.cpp
+	Source/Panels/ConfirmActionModal.cpp
     Source/UndoRedo/History/HistoryComponentTargets.cpp
     Source/UndoRedo/History/HistoryValueFormatter.cpp
 	Source/Editor/Registries/AssetOpenerRegistry.cpp
@@ -1769,12 +1811,31 @@ ge_add_engine_package_module(GePkgModule_EztreeEditor
 	# The editor half extends its runtime half: same peer-header rule the
 	# editor's package-module wiring applies to the source build.
 	EXTRA_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/Packages/eztree/Native)
+ge_add_engine_package_module(GePkgModule_LightmapBakingEditor
+	PACKAGE lightmap-baking
+	MODULE_NAME LightmapBaking.Editor
+	SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/lightmap-baking/Editor
+	KIND editor
+	PREBUILT_SUBDIR Binaries/Editor)
+add_subdirectory(${CMAKE_SOURCE_DIR}/Packages/lightmap-baking
+                 ${CMAKE_BINARY_DIR}/Packages/lightmap-baking)
 ge_add_engine_package_module(GePkgModule_AiAssistantEditor
 	PACKAGE ai-assistant
 	MODULE_NAME AiAssistant.Editor
 	SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor
 	KIND editor
 	PREBUILT_SUBDIR Binaries/Editor)
+ge_add_engine_package_module(GePkgModule_LocalizationEditor
+	PACKAGE localization
+	MODULE_NAME Localization.Editor
+	SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/localization/Editor
+	KIND editor
+	PREBUILT_SUBDIR Binaries/Editor)
+add_subdirectory(${CMAKE_SOURCE_DIR}/Packages/localization
+                 ${CMAKE_BINARY_DIR}/Packages/localization)
+# A localization asset edit re-stages the packages beside the editor.
+file(GLOB_RECURSE _ge_localization_assets CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/Packages/localization/Assets/*")
 ge_add_engine_package_module(GePkgModule_GitVcsEditor
 	PACKAGE git-vcs
 	MODULE_NAME GitVcs.Editor
@@ -2109,6 +2170,7 @@ add_dependencies(Editor EnginePackagePrebuilts)
 # First-party packages (Packages/eztree, ...) staged next to Editor.exe;
 # the package resolver's implicit engine-package scan mounts them per project.
 ge_stage_packages(Editor)
+set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_localization_assets}")
 
 # On Linux, the staging step above copies libGameEngine.Native.so into the exe
 # directory, but the dynamic linker loads it from cmake-build/lib/ via RPATH.
@@ -2272,7 +2334,7 @@ if(ENABLE_SCRIPTING)
 	# only runs once every dotnet build has completed.
 	set(_ge_editor_managed_deps
 		HotReloadAssembly CoreBridgeAssembly ScriptingAbiAssembly ScriptingBindingsAssembly
-		EcsAbiAssembly PlatformAbiAssembly ScriptingRuntimeAssembly
+		EcsAbiAssembly PlatformAbiAssembly TileMapAbiAssembly ScriptingRuntimeAssembly
 		EntitySystemGeneratorAssembly EditorManagedAssembly CompileServerHost)
 	add_dependencies(Editor ${_ge_editor_managed_deps})
 

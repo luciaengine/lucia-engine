@@ -12,10 +12,12 @@
 #include "NativeScripting/NativeScriptingABI.h"
 #include "NativeScripting/NativeSourceTree.h"
 #include "NativeScripting/PrebuiltModuleBinaries.h"
+#include "Types/Fnv1a.h"
 #include "NativeScripting/ToolchainFingerprint.h"
 #include "NativeScripting/UserModuleHandle.h"
 #include "NativeScripting/UserProjectGenerator.h"
 #include "NativeScripting/UserSystemRegistry.h" // ClearUserSystems on reload
+#include "Platform/Environment.h"
 #include "PluginAPI/EnginePlugin.h"             // registration hold + abort purge (C12)
 
 #include <algorithm>
@@ -59,7 +61,7 @@ std::filesystem::path ShadowCopyVersioned(const std::filesystem::path& src,
         return {};
     const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
-    const std::string hex = ToHexDigest(Fnv1aHash(bytes)).substr(0, 8);
+    const std::string hex = ToHexDigest(Hashing::Fnv1a64(bytes)).substr(0, 8);
 
     std::error_code ec;
     std::filesystem::create_directories(activeDir, ec);
@@ -944,7 +946,7 @@ void NativeScriptManager::UnloadSupersededModuleVersions(const std::string& modu
     }
 
     // Safety valve for the wild: force the pre-C12 keep-everything-mapped behavior.
-    static const bool unloadDisabled = std::getenv("GE_NATIVE_MODULE_NO_UNLOAD") != nullptr;
+    static const bool unloadDisabled = Platform::EnvironmentSwitchEnabled("GE_NATIVE_MODULE_NO_UNLOAD", false);
     if (unloadDisabled)
     {
         Logger::Log::Info("[NativeScripting] module '{}': superseded image(s) stay mapped "

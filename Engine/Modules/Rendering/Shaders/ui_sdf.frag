@@ -415,10 +415,10 @@ void main()
             // stripe centres, ±1/3 pixel horizontally (RGB-stripe panel,
             // R leftmost). The step rides the screen-x derivative of the
             // em-space interpolant, so it is exact at any glyph scale/DPI.
-            // Slug's per-tap footprint (the 1-px pixel box convolved with
-            // the kTextFilterWidthPx reconstruction filter) overlaps
-            // neighbouring taps, which is the low-pass that keeps fringes
-            // bounded.
+            // Each tap's footprint is a full 1-px box and neighbouring taps
+            // overlap by two thirds, so across a straight edge the red and
+            // blue taps differ by at most two thirds of the edge's step: that
+            // is the fringe's bound.
 #if defined(GE_COMPAT_PROFILE)
             vec2 subpixelStepEm = ge_UiDeriv.UvDdx * (1.0 / 3.0);
 #else
@@ -464,12 +464,9 @@ void main()
                 outCoverage = vec4(layerA, layerMean);
             }
 #else
-            // Colour-keyed coverage correction (Skia's SkMaskGamma model, see
-            // UI/text_mask_gamma.glsl). This replaced a ppem-keyed
-            // pow(coverage, e) ramp, which took up to a third of the ink out of
-            // a glyph purely for being asked for at a larger size and thinned
-            // both contrast polarities. The perceptual error that needs
-            // correcting is a property of the text colour, not of its size.
+            // Colour-keyed coverage correction (UI/text_mask_gamma.glsl): the
+            // contrast keyed on the paint's luminance, then the retarget into
+            // the attachment's blend space. Never keyed on size.
             coverage = correctTextCoverage(coverage, glyphColor.rgb,
                                            pc.textContrast, pc.textBlendGamma,
                                            pc.textBlendSpaceEncoded);

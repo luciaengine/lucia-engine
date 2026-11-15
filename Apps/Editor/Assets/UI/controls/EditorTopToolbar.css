@@ -12,7 +12,7 @@
 	background-color: #222222;
 	border-color: var(--ui_color_border);
 	border-width: 0px;
-	border-bottom-width: 1px;
+	border-bottom-width: 0px;
 	flex-shrink: 0;
 	font-size: var(--ui_font_size_base);
 	font-family: var(--ui_font_family);
@@ -60,8 +60,8 @@
 /* The clip above is what the sections exist for, and it also erases an outward
    focus ring: the ring occupies [+2,+4]px outside the border box, and a section
    is only as tall as the button it holds. There is no vertical room to give it
-   either -- the toolbar's 40px, less its 1px bottom border and 2px of vertical
-   padding, leaves 35px against a 32px button, and an outward ring needs 40px.
+   either -- the toolbar's 40px, less 2px of padding on each vertical side,
+   leaves 36px against a 32px button, and an outward ring needs 40px.
    So the ring is drawn INSIDE the button here: outline-offset -4px against
    outline-width 2px puts its outer edge 2px within the border box, whole and
    unclipped, without giving up the horizontal containment. */
@@ -112,7 +112,7 @@
 /* Match the resting brightness of the reference playback controls without
    changing their geometry, assets, or interaction states. */
 .top-toolbar-center .button.icon-button {
-	background-image-tint: #9E9E9E;
+	background-image-tint: var(--toolbar-playback-icon-tint, #9E9E9E);
 }
 
 .top-toolbar-center .button.icon-button.active,
@@ -193,4 +193,15 @@
 	background-color: transparent !important;
 	border-color: transparent !important;
 	background-image: url("editor:Icons/recording_on_button.svg");
+}
+
+/* Outline size and optical alignment are authored in the SVG canvas. */
+.toolbar-outline-icon {
+    background-size: 24px 24px;
+    background-position: center;
+}
+
+/* Keep play mode visible independently of Button's transient pressed class. */
+.toolbar-play-active {
+    --toolbar-playback-icon-tint: var(--ui_icon_tint_active);
 }

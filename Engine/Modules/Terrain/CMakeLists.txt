@@ -43,6 +43,7 @@ if(BUILD_TESTING AND (GTest_FOUND OR TARGET GTest::gtest))
     # Image and Logger are OBJECT libraries: their objects reach the executable only
     # when it links them directly.
     target_link_libraries(TerrainTests PRIVATE Terrain Image Logger GTest::gtest GTest::gtest_main)
+    target_include_directories(TerrainTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     set_target_properties(TerrainTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON

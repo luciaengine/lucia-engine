@@ -122,8 +122,8 @@ void DefineBuiltInControls()
         .Attr("enabled", &UIElement::SetEnabled);
 
     Register<Label>("label")
-        .Text(&Label::SetText)
-        .Attr("text", &Label::SetText);
+        .Text(&Label::SetAuthoredText)
+        .Attr("text", &Label::SetAuthoredText);
 
     // Public string field element. Uses TextField (string-based typed field)
     // and keeps legacy aliases for backwards compatibility.

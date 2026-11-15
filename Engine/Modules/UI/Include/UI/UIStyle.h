@@ -727,7 +727,7 @@ enum class StylePropertyId : uint16_t
     _Count
 };
 
-// Canonical property → invalidation impact (C-13). Single source of truth
+// Canonical property → invalidation impact. Single source of truth
 // consumed by the dynamic style analysis (hover/pseudo escalation gating)
 // and anything else deciding whether a property change can move layout or
 // only repaint. Exhaustive switch, no default: a new StylePropertyId left
@@ -1082,7 +1082,7 @@ struct StylesheetRuleIndex
     std::unordered_map<StringId, std::vector<uint32_t>> ByTag;
     std::vector<uint32_t> Universal;
 
-    // P4 sibling style sharing: buckets holding a "share-sensitive" rule —
+    // Sibling style sharing: buckets holding a "share-sensitive" rule —
     // one whose match can differ between same-key siblings (sibling
     // combinators anywhere in the chain; positional/:empty/attribute
     // selectors on the rightmost compound). An element probing any

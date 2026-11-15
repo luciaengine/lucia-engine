@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Engine/Rendering/MirrorCaptureView.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
@@ -74,8 +75,7 @@ public:
     // its world pass renders into.
     struct Mirror
     {
-        ::GameEngine::Rendering::CameraId CameraId = 0;
-        ::GameEngine::Rendering::ViewId ViewId = 0;
+        Engine::Renderer::MirrorCaptureView Capture; // the shared mirror camera and view
         ::GameEngine::Rendering::TextureHandle ColorTexture; // scaled RGBA16F
         uint32_t Width = 0;
         uint32_t Height = 0;
@@ -124,10 +124,6 @@ public:
         uint32_t frameIndex) const;
 
 private:
-    // Allocate the mirror's persistent reflection view + camera, configured to
-    // receive extraction submissions but skip the active pipeline.
-    void EnsureView(Engine::Renderer::RenderServices& rs, Mirror& mirror,
-                    ::GameEngine::Rendering::RenderLayerMask renderLayerMask, uint64_t worldId);
 
     // (Re)create the mirror's scaled colour target (and the shared sampler) when
     // the size changes.
@@ -139,11 +135,6 @@ private:
     void ReleaseIdleMirrors(std::chrono::steady_clock::time_point declarerPrevious);
     void ReleaseMirror(Mirror& mirror);
 
-    // Build the mirrored camera from the main camera by reflecting across the
-    // horizontal plane y = seaLevel (position + orientation), keeping the main
-    // projection. viewProj is recomputed so culling + the world pass agree.
-    static ::GameEngine::Rendering::CameraData MakeMirroredCamera(
-        const ::GameEngine::Rendering::CameraData& main, float seaLevel);
 
     ::GameEngine::Rendering::IDevice* m_Device = nullptr;
     Engine::Renderer::RenderServices* m_RenderServices = nullptr;

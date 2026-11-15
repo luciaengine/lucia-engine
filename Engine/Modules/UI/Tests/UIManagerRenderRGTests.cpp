@@ -18,6 +18,7 @@
 #include "UI/UIManager.h"
 #include "UIManagerSdfRingAccess.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -76,8 +77,8 @@ struct UiFixture
         Ui = std::make_unique<UIManager>(dev);
         Ui->SetRoot(std::move(root));
 
-        const auto tmpDir = std::filesystem::temp_directory_path();
-        const auto css = tmpDir / (withExternalBinding ? "ui_renderrg_ext.css" : "ui_renderrg.css");
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_renderrg"));
+        const auto css = tempDir.Path() / (withExternalBinding ? "ui_renderrg_ext.css" : "ui_renderrg.css");
         {
             std::ofstream f(css);
             f << R"(
@@ -407,7 +408,8 @@ TEST(UIManagerRenderRGTests, DrainDoesNotCompoundElementOpacity)
         auto ui = std::make_unique<UIManager>(dev.get());
         ui->SetRoot(std::move(root));
 
-        const auto css = std::filesystem::temp_directory_path() / "ui_drain_opacity.css";
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_drain_opacity"));
+        const auto css = tempDir.Path() / "ui_drain_opacity.css";
         {
             std::ofstream f(css);
             f << "#root { display: flex; width: 256px; height: 128px; }\n"

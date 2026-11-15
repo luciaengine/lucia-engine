@@ -153,7 +153,7 @@ AssetSourceDesc MakeEnginePackageMount(const ResolvedPackage& package,
 
     const std::filesystem::path authoringManifest = AuthoringManifestFile(package);
     if (authoringManifest.empty())
-        return desc; // Staged content with no authoring tree behind it.
+        return desc; // Host cache above remains outside staged/signed content.
 
     // An engine package in a developer build is a SOURCE package: the import
     // settings of the files its manifest declares are editable, and they are

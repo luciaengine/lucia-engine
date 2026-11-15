@@ -65,6 +65,28 @@ struct EditorDirectoryMenuItemSnapshot
     std::string Icon;
 };
 
+// What a module registers to add an item to the Assets panel's context menu
+// for a file. AppliesTo picks the files the item shows on (an extension
+// test, say); Action receives the file the menu was opened on. Icon is an
+// editor icon path (EditorIcons), empty for none.
+struct EditorAssetFileMenuItemDescriptor
+{
+    std::string Path;
+    int32_t Priority = 0; // the file menu sorts by (priority, path); built-in rows sit at 0
+    std::string Icon;
+    std::function<bool(const std::filesystem::path& file)> AppliesTo;
+    std::function<void(const std::filesystem::path& file)> Action;
+};
+
+// Snapshot row the file context menu consumes; the registry assigns the ids.
+struct EditorAssetFileMenuItemSnapshot
+{
+    uint32_t CommandId = 0;
+    std::string Path;
+    int32_t Priority = 0;
+    std::string Icon;
+};
+
 // A command reached by a fixed id instead of a menu path: UI replay and the
 // debug server's execute_command drive it (the ids live in
 // Automation/UiReplayCommandIds.h). The owner of the feature registers it, so
@@ -110,6 +132,15 @@ public:
     // Runs the folder item registered under commandId on `folder`. Returns
     // false when the id is not a registered folder item.
     bool TryInvokeDirectoryItem(uint32_t commandId, const std::filesystem::path& folder) const;
+
+    // File context-menu items, the same way: a same-Path registration replaces
+    // forward and keeps its command id. The snapshot holds the items whose
+    // AppliesTo accepts `file`.
+    void RegisterAssetFileMenuItem(EditorAssetFileMenuItemDescriptor descriptor);
+    std::vector<EditorAssetFileMenuItemSnapshot> AssetFileMenuSnapshot(const std::filesystem::path& file) const;
+    // Runs the file item registered under commandId on `file`. Returns false
+    // when the id is not a registered file item.
+    bool TryInvokeAssetFileItem(uint32_t commandId, const std::filesystem::path& file) const;
 
     // Fixed-id commands. A same-id registration replaces forward, like a
     // same-Path menu item. Ids inside the native menu range are rejected
@@ -159,6 +190,14 @@ private:
         ECS::ModuleRegistrationStamp Module;
     };
     std::vector<DirectoryEntry> m_DirectoryItems;
+
+    struct AssetFileEntry
+    {
+        EditorAssetFileMenuItemDescriptor Descriptor;
+        uint32_t CommandId = 0;
+        ECS::ModuleRegistrationStamp Module;
+    };
+    std::vector<AssetFileEntry> m_AssetFileItems;
 
     struct CommandEntry
     {

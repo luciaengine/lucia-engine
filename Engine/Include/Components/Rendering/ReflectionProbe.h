@@ -11,6 +11,8 @@ enum class ReflectionProbeUpdateMode : uint32 {
     Realtime = 1, // @ge-label Realtime (on change)
 };
 
+enum class ReflectionProbeInfluenceShape : uint32 { Box = 1, Ellipsoid = 2 };
+
 struct ReflectionProbe {
     // Local influence volume. Like PostProcessVolume, the entity transform owns
     // the probe range: a unit box/sphere is scaled and oriented by WorldTransform.
@@ -19,10 +21,22 @@ struct ReflectionProbe {
     // @ge-tooltip Tie-breaker when more than one probe influences the camera.
     uint32 Priority = 0;
 
-    // Godot-style local probe box. When disabled, the same transform range is
-    // treated as a sphere/ellipsoid influence without parallax box projection.
-    // @ge-tooltip Use the transform-scaled local box for probe selection and parallax-corrected specular reflections. When disabled, the transform range is treated as an ellipsoid.
-    bool BoxProjection = true;
+    // @ge-tooltip The influence volume's shape: a box blends to its faces, an ellipsoid to its surface.
+    ReflectionProbeInfluenceShape InfluenceShape = ReflectionProbeInfluenceShape::Box;
+    // Projection box in the influence volume's local axes. Extent multipliers
+    // and world-unit offsets default to the original transform-owned bounds.
+    // @ge-tooltip Size of the parallax projection box along local X, as a multiple of the influence volume.
+    float32 ProjectionScaleX = 1.0f; // @ge-range 0.001
+    // @ge-tooltip Size of the parallax projection box along local Y, as a multiple of the influence volume.
+    float32 ProjectionScaleY = 1.0f; // @ge-range 0.001
+    // @ge-tooltip Size of the parallax projection box along local Z, as a multiple of the influence volume.
+    float32 ProjectionScaleZ = 1.0f; // @ge-range 0.001
+    // @ge-tooltip Offset of the parallax projection box along local X, in meters.
+    float32 ProjectionOffsetX = 0.0f;
+    // @ge-tooltip Offset of the parallax projection box along local Y, in meters.
+    float32 ProjectionOffsetY = 0.0f;
+    // @ge-tooltip Offset of the parallax projection box along local Z, in meters.
+    float32 ProjectionOffsetZ = 0.0f;
     // @ge-tooltip Offset of the capture and projection origin along the probe's local X axis.
     float32 OriginOffsetX = 0.0f;
     // @ge-tooltip Offset of the capture and projection origin along the probe's local Y axis.
@@ -41,14 +55,9 @@ struct ReflectionProbe {
     // @ge-tooltip Darkens lighting sampled from below the horizon. 0 keeps it bright; 1 makes it black.
     float32 IblLowerHemisphereDarkness = 0.3f;
 
-    // When true the six-face capture also gathers environment reflections
-    // (the sky/HDRI and any lower-priority probe). Default false: the capture
-    // sees direct light, emission and the diffuse GI field only. A probe that
-    // sampled its OWN environment cube while baking would feed its output back
-    // into its next bake; in a closed, high-albedo room with no dominant fixed
-    // sky that loop diverges to Inf and the whole view tonemaps to black, so
-    // the safe default breaks the recursion. Turn it on only for an open scene
-    // where the environment is dominated by a fixed sky.
+    // Include the global sky/HDRI in captured geometry's environment lighting.
+    // Local probes are excluded from every probe capture, even when enabled,
+    // so captures cannot feed themselves or form cross-probe feedback loops.
     bool CaptureEnvironment = false;
 
     // Scene capture behavior. Probes use the active sky/HDRI as background
@@ -57,12 +66,10 @@ struct ReflectionProbe {
     uint32 CaptureResolution = 256;
     // @ge-tooltip When the probe re-bakes. Once: only when the probe's own settings, the sky or the geometry in its world are added or removed. Realtime (on change): also whenever its world changes: lights, the sky, moved or edited renderables, material edits, and animated or depth-writing content such as skinned characters, terrain, an animated ocean or grass. Shader-time material animation, playing video textures and particles do not re-bake it; set the interval to 0 to capture them every frame.
     ReflectionProbeUpdateMode UpdateMode = ReflectionProbeUpdateMode::Realtime;
-    // Shortest time between realtime captures while the probe's world
-    // changes (SceneProbeWorldEpochs: lights, renderables, dynamic depth,
-    // material edits; not shader-time animation, video textures or
-    // particles); a world at rest is not recaptured. 0 captures every frame:
-    // a full six-face bake per frame, no time slicing and no rebake throttle.
-    // @ge-tooltip Realtime (on change): the fastest the probe may re-bake while the world changes, in seconds; 0 = every frame.
+    // Shortest time between realtime captures while the probe's world changes (scene edits, lights,
+    // materials, render content, shadow casters, dynamic depth); a world at rest is not recaptured.
+    // 0 recaptures on every change. All probes share the global face and filter budget.
+    // @ge-tooltip Realtime (on change): the fastest the probe may re-bake while the world changes, in seconds; 0 = on every change.
     float32 RealtimeUpdateInterval = 0.5f; // @ge-range 0
     // @ge-tooltip Far clip distance for scene capture. 0 uses the probe volume.
     float32 MaxDistance = 0.0f;

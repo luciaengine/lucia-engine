@@ -3,9 +3,9 @@
     <CameraBookmarksWidget id="CameraBookmarks"/>
     <UIElement class="toolbar-spacer" />
     <!-- Inline tool mode buttons (visible when overlay is hidden) -->
-    <UIElement id="InlineToolButtons" class="sceneview-toolbar-buttons inline-tool-buttons hidden">
-      <Button id="InlineSelectBtn" class="scene-tool-btn select-tool-icon icon-active" />
-      <Button id="InlineTranslateBtn" class="scene-tool-btn translate-tool-icon" />
+    <UIElement id="InlineToolButtons" class="sceneview-toolbar-buttons inline-tool-buttons">
+      <Button id="InlineSelectBtn" class="scene-tool-btn select-tool-icon" />
+      <Button id="InlineTranslateBtn" class="scene-tool-btn translate-tool-icon icon-active" />
       <Button id="InlineRotateBtn" class="scene-tool-btn rotate-tool-icon" />
       <Button id="InlineScaleBtn" class="scene-tool-btn scale-tool-icon" />
       <Button id="InlineMeasureBtn" class="scene-tool-btn ruler-tool-icon" />
@@ -24,7 +24,7 @@
       <Button id="QuadViewToggle" class="small secondary icon-button quad-view-icon" />
       <Button id="PostProcessToggle" class="small secondary icon-button post-process-icon icon-active" />
       <Button id="RotationGizmoToggle" class="small secondary icon-button nav-gizmo-icon icon-active" />
-      <Button id="ToolOverlayToggle" class="small secondary icon-button tool-overlay-icon icon-active" />
+      <Button id="ToolOverlayToggle" class="small secondary icon-button tool-overlay-icon" />
     </UIElement>
   </SceneViewToolbar>
 

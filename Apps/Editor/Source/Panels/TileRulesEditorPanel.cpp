@@ -202,7 +202,7 @@ TileRulesEditorPanel::TileRulesEditorPanel(
     RequestSubtreeStyleAssetPath("UI/theme/tilemap-icons.css");
     if (m_Panels)
         m_Panels->RegisterUpdateCallback(
-            this, [this](const Editor::PanelUpdateContext&) { Update(); });
+            this, [this](const EditorPanelManager::PanelUpdateContext&) { Update(); });
 }
 
 TileRulesEditorPanel::~TileRulesEditorPanel()

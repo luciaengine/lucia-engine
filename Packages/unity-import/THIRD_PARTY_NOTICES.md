@@ -15,7 +15,7 @@ Retain the license and copyright notice when redistributing the converter.
 
 MIT License
 
-Copyright (c) 2026 Gamecrafters Guild Limited
+Copyright (c) 2026 Shanee
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

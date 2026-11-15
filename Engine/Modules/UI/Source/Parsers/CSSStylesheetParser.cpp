@@ -1,5 +1,5 @@
-// CSS stylesheet + inline-style parsing (lexbor-backed). Split out of
-// CSSParser.cpp (P4f). Lexbor selector conversion is folded in here because it
+// CSS stylesheet + inline-style parsing (lexbor-backed). Lexbor selector
+// conversion lives here because it
 // is only ever called from stylesheet parsing and keeps lexbor types out of
 // the shared detail header and the hot cascade TU.
 

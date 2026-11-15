@@ -36,8 +36,13 @@ void EditorPluginRegistry::RegisterPlugin(IEditorPlugin& plugin)
             Logger::Log::Info("[Plugins] Editor plugin '{}' replaced by a new instance (module "
                               "re-registration): the previous instance is no longer dispatched",
                               descriptor.Id);
+        IEditorPlugin* previous = existing->Attached ? existing->Plugin : nullptr;
+        existing->Attached = false;
         existing->Plugin = &plugin;
         existing->Module = ECS::GetActiveRegistrationModule();
+        // No iterator survives a hook: shutdown can register another package.
+        if (previous)
+            previous->OnEditorShutdown();
     }
     else
     {
@@ -56,6 +61,75 @@ void EditorPluginRegistry::RegisterPlugin(IEditorPlugin& plugin)
     // without waiting for a pass that already ran.
     if (m_InspectorsRegistered && IsEnabled(descriptor))
         plugin.RegisterInspectors();
+}
+
+void EditorPluginRegistry::AttachHost(EditorHostServices services)
+{
+    Shutdown();
+    m_HostServices = std::move(services);
+    m_HostAttached = true;
+}
+
+void EditorPluginRegistry::Update()
+{
+    if (!m_HostAttached)
+        return;
+    // A hook may append registrations. Process those on the next frame and
+    // retain no entry reference across callbacks. No per-frame snapshot allocation.
+    const size_t count = m_Plugins.size();
+    for (size_t index = 0; index < count; ++index)
+    {
+        IEditorPlugin* plugin = m_Plugins[index].Plugin;
+        const auto& module = m_Plugins[index].Module;
+        const bool available = !module.IsSet() || !m_HostServices.IsModuleAvailable ||
+                               m_HostServices.IsModuleAvailable(module.ModuleId);
+        const bool enabled = available && IsEnabled(plugin->GetDescriptor());
+        const bool attached = m_Plugins[index].Attached;
+        m_Plugins[index].Attached = enabled;
+        if (attached && !enabled)
+            plugin->OnEditorShutdown();
+        else if (!attached && enabled)
+            plugin->OnEditorAttach(m_HostServices);
+        if (enabled && m_Plugins[index].Plugin == plugin && m_Plugins[index].Attached)
+            plugin->OnEditorUpdate();
+    }
+}
+
+void EditorPluginRegistry::InvalidateScene()
+{
+    const auto entries = m_Plugins;
+    for (const Entry& entry : entries)
+        if (entry.Attached)
+            entry.Plugin->OnSceneInvalidated();
+}
+
+void EditorPluginRegistry::Shutdown()
+{
+    std::vector<IEditorPlugin*> attached;
+    for (Entry& entry : m_Plugins)
+    {
+        if (entry.Attached)
+            attached.push_back(entry.Plugin);
+        entry.Attached = false;
+    }
+    m_HostAttached = false;
+    for (IEditorPlugin* plugin : attached)
+        plugin->OnEditorShutdown();
+    m_HostServices = {};
+}
+
+bool EditorPluginRegistry::TryInvokeCommand(std::string_view method,
+                                           const nlohmann::json& parameters,
+                                           nlohmann::json& result)
+{
+    const auto entries = m_Plugins;
+    for (const Entry& entry : entries)
+        if (entry.Attached && IsEnabled(entry.Plugin->GetDescriptor()) &&
+            (!entry.Module.IsSet() || !m_HostServices.IsModuleAvailable ||
+             m_HostServices.IsModuleAvailable(entry.Module.ModuleId)) &&
+            entry.Plugin->TryInvokeCommand(method, parameters, result))
+            return true;
+    return false;
 }
 
 std::vector<IEditorPlugin*> EditorPluginRegistry::GetPlugins() const

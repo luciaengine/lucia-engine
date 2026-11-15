@@ -12,6 +12,7 @@ void PopulateScenePointerMods(ScenePointerEvent& ev, std::uint32_t mods)
     ev.alt   = (mods & Input::kModAlt) != 0;
     ev.ctrl  = (mods & Input::kModControl) != 0;
     ev.shift = (mods & Input::kModShift) != 0;
+    ev.primary = Input::IsPrimaryShortcutModifier(static_cast<int>(mods));
     ev.grave = false;
     ev.rotateSnap45 = false;
     if (Input::InputSystem* input = EngineCore::GetInstance().GetInputSystem())

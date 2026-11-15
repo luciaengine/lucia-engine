@@ -74,7 +74,7 @@ void StyleSwatch(UIElement* swatch, uint32 argb)
 {
     if (!swatch)
         return;
-    swatch->Overrides()
+    swatch->Style()
         .Set(Style::Width, StyleLength::Px(kSwatchSize))
         .Set(Style::Height, StyleLength::Px(kSwatchSize))
         .Set(Style::MinWidth, StyleLength::Px(kSwatchSize))
@@ -132,7 +132,7 @@ void AddTintRow(const InspectorContext& ctx, ECS::World* w, ECS::EntityHandle e,
         label->AddClass("inspector-label-no-drag");
 
     UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
-    fieldContainer->Overrides()
+    fieldContainer->Style()
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
         .Set(Style::Gap, StyleLength::Px(kSwatchGapPx));

@@ -149,6 +149,17 @@ std::unique_ptr<UIElement> EditorPanelRegistry::CreatePanelOfType(std::string_vi
     return it->Descriptor.Factory();
 }
 
+bool EditorPanelRegistry::TryGetPanelType(std::string_view typeKey,
+                                          EditorPanelTypeDescriptor& outDescriptor) const
+{
+    const auto it = std::find_if(m_PanelTypes.begin(), m_PanelTypes.end(),
+                                 [&](const PanelTypeEntry& e) { return e.Descriptor.TypeKey == typeKey; });
+    if (it == m_PanelTypes.end())
+        return false;
+    outDescriptor = it->Descriptor;
+    return true;
+}
+
 bool EditorPanelRegistry::TryGetPanel(std::string_view panelId,
                                       EditorPanelDescriptor& outDescriptor) const
 {

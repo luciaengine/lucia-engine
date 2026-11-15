@@ -574,6 +574,12 @@ button.toolbar-gap,
     background-color: #2b2b2b;
 }
 
+/* The track and lane colour chip (.inspector-color-swatch) keeps its size in a
+   crowded sidebar row. */
+.animationwindow-sequencer-color-swatch {
+    flex-shrink: 0;
+}
+
 .animationwindow-sequencer-empty {
     color: #8f8f8f;
     font-size: 14px;

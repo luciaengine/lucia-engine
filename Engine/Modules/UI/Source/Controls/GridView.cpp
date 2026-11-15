@@ -2,6 +2,7 @@
 #include "Mathematics/Interpolation.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/ScrollView.h"
+#include "DropFeedbackClasses.h"
 #include "UI/Controls/VirtualWindowCore.h"
 #include "UI/Interaction/DragDrop/DragDropManager.h"
 #include "UI/Interaction/ItemResizeGesture.h"
@@ -202,41 +203,8 @@ void GridView::EnqueuePumpWork(UIManager& ui)
 
 void GridView::AutoScrollDuringDrag(float mouseX, float mouseY)
 {
-    if (!m_Scroll)
-        return;
-    UIElement* clip = m_Scroll->GetClipViewport();
-    if (!clip)
-        return;
-
-    const float vx = clip->GetLayoutX();
-    const float vy = clip->GetLayoutY();
-    const float vw = clip->GetLayoutWidth();
-    const float vh = clip->GetLayoutHeight();
-    if (!(vh > 0.0f) || !(vw > 0.0f))
-        return;
-    if (mouseX < vx || mouseX >= vx + vw || mouseY < vy || mouseY >= vy + vh)
-        return;
-
-    constexpr float kEdgePx = 28.0f;
-    constexpr float kMaxSpeedPxPerFrame = 18.0f;
-
-    const float distTop = mouseY - vy;
-    const float distBot = (vy + vh) - mouseY;
-
-    float dy = 0.0f;
-    if (distTop < kEdgePx)
-    {
-        const float t = Math::Clamp01((kEdgePx - distTop) / kEdgePx);
-        dy = -kMaxSpeedPxPerFrame * t;
-    }
-    else if (distBot < kEdgePx)
-    {
-        const float t = Math::Clamp01((kEdgePx - distBot) / kEdgePx);
-        dy = kMaxSpeedPxPerFrame * t;
-    }
-
-    if (dy != 0.0f)
-        m_Scroll->ScrollBy(0.0f, dy);
+    if (m_Scroll)
+        m_Scroll->AutoScrollNearEdge(mouseX, mouseY);
 }
 
 bool GridView::AcceptsPayload(UI::Interaction::PayloadTypeId typeId) const
@@ -303,18 +271,11 @@ void GridView::UpdateDropPreviewClasses()
     {
         if (!s.cell)
             continue;
-        s.cell->RemoveClass("drop-hover");
-        s.cell->RemoveClass("drop-allowed");
-        s.cell->RemoveClass("drop-denied");
-        if (m_DropPreview.Visible &&
-            m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
-            s.boundId != 0 &&
-            s.boundId == m_DropPreview.Hit.TargetId)
-        {
-            s.cell->AddClass("drop-hover");
-            if (m_DropPreview.Allowed) s.cell->AddClass("drop-allowed");
-            else s.cell->AddClass("drop-denied");
-        }
+        const bool hovered = m_DropPreview.Visible &&
+                             m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
+                             s.boundId != 0 &&
+                             s.boundId == m_DropPreview.Hit.TargetId;
+        UI::SetDropFeedbackClasses(*s.cell, hovered, m_DropPreview.Allowed);
     }
 }
 
@@ -894,9 +855,7 @@ void GridView::UnbindCell(int slot)
             ui->ClearHoverForSubtree(s.cell);
     }
     s.cell->RemoveClass("selected");
-    s.cell->RemoveClass("drop-hover");
-    s.cell->RemoveClass("drop-allowed");
-    s.cell->RemoveClass("drop-denied");
+    UI::SetDropFeedbackClasses(*s.cell, false, false);
     s.boundId = 0;
     s.boundIndex = -1;
     UI::Layout::SetElementInvisible(*s.cell, true);
@@ -966,20 +925,11 @@ bool GridView::BindCell(int slotIndex, int itemIndex, int row, int col)
     else
         slot.cell->RemoveClass("selected");
 
-    slot.cell->RemoveClass("drop-hover");
-    slot.cell->RemoveClass("drop-allowed");
-    slot.cell->RemoveClass("drop-denied");
-    if (m_DropPreview.Visible &&
-        m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
-        gid != 0 &&
-        gid == m_DropPreview.Hit.TargetId)
-    {
-        slot.cell->AddClass("drop-hover");
-        if (m_DropPreview.Allowed)
-            slot.cell->AddClass("drop-allowed");
-        else
-            slot.cell->AddClass("drop-denied");
-    }
+    const bool dropHovered = m_DropPreview.Visible &&
+                             m_DropPreview.Hit.Location == UI::Interaction::DropLocation::OnItem &&
+                             gid != 0 &&
+                             gid == m_DropPreview.Hit.TargetId;
+    UI::SetDropFeedbackClasses(*slot.cell, dropHovered, m_DropPreview.Allowed);
 
     // Update cell content via binder or direct text set
     if (m_ItemBinder)
@@ -1087,7 +1037,7 @@ void GridView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
     }
     // Pull the typed provider changeset and normalize it for the core, which
     // never sees id types: All -> full rebind; Subset -> the flat pool slots
-    // currently bound to a changed id (the old Subset fast-path scan, reused).
+    // currently bound to a changed id.
     GridChangeSet changes{};
     if (m_PendingChangeSetValid)
     {
@@ -1101,7 +1051,7 @@ void GridView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
     if (changes.Version != m_LastProviderChangeVersion)
         m_LastProviderChangeVersion = changes.Version;
 
-    // C-7: a structural provider mutation (MarkStructureChanged) can arrive as
+    // A structural provider mutation (MarkStructureChanged) can arrive as
     // any changeset kind — items were added/removed/reordered/regrouped even if
     // the reported ids are a Subset (or None). Treat structure-version movement
     // like an All change: force the full rebind of the window.
@@ -1112,7 +1062,7 @@ void GridView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
     }
 
     // An All change means same-id cells may carry new content, so force the
-    // subtree-refresh gate in BindCell (mirrors the pre-core forceFullRebind).
+    // subtree-refresh gate in BindCell.
     if (changes.Kind == ChangeSetKind::All)
         m_DataDirty = true;
 
@@ -1138,7 +1088,7 @@ void GridView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
 
     // m_DataDirty forces a full rebind: bump the structure generation so the
     // guard cannot match m_Last and the core skips its ring shortcut. This is
-    // the single translation of the old "m_DataDirty => full rebind" rule and
+    // the single place the "m_DataDirty => full rebind" rule is applied and
     // covers provider swap, sort/grouping, refresh, icon-size, and cols change.
     if (m_DataDirty)
         ++m_StructureGeneration;
@@ -1157,8 +1107,7 @@ void GridView::UpdateVirtualization(VirtualizationCoordinator::Reason reason)
         m_WindowCore.Update(guard, reason, cols, changesView, host,
                             /*allowShrink=*/!UIElement::IsInEventDispatch());
 
-    // GridView now reports the aggregated impact once (accepted delta: it never
-    // notified before, compensating with MarkDirty/RequestRelayout). Impact
+    // GridView reports the aggregated impact once. Impact
     // mirrors VirtualizationImpact bit-for-bit (static_asserted above).
     if (impact != UI::VirtualWindowCore::Impact::None)
     {

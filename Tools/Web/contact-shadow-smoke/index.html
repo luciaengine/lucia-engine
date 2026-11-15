@@ -62,9 +62,9 @@ document.querySelector('#run').onclick=async()=>{
    bind(2,[depth.createView(),mask.createView(),{buffer:visibility}],dims);
    if(match){
     const params=new Float32Array(20);for(let i=0;i<16;i+=5)params[i]=1;params[17]=.1;params[18]=64;
-    const shadow=new Float32Array(116);shadow[0]=W/192;shadow[5]=H/192;shadow[10]=shadow[15]=1;
+    const shadow=new Float32Array(120);shadow[0]=W/192;shadow[5]=H/192;shadow[10]=shadow[15]=1;
     shadow[64]=100;shadow[70]=1;shadow[71]=100;shadow[75]=2;
-    const pb=own(createBuffer(80,GPUBufferUsage.UNIFORM,params)),sb=own(createBuffer(464,GPUBufferUsage.UNIFORM,shadow));
+    const pb=own(createBuffer(80,GPUBufferUsage.UNIFORM,params)),sb=own(createBuffer(480,GPUBufferUsage.UNIFORM,shadow));
     bind(3,[depth.createView(),mask.createView(),{buffer:visibility},matched.createView(),{buffer:pb},{buffer:sb}],dims);
    }
    const rb=own(device.createBuffer({size:stride*H,usage:GPUBufferUsage.COPY_DST|GPUBufferUsage.MAP_READ}));

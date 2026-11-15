@@ -46,6 +46,8 @@ import shadercook  # noqa: E402
 # Player's frame requests. A package outside this set has no WGSL, and the
 # runtime names it as missing rather than drawing without it.
 kPackages: dict[str, dict[str, str | tuple[str, list[str]]]] = {
+    "planar_reflection_composite": {"cs": "planar_reflection_composite.comp"},
+    "planar_reflection_blur": {"cs": "planar_reflection_blur.comp"},
     "encode_srgb": {"vs": "fullscreen_noinput.vert", "fs": "encode_srgb.frag"},
     "tonemap": {"vs": "fullscreen_noinput.vert", "fs": "tonemap.frag"},
     "copy": {"vs": "fullscreen_noinput.vert", "fs": "copy.frag"},

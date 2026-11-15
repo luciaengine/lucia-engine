@@ -465,18 +465,19 @@ class LightmapGpuRayTracing : public ::testing::Test
 protected:
     void SetUp() override
     {
-        previousRoot=ShaderProgramAsset::GetShaderCacheRoot();
+        previousRoots=ShaderProgramAsset::GetShaderCacheRoots();
         cacheRoot=std::filesystem::temp_directory_path() /
             ("ge-lightmap-gpu-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-        ShaderProgramAsset::SetShaderCacheRoot(cacheRoot);
+        ShaderProgramAsset::SetShaderCacheRoots({{}, cacheRoot});
     }
     void TearDown() override
     {
-        ShaderProgramAsset::SetShaderCacheRoot(previousRoot);
+        ShaderProgramAsset::SetShaderCacheRoots(previousRoots);
         std::error_code error;
         std::filesystem::remove_all(cacheRoot,error);
     }
-    std::filesystem::path previousRoot,cacheRoot;
+    ShaderCacheRoots previousRoots;
+    std::filesystem::path cacheRoot;
 };
 
 TEST_F(LightmapGpuRayTracing, ClosestHitsBarycentricsClippingAndDoubleSidedTriangles)

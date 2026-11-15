@@ -3,6 +3,7 @@
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Logger/Logger.h"
 #include "UI/ControlLayoutLoader.h"
+#include "UI/Controls/CollapsibleInfoCard.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/ScrollView.h"
 #include "UI/Controls/Toggle.h"

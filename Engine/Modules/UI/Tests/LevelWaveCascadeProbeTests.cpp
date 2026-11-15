@@ -35,6 +35,8 @@
 #include <vector>
 #include "UIRgTestHarness.h"
 
+#include "TestTempDir.h"
+
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 
@@ -47,7 +49,8 @@ namespace
 // so identically-shaped siblings stay share-eligible (P4 donor sharing engages).
 std::string WriteProbeCss()
 {
-    const auto css = std::filesystem::temp_directory_path() / "levelwave_cascade_probe.css";
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("levelwave_cascade_probe")};
+    const auto css = directory.Path() / "levelwave_cascade_probe.css";
     std::ofstream f(css);
     f << ".spine{display:flex;flex-direction:column;width:240px;padding:4px;"
          "margin:2px;background-color:#20242c;color:#d7dae2;font-size:14px;}"
