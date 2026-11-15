@@ -1373,6 +1373,32 @@ TEST(AiAssistantPanelTests, TheConversationTextFollowsTheTextScale)
     EXPECT_NEAR(replySizes[1], 21.0f, 0.01f) << "the reply follows the scale too";
 }
 
+// The prompt input and its placeholder grow with the conversation's text size, so what the user
+// types reads at the size of what they read.
+TEST(AiAssistantPanelTests, TheInputAndItsPlaceholderFollowTheTextScale)
+{
+    ConversationLayout layout;
+    if (!layout.Device)
+        GTEST_SKIP() << "No device";
+    const std::string built = BuildConversation(layout, 1200.0f, TurnWithALongReason("short"));
+    ASSERT_TRUE(built.empty()) << built;
+    auto input = std::make_unique<TextArea>();
+    const TextArea* field = input.get();
+    input->AddClass("prompt-panel-input");
+    input->SetValue("A legible prompt");
+    layout.List->AddChild(std::move(input));
+    auto placeholder = std::make_unique<Label>();
+    const Label* hint = placeholder.get();
+    placeholder->AddClass("prompt-panel-input-placeholder");
+    placeholder->SetText("Ask about the scene");
+    layout.List->AddChild(std::move(placeholder));
+    layout.List->Style().SetCustomNumber("--prompt_text_scale"_sid, 1.5f);
+    layout.List->MarkDirtySubtree(UIElement::StyleDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
+    layout.Ui->Update(0.016f, /*interactive=*/false);
+    EXPECT_NEAR(field->GetResolvedStyle().Visual.FontSize, 24.0f, 0.01f) << "scale 1.5 of the input's 16 px";
+    EXPECT_NEAR(hint->GetResolvedStyle().Visual.FontSize, 21.0f, 0.01f) << "scale 1.5 of the placeholder's 14 px";
+}
+
 // The conversation is a reading column in the middle of the panel: in a wide panel each card is
 // 800 px wide with equal space on both sides, and in a narrow one it keeps the list's 8 px gap on
 // each side.
