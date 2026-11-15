@@ -253,7 +253,7 @@ TEST_P(PreparedCopyTest, FinalizeChainPreparesDescriptorsAndDrawsTheColdFirstFra
                               << "all finalize descriptors must exist before the first record callback";
                   });
     Passes::TonemapParams tonemap{};
-    tonemap.tonemapMode = 5; // Linear keeps saturated green unchanged.
+    tonemap.look = Passes::kTonemapNoLookArm; // No display transform keeps saturated green unchanged.
     ASSERT_TRUE(Passes::AddTonemapPassRG(frame, source, linear, tonemap).IsValid());
     ASSERT_TRUE(Passes::AddSRGBEncodePassRG(
         frame, linear, encoded, {Passes::FinalizeInputSpace::Linear, Passes::FinalizeQuantizer::None}).IsValid());

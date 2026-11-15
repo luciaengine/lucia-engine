@@ -207,7 +207,7 @@ TEST_F(AwaitedEmissiveTexture, AnEmbeddedEmissiveMapIsBlackWhenItFailsAndItsOwnT
     EXPECT_EQ(mat->GetBindlessTextureIndex(kEmissive), Textures().DefaultBlackBindlessIndex())
         << "an image with no bytes never becomes a texture";
 
-    images[0].Data.assign(std::begin(kOnePixelPng), std::end(kOnePixelPng));
+    images[0].Data = ByteBuffer::CopyOf(kOnePixelPng);
     Textures().ResolveEmbeddedTextures(mat, doc, modelGuid, images);
     const uint32_t resident = mat->GetBindlessTextureIndex(kEmissive);
     EXPECT_NE(resident, Textures().DefaultBlackBindlessIndex());
