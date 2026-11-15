@@ -420,6 +420,8 @@ TEST_F(ClusterLODGpuReaderTest, TwoSubmittedReadersKeepFineStorageUntilTheirFixe
     const auto readers = m_Device->LastSubmissionToken(IDevice::QueueType::Graphics);
     ASSERT_TRUE(readers.IsValid());
     ASSERT_EQ(m_Device->QueryGpuSyncToken(readers), IDevice::GpuSyncStatus::Pending);
+    ASSERT_FALSE(m_Device->LastSubmissionToken(IDevice::QueueType::Compute).IsValid())
+        << "retirement takes its tokens before the first compute submit, so it must not wait for one";
     m_Services.SetLODForceLevel(1);
     for (uint32 frame = 0; frame < 35; ++frame)
         Prepare();
