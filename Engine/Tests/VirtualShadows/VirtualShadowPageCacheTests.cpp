@@ -1,7 +1,10 @@
 #include "Engine/Rendering/VirtualShadows/VirtualShadowPageCache.h"
 
+#include <algorithm>
 #include <array>
 #include <set>
+#include <span>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -145,6 +148,67 @@ TEST(VirtualShadowPageCacheTests, InvalidPointFaceAndLocalMipCoordinatesDoNotCon
     ASSERT_EQ(work.size(), 1u);
     EXPECT_EQ(work[0].Page, kSun);
     EXPECT_EQ(work[0].Tile, 0u);
+}
+
+std::vector<VirtualShadowPage> SunRow(int64_t first, uint32_t count)
+{
+    std::vector<VirtualShadowPage> pages;
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        auto page = kSun;
+        page.X = first + index;
+        pages.push_back(page);
+    }
+    return pages;
+}
+
+std::vector<int64_t> RenderAll(VirtualShadowPageCache& cache, std::span<const VirtualShadowPageWork> rows)
+{
+    std::vector<int64_t> rendered;
+    for (const auto& row : rows)
+    {
+        EXPECT_NE(row.Tile, kUnmappedShadowPage);
+        if (row.NeedsRender && cache.MarkRendered(row))
+            rendered.push_back(row.Page.X);
+    }
+    return rendered;
+}
+
+TEST(VirtualShadowPageCacheTests, DeformedPagesStayPublishedAndRefreshOldestFirstWithinTheBudget)
+{
+    constexpr uint32_t kResident = 12;
+    VirtualShadowPageCache cache(64);
+    const auto pages = SunRow(0, kResident);
+    ASSERT_EQ(RenderAll(cache, cache.Plan(pages, 1, 0)).size(), kResident);
+
+    cache.MarkDeformed();
+    const auto first = RenderAll(cache, cache.Plan(pages, 2, 1));
+    EXPECT_EQ(first, (std::vector<int64_t>{0, 1, 2, 3, 4, 5, 6, 7}));
+
+    cache.MarkDeformed();
+    const auto second = RenderAll(cache, cache.Plan(pages, 3, 2));
+    EXPECT_EQ(second, (std::vector<int64_t>{0, 1, 2, 3, 8, 9, 10, 11}));
+
+    const auto last = RenderAll(cache, cache.Plan(pages, 4, 3));
+    EXPECT_EQ(last, (std::vector<int64_t>{4, 5, 6, 7}));
+    const auto settled = cache.Plan(pages, 5, 4);
+    EXPECT_TRUE(std::ranges::none_of(settled, &VirtualShadowPageWork::NeedsRender));
+}
+
+TEST(VirtualShadowPageCacheTests, MissingPagesTakeTheRenderBudgetBeforeDeformedPages)
+{
+    VirtualShadowPageCache cache(64);
+    const auto resident = SunRow(0, 10);
+    ASSERT_EQ(RenderAll(cache, cache.Plan(resident, 1, 0)).size(), resident.size());
+
+    cache.MarkDeformed();
+    auto demand = SunRow(100, kVirtualShadowPageRenderBudget - 3);
+    demand.insert(demand.end(), resident.begin(), resident.end());
+    const auto rows = cache.Plan(demand, 2, 1);
+    const auto refreshed = std::ranges::count_if(rows, [](const VirtualShadowPageWork& row)
+                                                 { return row.NeedsRender && row.Page.X < 100; });
+    EXPECT_EQ(refreshed, 3);
+    EXPECT_EQ(std::ranges::count_if(rows, &VirtualShadowPageWork::NeedsRender), kVirtualShadowPageRenderBudget);
 }
 
 TEST(VirtualShadowPageCacheTests, CropMapsTopLeftAtlasCoordinatesWithoutChangingPerspectiveDepth)

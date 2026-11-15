@@ -123,7 +123,31 @@ std::vector<VirtualShadowPageWork> VirtualShadowPageCache::Plan(
         row.Revision = tile.Revision;
         row.NeedsRender = !tile.Rendered;
     }
+    RefreshDeformed(std::span(work).first(residentCount));
     return work;
+}
+
+void VirtualShadowPageCache::RefreshDeformed(std::span<VirtualShadowPageWork> rows)
+{
+    const auto missing = static_cast<uint32_t>(std::ranges::count_if(rows, &VirtualShadowPageWork::NeedsRender));
+    if (missing >= kVirtualShadowPageRenderBudget)
+        return;
+    std::vector<VirtualShadowPageWork*> deformed;
+    for (auto& row : rows)
+        if (row.Tile != kUnmappedShadowPage && !row.NeedsRender && m_Tiles[row.Tile].Deformed)
+            deformed.push_back(&row);
+    const auto count = std::min<std::size_t>(
+        deformed.size(), std::min(kVirtualShadowDeformedRefreshBudget, kVirtualShadowPageRenderBudget - missing));
+    // A lower revision was rendered earlier, so its content is the oldest.
+    std::ranges::partial_sort(deformed, deformed.begin() + static_cast<std::ptrdiff_t>(count), {},
+                              [](const VirtualShadowPageWork* row) { return row->Revision; });
+    for (auto* row : std::span(deformed).first(count))
+    {
+        auto& tile = m_Tiles[row->Tile];
+        Invalidate(tile);
+        row->Revision = tile.Revision;
+        row->NeedsRender = true;
+    }
 }
 
 bool VirtualShadowPageCache::MarkRendered(const VirtualShadowPageWork& work)
@@ -145,6 +169,7 @@ void VirtualShadowPageCache::Invalidate(Tile& tile)
 {
     tile.Revision = m_NextRevision++;
     tile.Rendered = false;
+    tile.Deformed = false;
 }
 
 void VirtualShadowPageCache::MarkDirty(const VirtualShadowPage& page)
@@ -169,6 +194,12 @@ void VirtualShadowPageCache::InvalidateProjection(const VirtualShadowPage& origi
 void VirtualShadowPageCache::InvalidateAll()
 {
     InvalidatePages([](const auto&) { return true; });
+}
+
+void VirtualShadowPageCache::MarkDeformed()
+{
+    for (auto& tile : m_Tiles)
+        tile.Deformed = tile.Rendered;
 }
 
 } // namespace GameEngine::Engine::Renderer
