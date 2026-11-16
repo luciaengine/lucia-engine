@@ -33,6 +33,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[2]
 PROJECT = REPO_ROOT / "Tests" / "Projects" / "PerformanceBenchmark"
 FOX_SOURCE = REPO_ROOT / "Tests" / "EditorHarness" / "rg2-gate1-content" / "Assets" / "Models" / "Fox"
+# The Player loads the default UI font from the project's Assets/Fonts.
+FONT_SOURCE = REPO_ROOT / "Engine" / "Modules" / "UI" / "Examples" / "Resources" / "Fonts" / "Roboto-Regular.ttf"
+# A Player log line that holds one of these tells that scene content did not load or a feature is off.
+FEATURE_FAILURE_LINES = ("no registered type is named", "Asset file does not exist", "Cluster LOD fine pages")
 RESULT_FORMAT = 1
 # A comparison flags a metric when it is slower by more than the noise threshold. Without a noise
 # file, or below it, this floor applies.
@@ -161,6 +165,8 @@ def prepare(work, manifest, scenes, player):
     if project.exists():
         shutil.rmtree(project)
     shutil.copytree(PROJECT, project)
+    (project / "Assets" / "Fonts").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(FONT_SOURCE, project / "Assets" / "Fonts" / FONT_SOURCE.name)
     needs = {item for name in scenes for item in manifest["scenes"][name].get("content", [])}
     if "fox" in needs:
         shutil.copytree(FOX_SOURCE, project / "Assets" / "Models" / "Fox")
@@ -198,7 +204,7 @@ def prepare(work, manifest, scenes, player):
             sys.exit("benchmark: no staged RenderPipelines/ForwardPlus.rendergraph beside the Player. "
                      "Build the Player target so that its assets are staged.")
         graph = json.loads(default.read_text(encoding="utf-8"))
-        shadow_nodes = [n for n in graph.get("nodes", []) if n.get("type") == "ShadowMap"]
+        shadow_nodes = [n for n in graph.get("passes", []) if n.get("type") == "ShadowMap"]
         if not shadow_nodes:
             sys.exit(f"benchmark: {default} has no ShadowMap node to configure for {name}.")
         for node in shadow_nodes:
@@ -261,11 +267,21 @@ def load_average():
 
 # ---------------------------------------------------------------- run
 
+def feature_failures(log_text):
+    """The first log line of each kind in FEATURE_FAILURE_LINES."""
+    found = {}
+    for line in log_text.splitlines():
+        for token in FEATURE_FAILURE_LINES:
+            if token in line and token not in found:
+                found[token] = line.split("] ", 3)[-1].strip()
+    return list(found.values())
+
+
 def parse_swapchain(log_text):
     """(width, height, presentMode) from the device's swapchain line, or None."""
     for line in log_text.splitlines():
         if "Created window swapchain" in line:
-            size = line.split("Created window swapchain", 1)[1].split()[0]
+            size = line.split("Created window swapchain", 1)[1].split()[0].rstrip(",")
             width, _, height = size.partition("x")
             mode = None
             for other in log_text.splitlines():
@@ -310,6 +326,7 @@ def run_scene(name, settings, manifest, project, player, out_dir, timeout):
             problems.append(f"the swapchain is {swapchain[0]}x{swapchain[1]}, not {width}x{height}")
         if swapchain[2] == "FIFO":
             problems.append("the swapchain presents with FIFO (vsync), so the frame times are display-paced")
+    problems += [f"the log says: {line}" for line in feature_failures(log_text)]
     result = {"scene": settings["scene"], "description": settings.get("description"),
               "environment": settings.get("environment", {}), "pipeline": settings.get("pipeline"),
               "swapchain": swapchain and {"width": swapchain[0], "height": swapchain[1], "presentMode": swapchain[2]},

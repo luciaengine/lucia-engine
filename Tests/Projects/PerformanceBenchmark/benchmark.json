@@ -58,7 +58,7 @@
       "scene": "Scenes/OpenWorld.scene",
       "description": "Open world: a 4 km generated terrain, an ocean, 1500 scattered rocks under an HLOD volume.",
       "requiredPasses": [
-        "Ocean"
+        "OceanSurface"
       ],
       "notes": "HLOD proxies come from a bake (the editor's Bake HLOD or a packaged cook). A loose-asset run draws the rocks without proxies.",
       "poses": [
@@ -220,7 +220,8 @@
       "scene": "Scenes/Sprites2D.scene",
       "description": "2D and UI: 5000 alpha-blended unlit quads, orthographic, under 3 UI panels of 60 rows each.",
       "requiredPasses": [
-        "UI"
+        "UI Overlay",
+        "SortedTransparent"
       ],
       "poses": [
         {

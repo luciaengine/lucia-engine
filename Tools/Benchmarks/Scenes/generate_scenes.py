@@ -160,7 +160,7 @@ def open_world():
                yaw_quat(rng.uniform(0, 360)))
     return s, {
         "description": "Open world: a 4 km generated terrain, an ocean, 1500 scattered rocks under an HLOD volume.",
-        "requiredPasses": ["Ocean"],
+        "requiredPasses": ["OceanSurface"],
         "notes": "HLOD proxies come from a bake (the editor's Bake HLOD or a packaged cook). A loose-asset run draws the rocks without proxies.",
         "poses": [pose("shore", (0, 15, -1500), 0, -4), pose("vista", (-1600, 400, -1600), 45, -10),
                   pose("low", (500, 40, 0), 270, -2)],
@@ -280,7 +280,7 @@ def ui_2d():
                                    "UIDocument.RenderMode = Overlay"])
     return s, {
         "description": "2D and UI: 5000 alpha-blended unlit quads, orthographic, under 3 UI panels of 60 rows each.",
-        "requiredPasses": ["UI"],
+        "requiredPasses": ["UI Overlay", "SortedTransparent"],
         "poses": [pose("full", (0, 0, -20), 0, 0), pose("zoomed", (8, 4, -20), 0, 0)],
     }
 
