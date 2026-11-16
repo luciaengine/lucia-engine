@@ -51,6 +51,7 @@ extern "C" {
     // Window level
     void GE_MacOS_SetWindowAlwaysOnTop(void* nsWindow, bool enable);
     void GE_MacOS_FocusWindow(void* nsWindow);
+    void GE_MacOS_RefuseApplicationActivation();
     bool GE_MacOS_GetMouseButtonEventPosition(void* nsWindow, int button, double* x, double* y);
     void* GE_MacOS_InstallTitleBarRightClickMonitor(void* nsWindow, void (*callback)(int, int, void*), void* userData);
     void GE_MacOS_RemoveTitleBarRightClickMonitor(void* monitor);
@@ -345,6 +346,12 @@ bool Window::Initialize()
     s_DisplayChangeListener.Create(&OnDisplayConfigurationChanged);
 #endif
     s_GlfwInitialized = true;
+#if defined(__APPLE__)
+    // The GLFW window hints stop only the activation that GLFW does. A different process can also activate
+    // the application.
+    if (!s_TakesFocus)
+        GE_MacOS_RefuseApplicationActivation();
+#endif
     return true;
 }
 

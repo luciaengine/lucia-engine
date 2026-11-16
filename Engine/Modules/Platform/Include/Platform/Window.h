@@ -168,8 +168,10 @@ class Window
     void* GetUserPointer() const { return m_UserPtr; }
 
     /// Process-wide: when false, no window takes the keyboard focus or brings the application
-    /// to the foreground, at creation, at Show() or through Focus(). Set it before the first
-    /// window is created. Automation sessions use it so that they never take the user's input.
+    /// to the foreground, at creation, at Show() or through Focus(). Set it before Initialize()
+    /// and before the first window is created. Automation sessions use it so that they never
+    /// take the user's input. On macOS the application also gives back an activation that a
+    /// different process starts: it hides, and its windows come back without activation.
     static void SetTakesFocus(bool takesFocus);
 
     // Global event pump
