@@ -20,6 +20,7 @@
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 
 #include "Components/Rendering/Light.h"
+#include "Engine/Rendering/Pipeline/Nodes/ShadowMapNode.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
@@ -31,6 +32,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 using namespace GameEngine;
 using namespace GameEngine::Mathematics;
@@ -261,16 +263,26 @@ TEST(ShadowSamplingFit, NoSnapshotFallsBackToCurrentFrame)
     }
 }
 
-TEST(ShadowSamplingFit, ProjectResolutionOverrideIsOwnedAndNormalizedByShadowFeature)
+// The ShadowMap node "resolution" is the one owner of the cascade size. The
+// node refuses a value the cascades cannot use, and the message names the
+// field and the supported range.
+TEST(ShadowSamplingFit, ShadowMapNodeRefusesAnUnsupportedCascadeResolution)
 {
-    ShadowMapRenderFeature feature;
-
-    EXPECT_FALSE(feature.GetProjectResolutionOverride().has_value());
-    feature.SetProjectResolutionOverride(5000u);
-
-    ASSERT_TRUE(feature.GetProjectResolutionOverride().has_value());
-    EXPECT_EQ(*feature.GetProjectResolutionOverride(), 4096u);
-    EXPECT_EQ(feature.GetConfig().Resolution, 4096u);
+    for (const char* json : {R"({"resolution":4096})", R"({"resolution":256})", R"({"resolution":8192})"})
+    {
+        Renderer::Pipeline::Nodes::ShadowMapNode node;
+        std::string error;
+        EXPECT_TRUE(node.Initialize("CSM", json, &error)) << json << ": " << error;
+    }
+    for (const char* json : {R"({"resolution":5000})", R"({"resolution":128})", R"({"resolution":16384})",
+                             R"({"resolution":"4096"})", R"({"resolution":4096.5})"})
+    {
+        Renderer::Pipeline::Nodes::ShadowMapNode node;
+        std::string error;
+        EXPECT_FALSE(node.Initialize("CSM", json, &error)) << json;
+        EXPECT_NE(error.find("resolution must be a power of two from 256 to 8192"), std::string::npos)
+            << json << ": " << error;
+    }
 }
 
 // Penumbra width is driven by the light's angular size, not by a world-space

@@ -9,15 +9,18 @@
 #include "Inspectors/RenderLayers/RenderLayerField.h"
 #include "Panels/HierarchyCommandIds.h"
 #include "Platform/ContextMenu.h"
+#include "Rendering/RenderLayerMask.h"
+#include "Rendering/RenderLayersScriptApi.h"
 #include "Rendering/Sorting/RenderSortingEditor.h"
 #include "UI/Controls/Dropdown.h"
-#include "UI/Controls/MaskField.h"
 #include "UI/EditorIcons.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/UIElement.h"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <utility>
@@ -67,6 +70,48 @@ class SortingLayerPicker final : public Dropdown
     std::vector<Option> m_Options;
 };
 
+// One project-named layer per option. A mask with more than one layer gets a "Mask 0x..." option first, so
+// the row still shows the stored value; a pick sets exactly one layer.
+class RenderLayerPicker final : public Dropdown
+{
+  public:
+    void Present(uint32 mask, uint64 namesRevision)
+    {
+        const bool oneLayer = mask != 0 && (mask & (mask - 1u)) == 0;
+        const std::optional<uint32> multiLayer = oneLayer ? std::nullopt : std::optional<uint32>(mask);
+        if (!m_NamesRevision || *m_NamesRevision != namesRevision || multiLayer != m_MultiLayer)
+        {
+            SetOptions(RenderLayerOptions(multiLayer), 0);
+            m_NamesRevision = namesRevision;
+            m_MultiLayer = multiLayer;
+        }
+        const int selected = oneLayer ? static_cast<int>(std::countr_zero(mask)) : 0;
+        if (GetSelectedIndex() != selected)
+            SetSelectedIndexWithoutNotify(selected);
+    }
+
+  private:
+    static std::vector<Option> RenderLayerOptions(std::optional<uint32> multiLayer)
+    {
+        std::vector<Option> options;
+        if (multiLayer)
+        {
+            char label[32]{};
+            std::snprintf(label, sizeof(label), "Mask 0x%08X", *multiLayer);
+            options.push_back({std::to_string(*multiLayer), label});
+        }
+        for (uint32 layer = 0; layer < Rendering::RenderLayerMask::kCount; ++layer)
+        {
+            const Rendering::RenderLayerMask single = Rendering::RenderLayerMask::FromLayer(layer);
+            options.push_back({std::to_string(single.Bits), Rendering::Script::NameOf(single)});
+        }
+        return options;
+    }
+
+    std::optional<uint64> m_NamesRevision;
+    std::optional<uint32> m_MultiLayer;
+};
+
 template <typename Picker>
 Picker* FindPicker(UIElement& row, const char* className)
 {
@@ -76,15 +121,16 @@ Picker* FindPicker(UIElement& row, const char* className)
     return nullptr;
 }
 
-MaskField& RenderLayerPicker(UIElement& row)
+RenderLayerPicker& RenderPicker(UIElement& row)
 {
-    if (auto* picker = FindPicker<MaskField>(row, kRenderLayerClass))
+    if (auto* picker = FindPicker<RenderLayerPicker>(row, kRenderLayerClass))
         return *picker;
-    auto picker = std::make_unique<MaskField>();
+    auto picker = std::make_unique<RenderLayerPicker>();
     picker->AddClass(kRenderLayerClass);
-    FeedRenderLayerNames(*picker);
-    picker->SetNothingTooltip(kRenderLayersNothingTooltip);
-    MaskField& result = *picker;
+    picker->SetAutoWidthPopup(true);
+    picker->FitPopupToAvailableHeight();
+    picker->SetTooltip("Render Layer: the views that draw this entity");
+    RenderLayerPicker& result = *picker;
     row.AddChild(std::move(picker));
     return result;
 }
@@ -111,12 +157,18 @@ void SetClass(UIElement& element, const char* name, bool enabled)
         element.RemoveClass(name);
 }
 
-bool ParseLayer(const std::string& text, int32& out)
+template <typename Value>
+bool ParseValue(const std::string& text, Value& out)
 {
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), out);
     return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
 }
 } // namespace
+
+HierarchyLayerControls::HierarchyLayerControls()
+    : m_NamesRefreshed(RenderLayerFieldsRefreshed().Subscribe([this]() { ++m_NamesRevision; }))
+{
+}
 
 void HierarchyLayerControls::Present(ECS::World& world, ECS::EntityHandle entity, UIElement& row,
                                      float panelWidth, TargetsResolver targets, UndoRedoService* undo,
@@ -127,8 +179,8 @@ void HierarchyLayerControls::Present(ECS::World& world, ECS::EntityHandle entity
     const bool showSortingLayer = m_ShowSortingLayer && SupportsRenderSorting(world, entity);
 
     // Created on first need only, so a Hierarchy with both columns off adds nothing to its rows.
-    MaskField* renderPicker =
-        showRenderLayer ? &RenderLayerPicker(row) : FindPicker<MaskField>(row, kRenderLayerClass);
+    RenderLayerPicker* renderPicker =
+        showRenderLayer ? &RenderPicker(row) : FindPicker<RenderLayerPicker>(row, kRenderLayerClass);
     SortingLayerPicker* sortingPicker =
         showSortingLayer ? &SortingPicker(row) : FindPicker<SortingLayerPicker>(row, kSortingLayerClass);
     if (renderPicker)
@@ -144,11 +196,14 @@ void HierarchyLayerControls::Present(ECS::World& world, ECS::EntityHandle entity
 
     if (showRenderLayer)
     {
-        renderPicker->SetValueWithoutNotify(renderer->RenderLayers.Bits);
-        renderPicker->SetOnBitsChanged([&world, targets, undo, notifications](uint32 bits, bool on)
+        renderPicker->SetOnValueChanged({});
+        renderPicker->Present(renderer->RenderLayers.Bits, m_NamesRevision);
+        renderPicker->SetOnValueChanged([&world, targets, undo, notifications](const std::string& text)
         {
-            // A row inside the selection applies to the whole selection; each entity keeps its other layers.
-            ApplyRenderLayerBits(world, targets(), bits, on, undo, notifications);
+            // A row inside the selection applies to the whole selection.
+            uint32 bits = 0;
+            if (ParseValue(text, bits))
+                ApplyRenderLayerMask(world, targets(), Rendering::RenderLayerMask{bits}, undo, notifications);
         });
     }
     if (showSortingLayer)
@@ -159,7 +214,7 @@ void HierarchyLayerControls::Present(ECS::World& world, ECS::EntityHandle entity
         sortingPicker->SetOnValueChanged([&world, targets, undo, notifications](const std::string& text)
         {
             int32 layer = 0;
-            if (ParseLayer(text, layer))
+            if (ParseValue(text, layer))
                 ApplyRenderSortingLayer(world, targets(), layer, undo, notifications);
         });
     }
@@ -215,7 +270,9 @@ bool HierarchyLayerControls::NeedsRefresh(ECS::World& world)
         query.BatchEach([&changed](const Components::RenderSorting*, std::size_t) { changed = true; });
     }
     m_SortingChanges.LastRunVersion = entryVersion;
-    return changed && m_ShowSortingLayer;
+    const bool namesChanged = m_RefreshedNamesRevision != m_NamesRevision;
+    m_RefreshedNamesRevision = m_NamesRevision;
+    return (changed && m_ShowSortingLayer) || (namesChanged && m_ShowRenderLayer);
 }
 
 } // namespace GameEngine::Editor

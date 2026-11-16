@@ -254,44 +254,6 @@ static void PostBuildPanelVersionsAndRequirementsRefresh(EditorPanelManager& man
         });
 }
 
-static const char* DefaultPanelLeafAnchor(const std::string& panelId)
-{
-    if (panelId == EditorPanelIds::Hierarchy ||
-        panelId == EditorPanelIds::Settings || panelId == EditorPanelIds::Todo ||
-        panelId == EditorPanelIds::Bookmarks)
-        return EditorPanelIds::Hierarchy;
-
-    if (panelId == EditorPanelIds::Inspector || panelId == EditorPanelIds::Inspector2 ||
-        panelId == EditorPanelIds::UndoHistory || panelId == EditorPanelIds::Log)
-        return EditorPanelIds::Inspector;
-
-    /* Per-asset graph docks are "{kind tab}:{guid}" (MakeGraphDockIdForAsset).
-       They belong with their kind tab in the centre workspace, not in whatever
-       leaf happens to come first in the tree. */
-    for (const char* graphTab : {EditorPanelIds::NodeGraph, EditorPanelIds::AnimationGraph,
-                                 EditorPanelIds::GameLogicGraph})
-    {
-        const std::size_t len = std::strlen(graphTab);
-        if (panelId.size() > len && panelId.compare(0, len, graphTab) == 0 && panelId[len] == ':')
-            return EditorPanelIds::SceneView;
-    }
-
-    if (panelId == EditorPanelIds::SceneView || panelId == EditorPanelIds::GameView ||
-        panelId == EditorPanelIds::NodeGraph || panelId == EditorPanelIds::AnimationGraph ||
-        panelId == EditorPanelIds::GameLogicGraph || panelId == EditorPanelIds::Web ||
-        panelId == EditorPanelIds::Diff || panelId == EditorPanelIds::UiDemo ||
-        panelId == EditorPanelIds::ScriptEditor || panelId == EditorPanelIds::VisualProfiler ||
-        panelId == EditorPanelIds::RenderGraph || panelId == EditorPanelIds::Vram)
-        return EditorPanelIds::SceneView;
-
-    if (panelId == EditorPanelIds::AssetView)
-        return EditorPanelIds::AssetView;
-
-    // Assets, script/CPU diagnostics, animation tools, project utilities, and
-    // package-contributed panels default to the bottom workspace stack.
-    return panelId == EditorPanelIds::Assets ? EditorPanelIds::ScriptErrors : EditorPanelIds::Assets;
-}
-
 // ---- Generic panel activation ----
 
 void EditorPanelManager::ShowOrActivatePanelAtDefaultPlacement(
@@ -321,7 +283,7 @@ void EditorPanelManager::ShowOrActivatePanelAtDefaultPlacement(
         return;
     }
 
-    ShowOrActivatePanel(ctx, panelId, DefaultPanelLeafAnchor(panelId));
+    ShowOrActivatePanel(ctx, panelId, EditorPanelIds::DefaultPanelLeafAnchor(panelId));
 }
 
 bool EditorPanelManager::ActivateOpenPanel(EditorWindowContext* ctx, const std::string& panelId)
@@ -365,7 +327,7 @@ void EditorPanelManager::ShowOrActivatePanel(EditorWindowContext* ctx, const std
                    where this panel belongs by default before settling for the
                    first leaf in the tree, which is the Hierarchy corner. */
                 if (!targetLeaf)
-                    targetLeaf = FindLeafContainingPanel(root, DefaultPanelLeafAnchor(panelId));
+                    targetLeaf = FindLeafContainingPanel(root, EditorPanelIds::DefaultPanelLeafAnchor(panelId));
                 if (!targetLeaf)
                     targetLeaf = FindFirstLeaf(root);
                 if (targetLeaf)
@@ -390,7 +352,7 @@ void EditorPanelManager::ShowOrActivateUIDemoPanel(EditorWindowContext* ctx)
 
 void EditorPanelManager::ShowOrActivateSettingsPanel(EditorWindowContext* ctx)
 {
-    ShowOrActivatePanel(ctx, EditorPanelIds::Settings, EditorPanelIds::Hierarchy);
+    ShowOrActivatePanel(ctx, EditorPanelIds::Settings, EditorPanelIds::DefaultPanelLeafAnchor(EditorPanelIds::Settings));
 }
 
 void EditorPanelManager::ShowOrActivateSettingsPanelToCategory(EditorWindowContext* ctx,

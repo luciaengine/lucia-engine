@@ -778,8 +778,7 @@ void HumanoidRetargetSystem::Update(ECS::World& world, float32 deltaTime)
                 // both use this corrected count or the GPU writes 0 joints
                 // into a slot reserved for BoneCount, leaving the mesh at
                 // bind pose.
-                const uint32_t skinJointCount = (tgtSkelMut->SkinJointCount > 0)
-                    ? tgtSkelMut->SkinJointCount : tgtSkelMut->BoneCount;
+                const uint32_t skinJointCount = tgtSkelMut->PaletteJointCount();
 
                 const uint32_t rigPairIdx = m_GPUStore->EnsureRigPairUploaded(
                     rc.Map.ToGuid(), *entry.CpuNode, *srcSkel, *tgtSkelMut, skinJointCount);

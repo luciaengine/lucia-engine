@@ -26,7 +26,7 @@ class ReflectionProbeSystem : public ECS::ISystem
 
   private:
     // True when nothing the probe descriptors read changed since the last rebuild.
-    bool SceneUnchangedSinceLastBuild(ECS::World& world);
+    bool SceneUnchangedSinceLastBuild(ECS::World& world, uint64_t featureContent);
 
     RenderServices* m_RenderServices = nullptr;
 
@@ -35,6 +35,7 @@ class ReflectionProbeSystem : public ECS::ISystem
     uint64_t m_BuiltWorldId = 0;
     std::size_t m_BuiltStructuralVersion = 0;
     uint64_t m_BuiltMaterialDigest = 0;
+    uint64_t m_BuiltFeatureContent = 0;
     bool m_HasBuild = false;
     ECS::ChangeGate m_ProbeGate;
     ECS::ChangeGate m_MeshGate;

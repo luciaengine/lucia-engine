@@ -7,6 +7,7 @@
 #include "PlayMode/PlayModeManager.h"
 #include "Scene/SceneEditorController.h"
 #include "Editor/Settings/InterfaceSettingsPage.h"
+#include "Editor/Settings/SearchBarSettingsPage.h"
 #include "Editor/Settings/StartupSettingsPage.h"
 #include "Editor/Settings/AssetPreviewSettings.h"
 #include "Editor/Settings/InfoCardAppearanceSettings.h"
@@ -473,6 +474,8 @@ void EditorApplication::InitializeAssetsGridAndSmartFolderSettings(SettingsPanel
     Editor::RegisterExperimentalRenderingSettingsCategory();
     // Interface (context-menu backend) likewise.
     Editor::RegisterInterfaceSettingsCategory();
+    // Search Bars: fill, placement and focus outline of the panel searches, on UI > Appearance.
+    Editor::RegisterSearchBarSettingsCategory();
     // Startup: what the editor opens on start.
     Editor::RegisterStartupSettingsCategory();
     // Prefabs: the pick climb, the Hierarchy glyph and rows, the context menu entries, the Assets tile.

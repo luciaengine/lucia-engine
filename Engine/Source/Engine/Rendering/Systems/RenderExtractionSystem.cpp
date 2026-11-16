@@ -621,7 +621,7 @@ void AppendRenderableRecords(QueryT& query, std::vector<WorldRenderableRecord>& 
                    const Components::SceneViewHidden* hidden,
                    const Components::SceneViewHiddenInHierarchy* hiddenInHierarchy)
                {
-                   if (meshGpu && meshGpu->hlodEvicted)
+                   if (meshGpu && (meshGpu->hlodEvicted || meshGpu->clusterEvicted))
                    {
                        ++hlodSkipped;
                        return;
@@ -1256,7 +1256,7 @@ RenderExtractionSystem::RenderExtractionSystem(RenderServices* renderServices,
 void RenderExtractionSystem::RequestFullExtractionNextFrame()
 {
     if (m_RenderServices)
-        m_RenderServices->RequestHlodResidencyExtraction();
+        m_RenderServices->RequestResidencyExtraction();
 }
 
 // Out of line to anchor the vtable; ParticleExtraction's destructor releases
@@ -1809,8 +1809,8 @@ bool RenderExtractionSystem::EvaluateFastPathPreconditions(ECS::World& world, ui
     // frees slots directly, but re-adding the winning set is a full-lane Op::Add,
     // so this frame must run the full lane. The request is routed through
     // RenderServices so HLODSelectSystem and this system stay decoupled.
-    if (m_RenderServices && m_RenderServices->ConsumeHlodResidencyExtractionPending())
-        reasons |= kEscalationHlodResidency;
+    if (m_RenderServices && m_RenderServices->ConsumeResidencyExtractionPending())
+        reasons |= kEscalationResidency;
 
     // E7 — material dirtiness digest (D-MAT). Entry-computed; the value is
     // stored as the new compare base only at full-lane end, so a mid-frame
@@ -2208,6 +2208,8 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         const bool hasClipAnimation = anim && anim->ClipIndex != 0;
         const float lodBias = lodGroup ? lodGroup->Bias : 0.0f;
 
+        const bool castShadows = mr->shadowCasting != Components::ShadowCasting::Off && (!hasBounds || lb->CastShadows);
+        rigidCasterRefreshed |= castShadows && !Rendering::IsSkinned(meshEntry->vertexFlags);
         const uint32 flags =
             ComputeInstanceFlags(mr->shadowCasting, !hasBounds || lb->CastShadows, mr->receiveShadows,
                                  m_RenderServices->Materials().GetMaterialDepthClass(matIdx),
@@ -2589,6 +2591,7 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     m_DeltaPreparedIds.clear();
     uint32_t feedPatchedCount = 0;
     uint32_t subsetRefreshedCount = 0;
+    // A rigid shadow caster was refreshed or cleared: the rigid shadow content changed.
     bool rigidCasterRefreshed = false;
     // L1b: fresh caster-change attribution each frame (the published set explains
     // exactly this frame's caster content-version bump, if one happens). A frame

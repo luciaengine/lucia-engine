@@ -27,9 +27,24 @@
 namespace GameEngine {
 
 namespace ECS { class World; }
+namespace Components { struct MeshRenderer; }
 namespace Rendering { class MeshGPURegistry; }
 
 namespace Hlod {
+
+// The authored mesh a member draws: its model asset and submesh (index or name),
+// or its GPU mesh handle when it has no model asset. Runtime systems (cluster LOD) switch the
+// handle of a model mesh between entries of the same mesh; that is not a
+// reassignment, so it does not make a cluster stale.
+struct MemberMeshSource {
+    GUID Model;
+    uint32 Submesh = 0;
+    StringId SubmeshName = 0;
+    uint64 Handle = 0;
+
+    static MemberMeshSource Of(const Components::MeshRenderer& renderer);
+    bool operator==(const MemberMeshSource&) const = default;
+};
 
 // One runtime cluster: the live member + proxy entities, the switch inputs, and
 // the per-member cached identity for live staleness detection (design §3.4 / C3).
@@ -47,7 +62,7 @@ struct RuntimeCluster {
     // material/mesh reassignment (MeshRenderer) can be detected per-frame and
     // fall the cluster back to members-only with a persistent stale flag (C3).
     std::vector<uint32> MemberTransformVersion;
-    std::vector<uint64> MemberMeshHandleId;
+    std::vector<MemberMeshSource> MemberMeshSources;
     std::vector<GUID>   MemberMaterialGuid;
     bool ProxyActive = false; // hysteresis residency state (members resident when false)
     bool Stale = false;       // members-only fallback: never goes proxy-active

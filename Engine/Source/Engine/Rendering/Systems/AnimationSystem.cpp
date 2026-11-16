@@ -946,9 +946,7 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
             // Uploaded, so gpuReady held and the render services exist.
             auto& gpuStore = m_RenderServices->GetGPUAnimationDataStore();
             auto& atlas = m_RenderServices->GetSkinPaletteAtlas();
-            const uint32 jointCount = (item.CachedSkeleton->SkinJointCount > 0 &&
-                item.CachedSkeleton->JointNodes.size() == item.CachedSkeleton->SkinJointCount)
-                ? item.CachedSkeleton->SkinJointCount : item.CachedSkeleton->BoneCount;
+            const uint32 jointCount = item.CachedSkeleton->PaletteJointCount();
             if (jointCount == 0) continue;
 
             uint32 atlasOffset = atlas.Reserve(jointCount);

@@ -921,7 +921,7 @@ TEST(MetalResources, RenderGraphPublishesDeclaredWorkBeforeTheUnrelatedTail)
 // the mirror is still pending, and never read true before the copy has landed.
 // A caller that reuses memory the GPU may still read (cluster LOD fine page retirement)
 // needs a token for the newest graphics submit. Without a graphics timeline it never gets one.
-TEST(MetalResources, LastGraphicsSubmissionTokenCompletesAfterTheSubmit)
+TEST(MetalResources, LastSubmissionTokenCompletesAfterTheGraphicsSubmit)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -929,7 +929,7 @@ TEST(MetalResources, LastGraphicsSubmissionTokenCompletesAfterTheSubmit)
         GTEST_SKIP() << "Metal backend unavailable";
     }
 
-    EXPECT_FALSE(device->LastGraphicsSubmissionToken().IsValid()) << "no graphics submit yet";
+    EXPECT_FALSE(device->LastSubmissionToken(IDevice::QueueType::Graphics).IsValid()) << "no graphics submit yet";
 
     uint64_t previous = 0;
     for (int submit = 0; submit < 3; ++submit)
@@ -938,7 +938,7 @@ TEST(MetalResources, LastGraphicsSubmissionTokenCompletesAfterTheSubmit)
         commandList->Begin();
         commandList->End();
         ASSERT_TRUE(device->QueueSubmit(IDevice::QueueType::Graphics, {commandList.get()}, {}, {}));
-        const IDevice::GpuSyncToken token = device->LastGraphicsSubmissionToken();
+        const IDevice::GpuSyncToken token = device->LastSubmissionToken(IDevice::QueueType::Graphics);
         ASSERT_TRUE(token.IsValid()) << "submit " << submit;
         EXPECT_GT(token.value, previous) << "each graphics submit signals a later value";
         previous = token.value;
@@ -951,7 +951,11 @@ TEST(MetalResources, LastGraphicsSubmissionTokenCompletesAfterTheSubmit)
     transfer->Begin();
     transfer->End();
     ASSERT_TRUE(device->QueueSubmit(IDevice::QueueType::Transfer, {transfer.get()}, {}, {}));
-    EXPECT_EQ(device->LastGraphicsSubmissionToken().value, previous);
+    EXPECT_EQ(device->LastSubmissionToken(IDevice::QueueType::Graphics).value, previous);
+    // Every queue family index is 0, so frames keep every pass on the graphics queue and
+    // every queue reports the graphics timeline.
+    EXPECT_EQ(device->LastSubmissionToken(IDevice::QueueType::Compute).value, previous);
+    EXPECT_EQ(device->LastSubmissionToken(IDevice::QueueType::Transfer).value, previous);
     device->Shutdown();
 }
 

@@ -52,6 +52,17 @@ void RunWhenAssetLoaded(AssetManager& assets,
                         std::function<void()> onReady,
                         std::string pendingLabel);
 
+// Run `onReady` on the main thread once `isReady` returns true, for work that waits on
+// something other than an asset load (a mesh still being prepared for picking).
+// `isReady` runs once now and then once per frame; it must be cheap and must not
+// touch `postTarget`. `postTarget`, `world` and `pendingLabel` mean what they mean
+// for RunWhenAssetLoaded.
+void RunWhenReady(std::function<bool()> isReady,
+                  UIElement* postTarget,
+                  const ECS::World* world,
+                  std::function<void()> onReady,
+                  std::string pendingLabel);
+
 // Runs the continuations of the loads that have finished. Main thread, once
 // per frame (PendingAssetLoadsOverlay).
 void PollPendingAssetLoads();

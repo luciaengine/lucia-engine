@@ -173,7 +173,7 @@ TEST(DeviceLostEcsRecovery, ZeroesMorphHandleForceDirtiesAndReRegisters)
 
     // Simulate what a device rebuild triggers: sample a change gate, run the pass.
     const uint64 gate = world.GetGlobalSystemVersion();
-    ASSERT_FALSE(rs.ConsumeHlodResidencyExtractionPending()); // clean slate
+    ASSERT_FALSE(rs.ConsumeResidencyExtractionPending()); // clean slate
     const auto report = RecoverEcsComponentHandlesAfterDeviceRebuild(world, rs);
 
     // (1) Runtime handle zeroed so the owning system treats it as missing.
@@ -192,7 +192,7 @@ TEST(DeviceLostEcsRecovery, ZeroesMorphHandleForceDirtiesAndReRegisters)
 
     // (3) The full-extraction hook is flagged (consumed once).
     EXPECT_TRUE(report.FullExtractionRequested);
-    EXPECT_TRUE(rs.ConsumeHlodResidencyExtractionPending());
+    EXPECT_TRUE(rs.ConsumeResidencyExtractionPending());
 
     // (4) On its next tick the owning system re-registers a fresh runtime mesh.
     morphSystem.Update(world, kDt);
@@ -220,7 +220,7 @@ TEST(DeviceLostEcsRecovery, EmptyWorldIsSafeNoWork)
     EXPECT_EQ(report.MorphRuntimeHandlesCleared, 0u);
     EXPECT_EQ(report.MeshRenderersDirtied, 0u);
     EXPECT_TRUE(report.FullExtractionRequested);
-    EXPECT_TRUE(rs.ConsumeHlodResidencyExtractionPending());
+    EXPECT_TRUE(rs.ConsumeResidencyExtractionPending());
 
     rs.Shutdown();
     device->Shutdown();

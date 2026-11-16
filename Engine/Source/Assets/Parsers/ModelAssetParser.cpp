@@ -141,7 +141,7 @@ bool ModelAssetParser::CookForPackage(const AssetPackageCookContext& context, st
         const auto& page = decoded.Manifest.Pages[group];
         Mesh fine;
         if (!DecodeMeshClusterLODFinePage(std::span<const uint8>(fineBytes).subspan(static_cast<size_t>(page.Offset),
-            static_cast<size_t>(page.Bytes)), page, decoded.CoarseMeshes[group], fine, error))
+            static_cast<size_t>(page.Bytes)), page, decoded.CoarseMeshes[page.Mesh], fine, error))
             return false;
     }
     if (exists)

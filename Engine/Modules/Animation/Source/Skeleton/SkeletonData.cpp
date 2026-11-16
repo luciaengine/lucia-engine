@@ -61,7 +61,7 @@ void SkeletonData::ComputeTopologicalSort()
 
     // Mark every joint and its ancestors; the walk up a chain stops at the
     // first bone already marked.
-    const bool hasJointTable = SkinJointCount > 0 && JointNodes.size() == SkinJointCount;
+    const bool hasJointTable = HasJointTable();
     std::vector<uint8> inClosure(BoneCount, hasJointTable ? uint8{0} : uint8{1});
     if (hasJointTable)
     {

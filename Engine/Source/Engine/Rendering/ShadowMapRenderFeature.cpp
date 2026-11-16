@@ -320,8 +320,6 @@ bool ShadowMapRenderFeature::Initialize(Rendering::IDevice* device, const Cascad
 
     m_Device = device;
     m_Config = config;
-    if (m_ProjectResolutionOverride.has_value())
-        m_Config.Resolution = *m_ProjectResolutionOverride;
     m_Config.NumCascades = std::min(config.NumCascades, kMaxShadowCascades);
 
     // Create depth comparison sampler for hardware PCF (shared across views).
@@ -343,25 +341,6 @@ void ShadowMapRenderFeature::SetResolution(uint32_t resolution)
     // makes the resolution transition atomic for all views and cascades.
     m_FrozenFits.clear();
     m_PrevSnappedHalfExtent.clear();
-}
-
-void ShadowMapRenderFeature::SetProjectResolutionOverride(uint32_t resolution)
-{
-    static constexpr uint32_t kTiers[] = {1024u, 2048u, 4096u, 8192u};
-    uint32_t snapped = kTiers[0];
-    uint32_t bestDistance = resolution > snapped ? resolution - snapped : snapped - resolution;
-    for (uint32_t tier : kTiers)
-    {
-        const uint32_t distance = resolution > tier ? resolution - tier : tier - resolution;
-        if (distance < bestDistance)
-        {
-            snapped = tier;
-            bestDistance = distance;
-        }
-    }
-
-    m_ProjectResolutionOverride = snapped;
-    SetResolution(snapped);
 }
 
 void ShadowMapRenderFeature::OnDeviceRebuilt(Rendering::IDevice* device)

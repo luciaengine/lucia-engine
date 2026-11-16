@@ -2,6 +2,8 @@
 
 #include "Assets/ModelAsset.h"
 
+#include <span>
+
 namespace GameEngine
 {
 
@@ -32,5 +34,17 @@ struct MeshClusterLODGroup
 /// On failure, leaves groups unchanged and reports the refusal or cancellation.
 bool GenerateMeshClusterLODs(const Mesh& mesh, const MeshClusterLODConfig& config,
                             Vector<MeshClusterLODGroup>& groups, String& error);
+
+/// The `remap` entry of a source vertex that the compacted mesh does not use.
+inline constexpr uint32 kMeshClusterLODUnusedVertex = ~0u;
+
+/// Copies name, material and node placement from `source` to `destination`.
+void CopyMeshClusterLODPlacement(const Mesh& source, Mesh& destination);
+
+/// The triangles `indices` of `source` as a mesh with only the vertices they use; bounds cover
+/// those vertices. `remap` has one kMeshClusterLODUnusedVertex entry per source vertex; the call
+/// restores it. `sourceVertices` receives the source index of each output vertex.
+Mesh CompactMeshClusterLODTriangles(const Mesh& source, std::span<const uint32> indices,
+                                   std::span<uint32> remap, Vector<uint32>& sourceVertices);
 
 } // namespace GameEngine

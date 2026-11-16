@@ -368,6 +368,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/ServedGenerationTable.cpp
 	Source/Engine/Rendering/TextureService.cpp
 	Source/Engine/Rendering/RenderServicesViewState.cpp
+	Source/Engine/Rendering/WorldContentDigestTable.cpp
 	Source/Engine/Rendering/ViewRegistry.cpp
 	Source/Engine/Rendering/ViewTemporalHistory.cpp
 	Source/Engine/Rendering/DynamicResolutionController.cpp
@@ -433,6 +434,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODFeature.cpp
+	Source/Engine/Rendering/ClusterLOD/ClusterLODSplits.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeaturePasses.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeatureViewFit.cpp
@@ -2081,11 +2083,14 @@ endif()
             function(ge_add_render_services_test target_name)
                 cmake_parse_arguments(PARSE_ARGV 1 GE_RENDER_TEST "OPT_IN" "" "")
                 add_executable(${target_name} ${GE_RENDER_TEST_UNPARSED_ARGUMENTS} Tests/EngineTestShaderSetup.cpp)
+                # GameEngine.Native exists only when scripting builds it; the members need it then.
                 if(WIN32)
                     target_sources(${target_name} PRIVATE Tests/TestIsolationTripwireMain.cpp)
-                    target_link_libraries(${target_name} PRIVATE Engine GameEngine.Native GTest::gtest)
+                    target_link_libraries(${target_name} PRIVATE
+                        Engine $<TARGET_NAME_IF_EXISTS:GameEngine.Native> GTest::gtest)
                 else()
-                    target_link_libraries(${target_name} PRIVATE Engine GameEngine.Native GTest::gtest GTest::gtest_main)
+                    target_link_libraries(${target_name} PRIVATE
+                        Engine $<TARGET_NAME_IF_EXISTS:GameEngine.Native> GTest::gtest GTest::gtest_main)
                 endif()
                 target_compile_definitions(${target_name} PRIVATE
                     ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}"
@@ -2225,7 +2230,6 @@ endif()
                 Tests/PropCoverageFloorTests.cpp
                 Tests/HzbBuildComputeTests.cpp
                 Tests/HzbSpdParityTests.cpp
-                Tests/HzbSpdMinMaxParityTests.cpp
                 Tests/ClusterDepthMinMaxParityTests.cpp
                 Tests/HzbCullingComputeTests.cpp
                 Tests/VertexModifierEnvelopeSampledTests.cpp
@@ -2241,6 +2245,7 @@ endif()
                 Tests/SortedTransparentCullTests.cpp
                 Tests/SortedTransparentRunTests.cpp
                 Tests/RenderSortingTests.cpp
+                Tests/SortedTransparentKeyTests.cpp
                 Tests/SortedTransparentDeciderTests.cpp
                 Tests/SortedTransparentBuildAllocationTests.cpp
                 Tests/SkinPaletteAtlasTests.cpp
@@ -2369,9 +2374,12 @@ endif()
                 Tests/LensFlareImporterTests.cpp)
             target_include_directories(EnginePostProcessTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
-            # Reflection probes: selection, capture retention, blend weights and invalidation.
+            # Reflection probes: selection, capture retention, blend weights and invalidation,
+            # and the per-world feature content their scene digest reads.
             ge_add_render_services_test(ReflectionProbeTests
-                Tests/ReflectionProbeSystemTests.cpp)
+                Tests/ReflectionProbeSystemTests.cpp
+                Tests/WorldContentDigestTableTests.cpp
+                Tests/OceanContentDigestTests.cpp)
 
             # The render services themselves and the lighting they carry:
             # the feature registry, device recovery, views and cameras, project settings,

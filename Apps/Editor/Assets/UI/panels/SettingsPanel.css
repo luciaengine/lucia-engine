@@ -947,7 +947,7 @@ button.trash-icon,
     margin-bottom: 38px; /* Make room for search bar */
 }
 
-/* A top search row, as in the other panels (theme/views.css): the field (6px inset + 24px)
+/* A top search row, as in the other panels (theme/views.css): the field (8px inset + 22px)
    and 6px below it. The search's container carries .settings-search-host: the panel itself in
    the stacked layout, the right-hand container in the side-by-side one. */
 .settings-search-host.search-bars-at-top {

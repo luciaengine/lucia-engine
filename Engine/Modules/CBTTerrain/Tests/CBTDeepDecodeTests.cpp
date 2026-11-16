@@ -589,7 +589,7 @@ class CBTDeepDecodeGpu : public ::testing::Test
     void SeedDeepKeys(CBTInstance& instance, const std::vector<uint64_t>& keys, uint32_t firstSlot)
     {
         // Synthetic host writes must follow the asynchronous initialization upload.
-        ASSERT_TRUE(m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken()));
+        ASSERT_TRUE(m_Device->WaitGpuSyncToken(m_Device->LastSubmissionToken(IDevice::QueueType::Graphics)));
         ASSERT_EQ(firstSlot % 32u, 0u) << "seed base must be bitfield-word aligned";
         auto& res = instance.GetResources();
         m_Device->UpdateBuffer(res.GetBuffer(CBTBinding::HeapID), firstSlot * sizeof(uint64_t),

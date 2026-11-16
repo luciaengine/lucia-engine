@@ -85,22 +85,13 @@ TEST(ForwardDrainOrderTest, EmptyStreamDoesNotSuppressTheOtherStream)
     EXPECT_EQ(entities, contributors);
 }
 
-static void SetIdentityMatrix4x4(float outM[16])
-{
-    for (int i = 0; i < 16; ++i)
-        outM[i] = 0.0f;
-    outM[0] = 1.0f;
-    outM[5] = 1.0f;
-    outM[10] = 1.0f;
-    outM[15] = 1.0f;
-}
 
 static CameraData MakeIdentityCameraData()
 {
     CameraData data{};
-    SetIdentityMatrix4x4(data.view);
-    SetIdentityMatrix4x4(data.proj);
-    SetIdentityMatrix4x4(data.viewProj);
+    data.view = Mathematics::Matrix4x4::Identity();
+    data.proj = Mathematics::Matrix4x4::Identity();
+    data.viewProj = Mathematics::Matrix4x4::Identity();
     return data;
 }
 
@@ -156,7 +147,7 @@ static MeshRenderer MakeTestMeshRenderer(const TestRenderableSetup& setup)
 {
     MeshRenderer mr{};
     mr.meshGpuHandleId = static_cast<uint64>(setup.meshHandle);
-    mr.renderLayerMask = 0x1u;
+    mr.RenderLayers = Rendering::RenderLayerMask{0x1u};
 
     mr.materialAssetGuid.Set(setup.materialGuid);
 
@@ -325,16 +316,16 @@ TEST(RenderServicesWorldMaterialTests, ECSWorldMeshExtraction_UsesWorldTransform
 
 	ViewId viewId = rs.Views().AllocateView("TestView", cameraId);
 	rs.Views().SetViewWorldId(viewId, worldId);
-	rs.Views().SetViewRenderLayerMask(viewId, 0x1u);
+	rs.Views().SetViewRenderLayerMask(viewId, Rendering::RenderLayerMask{0x1u});
 
 	// Views that must receive no world draw items: another world, another layer.
 	World otherWorld(nullptr);
 	ViewId viewWrongWorld = rs.Views().AllocateView("ViewWrongWorld", cameraId);
 	rs.Views().SetViewWorldId(viewWrongWorld, otherWorld.GetWorldId());
-	rs.Views().SetViewRenderLayerMask(viewWrongWorld, 0x1u);
+	rs.Views().SetViewRenderLayerMask(viewWrongWorld, Rendering::RenderLayerMask{0x1u});
 	ViewId viewWrongLayer = rs.Views().AllocateView("ViewWrongLayer", cameraId);
 	rs.Views().SetViewWorldId(viewWrongLayer, worldId);
-	rs.Views().SetViewRenderLayerMask(viewWrongLayer, 0x2u);
+	rs.Views().SetViewRenderLayerMask(viewWrongLayer, Rendering::RenderLayerMask{0x2u});
 
 	Entity parent = world.Create();
 	Entity child  = world.Create();
@@ -351,7 +342,7 @@ TEST(RenderServicesWorldMaterialTests, ECSWorldMeshExtraction_UsesWorldTransform
 	parent.Set(parentLocal);
 
 	Parent parentComp{};
-	parentComp.parent = parent.GetHandle();
+	parentComp.Entity = parent.GetHandle();
 
 	MeshRenderer mr = MakeTestMeshRenderer(setup);
 
@@ -441,7 +432,7 @@ TEST(RenderServicesWorldMaterialTests, DisabledRendererClearsCachedGPUSceneInsta
 
 	ViewId viewId = rs.Views().AllocateView("DisableTestView", cameraId);
 	rs.Views().SetViewWorldId(viewId, worldId);
-	rs.Views().SetViewRenderLayerMask(viewId, 0x1u);
+	rs.Views().SetViewRenderLayerMask(viewId, Rendering::RenderLayerMask{0x1u});
 
 	Entity entity = world.Create();
 	entity.Set(Transform::FromTRS(
@@ -553,7 +544,7 @@ TEST(RenderServicesWorldMaterialTests, LateExtractionRedirtiesGPUSceneForBuckete
 	{
 		ViewId viewMain = rs.Views().AllocateView("MainTestView", cameraId);
 		rs.Views().SetViewWorldId(viewMain, mainWorld.GetWorldId());
-		rs.Views().SetViewRenderLayerMask(viewMain, 0x1u);
+		rs.Views().SetViewRenderLayerMask(viewMain, Rendering::RenderLayerMask{0x1u});
 
 		Entity e = mainWorld.Create();
 		e.Set(Transform::FromTRS(
@@ -588,7 +579,7 @@ TEST(RenderServicesWorldMaterialTests, LateExtractionRedirtiesGPUSceneForBuckete
 	{
 		ViewId viewThumb = rs.Views().AllocateView("ThumbTestView", cameraId);
 		rs.Views().SetViewWorldId(viewThumb, thumbnailWorld.GetWorldId());
-		rs.Views().SetViewRenderLayerMask(viewThumb, 0x1u);
+		rs.Views().SetViewRenderLayerMask(viewThumb, Rendering::RenderLayerMask{0x1u});
 
 		Entity e = thumbnailWorld.Create();
 		e.Set(Transform::FromTRS(
@@ -1004,7 +995,7 @@ TEST(RenderServicesWorldMaterialTests, ECSWorldMeshExtraction_LODGroupBiasReache
 	rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(MakeIdentityCameraData()), {0.1f, 1000.0f});
 	ViewId viewId = rs.Views().AllocateView("TestView", cameraId);
 	rs.Views().SetViewWorldId(viewId, world.GetWorldId());
-	rs.Views().SetViewRenderLayerMask(viewId, 0x1u);
+	rs.Views().SetViewRenderLayerMask(viewId, Rendering::RenderLayerMask{0x1u});
 
 	Entity plain = world.Create();
 	plain.Set(Transform::FromTRS({0.0, 0.0, 0.0}, Mathematics::Quaternion{}, {1.0f, 1.0f, 1.0f}));
@@ -1189,10 +1180,10 @@ TEST(TransformHierarchyParallelTests, ReparentTopologyRebuild_ChildFollowsNewPar
 	Entity c = world.Create(Transform::FromTRS({0.0, 0.0, 3.0}, Mathematics::Quaternion{}, {1, 1, 1}));
 
 	Parent bToA{};
-	bToA.parent = a.GetHandle();
+	bToA.Entity = a.GetHandle();
 	b.Set(bToA);
 	Parent cToB{};
-	cToB.parent = b.GetHandle();
+	cToB.Entity = b.GetHandle();
 	c.Set(cToB);
 	world.ProcessCommands();
 
@@ -1208,7 +1199,7 @@ TEST(TransformHierarchyParallelTests, ReparentTopologyRebuild_ChildFollowsNewPar
 
 	// Reparent c directly under a: c world = a(10,0,0) + local(0,0,3).
 	Parent cToA{};
-	cToA.parent = a.GetHandle();
+	cToA.Entity = a.GetHandle();
 	c.Set(cToA);
 	world.ProcessCommands();
 	parallel.Update(world, 0.0f);
@@ -1238,8 +1229,8 @@ TEST(TransformHierarchyParallelTests, MixedHierarchy_OffAndOnBitwiseIdentical)
 		Entity root = w.Create(MakeVariedLocalTransform(1000));
 		Entity mid = w.Create(MakeVariedLocalTransform(1001));
 		Entity leaf = w.Create(MakeVariedLocalTransform(1002));
-		Parent pm{}; pm.parent = root.GetHandle(); mid.Set(pm);
-		Parent pl{}; pl.parent = mid.GetHandle(); leaf.Set(pl);
+		Parent pm{}; pm.Entity = root.GetHandle(); mid.Set(pm);
+		Parent pl{}; pl.Entity = mid.GetHandle(); leaf.Set(pl);
 		handles.push_back(root.GetHandle());
 		handles.push_back(mid.GetHandle());
 		handles.push_back(leaf.GetHandle());

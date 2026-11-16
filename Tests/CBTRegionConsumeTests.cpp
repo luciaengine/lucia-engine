@@ -899,3 +899,26 @@ TEST(CBTUpdateSchedule, DeclaredEdgeOrdersTerrainModifiersAfterCBTUpdate)
         << " — TerrainModifiers does not declare a dependency on CBTUpdate, so the "
            "planet layer reset is no longer ordered before the bake";
 }
+
+// The terrain's term in the reflection probe digest: its identity and source assets. A shape value
+// an inspector drag changes every frame is not content.
+TEST(CBTTerrainContentDigest, FollowsTheSourceAssetsAndNotTheShapeValues)
+{
+    Components::Terrain terrain{};
+    EXPECT_EQ(CBTUpdateSystem::ComputeTerrainContentDigest(false, terrain), 0u);
+    const uint64 base = CBTUpdateSystem::ComputeTerrainContentDigest(true, terrain);
+    EXPECT_NE(base, 0u);
+
+    Components::Terrain resized = terrain;
+    resized.SizeX *= 2.0f;
+    resized.PlanetRadius *= 2.0f;
+    EXPECT_EQ(CBTUpdateSystem::ComputeTerrainContentDigest(true, resized), base);
+
+    Components::Terrain heightmap = terrain;
+    heightmap.TerrainAssetGuid.Set(GUID::Generate());
+    EXPECT_NE(CBTUpdateSystem::ComputeTerrainContentDigest(true, heightmap), base);
+
+    Components::Terrain library = terrain;
+    library.MaterialLibraryGuid.Set(GUID::Generate());
+    EXPECT_NE(CBTUpdateSystem::ComputeTerrainContentDigest(true, library), base);
+}
