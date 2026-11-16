@@ -279,6 +279,17 @@ int OrdinalOf(const ShaderMeta& meta, uint32_t setIndex)
 class TonemapRig
 {
 public:
+    // Shuts the device down while the process's rendering registries still exist: a device left to
+    // the static destructors reads them after they are gone.
+    void Shutdown()
+    {
+        if (!m_Device)
+            return;
+        m_Device->WaitForIdle();
+        m_Device->Shutdown();
+        m_Device.reset();
+    }
+
     // `fatal` distinguishes "this machine has no GPU" (a legitimate skip) from
     // "the thing under test is missing or broken" (never a skip — a filter or a
     // missing shader that exits PASSED is exactly how this suite would lie).
@@ -719,6 +730,12 @@ protected:
             attempted = true;
             RigReady() = Rig().Init(RigWhy(), RigFatal());
         }
+    }
+
+    static void TearDownTestSuite()
+    {
+        Rig().Shutdown();
+        RigReady() = false;
     }
 
     void SetUp() override

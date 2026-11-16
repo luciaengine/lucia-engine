@@ -397,6 +397,18 @@ protected:
     void Render() override { Host->Render(static_cast<float>(GetDeltaTime())); }
 };
 
+// Stops and drops the registered user systems when the test body leaves, while the systems it
+// registered from its own stack are still alive.
+struct UserSystemsScope
+{
+    ECS::World& World;
+    ~UserSystemsScope()
+    {
+        NativeScripting::StopUserSystems(World);
+        NativeScripting::ClearUserSystems();
+    }
+};
+
 class HeadlessRuntimeHost : public ::testing::Test
 {
 protected:
@@ -463,10 +475,11 @@ TEST_F(HeadlessRuntimeHost, RunsTheScheduleAndAScriptOnAFixedStepWithNoWindowOrD
     Engine::Renderer::RenderingLoop* loop = EngineCore::GetInstance().GetRenderingLoop();
     ASSERT_NE(loop, nullptr) << "the engine's schedule runs without render services";
     FrameCountingSystem* system = loop->GetSystemManager()->AddSystem<FrameCountingSystem>();
-    QuittingScript script;
-    ASSERT_TRUE(NativeScripting::RegisterUserSystem(&script));
     ECS::World* world = EngineCore::GetInstance().EnsurePrimaryWorld();
     ASSERT_NE(world, nullptr);
+    QuittingScript script;
+    ASSERT_TRUE(NativeScripting::RegisterUserSystem(&script));
+    const UserSystemsScope userSystems{*world};
     NativeScripting::StartUserSystems(*world);
 
     m_Application->SetFixedFrameRate(kHeadlessFps);
