@@ -46,11 +46,14 @@ inline Vector3 OctahedralDecode(const Vector2& uv)
 }
 
 /// Hemi-octahedral encode of a unit vector with y >= 0 into [0,1]^2, with +Y at the center and
-/// the horizon on the square's edge. A vector below the horizon encodes as its horizon point.
-/// CPU mirror of GE_HemiOctEncode.
+/// the horizon on the square's edge. A vector below the horizon encodes as its horizon point;
+/// straight down, which has none, encodes as the +X horizon point. CPU mirror of GE_HemiOctEncode.
 inline Vector2 HemiOctahedralEncode(const Vector3& direction)
 {
+    constexpr float kStraightDownNorm = 1e-6f;
     const float norm = std::abs(direction.x) + std::max(direction.y, 0.0f) + std::abs(direction.z);
+    if (norm < kStraightDownNorm)
+        return Vector2(1.0f, 0.0f);
     const float px = direction.x / norm;
     const float pz = direction.z / norm;
     return Vector2((px + pz) * 0.5f + 0.5f, (pz - px) * 0.5f + 0.5f);

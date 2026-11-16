@@ -30,10 +30,14 @@ vec3 GE_OctDecode(vec2 f)
 
 // Hemi-octahedral encode/decode of the upper hemisphere around +Y into [0,1]^2: +Y at the
 // center, the horizon on the square's edge. A vector below the horizon encodes as its
-// horizon point. CPU mirror: Mathematics/Octahedral.h (HemiOctahedralEncode/Decode).
+// horizon point; straight down encodes as the +X horizon point.
+// CPU mirror: Mathematics/Octahedral.h (HemiOctahedralEncode/Decode).
 vec2 GE_HemiOctEncode(vec3 n)
 {
-    vec2 p = n.xz / (abs(n.x) + max(n.y, 0.0) + abs(n.z));
+    float norm = abs(n.x) + max(n.y, 0.0) + abs(n.z);
+    if (norm < 1e-6)
+        return vec2(1.0, 0.0);
+    vec2 p = n.xz / norm;
     return vec2(p.x + p.y, p.y - p.x) * 0.5 + 0.5;
 }
 

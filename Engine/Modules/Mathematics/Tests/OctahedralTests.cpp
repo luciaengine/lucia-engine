@@ -88,6 +88,13 @@ TEST(OctahedralTests, HemisphereMapsTheHorizonToTheSquareEdge)
     ExpectDirection(Vector3(1.0f, 0.0f, 0.0f), HemiOctahedralDecode(HemiOctahedralEncode(Vector3(1.0f, -0.5f, 0.0f).Normalize())));
 }
 
+TEST(OctahedralTests, HemisphereEncodesStraightDownAsAHorizonPointWithoutDividingByZero)
+{
+    const Vector2 uv = HemiOctahedralEncode(Vector3(0.0f, -1.0f, 0.0f));
+    EXPECT_TRUE(std::isfinite(uv.x) && std::isfinite(uv.y));
+    ExpectDirection(Vector3(1.0f, 0.0f, 0.0f), HemiOctahedralDecode(uv));
+}
+
 TEST(OctahedralTests, FrameDirectionIsTheDecodedFrameCenter)
 {
     constexpr uint32_t kFramesPerSide = 8u;
