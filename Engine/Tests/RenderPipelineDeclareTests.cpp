@@ -85,7 +85,7 @@
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Terrain/Heightfield.h"
 #include "TerrainECS/TerrainUploadNode.h"
-#include "TerrainECS/TerrainHeightPageFeature.h"
+#include "TerrainECS/TerrainPageFeature.h"
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
@@ -12837,7 +12837,7 @@ bool ActivateCbtTerrain(TerrainFixture& f, TerrainECS::TerrainRenderFeature& ter
 }
 
 std::vector<TerrainECS::HeightPageUpload> PublishCbtHeightPages(TerrainECS::TerrainHeightPages& pages,
-    TerrainECS::TerrainHeightPageFeature& publication, uint64 identity, uint64 firstFrame, float height)
+    TerrainECS::TerrainPageFeature& publication, uint64 identity, uint64 firstFrame, float height)
 {
     PageStreaming::GeneratedHeightLattice lattice;
     lattice.Source = PageStreaming::GeneratedHeightSource::Flat;
@@ -13846,7 +13846,7 @@ TEST(RenderPipelineDeclareTests, RegionalPageRewriteMatchesFullEvaluationOfTheSa
     classify.TargetDepth = CBTTerrain::kDefaultBaseDepth + 6u;
     cbt.SetActive(true, classify, 8.0f, Components::kNoTerrainSeaLevel,
                   CBTTerrainECS::CBTRenderFeature::DomainConfig{}, 0u);
-    auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainHeightPageFeature>();
+    auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainPageFeature>();
     TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords});
     pages.Update(1, 1.0f / 60.0f, false, 2);
     const auto payloads = PublishCbtHeightPages(pages, publication, 11, 2, 0.25f);
@@ -14033,7 +14033,7 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
     if (!ActivateCbtTerrain(fixture, terrain))
         GTEST_SKIP() << "staged shader sources or CBT kernels unavailable";
     auto& cbt = fixture.Rs->EnsureFeature<CBTTerrainECS::CBTRenderFeature>();
-    auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainHeightPageFeature>();
+    auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainPageFeature>();
     TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords});
     pages.Update(1, 1.0f / 60.0f, false, 2);
     ASSERT_FALSE(PublishCbtHeightPages(pages, publication, 11, 2, 0.25f).empty());

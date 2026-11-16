@@ -31,8 +31,6 @@
 #include "HeldPipelineBuilds.h"
 #include "SceneDrawWarm.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/PipelineCache.h"
-#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/SpecializationConstants.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/HotReloadIntegration.h"
