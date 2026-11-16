@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include "Rendering/Core/HashUtils.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -40,17 +42,15 @@ struct hash<GameEngine::Engine::Renderer::ColorClassSignature>
     size_t operator()(
         const GameEngine::Engine::Renderer::ColorClassSignature& s) const noexcept
     {
-        auto mix = [](size_t h, size_t v) {
-            return h ^ (v + 0x9e3779b9u + (h << 6) + (h >> 2));
-        };
-        size_t h = std::hash<std::string>{}(s.SurfaceShaderPath);
-        h = mix(h, std::hash<std::string>{}(s.VertexModifierPath));
-        h = mix(h, std::hash<std::string>{}(s.LightingModel));
-        h = mix(h, std::hash<uint64_t>{}(s.MaterialKeywords));
-        h = mix(h, std::hash<uint32_t>{}((static_cast<uint32_t>(s.AlphaMode) << 2)
-                                         | (s.DoubleSided ? 2u : 0u)
-                                         | (s.IgnoreVertexColor ? 1u : 0u)));
-        return h;
+        using GameEngine::Rendering::HashUtils::HashCombine;
+        uint64_t h = std::hash<std::string>{}(s.SurfaceShaderPath);
+        h = HashCombine(h, std::hash<std::string>{}(s.VertexModifierPath));
+        h = HashCombine(h, std::hash<std::string>{}(s.LightingModel));
+        h = HashCombine(h, s.MaterialKeywords);
+        h = HashCombine(h, (static_cast<uint32_t>(s.AlphaMode) << 2)
+                               | (s.DoubleSided ? 2u : 0u)
+                               | (s.IgnoreVertexColor ? 1u : 0u));
+        return static_cast<size_t>(h);
     }
 };
 } // namespace std

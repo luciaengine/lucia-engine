@@ -229,6 +229,33 @@ TEST(AssistantGateTests, EveryToolHasAClassAnActionAndASubject)
     EXPECT_NE(std::find(attached.begin(), attached.end(), "input_text"), attached.end());
 }
 
+// Polling a completed lightmap job can import assets and assign materials.
+// Treat it like the other bake operations, including when the mode is Auto.
+TEST(AssistantGateTests, BakeOperationsWaitForApprovalInAuto)
+{
+    for (const char* tool : {"bake_lightmaps", "get_lightmap_bake", "cancel_lightmap_bake", "rebake_reflection_probes"})
+    {
+        AssistantGate gate;
+        OpenBound(gate, AssistantMode::Auto, 7);
+        EXPECT_EQ(Call(gate, 7, tool).Decision, DebugRequestDecision::Park) << tool;
+    }
+}
+
+TEST(AssistantGateTests, ProbeInspectionIsReadOnlyAndDockingKeepsTheForegroundPolicy)
+{
+    for (const AssistantModeChoice& mode : AssistantModeChoices())
+    {
+        AssistantGate gate;
+        OpenBound(gate, mode.Mode, 7);
+        EXPECT_EQ(Call(gate, 7, "get_reflection_probe_state").Decision, DebugRequestDecision::Run) << mode.Label;
+        const auto dock = Call(gate, 7, "dock_panel", {{"panelId", "Assets"}});
+        EXPECT_EQ(dock.Decision, DebugRequestDecision::Refuse) << mode.Label;
+        EXPECT_NE(dock.Refusal.find("foreground"), std::string::npos) << mode.Label;
+    }
+    const auto attached = AssistantTools::AttachedNames();
+    EXPECT_EQ(std::find(attached.begin(), attached.end(), "dock_panel"), attached.end());
+}
+
 TEST(AssistantGateTests, AWindowCaptureIsRefusedInEveryModeAndTheRenderedFrameIsNot)
 {
     for (const AssistantModeChoice& mode : AssistantModeChoices())
@@ -314,8 +341,8 @@ class BoundConnection
 public:
     static constexpr uint32_t kClient = 21;
 
-    explicit BoundConnection(AssistantMode mode)
-        : m_Gate([this] { return m_Now; })
+    explicit BoundConnection(AssistantMode mode, Editor::UndoRedoService::Config undo = {})
+        : Undo(undo), m_Gate([this] { return m_Now; })
     {
         m_Registry.Register(m_Gate.AsDebugRequestGate());
         m_Session = OpenBound(m_Gate, mode, kClient);
@@ -615,8 +642,7 @@ TEST(AssistantGateTests, AUserStepOnTopDisablesUndoThisTurnAndNamesItUntilTheUse
 
 TEST(AssistantGateTests, ATurnWhoseOldestStepWasTrimmedIsTooOldToUndoAsATurn)
 {
-    BoundConnection connection(AssistantMode::Auto);
-    connection.Undo = Editor::UndoRedoService(Editor::UndoRedoService::Config{2});
+    BoundConnection connection(AssistantMode::Auto, Editor::UndoRedoService::Config{2});
     int value = 0;
     ASSERT_EQ(connection.Offer(721, "create_entity", {{"name", "Lantern_01"}}, OneCommand(value)),
               DebugRequestDecision::Run);

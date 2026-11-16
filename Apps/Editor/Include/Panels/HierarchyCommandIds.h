@@ -39,6 +39,7 @@ inline constexpr std::uint32_t kCmdSortDescending = 0x4174;
 inline constexpr std::uint32_t kCmdShowRenderLayer = 0x4175;
 inline constexpr std::uint32_t kCmdShowVcsSceneDiffDots = 0x4176;
 inline constexpr std::uint32_t kCmdShowSortingLayer = 0x4177;
+inline constexpr std::uint32_t kCmdShowSceneViewEye = 0x4178;
 inline constexpr std::uint32_t kCmdShowMeshLocation = 0x4180;
 inline constexpr std::uint32_t kCmdAddToBookmarks = 0x4190;
 inline constexpr std::uint32_t kCmdLoadRecentSceneBase = 0x41A0;

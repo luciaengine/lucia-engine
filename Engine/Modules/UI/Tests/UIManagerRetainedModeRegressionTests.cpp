@@ -24,6 +24,7 @@
 #include "UI/UIStyle.h"
 #include "IsolatedUIFixture.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -106,7 +107,8 @@ TEST(UIRegressions, TooltipWrapsAtMaximumWidthAndShortTextReturnsToNaturalWidth)
     // engine-side Style::MaxWidth override TooltipOverlay installs on
     // #ui-tooltip, and a percent width on the label would let long text
     // escape the bubble (measure at pre-clamp width) instead of wrapping.
-    const auto css = std::filesystem::temp_directory_path() / "ui_regression_tooltip_wrap.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_tooltip_wrap"));
+    const auto css = tempDir.Path() / "ui_regression_tooltip_wrap.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -189,7 +191,8 @@ TEST(UIRegressions, HoverTooltipDrawsAboveDropdownOverlay)
         UIManager ui(dev);
         ui.SetRoot(std::move(root));
 
-        const auto css = std::filesystem::temp_directory_path() / "ui_regression_tooltip_overlay_order.css";
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_tooltip_overlay_order"));
+        const auto css = tempDir.Path() / "ui_regression_tooltip_overlay_order.css";
         {
             std::ofstream f(css);
             f << R"(
@@ -250,8 +253,8 @@ TEST(UIRegressions, GridViewInitialColumnsUsesUpdatedViewportOnFirstUpdate)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_grid_initial_cols.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_grid_initial_cols"));
+    const auto css = tempDir.Path() / "ui_regression_grid_initial_cols.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -321,8 +324,8 @@ TEST(UIRegressions, CaptureSurvivesTreeChangedRebuild)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_capture_rebuild.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_capture_rebuild"));
+    const auto css = tempDir.Path() / "ui_regression_capture_rebuild.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -389,8 +392,8 @@ TEST(UIRegressions, SetValueSkipsLayoutForFixedTextInput)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() /
-                     "ui_regression_fixed_text_set_value.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_fixed_text_set_value"));
+    const auto css = tempDir.Path() / "ui_regression_fixed_text_set_value.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -527,8 +530,8 @@ TEST(UIRegressions, MeasureNodesClearStaleYogaChildrenBeforeSettingMeasureFunc)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_measure_children.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_measure_children"));
+    const auto css = tempDir.Path() / "ui_regression_measure_children.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -588,8 +591,8 @@ TEST(UIRegressions, TreeChangedRebuildThenRelayoutDoesNotBreakInheritedFontSize)
     ui.SetRoot(std::move(root));
 
     // Basic layout with inherited typography.
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_treechanged_rel_layout_fontsize.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_treechanged_rel_layout_fontsize"));
+    const auto css = tempDir.Path() / "ui_regression_treechanged_rel_layout_fontsize.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -676,8 +679,8 @@ TEST(UIRegressions, MultilineLabelHeightPreventsOverlapInScrollView)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_multiline_label_no_overlap.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_multiline_label_no_overlap"));
+    const auto css = tempDir.Path() / "ui_regression_multiline_label_no_overlap.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -728,8 +731,8 @@ TEST(UIRegressions, ScrollViewShowsHorizontalScrollbarForLongLabelLine)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollview_hscroll_long_label.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollview_hscroll_long_label"));
+    const auto css = tempDir.Path() / "ui_regression_scrollview_hscroll_long_label.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -787,8 +790,8 @@ TEST(UIRegressions, ScrollViewShowsHorizontalScrollbarAfterTreeChangedRebuildSam
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollview_hscroll_treechanged.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollview_hscroll_treechanged"));
+    const auto css = tempDir.Path() / "ui_regression_scrollview_hscroll_treechanged.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -858,8 +861,8 @@ TEST(UIRegressions, ScrollViewHorizontalScrollbarDoesNotOverlapViewport)
     ASSERT_TRUE(std::filesystem::exists(theme)) << "Editor theme not staged at " << theme.string();
     ASSERT_TRUE(ui.AttachStyleFromFile(theme.string()));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollview_no_overlap.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollview_no_overlap"));
+    const auto css = tempDir.Path() / "ui_regression_scrollview_no_overlap.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -960,8 +963,8 @@ TEST(UIRegressions, VerticalScrollbarVisibilityReflowsPercentageWidthDescendants
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() /
-                     "ui_regression_scrollbar_visibility_percent_reflow.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollbar_visibility_percent_reflow"));
+    const auto css = tempDir.Path() / "ui_regression_scrollbar_visibility_percent_reflow.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1036,8 +1039,8 @@ TEST(UIRegressions, ScrollbarDragDoesNotResetScrollX)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollbar_drag_persists_scroll.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollbar_drag_persists_scroll"));
+    const auto css = tempDir.Path() / "ui_regression_scrollbar_drag_persists_scroll.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1109,8 +1112,8 @@ TEST(UIRegressions, ScrollbarDragDoesNotResetScrollY)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollbar_drag_persists_scroll_y.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollbar_drag_persists_scroll_y"));
+    const auto css = tempDir.Path() / "ui_regression_scrollbar_drag_persists_scroll_y.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1181,8 +1184,8 @@ TEST(UIRegressions, WordBreakBreakAllWrapsLabelHeight)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_word_break_wraps_label.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_word_break_wraps_label"));
+    const auto css = tempDir.Path() / "ui_regression_word_break_wraps_label.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1237,8 +1240,8 @@ TEST(UIRegressions, DeferredRelayoutReflowsSiblingAfterDisplayNoneCollapse)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_deferred_relayout_collapse.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_deferred_relayout_collapse"));
+    const auto css = tempDir.Path() / "ui_regression_deferred_relayout_collapse.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1295,8 +1298,8 @@ TEST(UIRegressions, DeferredRelayoutReflowsSiblingAfterSelfResize)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_deferred_relayout_resize.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_deferred_relayout_resize"));
+    const auto css = tempDir.Path() / "ui_regression_deferred_relayout_resize.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1420,8 +1423,8 @@ TEST(UIRegressions, SearchBarClearButtonClickClearsFieldOverText)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_search_clear.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_search_clear"));
+    const auto css = tempDir.Path() / "ui_regression_search_clear.css";
     {
         std::ofstream f(css);
         f << R"(

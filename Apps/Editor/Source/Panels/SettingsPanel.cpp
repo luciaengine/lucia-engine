@@ -10,6 +10,7 @@
 #include "Editor/Settings/BuildFolderDefaults.h"
 #include "Editor/Shortcuts/EditorShortcuts.h"
 #include "Editor/Settings/EditorSettingsRegistry.h"
+#include "Editor/Settings/AutoLodImportSettings.h"
 #include "Editor/Settings/SvgRasterSettings.h"
 #include "Editor/Settings/BuildRenderPipelineSettings.h"
 #include "Editor/Settings/DirectionalShadowSettingsPage.h"
@@ -56,7 +57,6 @@
 #include "Input/InputSystem.h"
 #include "EditorInputActions.h"
 #include "Assets/AssetManager.h"
-#include "Assets/MeshLODGenerator.h"
 #include "UI/EditorTags.h"
 #include "UI/EditorUIFontSettings.h"
 #include "Engine/UI/FontResolver.h"
@@ -9894,19 +9894,10 @@ void SettingsPanel::CreateAssetImportSettingsContent()
         m_ContentBody->AddContent(std::move(sectionHeader));
     }
 
-    // Project-scoped (like the FBX import toggles above) so the whole team gets
-    // uniform import behavior. The callback persists to project settings and
-    // pushes the live policy down to the engine import path (which has no editor
-    // dependency). When off, LODs are still available from the model inspector
-    // and the API.
+    // Project-scoped, like the FBX import toggles above. When off, LODs are still
+    // available from the model inspector and the API.
     {
-        bool autoLODs = true; // default-on for static meshes when the project has no explicit key
-        {
-            Editor::SettingsStore store = Editor::OpenProjectSettings(workspaceRoot);
-            std::string err;
-            (void)store.Load(&err);
-            store.TryGetBool("import.autoGenerateLODs", autoLODs);
-        }
+        const bool autoLODs = Editor::AutoLodImportSettings::Load(workspaceRoot);
 
         auto row = std::make_unique<UIElement>();
         row->AddClass("settings-row");
@@ -9923,21 +9914,12 @@ void SettingsPanel::CreateAssetImportSettingsContent()
         toggle->SetChecked(autoLODs);
         Toggle* togglePtr = toggle.get();
 
-        auto apply = [workspaceRoot](bool value) {
-            Editor::SettingsStore store = Editor::OpenProjectSettings(workspaceRoot);
-            std::string err;
-            (void)store.Load(&err);
-            store.SetBool("import.autoGenerateLODs", value);
-            (void)store.Save(&err);
-            GameEngine::LODImportSettings lod = GameEngine::GetLODImportSettings();
-            lod.AutoGenerateOnImport = value;
-            GameEngine::SetLODImportSettings(lod);
-        };
+        auto apply = [workspaceRoot](bool value) { Editor::AutoLodImportSettings::SaveAndApply(workspaceRoot, value); };
 
         toggle->SetOnValueChanged([apply](const bool& checked) { apply(checked); });
         AddDoubleClickReset(labelPtr, [togglePtr, apply]() {
-            togglePtr->SetChecked(false);
-            apply(false);
+            togglePtr->SetChecked(Editor::AutoLodImportSettings::kDefault);
+            apply(Editor::AutoLodImportSettings::kDefault);
         });
 
         row->AddChild(std::move(label));

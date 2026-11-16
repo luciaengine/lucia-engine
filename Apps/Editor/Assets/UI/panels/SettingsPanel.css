@@ -1,6 +1,7 @@
 /* Settings Panel Styles */
 .settings-panel {
     --settings-row-gap: 4px;
+    --settings-color-swatch-border: #555555;
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -204,6 +205,29 @@
 /* Tags settings: fixed-size name field and icon-only delete button (toolbar style) */
 .settings-tag-row {
     min-height: 32px;
+}
+
+/* Colour setting swatch; the background is the setting's colour, set per swatch. */
+.settings-color-swatch {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    min-height: 16px;
+    flex-shrink: 0;
+    border: 1px solid var(--settings-color-swatch-border);
+    border-radius: 2px;
+    cursor: pointer;
+}
+
+.settings-tag-color-swatch {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    min-height: 20px;
+    flex-shrink: 0;
+    border: 1px solid var(--settings-color-swatch-border);
+    border-radius: 4px;
+    cursor: pointer;
 }
 
 .settings-tag-name-field,
@@ -923,7 +947,7 @@ button.trash-icon,
     margin-bottom: 38px; /* Make room for search bar */
 }
 
-/* A top search row, as in the other panels (theme/views.css): the field (6px inset + 24px)
+/* A top search row, as in the other panels (theme/views.css): the field (8px inset + 22px)
    and 6px below it. The search's container carries .settings-search-host: the panel itself in
    the stacked layout, the right-hand container in the side-by-side one. */
 .settings-search-host.search-bars-at-top {
@@ -1158,4 +1182,61 @@ button.trash-icon,
     padding: 0;
     font-size: 14px;
     font-weight: 600;
+}
+
+/* Shortcut conflict confirmation (Reassign / Swap / Add alternate / Cancel) */
+.shortcut-conflict-overlay {
+    position: absolute;
+    left: 0px;
+    top: 0px;
+    width: 100%;
+    height: 100%;
+    z-index: 10000;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+}
+
+.shortcut-conflict-window {
+    display: flex;
+    flex-direction: column;
+    background-color: #252526;
+    border: 1px solid var(--ui_color_border_subtle);
+    border-radius: 10px;
+    width: 500px;
+    max-width: 85%;
+    overflow: hidden;
+}
+
+.shortcut-conflict-header {
+    padding: 16px 20px 14px 20px;
+    background-color: #1E1E1E;
+    border-bottom: 1px solid #2E2E2E;
+}
+
+.shortcut-conflict-title {
+    color: #EDEDED;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.shortcut-conflict-body {
+    padding: 20px;
+}
+
+.shortcut-conflict-message {
+    color: #CFCFCF;
+    font-size: 13px;
+}
+
+.shortcut-conflict-footer {
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 14px 20px;
+    background-color: #1E1E1E;
+    border-top: 1px solid #2E2E2E;
 }

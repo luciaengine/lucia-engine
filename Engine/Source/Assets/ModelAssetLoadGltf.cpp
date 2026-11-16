@@ -777,7 +777,7 @@ std::string PrimitiveAccessorRefusal(size_t primitiveIndex, size_t meshIndex, co
 }
 
 // The glTF type LoadGLTF reads base attribute `attribute` as: VEC3 for POSITION and NORMAL, VEC2 for
-// TEXCOORD_0, VEC4 for TANGENT, JOINTS_0 and WEIGHTS_0, and for COLOR_0 its accessor's own type when that is
+// TEXCOORD_0 and TEXCOORD_1, VEC4 for TANGENT, JOINTS_0 and WEIGHTS_0, and for COLOR_0 its accessor's own type when that is
 // VEC3 or VEC4 (the one base attribute with two legal types; VEC4 otherwise, which refuses it);
 // cgltf_type_invalid for an attribute it does not read.
 cgltf_type BaseAttributeType(const cgltf_attribute& attribute)
@@ -787,7 +787,7 @@ cgltf_type BaseAttributeType(const cgltf_attribute& attribute)
     case cgltf_attribute_type_normal:
         return cgltf_type_vec3;
     case cgltf_attribute_type_texcoord:
-        return attribute.index == 0 ? cgltf_type_vec2 : cgltf_type_invalid;
+        return attribute.index <= 1 ? cgltf_type_vec2 : cgltf_type_invalid;
     case cgltf_attribute_type_tangent:
     case cgltf_attribute_type_joints:
     case cgltf_attribute_type_weights:
@@ -1602,13 +1602,16 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
                         const float* normal = attributeFloats.data() + i * 3;
                         convertVec(normal[0], normal[1], normal[2], mesh.Vertices[i].Normal);
                     }
-                } else if (a.type == cgltf_attribute_type_texcoord) {
+                } else if (a.type == cgltf_attribute_type_texcoord && a.index == 0) {
                     haveTexcoords = true;
                     for (size_t i = 0; i < count; ++i) {
                         const float* texcoord = attributeFloats.data() + i * 2;
                         mesh.Vertices[i].TexCoords[0] = texcoord[0];
                         mesh.Vertices[i].TexCoords[1] = texcoord[1];
                     }
+                } else if (a.type == cgltf_attribute_type_texcoord && a.index == 1) {
+                    // UV1 (the lightmap channel) reads the same unpacked accessor as UV0, sparse values included.
+                    mesh.TexCoords1.assign(attributeFloats.begin(), attributeFloats.end());
                 } else if (a.type == cgltf_attribute_type_tangent) {
                     haveTangents = true;
                     for (size_t i = 0; i < count; ++i) {
@@ -1665,6 +1668,9 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
                 m_Meshes.clear();
                 return false;
             }
+            // A UV1 accessor with a vertex count other than the positions' is dropped, not read past.
+            if (!mesh.HasTexCoords1())
+                mesh.TexCoords1.clear();
 
             // Morph targets keep the file's order, empty ones included, so the engine's target i,
             // default weight i and name i are the file's target i, mesh.weights[i] and

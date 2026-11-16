@@ -2981,6 +2981,17 @@ void TextureService::HotSwapTexture(const GUID& textureGuid)
         return; // nothing changed
 
     const uint32_t newIdx = GetBindlessIndex(newEntry.Texture);
+    if (m_IndexingMode != MaterialIndexingMode::Classic && newIdx == 0u)
+    {
+        // The bindless table refused the new texture, and index 0 samples undefined
+        // data. Keep the old texture bound and cached, and discard the new one.
+        TextureGPUCache::Entry refused{};
+        m_TextureGPUCache.Remove(textureGuid, refused);
+        if (oldEntry.Texture.IsValid())
+            m_TextureGPUCache.Set(textureGuid, oldEntry);
+        RetireCacheEntry(newEntry);
+        return;
+    }
 
     // Snapshot the materials bound to this texture (the reverse map is guarded by
     // the pending mutex), then atomically repoint each slot to the new handle/index.

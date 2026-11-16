@@ -447,14 +447,13 @@ class RenderServices
     Hlod::HlodRuntime& GetHlodRuntime() { return *m_HlodRuntime; }
     const Hlod::HlodRuntime& GetHlodRuntime() const { return *m_HlodRuntime; }
 
-    // HLOD residency-flip escalation (design v0.2 §5.1). A cluster flip evicts the
-    // losing set directly, but re-adding the winning set (proxy on enter, members
-    // on exit) is a full-lane Op::Add. HLODSelectSystem requests the full lane
-    // here on any flip; RenderExtractionSystem consumes the request when it
-    // evaluates fast-path preconditions. Routed through RenderServices so the two
-    // systems stay decoupled (neither holds a pointer to the other).
-    void RequestHlodResidencyExtraction() { m_HlodResidencyPending.store(true, std::memory_order_relaxed); }
-    bool ConsumeHlodResidencyExtractionPending() { return m_HlodResidencyPending.exchange(false, std::memory_order_relaxed); }
+    // Residency-flip escalation. A system that swaps which entities draw (an HLOD
+    // cluster flip, a cluster LOD split) evicts the losing set directly, but re-adding
+    // the winning set is a full-lane Op::Add. The system requests the full lane here;
+    // RenderExtractionSystem consumes the request when it evaluates fast-path
+    // preconditions, so neither system holds a pointer to the other.
+    void RequestResidencyExtraction() { m_ResidencyExtractionPending.store(true, std::memory_order_relaxed); }
+    bool ConsumeResidencyExtractionPending() { return m_ResidencyExtractionPending.exchange(false, std::memory_order_relaxed); }
 
     // L1a point-shadow whole-light on-dirty caching signal. A per-world monotonic
     // version of the renderable scene's shadow-caster content. RenderExtractionSystem
@@ -967,15 +966,8 @@ class RenderServices
 
     // --- Sorted transparent path (T2/S2) ---
     //
-    // Order-dependent Blend materials are peeled out of the GPU-driven opaque
-    // batch path and drawn back-to-front as per-(surface×blend) RUNS — one
-    // DrawIndexedIndirectCount per run over a GPU-sorted indirect stream, the
-    // GE_INSTANCED vertex path fetching per-record data (materialIndex,
-    // sectors, custom0, flags) through the standard indirection. There is no
-    // draw ceiling and no whole-view fallback: views whose visible set exceeds
-    // the GPU sort capacity (kSortedTransparentSortCapacity) take a CPU-sorted
-    // twin of the same indirect stream. See SortedTransparentRuns.h for the
-    // run/ordering contract.
+    // The sorted transparent pass draws adjacent compatible meshes together in
+    // the same artwork order as sprites and other contributors.
 
     // Build (once per view per frame) the sorted transparent record set: reads
     // the view's Blend submissions, frustum-culls against their GPUScene
@@ -989,11 +981,7 @@ class RenderServices
     // True when this frame's sorted transparent pass owns the view's Blend draws,
     // so the opaque batch path must peel them. Read by recordEntityBatch.
     bool IsSortedTransparentActive(Rendering::ViewId viewId) const;
-    // Declare this frame's drain for the view: the fused GPU
-    // gather+key+sort+scatter dispatch (or its CPU-sorted twin) plus one
-    // indirect draw per run into the same HDR colour + depth the world pass
-    // wrote. Called by the SortedTransparent pipeline node (after HZBBuild).
-    // No-op when the view's set is inactive this frame.
+    // Draw the prepared artwork into the world pass's color and depth targets.
     void AddSortedTransparentDrainForView(Rendering::RenderGraph::RGFrame& frame,
                                           Rendering::ViewId viewId,
                                           const WorldPassTargetsRG& targets,
@@ -1005,7 +993,6 @@ class RenderServices
         uint32_t Culled = 0;    // frustum-culled candidates
         uint32_t Records = 0;   // visible records staged for the drain
         uint32_t Runs = 0;      // per-(surface×blend) runs
-        bool CpuSorted = false; // past-capacity CPU order path engaged
 
         bool operator==(const SortedTransparentStats&) const = default;
     };
@@ -1664,6 +1651,10 @@ class RenderServices
     void SetWorldRenderContentDigest(uint64 worldId, uint64 digest);
     // Returns the world's last published content digest (0 = never published).
     uint64 GetWorldRenderContentDigest(uint64 worldId) const;
+    /// Wrapping sum of every feature's IRenderFeature::ContentDigest for worldId: the
+    /// terrain, ocean and other feature content a reflection probe photographs.
+    /// Feature order cannot move it. Thread-safe.
+    uint64 ComputeFeatureContentDigest(uint64 worldId) const;
 
     // Blends the registry override (if any) with the world fallback — stays on
     // RenderServices because both halves are reachable only here.
@@ -2092,7 +2083,7 @@ class RenderServices
     // Initialize). The residency-flip request routed from HLODSelectSystem to
     // RenderExtractionSystem lives here so neither system references the other.
     std::unique_ptr<Hlod::HlodRuntime> m_HlodRuntime;
-    std::atomic<bool> m_HlodResidencyPending{false};
+    std::atomic<bool> m_ResidencyExtractionPending{false};
 
     // The material stack (A1.3). Owns the registry, compiler, shader-compilation
     // cache, pipeline-variant cache, prewarm service + drain, build context, the
@@ -2540,14 +2531,7 @@ class RenderServices
     // under per-view names; each transmissive pass binds its own SceneGrab import.
     std::unique_ptr<SceneColorGrab> m_TransmissionSceneGrab;
 
-    // Sorted transparent (T2/S2) per-view staging, rebuilt once per view per
-    // frame by BuildSortedTransparentForView (records + run layout) and
-    // consumed by AddSortedTransparentDrainForView (uploads, drain dispatch,
-    // per-run indirect draws). PcBytes is the stable 16-byte GE_INSTANCED
-    // push-constant backing every run command's Bindings.PushConstants span
-    // aliases through render-graph execution. Frame stamps the last build so a
-    // stale Active never leaks across frames or to views the world node did
-    // not declare.
+    // Staged records, commands and their span backing live through graph execution.
     struct SortedTransparentView
     {
         std::vector<SortedTransparentRecord> Records;
@@ -2565,9 +2549,7 @@ class RenderServices
         SortedTransparentRunPartition Partition;
         std::vector<DrawCommand> Commands;
         std::vector<std::byte> PcBytes;
-        // Camera snapshot from the build (the drain's GPU key must use the
-        // same values the CPU run metric + overflow order used). CameraPos is
-        // relative to the origin of OriginSector.
+        // Camera snapshot from the build. CameraPos is relative to the origin of OriginSector.
         Mathematics::Vector3 CameraPos{};
         Mathematics::Vector3 CameraForward{};
         Mathematics::Vector3Int OriginSector{};
@@ -2596,21 +2578,6 @@ class RenderServices
         uint64_t CpuDrainCapacityBytes[Rendering::IDevice::kMaxSupportedFramesInFlight]{};
     };
     std::unordered_map<Rendering::ViewId, SortedTransparentView> m_SortedTransparentByView;
-
-    // Sorted transparent drain compute (sorted_transparent_drain.comp), interned
-    // lazily on the first drain declare. The set layout is the six-binding
-    // records/instances/args/counts/indirection/runCounts block.
-    Rendering::ComputePipelineId m_SortedTransparentDrainPipeline{};
-    Rendering::DescriptorSetLayoutDesc m_SortedTransparentDrainLayout{};
-    // Latched only on DEFINITIVE failure (SPIR-V rejected at intern).
-    bool m_SortedTransparentDrainAttempted = false;
-    // Transient package-load failures (hot-reload mid-write) retry on a frame
-    // backoff instead of sticking the drain on the CPU sorter all session.
-    static constexpr uint64_t kSortedTransparentDrainRetryInterval = 512;
-    uint64_t m_SortedTransparentDrainRetryFrame = 0;
-    // Lazily create + intern the drain pipeline; false when the shader package
-    // is unavailable (the drain then uses the CPU-sorted twin at any count).
-    bool EnsureSortedTransparentDrainPipeline();
 
     // Registered draw producer callbacks. Small vectors of (handle, fn) —
     // registration is rare (feature setup) and iteration runs once per view

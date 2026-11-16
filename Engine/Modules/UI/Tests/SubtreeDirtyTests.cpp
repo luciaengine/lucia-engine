@@ -842,7 +842,9 @@ TEST(ProductionPathTests, OrderOverrideReordersYogaChildren)
         << "resetting the order override must restore document order";
 }
 
-// A WeightedPane::SetFlexWeight change reaches Yoga on the next Update.
+// Splitter regression: a WeightedPane::SetFlexWeight change must reach Yoga on
+// the next Update — a weight that never reached the node caused the
+// docked-panel splitter snap-back bug in the Editor.
 TEST(ProductionPathTests, WeightedPaneFlexWeightReachesYoga)
 {
     auto* dev = SharedHeadlessDevice();

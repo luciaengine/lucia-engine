@@ -323,6 +323,9 @@ std::optional<PixelRect> FindText(const std::vector<UI::UIPrimitive>& glyphs, st
     if (expected.empty() || expected.size() > glyphs.size())
         return std::nullopt;
     const auto same = [](float a, float b) { return std::abs(a - b) < 0.05f; };
+    // Glyph pens round to a quarter pixel at their own x (GlyphRunEmitter), so a run drawn at another x
+    // keeps each glyph within one pen phase of the reference layout.
+    const auto samePen = [](float a, float b) { return std::abs(a - b) <= 0.25f + 0.01f; };
     for (std::size_t first = 0; first + expected.size() <= glyphs.size(); ++first)
     {
         const float dx = glyphs[first].X - expected[0].X;
@@ -331,7 +334,7 @@ std::optional<PixelRect> FindText(const std::vector<UI::UIPrimitive>& glyphs, st
         for (std::size_t k = 0; k < expected.size() && match; ++k)
         {
             const UI::UIPrimitive& drawn = glyphs[first + k];
-            match = same(drawn.X, expected[k].X + dx) && same(drawn.Y, expected[k].Y + dy) &&
+            match = samePen(drawn.X, expected[k].X + dx) && same(drawn.Y, expected[k].Y + dy) &&
                     same(drawn.W, expected[k].W) && same(drawn.H, expected[k].H);
         }
         if (!match)

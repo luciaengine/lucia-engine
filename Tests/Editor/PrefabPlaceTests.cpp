@@ -1500,11 +1500,11 @@ TEST_F(PrefabPlaceTests, TheDefaultRowsMarkTheFieldsAnInstanceOverrides)
     context.Entity = lid;
     ASSERT_TRUE(RenderDefaultComponentInspector(context, probeType));
     const UIElement* intensity = FindFieldRow(parent, "Intensity");
-    const UIElement* boxProjection = FindFieldRow(parent, "Box Projection");
+    const UIElement* influenceShape = FindFieldRow(parent, "Influence Shape");
     ASSERT_NE(intensity, nullptr);
-    ASSERT_NE(boxProjection, nullptr);
+    ASSERT_NE(influenceShape, nullptr);
     EXPECT_TRUE(HasOverrideMark(*intensity));
-    EXPECT_FALSE(HasOverrideMark(*boxProjection));
+    EXPECT_FALSE(HasOverrideMark(*influenceShape));
 }
 
 namespace
@@ -2484,7 +2484,7 @@ TEST_F(PrefabPlaceTests, TheRowMenuOfAnOverriddenFieldAppliesItToThePrefabAndEve
     const ECS::ComponentTypeId probeType = ECS::GetComponentTypeId<Components::ReflectionProbe>();
 
     Editor::UndoRedoService undo;
-    EXPECT_TRUE(OverrideMenuOf(world, firstLid, probeType, "BoxProjection", undo).empty()) << "not overridden";
+    EXPECT_TRUE(OverrideMenuOf(world, firstLid, probeType, "InfluenceShape", undo).empty()) << "not overridden";
     EXPECT_TRUE(OverrideMenuOf(world, firstLid, probeType, "", undo).empty()) << "the header has no addition";
     const std::vector<OverrideMenuEntry> menu = OverrideMenuOf(world, firstLid, probeType, "Intensity", undo);
     ASSERT_EQ(LabelsOf(menu), (std::vector<std::string>{"Apply to prefab 'Probe'", "Revert to prefab value"}));

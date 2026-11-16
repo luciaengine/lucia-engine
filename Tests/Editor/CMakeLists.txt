@@ -8,6 +8,8 @@ set(EDITOR_TEST_SOURCES
 	# The per-window dock Mount hold behind MountedViewPanels (header only).
 	MountedViewPanelsTests.cpp
 	CssInspectorIdleTests.cpp
+	# The Ctrl+I card: its two text colors and its color chips from CssInspector.css.
+	CssInspectorCardTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Modules/CssInspector/CssInspector.cpp
 	SceneViewTransformToolTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/MeasureSceneGizmo.cpp
@@ -29,6 +31,8 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/AssistantSessionHandlers.cpp
 	PickRootResolverTests.cpp
 	SceneViewToolStripTests.cpp
+	SceneViewToolOverlayChoiceTests.cpp
+	SceneViewGridPipelineTests.cpp
 	# The tool strip's badge count, laid out over the real editor stylesheets: inside its strip at
 	# every count it can show, in both floating orientations and in the toolbar.
 	SceneViewToolStripBadgeLayoutTests.cpp
@@ -71,6 +75,15 @@ set(EDITOR_TEST_SOURCES
 	EntityDuplicateTests.cpp
 	# The editor's teleport of a live physics body, composed with the entity's sector.
 	PhysicsBodyTeleportTests.cpp
+	# The Hierarchy sprite row preview: atlas-region and frame crops for sprite rows.
+	HierarchySpritePreviewTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/SpritePreview/SpritePreview.cpp
+	# The editor's posted refresh: once per burst, skipped after its owner is destroyed.
+	PostedRefreshTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/PostedRefresh.cpp
+	# The Physics Collider inspector's Physics Material row and its precedence over the inline rows.
+	PhysicsColliderInspectorTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/Physics/PhysicsColliderInspector.cpp
 	SplineNetworkUndoTests.cpp
 	DefaultSceneEntitiesTests.cpp
 	NewSceneSeedTests.cpp
@@ -224,6 +237,10 @@ set(EDITOR_TEST_SOURCES
 	# so the rule an author reads is checkable without a running editor.
 	SubmeshLodProvenanceTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SubmeshLodProvenance.cpp
+	BoneLODTreeProviderTests.cpp
+	ModelBoneLODSectionTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/BoneLOD/BoneLODTreeProvider.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/BoneLOD/ModelBoneLODSection.cpp
 	# The sky's Day of year field: a typed date reads as the day it falls on.
 	DayOfYearTextTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/DayOfYearText.cpp
@@ -451,6 +468,9 @@ set(EDITOR_TEST_SOURCES
 	# (JobSystemStatistics + nlohmann).
 	JobSystemReportTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/JobSystem/JobSystemReport.cpp
+	# get_reflection_probe_state's reply: the retained probes and the digests a recapture check reads.
+	ReflectionProbeDebugHandlersTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/ReflectionProbeDebugHandlers.cpp
 	# get_ai_trace's reply: the fields of a traced agent's decisions on a test world. Leaf TU
 	# (AiTrace + nlohmann).
 	AiTraceReportTests.cpp
@@ -489,6 +509,8 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/WindowCursorLock.cpp
 	# Where the keyboard focus goes at Play and Stop, over a UI and a dock model with no device.
 	PlayModeGameViewFocusTests.cpp
+	EditorPanelDefaultPlacementTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/EditorPanelIds.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/PlayModeGameViewFocus.cpp
 	# The colour picker dialog's own routing: a UI-only chain, plus the
 	# eyedropper's screen-wide pointer grab and the Escape that ends it. Leaf TU
@@ -710,6 +732,7 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Markups/MarkupsPanelRows.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/AssetBoundDockPanel.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewToolStrip.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewGridRenderer.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewToolStripRegistry.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SplineTool/SplineToolMenu.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SplineTool/SplineToolStripEntry.cpp
@@ -1069,6 +1092,9 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyNavigationBar.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/ItemSizeSlider.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/EditorSearchBars.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/SearchBarSettingsPage.cpp
+	SearchBarSettingsTests.cpp
+	PanelSearchBarLookTests.cpp
 	# The terrain panel's material surface: the library's materials as a grid, the channel-role
 	# binding under it, and the picker semantics both terrain material surfaces share. Sits over
 	# the library asset, UndoRedoService and the library inspector's tint encoding — that TU is
@@ -1161,6 +1187,30 @@ set(EDITOR_TEST_SOURCES
 
     SpritePlacementSizeTests.cpp
     TileMapLayerRestoreTests.cpp
+    # 2D tile editing: the edit context, tile set documents, layer edits, source import,
+    # rules, terrain brush and thumbnails.
+    TileMapSourceImportTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileMapSourceImport.cpp
+    TileMapRulesCommandsTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/TileMapRulesCommands.cpp
+    TileMapRulesWindowTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/TileMapRulesWindow.cpp
+    TileMapTerrainBrushTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileMapTerrainBrush.cpp
+    TileMapEditContextTests.cpp
+    TileSetDocumentTests.cpp
+    TileLayerEditsTests.cpp
+    TileMapThumbnailCompositeTests.cpp
+    TileThumbnailHandlerTests.cpp
+    TileMapLayerThumbnailTests.cpp
+    ThumbnailImageOpsTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileMapEditContext.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileSetDocument.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileLayerEdits.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileReplaceEdit.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/TileMap/TileMapEditCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/TileMapThumbnailComposite.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/TileThumbnailHandler.cpp
     EditorTextBlendTests.cpp
     TerrainPickingRayTests.cpp
     ScenePickTerrainInclusionTests.cpp
@@ -1218,6 +1268,9 @@ add_test(NAME AnimationEditingTests COMMAND $<TARGET_FILE:AnimationEditingTests>
 # anonymous namespaces contain duplicate helper names.
 add_executable(HierarchyEnableStateTests
 	HierarchyEnableStateTests.cpp
+	HierarchyRowEyeTests.cpp
+	# The row eye keeps its choice in the editor preferences: a scratch root per process.
+	EditorPreferencesEnvironment.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyEnableState.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRowActivity.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRowEye.cpp
@@ -1232,9 +1285,11 @@ target_include_directories(HierarchyEnableStateTests PRIVATE
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
 	# UIRgTestHarness.h: a headless device for the tree the row test lays out.
 	${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests
+	${CMAKE_SOURCE_DIR}/Tests
 )
 target_link_libraries(HierarchyEnableStateTests PRIVATE
 	Engine
+	EditorSDK
 	SharedHeadlessDeviceTestSupport
 	GTest::gtest
 	GTest::gtest_main
@@ -1849,6 +1904,8 @@ add_executable(SceneViewportTests
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewport/SceneViewportRegistry.cpp
 )
 target_include_directories(SceneViewportTests PRIVATE
+	# TestTempDir.h, which UIRgTestHarness.h includes.
+	${CMAKE_SOURCE_DIR}/Tests
 	${CMAKE_SOURCE_DIR}/Engine/Source
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
@@ -2382,6 +2439,9 @@ if(TARGET EditorTests)
 	ge_stage_test_asset(EditorTests
 	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/InspectorNotice/InspectorNotice.uxml"
 	    "Assets/UI/controls/InspectorNotice/InspectorNotice.uxml")
+	ge_stage_test_asset(EditorTests
+	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/inspectors/BoneLOD/ModelBoneLODSection.uxml"
+	    "Assets/UI/inspectors/BoneLOD/ModelBoneLODSection.uxml")
 
 	# EditorBuildStatus builds its two labels from its layout, read from the same install-assets root.
 	ge_stage_test_asset(EditorTests
@@ -2799,7 +2859,9 @@ if(TARGET Editor)
 	set_tests_properties(EditorProjectOpenTests PROPERTIES LABELS "Editor" TIMEOUT 1900)
 endif()
 
-target_sources(EditorTests PRIVATE ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/ThumbnailImageCache.cpp)
+target_sources(EditorTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/ThumbnailImageCache.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Thumbnails/ThumbnailImageOps.cpp)
 
 add_executable(AtlasRegionThumbnailTests
     AtlasRegionThumbnailTests.cpp
@@ -2820,8 +2882,10 @@ add_executable(RenderSortingEditorTests
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingFields.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingEdit.cpp
+    # The Hierarchy's layer column: its sorting picker and the render layer picker beside it.
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyLayerControls.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/RenderLayers/RenderLayerField.cpp
 )
 target_include_directories(RenderSortingEditorTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Include

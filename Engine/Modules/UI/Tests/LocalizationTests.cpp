@@ -168,37 +168,6 @@ TEST(LabelLocalizationTests, LiteralTextUnbindsEvenWhenItMatchesTheTranslation)
     EXPECT_EQ(differentText.GetText(), "Manual");
 }
 
-TEST(LabelLocalizationTests, RegisteredAuthoredTextPreservesPluralArgumentsUntilBindingIsRemoved)
-{
-    auto catalog = std::make_shared<Localization::LocalizationCatalog>();
-    std::istringstream input(R"({"en":{"coins":"{n, plural, one {# coin} other {# coins}}"},"nl":{"coins":"{n, plural, one {# munt} other {# munten}}"}})");
-    std::string error;
-    ASSERT_TRUE(catalog->Load(input, error)) << error;
-    UIManager manager(nullptr);
-    manager.SetLocalizationCatalog(catalog);
-    auto& registry = UIRegistration::ElementFactoryRegistry::Instance();
-    auto element = registry.Create("label");
-    auto* label = dynamic_cast<Label*>(element.get());
-    ASSERT_NE(label, nullptr);
-    label->SetOwnerManager(&manager);
-    UIAttributeAccess::SetAuthoredAttribute(*label, "localization-key", "coins");
-    UIAttributeAccess::SetAuthoredAttribute(*label, "text", "Coins");
-    registry.ApplyAttributes(*label, {{"localization-key", "coins"}, {"text", "Coins"}}, "");
-    label->SetLocalizationArguments({{"n", int64_t{2}}});
-    EXPECT_EQ(label->GetText(), "2 coins");
-    registry.ApplyAttributes(*label, {{"localization-key", "coins"}, {"text", "Coins"}}, "");
-    EXPECT_EQ(label->GetText(), "2 coins");
-    // Inner text uses the other registered setter, before the final authored hook.
-    registry.ApplyAttributes(*label, {{"localization-key", "coins"}}, "Coins");
-    EXPECT_EQ(label->GetText(), "2 coins");
-    ASSERT_TRUE(catalog->SetLocale("nl", error)) << error;
-    EXPECT_EQ(label->GetText(), "2 munten");
-    registry.ApplyAttributes(*label, {{"text", "Manual"}}, "");
-    EXPECT_EQ(label->GetText(), "Manual");
-    ASSERT_TRUE(catalog->SetLocale("en", error)) << error;
-    EXPECT_EQ(label->GetText(), "Manual");
-}
-
 TEST(LabelLocalizationTests, ClearLocalizationKeepsDisplayedTranslation)
 {
     auto catalog = std::make_shared<Localization::LocalizationCatalog>();

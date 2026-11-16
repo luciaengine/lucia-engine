@@ -1,4 +1,8 @@
 #include "Engine/Rendering/GPUAnimationDataStore.h"
+
+#include "Animation/Compression/AnimationClipData.h"
+
+#include "Animation/BoneEvaluationPlan.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "ECSModules/Rendering/ClipStore.h"
 #include "Assets/AnimationClip.h"
@@ -75,6 +79,8 @@ bool GPUAnimationDataStore::Initialize(GameEngine::Rendering::IDevice* device)
 
 void GPUAnimationDataStore::Shutdown()
 {
+    m_SkelPlanToGPU.Clear();
+    m_ClipIdToGPU.Clear();
     if (!m_Device) return;
     m_InstanceAllocator.Shutdown();
     if (m_SkelHeaderBuf.IsValid()) m_Device->DestroyBuffer(m_SkelHeaderBuf);
@@ -181,20 +187,54 @@ void GPUAnimationDataStore::FlushSkeletonBuffers()
 
 void GPUAnimationDataStore::FlushClipBuffers()
 {
-    if (!m_ClipDirty || !m_Device) return;
+    if (m_ClipDirty && m_Device && UploadClipBuffers(m_ClipHeaders, m_ClipData))
+        m_ClipDirty = false;
+}
 
-    const size_t headerBytes = m_ClipHeaders.size() * sizeof(GPUClipHeader);
-    const size_t dataBytes   = m_ClipData.size() * sizeof(uint32);
-
-    m_ClipHeaderBuf = CreateOrGrowBuffer(m_ClipHeaderBuf, m_ClipHeaderCapacity, headerBytes, "GPUAnimClipHeaders");
-    m_ClipDataBuf   = CreateOrGrowBuffer(m_ClipDataBuf,   m_ClipDataCapacity,   dataBytes,   "GPUAnimClipData");
-
-    if (headerBytes > 0)
-        m_Device->UpdateBuffer(m_ClipHeaderBuf, 0, headerBytes, m_ClipHeaders.data());
-    if (dataBytes > 0)
-        m_Device->UpdateBuffer(m_ClipDataBuf, 0, dataBytes, m_ClipData.data());
-
-    m_ClipDirty = false;
+bool GPUAnimationDataStore::UploadClipBuffers(const std::vector<GPUClipHeader>& headers,
+    const std::vector<uint32>& words)
+{
+    BufferDesc description{};
+    description.usage = static_cast<uint32>(BufferUsage::Storage | BufferUsage::TransferDst);
+    description.memoryUsage = BufferMemoryUsage::Upload;
+    description.flags = BufferCreateFlags::PersistentlyMapped;
+    description.persistent = true;
+    const size_t headerBytes = headers.size() * sizeof(GPUClipHeader);
+    const size_t dataBytes = words.size() * sizeof(uint32);
+    const size_t bindingLimit = m_Device->GetCapabilities().maxStorageBufferBindingSize;
+    if (bindingLimit != 0u && (headerBytes > bindingLimit || dataBytes > bindingLimit))
+        return false;
+    description.size = std::max<size_t>(headerBytes, 16u);
+    description.debugName = "GPUAnimClipHeaders";
+    const auto headerBuffer = m_Device->CreateBuffer(description);
+    description.size = std::max<size_t>(dataBytes, 16u);
+    description.debugName = "GPUAnimClipData";
+    const auto dataBuffer = m_Device->CreateBuffer(description);
+    void* mappedHeaders = headerBuffer.IsValid() ? m_Device->MapBuffer(headerBuffer) : nullptr;
+    void* mappedData = dataBuffer.IsValid() ? m_Device->MapBuffer(dataBuffer) : nullptr;
+    if (!mappedHeaders || !mappedData)
+    {
+        if (mappedHeaders) m_Device->UnmapBuffer(headerBuffer);
+        if (mappedData) m_Device->UnmapBuffer(dataBuffer);
+        if (headerBuffer.IsValid()) m_Device->DestroyBuffer(headerBuffer);
+        if (dataBuffer.IsValid()) m_Device->DestroyBuffer(dataBuffer);
+        return false;
+    }
+    m_Device->UnmapBuffer(headerBuffer);
+    m_Device->UnmapBuffer(dataBuffer);
+    // UpdateBuffer flushes non-coherent allocations and WebGPU shadows.
+    if (headerBytes != 0u) m_Device->UpdateBuffer(headerBuffer, 0u, headerBytes, headers.data());
+    if (dataBytes != 0u) m_Device->UpdateBuffer(dataBuffer, 0u, dataBytes, words.data());
+    const auto previousHeaders = m_ClipHeaderBuf;
+    const auto previousData = m_ClipDataBuf;
+    m_ClipHeaderBuf = headerBuffer;
+    m_ClipDataBuf = dataBuffer;
+    m_ClipHeaderCapacity = std::max<size_t>(headerBytes, 16u);
+    m_ClipDataCapacity = std::max<size_t>(dataBytes, 16u);
+    // The backend retires native allocations after their submitted uses finish.
+    if (previousHeaders.IsValid()) m_Device->DestroyBuffer(previousHeaders);
+    if (previousData.IsValid()) m_Device->DestroyBuffer(previousData);
+    return true;
 }
 
 // ----------------------------------------------------------------
@@ -213,46 +253,66 @@ void GPUAnimationDataStore::InvalidateSkeleton(uint32 skeletonId)
     if (skeletonId == 0)
         return;
     m_SkelIdToGPU.erase(skeletonId);
+    m_SkelPlanToGPU.EraseIf([skeletonId](const auto& key, const auto&) { return key.first == skeletonId; });
 }
 
 void GPUAnimationDataStore::InvalidateAllClips()
 {
-    m_ClipIdToGPU.clear();
+    m_ClipIdToGPU.Clear();
 }
 
-bool GPUAnimationDataStore::FitsKernelLimits(const SkeletonData& skeleton)
+bool GPUAnimationDataStore::FitsKernelLimits(const SkeletonData& skeleton, const Animation::BoneEvaluationPlan* plan)
 {
+    if (plan)
+        return plan->IsForSkeleton(skeleton) && plan->SkinNodes().size() <= kMaxBones &&
+            !plan->SkinLevelOffsets().empty() && plan->SkinLevelOffsets().size() - 1u <= kMaxHierarchyLevels;
     return skeleton.JointClosure.size() <= kMaxBones
         && skeleton.JointClosureLevelCount() <= kMaxHierarchyLevels;
 }
 
-uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
+uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId,
+    const SharedPtr<const Animation::BoneEvaluationPlan>& plan)
 {
-    auto it = m_SkelIdToGPU.find(skeletonId);
-    if (it != m_SkelIdToGPU.end())
-        return it->second;
+    if (!plan)
+    {
+        const auto it = m_SkelIdToGPU.find(skeletonId);
+        if (it != m_SkelIdToGPU.end())
+            return it->second;
+    }
 
     auto& skStore = SkeletonStore::Instance();
     const SkeletonData* skel = skStore.Get(skeletonId);
-    if (!skel || skel->JointClosure.empty() || !FitsKernelLimits(*skel))
+    if (!skel || skel->JointClosure.empty() || (plan && !plan->IsForSkeleton(*skel)))
+        return kNotUploaded;
+    const auto variantKey = std::make_pair(skeletonId, reinterpret_cast<uintptr_t>(plan.get()));
+    if (plan)
+    {
+        if (const auto* variant = m_SkelPlanToGPU.Find(variantKey))
+            return variant->GPUIndex;
+    }
+
+    const std::span<const uint32> evaluatedNodes = plan ? plan->SkinNodes() : std::span<const uint32>(skel->JointClosure);
+    const std::span<const uint32> levelOffsets = plan ? plan->SkinLevelOffsets()
+        : std::span<const uint32>(skel->JointClosureLevelOffsets);
+    const uint32 levelCount = levelOffsets.empty() ? 0u : static_cast<uint32>(levelOffsets.size() - 1u);
+    if (evaluatedNodes.size() > kMaxBones || levelCount > kMaxHierarchyLevels)
         return kNotUploaded;
 
     const uint32 nodes = skel->BoneCount;
-    const uint32 bones = static_cast<uint32>(skel->JointClosure.size());
+    const uint32 bones = static_cast<uint32>(evaluatedNodes.size());
     // Without a joint table (FBX imports often have none), joint j is bone j and the
     // palette has one matrix per bone, as on the CPU path (SkeletonData::PaletteJointCount).
-    const bool synthesizeJoints = !skel->HasJointTable();
     const uint32 joints = skel->PaletteJointCount();
 
-    // The closure bone of each skeleton node; nodes outside the closure have none.
+    // The compact evaluated index of each original node; omitted nodes have none.
     std::vector<uint32> boneOfNode(nodes, kNoBone);
     for (uint32 bone = 0; bone < bones; ++bone)
-        boneOfNode[skel->JointClosure[bone]] = bone;
+        boneOfNode[evaluatedNodes[bone]] = bone;
 
     GPUSkeletonHeader hdr{};
     hdr.boneCount = bones;
     hdr.skinJointCount = joints;
-    hdr.levelCount = skel->JointClosureLevelCount();
+    hdr.levelCount = levelCount;
 
     // Pre-compute meshRootInverse (column-major).
     {
@@ -264,12 +324,11 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     // Pack data in closure order: parents, restTRS, restLocalMat, boneNodes;
     // then per joint: jointBones, inverseBind; then levelOffsets.
 
-    // Parents (int32 as uint32 reinterpret). An ancestor of a closure bone is
-    // itself in the closure, so every parent maps to a bone.
+    // Parents (int32 as uint32 reinterpret). The selection is ancestor-closed.
     hdr.parentsOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 bone = 0; bone < bones; ++bone)
     {
-        const uint32 node = skel->JointClosure[bone];
+        const uint32 node = evaluatedNodes[bone];
         const int32 parentNode = (node < skel->Parent.size()) ? skel->Parent[node] : -1;
         const int32 parent = (parentNode >= 0 && static_cast<uint32>(parentNode) < nodes)
             ? static_cast<int32>(boneOfNode[static_cast<uint32>(parentNode)]) : -1;
@@ -282,16 +341,16 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     hdr.restTRSOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 bone = 0; bone < bones; ++bone)
     {
-        const size_t i = skel->JointClosure[bone];
+        const size_t nodeIndex = evaluatedNodes[bone];
         // Translation (3 floats).
         for (int c = 0; c < 3; ++c)
-            PackFloat(m_SkelData, (i * 3 + c < skel->RestTranslation.size()) ? skel->RestTranslation[i * 3 + c] : 0.0f);
+            PackFloat(m_SkelData, (nodeIndex * 3 + c < skel->RestTranslation.size()) ? skel->RestTranslation[nodeIndex * 3 + c] : 0.0f);
         // Rotation (4 floats: x,y,z,w).
         for (int c = 0; c < 4; ++c)
-            PackFloat(m_SkelData, (i * 4 + c < skel->RestRotation.size()) ? skel->RestRotation[i * 4 + c] : (c == 3 ? 1.0f : 0.0f));
+            PackFloat(m_SkelData, (nodeIndex * 4 + c < skel->RestRotation.size()) ? skel->RestRotation[nodeIndex * 4 + c] : (c == 3 ? 1.0f : 0.0f));
         // Scale (3 floats).
         for (int c = 0; c < 3; ++c)
-            PackFloat(m_SkelData, (i * 3 + c < skel->RestScale.size()) ? skel->RestScale[i * 3 + c] : 1.0f);
+            PackFloat(m_SkelData, (nodeIndex * 3 + c < skel->RestScale.size()) ? skel->RestScale[nodeIndex * 3 + c] : 1.0f);
     }
 
     // Rest local matrices (16 floats per bone, column-major).
@@ -300,15 +359,15 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     {
         for (int c = 0; c < 16; ++c)
         {
-            size_t idx = static_cast<size_t>(skel->JointClosure[bone]) * 16 + c;
-            PackFloat(m_SkelData, (idx < skel->RestLocalMatrix.size()) ? skel->RestLocalMatrix[idx] : ((c % 5 == 0) ? 1.0f : 0.0f));
+            size_t matrixElementIndex = static_cast<size_t>(evaluatedNodes[bone]) * 16 + c;
+            PackFloat(m_SkelData, (matrixElementIndex < skel->RestLocalMatrix.size()) ? skel->RestLocalMatrix[matrixElementIndex] : ((c % 5 == 0) ? 1.0f : 0.0f));
         }
     }
 
     // Skeleton node per bone (uint32): the clip's channel table is per node.
     hdr.boneNodesOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 bone = 0; bone < bones; ++bone)
-        m_SkelData.push_back(skel->JointClosure[bone]);
+        m_SkelData.push_back(evaluatedNodes[bone]);
 
     // Joint nodes, in skin order. When synthesizing the joint mapping
     // (FBX fallback, see above), JointNodes is empty so the lookup falls
@@ -317,17 +376,26 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     for (uint32 j = 0; j < joints; ++j)
         jointNodes[j] = (j < skel->JointNodes.size()) ? skel->JointNodes[j] : j;
 
-    // Bone per joint (uint32), kNoBone for a joint that names no node.
+    // Evaluated ancestor per joint. The correction below restores omitted rest chains.
     hdr.jointBonesOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 j = 0; j < joints; ++j)
-        m_SkelData.push_back((jointNodes[j] < nodes) ? boneOfNode[jointNodes[j]] : kNoBone);
+    {
+        const uint32 node = jointNodes[j];
+        const uint32 evaluatedNode = plan && node < nodes ? plan->EvaluatedAncestors()[node] : node;
+        m_SkelData.push_back(evaluatedNode < nodes ? boneOfNode[evaluatedNode] : kNoBone);
+    }
 
-    // Inverse bind matrices (16 floats per joint, column-major).
+    // Rest-chain times inverse bind (16 floats per joint, column-major).
     hdr.inverseBindOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 j = 0; j < joints; ++j)
     {
         for (int c = 0; c < 16; ++c)
         {
+            if (plan)
+            {
+                PackFloat(m_SkelData, plan->JointCorrections()[j].Data()[c]);
+                continue;
+            }
             size_t idx = static_cast<size_t>(jointNodes[j]) * 16 + c;
             PackFloat(m_SkelData, (idx < skel->InverseBind.size()) ? skel->InverseBind[idx] : ((c % 5 == 0) ? 1.0f : 0.0f));
         }
@@ -335,12 +403,15 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
 
     // Level offsets (uint32, levelCount + 1 entries).
     hdr.levelOffsetsOffset = static_cast<uint32>(m_SkelData.size());
-    for (size_t i = 0; i < skel->JointClosureLevelOffsets.size(); ++i)
-        m_SkelData.push_back(skel->JointClosureLevelOffsets[i]);
+    for (uint32 offset : levelOffsets)
+        m_SkelData.push_back(offset);
 
     const uint32 gpuIndex = static_cast<uint32>(m_SkelHeaders.size());
     m_SkelHeaders.push_back(hdr);
-    m_SkelIdToGPU[skeletonId] = gpuIndex;
+    if (plan)
+        m_SkelPlanToGPU.InsertOrAssign(variantKey, SkeletonVariant{gpuIndex, plan});
+    else
+        m_SkelIdToGPU[skeletonId] = gpuIndex;
     m_SkelDirty = true;
 
     FlushSkeletonBuffers();
@@ -351,142 +422,90 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
 // Clip upload
 // ----------------------------------------------------------------
 
+bool GPUAnimationDataStore::PackClip(const UploadedClip& clip,
+    std::vector<GPUClipHeader>& headers, std::vector<uint32>& words) const
+{
+    std::vector<const Animation::AnimationClipData::Track*> tracks;
+    uint32 boneCount = 0u;
+    for (const auto& track : clip.Data->Tracks())
+    {
+        if (track.Path == AnimPath::MorphWeight)
+            continue;
+        constexpr uint32 kMaximumClipNodes = 1u << 20u;
+        if (track.BoneIndex >= kMaximumClipNodes)
+            return false;
+        tracks.push_back(&track);
+        boneCount = std::max(boneCount, track.BoneIndex + 1u);
+    }
+    // Equal-bone channels keep their authored order, including repeated paths.
+    std::stable_sort(tracks.begin(), tracks.end(), [](const auto* first, const auto* second)
+        { return first->BoneIndex < second->BoneIndex; });
+    const size_t bindingLimit = m_Device->GetCapabilities().maxStorageBufferBindingSize;
+    if (bindingLimit != 0u && static_cast<size_t>(boneCount) * 2u * sizeof(uint32) > bindingLimit)
+        return false;
+    std::vector<uint32> starts(boneCount, 0u);
+    std::vector<uint32> counts(boneCount, 0u);
+    GPUClipHeader header{};
+    header.duration = clip.Duration;
+    header.channelCount = static_cast<uint32>(tracks.size());
+    header.boneCount = boneCount;
+    header.channelDescOffset = static_cast<uint32>(words.size());
+    uint32 keyWords = 0u;
+    for (uint32 index = 0u; index < tracks.size(); ++index)
+    {
+        const auto& track = *tracks[index];
+        if (counts[track.BoneIndex]++ == 0u)
+            starts[track.BoneIndex] = index;
+        words.push_back(track.BoneIndex);
+        words.push_back(static_cast<uint32>(track.Path) |
+            (static_cast<uint32>(track.Interpolation) << 2u) | (track.HasCubic ? 16u : 0u) |
+            (track.WordsPerKey << 8u));
+        words.push_back(keyWords);
+        words.push_back(track.KeyCount);
+        keyWords += track.KeyCount * track.WordsPerKey;
+    }
+    header.boneChannelStartOffset = static_cast<uint32>(words.size());
+    words.insert(words.end(), starts.begin(), starts.end());
+    header.boneChannelCountOffset = static_cast<uint32>(words.size());
+    words.insert(words.end(), counts.begin(), counts.end());
+    header.keyframeDataOffset = static_cast<uint32>(words.size());
+    const auto sourceWords = clip.Data->Words();
+    for (const auto* track : tracks)
+    {
+        const auto keys = sourceWords.subspan(track->WordOffset, static_cast<size_t>(track->KeyCount) * track->WordsPerKey);
+        words.insert(words.end(), keys.begin(), keys.end());
+    }
+    headers[clip.GPUIndex] = header;
+    return true;
+}
+
 uint32 GPUAnimationDataStore::EnsureClipUploaded(uint32 clipIndex)
 {
-    auto it = m_ClipIdToGPU.find(clipIndex);
-    if (it != m_ClipIdToGPU.end())
-        return it->second;
-
-    auto& clipStore = ClipStore::Instance();
-    auto clip = clipStore.Get(clipIndex);
-    if (!clip) return 0;
-
-    const auto& channels = clip->GetChannels();
-    std::vector<AnimChannel> transformChannels;
-    transformChannels.reserve(channels.size());
-    for (const auto& ch : channels)
+    if (!m_Device)
+        return kNotUploaded;
+    const auto clip = ClipStore::Instance().Get(clipIndex);
+    const auto data = clip ? clip->GetRuntimeData() : nullptr;
+    if (!data)
+        return kNotUploaded;
+    const auto* previous = m_ClipIdToGPU.Find(clipIndex);
+    if (previous && previous->Data == data && m_ClipHeaderBuf.IsValid() && m_ClipDataBuf.IsValid())
+        return previous->GPUIndex;
+    const uint32 gpuIndex = previous ? previous->GPUIndex : static_cast<uint32>(m_ClipIdToGPU.Size());
+    auto candidates = m_ClipIdToGPU;
+    candidates.InsertOrAssign(clipIndex, UploadedClip{gpuIndex, data, clip->GetDuration()});
+    std::vector<GPUClipHeader> headers(candidates.Size());
+    std::vector<uint32> words;
+    for (const auto& entry : candidates)
     {
-        if (ch.path == AnimPath::Translation || ch.path == AnimPath::Rotation || ch.path == AnimPath::Scale)
-            transformChannels.push_back(ch);
+        if (!PackClip(entry.second, headers, words))
+            return kNotUploaded;
     }
-
-    // Determine boneCount from channels (max boneIndex + 1).
-    uint32 boneCount = 0;
-    for (const auto& ch : transformChannels)
-        boneCount = std::max(boneCount, ch.boneIndex + 1);
-
-    // Sort channels by boneIndex, then pack per-bone lookup indices.
-    struct ChannelRef { uint32 channelIdx; uint32 boneIndex; };
-    std::vector<ChannelRef> sorted;
-    sorted.reserve(transformChannels.size());
-    for (uint32 i = 0; i < transformChannels.size(); ++i)
-        sorted.push_back({i, transformChannels[i].boneIndex});
-    std::sort(sorted.begin(), sorted.end(), [](const ChannelRef& a, const ChannelRef& b) {
-        return a.boneIndex < b.boneIndex;
-    });
-
-    // Build per-bone channel start/count.
-    std::vector<uint32> boneChannelStart(boneCount, 0);
-    std::vector<uint32> boneChannelCount(boneCount, 0);
-    for (uint32 i = 0; i < sorted.size(); ++i)
-    {
-        uint32 bone = sorted[i].boneIndex;
-        if (bone < boneCount)
-        {
-            if (boneChannelCount[bone] == 0)
-                boneChannelStart[bone] = i;
-            boneChannelCount[bone]++;
-        }
-    }
-
-    GPUClipHeader hdr{};
-    hdr.duration = clip->GetDuration();
-    hdr.channelCount = static_cast<uint32>(transformChannels.size());
-    hdr.boneCount = boneCount;
-
-    // Pack channel descriptors (sorted by bone).
-    hdr.channelDescOffset = static_cast<uint32>(m_ClipData.size());
-    std::vector<uint32> channelKeyframeOffsets(transformChannels.size());
-    uint32 keyframeAccum = 0;
-    for (uint32 si = 0; si < sorted.size(); ++si)
-    {
-        const auto& ch = transformChannels[sorted[si].channelIdx];
-        GPUChannelDesc desc{};
-        desc.boneIndex = ch.boneIndex;
-        uint32 pathBits = 0;
-        if (ch.path == AnimPath::Translation) pathBits = 0;
-        else if (ch.path == AnimPath::Rotation) pathBits = 1;
-        else pathBits = 2; // Scale
-        uint32 interpBits = 0;
-        if (ch.interp == AnimInterp::Step) interpBits = 0;
-        else if (ch.interp == AnimInterp::Linear) interpBits = 1;
-        else interpBits = 2; // CubicSpline
-        desc.pathAndInterp = pathBits | (interpBits << 2);
-        desc.keyframeOffset = keyframeAccum;
-        desc.keyframeCount = static_cast<uint32>(ch.keys.size());
-        channelKeyframeOffsets[sorted[si].channelIdx] = keyframeAccum;
-        keyframeAccum += desc.keyframeCount * 28; // 28 floats per keyframe (padded)
-
-        // Pack as 4 uint32.
-        m_ClipData.push_back(desc.boneIndex);
-        m_ClipData.push_back(desc.pathAndInterp);
-        m_ClipData.push_back(desc.keyframeOffset);
-        m_ClipData.push_back(desc.keyframeCount);
-    }
-
-    // Pack per-bone channel start/count.
-    hdr.boneChannelStartOffset = static_cast<uint32>(m_ClipData.size());
-    for (uint32 b = 0; b < boneCount; ++b)
-        m_ClipData.push_back(boneChannelStart[b]);
-
-    hdr.boneChannelCountOffset = static_cast<uint32>(m_ClipData.size());
-    for (uint32 b = 0; b < boneCount; ++b)
-        m_ClipData.push_back(boneChannelCount[b]);
-
-    // Pack keyframe data (sorted by bone, 28 floats per keyframe).
-    hdr.keyframeDataOffset = static_cast<uint32>(m_ClipData.size());
-    for (uint32 si = 0; si < sorted.size(); ++si)
-    {
-        const auto& ch = transformChannels[sorted[si].channelIdx];
-        for (const auto& key : ch.keys)
-        {
-            PackFloat(m_ClipData, key.time);
-            PackFloat(m_ClipData, key.translation[0]);
-            PackFloat(m_ClipData, key.translation[1]);
-            PackFloat(m_ClipData, key.translation[2]);
-            PackFloat(m_ClipData, key.rotation[0]);
-            PackFloat(m_ClipData, key.rotation[1]);
-            PackFloat(m_ClipData, key.rotation[2]);
-            PackFloat(m_ClipData, key.rotation[3]);
-            PackFloat(m_ClipData, key.scale[0]);
-            PackFloat(m_ClipData, key.scale[1]);
-            PackFloat(m_ClipData, key.scale[2]);
-            PackFloat(m_ClipData, key.inTangent[0]);
-            PackFloat(m_ClipData, key.inTangent[1]);
-            PackFloat(m_ClipData, key.inTangent[2]);
-            PackFloat(m_ClipData, key.inTangent[3]);
-            PackFloat(m_ClipData, key.outTangent[0]);
-            PackFloat(m_ClipData, key.outTangent[1]);
-            PackFloat(m_ClipData, key.outTangent[2]);
-            PackFloat(m_ClipData, key.outTangent[3]);
-            PackFloat(m_ClipData, key.inWeight[0]);
-            PackFloat(m_ClipData, key.inWeight[1]);
-            PackFloat(m_ClipData, key.inWeight[2]);
-            PackFloat(m_ClipData, key.inWeight[3]);
-            PackFloat(m_ClipData, key.outWeight[0]);
-            PackFloat(m_ClipData, key.outWeight[1]);
-            PackFloat(m_ClipData, key.outWeight[2]);
-            PackFloat(m_ClipData, key.outWeight[3]);
-            m_ClipData.push_back(0); // pad to 28 floats (7 x vec4)
-        }
-    }
-
-    const uint32 gpuIndex = static_cast<uint32>(m_ClipHeaders.size());
-    m_ClipHeaders.push_back(hdr);
-    m_ClipIdToGPU[clipIndex] = gpuIndex;
-    m_ClipDirty = true;
-
-    FlushClipBuffers();
+    if (!UploadClipBuffers(headers, words))
+        return kNotUploaded;
+    m_ClipIdToGPU = std::move(candidates);
+    m_ClipHeaders = std::move(headers);
+    m_ClipData = std::move(words);
+    m_ClipDirty = false;
     return gpuIndex;
 }
 

@@ -318,9 +318,9 @@ function(ge_stage_runtime_dependencies target_name)
   # Fresh build-output dirs come before the staged app dir so NEW dependencies
   # resolve to fresh binaries. Note this ordering alone does NOT protect the
   # scan from stale ALREADY-STAGED copies: on Windows the PE scanner probes a
-  # scanned module's own directory before this list, so StageRuntimeDependencies
-  # refreshes staged libraries from these dirs before scanning (see the
-  # pre-refresh pass there for the full failure mode).
+  # scanned module's own directory before this list. StageRuntimeDependencies
+  # stages this host's imports and also scans their fresh source binaries until
+  # the current transitive import closure has been discovered.
   set(_ge_search_dirs
       "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
       "${CMAKE_BINARY_DIR}/lib/$<CONFIG>"
@@ -397,6 +397,10 @@ function(ge_stage_runtime_dependencies target_name)
       OUTPUT "${_ge_script}"
       CONTENT "${_ge_script_content}"
   )
+  set_property(TARGET ${target_name} APPEND PROPERTY LINK_DEPENDS
+      "${_ge_script}"
+      "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDependencies.cmake"
+      "${CMAKE_SOURCE_DIR}/cmake/GeStagedCopy.cmake")
 
   add_custom_command(TARGET ${target_name} POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -P "${_ge_script}"

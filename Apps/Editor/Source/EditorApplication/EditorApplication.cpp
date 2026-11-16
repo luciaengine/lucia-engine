@@ -45,7 +45,6 @@
 #include "Assets/AssetManager.h"
 #include "Assets/AssetPipelineCommands.h"
 #include "Assets/AssetRegistry.h"
-#include "Assets/MeshLODGenerator.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/RenderPipelineAsset.h"
 #include "AssetCore/AssetEvents.h"
@@ -86,6 +85,7 @@
 #include "Editor/Settings/Render/RenderProjectSettings.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Editor/Settings/StartupSettingsPage.h"
+#include "Editor/Settings/AutoLodImportSettings.h"
 #include "Editor/Settings/SvgRasterSettings.h"
 #include "Editor/Settings/SceneViewSettings.h"
 #include "Editor/Settings/TooltipSettings.h"
@@ -152,6 +152,11 @@
 #include "GameView/GameViewRenderCoordinator.h"
 #include "MovieRecorderController.h"
 #include "MovieRecorderToolbarMenu.h"
+#include "Panels/TilePalettePanel.h"
+#include "Panels/TileSetEditorPanel.h"
+#include "Thumbnails/SpriteFramesThumbnailHandler.h"
+#include "Thumbnails/TileThumbnailHandler.h"
+#include "TileMap/TileMapEditorIntegration.h"
 #include "Panels/AssetsPanel.h"
 #include "Panels/TodoPanel.h"
 #include "Panels/BookmarksPanel.h"
@@ -1299,9 +1304,33 @@ static T* FindFirstPanelOfType(const std::vector<std::unique_ptr<UIElement>>& pa
     return nullptr;
 }
 
+void EditorApplication::AttachEditorPluginHost()
+{
+    Editor::EditorHostServices services;
+    services.ChangeNotifications = m_ChangeNotifications.get();
+    services.SelectedEntityIds = [this] {
+        std::vector<uint32_t> ids;
+        if (auto* hierarchy = FindFirstPanelOfType<HierarchyPanel>(m_PanelStorage))
+            for (const auto item : hierarchy->GetSelectionItemIds())
+                ids.push_back(static_cast<uint32_t>(item));
+        return ids;
+    };
+    services.CanWriteScene = [this] { return !m_IsShuttingDown && !IsPlayModeBlockingSceneWrites(); };
+    services.IsModuleAvailable = [this](std::string_view moduleId) {
+        if (!m_Packages)
+            return false;
+        const auto& modules = m_Packages->GetCodeModules();
+        return std::any_of(modules.begin(), modules.end(),
+                           [moduleId](const PackageCodeModule& module) { return module.AssemblyName == moduleId; });
+    };
+    Editor::EditorPluginRegistry::Get().AttachHost(std::move(services));
+}
+
 void EditorApplication::OnPlayModeStateChanged(Editor::PlayModeState state)
 {
     UpdatePlayModeToolbar(state);
+    if (state == Editor::PlayModeState::EnteringPlay || state == Editor::PlayModeState::ExitingPlay)
+        Editor::EditorPluginRegistry::Get().InvalidateScene();
     if (m_PlayModeGameViewFocus)
         m_PlayModeGameViewFocus->OnPlayModeStateChanged(state);
 
@@ -1480,6 +1509,7 @@ EditorApplication::EditorApplication(const ApplicationConfig& config)
     // Core editor services (single-document for now).
     m_UndoRedo = std::make_unique<GameEngine::Editor::UndoRedoService>();
     m_ChangeNotifications = std::make_unique<GameEngine::Editor::EditorChangeNotifications>();
+    AttachEditorPluginHost();
     // The editor's own Scene View tools come first in the tool strip.
     Editor::RegisterBuiltInSceneViewTools();
     m_MarkupBridge = Editor::CreateMarkupEditorBridge(*m_ChangeNotifications,
@@ -1517,6 +1547,7 @@ EditorApplication::EditorApplication(const ApplicationConfig& config)
     // no panel (--scene, MCP open_scene).
     m_SceneEditor->SetSceneScopedGeneratorRelease([this]()
     {
+        Editor::EditorPluginRegistry::Get().InvalidateScene();
         if (auto* world = EngineCore::GetInstance().EnsurePrimaryWorld())
             m_EditorServices.ReleaseSceneScoped(*world);
     });
@@ -2722,6 +2753,12 @@ bool EditorApplication::Initialize()
             auto textureHandler =
                 std::make_unique<TextureThumbnailHandler>(EngineCore::GetInstance().GetJobSystem());
             thumbnailServiceRaw->RegisterHandler(AssetType::Texture, std::move(textureHandler));
+            thumbnailServiceRaw->RegisterHandler(AssetType::SpriteFrames,
+                std::make_unique<SpriteFramesThumbnailHandler>(EngineCore::GetInstance().GetJobSystem(), assetManager));
+            thumbnailServiceRaw->RegisterHandler(
+                AssetType::TileSet, std::make_unique<TileThumbnailHandler>(EngineCore::GetInstance().GetJobSystem(), assetManager));
+            thumbnailServiceRaw->RegisterHandler(
+                AssetType::TileMap, std::make_unique<TileThumbnailHandler>(EngineCore::GetInstance().GetJobSystem(), assetManager));
 
             // Thumbnails should browse project assets, not editor assets.
             m_ThumbnailProvider->SetAssetsRoot(EngineCore::GetInstance().GetAssetManager().GetAssetRoot());
@@ -4333,6 +4370,10 @@ bool EditorApplication::Initialize()
                             if (main && m_PanelManager)
                                 m_PanelManager->ShowOrActivateGraphPanel(main);
                         };
+                        toolbarCb.onTilePaletteClicked = [this, main]() {
+                            if (main && m_PanelManager)
+                                OpenPanel(EditorPanelIds::TilePalette);
+                        };
                         toolbarCb.onBookmarksClicked = [this, main]() {
                             if (main && m_PanelManager) m_PanelManager->ShowOrActivateBookmarksPanel(main);
                         };
@@ -4621,11 +4662,7 @@ bool EditorApplication::Initialize()
                         if (auto* infoBtn = dynamic_cast<Button*>(rootEl->FindById("TopToolbarRight2"_sid)))
                         {
                             infoBtn->SetTooltip("Info");
-                            infoBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&)
-                            {
-                                m_VideoPlayer.Open(m_AssetsDirectory / "Sample" / "logo.mp4",
-                                                   "Open Engine " + Editor::EditorVersionText());
-                            });
+                            infoBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { m_VideoPlayer.OpenIntro(); });
                         }
 
                         m_TopToolbar->ApplyButtonVisibilityFromPrefs(rootEl);
@@ -4824,6 +4861,18 @@ bool EditorApplication::Initialize()
             searchDeps.ResetLayout = [this]() { ResetLayoutToDefault(); };
             m_UniversalSearch = std::make_unique<Editor::UniversalSearchController>();
             m_UniversalSearch->Initialize(searchDeps);
+        }
+        {
+            Editor::TileMapEditorIntegration::Services tileMap{};
+            tileMap.Panels = m_PanelManager.get();
+            tileMap.UndoRedo = m_UndoRedo.get();
+            tileMap.Context = editorCtx;
+            tileMap.Scene = main ? main->scene.get() : nullptr;
+            tileMap.Palette = FindFirstPanelOfType<TilePalettePanel>(m_PanelStorage);
+            tileMap.TileSetEditor = FindFirstPanelOfType<TileSetEditorPanel>(m_PanelStorage);
+            tileMap.UI = main ? main->ui.get() : nullptr;
+            m_TileMapEditor = std::make_unique<Editor::TileMapEditorIntegration>();
+            m_TileMapEditor->Attach(tileMap);
         }
         if (m_EditorToolbar)
             m_EditorToolbar->Refresh();
@@ -5467,17 +5516,7 @@ void EditorApplication::ApplyProjectLodImportPolicy(const std::filesystem::path&
     if (projectRoot.empty())
         return;
 
-    // Push the project's auto-LOD import policy down to the engine import path
-    // (which has no editor dependency). Project-scoped so the whole team gets
-    // uniform import behavior; mirrors the physics-settings-on-open pattern.
-    Editor::SettingsStore projectSettings = Editor::OpenProjectSettings(projectRoot);
-    std::string err;
-    (void)projectSettings.Load(&err);
-    bool autoLODs = true; // default-on for static meshes when the project has no explicit key
-    projectSettings.TryGetBool("import.autoGenerateLODs", autoLODs);
-    GameEngine::LODImportSettings lod = GameEngine::GetLODImportSettings();
-    lod.AutoGenerateOnImport = autoLODs;
-    GameEngine::SetLODImportSettings(lod);
+    Editor::AutoLodImportSettings::ApplySaved(projectRoot);
 }
 
 void EditorApplication::WireNativeScriptingForProject(const std::filesystem::path& projectRoot)
@@ -6120,6 +6159,8 @@ void EditorApplication::Update(float64 deltaTime)
     // Heartbeat for the hang watchdog: reaching here each frame means the
     // message pump (PollEvents, immediately before Update) is being serviced.
     Editor::MainThreadHangWatchdog::NotifyAlive();
+    if (!m_IsShuttingDown)
+        Editor::EditorPluginRegistry::Get().Update();
 
     EditorWindowContext* mainWindow = m_Windows.empty() ? nullptr : m_Windows[0].get();
     m_FramePhaseRecorder.RecordPreviousFrame({
@@ -7908,6 +7949,7 @@ void EditorApplication::OnShutdown()
         m_DebugServer->Stop();
         Editor::SetEditorDebugPort(0);
     }
+    Editor::EditorPluginRegistry::Get().Shutdown();
 
     // Detach runtime input before tearing down subsystems.
     EngineCore::GetInstance().SetRuntimeInput(nullptr);
@@ -8466,7 +8508,7 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
 
         // 8e-7: the pixel-probing replay declares its region readback of the
         // FinalLinear composite NOW (after the UI pass, before Execute);
-        // tickets are stamped by OnFrameSubmittedReadbacksRG below — no
+        // tickets are stamped by NotifyRenderGraphExecution below — no
         // abandon point exists between this seam and Execute.
         if (uiReplayWantsComposite && finalLinear.IsValid() && ctx->ui)
         {
@@ -8510,13 +8552,14 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
                 pool.Wait(counter);
             });
 
+        const uint64_t submittedFramesBefore = frame.SubmittedFrameCount();
         const auto tExec0 = MsNow();
         frame.Execute();
         result.rgExecuteMs = MsBetween(tExec0, MsNow());
         result.rgCompileMs = 0.0; // RenderGraph has no compile phase — declaration IS the build
-        if (auto* rs = MainRenderServices())
-            rs->Spine().OnFrameSubmittedRG(frame, frame.SubmissionToken());
-        Rendering::OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
+        auto* submittedFrameServices = MainRenderServices();
+        Engine::Renderer::NotifyRenderGraphExecution(
+            frame, submittedFramesBefore, submittedFrameServices ? &submittedFrameServices->Spine() : nullptr);
 
         // Phase C RG CSV sidecar (--bench-rg-csv): lazy-open on first frame,
         // then one row per frame. rgCompileMs is 0 in RenderGraph (declaration IS the

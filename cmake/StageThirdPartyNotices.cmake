@@ -180,6 +180,12 @@ _ge_notice_copy(
     "${GE_NOTICES_DEST}/Runevision-Erosion-Filter/ErosionFilter.cpp")
 
 _ge_notice_copy(
+    "${GE_SOURCE_DIR}/Packages/lightmap-baking/Licenses/Godot-MIT.txt"
+    "${GE_NOTICES_DEST}/Godot-Lightmap/LICENSE.txt")
+_ge_notice_copy(
+    "${GE_SOURCE_DIR}/Packages/lightmap-baking/Licenses/NOTICE.txt"
+    "${GE_NOTICES_DEST}/Godot-Lightmap/NOTICE.txt")
+_ge_notice_copy(
     "${GE_SOURCE_DIR}/ThirdParty/BendScreenSpaceShadows/LICENSE.txt"
     "${GE_NOTICES_DEST}/Bend-Screen-Space-Shadows/LICENSE.txt")
 _ge_notice_copy(

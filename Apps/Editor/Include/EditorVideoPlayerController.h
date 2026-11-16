@@ -22,6 +22,8 @@ public:
     // If title is non-empty it overrides the filename-derived header text.
     void Open(const std::filesystem::path& videoPath, const std::string& title = {});
 
+    /// Plays the looping Lucia Engine intro; closing it returns the focus to the toolbar's Info button.
+    void OpenIntro();
     bool IsOpen() const;
     void Close();
 

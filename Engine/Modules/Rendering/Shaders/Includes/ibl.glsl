@@ -83,31 +83,8 @@ layout(set = 0, binding = 43) uniform sampler2D ge_ddgiResolveIrradiance;
 // Global per-frame environment parameters (NOT per-material — the param block
 // and the 8 texture slots are full). The reflected resource name is the instance
 // "Env", so the C++ binder must register this buffer under "Env" (cf. LightUBO/Light).
-layout(set = 0, binding = 21) uniform EnvDataUBO {
-    float iblIntensity;     // linear radiance scale on env-SOURCED radiance only, pre-exposure.
-                            // Folded inside GE_SampleEnvironmentIrradiance/Prefilter — never on
-                            // the GE_EvaluateIBL returns (see the sampler comment below).
-    float prefilterMaxMip;  // = mipCount - 1, the highest valid specular mip INDEX
-    float localBoxProjection;
-    float lowerHemisphereDarkness;
-    vec4 localProbePositionWS;
-    vec4 localBoxCenterWS;
-    vec4 localBoxHalfExtentsWS;
-    vec4 localBoxAxisXWS;
-    vec4 localBoxAxisYWS;
-    vec4 localBoxAxisZWS;
-    vec4 ambientTintSky;      // scene-linear RGB in .rgb (.a unused); white = identity
-    vec4 ambientTintEquator;
-    vec4 ambientTintGround;
-    // Additive authored ambient irradiance FLOOR (AmbientLight component). Scene-linear RGB in
-    // .rgb, ALREADY premultiplied by intensity/203 on the CPU. ambientFloorParams.x is the mode
-    // (0 = off, 1 = flat, 2 = gradient); .y is affectSpecular (0/1). Mode 0 (no component) makes
-    // GE_AmbientFloor return exactly vec3(0), so the diffuse term is byte-identical.
-    vec4 ambientFloorSky;
-    vec4 ambientFloorEquator;
-    vec4 ambientFloorGround;
-    vec4 ambientFloorParams;
-} Env;
+#include "environment_data.glsl"
+#include "local_reflections.glsl"
 
 #if defined(GE_COMPAT_PROFILE)
 // WebGPU counts one sampler per sampled texture per stage, and the IBL trio's
@@ -126,10 +103,6 @@ layout(set = 0, binding = 30) uniform sampler     ge_iblSampler;
 #define ge_irradianceCube samplerCube(ge_irradianceCubeTex, ge_iblSampler)
 #define ge_prefilterCube  samplerCube(ge_prefilterCubeTex, ge_iblSampler)
 #define ge_brdfLUT        sampler2D(ge_brdfLUTTex, ge_iblSampler)
-// The irradiance cube and the BRDF LUT are single-mip, so their taps are
-// GE_TAP_LOD0: explicit LOD 0 under compat, texture() on desktop, the same texel
-// either way. Implicit-derivative sampling is illegal in WGSL after a non-uniform
-// branch, and the cascade shadow filters (PCSS's early-outs) run before the IBL.
 #else
 layout(set = 0, binding = 18) uniform samplerCube ge_irradianceCube;
 layout(set = 0, binding = 19) uniform samplerCube ge_prefilterCube;
@@ -369,11 +342,10 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
     // GTAO bent normal as the diffuse irradiance direction (== N without GTAO):
     // it tilts the hemisphere away from occluders so cavities sample less skylight.
     // Ambient gradient tint: multiply the authored 3-color wash into the diffuse irradiance
-    // only (specular `pref` below is untouched). Blend by the geometric normal N, not the GTAO
-    // bent normal used for the cube sample: the wash is an authored direction-to-colour ramp, so it
-    // must follow where the surface actually faces, not where occluders pushed the sample.
-    // White = identity.
-    vec3  irr     = GE_SampleEnvironmentIrradiance(so.bentNormalWS, so.iblGroundDarkening)
+    // only (specular `pref` below is untouched). Blend by the geometric normal N,
+    // not the GTAO bent normal used for the cube sample. White = identity.
+    vec3  irr     = GE_BlendLocalIrradiance(positionWS, so.bentNormalWS, so.iblGroundDarkening,
+                      GE_SampleEnvironmentIrradiance(so.bentNormalWS, so.iblGroundDarkening))
                   * GE_AmbientGradientTint(N);
 #if defined(GE_DDGI_ENABLED)
     // DDGI REPLACES (not adds to) the flat-cube diffuse sample when a volume
@@ -427,13 +399,14 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
     // Add the authored irradiance floor (AmbientLight) to the DIFFUSE budget only — irr stays the
     // pure sampled env so the sheen ambient below reuses it unchanged. Floor is exactly 0 without an
     // AmbientLight component, so (irr + 0.0) * baseColor == irr * baseColor (byte-identical).
-    vec3  diffuse = (irr + GE_AmbientFloor(N)) * so.baseColor;
+    vec3  diffuse = GE_SurfaceDiffuseIrradiance(irr, GE_AmbientFloor(N)) * so.baseColor;
 
     // Specular split-sum: reconstruct with F0, not the roughness F — the LUT
     // bakes the grazing-angle Fresnel ramp into its bias term.
     float lod      = so.roughness * Env.prefilterMaxMip;        // linear; inverse of the generator mapping
     vec3  prefDir  = GE_LocalReflectionDirection(positionWS, R);
-    vec3  pref     = GE_SampleEnvironmentPrefilter(prefDir, lod, so.iblGroundDarkening);
+    vec3  pref     = GE_BlendLocalPrefilter(positionWS, R, so.roughness, so.iblGroundDarkening,
+                      GE_SampleEnvironmentPrefilter(prefDir, lod, so.iblGroundDarkening));
     // Optional (AmbientLight.AffectSpecular): also fill the primary reflection lobe with the floor as
     // a constant-radiance probe fallback, so it flows through the split-sum / multiscatter / horizon
     // / specular-AO path below. Default-off and floor-0 both leave pref untouched -> byte-identical.
@@ -553,7 +526,8 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
         refrDir = R;
     // Env cube = the always-available background (no-grab variants, thumbnails) AND the
     // screen-edge / foreground-reject fallback for the screen-space path below.
-    vec3  background = GE_SampleEnvironmentPrefilter(refrDir, lod, so.iblGroundDarkening)
+    vec3  background = GE_BlendLocalPrefilter(positionWS, refrDir, so.roughness, so.iblGroundDarkening,
+                          GE_SampleEnvironmentPrefilter(refrDir, lod, so.iblGroundDarkening))
                      * so.transmissionColor;
   #ifdef GE_SCENECOLOR_GRAB
     // The depth prepass peels transmissive (RenderServices ExecuteDepthOnlyPass), so ge_sceneDepth
@@ -564,7 +538,7 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
     // by the view-space front normal, aspect-corrected and scaled by the IOR bend. View +Y is up but
     // the grab's texture V increases downward (negative viewport for Y-up), so the vertical component
     // is negated — same family as shadowUV.y = 1-y and the IBL (1-uv.y) flips.
-    const float kThinRefractionStrength = 0.3;  // authored single-tap bend
+    float kThinRefractionStrength = clamp(so.transmissionRefractionStrength, 0.0, 0.3);
     const float kScreenEdgeFadeMargin   = 0.04; // screen-border fade back to the env cube
     vec2  ssScreenUV = gl_FragCoord.xy * ge_screenSize.zw;
     vec3  ssNv       = mat3(ge_view) * N;
@@ -576,6 +550,17 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
     // The grab is stored at the pre-exposure P; this radiance is absolute until the adapter's output.
     vec3  ssBg       = textureLod(ge_sceneColor, clamp(ssUV, 0.0, 1.0), 0.0).rgb / GE_PreExposure() *
                        so.transmissionColor;
+    // Frosted glass: 4 more taps around the center, 5 equal weights. A zero radius keeps one tap.
+    if (so.transmissionBlur > 0.01)
+    {
+        vec2 blur = ge_screenSize.zw * clamp(so.transmissionBlur, 0.0, 8.0);
+        vec3 blurred = textureLod(ge_sceneColor, clamp(ssUV, 0.0, 1.0), 0.0).rgb;
+        blurred += textureLod(ge_sceneColor, clamp(ssUV + vec2(blur.x, 0.0), 0.0, 1.0), 0.0).rgb;
+        blurred += textureLod(ge_sceneColor, clamp(ssUV - vec2(blur.x, 0.0), 0.0, 1.0), 0.0).rgb;
+        blurred += textureLod(ge_sceneColor, clamp(ssUV + vec2(0.0, blur.y), 0.0, 1.0), 0.0).rgb;
+        blurred += textureLod(ge_sceneColor, clamp(ssUV - vec2(0.0, blur.y), 0.0, 1.0), 0.0).rgb;
+        ssBg = blurred * 0.2 / GE_PreExposure() * so.transmissionColor;
+    }
    #ifdef GE_IBL_TRACKS_GRAB
     // The fraction of the grab that reaches the camera through the glass, per channel.
     vec3  ssThrough  = so.transmissionColor;
@@ -688,7 +673,8 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
 #endif
     float ccLod  = so.clearCoatRoughness * Env.prefilterMaxMip;
     vec3  ccPrefDir = GE_LocalReflectionDirection(positionWS, ccRefl);
-    vec3  ccPref = GE_SampleEnvironmentPrefilter(ccPrefDir, ccLod, so.iblGroundDarkening);
+    vec3  ccPref = GE_BlendLocalPrefilter(positionWS, ccRefl, so.clearCoatRoughness, so.iblGroundDarkening,
+                      GE_SampleEnvironmentPrefilter(ccPrefDir, ccLod, so.iblGroundDarkening));
     vec2  ccAb   = GE_TAP_LOD0(ge_brdfLUT, vec2(ccNdotV, so.clearCoatRoughness)).rg;
     float ccFc   = GE_SchlickFresnel(vec3(GE_DielectricF0Scalar(so.clearCoatIor)), ccNdotV).x * so.clearCoat;
     vec3  ccSpec = ccPref * (GE_DielectricF0Scalar(so.clearCoatIor) * ccAb.x + ccAb.y) * so.clearCoat;

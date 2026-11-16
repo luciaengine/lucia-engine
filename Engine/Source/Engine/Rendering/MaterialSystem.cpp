@@ -1878,6 +1878,7 @@ void MaterialSystem::ResubmitMaterialPipeline(const GUID& guid, Material* mat, c
     // liveness-checks concretes via IsPipelineAlive, so a restored id lazily
     // rebuilds its backend state on the healthy device.
     const Rendering::GraphicsPipelineId lastGoodId = mat->m_GraphicsPipelineId;
+    const Rendering::ShaderCompileTarget lastGoodTarget = mat->m_GraphicsPipelineTarget;
     mat->m_GraphicsPipelineId = {};
     {
         std::lock_guard lock(*mat->m_PerFlagsIdMutex);
@@ -1894,7 +1895,10 @@ void MaterialSystem::ResubmitMaterialPipeline(const GUID& guid, Material* mat, c
         // A synchronous compile may have published since that submit; an id
         // that was valid at entry is the freshest last-good.
         if (lastGoodId.IsValid())
+        {
             it->second.LastGoodPipelineId = lastGoodId;
+            it->second.LastGoodTarget = lastGoodTarget;
+        }
         return;
     }
     SubmitAsyncBaseCompile(guid, *mat, resolved);
@@ -1903,13 +1907,14 @@ void MaterialSystem::ResubmitMaterialPipeline(const GUID& guid, Material* mat, c
         // Async submit accepted — stash the retired id for the publish drain's
         // failed-compile restore.
         it->second.LastGoodPipelineId = lastGoodId;
+        it->second.LastGoodTarget = lastGoodTarget;
     }
     else if (!mat->GetGraphicsPipelineId().IsValid())
     {
         // The submit fell back to the inline compile (headless/tests) and that
         // compile FAILED — restore the retired id here; there is no publish
         // record to restore it from.
-        mat->m_GraphicsPipelineId = lastGoodId;
+        RestoreBasePipeline(*mat, lastGoodId, lastGoodTarget);
     }
 }
 
@@ -2294,6 +2299,7 @@ void MaterialSystem::CompileMaterialPipeline(Material& mat, const MaterialDocume
         return; // meta-apply failed (already logged)
 
     mat.m_GraphicsPipelineId = pipelineId;
+    mat.m_GraphicsPipelineTarget = cacheKey.Target;
     mat.m_ShaderMeta = variant->meta;
     // The packed lanes this program reads, re-laid by name from the same parse
     // the composer used, so the CPU cache and the shader now bound agree on
@@ -2467,11 +2473,13 @@ void MaterialSystem::ApplyPendingPipelinePublishes()
         // a material that vanished, or a stale key) so the GUID can be resubmitted.
         bool redrive = false;
         Rendering::GraphicsPipelineId lastGoodId{};
+        Rendering::ShaderCompileTarget lastGoodTarget{};
         if (const auto it = m_BaseCompileInFlight.find(rec.Guid);
             it != m_BaseCompileInFlight.end())
         {
             redrive = it->second.RedriveAfterPublish;
             lastGoodId = it->second.LastGoodPipelineId;
+            lastGoodTarget = it->second.LastGoodTarget;
             m_BaseCompileInFlight.erase(it);
         }
 
@@ -2491,10 +2499,11 @@ void MaterialSystem::ApplyPendingPipelinePublishes()
                     it != m_BaseCompileInFlight.end())
                 {
                     it->second.LastGoodPipelineId = lastGoodId;
+                    it->second.LastGoodTarget = lastGoodTarget;
                 }
                 else if (!live->GetGraphicsPipelineId().IsValid() && lastGoodId.IsValid())
                 {
-                    live->m_GraphicsPipelineId = lastGoodId;
+                    RestoreBasePipeline(*live, lastGoodId, lastGoodTarget);
                 }
             }
             continue;
@@ -2509,7 +2518,7 @@ void MaterialSystem::ApplyPendingPipelinePublishes()
             if (Material* mat = m_RuntimeMaterialRegistry.Find(rec.Guid);
                 mat && lastGoodId.IsValid() && !mat->GetGraphicsPipelineId().IsValid())
             {
-                mat->m_GraphicsPipelineId = lastGoodId;
+                RestoreBasePipeline(*mat, lastGoodId, lastGoodTarget);
             }
             continue;
         }
@@ -2549,6 +2558,7 @@ void MaterialSystem::ApplyPendingPipelinePublishes()
         // engine runs a single frame spine, and this drain executes in BeginFrame
         // before the parallel record window opens, so no reader overlaps the write.
         mat->m_GraphicsPipelineId = rec.PipelineId;
+        mat->m_GraphicsPipelineTarget = rec.CompiledKey.Target;
         mat->m_ShaderMeta = std::move(rec.Meta);
         // The packed lanes the published program reads, from the key it was
         // compiled against (F1 above proved it is still the material's live key):
@@ -2573,6 +2583,16 @@ void MaterialSystem::ApplyPendingPipelinePublishes()
     }
 }
 
+void MaterialSystem::RestoreBasePipeline(Material& material, Rendering::GraphicsPipelineId pipeline,
+                                         const Rendering::ShaderCompileTarget& target)
+{
+    if (!pipeline.IsValid() || material.m_GraphicsPipelineId.IsValid() ||
+        target != Rendering::CurrentShaderCompileTarget())
+        return;
+    material.m_GraphicsPipelineId = pipeline;
+    material.m_GraphicsPipelineTarget = target;
+}
+
 void MaterialSystem::EnqueueBasePipelinePublishForTesting(
     const GUID& guid, Rendering::GraphicsPipelineId pipelineId,
     std::shared_ptr<Rendering::ShaderMeta> meta, const ShaderCacheKey& compiledKey,
@@ -2580,8 +2600,10 @@ void MaterialSystem::EnqueueBasePipelinePublishForTesting(
 {
     // Mimic a real async submit + worker publish so a test can exercise the drain
     // guards through FlushAsyncMaterialCompiles without a live job system.
+    const Material* material = m_RuntimeMaterialRegistry.Find(guid);
+    const auto lastGoodTarget = material ? material->m_GraphicsPipelineTarget : Rendering::ShaderCompileTarget{};
     m_BaseCompileInFlight.insert_or_assign(
-        guid, BaseCompileState{compiledKey, /*RedriveAfterPublish=*/false, lastGoodPipelineId});
+        guid, BaseCompileState{compiledKey, /*RedriveAfterPublish=*/false, lastGoodPipelineId, lastGoodTarget});
     std::lock_guard<std::mutex> lk(m_PendingPublishMutex);
     m_PendingPipelinePublishes.push_back({guid, pipelineId, std::move(meta), compiledKey});
 }
@@ -2992,6 +3014,7 @@ void MaterialSystem::PrewarmMaterialVariantSet(const Rendering::ShaderVariantKey
     // the source set moves, and a project switch resets it outright. Copying
     // here is what keeps the worker off that mutation.
     const Rendering::MaterialBuildContext buildContext = m_MaterialBuildContext;
+    const Rendering::ShaderCompileTarget target = Rendering::CurrentShaderCompileTarget();
     auto* cache = &m_ShaderCompilationCache;
 
     // The color/world pass keyword set is resolved on the RenderServices side
@@ -3009,7 +3032,7 @@ void MaterialSystem::PrewarmMaterialVariantSet(const Rendering::ShaderVariantKey
     SubmitTrackedPrewarm(TrackLoadWork(
         LoadWork::BaseCompile, materialName, origin,
         [cache, variantKey, spec, alphaMode, ignoresVertexColor, buildContext, materialName, materialAssetPath,
-         colorPassKw, sourceKind, shutdown]() mutable
+         colorPassKw, sourceKind, shutdown, target]() mutable
         {
             using Clock = std::chrono::high_resolution_clock;
             const auto t0 = Clock::now();
@@ -3020,6 +3043,7 @@ void MaterialSystem::PrewarmMaterialVariantSet(const Rendering::ShaderVariantKey
                 if (shutdown->load(std::memory_order_relaxed))
                     return;
                 ShaderCacheKey ck{};
+                ck.Target = target;
                 ck.Source = MakeShaderSourceKey(spec.surfaceShaderPath, spec.vertexModifierPath, materialAssetPath);
                 ck.VariantKey = key;
                 cache->GetOrCompile(ck, spec, buildContext, materialName, materialAssetPath, sourceKind);

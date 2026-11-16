@@ -621,7 +621,7 @@ void AppendRenderableRecords(QueryT& query, std::vector<WorldRenderableRecord>& 
                    const Components::SceneViewHidden* hidden,
                    const Components::SceneViewHiddenInHierarchy* hiddenInHierarchy)
                {
-                   if (meshGpu && meshGpu->hlodEvicted)
+                   if (meshGpu && (meshGpu->hlodEvicted || meshGpu->clusterEvicted))
                    {
                        ++hlodSkipped;
                        return;
@@ -1256,7 +1256,7 @@ RenderExtractionSystem::RenderExtractionSystem(RenderServices* renderServices,
 void RenderExtractionSystem::RequestFullExtractionNextFrame()
 {
     if (m_RenderServices)
-        m_RenderServices->RequestHlodResidencyExtraction();
+        m_RenderServices->RequestResidencyExtraction();
 }
 
 // Out of line to anchor the vtable; ParticleExtraction's destructor releases
@@ -1809,8 +1809,8 @@ bool RenderExtractionSystem::EvaluateFastPathPreconditions(ECS::World& world, ui
     // frees slots directly, but re-adding the winning set is a full-lane Op::Add,
     // so this frame must run the full lane. The request is routed through
     // RenderServices so HLODSelectSystem and this system stay decoupled.
-    if (m_RenderServices && m_RenderServices->ConsumeHlodResidencyExtractionPending())
-        reasons |= kEscalationHlodResidency;
+    if (m_RenderServices && m_RenderServices->ConsumeResidencyExtractionPending())
+        reasons |= kEscalationResidency;
 
     // E7 — material dirtiness digest (D-MAT). Entry-computed; the value is
     // stored as the new compare base only at full-lane end, so a mid-frame
@@ -2215,6 +2215,9 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
                                  m_RenderServices->Materials().GetMaterialDepthClass(matIdx),
                                  IsOrderDependentBlendMaterial(*material), giEmitter,
                                  hidden != nullptr || hiddenInHierarchy != nullptr, worldId);
+        const bool castsShadows =
+            mr->shadowCasting != Components::ShadowCasting::Off && (!hasBounds || lb->CastShadows);
+        rigidCasterRefreshed |= castsShadows && !Rendering::IsSkinned(meshEntry->vertexFlags);
 
         const SkinPaletteOffsets paletteOffsets =
             ResolveSkinPaletteOffsets(skeletonId, hasClipAnimation, runtimeId);

@@ -316,6 +316,12 @@ bool ResolveSurfaceShaderFromGraph(MaterialDocument& doc,
         if (!graphPath.is_absolute())
             graphPath = (materialPath.parent_path() / graphPath).lexically_normal();
 
+        if (!IsShaderGraphSurfacePath(graphPath))
+        {
+            outErrors.push_back("ShaderGraphMaterial: surfaceGraph must reference a GLSL shader graph with @sg tags: '" +
+                                graphPath.generic_string() + "'.");
+            return false;
+        }
         outGraphPath = graphPath;
 
         doc.surfaceShader = std::filesystem::relative(graphPath, materialPath.parent_path()).generic_string();

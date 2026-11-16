@@ -73,6 +73,11 @@ void AppendDropShadowSlider(SettingsCategoryDescriptor& category,
     slider.MaxValue = maxValue;
     slider.Step = step;
     slider.Get = [state, member]() { return (*state).*member; };
+    slider.Preview = [state, member](float value)
+    {
+        (*state).*member = value;
+        ApplyDropShadow(*state);
+    };
     slider.Set = [state, member](float value)
     {
         if ((*state).*member == value)
@@ -96,8 +101,9 @@ void AppendTypeColorRows(SettingsCategoryDescriptor& category, std::string_view 
         return a.DisplayName < b.DisplayName;
     });
 
-    // The page has one header level under its title, so each category run is headed
-    // "<kind> Nodes: <category>".
+    // The registry has one header level below the page title, so each category
+    // run is headed "<kind> Nodes: <category>" rather than nesting categories
+    // under a kind header.
     std::string currentCategory;
     bool first = true;
     for (const NodeTypeMeta& type : types)
@@ -220,6 +226,7 @@ void RegisterGraphSettingsCategory()
         slider.MaxValue = GraphCanvas::kMaxNodeCornerRadius;
         slider.Step = 0.5f;
         slider.Get = []() { return GraphCanvas::GetNodeCornerRadius(); };
+        slider.Preview = [](float value) { GraphCanvas::SetNodeCornerRadius(value); };
         slider.Set = [](float value)
         {
             if (GraphCanvas::GetNodeCornerRadius() == value)

@@ -34,6 +34,7 @@ target_link_libraries(LoggerAsyncTests
         GTest::gtest
         GTest::gtest_main
 )
+target_include_directories(LoggerAsyncTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
 target_include_directories(LoggerAsyncTests
     PRIVATE

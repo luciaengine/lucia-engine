@@ -78,7 +78,7 @@ Toggle* AddToggle(UIElement& parent, const char* id, const char* label, bool val
 bool IsStaticCaster(ECS::World& world, ECS::EntityHandle entity)
 {
     const auto* mesh=world.GetComponent<Components::MeshRenderer>(entity);
-    return mesh && !world.HasComponent<ECS::ComponentDisabled<Components::MeshRenderer>>(entity) && mesh->castShadows && !world.GetComponent<ECS::Disabled>(entity) &&
+    return mesh && !world.HasComponent<ECS::ComponentDisabled<Components::MeshRenderer>>(entity) && mesh->shadowCasting != Components::ShadowCasting::Off && !world.GetComponent<ECS::Disabled>(entity) &&
         !world.GetComponent<Components::SkinnedMeshRenderer>(entity);
 }
 std::string EntityName(ECS::World& world, uint32_t id)
@@ -175,7 +175,7 @@ LightmapBakingPanel::LightmapBakingPanel() : DockPanel("Lighting Bake")
     m_Cancel->SetEnabled(false);
     footer->AddChild(std::move(footerContent));
     AddChild(std::move(footer));
-    m_CustomOccluders->Overrides().Set(Style::Display,DisplayMode::None);
+    m_CustomOccluders->Style().Set(Style::Display,DisplayMode::None);
     m_Bake->SetEnabled(false);
 }
 
@@ -233,7 +233,7 @@ std::string LightmapBakingPanel::MeshNames(const std::vector<uint32_t>& ids) con
 void LightmapBakingPanel::RefreshMeshLabels()
 {
     m_ReceiverLabel->SetText(m_Receivers.empty()?"No receivers. Select meshes or a model in the hierarchy.":MeshNames(m_Receivers));
-    m_CustomOccluders->Overrides().Set(Style::Display,m_AllOccluders->GetValue()?DisplayMode::None:DisplayMode::Flex);
+    m_CustomOccluders->Style().Set(Style::Display,m_AllOccluders->GetValue()?DisplayMode::None:DisplayMode::Flex);
     m_OccluderLabel->SetText(m_AllOccluders->GetValue()?MeshNames(SceneOccluders()):
         (m_Occluders.empty()?"Only receivers cast shadows and bounce light.":MeshNames(m_Occluders)));
 }
@@ -247,7 +247,7 @@ void LightmapBakingPanel::AddSelection(bool receivers)
     std::set<uint32_t> visited;
     std::unordered_map<uint32_t,std::vector<uint32_t>> children;
     world->Query<ECS::Read<Components::Parent>>().Each([&](ECS::EntityHandle entity,const Components::Parent& p) {
-        children[p.parent.id].push_back(entity.id);
+        children[p.Entity.id].push_back(entity.id);
     });
     auto& destination=receivers?m_Receivers:m_Occluders;
     std::set<uint32_t> result(destination.begin(),destination.end());

@@ -62,7 +62,7 @@
 	justify-content: flex-end;
 	min-width: 160px;
 	/* The height every panel search shares (theme/views.css, .panel-search-bar). */
-	height: 24px;
+	height: 22px;
 }
 
 /* The shared .panel-search-bar is pinned absolutely to a side pane's edge (theme/views.css). The

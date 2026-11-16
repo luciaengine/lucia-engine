@@ -180,9 +180,8 @@ TEST_F(VideoFrameUploaderTest, RefusedSlotGrowsSoBothEntitiesStageLater)
 }
 
 // B2. The slot-reuse gate reads a completion token, and an absent token is not
-// evidence of completion. Only VulkanDevice overrides LastGraphicsSubmissionToken();
-// D3D12Device and MetalDevice inherit IDevice's `return {}`, so on those backends no
-// slot ever holds one.
+// evidence of completion. VulkanDevice and MetalDevice override LastSubmissionToken();
+// D3D12Device inherits IDevice's `return {}`, so on that backend no slot ever holds one.
 //
 // Both arms of the rule are pinned here, because a two-valued answer cannot satisfy
 // them at once: an absent token must never read as Complete, AND a slot that has
@@ -201,7 +200,7 @@ TEST_F(VideoFrameUploaderTest, AbsentCompletionTokenIsNotEvidenceOfCompletion)
     // Positive companion: the same device answers Complete for a token it can
     // observe, so the Unknown above is a verdict rather than a dead instrument.
     m_Device->WaitForIdle();
-    const IDevice::GpuSyncToken live = m_Device->LastGraphicsSubmissionToken();
+    const IDevice::GpuSyncToken live = m_Device->LastSubmissionToken(IDevice::QueueType::Graphics);
     if (live.IsValid())
     {
         EXPECT_EQ(m_Device->QueryGpuSyncToken(live), IDevice::GpuSyncStatus::Complete)

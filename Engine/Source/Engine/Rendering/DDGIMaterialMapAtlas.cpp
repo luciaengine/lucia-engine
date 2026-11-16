@@ -4,7 +4,9 @@
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/Device.h"
+#include "Types/Fnv1a.h"
 #include "Types/StringId.h"
 
 #include <algorithm>
@@ -69,19 +71,19 @@ bool EnvFlagEnabled(const char* name)
 
 bool AlbedoMapsEnabled()
 {
-    static const bool enabled = EnvFlagEnabled("GE_DDGI_ALBEDO_MAPS");
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_DDGI_ALBEDO_MAPS", true);
     return enabled;
 }
 
 bool EmissiveMapsEnabled()
 {
-    static const bool enabled = EnvFlagEnabled("GE_DDGI_EMISSIVE_MAPS");
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_DDGI_EMISSIVE_MAPS", true);
     return enabled;
 }
 
 bool MetallicMapsEnabled()
 {
-    static const bool enabled = EnvFlagEnabled("GE_DDGI_METALLIC_MAPS");
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_DDGI_METALLIC_MAPS", true);
     return enabled;
 }
 
@@ -196,11 +198,11 @@ void DDGIMaterialMapAtlas::Refresh()
             records[slot] = record;
         });
 
-    uint64_t hash = kFnvOffsetBasis;
+    uint64_t hash = Hashing::kFnv1a64OffsetBasis;
     for (const Rendering::TextureHandle& source : layerSources)
-        HashBytes(hash, &source.id, sizeof(source.id));
+        hash = Hashing::Fnv1a64(&source.id, sizeof(source.id), hash);
     for (const MaterialRecord& record : records)
-        HashBytes(hash, &record, sizeof(record));
+        hash = Hashing::Fnv1a64(&record, sizeof(record), hash);
 
     // A settled layout still falls through to the re-arm below: the layer set
     // being unchanged says nothing about whether every layer's contents landed.
@@ -239,7 +241,7 @@ void DDGIMaterialMapAtlas::Refresh()
     UploadTable();
     RearmPendingBlits();
 
-    if (const char* v = std::getenv("GE_DDGI_ATLAS_TRACE"); v && v[0] != '\0' && v[0] != '0')
+    if (Platform::EnvironmentSwitchEnabled("GE_DDGI_ATLAS_TRACE", false))
     {
         std::string ids;
         for (size_t i = 0; i < m_LayerSources.size(); ++i)

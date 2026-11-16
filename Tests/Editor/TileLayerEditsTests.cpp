@@ -55,8 +55,10 @@ class TileLayerEditsTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        ASSERT_FALSE(TileMapECS::TileMapRuntimeStore::IsInitialized());
-        TileMapECS::TileMapRuntimeStore::Initialize();
+        // An engine started by an earlier suite owns the store; start it only when it is absent.
+        m_OwnStore = !TileMapECS::TileMapRuntimeStore::IsInitialized();
+        if (m_OwnStore)
+            TileMapECS::TileMapRuntimeStore::Initialize();
         m_Guid = GUID(kMapGuidText);
         m_Path = WriteFixture(::testing::UnitTest::GetInstance()->current_test_info()->name());
         ASSERT_TRUE(Store().LoadMapFromFile(m_Guid, m_Path));
@@ -64,7 +66,8 @@ protected:
 
     void TearDown() override
     {
-        TileMapECS::TileMapRuntimeStore::Shutdown();
+        if (m_OwnStore)
+            TileMapECS::TileMapRuntimeStore::Shutdown();
         std::error_code ec;
         std::filesystem::remove(m_Path, ec);
     }
@@ -73,6 +76,7 @@ protected:
 
     GUID m_Guid;
     std::filesystem::path m_Path;
+    bool m_OwnStore = false;
 };
 } // namespace
 

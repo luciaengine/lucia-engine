@@ -35,6 +35,7 @@ class RenderServices;
 struct EditorContext;
 class INativeContextMenu;
 namespace Platform { class Window; }
+namespace Mathematics { struct Ray3D; }
 class UIElement;
 class Label;
 class SceneCameraSettingsPopup;
@@ -317,6 +318,12 @@ private:
     void ApplyAssetPreviewBackground(const std::string& relOrEngine);
 
     void ClearDropPreviewModel();
+    // Places dropped models, prefabs and lens flares at `worldPos` and records the drop.
+    void PlaceDroppedFiles(ECS::World& world, const std::vector<std::filesystem::path>& paths,
+                           const Mathematics::Vector3& worldPos);
+    // Places the files once the point along `ray` is not on a mesh still being prepared for picking.
+    void QueueDropOnPendingMesh(ECS::World& world, std::vector<std::filesystem::path> paths,
+                                const Mathematics::Ray3D& ray);
     // Spawns a loaded model where a drop aimed: its entities, its exported materials, its
     // place at the end of the hierarchy. Returns the root, or an invalid handle (logged)
     // when the model did not load.

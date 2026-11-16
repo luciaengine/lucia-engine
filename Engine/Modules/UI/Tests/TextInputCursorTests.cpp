@@ -16,6 +16,7 @@
 #include "UI/UIManager.h"
 #include "UI/UIStyle.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -61,7 +62,8 @@ struct CursorFixture
         Ui->SetRoot(std::move(root));
         Ui->SetCursorCallback([this](CursorStyle c) { LastCursor = c; });
 
-        const auto css = std::filesystem::temp_directory_path() /
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_text_cursor"));
+        const auto css = tempDir.Path() /
                          ("ui_text_cursor_" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ".css");
         {
             std::ofstream f(css);

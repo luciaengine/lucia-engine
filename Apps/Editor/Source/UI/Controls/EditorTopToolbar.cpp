@@ -72,6 +72,7 @@ constexpr ToolbarButtonInfo kToolbarButtons[] = {
     {"TopToolbarVram",           "VRAM",                "editor:Icons/hardware-chip.svg"},
     {"TopToolbarRenderGraph",    "Render Graph",        "editor:Icons/pie-chart.svg"},
     {"TopToolbarLog",            "Log",                 "editor:Icons/alert-circle.svg"},
+    {"TopToolbarTilePalette",    "Tile Palette",        "editor:Icons/TilePalette.svg"},
     {"TopToolbarRight2",         "Info",                "editor:Icons/info.svg"},
     {"TopToolbarPanelMenu",      "Panels",              "editor:Icons/menulist.svg"},
 };
@@ -274,6 +275,13 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
     }
 
     // Node Graph button
+    if (auto* button = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarTilePalette))))
+    {
+        button->SetTooltip("Tile Palette");
+        if (cb.onTilePaletteClicked)
+            button->RegisterEventHandler(kEventButtonClick, [fn = cb.onTilePaletteClicked](UIEvent&) { fn(); });
+    }
+
     if (auto* btn = dynamic_cast<Button*>(rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarNodeGraph))))
     {
         btn->SetTooltip("Node Graph");

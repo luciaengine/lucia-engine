@@ -54,6 +54,8 @@
         <DockablePanel id="NodeGraph" type="ShaderGraphPanel" title="Shader Graph" />
         <DockablePanel id="AnimationGraph" type="AnimationGraphPanel" title="Animation Graph" />
         <DockablePanel id="GameLogicGraph" type="GameLogicGraphPanel" title="Game Logic Graph" />
+        <DockablePanel id="TilePalette" type="TilePalettePanel" title="Tile Palette" />
+        <DockablePanel id="TileSetEditor" type="TileSetEditorPanel" title="Tile Set Editor" />
         <DockablePanel id="Build" type="BuildPanel" title="Build" />
         <DockablePanel id="Animation" type="AnimationWindowPanel" title="Animation"
                       layout="panels/AnimationWindowPanel.uxml" style="panels/AnimationWindowPanel.css" />
@@ -82,6 +84,7 @@
               <DockLeafNode active="SceneView">
                 <DockTabNode panel="SceneView" />
                 <DockTabNode panel="GameView" />
+                <DockTabNode panel="Settings" />
               </DockLeafNode>
             </DockSplit>
 

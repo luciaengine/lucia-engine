@@ -32,6 +32,8 @@ class AnimationAssetParser final : public AssetParser
     std::string GetName() const override { return "AnimationAssetParser"; }
     int GetPriority() const override { return 100; }
 
+    bool CookForPackage(const AssetPackageCookContext& context, std::string& error) const override;
+
     // Walk the animation JSON and emit a single AnimationSkeleton edge for
     // its skeleton reference. Field precedence:
     //   1. "skeletonGuid" (explicit GUID)
