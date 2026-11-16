@@ -177,11 +177,11 @@ To edit these fields in the editor, select the `.rendergraph` asset and expand t
 
 | Row | Field | Use |
 |---|---|---|
-| Cascade Resolution | `resolution` | A dropdown of the supported sizes. Each option shows the memory of one cascade. An unsupported value in the file stays selected and shows "not supported". |
+| Resolution | `resolution` | A dropdown of the supported sizes. Each option shows the memory of one cascade. An unsupported value in the file stays selected and shows "not supported". |
 | Cascades | `cascades` | The number of directional cascades, from 1 to 4. |
-| Split Lambda | `splitLambda` | How the cascades divide the shadow distance, from 0 (equal depth) to 1 (more resolution near the camera). |
-| Fit Distance To Scene | `fitShadowDistanceToScene` | Fits the shadow distance to the meshes of the scene. When it is on, the Max Shadow Distance row is hidden. |
-| Max Shadow Distance | `maxShadowDistance` | The distance in meters at which directional shadows end. |
+| Split | `splitLambda` | How the cascades divide the shadow distance, from 0 (equal depth) to 1 (more resolution near the camera). |
+| Fit To Scene | `fitShadowDistanceToScene` | Fits the shadow distance to the meshes of the scene. When it is on, the Distance row is hidden. |
+| Distance | `maxShadowDistance` | The distance in meters at which directional shadows end. |
 
 Each change saves the pipeline file and is one undo step.
 

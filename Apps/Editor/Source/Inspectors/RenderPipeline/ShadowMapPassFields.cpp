@@ -35,7 +35,7 @@ std::string CascadeResolutionLabel(uint32_t resolution)
 {
     const unsigned long long bytes =
         static_cast<unsigned long long>(resolution) * resolution * kCascadeBytesPerTexel;
-    return std::to_string(resolution) + " (" + FormatMebibytes(bytes) + " per cascade)";
+    return std::to_string(resolution) + " (" + FormatMebibytes(bytes) + ")";
 }
 
 std::vector<Dropdown::Option> MakeCascadeResolutionOptions(uint32_t current, int& selectedIndex)
@@ -95,12 +95,12 @@ void AddResolutionRow(UIElement& section, const nlohmann::json& pass, const std:
     const std::vector<Dropdown::Option> options = MakeCascadeResolutionOptions(
         ReadUnsigned(pass, "resolution", ShadowMapNode::kDefaultCascadeResolution), selectedIndex);
     Dropdown* dropdown = InspectorUI::AddDropdownRow(
-        &section, "Cascade Resolution", options, selectedIndex,
-        "Size in texels of each directional shadow cascade. Higher values give sharper shadow edges. "
-        "Memory and render cost increase with the square of the size.");
+        &section, "Resolution", options, selectedIndex,
+        "Size in texels of each directional shadow cascade, with the memory of one cascade. Higher "
+        "values give sharper shadow edges. Memory and render cost increase with the square of the size.");
     dropdown->SetId(idPrefix + "-resolution");
     dropdown->SetOnValueChanged([commit](const std::string& value)
-                                { commit("resolution", static_cast<uint32_t>(std::stoul(value)), "Cascade Resolution"); });
+                                { commit("resolution", static_cast<uint32_t>(std::stoul(value)), "Shadow Resolution"); });
 }
 
 void AddCascadeCountRow(UIElement& section, const nlohmann::json& pass, const std::string& idPrefix,
@@ -121,11 +121,11 @@ void AddSplitLambdaRow(UIElement& section, const nlohmann::json& pass, const std
                        const PipelinePassFieldCommit& commit)
 {
     FloatField* field = InspectorDrag::AddFloatRowWithDrag(
-        &section, "Split Lambda", ReadFloat(pass, "splitLambda", ShadowMapNode::kDefaultSplitLambda),
+        &section, "Split", ReadFloat(pass, "splitLambda", ShadowMapNode::kDefaultSplitLambda),
         [](float) {}, [commit](float value) { commit("splitLambda", SavedFloat(value), "Split Lambda"); },
         ShadowMapNode::kDefaultSplitLambda,
-        "How the cascades divide the shadow distance. 0 gives cascades of equal depth. 1 gives more "
-        "resolution near the camera.",
+        "Split lambda: how the cascades divide the shadow distance. 0 gives cascades of equal depth. 1 "
+        "gives more resolution near the camera.",
         0.0f, 1.0f);
     field->SetId(idPrefix + "-splitLambda");
 }
@@ -135,20 +135,19 @@ void AddDistanceRows(UIElement& section, const nlohmann::json& pass, const std::
 {
     const bool fitToScene = ReadBool(pass, "fitShadowDistanceToScene", false);
     Toggle* toggle = InspectorDrag::AddToggleRow(
-        &section, "Fit Distance To Scene", fitToScene,
-        [commit](bool value) { commit("fitShadowDistanceToScene", value, "Fit Distance To Scene"); },
-        "Fits the shadow distance to the meshes of the scene in each view. When on, Max Shadow Distance "
-        "is not used.");
+        &section, "Fit To Scene", fitToScene,
+        [commit](bool value) { commit("fitShadowDistanceToScene", value, "Fit Shadow Distance To Scene"); },
+        "Fits the shadow distance to the meshes of the scene in each view. When on, Distance is not used.");
     toggle->SetId(idPrefix + "-fitShadowDistanceToScene");
     if (fitToScene)
         return;
 
     FloatField* field = InspectorDrag::AddFloatRowWithDrag(
-        &section, "Max Shadow Distance",
+        &section, "Distance",
         ReadFloat(pass, "maxShadowDistance", ShadowMapNode::kDefaultMaxShadowDistance), [](float) {},
         [commit](float value) { commit("maxShadowDistance", SavedFloat(value), "Max Shadow Distance"); },
         ShadowMapNode::kDefaultMaxShadowDistance,
-        "Distance in meters from the camera at which directional shadows end.", kMinMaxShadowDistance,
+        "Max shadow distance: the distance in meters from the camera at which directional shadows end.", kMinMaxShadowDistance,
         std::numeric_limits<float>::infinity());
     field->SetId(idPrefix + "-maxShadowDistance");
 }
