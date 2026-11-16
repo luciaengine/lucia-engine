@@ -115,6 +115,7 @@ add_executable(EditorThumbnailTests
 target_include_directories(EditorThumbnailTests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../Include
+        ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
 )
 
 target_link_libraries(EditorThumbnailTests
@@ -141,6 +142,7 @@ add_executable(EditorUniversalSearchTests
 target_include_directories(EditorUniversalSearchTests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../Include
+        ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
 )
 
 target_link_libraries(EditorUniversalSearchTests
@@ -185,6 +187,7 @@ target_include_directories(EditorThumbnailRoutingTests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../Include
         ${CMAKE_CURRENT_SOURCE_DIR}/../Source
+        ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
 )
 
 target_link_libraries(EditorThumbnailRoutingTests

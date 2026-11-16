@@ -3229,6 +3229,7 @@ endif()
 		        GTest::gtest GTest::gtest_main)
         target_include_directories(TerrainRenderFeatureTests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/Tests
+            ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
             ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Source
             ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Source
             ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering
