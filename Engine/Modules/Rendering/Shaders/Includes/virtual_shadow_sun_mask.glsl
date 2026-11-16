@@ -17,7 +17,7 @@ uint GE_EncodeVirtualShadowSunMask(bool resolved, float visibility)
 
 #ifdef GE_VIRTUAL_SHADOW_SUN_MASK
 // Written by virtual_shadow_sun_mask.comp from the prepass depth, at the prepass resolution.
-layout(set = 0, binding = 47) uniform usampler2D ge_virtualShadowSunMask;
+layout(set = 0, binding = 66) uniform usampler2D ge_virtualShadowSunMask;
 
 // The sun visibility that the mask pass resolved for this pixel.
 // Returns 1 with the visibility, 0 when no resident page covers the receiver

@@ -36,8 +36,8 @@ struct SunMaskParams
 };
 static_assert(sizeof(SunMaskParams) == 128, "must match VirtualShadowSunMaskParams");
 
-constexpr uint32_t kMaskUsage =
-    static_cast<uint32_t>(Rendering::TextureUsage::UnorderedAccess | Rendering::TextureUsage::ShaderResource);
+constexpr uint32_t kMaskUsage = static_cast<uint32_t>(Rendering::TextureUsage::UnorderedAccess) |
+                                static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
 
 SunMaskParams BuildParams(const VirtualShadowSunMaskRequest& request, uint32_t width, uint32_t height)
 {
