@@ -797,7 +797,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
     }
 
     if (vfr && HasKeyword(passKeywords, MaterialKeyword::VirtualShadowMaps))
-        BindVirtualShadowInputs(frame, vfr->VirtualShadows, resources);
+        BindVirtualShadowInputs(frame, vfr->VirtualShadows, passKeywords, resources);
 
     // ge_sceneColor: the post-opaque scene-colour grab the transmissive pass refracts. Bound
     // only on SceneColorGrab-keyword passes (the dedicated transmissive pass, and only when the
@@ -1975,6 +1975,15 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     passKeywords = ContributeScreenSpaceShadows(
         *this, frame, contactView, m_ScreenSpaceShadows, vfr.ScreenSpaceShadowMask, passKeywords);
     passKeywords = ContributeVirtualShadows(vfr.VirtualShadows, passKeywords);
+    const ViewLetterbox letterbox = m_ViewRegistry.GetViewLetterbox(viewId);
+    // The sun mask resolves the virtual page lookup per prepass receiver, from the depth and the
+    // jittered camera the prepass rasterized with, like the ray-traced mask above.
+    const VirtualShadowSunMaskView sunMaskView{
+        static_cast<uint32_t>(viewId), view->worldId,
+        targets.DepthResolved.IsValid() ? targets.DepthResolved : targets.Depth,
+        cam.Valid() ? cam.Ptr : nullptr, &worldShadowSettings, letterbox,
+        !isRecover && vfr.DepthPrepassDepth.IsValid(), scope == WorldPassDrawScope::TransmissiveOnly};
+    passKeywords = ContributeVirtualShadowSunMask(*this, frame, sunMaskView, vfr.VirtualShadows, passKeywords);
 
     // MaterialKeyword::LodCrossfade is deliberately NOT set here. It is a
     // per-SEGMENT property (BatchDrawRange::Segments) selected by the entity
@@ -2007,7 +2016,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                                   viewportW, viewportH, WorldKeyForView(viewId));
     }
 
-    const ViewLetterbox letterbox = m_ViewRegistry.GetViewLetterbox(viewId);
     // Planar-reflection winding fix: a mirror-matrix view flips triangle winding,
     // so flip the viewport Y to re-invert it (front face stays correct). See
     // SetViewWorldPassFlipY. The sampler flips V to compensate the image flip.
@@ -2104,7 +2112,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             if (vfr.ScreenSpaceShadowMask.IsValid())
                 p.Read(vfr.ScreenSpaceShadowMask, RenderGraph::RGTextureRead::Sampled);
             if (HasKeyword(passKeywords, MaterialKeyword::VirtualShadowMaps))
-                ReadVirtualShadowInputs(p, vfr.VirtualShadows);
+                ReadVirtualShadowInputs(p, vfr.VirtualShadows, passKeywords);
             if (vfr.AreaShadowMap.IsValid())
                 p.Read(vfr.AreaShadowMap, RenderGraph::RGTextureRead::Sampled);
             if (vfr.SpotShadowMap.IsValid())
@@ -2464,7 +2472,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
             if (vfr.ScreenSpaceShadowMask.IsValid())
                 p.Read(vfr.ScreenSpaceShadowMask, RenderGraph::RGTextureRead::Sampled);
             if (HasKeyword(passKeywords, MaterialKeyword::VirtualShadowMaps))
-                ReadVirtualShadowInputs(p, vfr.VirtualShadows);
+                ReadVirtualShadowInputs(p, vfr.VirtualShadows, passKeywords);
             if (vfr.AreaShadowMap.IsValid())
                 p.Read(vfr.AreaShadowMap, RenderGraph::RGTextureRead::Sampled);
             if (vfr.SpotShadowMap.IsValid())

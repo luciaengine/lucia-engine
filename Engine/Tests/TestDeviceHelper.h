@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Platform/Environment.h"
 #include "Rendering/Core/Device.h"
 #include "../../Tests/TestTempDir.h"
 
@@ -10,7 +11,8 @@ inline std::unique_ptr<GameEngine::Rendering::IDevice> CreateVulkanDeviceFast()
 {
     GameEngine::Rendering::DeviceDesc desc{};
     desc.preferredAPI = GameEngine::Rendering::GraphicsAPI::Vulkan;
-    desc.enableDebugLayer = false;
+    // Off by default in every configuration; GE_VK_VALIDATION=1 loads the validation layer.
+    desc.enableDebugLayer = GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_VALIDATION", false);
     desc.enableDynamicRendering = true;
     static const GameEngine::TestUtils::ScopedTempDir kCacheRoot{
         GameEngine::TestUtils::MakeUniqueTempDirectory("ge-render-tests")};

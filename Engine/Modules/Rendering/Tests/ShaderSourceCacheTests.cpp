@@ -12,6 +12,7 @@
 // timestamp check cannot see and the ones that move where a directive resolves.
 #include <gtest/gtest.h>
 
+#include "Rendering/Core/HotReloadIntegration.h"
 #include "Source/Materials/Shader/ShaderIncludeClosure.h"
 #include "Source/Materials/Shader/ShaderSourceCache.h"
 #include "TestTempDir.h"

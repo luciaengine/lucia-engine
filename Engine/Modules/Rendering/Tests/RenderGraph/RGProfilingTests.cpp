@@ -200,8 +200,8 @@ TEST(RGProfiling, MissedCollectionSurfacesAsReadFailures)
         EXPECT_EQ(t.GpuSpanMs, 0.0) << "failed reads must publish zeros, not garbage";
 }
 
-// 512 timestamps per device frame slot ⇒ 256 fully-bracketed passes; everything
-// past the cap degrades to UINT32_MAX indices counted as InvalidQueryIndices.
+// Each backend caps the timestamps of one device frame slot (Vulkan 512, Metal 1024). Every pass
+// past the cap degrades to UINT32_MAX indices counted as InvalidQueryIndices; the passes before it keep theirs.
 TEST(RGProfiling, OverCapPassesDegradeToInvalidIndicesNotCorruption)
 {
     RG_REQUIRE_PROFILING_DEVICE(dev);
@@ -209,7 +209,7 @@ TEST(RGProfiling, OverCapPassesDegradeToInvalidIndicesNotCorruption)
     RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
     frame.SetProfilingEnabled(true);
 
-    constexpr uint32_t kPassCount = 280; // 560 wanted timestamps > 512 cap
+    constexpr uint32_t kPassCount = 600; // 1200 wanted timestamps, more than the Vulkan and Metal caps
     auto bigFrame = [&](uint64_t n)
     {
         frame.BeginFrame(n);
@@ -234,8 +234,16 @@ TEST(RGProfiling, OverCapPassesDegradeToInvalidIndicesNotCorruption)
     const auto timings = frame.LastFrameProfiling().Passes;
     ASSERT_EQ(timings.size(), kPassCount) << "every pass keeps its entry, capped or not";
     EXPECT_EQ(stats.ResolvedPasses + stats.InvalidQueryIndices + stats.ReadFailures, kPassCount);
-    EXPECT_EQ(stats.InvalidQueryIndices, kPassCount - 256u);
-    EXPECT_STREQ(timings[kPassCount - 1].Name, "P279") << "over-cap entries keep their names";
+    uint32_t firstCapped = 0;
+    while (firstCapped < kPassCount && timings[firstCapped].BeginQuery != ~0u && timings[firstCapped].EndQuery != ~0u)
+        ++firstCapped;
+    ASSERT_GT(firstCapped, 0u) << "the passes before the cap keep their queries";
+    ASSERT_LT(firstCapped, kPassCount) << "the frame must exceed the pool's cap";
+    for (uint32_t i = firstCapped; i < kPassCount; ++i)
+        EXPECT_TRUE(timings[i].BeginQuery == ~0u || timings[i].EndQuery == ~0u)
+            << "the capped passes form one tail, pass " << i;
+    EXPECT_EQ(stats.InvalidQueryIndices, kPassCount - firstCapped);
+    EXPECT_STREQ(timings[kPassCount - 1].Name, "P599") << "over-cap entries keep their names";
     EXPECT_EQ(timings[kPassCount - 1].GpuSpanMs, 0.0);
 }
 

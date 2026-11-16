@@ -112,7 +112,7 @@ TEST(HlodMemberGather, GathersEligibleStaticMember) {
     MeshRenderer mr{};
     mr.materialAssetGuid.Set(materialGuid);
     mr.modelAssetGuid.Set(modelGuid);
-    mr.castShadows = true;
+    mr.shadowCasting = ShadowCasting::On;
     e.Set(mr);
     world.ProcessCommands();
 

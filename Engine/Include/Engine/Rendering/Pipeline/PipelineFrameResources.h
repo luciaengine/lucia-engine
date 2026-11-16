@@ -110,6 +110,16 @@ struct PipelineFrameResources
         PreExposedTextures.clear();
     }
 
+    // The view's buffer named `name`, else the frame-scope one; invalid when neither is bound.
+    PipelineBufferBindingRG FindBufferBinding(::GameEngine::Rendering::ViewId viewId, std::string_view name) const
+    {
+        if (const auto it = Buffers.find(Key(viewId, name)); it != Buffers.end())
+            return it->second;
+        if (const auto it = Buffers.find(Key(0, name)); it != Buffers.end())
+            return it->second;
+        return {};
+    }
+
     // Calls fn(nameId, binding) for the frame-scope entries, then for the view's entries: a per-view
     // name shadows a frame-scope one at the binding table's last-add-wins upsert.
     template <class Fn>

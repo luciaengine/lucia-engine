@@ -31,7 +31,9 @@ PagedTerrainRequest PublicationRequest(uint64 identity)
     lattice.TileSamples = 257;
     lattice.TilesX = 1;
     lattice.TilesZ = 1;
-    lattice.Noise = {0.01f, 1.0f, 2u, static_cast<uint32>(identity)};
+    lattice.Noise.TopFrequency = 0.01f;
+    lattice.Noise.Octaves = 2u;
+    lattice.Noise.TopSeed = static_cast<uint32>(identity);
     PagedTerrainRequest request;
     request.Terrain = 3;
     request.TerrainGeneration = 7;
@@ -100,7 +102,7 @@ protected:
         m_Services = std::make_unique<Engine::Renderer::RenderServices>();
         ASSERT_TRUE(m_Services->Initialize(m_Device.get()));
         m_Publication = &m_Services->EnsureFeature<TerrainPageFeature>();
-        m_Pages = std::make_unique<TerrainPages>(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords}, kDesktopSurfacePages);
+        m_Pages = std::make_unique<TerrainPages>(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords}, DesktopSurfacePageProfile());
         m_Pages->Update(1, 1.0f / 60.0f, false, 2);
         ASSERT_TRUE(m_Upload.Initialize("Upload", "{}", nullptr));
         m_Persistent = std::make_unique<Rendering::RenderGraph::RGResourcePool>(m_Device.get());
@@ -330,8 +332,9 @@ TEST_F(TerrainHeightPagePublication, AbandonedUploadRetainsSubmittedTableAndRetr
     const PagedTerrainRequest replacement = PublicationRequest(29);
     LoadPublication(*m_Pages, replacement, 30);
     ASSERT_FALSE(m_Pages->Uploads().empty());
-    uint64 requestedVersion = 0;
-    ASSERT_NE(m_Pages->TableWords(replacement.Terrain, requestedVersion), nullptr);
+    const PackedPageTable* requestedTable = m_Pages->PackedTable(replacement.Terrain);
+    ASSERT_NE(requestedTable, nullptr);
+    const uint64 requestedVersion = requestedTable->Version();
     ASSERT_NE(requestedVersion, committedVersion);
     m_Publication->Publish(*m_Pages);
     m_Frame->BeginFrame(2);

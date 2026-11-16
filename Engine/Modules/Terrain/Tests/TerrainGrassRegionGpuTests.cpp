@@ -23,7 +23,6 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -85,8 +84,6 @@ protected:
         if (!Device->Initialize(desc)) GTEST_SKIP() << "Vulkan unavailable";
         Feature = std::make_unique<TerrainRenderFeature>();
         ASSERT_TRUE(Feature->Initialize(Device.get()));
-        Cache = std::filesystem::temp_directory_path() / ("GrassRegionGpu-" + std::to_string(
-            std::chrono::steady_clock::now().time_since_epoch().count()));
     }
     void TearDown() override
     {
@@ -101,10 +98,6 @@ protected:
             if (Pipeline.IsValid()) Device->DestroyPipeline(Pipeline);
             Device->Shutdown();
         }
-        std::error_code error;
-        if (!Cache.empty() && Cache.parent_path() == std::filesystem::temp_directory_path()
-            && Cache.filename().string().starts_with("GrassRegionGpu-"))
-            std::filesystem::remove_all(Cache, error);
     }
     BufferHandle Buffer(const void* data, size_t size, BufferUsage usage)
     {
@@ -504,8 +497,7 @@ protected:
     // filtered RGBA, decoded as the surface reads it.
     std::vector<std::array<float32, 4>> Sample(TextureHandle texture, const std::vector<std::array<float32, 2>>& uvs)
     {
-        std::filesystem::create_directories(Cache);
-        const auto source = Cache / "color_map_sample.comp";
+        const auto source = Cache.Path() / "color_map_sample.comp";
         std::ofstream(source)
             << "#version 460\n"
                "layout(local_size_x = 1) in;\n"
@@ -515,8 +507,8 @@ protected:
                "void main() { vec2 uv = gSamples.values[gl_GlobalInvocationID.x].xy;\n"
                "  gSamples.values[gl_GlobalInvocationID.x] = textureLod(sampler2D(gMap, gMapSampler), uv, 0.0); }\n";
         ShaderProgramCompileRequest request{};
-        request.baseDirectory = Cache;
-        request.cacheRoot = Cache / "cache";
+        request.baseDirectory = Cache.Path();
+        request.cacheRoot = Cache.Path() / "cache";
         ShaderStageCompileSpec stage{};
         stage.stage = "cs"; stage.sourcePath = "color_map_sample.comp";
         request.stages.push_back(stage);

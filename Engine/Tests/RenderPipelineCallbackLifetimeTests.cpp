@@ -86,7 +86,7 @@ void CheckCallbackRetirement(bool dynamicModule, bool shutdown = false)
             services.EnsureFeature<ObservedFeature>(featureAlive);
         const auto camera = services.Views().AllocateCamera("CallbackCamera");
         const auto view = services.Views().AllocateView("CallbackView", camera);
-        services.Views().SetViewRenderLayerMask(view, 1);
+        services.Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
         services.Views().SetViewTargets(view, 0, 0, 0, ViewClearConfig{});
         const auto registerGeneration = [&](uint64_t generation)
         {
@@ -214,7 +214,7 @@ void CheckStreamRetirement(bool abandonedSameFrame)
         int destroyed = 0, executed = 0;
         const auto camera = services.Views().AllocateCamera("StreamCamera");
         const auto view = services.Views().AllocateView("StreamView", camera);
-        services.Views().SetViewRenderLayerMask(view, 1);
+        services.Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
         services.Views().SetViewTargets(view, 0, 0, 0, ViewClearConfig{});
         ECS::SetActiveRegistrationModule("StreamModule", 1);
         const bool registered = services.Spine().RegisterPipelineNodeType("CallbackProbe", [&]
@@ -369,10 +369,10 @@ public:
     void DeclareForView(ViewDeclare& d) override
     {
         const auto id = d.View.id;
-        d.Services.Views().SetViewRenderLayerMask(id, 2);
+        d.Services.Views().SetViewRenderLayerMask(id, GameEngine::Rendering::RenderLayerMask::FromLayer(1));
         // The declaration keeps the frame's input, even if a utility capture
         // changes or grows the live registry while a node is declaring.
-        EXPECT_EQ(d.View.renderLayerMask, 1u);
+        EXPECT_EQ(d.View.renderLayerMask, GameEngine::Rendering::RenderLayerMask::Default());
         for (int i = 0; i < 128; ++i)
         {
             const auto camera = d.Services.Views().AllocateCamera("UtilityCamera");
@@ -380,7 +380,7 @@ public:
                 ViewPurpose::UtilityCapture, ViewParticipation::OnDemand);
         }
         EXPECT_EQ(d.View.id, id);
-        EXPECT_EQ(d.View.renderLayerMask, 1u);
+        EXPECT_EQ(d.View.renderLayerMask, GameEngine::Rendering::RenderLayerMask::Default());
         ++m_Observed;
     }
 private:
@@ -396,7 +396,7 @@ TEST(RenderPipelineViewLifetime, UtilityViewAllocationKeepsDeclarationSnapshotAl
     ASSERT_TRUE(services.Initialize(device.get()));
     const auto camera = services.Views().AllocateCamera("MainCamera");
     const auto view = services.Views().AllocateView("MainView", camera);
-    services.Views().SetViewRenderLayerMask(view, 1);
+    services.Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
     int observed = 0;
     ASSERT_TRUE(services.Spine().RegisterPipelineNodeType("ViewGrowthProbe", [&]
         { return std::make_unique<ViewGrowthProbeNode>(observed); }, true));

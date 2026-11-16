@@ -265,6 +265,20 @@ const ExtractedLight* SelectLitPrimaryDirectional(std::span<const ExtractedLight
     return primary;
 }
 
+std::optional<Mathematics::Vector3> TowardShadowCastingPrimaryDirectional(
+    std::span<const ExtractedLight> sortedLights)
+{
+    constexpr float kMinLightDirectionLength = 1e-6f;
+    const ExtractedLight* sun = SelectPrimaryDirectional(sortedLights);
+    if (!sun || sun->castsShadows == 0)
+        return std::nullopt;
+    const Mathematics::Vector3 towardLight(-sun->directionWS[0], -sun->directionWS[1], -sun->directionWS[2]);
+    const float length = towardLight.Length();
+    if (!std::isfinite(length) || length <= kMinLightDirectionLength)
+        return std::nullopt;
+    return towardLight / length;
+}
+
 uint32 SelectShadedDirectionals(std::span<const ExtractedLight> sortedLights,
                                 std::array<const ExtractedLight*, kMaxDirectionalLights>& out)
 {
