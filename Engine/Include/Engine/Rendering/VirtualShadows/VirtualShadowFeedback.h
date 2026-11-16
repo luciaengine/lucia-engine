@@ -3,6 +3,7 @@
 #include "Engine/Rendering/VirtualShadows/VirtualShadowPageCache.h"
 #include "Mathematics/Vector3.h"
 #include "Mathematics/Vector3Int.h"
+#include "Mathematics/Vector4.h"
 #include "Mathematics/WorldPosition.h"
 
 #include <array>
@@ -13,6 +14,9 @@ namespace GameEngine::Engine::Renderer
 inline constexpr uint32_t kVirtualShadowMaxSpotProjections = 8;
 inline constexpr uint32_t kVirtualShadowPhysicalTiles = 256;
 inline constexpr uint8_t kVirtualShadowCasterCullingIndex = 0xFBu;
+// The rendered pages of one frame cull into slices [base, base + kVirtualShadowPageRenderBudget).
+inline constexpr uint8_t kVirtualShadowPageCullingIndexBase =
+    static_cast<uint8_t>(kVirtualShadowCasterCullingIndex - kVirtualShadowPageRenderBudget);
 
 bool VirtualShadowFeedbackEnabled();
 
@@ -82,6 +86,12 @@ bool SameVirtualShadowProjection(const VirtualShadowFeedbackProjection& a,
 // The address of a page in this dispatch's bitset (also the page-table index).
 std::optional<uint32_t> FindVirtualShadowFeedbackBit(
     const VirtualShadowFeedbackProjection& projection, const VirtualShadowPage& page);
+
+// The frustum planes (left, right, bottom, top, near, far) of a page raster projection.
+// A caster sphere outside one plane cannot write the page. The sun raster clamps near depth,
+// so a directional page has no near plane.
+std::array<Mathematics::Vector4, 6> VirtualShadowPageCasterPlanes(
+    const Mathematics::Matrix4x4& pageViewProjection, VirtualShadowLight family);
 
 bool VirtualShadowPageTouchedByCasters(const VirtualShadowFeedbackProjection& projection,
                                        const VirtualShadowPage& page,

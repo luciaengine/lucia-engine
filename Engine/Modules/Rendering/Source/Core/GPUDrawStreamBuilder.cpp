@@ -1498,6 +1498,7 @@ void GPUDrawStreamBuilder::BeginArenaFrame()
     m_ArenaCursorCursor    = 0;
     m_ArenaStatsCursor     = 0;
     m_ArenaSkipLogged      = false;
+    m_ReservedAppendedSlices = 0;
     m_TableRingFrameBytes  = 0;
     m_ClassMapUploaded     = false;
     m_ClassMapRingOffset   = 0;
@@ -2493,22 +2494,27 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     // Schedule-time arena guard (design §8-A2/M2): resize BEFORE any recording —
     // the GPU tripwire cannot prevent an out-of-bounds write. Each exhausted
     // dimension requests its own growth.
-    auto arenaExhausted = [&]
+    // The frame's first claim also sizes the shadow slices that later calls append. A tail-free
+    // shadow slice needs one cursor half block and blocksPerSlice record blocks.
+    const bool firstClaim = m_ArenaRecordCursor == 0u && m_ArenaCursorCursor == 0u;
+    const uint32_t reservedRecords = firstClaim ? m_ReservedAppendedSlices * blocksPerSlice * snapshotRecords : 0u;
+    const uint32_t reservedCursors = firstClaim ? m_ReservedAppendedSlices * cursorHalfStride : 0u;
+    auto arenaExhausted = [&](uint32_t extraRecords, uint32_t extraCursors)
     {
-        return m_ArenaRecordCursor + neededRecords > m_RecordCapacity
-               || m_ArenaCursorCursor + neededCursors > m_CursorCapacity
+        return m_ArenaRecordCursor + neededRecords + extraRecords > m_RecordCapacity
+               || m_ArenaCursorCursor + neededCursors + extraCursors > m_CursorCapacity
                || combinedTableBytes > m_TableRingBytes;
     };
-    if (arenaExhausted())
+    if (arenaExhausted(reservedRecords, reservedCursors))
     {
-        if (m_ArenaRecordCursor + neededRecords > m_RecordCapacity)
+        if (m_ArenaRecordCursor + neededRecords + reservedRecords > m_RecordCapacity)
         {
-            const uint32_t need = m_ArenaRecordCursor + neededRecords;
+            const uint32_t need = m_ArenaRecordCursor + neededRecords + reservedRecords;
             m_PendingRecordCapacity = std::max(m_PendingRecordCapacity, need + need / 2u);
         }
-        if (m_ArenaCursorCursor + neededCursors > m_CursorCapacity)
+        if (m_ArenaCursorCursor + neededCursors + reservedCursors > m_CursorCapacity)
         {
-            const uint32_t need = m_ArenaCursorCursor + neededCursors;
+            const uint32_t need = m_ArenaCursorCursor + neededCursors + reservedCursors;
             m_PendingCursorCapacity = std::max(m_PendingCursorCapacity, need + need / 2u);
         }
         if (combinedTableBytes > m_TableRingBytes)
@@ -2537,7 +2543,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         // A mid-frame trip cannot resize (earlier calls this frame hold the
         // current buffers in already-recorded passes), and an allocation failure
         // cannot either: both still skip, loudly, and self-heal next frame.
-        if (arenaExhausted())
+        if (arenaExhausted(0u, 0u))
         {
             if (!m_ArenaSkipLogged)
             {

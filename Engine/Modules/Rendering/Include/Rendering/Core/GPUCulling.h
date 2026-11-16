@@ -197,6 +197,14 @@ class GPUCullingPipeline
     // via (viewId, cascadeIndex) lookups.
     void SubmitCascadeGroup(const CascadeCullingGroup& group);
     void EndFrame();
+    // Dispatches one cascade group after EndFrame, into a visibility buffer the caller owns: for
+    // shadow frustums that exist only after the frame's culling (virtual shadow pages). Slice c
+    // writes 1 or 0 for each candidate at sliceOffsetsElements[c] + index. Every slice takes the
+    // conservative margin. Returns false and declares nothing while the kernel for the group's
+    // slice count is not ready.
+    bool ScheduleCascadeGroupInto(RenderGraph::RGFrame& frame, GPUScene& scene, const CascadeCullingGroup& group,
+                                  RenderGraph::RGBuffer visibility, uint32_t visibilityTotalBytes,
+                                  std::span<const uint32_t> sliceOffsetsElements);
 
     // Phase 6-iii: per-runtime visibility buffer + aggregate pass. The
     // aggregate compute zeros the buffer, then atomic-ORs anyViewVisible[i]
@@ -415,6 +423,7 @@ class GPUCullingPipeline
     // first dispatch of the frame asks for it.
     CullDeformationMargins m_FrameDeformationMargins{};
     const CullDeformationMargins& FrameDeformationMargins(RenderGraph::RGFrame& frame);
+    CullDeformationMargins UploadDeformationMargins(RenderGraph::RGFrame& frame) const;
     uint64_t m_ElisionFrameStamp = 0;     // ticks per BeginFrame (the gate's stamp)
     uint64_t m_VisibilityWriteEpoch = 0;
     bool m_ElidedThisFrame = false;
