@@ -19,6 +19,7 @@ struct MeshClusterLODConfig
     // allocator capacity/RSS, source/prior output, strings or meshoptimizer's allocator.
     uint64 MaximumScratchBytes = 256ull * 1024ull * 1024ull;
     float CoarseRatio = 0.25f;
+    // The simplification error budget, relative to the extents of the whole source mesh.
     float RelativeError = 0.02f;
 };
 

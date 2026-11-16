@@ -299,7 +299,6 @@ void MarkDirty(const InspectorContext& ctx,
                Editor::EditorChangeNotifications::ChangeKind kind = Editor::EditorChangeNotifications::ChangeKind::Commit)
 {
     tree.RuntimeOptionsHash = 0;
-    tree.RuntimeMaterialHash = 0;
     tree.RuntimeMeshHandleId = 0;
     if (ctx.World)
         ctx.World->AddComponentImmediate(ctx.Entity, tree);
@@ -311,7 +310,6 @@ void MarkDirty(const InspectorContext& ctx,
 void WriteDirtyTreeComponent(const InspectorContext& ctx, Components::EZTree& tree)
 {
     tree.RuntimeOptionsHash = 0;
-    tree.RuntimeMaterialHash = 0;
     tree.RuntimeMeshHandleId = 0;
     if (ctx.World)
         ctx.World->AddComponentImmediate(ctx.Entity, tree);
@@ -325,7 +323,6 @@ std::string MakeTreeUndoName(const std::string& label)
 void PreserveCurrentRuntimeState(Components::EZTree& restored, const Components::EZTree& current)
 {
     restored.RuntimeOptionsHash = 0;
-    restored.RuntimeMaterialHash = 0;
     restored.RuntimeMeshHandleId = 0;
     restored.RuntimeBranchMeshHandleId = current.RuntimeBranchMeshHandleId;
     restored.RuntimeLeafMeshHandleId = current.RuntimeLeafMeshHandleId;
@@ -364,7 +361,6 @@ Editor::UndoRedoService::SnapshotTarget MakeTreeSnapshotTarget(const InspectorCo
         else
         {
             restored.RuntimeOptionsHash = 0;
-            restored.RuntimeMaterialHash = 0;
             restored.RuntimeMeshHandleId = 0;
         }
 

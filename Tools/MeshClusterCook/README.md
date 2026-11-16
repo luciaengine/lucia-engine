@@ -34,6 +34,11 @@ project/package asset manifest first. The tool does not scan or rewrite identiti
 directory. Unsupported topology, animation, vertex streams, materials or resource
 limits produce a refusal.
 
+Fine pages are compressed without loss: each page holds its vertices and its
+indices in the meshoptimizer codecs, about 30 % of the raw size for a dense
+model. The streaming worker decodes and validates a page in about 0.1 ms. A page that
+does not decode is refused, and its coarse range keeps drawing.
+
 Keep the generated model and its sibling `.cluster` directory together when
 moving authoring data. Package cooking gathers the fine store under the packaged
 asset root and retains texture dependency edges. Missing fine pages still permit
@@ -69,6 +74,22 @@ until restart. Skinning, morphing, custom vertex/surface programs, transmission,
 blend materials and sector-tagged instances use coarse geometry. CPU picking
 uses the coarse model. Re-cooking a different cluster incarnation requires a
 restart; live replacement of its fine directory is refused.
+
+### Triangle budget
+
+A game can cap the triangles that all cluster instances of the world draw:
+
+```cpp
+renderServices.EnsureFeature<GameEngine::Engine::Renderer::ClusterLODFeature>().SetTriangleBudget(2'000'000);
+```
+
+Set `GE_CLUSTER_LOD_TRIANGLE_BUDGET=<triangles>` to set the same cap at startup without code.
+The cap is off by default (0). The pixel error budget stays the floor: a group refines only
+when its projected error is above that budget. Under the cap, groups refine in order of
+largest projected error first, until the next group does not fit. Every instance counts its
+coarse triangles first, so a cap below the coarse total refines nothing. Forced LOD 0 and LOD
+selection off ignore the cap. Any mix of coarse and fine groups is crack-free, because the
+cook locks every border that groups share.
 
 Fine storage owns at most 32 MiB of GPU buffer capacity, including unused and
 retiring ranges. At most four reads remain in flight; each preparation admits at most two fine pages.
