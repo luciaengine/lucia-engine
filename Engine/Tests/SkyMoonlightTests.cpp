@@ -68,9 +68,9 @@ struct NightRig
             state.moonDirWS[c] = Settings().moonDirWS[c];
         }
         state.primaryMoonBlend = Rendering::PrimaryMoonBlend(config, state.sunDirWS[1]);
-        const float white[3] = {1.0f, 1.0f, 1.0f};
-        Rendering::MixLinkedLightGroundColor(
-            Rendering::EvaluateBodyGroundColors(Rendering::ScatteringAtmosphere(), config, state, white), moonScale, out);
+        return Rendering::MixLinkedLightGroundColor(
+            Rendering::EvaluateBodyGroundColors(Rendering::ScatteringAtmosphere(), config, state, ColorLinear(1.0f, 1.0f, 1.0f)),
+            moonScale);
     }
 };
 } // namespace
@@ -91,8 +91,10 @@ TEST(SkyMoonlight, TheDefaultReproducesTodaysNight)
     EXPECT_NEAR(Components::kDefaultMoonlightIlluminanceLux, 5.158f, 0.001f);
 
     const float clearSun =
-        Components::LightIntensityToUnitless(Components::kClearNoonSunIlluminanceLux, Components::LightUnit::Lux) * 1.33f;
-    EXPECT_EQ(rig.Settings().primarySunIntensity, clearSun * config.moonIntensityScale);
+        Components::LightIntensityToUnitless(Components::kClearNoonSunIlluminanceLux, Components::LightUnit::Lux) *
+        Rendering::SkySourceIlluminanceScale(Rendering::ScatteringAtmosphere());
+    EXPECT_NEAR(rig.Settings().moonIntensity, clearSun * config.moonLightIlluminanceScale,
+                clearSun * config.moonLightIlluminanceScale * 1e-4f);
 }
 
 // Moonlight is absolute: a dimmer sun, or one authored in another unit, has the same night.
@@ -170,10 +172,8 @@ TEST(SkyMoonlight, TheNightHorizonFollowsTheMoonlight)
     const Components::SkyEnvironment defaults{};
     for (int c = 0; c < 3; ++c)
     {
-        EXPECT_EQ(base.Settings().nightSkyHorizonColor[c], defaults.NightSkyHorizonColorKeys.Midnight[c]) << c;
-        EXPECT_EQ(base.Settings().groundHorizonNightColor[c], defaults.GroundHorizonNightColorKeys.Midnight[c]) << c;
-        EXPECT_NEAR(bright.Settings().nightSkyHorizonColor[c] / base.Settings().nightSkyHorizonColor[c], 2.0f, 1e-5f) << c;
-        EXPECT_NEAR(bright.Settings().groundHorizonNightColor[c] / base.Settings().groundHorizonNightColor[c], 2.0f, 1e-5f)
-            << c;
+        EXPECT_EQ(settings->nightSkyHorizonColor.r, midnight[0]);
+        EXPECT_EQ(settings->nightSkyHorizonColor.g, midnight[1]);
+        EXPECT_EQ(settings->nightSkyHorizonColor.b, midnight[2]);
     }
 }

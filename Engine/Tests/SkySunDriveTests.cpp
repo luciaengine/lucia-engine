@@ -94,9 +94,8 @@ Math::Curve FlatCurve(float lux)
 
 float GroundLuminance(const float source[3], float upDot)
 {
-    float ground[3];
-    Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), source, upDot, ground);
-    return ColorUtils::LinearRec709Luminance(ground);
+    return ColorUtils::LinearRec709Luminance(
+        Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), source, upDot));
 }
 
 // The wave of the execution plan the system named `systemName` runs in, or -1 when it is not in the plan.
@@ -166,11 +165,9 @@ TEST(SkySunDrive, TheCurveSetsTheIntensityInTheLightsUnitAndTheColourIsHueOnly)
             << "hour " << hours;
 
         const Components::Light light = lux.Light();
-        EXPECT_NEAR(ColorUtils::LinearRec709Luminance(light.Color), 1.0f, 1e-6f) << "hour " << hours;
-        const float white[3] = {1.0f, 1.0f, 1.0f};
-        float ground[3];
-        Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), white,
-                                               lux.Settings().scatteringSunDir[1], ground);
+        EXPECT_NEAR(ColorUtils::LinearRec709Luminance({light.Color[0], light.Color[1], light.Color[2]}), 1.0f, 1e-6f) << "hour " << hours;
+        const ColorLinear ground = Rendering::EvaluateGroundLevelSunColor(
+            Rendering::ScatteringAtmosphere(), ColorLinear(1.0f, 1.0f, 1.0f), lux.Settings().scatteringSunDir[1]);
         const float groundLuminance = ColorUtils::LinearRec709Luminance(ground);
         for (int c = 0; c < 3; ++c)
             EXPECT_NEAR(light.Color[c], ground[c] / groundLuminance, 1e-5f) << "hour " << hours << ", channel " << c;

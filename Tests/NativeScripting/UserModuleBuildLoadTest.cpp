@@ -290,8 +290,7 @@ TEST(NativeUserModuleBuildLoad, ScansAndRegistersInheritedComponent)
     // `#include "Components/X.h"` the user DLL (which has only SourceDir on its include path)
     // could not resolve. User-mode include roots must be relative to SourceDir.
     ns::NativeBuildConfig config = MakeBaseConfig(kv, root, "Components");
-    config.DotnetExe = kv.at("dotnet");
-    config.ComponentScannerDll = kv.at("scannerdll");
+    config.ComponentScannerExe = kv.at("scanner");
     config.DetectBase = "ComponentBase";
     const fs::path sourceDir = config.SourceDir;
     std::error_code ec;

@@ -80,10 +80,19 @@ protected:
         UILayoutAccess::SetLastLayoutRect(*Panel, 0, 0, 600, 400);
         UILayoutAccess::SetLastLayoutRect(*Viewport, 100, 50, 400, 200);
         GameViewPanelTestAccess::BindViewport(*Panel);
-        Panel->SetPointerCallback([this](bool over, float x, float y, bool down, int mods) {
-            GameUIHost::PointerState pointer{x * 800, y * 400, down, mods};
-            Host.UpdatePointer(over ? &pointer : nullptr);
-        });
+        // The editor's wiring (GameViewController): moves and button edges reach the host's
+        // event entries, and leaving the view cancels without waiting for a release.
+        Panel->SetPointerCallbacks(
+            [this](bool over, float x, float y, int mods) {
+                if (!over)
+                {
+                    Host.CancelPointer(GameUIHost::PrimaryButtonState::Released);
+                    return;
+                }
+                Host.GetUIManager()->ReconcileModifierKeys(mods);
+                Host.OnMouseMove({x * 800, y * 400});
+            },
+            [this](int button, bool pressed, int mods) { Host.OnMouseButton(button, pressed, mods); });
         Panel->RegisterEventHandler(kEventMouseDown, [this](auto&) { ++AncestorPresses; });
     }
 
@@ -404,7 +413,7 @@ TEST_F(GameViewPointerDeliveryTests, ReconcileReresolvesTheViewportAndLayoutPass
 TEST_F(GameViewPointerDeliveryTests, ReconcileKeepingTheViewportDoesNotWireItTwice)
 {
     int forwards = 0;
-    Panel->SetPointerCallback([&](bool, float, float, bool, int) { ++forwards; });
+    Panel->SetPointerCallbacks([&](bool, float, float, int) { ++forwards; }, {});
     Editor.GetDispatcher()->Drain();
 
     AnnounceReconcile();
@@ -419,15 +428,48 @@ TEST_F(GameViewPointerDeliveryTests, RebindingSinkCancelsOldHostAndDoesNotReplay
     Press();
     ASSERT_TRUE(Target->HasClass("pressed")) << "nothing reached the old host, so the rebind proves nothing";
     int newHostEdges = 0;
-    Panel->SetPointerCallback([&](bool over, float, float, bool, int) {
-        if (over)
-            ++newHostEdges;
-    });
+    Panel->SetPointerCallbacks([](bool, float, float, int) {}, [&](int, bool, int) { ++newHostEdges; });
     Editor.GetDispatcher()->Drain();
     EXPECT_FALSE(Target->HasClass("pressed"));
     EXPECT_EQ(Clicks, 0);
-    EXPECT_EQ(newHostEdges, 0);
-    Panel->SetPointerCallback({});
+    EXPECT_EQ(newHostEdges, 0) << "the new sink received a button edge queued for the old one";
+    Panel->SetPointerCallbacks({}, {});
+    Editor.GetDispatcher()->Drain();
+}
+
+TEST_F(GameViewPointerDeliveryTests, RightPressReachesTheHudWithButtonOne)
+{
+    int button = -1;
+    Target->RegisterEventHandler(kEventMouseDown, [&button](UIEvent& e) { button = e.Button; });
+
+    Editor.OnMouseMove(225, 120);
+    Editor.OnMouseButton(Input::kMouseButton_Right, true);
+    Editor.GetDispatcher()->Drain();
+
+    EXPECT_EQ(button, Input::kMouseButton_Right) << "a right-press reached the HUD as button " << button;
+}
+
+TEST_F(GameViewPointerDeliveryTests, LeftPressIsDeliveredExactlyOnce)
+{
+    int presses = 0;
+    Target->RegisterEventHandler(kEventMouseDown, [&presses](UIEvent&) { ++presses; });
+
+    Editor.OnMouseMove(225, 120);
+    Editor.OnMouseButton(0, true);
+    Editor.GetDispatcher()->Drain();
+
+    EXPECT_EQ(presses, 1) << "position and button paths both synthesized a press";
+}
+
+TEST_F(GameViewPointerDeliveryTests, RightPressDraggedOutOfTheViewDoesNotEatTheNextClick)
+{
+    Editor.OnMouseMove(225, 120);
+    Editor.OnMouseButton(Input::kMouseButton_Right, true);
+    // The pointer leaves the viewport with the button held and is released outside it,
+    // so the game UI never receives the release.
+    Send(kEventMouseLeave);
+    Editor.OnMouseMove(50, 20);
+    Editor.OnMouseButton(Input::kMouseButton_Right, false);
     Editor.GetDispatcher()->Drain();
 }
 }
