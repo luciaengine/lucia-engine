@@ -142,13 +142,13 @@ TEST(SceneViewExposureHint, WithoutAReadingItComparesTheSettings)
     EXPECT_EQ(DecideOnce(framingGap, Message::Brighter), Message::None);
 }
 
-// A Scene View and a camera at their own defaults count as matched: they differ only in what each ships
-// with (the meter and the ceiling), so without a reading no notice shows.
+// A Scene View and a camera at their own defaults are matched: both ship fixed exposure with the same
+// settings, so without a reading no notice shows.
 TEST(SceneViewExposureHint, AStockPairCountsAsMatched)
 {
     const SceneViewSettings::Exposure stockView;
     const Components::Camera stockCamera{};
-    EXPECT_EQ(SceneViewExposureHintOverlay::CompareSettings(stockView, stockCamera), SettingsMatch::Defaults);
+    EXPECT_EQ(SceneViewExposureHintOverlay::CompareSettings(stockView, stockCamera), SettingsMatch::Same);
     EXPECT_EQ(WithoutAReading(stockView, stockCamera), Message::None) << "the stock pair showed the settings sentence";
 }
 

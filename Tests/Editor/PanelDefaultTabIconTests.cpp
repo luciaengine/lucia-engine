@@ -171,18 +171,23 @@ struct ClassInfo {
     bool declaresOverride = false;
 };
 
-// Scans every panel header once. A class's region runs from its `class X` line to
-// the next top-level `class ` in the same header, which is how these headers are
+// Scans every header under Include/Panels, Include/SceneView and Include/ShaderGraph once. A class's region runs
+// from its `class X` line to the next top-level `class ` in the same header, which is how these headers are
 // laid out (one panel per header, plus small derived panels appended).
 std::map<std::string, ClassInfo> ScanPanelHeaders()
 {
     std::map<std::string, ClassInfo> out;
-    const std::filesystem::path dir = EditorSourceRoot() / "Include" / "Panels";
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir))
+    std::vector<std::filesystem::path> headers;
+    for (const char* folder : {"Panels", "SceneView", "ShaderGraph"})
     {
-        if (entry.path().extension() != ".h")
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(EditorSourceRoot() / "Include" / folder))
+            headers.push_back(entry.path());
+    }
+    for (const std::filesystem::path& header : headers)
+    {
+        if (header.extension() != ".h")
             continue;
-        const std::string text = ReadFile(entry.path());
+        const std::string text = ReadFile(header);
 
         std::vector<std::pair<size_t, std::string>> classes;
         size_t pos = 0;
