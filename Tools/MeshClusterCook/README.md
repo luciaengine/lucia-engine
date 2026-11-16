@@ -51,8 +51,9 @@ asset IO service; pending or failed reads keep the complete coarse cover.
 The prototype supports one cluster world, static opaque standard-PBR materials,
 and ordinary raster views. It checks every active view and freezes selection
 before extraction. Non-cluster preview worlds can share the renderer. Enabling
-GI, reflection capture, HLOD or a second cluster world returns to coarse mode
-until restart. Destroying or clearing the cluster world also selects coarse mode
+GI, reflection capture or a second cluster world returns to coarse mode
+until restart. HLOD runs beside cluster LOD: a member that HLOD replaces with its
+cluster proxy keeps its coarse cover, and its fine page retires. Destroying or clearing the cluster world also selects coarse mode
 until restart. Skinning, morphing, custom vertex/surface programs, transmission,
 blend materials and sector-tagged instances use coarse geometry. CPU picking
 uses the coarse model. Re-cooking a different cluster incarnation requires a

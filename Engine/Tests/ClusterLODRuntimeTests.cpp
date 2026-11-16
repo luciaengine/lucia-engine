@@ -5,6 +5,8 @@
 #include "Assets/MeshLODGenerator.h"
 #include "ClusterLODTestMesh.h"
 #include "Components/Rendering/DDGIVolume.h"
+#include "Components/Rendering/HLODVolume.h"
+#include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Transform.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
@@ -13,6 +15,7 @@
 #include "ECS/Entity.h"
 #include "ECS/SystemScheduling.h"
 #include "Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.h"
+#include "Engine/Rendering/HlodRuntime.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/RenderOrigin.h"
@@ -796,6 +799,54 @@ TEST_F(ClusterLODRuntimeTest, CoarseOnlyDemandDoesNotOccupyTheBoundedFinePageDir
     Prepare();
     Prepare();
     ASSERT_NO_FATAL_FAILURE(ExpectFine());
+}
+
+// HLOD replaces distant groups with a merged proxy; cluster LOD refines the members near the camera.
+// Both run in one world: an HLOD volume and a runtime cluster do not turn fine pages off.
+TEST_F(ClusterLODRuntimeTest, FinePagesStartInAWorldWithHlodClusters)
+{
+    m_World.Create().Set<Components::HLODVolume>({});
+    m_World.ProcessCommands();
+    auto& clusters = m_Services.GetHlodRuntime().GetClusters();
+    clusters.push_back(Hlod::RuntimeCluster{});
+    clusters.back().Members.push_back(m_Entity);
+    Prepare();
+    Prepare();
+    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    clusters.clear();
+}
+
+// A member that HLOD replaced with its proxy draws nothing: it keeps the coarse cover, and
+// its fine page loads once HLOD makes it resident again.
+TEST_F(ClusterLODRuntimeTest, AnHlodEvictedMemberKeepsTheCoarseCover)
+{
+    Components::MeshGPUData evicted{};
+    evicted.hlodEvicted = true;
+    m_World.AddComponentImmediate(m_Entity, evicted);
+    Prepare();
+    Prepare();
+    EXPECT_EQ(CurrentHandle(), m_Coarse);
+
+    m_World.GetComponentForWrite<Components::MeshGPUData>(m_Entity)->hlodEvicted = false;
+    Prepare();
+    Prepare();
+    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+}
+
+// HLOD compares the authored mesh of each member to detect a reassignment. The switch
+// between the coarse and the fine entry changes the GPU handle, not the authored mesh.
+TEST_F(ClusterLODRuntimeTest, TheFineSwitchKeepsTheMembersHlodMeshSource)
+{
+    const auto* renderer = m_World.GetComponent<Components::MeshRenderer>(m_Entity);
+    ASSERT_NE(renderer, nullptr);
+    const Hlod::MemberMeshSource coarseSource = Hlod::MemberMeshSource::Of(*renderer);
+    Prepare();
+    Prepare();
+    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    renderer = m_World.GetComponent<Components::MeshRenderer>(m_Entity);
+    ASSERT_NE(renderer, nullptr);
+    EXPECT_NE(renderer->meshGpuHandleId, m_Coarse.id);
+    EXPECT_EQ(Hlod::MemberMeshSource::Of(*renderer), coarseSource);
 }
 
 TEST_F(ClusterLODRuntimeTest, MissingFineStoreKeepsCoarseCoverageAndFinishesTheRead)
