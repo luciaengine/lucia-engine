@@ -368,6 +368,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/ServedGenerationTable.cpp
 	Source/Engine/Rendering/TextureService.cpp
 	Source/Engine/Rendering/RenderServicesViewState.cpp
+	Source/Engine/Rendering/WorldContentDigestTable.cpp
 	Source/Engine/Rendering/ViewRegistry.cpp
 	Source/Engine/Rendering/ViewTemporalHistory.cpp
 	Source/Engine/Rendering/DynamicResolutionController.cpp
@@ -2369,9 +2370,12 @@ endif()
                 Tests/LensFlareImporterTests.cpp)
             target_include_directories(EnginePostProcessTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
-            # Reflection probes: selection, capture retention, blend weights and invalidation.
+            # Reflection probes: selection, capture retention, blend weights and invalidation,
+            # and the per-world feature content their scene digest reads.
             ge_add_render_services_test(ReflectionProbeTests
-                Tests/ReflectionProbeSystemTests.cpp)
+                Tests/ReflectionProbeSystemTests.cpp
+                Tests/WorldContentDigestTableTests.cpp
+                Tests/OceanContentDigestTests.cpp)
 
             # The render services themselves and the lighting they carry:
             # the feature registry, device recovery, views and cameras, project settings,
