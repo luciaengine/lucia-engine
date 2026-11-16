@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/IRenderFeature.h"
+#include "Engine/Rendering/WorldContentDigestTable.h"
 #include "Ocean/OceanAlbedoSim.h"
 #include "Ocean/OceanCaustics.h"
 #include "Ocean/OceanClipSim.h"
@@ -750,6 +751,8 @@ public:
     // a surface, FFT or local FFT block changed. The ocean time counts only when the surface displaces.
     // The extraction system calls it once per update, after its last SetParams.
     void PublishDepthClaim();
+    Engine::Renderer::WorldContentDigestTable& GetWorldContent() { return m_WorldContent; }
+    uint64_t ContentDigest(uint64_t worldId) const override { return m_WorldContent.Get(worldId); }
 
     // Authored flow / dynamic-wave toggles (from OceanSurface). Stored by the
     // extraction system; read by the contributor to gate binding + availability.
@@ -1012,6 +1015,7 @@ private:
     SurfaceDepthInputs m_LatestDepthInputs{};
     // The inputs at the previous PublishDepthClaim.
     SurfaceDepthInputs m_ClaimedDepthInputs{};
+    Engine::Renderer::WorldContentDigestTable m_WorldContent;
     static void ClearOceanTimes(SurfaceDepthInputs& inputs);
     OceanOriginShiftNotifier m_OriginShiftNotifier;
     std::atomic<float32> m_WaveOriginOffsetX{0.0f};

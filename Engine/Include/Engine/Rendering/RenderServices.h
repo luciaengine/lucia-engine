@@ -1652,6 +1652,10 @@ class RenderServices
     void SetWorldRenderContentDigest(uint64 worldId, uint64 digest);
     // Returns the world's last published content digest (0 = never published).
     uint64 GetWorldRenderContentDigest(uint64 worldId) const;
+    /// Wrapping sum of every feature's IRenderFeature::ContentDigest for worldId: the
+    /// terrain, ocean and other feature content a reflection probe photographs.
+    /// Feature order cannot move it. Thread-safe.
+    uint64 ComputeFeatureContentDigest(uint64 worldId) const;
 
     // Blends the registry override (if any) with the world fallback — stays on
     // RenderServices because both halves are reachable only here.
