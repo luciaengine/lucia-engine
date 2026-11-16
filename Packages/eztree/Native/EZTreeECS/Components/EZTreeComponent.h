@@ -17,7 +17,6 @@ struct EZTree
     uint32 SelectedBranchLevel = 0;
     uint32 RandomizeCounter = 0;
     uint64 RuntimeOptionsHash = 0;
-    uint64 RuntimeMaterialHash = 0;
     uint64 RuntimeMeshHandleId = 0;
     uint64 RuntimeBranchMeshHandleId = 0;
     uint64 RuntimeLeafMeshHandleId = 0;
