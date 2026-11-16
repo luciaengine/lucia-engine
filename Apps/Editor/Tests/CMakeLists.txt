@@ -278,6 +278,7 @@ add_executable(AgentProviderTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantMode.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantTools.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentSessionState.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFiles.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AiAssistantSettings.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Setup/AiAssistantSetupPage.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Setup/AiAssistantApiKeyRow.cpp

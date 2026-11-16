@@ -3975,7 +3975,7 @@ if(BUILD_TESTING)
 	# Header-only math, so it links no Engine target.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(SpriteQuadTests Tests/SpriteQuadTests.cpp)
-	    target_link_libraries(SpriteQuadTests PRIVATE ECSComponents Mathematics GTest::gtest GTest::gtest_main)
+	    target_link_libraries(SpriteQuadTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 	    set_target_properties(SpriteQuadTests PROPERTIES
 	        CXX_STANDARD 20
 	        CXX_STANDARD_REQUIRED ON
