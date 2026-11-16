@@ -210,18 +210,18 @@ std::array<uint32, 4> PartInstances(const Components::EZTree& tree)
             tree.RuntimeImpostorInstanceIndex};
 }
 
-// The tree's bounding sphere in world space.
-void WorldSphere(const Components::WorldTransform& worldTransform, const Mathematics::BoundingBox& bounds,
-                 float (&outCenter)[3], float& outRadius)
+// The tree's impostor sphere in world space.
+void WorldSphere(const Components::WorldTransform& worldTransform, const Mathematics::Vector3& localCenter,
+                 float localRadius, float (&outCenter)[3], float& outRadius)
 {
-    const Mathematics::Vector3 rotated = Mathematics::Vector3(worldTransform.Basis[0]) * bounds.center.x +
-                                         Mathematics::Vector3(worldTransform.Basis[1]) * bounds.center.y +
-                                         Mathematics::Vector3(worldTransform.Basis[2]) * bounds.center.z;
+    const Mathematics::Vector3 rotated = Mathematics::Vector3(worldTransform.Basis[0]) * localCenter.x +
+                                         Mathematics::Vector3(worldTransform.Basis[1]) * localCenter.y +
+                                         Mathematics::Vector3(worldTransform.Basis[2]) * localCenter.z;
     const Mathematics::Vector3 center = (worldTransform.GetPosition() - Mathematics::WorldPosition{}) + rotated;
     outCenter[0] = center.x;
     outCenter[1] = center.y;
     outCenter[2] = center.z;
-    outRadius = bounds.Radius() * LargestAxisScale(worldTransform);
+    outRadius = localRadius * LargestAxisScale(worldTransform);
 }
 
 // custom0 of an impostor card: xy the hemi-octahedral code of the direction from the tree toward
@@ -244,10 +244,10 @@ Rendering::Vector4 ImpostorCardData(const Components::WorldTransform& worldTrans
 // Impostor atlas of a tree variant: hemi-octahedral, 8 x 8 frames of 128 pixels.
 constexpr uint32 kImpostorFramesPerSide = 8u;
 constexpr uint32 kImpostorFrameSize = 128u;
-// Screen coverage (Hlod::ClusterCoverage: radius * proj[1][1] / distance) under which a tree draws
-// its impostor. At 1080 lines that is a tree under about 65 pixels tall, which a 128-pixel frame
-// shows with the tree at about 60 percent of the frame. The band above it stops flicker.
-constexpr float kImpostorSwitchCoverage = 0.06f;
+// Screen coverage (Hlod::ClusterCoverage: radius * proj[1][1] / distance, with the impostor's
+// sphere) under which a tree draws its impostor. A frame spans the sphere over kImpostorFrameSize
+// pixels, so at 1080 lines this is about one atlas texel per screen pixel.
+constexpr float kImpostorSwitchCoverage = 0.12f;
 constexpr float kImpostorSwitchHysteresis = 0.15f;
 // A tree requests its atlas a little before it switches, so the bake is ready when it is needed.
 constexpr float kImpostorBakeCoverage = 1.5f * kImpostorSwitchCoverage;
@@ -466,7 +466,7 @@ void EZTreeExtractionSystem::ExtractTree(FrameContext& frame,
 
     float center[3];
     float radius = 0.0f;
-    WorldSphere(*worldTransform, variant->Bounds, center, radius);
+    WorldSphere(*worldTransform, variant->Bounds.center, variant->ImpostorRadius, center, radius);
     const float coverage = Hlod::ClusterCoverage(frame.View, center, radius);
     if (coverage < kImpostorBakeCoverage)
         frame.WantedImpostors.InsertOrAssign(hash, true);
