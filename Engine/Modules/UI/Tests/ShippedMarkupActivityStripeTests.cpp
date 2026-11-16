@@ -1,4 +1,3 @@
-#include "Core/ApplicationPaths.h"
 // The Mark-ups panel's Activity stripes, as the editor ships them: every second row sits on the
 // theme's secondary list stripe, an opaque plate the first row does not draw. Read from the staged
 // sheets.
@@ -8,14 +7,14 @@
 #include "UI/ResolvedStyle.h"
 #include "UI/UIStyle.h"
 
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 
 #include <fstream>
 #include <gtest/gtest.h>
 #include <sstream>
 #include <string>
 
-using GameEngine::PathUtils;
+using GameEngine::ApplicationPaths;
 using GameEngine::UITesting::IsolatedUIFixture;
 
 namespace

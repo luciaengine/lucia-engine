@@ -6,6 +6,7 @@
 #include "Engine/Rendering/ShadowCasterChanges.h"
 #include "Engine/Rendering/ShadowFrameInfo.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowFeedback.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowSunMask.h"
 #include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/GPUCulling.h"
 #include "Rendering/Core/RenderGraph/RGReadbackRing.h"
@@ -197,7 +198,8 @@ void VirtualShadowRenderFeature::OnScheduleCulling(const FeatureCullingContext& 
         group.instanceCount = context.InstanceCount;
         group.frameIndex = context.FrameIndex;
         group.deltaTime = context.DeltaTime;
-        // A page can receive shadows from outside the camera and conventional cube-face culls.
+        // This all-caster slice proves resident pages and keeps off-camera casters animated.
+        // A page that renders draws from its own slice, which DeclarePages culls to the page.
         for (auto& plane : group.frustumPlanes[0])
             plane = Mathematics::Vector4{0.0f, 0.0f, 0.0f, 1.0f};
         context.CullingPipeline->SubmitCascadeGroup(group);
@@ -214,6 +216,18 @@ void VirtualShadowRenderFeature::OnDeviceRebuilt(Rendering::IDevice* device)
     m_Views.Clear();
     m_RetiredViews.clear();
     m_Device = device;
+    if (m_SunMask)
+        m_SunMask->OnDeviceRebuilt(device);
+}
+
+RenderGraph::RGTexture VirtualShadowRenderFeature::DeclareSunMask(RenderGraph::RGFrame& frame,
+                                                                  const VirtualShadowSunMaskRequest& request)
+{
+    if (!m_Device)
+        return {};
+    if (!m_SunMask)
+        m_SunMask = std::make_unique<VirtualShadowSunMask>(m_Device);
+    return m_SunMask->Declare(frame, request);
 }
 
 void VirtualShadowRenderFeature::CollectRetiredViews()

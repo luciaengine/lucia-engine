@@ -1494,6 +1494,7 @@ add_executable(DayCycleEditorTests
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleWindow/DayCycleWindowRegistration.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleWorkingCopy.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetCreation.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EditorAssetRegistrations.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EntityMaterialTextureAssign.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/LuxText.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkySun/SkySunPathCaptions.cpp
@@ -1722,6 +1723,7 @@ add_executable(EditorShortcutsTests
 	# The size slider's tooltip follows the real catalog's Resize Items binding.
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/ItemSizeSlider.cpp
 )
+target_include_directories(EditorShortcutsTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 target_include_directories(EditorShortcutsTests PRIVATE
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source
@@ -2829,6 +2831,7 @@ if(TARGET Editor)
 	)
 	target_link_libraries(EditorProjectOpenTests PRIVATE
 		Engine
+		nlohmann_json::nlohmann_json
 		GTest::gtest
 		GTest::gtest_main
 	)

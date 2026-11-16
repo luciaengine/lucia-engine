@@ -52,6 +52,12 @@ set(GE_ENGINE_PACKAGE_AUTHORING_ROOT_FILE
     CACHE INTERNAL "Staged marker naming the repo's Packages tree")
 file(WRITE "${GE_ENGINE_PACKAGE_AUTHORING_ROOT_FILE}" "${CMAKE_SOURCE_DIR}/Packages\n")
 
+# The runtime-kind prebuilt modules. Every target that stages the packages depends on it, so the
+# staged runtime modules exist before the overlay runs: a Player built alone loads them too.
+if(NOT TARGET EngineRuntimePackagePrebuilts)
+    add_custom_target(EngineRuntimePackagePrebuilts)
+endif()
+
 # Stage the whole Packages tree next to a target's executable (apps AND
 # test executables that consume staged packages — tests must never reach back
 # into the source tree) as a mirror (cmake/StagePackages.cmake):
@@ -68,6 +74,7 @@ file(WRITE "${GE_ENGINE_PACKAGE_AUTHORING_ROOT_FILE}" "${CMAKE_SOURCE_DIR}/Packa
 # longer produces are pruned by the overlay script (they can never load and only
 # accumulate).
 function(ge_stage_packages target_name)
+    add_dependencies(${target_name} EngineRuntimePackagePrebuilts)
     add_custom_command(TARGET ${target_name} POST_BUILD
         COMMAND ${CMAKE_COMMAND}
                 -DSRC=${CMAKE_SOURCE_DIR}/Packages
@@ -216,6 +223,9 @@ function(ge_add_engine_package_module target_name)
         add_custom_target(EnginePackagePrebuilts)
     endif()
     add_dependencies(EnginePackagePrebuilts ${target_name})
+    if(GEPKG_KIND STREQUAL "runtime")
+        add_dependencies(EngineRuntimePackagePrebuilts ${target_name})
+    endif()
 
     # Record for the marker pass (pkg-relative prebuilt subdir, module kind,
     # comma-joined defines — commas survive the list file round-trip).

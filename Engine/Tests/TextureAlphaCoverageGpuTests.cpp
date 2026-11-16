@@ -226,7 +226,7 @@ class TextureCoverageGPU : public testing::Test
         TextureCookInputs inputs;
         std::vector<uint8> cooked;
         std::string error;
-        ASSERT_TRUE(CookTexture(source.data(), source.size(), ".tga", inputs, TextureCookOutput::Uncompressed,
+        ASSERT_TRUE(CookTexture(source.data(), source.size(), "streamed.tga", ".tga", inputs, TextureCookOutput::Uncompressed,
                                 cooked, error)) << error;
         const auto path = s_Workspace / "Assets" / (GUID::Generate().ToString() + ".ktx2");
         {

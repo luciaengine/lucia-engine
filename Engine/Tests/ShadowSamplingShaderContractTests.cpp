@@ -87,9 +87,13 @@ std::string ShadowSamplingSource()
 #ifndef GE_RENDERER_REPO_ROOT
     return {};
 #else
-    const std::filesystem::path path = std::filesystem::path(GE_RENDERER_REPO_ROOT) /
-                                       "Engine/Modules/Rendering/Shaders/Includes/shadow_sampling.glsl";
-    return StripLineComments(ReadTextFile(path));
+    // shadow_sampling.glsl and the two includes that hold its constants block and its PCSS taps.
+    const std::filesystem::path includes =
+        std::filesystem::path(GE_RENDERER_REPO_ROOT) / "Engine/Modules/Rendering/Shaders/Includes";
+    std::string source;
+    for (const char* file : {"shadow_sampling.glsl", "shadow_data.glsl", "shadow_pcss_taps.glsl"})
+        source += ReadTextFile(includes / file);
+    return StripLineComments(source);
 #endif
 }
 

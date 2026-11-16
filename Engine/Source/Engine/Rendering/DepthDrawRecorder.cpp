@@ -219,7 +219,11 @@ class DepthPassPreparation
         const bool virtualPage = m_Data.Params.VirtualPageTile.has_value();
         if (virtualPage)
         {
+            const uint8_t casterSlice = m_Data.Params.VirtualCasterSlice;
+            const bool pageSlice = casterSlice >= kVirtualShadowPageCullingIndexBase &&
+                                   casterSlice < kVirtualShadowCasterCullingIndex;
             if (*m_Data.Params.VirtualPageTile >= kVirtualShadowPhysicalTiles ||
+                (!pageSlice && casterSlice != kVirtualShadowCasterCullingIndex) ||
                 m_Data.Params.Casters != CascadeCasters::All ||
                 m_Data.Params.Phase != Rendering::GPUDrawStreamBuilder::SlicePhase::A ||
                 (m_Data.Params.PassType != DepthPassType::ShadowCascade &&
@@ -297,7 +301,7 @@ class DepthPassPreparation
                 : std::span<const DrawCommand>{};
         m_CascadeIndex = Rendering::GPUDrawStreamBuilder::kCascadeIndexNone;
         if (virtualPage)
-            m_CascadeIndex = kVirtualShadowCasterCullingIndex;
+            m_CascadeIndex = m_Data.Params.VirtualCasterSlice;
         else if (m_Data.Params.PassType == DepthPassType::ShadowCascade ||
             m_Data.Params.PassType == DepthPassType::TransmittanceCascade)
             m_CascadeIndex = static_cast<uint8_t>(m_Data.Params.CascadeIndex);
@@ -309,9 +313,8 @@ class DepthPassPreparation
             m_CascadeIndex = PointShadowCullingIndex(m_Data.Params.CascadeIndex);
 
         const bool virtualRoutePublished = virtualPage && m_Services.Streams &&
-            m_CascadeIndex == kVirtualShadowCasterCullingIndex &&
             m_Services.Streams->HasPublishedRangesForPhase(static_cast<uint32_t>(m_Data.Params.ViewId),
-                kVirtualShadowCasterCullingIndex, Rendering::GPUDrawStreamBuilder::SlicePhase::A);
+                m_CascadeIndex, Rendering::GPUDrawStreamBuilder::SlicePhase::A);
         const bool virtualPunctualProducer = virtualRoutePublished &&
             (m_Data.Params.PassType == DepthPassType::SpotShadow ||
              m_Data.Params.PassType == DepthPassType::PointShadow);

@@ -22,6 +22,7 @@ namespace GameEngine {
 
 namespace ECS { class World; }
 namespace Rendering::RenderGraph { struct RGResourceDesc; }
+class PlayerBenchmark;
 class PlayerDemoControls;
 class RuntimeFrameReadback;
 class RuntimeHost;
@@ -44,6 +45,11 @@ public:
     bool Initialize() override;
     void Shutdown() override;
 
+    /// --benchmark: runs the benchmark once the startup scene is ready and exits when it is done.
+    void SetBenchmark(std::unique_ptr<PlayerBenchmark> benchmark);
+    /// False when a benchmark ran and could not write its result.
+    bool BenchmarkSucceeded() const;
+
 protected:
     void Update(float64 deltaTime) override;
     void Render() override;
@@ -53,6 +59,8 @@ private:
     // Terminal device-loss handling for the Player (no in-app recovery UI): log, run a
     // save-state hook, and request a clean exit. One-shot per process.
     void HandleFatalDeviceLoss();
+    // --benchmark: poses the camera and records the frame once the startup scene is ready.
+    void AdvanceBenchmark();
     bool m_FatalDeviceLossHandled = false;
 
     // The host's settings from game.config; the window size from the application
@@ -178,6 +186,8 @@ private:
 #endif
     // The window, the render device, the pipeline, the scene and the frame.
     std::unique_ptr<RuntimeHost> m_Host;
+    // --benchmark: null for a normal run.
+    std::unique_ptr<PlayerBenchmark> m_Benchmark;
 #if defined(GE_PLATFORM_MOBILE)
     // GE_PLAYER_DEMO_CONTROLS=1: touch orbit and the frame statistics overlay. Null otherwise.
     std::unique_ptr<PlayerDemoControls> m_DemoControls;

@@ -1,5 +1,7 @@
 #include "PlayerApplication.h"
 
+#include "Benchmark/PlayerBenchmark.h"
+
 #if defined(GE_PLATFORM_MOBILE)
 #include "PlayerDemoControls.h"
 #include "Platform/Environment.h"
@@ -732,6 +734,7 @@ void PlayerApplication::Update(float64 deltaTime)
         RequestExit();
 
     PollRuntimeDisplayControls();
+    AdvanceBenchmark();
 
     // --quit-after: this is the last frame when it is frame number m_QuitAfterFrames.
     // A movie capture ends on its written frames instead (PollMovieFrames).
@@ -745,6 +748,26 @@ void PlayerApplication::Update(float64 deltaTime)
 
     // Engine::Update() is called by the base Application loop and drives the
     // rendering loop (ECS systems) automatically via SetRenderingLoopAutoDrive(true).
+}
+
+void PlayerApplication::SetBenchmark(std::unique_ptr<PlayerBenchmark> benchmark)
+{
+    m_Benchmark = std::move(benchmark);
+}
+
+bool PlayerApplication::BenchmarkSucceeded() const
+{
+    return !m_Benchmark || m_Benchmark->Succeeded();
+}
+
+void PlayerApplication::AdvanceBenchmark()
+{
+    auto* world = EngineCore::GetInstance().GetPrimaryWorld();
+    if (!m_Benchmark || !world || m_StartupScene.IsPending() || !m_StartupSceneRevealed)
+        return;
+    auto* renderContext = m_Host->GetRenderDeviceContext();
+    if (m_Benchmark->Advance(*world, m_Host->GetRenderGraphFrame(), renderContext ? renderContext->GetDevice() : nullptr))
+        RequestExit();
 }
 
 void PlayerApplication::HandleFatalDeviceLoss()

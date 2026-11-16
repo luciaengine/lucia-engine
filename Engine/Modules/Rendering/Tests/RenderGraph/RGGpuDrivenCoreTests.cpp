@@ -718,7 +718,8 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
     auto device = DeviceFactory::CreateDevice(deviceDesc);
     if (!device || !device->Initialize(deviceDesc))
         GTEST_SKIP() << "Requested core culling backend unavailable";
-    ASSERT_EQ(device->GetAPI(), graphicsAPI);
+    if (device->GetAPI() != graphicsAPI)
+        GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
     if (const char* missing =
             FirstUnloadablePkg({"Shaders/frustum_culling.shaderpkg",
                                 "Shaders/hzb_culling.shaderpkg",
@@ -1129,6 +1130,64 @@ TEST(RGGpuDriven, IntrospectScatterNeverCreatesThePipeline)
     builder->Shutdown();
 }
 
+// A later schedule call of a frame cannot grow the arena, so the frame's first call grows it for
+// the slices that the frame announced. Without the announcement the appended call trips the guard.
+TEST(RGGpuDriven, ReservedAppendedSlicesFitAfterTheFirstScatterOfTheFrame)
+{
+    RG_REQUIRE_DEVICE(dev);
+    GPUScene::SetCullingShaderLoader(&TestShaderLoader);
+    GPUDrawStreamBuilder::SetShaderLoader(&TestShaderLoader);
+    auto scene = GPUSceneFactory::CreateSmallScene(dev.get());
+    // One batch whose snapshot fills more than half of the initial arena per slice.
+    constexpr uint32_t kBatchInstances = 600000u;
+    BatchRegistry registry;
+    for (uint32_t instance = 0; instance < kBatchInstances; ++instance)
+        registry.OnInstanceAdded(/*materialIndex=*/0u, /*meshIndex=*/0u, /*mirrored=*/false);
+
+    for (const bool reserve : {true, false})
+    {
+        SCOPED_TRACE(::testing::Message() << "reserve=" << reserve);
+        auto builder = std::make_unique<GPUDrawStreamBuilder>(dev.get());
+        ASSERT_TRUE(builder->Initialize());
+        if (!builder->GetOrCreateScatterPipeline().IsValid())
+            GTEST_SKIP() << "draw_command_scatter.shaderpkg unavailable";
+        FramePools pools(dev.get());
+        RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(0);
+        BufferDesc descriptor;
+        descriptor.size = 4096;
+        descriptor.usage = static_cast<uint32_t>(BufferUsage::Storage);
+        const BufferHandle visibilityBuffer = dev->CreateBuffer(descriptor);
+        ASSERT_TRUE(visibilityBuffer.IsValid());
+        const RGBuffer visibility = frame.ImportExternalBuffer("Vis", visibilityBuffer);
+        const GPUScene::GPUSceneFrameRG sceneRG = scene->ImportFrameResources(frame);
+        const auto schedule = [&](const char* suffix, std::initializer_list<uint8_t> cascades)
+        {
+            for (const uint8_t cascade : cascades)
+            {
+                GPUDrawStreamBuilder::SliceRegistration slice{};
+                slice.viewId = 1u;
+                slice.cascadeIndex = cascade;
+                slice.disableVisibilityCheck = true;
+                builder->RegisterSlice(slice);
+            }
+            return builder->ScheduleUnifiedScatter(frame, suffix, 0, visibility, sceneRG.Instances, sceneRG.ScatterHot,
+                sceneRG.Meshes, registry, {}, {}, {}, {}, 8u, static_cast<uint32_t>(scene->GetMeshes().size()));
+        };
+
+        builder->BeginArenaFrame();
+        if (reserve)
+            builder->ReserveAppendedSlices(2u);
+        EXPECT_TRUE(schedule("First", {GPUDrawStreamBuilder::kCascadeIndexNone}).IsValid());
+        const RGBuffer appended = schedule("Appended", {0x10u, 0x11u});
+        EXPECT_EQ(appended.IsValid(), reserve);
+        EXPECT_EQ(builder->FindBatchDrawRange(1u, 0x11u, 0u, 0u, GPUDrawStreamBuilder::SlicePhase::A).IsValid(), reserve);
+        frame.Execute();
+        dev->WaitForIdle();
+        dev->DestroyBuffer(visibilityBuffer);
+    }
+}
+
 // E2 — ScheduleUnifiedScatter(RGFrame&): publishes the ordering proxy,
 // consumes the registered slices, publishes consumer ranges, and the pass's
 // first-touch barrier carries Transfer in its dst scope — the declared
@@ -1239,6 +1298,26 @@ struct WarmScatterCounts
 
 // Registers one color slice of view 1 for each of `cascades`, in that order, and schedules
 // `registry` on each of `frameCount` frames.
+// The allocations of one scatter set as the record pass uses it: create, one batch write and one bind.
+// A backend may build the set's residency list at its first bind (Metal does).
+uint64_t CountOneScatterSet(IDevice& device, GPUDrawStreamBuilder& builder, const DescriptorSetDesc& setDesc,
+                            std::span<const DescriptorWrite> writes)
+{
+    using GameEngine::Memory::AllocationCountScope;
+    using GameEngine::Memory::CountWindow;
+    const PipelineHandle pipeline = builder.GetOrCreateScatterPipeline();
+    auto list = device.CreateCommandList(IDevice::QueueType::Compute);
+    list->Begin();
+    list->SetPipeline(pipeline);
+    const AllocationCountScope count(CountWindow::ThisThread);
+    const DescriptorSetHandle set = device.CreateDescriptorSet(setDesc);
+    device.WriteDescriptorSet(set, writes);
+    list->BindDescriptorSet(0, set, pipeline);
+    const uint64_t allocations = count.Count();
+    list->End();
+    return allocations;
+}
+
 WarmScatterCounts CountWarmScatter(IDevice& device, GPUScene& scene, BufferHandle visibility,
                                    const BatchRegistry& registry, std::span<const uint8_t> cascades,
                                    uint32_t frameCount)
@@ -1261,11 +1340,7 @@ WarmScatterCounts CountWarmScatter(IDevice& device, GPUScene& scene, BufferHandl
     {
         RGFrame frame(&device, &pools.Persistent, &pools.Transient, &pools.Ring);
         frame.BeginFrame(f);
-        {
-            const AllocationCountScope set(CountWindow::ThisThread);
-            device.WriteDescriptorSet(device.CreateDescriptorSet(setDesc), writes);
-            counts.deviceSetAllocations = set.Count();
-        }
+        counts.deviceSetAllocations = CountOneScatterSet(device, builder, setDesc, writes);
         const RGBuffer vis = frame.ImportExternalBuffer("Vis", visibility);
         const GPUScene::GPUSceneFrameRG sceneRG = scene.ImportFrameResources(frame);
         builder.BeginArenaFrame();
@@ -1379,7 +1454,7 @@ TEST(RGGpuDriven, ScatterPublishesTheSlicesOfAViewInKeyOrder)
 }
 
 // On a warm frame, the scatter record pass allocates per slice only what the device allocates
-// for one transient set and one batch write. A per-binding update adds three vectors per binding.
+// for one transient set, one batch write and one bind. A per-binding update adds three vectors per binding.
 TEST(RGGpuDriven, WarmScatterRecordAllocatesOnlyTheDeviceSetPerSlice)
 {
     RG_REQUIRE_DEVICE(dev);
@@ -3424,7 +3499,8 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI, bool instanceCompac
     auto device = DeviceFactory::CreateDevice(description);
     if (!device || !device->Initialize(description))
         GTEST_SKIP() << "Requested unified scatter backend unavailable";
-    ASSERT_EQ(device->GetAPI(), graphicsAPI);
+    if (device->GetAPI() != graphicsAPI)
+        GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
     GPUScene::SetCullingShaderLoader(&TestShaderLoader);
     ScatterBuilder::SetShaderLoader(&TestShaderLoader);
     GPUScene scene(device.get());

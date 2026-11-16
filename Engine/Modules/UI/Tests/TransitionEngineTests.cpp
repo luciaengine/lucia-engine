@@ -72,7 +72,6 @@ protected:
     const TestUtils::ScopedTempDir m_CssDir{TestUtils::MakeUniqueTempDirectory("transition_engine_test")};
     IDevice* m_Dev = nullptr;
     std::unique_ptr<UIManager> m_Ui;
-    std::filesystem::path m_CssDir;
     std::filesystem::path m_CssPath;
 };
 

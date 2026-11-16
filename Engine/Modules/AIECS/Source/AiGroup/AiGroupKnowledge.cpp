@@ -10,12 +10,6 @@ namespace GameEngine::AIECS
 namespace
 {
 
-// A hook runs under the lock of the world, so it reads only the world id and the component.
-void ReleaseGroupKnowledge(const ECS::World& world, ECS::EntityHandle entity, Components::AiGroup& group)
-{
-    AiGroupStore::ReleaseInWorld(world.GetWorldId(), entity, group.Knowledge);
-}
-
 AiGroupStore::Group* FindGroup(const ECS::World& world, ECS::EntityHandle entity)
 {
     const Components::AiGroup* group = world.GetComponent<Components::AiGroup>(entity);
@@ -24,11 +18,6 @@ AiGroupStore::Group* FindGroup(const ECS::World& world, ECS::EntityHandle entity
 }
 
 } // namespace
-
-void RegisterAiWorldHooks(ECS::World& world)
-{
-    world.RegisterOnRemove<Components::AiGroup>(&ReleaseGroupKnowledge);
-}
 
 const AI::RecordStore* FindGroupRecords(const ECS::World& world, ECS::EntityHandle group)
 {

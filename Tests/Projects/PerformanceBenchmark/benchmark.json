@@ -1,0 +1,250 @@
+{
+  "resolution": [
+    1920,
+    1080
+  ],
+  "run": {
+    "warmupFrames": 300,
+    "timingFrames": 600,
+    "profiledFrames": 120
+  },
+  "city": {
+    "uniqueBuildings": 32
+  },
+  "scenes": {
+    "Forest": {
+      "scene": "Scenes/Forest.scene",
+      "description": "Dense forest: 720 procedural trees from 12 seeds, global wind, a sun with virtual shadows.",
+      "pipeline": {
+        "virtualShadows": true
+      },
+      "requiredPasses": [
+        "VirtualShadowDepth"
+      ],
+      "poses": [
+        {
+          "name": "clearing",
+          "position": [
+            0,
+            1.7,
+            0
+          ],
+          "yawDeg": 20,
+          "pitchDeg": 2
+        },
+        {
+          "name": "canopy",
+          "position": [
+            0,
+            45,
+            -130
+          ],
+          "yawDeg": 0,
+          "pitchDeg": -18
+        },
+        {
+          "name": "edge",
+          "position": [
+            -125,
+            2,
+            -125
+          ],
+          "yawDeg": 45,
+          "pitchDeg": 4
+        }
+      ]
+    },
+    "OpenWorld": {
+      "scene": "Scenes/OpenWorld.scene",
+      "description": "Open world: a 4 km generated terrain, an ocean, 1500 scattered rocks under an HLOD volume.",
+      "requiredPasses": [
+        "OceanSurface"
+      ],
+      "notes": "HLOD proxies come from a bake (the editor's Bake HLOD or a packaged cook). A loose-asset run draws the rocks without proxies.",
+      "poses": [
+        {
+          "name": "shore",
+          "position": [
+            0,
+            15,
+            -1500
+          ],
+          "yawDeg": 0,
+          "pitchDeg": -4
+        },
+        {
+          "name": "vista",
+          "position": [
+            -1600,
+            400,
+            -1600
+          ],
+          "yawDeg": 45,
+          "pitchDeg": -10
+        },
+        {
+          "name": "low",
+          "position": [
+            500,
+            40,
+            0
+          ],
+          "yawDeg": 270,
+          "pitchDeg": -2
+        }
+      ]
+    },
+    "Crowd": {
+      "scene": "Scenes/Crowd.scene",
+      "description": "Crowd: 400 skinned foxes playing three clips, each with bone LOD.",
+      "content": [
+        "fox"
+      ],
+      "requiredPasses": [],
+      "poses": [
+        {
+          "name": "close",
+          "position": [
+            0,
+            1.6,
+            -6
+          ],
+          "yawDeg": 0,
+          "pitchDeg": -5
+        },
+        {
+          "name": "mid",
+          "position": [
+            0,
+            12,
+            -25
+          ],
+          "yawDeg": 0,
+          "pitchDeg": -20
+        },
+        {
+          "name": "overview",
+          "position": [
+            -60,
+            40,
+            -40
+          ],
+          "yawDeg": 45,
+          "pitchDeg": -25
+        }
+      ]
+    },
+    "City": {
+      "scene": "Scenes/City.scene",
+      "description": "City: 256 buildings from 32 unique procedural meshes, cooked to cluster LOD.",
+      "content": [
+        "city"
+      ],
+      "environment": {
+        "GE_CLUSTER_LOD": "1"
+      },
+      "requiredPasses": [],
+      "poses": [
+        {
+          "name": "street",
+          "position": [
+            18,
+            1.7,
+            -270
+          ],
+          "yawDeg": 0,
+          "pitchDeg": 2
+        },
+        {
+          "name": "rooftop",
+          "position": [
+            -300,
+            120,
+            -300
+          ],
+          "yawDeg": 45,
+          "pitchDeg": -15
+        },
+        {
+          "name": "aerial",
+          "position": [
+            0,
+            600,
+            -700
+          ],
+          "yawDeg": 0,
+          "pitchDeg": -38
+        }
+      ]
+    },
+    "Interior": {
+      "scene": "Scenes/Interior.scene",
+      "description": "Interior: a closed 24 m hall, 48 point lights (4 with shadows), a DDGI volume and 2 realtime reflection probes.",
+      "requiredPasses": [
+        "DDGI"
+      ],
+      "poses": [
+        {
+          "name": "closeup",
+          "position": [
+            -1.5,
+            1.2,
+            -5
+          ],
+          "yawDeg": 20,
+          "pitchDeg": -8
+        },
+        {
+          "name": "hall",
+          "position": [
+            0,
+            3,
+            -11.5
+          ],
+          "yawDeg": 0,
+          "pitchDeg": -6
+        },
+        {
+          "name": "corner",
+          "position": [
+            10.5,
+            5,
+            10.5
+          ],
+          "yawDeg": 225,
+          "pitchDeg": -25
+        }
+      ]
+    },
+    "Sprites2D": {
+      "scene": "Scenes/Sprites2D.scene",
+      "description": "2D and UI: 5000 alpha-blended unlit quads, orthographic, under 3 UI panels of 60 rows each.",
+      "requiredPasses": [
+        "UI Overlay",
+        "SortedTransparent"
+      ],
+      "poses": [
+        {
+          "name": "full",
+          "position": [
+            0,
+            0,
+            -20
+          ],
+          "yawDeg": 0,
+          "pitchDeg": 0
+        },
+        {
+          "name": "zoomed",
+          "position": [
+            8,
+            4,
+            -20
+          ],
+          "yawDeg": 0,
+          "pitchDeg": 0
+        }
+      ]
+    }
+  }
+}

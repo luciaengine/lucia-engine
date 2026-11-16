@@ -613,8 +613,8 @@ void main()
     ge_shadowReceiverDx = dFdx(vPosRel);
     ge_shadowReceiverDy = dFdy(vPosRel);
 #endif
-#if defined(HAS_SHADOWS) && defined(GE_SCREEN_SPACE_SHADOWS_ENABLED)
-    ge_contactReceiverDepthFootprint = fwidth(gl_FragCoord.z);
+#if defined(HAS_SHADOWS) && defined(GE_READS_PREPASS_RECEIVER_MASK)
+    ge_prepassReceiverDepthFootprint = fwidth(gl_FragCoord.z);
 #endif
 #ifdef GE_PARALLAX_MARCH
     // The relief march's footprint, taken before any branch: WGSL admits derivatives only in

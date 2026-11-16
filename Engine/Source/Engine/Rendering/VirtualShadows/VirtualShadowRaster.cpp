@@ -102,8 +102,8 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
     if (!plan.For.IsFor(frame) || !context.For.IsFor(frame) || context.WorldAlreadyDeclared ||
         !plan.Atlas.IsValid() || !context.DrawStreamOrdering.IsValid() ||
         (context.HasPendingSkinnedInstances && !context.SkinPaletteAtlas.IsValid()) ||
-        cameras.size() != layout.Projections.size() || !MatchesLayout(context.View, plan, layout) ||
-        layout.WordCount == 0)
+        cameras.empty() || cameras.size() != layout.Projections.size() ||
+        !MatchesLayout(context.View, plan, layout) || layout.WordCount == 0)
         return {};
 
     const size_t entryCount = static_cast<size_t>(layout.WordCount) * 32;
@@ -114,12 +114,21 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
     auto* words = static_cast<uint32_t*>(staging.Ptr);
     std::fill_n(words, entryCount, kUnmappedShadowPage);
 
-    auto* pages = frame.AllocatePassData<std::vector<PreparedPage>>();
-    pages->reserve(plan.Work.size());
-    uint32_t renderCount = 0;
+    struct PageCandidate
+    {
+        const VirtualShadowPageWork* Work = nullptr;
+        uint32_t Bit = 0;
+        size_t Projection = 0;
+        DepthPassType PassType = DepthPassType::Count;
+        Rendering::CameraData Camera;
+    };
+    std::vector<PageCandidate> candidates;
+    candidates.reserve(plan.Work.size());
+    std::vector<RenderServices::LateShadowSlice> slices;
+    slices.reserve(kVirtualShadowPageRenderBudget);
     for (const auto& work : plan.Work)
     {
-        if (work.Tile == kUnmappedShadowPage || (work.NeedsRender && renderCount == kVirtualShadowPageRenderBudget))
+        if (work.Tile == kUnmappedShadowPage || (work.NeedsRender && slices.size() == kVirtualShadowPageRenderBudget))
             continue;
         size_t index = 0;
         std::optional<uint32_t> bit;
@@ -139,18 +148,42 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
         const auto pageCamera = PageCamera(layout.Projections[index], work.Page, cameras[index]);
         if (!pageCamera)
             continue;
+        if (work.NeedsRender)
+            slices.push_back({static_cast<uint8_t>(kVirtualShadowPageCullingIndexBase + slices.size()),
+                              VirtualShadowPageCasterPlanes(pageCamera->viewProjRel, work.Page.Family)});
+        candidates.push_back({&work, *bit, index, passType, *pageCamera});
+    }
+
+    // A rendered page draws only the casters that its own slice culls in. Without the slices
+    // the pages stay dirty and render in a later frame.
+    const auto& sector = cameras.front().renderOriginSector;
+    const auto pageOrdering = slices.empty() ? RenderGraph::RGBuffer{} :
+        services.ScheduleLateShadowSlices(frame, context.View, Mathematics::Vector3Int{sector[0], sector[1], sector[2]},
+                                          slices);
+
+    auto* pages = frame.AllocatePassData<std::vector<PreparedPage>>();
+    pages->reserve(candidates.size());
+    uint32_t slice = 0;
+    for (const auto& candidate : candidates)
+    {
+        const auto& work = *candidate.Work;
+        const uint8_t casterSlice = work.NeedsRender
+            ? static_cast<uint8_t>(kVirtualShadowPageCullingIndexBase + slice++) : kVirtualShadowCasterCullingIndex;
+        if (work.NeedsRender && !pageOrdering.IsValid())
+            continue;
         const auto camera = frame.AllocUpload<Rendering::CameraData>();
         if (!camera.Valid())
             return {};
-        *camera.Ptr = *pageCamera;
+        *camera.Ptr = candidate.Camera;
 
         DepthOnlyPassParamsRG parameters{};
         parameters.ViewId = context.View;
-        parameters.PassType = passType;
-        parameters.CascadeIndex = static_cast<uint32_t>(index);
+        parameters.PassType = candidate.PassType;
+        parameters.CascadeIndex = static_cast<uint32_t>(candidate.Projection);
         parameters.VirtualPageTile = work.Tile;
+        parameters.VirtualCasterSlice = casterSlice;
         parameters.VirtualFrame = context.For;
-        parameters.VirtualCasterOrdering = context.DrawStreamOrdering;
+        parameters.VirtualCasterOrdering = work.NeedsRender ? pageOrdering : context.DrawStreamOrdering;
         parameters.Casters = CascadeCasters::All;
         parameters.Phase = Rendering::GPUDrawStreamBuilder::SlicePhase::A;
         parameters.DepthBiasEnable = true;
@@ -160,9 +193,7 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
         parameters.Resources = services.BuildShadowPassResources(context.Seam, frame, context.View,
                                                                   camera.Buffer, camera.Offset);
         auto* prepared = AllocatePreparedDepthOnlyPass(frame, std::move(parameters));
-        pages->push_back({work, *bit, prepared, {}, work.NeedsRender, false});
-        if (work.NeedsRender)
-            ++renderCount;
+        pages->push_back({work, candidate.Bit, prepared, {}, work.NeedsRender, false});
     }
 
     Rendering::BufferDesc descriptor{};
@@ -218,9 +249,9 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
         const std::string passName = "VirtualShadowDepth.View" + std::to_string(view) +
                                      ".Tile" + std::to_string(page.Work.Tile);
         frame.AddPass(passName.c_str(), Rendering::PassPhase::kEarlySetup,
-            [this, packet, plan, view, ordering, skin, ready](RenderGraph::RGPassBuilder& builder)
+            [this, packet, plan, view, pageOrdering, skin, ready](RenderGraph::RGPassBuilder& builder)
             {
-                builder.Read(ordering, RenderGraph::RGBufferRead::Indirect);
+                builder.Read(pageOrdering, RenderGraph::RGBufferRead::Indirect);
                 if (skin.IsValid())
                     builder.Read(skin);
                 builder.RecordInSecondary();

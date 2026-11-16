@@ -1545,8 +1545,10 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(draw_command_scatter_compact_stats draw_command_scatter_compact_stats.comp)
     _ge_add_shaderpkg_compute(depth_reduce depth_reduce.comp)
     _ge_add_shaderpkg_compute(virtual_shadow_mark virtual_shadow_mark.comp)
+    _ge_add_shaderpkg_compute(virtual_shadow_sun_mask virtual_shadow_sun_mask.comp)
     if(BUILD_TESTING)
         _ge_add_shaderpkg_compute(virtual_shadow_lookup_test virtual_shadow_lookup_test.comp)
+        _ge_add_shaderpkg_compute(virtual_shadow_sun_mask_test virtual_shadow_sun_mask_test.comp)
         _ge_add_shaderpkg_compute(virtual_shadow_receiver_test virtual_shadow_receiver_test.comp)
         _ge_add_shaderpkg_graphics(virtual_shadow_test_depth virtual_shadow_test_depth.vert "")
     endif()
@@ -2267,7 +2269,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(DescriptorBufferTests Tests/DescriptorBufferTests.cpp)
     set_target_properties(DescriptorBufferTests PROPERTIES FOLDER "Rendering/Tests")
     # Standalone consumers link Image objects for the shared image implementation.
-    target_link_libraries(DescriptorBufferTests PRIVATE Image)
+    target_link_libraries(DescriptorBufferTests PRIVATE Image AssetCore) # AssetCore: the shader source reads of MaterialBuildContext
     target_compile_definitions(DescriptorBufferTests PRIVATE GE_HAVE_STB)
     if(TARGET stb::stb)
         target_link_libraries(DescriptorBufferTests PRIVATE stb::stb)
@@ -2834,7 +2836,7 @@ if(GTest_FOUND)
             Tests/PipelineDescHashTests.cpp
             Tests/SpecializationConstantsTest.cpp)
         # Standalone consumers link Image objects for the shared image implementation.
-        target_link_libraries(PipelineDescHashTests PRIVATE Image)
+        target_link_libraries(PipelineDescHashTests PRIVATE Image AssetCore) # AssetCore: the shader source reads of MaterialBuildContext
         target_compile_definitions(PipelineDescHashTests PRIVATE GE_HAVE_STB)
         if(TARGET stb::stb)
             target_link_libraries(PipelineDescHashTests PRIVATE stb::stb)
@@ -3628,7 +3630,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
 
   add_executable(TextureViewTests Tests/TextureViewTests.cpp)
   # Standalone consumers link Image objects for the shared image implementation.
-  target_link_libraries(TextureViewTests PRIVATE Image)
+  target_link_libraries(TextureViewTests PRIVATE Image AssetCore) # AssetCore: the shader source reads of MaterialBuildContext
   target_compile_definitions(TextureViewTests PRIVATE GE_HAVE_STB)
   if(TARGET stb::stb)
     target_link_libraries(TextureViewTests PRIVATE stb::stb)

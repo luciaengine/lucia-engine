@@ -83,7 +83,8 @@ enum class MaterialKeyword : uint64_t
     DepthPixelationBand = 1ull << 46, // Per-band color coverage.
     UV1Crossfade = 1ull << 47, // Vertex-alpha weight blends UV0 and UV1 material samples.
     VirtualShadowMaps = 1ull << 48, // Pass keyword (set per view only in a frame whose virtual shadow page table and depth atlas are published): the sun, spot and point shadow lookups try a resident virtual page first (Includes/virtual_shadow_lookup.glsl: ge_virtualShadowDepth at set-0 b58, VirtualShadowPageTable b59, VirtualShadowProjections b60, ge_virtualShadowDepthCompare b61) and use the conventional map where no page is resident. Without the keyword none of it is in the SPIR-V
-    ImpostorBake = 1ull << 49, // Pass keyword (set on the draws of an impostor bake, ImpostorBaker): the forward adapter runs the material's surface and its alpha cutoff and writes the surface instead of shading it: location 0 base colour and coverage, location 1 the normal (the bake draws the mesh untransformed, so object space) and the depth along the frame axis. No lighting, fog, exposure or SSSR. Mutually exclusive with DepthOnlyFragment, MotionVectors and DepthOnlyTransmissionColor (the adapter refuses each pairing by name). Without the keyword none of it is in the SPIR-V
+    VirtualShadowSunMask = 1ull << 49, // Pass keyword, beside VirtualShadowMaps (set per view only in a frame whose virtual shadow sun mask pass ran on the prepass depth): the sun reads its virtual page visibility from ge_virtualShadowSunMask (set-0 b66, R32_UINT receiver depth and visibility, Includes/virtual_shadow_sun_mask.glsl) where the fragment is the prepass receiver, and runs GE_TryVirtualShadowDirectional elsewhere. Without the keyword neither the binding nor the read is in the SPIR-V
+    ImpostorBake = 1ull << 50, // Pass keyword (set on the draws of an impostor bake, ImpostorBaker): the forward adapter runs the material's surface and its alpha cutoff and writes the surface instead of shading it: location 0 base colour and coverage, location 1 the normal (the bake draws the mesh untransformed, so object space) and the depth along the frame axis. No lighting, fog, exposure or SSSR. Mutually exclusive with DepthOnlyFragment, MotionVectors and DepthOnlyTransmissionColor (the adapter refuses each pairing by name). Without the keyword none of it is in the SPIR-V
 };
 
 inline constexpr MaterialKeyword operator|(MaterialKeyword a, MaterialKeyword b)
@@ -351,6 +352,8 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
         defs.push_back("GE_DEPTH_PIXELATION_BAND");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::VirtualShadowMaps))
         defs.push_back("GE_VIRTUAL_SHADOW_MAPS");
+    if (HasKeyword(key.materialKeywords, MaterialKeyword::VirtualShadowSunMask))
+        defs.push_back("GE_VIRTUAL_SHADOW_SUN_MASK");
 
     defs.push_back("LIGHTING_MODEL_" + ToUpperSnakeCase(lightingModelName));
 
