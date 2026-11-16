@@ -492,10 +492,10 @@ Tools/ai/retarget-redesign/
 
 # On-demand FBX fixtures (FetchFbxTestFixtures) + sidecars the editor
 # may regenerate next to them — store-licensed payload, never committed.
-Assets/Models/FBXTest/*.fbx
-Assets/Models/FBXTest/*.humanoidrig.json
-Assets/Models/FBXTest/*.retargetmap.json
-Assets/Models/FBXTest/*.anim.json
+Engine/Assets/Models/FBXTest/*.fbx
+Engine/Assets/Models/FBXTest/*.humanoidrig.json
+Engine/Assets/Models/FBXTest/*.retargetmap.json
+Engine/Assets/Models/FBXTest/*.anim.json
 
 # Renderer perf-bench hermetic project, and every benchmark results/ directory
 # under Tools (ECSBenchCompare writes results/ecs_bench_results.json).

@@ -509,7 +509,7 @@ if(GE_FBXTEST_SHA256)
 endif()
 add_custom_target(FetchFbxTestFixtures
   COMMAND ${CMAKE_COMMAND}
-          -DFBXTEST_ROOT=${CMAKE_SOURCE_DIR}/Assets/Models/FBXTest
+          -DFBXTEST_ROOT=${CMAKE_SOURCE_DIR}/Engine/Assets/Models/FBXTest
           -DSTAGED_ROOT=${CMAKE_BINARY_DIR}/Assets/Models/FBXTest
           -DDOWNLOAD_DIR=${CMAKE_BINARY_DIR}/_fixture_downloads
           ${_ge_fbxtest_overrides}
@@ -987,7 +987,7 @@ ge_stage_runtime_dependencies(PathsAndSettingsTests)
 # copy the test could only check string composition, and deleting a staging rule would leave
 # it green.
 ge_stage_test_asset(PathsAndSettingsTests
-  "${CMAKE_SOURCE_DIR}/Assets/Textures/Sky/MoonPhases/moon_full.png"
+  "${CMAKE_SOURCE_DIR}/Engine/Assets/Textures/Sky/MoonPhases/moon_full.png"
   "Assets/Textures/Sky/MoonPhases/moon_full.png")
 add_test(NAME PathsAndSettingsTests COMMAND $<TARGET_FILE:PathsAndSettingsTests>)
 set_tests_properties(PathsAndSettingsTests PROPERTIES
