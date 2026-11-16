@@ -35,29 +35,26 @@
 #include "ECSModules/Rendering/Systems/SkyEnvironmentSystem.h"
 #include "Engine/Rendering/FogSunLightingResolver.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/SkyEnvironmentSource.h"
 #include "Engine/Rendering/SkyRenderFeature.h"
 #include "Rendering/Sky/AtmosphereTransmittance.h"
 #include "Rendering/Sky/SkyRenderer.h"
 #include "Rendering/Sky/SkySettings.h"
 #include "Rendering/Sky/SkySystem.h"
+#include "Types/ColorUtils.h"
 
 using namespace GameEngine;
 
 namespace
 {
 
-constexpr float kWhite[3] = {1.0f, 1.0f, 1.0f};
+constexpr ColorLinear kWhite{1.0f, 1.0f, 1.0f};
 
 Rendering::AtmosphereParametersGPU DefaultAtmosphere()
 {
     Rendering::AtmosphereParametersGPU atmo{};
     Rendering::SkyRenderer::FillDefaultAtmosphere(atmo, Rendering::SkyPlanet{});
     return atmo;
-}
-
-float Luminance(const float rgb[3])
-{
-    return 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
 }
 
 float MuForElevationDegrees(float degrees)
@@ -106,8 +103,12 @@ void ReferenceOpticalDepth(const Rendering::AtmosphereParametersGPU& atmo, doubl
             std::max(0.0, std::sqrt(r * r + sMid * sMid + 2.0 * r * mu * sMid) - atmo.planetRadius);
         const double rayleigh = std::exp(-height / atmo.rayleighScaleHeight);
         const double mie = std::exp(-height / atmo.mieScaleHeight);
+        const double ozone =
+            std::max(0.0, 1.0 - std::fabs(height - atmo.ozoneCenterHeight) / atmo.ozoneHalfWidth);
         for (int c = 0; c < 3; ++c)
-            outTau[c] += (atmo.betaRayleigh[c] * rayleigh + atmo.betaMie[c] * mie) * ds;
+            outTau[c] += (atmo.betaRayleigh[c] * rayleigh + (atmo.betaMie[c] + atmo.mieAbsorption[c]) * mie +
+                          atmo.ozoneAbsorption[c] * ozone) *
+                         ds;
     }
 }
 
@@ -160,13 +161,15 @@ std::string LoadEngineSource(const char* relativePath)
 } // namespace
 
 // Verify the yardstick before measuring with it. For a straight-up ray the path parameter IS the
-// height, so the optical depth has a closed form, beta * H * (1 - exp(-thickness / H)). With Mie
-// switched off (its 1200 m scale height is the term any quadrature resolves worst) the test's own
-// converged reference must land on it — otherwise every comparison below is against a broken ruler.
+// height, so the optical depth has a closed form: beta * H * (1 - exp(-thickness / H)) for Rayleigh,
+// and the ozone tent's area, its half width, for ozone. With Mie switched off (its 1200 m scale
+// height is the term any quadrature resolves worst) the test's own converged reference must land on
+// it — otherwise every comparison below is against a broken ruler.
 TEST(SkySunColor, TheReferenceIntegralMatchesTheAnalyticRadialForm)
 {
     Rendering::AtmosphereParametersGPU atmo = DefaultAtmosphere();
     atmo.betaMie[0] = atmo.betaMie[1] = atmo.betaMie[2] = 0.0f;
+    atmo.mieAbsorption[0] = atmo.mieAbsorption[1] = atmo.mieAbsorption[2] = 0.0f;
     const float thickness = atmo.atmosphereRadius - atmo.planetRadius;
 
     double reference[3];
@@ -175,12 +178,13 @@ TEST(SkySunColor, TheReferenceIntegralMatchesTheAnalyticRadialForm)
     for (int c = 0; c < 3; ++c)
     {
         const double expected = atmo.betaRayleigh[c] * atmo.rayleighScaleHeight *
-                                (1.0 - std::exp(-thickness / atmo.rayleighScaleHeight));
+                                    (1.0 - std::exp(-thickness / atmo.rayleighScaleHeight)) +
+                                atmo.ozoneAbsorption[c] * atmo.ozoneHalfWidth;
         EXPECT_NEAR(reference[c], expected, expected * 0.001) << "channel " << c;
     }
 }
 
-// The 32-step quadrature is inherited from the shader, not a free parameter: it has to be close
+// The 512-step quadrature is inherited from the shader, not a free parameter: it has to be close
 // enough to the converged integral that the light's colour is the atmosphere's answer rather than
 // the step count's.
 TEST(SkySunColor, QuadratureAgreesWithItsConvergedLimit)
@@ -200,8 +204,8 @@ TEST(SkySunColor, QuadratureAgreesWithItsConvergedLimit)
         {
             // Relative on a floor, because the horizon's blue channel is ~1e-4 and an absolute
             // tolerance there would pass anything.
-            const double tolerance = std::max(reference[c] * 0.01, 1e-4);
-            EXPECT_NEAR(actual[c], reference[c], tolerance)
+            const double tolerance = std::max(reference[c] * 0.001, 1e-5);
+            EXPECT_NEAR(actualChannels[c], reference[c], tolerance)
                 << "elevation " << elevation << " channel " << c;
         }
     }
@@ -213,7 +217,7 @@ TEST(SkySunColor, QuadratureAgreesWithItsConvergedLimit)
 TEST(SkySunColor, AnOverheadSourceIsUnchanged)
 {
     const Rendering::AtmosphereParametersGPU atmo = DefaultAtmosphere();
-    const float source[3] = {0.9f, 0.8f, 0.7f};
+    const ColorLinear source(0.9f, 0.8f, 0.7f);
 
     const ColorLinear color = Rendering::EvaluateGroundLevelSunColor(atmo, source, 1.0f);
 
@@ -222,8 +226,31 @@ TEST(SkySunColor, AnOverheadSourceIsUnchanged)
     EXPECT_FLOAT_EQ(color.b, source.b);
 }
 
-    for (int c = 0; c < 3; ++c)
-        EXPECT_FLOAT_EQ(color[c], source[c]) << "channel " << c;
+// The ground color for three sources and elevations, recorded on Windows. The relative tolerance
+// holds the math library differences of other platforms; each source has three different channels,
+// so a swapped or dropped channel fails.
+TEST(SkySunColor, GroundColorMatchesTheRecordedValues)
+{
+    constexpr float kRelativeTolerance = 1e-4f;
+    struct Case
+    {
+        ColorLinear Source;
+        float Mu;
+        ColorLinear Expected;
+    };
+    const Case cases[] = {
+        {ColorLinear(0.25f, 0.5f, 2.0f), 0.5f, ColorLinear(0.220613271f, 0.411898375f, 1.41165149f)},
+        {ColorLinear(1.0f, 0.9f, 0.8f), 0.0871557f, ColorLinear(0.32462433f, 0.149478957f, 0.0296552274f)},
+        {ColorLinear(0.6f, 0.7f, 0.8f), -0.05f, ColorLinear(2.4855311e-12f, 2.36818335e-18f, 1.50102541e-29f)},
+    };
+    for (const Case& testCase : cases)
+    {
+        const ColorLinear actual =
+            Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), testCase.Source, testCase.Mu);
+        EXPECT_NEAR(actual.r, testCase.Expected.r, testCase.Expected.r * kRelativeTolerance) << "mu " << testCase.Mu;
+        EXPECT_NEAR(actual.g, testCase.Expected.g, testCase.Expected.g * kRelativeTolerance) << "mu " << testCase.Mu;
+        EXPECT_NEAR(actual.b, testCase.Expected.b, testCase.Expected.b * kRelativeTolerance) << "mu " << testCase.Mu;
+    }
 }
 
 // The shape of an atmospheric sun: monotonically dimmer as the path lengthens, and reddening as it
@@ -249,7 +276,7 @@ TEST(SkySunColor, DimsAndReddensMonotonicallyAsTheSunDescends)
         EXPECT_GT(current.r / std::max(current.b, 1e-30f),
                   previous.r / std::max(previous.b, 1e-30f))
             << "elevation " << elevation << " must be redder than the one above it";
-        std::copy(std::begin(current), std::end(current), std::begin(previous));
+        previous = current;
     }
 
     for (float elevation : {-0.5f, -1.0f, -2.0f, -3.0f, -5.0f})
@@ -258,7 +285,7 @@ TEST(SkySunColor, DimsAndReddensMonotonicallyAsTheSunDescends)
             Rendering::EvaluateGroundLevelSunColor(atmo, kWhite, MuForElevationDegrees(elevation));
         EXPECT_LE(ColorUtils::LinearRec709Luminance(current), ColorUtils::LinearRec709Luminance(previous))
             << "elevation " << elevation << " — a set sun must not brighten";
-        std::copy(std::begin(current), std::end(current), std::begin(previous));
+        previous = current;
     }
 }
 
@@ -271,12 +298,13 @@ TEST(SkySunColor, LowSunIsWarmAndOrderedNotMagenta)
 
     const ColorLinear color = Rendering::EvaluateGroundLevelSunColor(atmo, kWhite, MuForElevationDegrees(15.0f));
 
-    EXPECT_GT(color[0], color[1]) << "red must survive the longest path";
-    EXPECT_GT(color[1], color[2]) << "green above blue: blue scatters out first";
-    EXPECT_GT(color[1] / color[2], 1.4f) << "the warmth has to be visible, not a rounding artefact";
-    // Still a daylight sun, not a dusk one: a 15-degree sun keeps most of its luminous flux.
-    EXPECT_GT(Luminance(color), 0.65f);
-    EXPECT_LT(Luminance(color), 0.85f);
+    EXPECT_GT(color.r, color.g) << "red must survive the longest path";
+    EXPECT_GT(color.g, color.b) << "green above blue: blue scatters out first";
+    EXPECT_GT(color.g / color.b, 1.4f) << "the warmth has to be visible, not a rounding artefact";
+    // Still a daylight sun, not a dusk one: through the default crisp day's aerosol (optical depth
+    // 0.06) a 15-degree sun keeps about 60 % of its overhead luminous flux (0.59 measured).
+    EXPECT_GT(ColorUtils::LinearRec709Luminance(color), 0.49f);
+    EXPECT_LT(ColorUtils::LinearRec709Luminance(color), 0.69f);
 }
 
 // Once the moon has taken the primary slot (SkySystemConfig's blend completes at sunY = -0.17,
@@ -311,9 +339,9 @@ TEST(SkySunColor, ScalesTheSourceColourRatherThanReplacingIt)
     const ColorLinear tinted(0.25f, 0.5f, 2.0f);
     const ColorLinear result = Rendering::EvaluateGroundLevelSunColor(atmo, tinted, mu);
 
-    for (int c = 0; c < 3; ++c)
-        EXPECT_NEAR(result[c], white[c] * tinted[c], white[c] * tinted[c] * 1e-5f)
-            << "channel " << c;
+    EXPECT_NEAR(result.r, white.r * tinted.r, white.r * tinted.r * 1e-5f);
+    EXPECT_NEAR(result.g, white.g * tinted.g, white.g * tinted.g * 1e-5f);
+    EXPECT_NEAR(result.b, white.b * tinted.b, white.b * tinted.b * 1e-5f);
 }
 
 // The daytime sun the sky shaders see must stay unattenuated: they apply the transmittance LUT
@@ -339,10 +367,10 @@ TEST(SkySunColor, TheSourceAboveTheAtmosphereIsWhiteWhileTheGroundColourIsNot)
     EXPECT_GT(ground.g, ground.b);
 }
 
-// At full night the primary source is the moon, and its stylized illuminance lives in the colour's
-// MAGNITUDE (SkySystemConfig::moonColor). Restoring a normalized tint there would brighten every
-// night scene by more than two orders of magnitude while looking like a cosmetic edit.
-TEST(SkySunColor, TheNightSourceCarriesTheStylizedMoonIlluminance)
+// At full night the primary source is the moon: its colour is the lunar tint at unit luminance,
+// warmer than the sun's white (the moon reflects red better than blue), and its illuminance is in the
+// intensity, the moon's own source, never in the colour.
+TEST(SkySunColor, TheNightSourceIsTheMoonsWarmTintAtUnitLuminance)
 {
     Rendering::SkySettings settings{};
     settings.timeOfDayHours = 0.0f;
@@ -376,8 +404,9 @@ TEST(SkySunColor, TheNightSourceCarriesTheStylizedMoonIlluminance)
 //
 // Two properties, both violated by evaluating one extinction at the BLENDED direction (which, with
 // the default antipodal moon, flips sign at blend 0.5):
-//   * no step may brighten the delivered light by more than half again — a crossfading moon rises
-//     gently, it does not flash (the defect stepped ~900x in one 0.05 h tick);
+//   * no step may brighten the delivered light by more than half again, except up to the moonlight
+//     it is handing over to (a hazy evening extinguishes the sun below the moon first) — a
+//     crossfading moon rises gently, it does not flash (the defect stepped ~900x in one 0.05 h tick);
 //   * once the sun is 2 degrees under, the source COLOUR may never exceed moonlight's — the sun has
 //     set, so nothing may still be tinted as if it had not.
 TEST(SkySunColor, TheLinkedLightNeverFlaresBackOnAcrossTheSunsetHandoff)
@@ -413,16 +442,20 @@ TEST(SkySunColor, TheLinkedLightNeverFlaresBackOnAcrossTheSunsetHandoff)
             ColorUtils::LinearRec709Luminance(bodies.Moon) *
             Rendering::LinkedLightMoonScale(config, true) * bodies.MoonBlend;
         if (previous >= 0.0f)
-            EXPECT_LE(delivered, previous * 1.5f)
+        {
+            EXPECT_LE(delivered, std::max(previous * 1.5f, moonLevel * 1.001f))
                 << "hour " << hour << ": the delivered light brightened " << (delivered / previous)
-                << "x in one 0.05 h step";
+                << "x in one 0.05 h step, above the moonlight it is handing over to";
+        }
 
         const float sunElevationDeg = std::asin(std::clamp(state.sunDirWS[1], -1.0f, 1.0f)) *
                                       180.0f / 3.14159265358979323846f;
         if (sunElevationDeg <= -2.0f)
-            EXPECT_LT(Luminance(ground), moonSourceLuminance * 1.2f)
+        {
+            EXPECT_LT(ColorUtils::LinearRec709Luminance(ground), moonSourceLuminance * 1.2f)
                 << "hour " << hour << ": sun is " << sunElevationDeg
                 << " degrees under and the source colour is brighter than moonlight";
+        }
 
         if (step == 0)
             firstLuminance = delivered;
@@ -430,13 +463,14 @@ TEST(SkySunColor, TheLinkedLightNeverFlaresBackOnAcrossTheSunsetHandoff)
         previous = delivered;
     }
 
-    // And the window as a whole is a sunset: the delivered light ends far below where it started.
-    EXPECT_LT(lastLuminance, firstLuminance / 1000.0f);
+    // And the window as a whole is a sunset: the delivered light ends far below where it started. The
+    // window opens with the sun 1 degree up, already dimmed to 2.5 % of overhead through the default
+    // crisp day's haze, and ends at the moonlight 960x below that.
+    EXPECT_LT(lastLuminance, firstLuminance / 50.0f);
 }
 
-// The primary direction must stay on one of the two bodies. An antipodal moon at blend 0.5 makes
-// the lerp a zero vector, and Normalize3's fallback aims it at the zenith — which is also what fed
-// the flare above once the colour became a function of this direction.
+// The primary direction stays on one of the two bodies. An antipodal moon at blend 0.5 makes the
+// lerp a zero vector, and the zenith fallback would aim it at the zenith and cause the flare above.
 TEST(SkySunColor, TheBlendedPrimaryDirectionNeverCollapsesToTheZenith)
 {
     const Rendering::SkySystemConfig config{};
@@ -495,18 +529,25 @@ TEST(SkySunColor, TransmittanceShaderStillIntegratesTheMirroredModel)
     const std::string shader = LoadShader("sky_transmittance_lut.comp");
     ASSERT_FALSE(shader.empty()) << "sky_transmittance_lut.comp not found via GE_RENDERER_REPO_ROOT";
 
-    EXPECT_NE(shader.find("const int kSteps = 32;"), std::string::npos)
+    EXPECT_NE(shader.find("const int kSteps = 512;"), std::string::npos)
         << "step count must match kOpticalDepthSteps in AtmosphereTransmittance.cpp";
-    EXPECT_NE(shader.find("float sm = 0.5 * (s0 + s1);"), std::string::npos)
+    EXPECT_NE(shader.find("float sm = (float(i) + 0.5) * ds;"), std::string::npos)
         << "midpoint sampling";
     EXPECT_NE(shader.find("float r2 = r * r + sm * sm + 2.0 * r * mu * sm;"), std::string::npos)
         << "sample radius along the ray";
-    EXPECT_NE(shader.find("vec3 sigma = uAtmos.betaRayleigh * rayleigh + uAtmos.betaMie * mie;"),
+    EXPECT_NE(shader.find("tau += GE_SkyMediumAt(hSample).extinction * ds;"), std::string::npos)
+        << "the optical depth integrates the shared medium's extinction";
+    const std::string medium = LoadShader("Includes/sky_atmosphere_ubo.glsl");
+    EXPECT_NE(medium.find("m.extinction = m.scatterRayleigh + (uAtmos.betaMie + uAtmos.mieAbsorption) * mieDensity +"),
               std::string::npos)
-        << "extinction is Rayleigh + Mie with no tint or floor";
+        << "extinction is Rayleigh + Mie scattering and absorption + ozone, with no tint or floor";
+    EXPECT_NE(medium.find("max(0.0, 1.0 - abs(h - uAtmos.ozoneCenterHeight) / uAtmos.ozoneHalfWidth)"),
+              std::string::npos)
+        << "the ozone tent the mirror copies";
     EXPECT_NE(shader.find("vec3 transmittance = exp(-tau);"), std::string::npos);
-    EXPECT_NE(shader.find("sMax = sGround;"), std::string::npos)
-        << "downward rays clamp to their own hit with the ground";
+    EXPECT_NE(shader.find("GE_SkyTransmittanceLutUvToRMu("), std::string::npos)
+        << "the LUT stores only rays that leave the atmosphere; below the horizon the mirror's chord "
+           "through the planet and the readers' 0 are the two occlusions";
 }
 
 // The sky-view LUT applies the transmittance toward the sun at every march step. That is the OTHER
@@ -516,8 +557,10 @@ TEST(SkySunColor, SkyViewLutStillAppliesItsOwnTransmittanceToTheSunColour)
 {
     const std::string lut = LoadShader("sky_view_lut.comp");
     ASSERT_FALSE(lut.empty()) << "sky_view_lut.comp not found via GE_RENDERER_REPO_ROOT";
-    EXPECT_NE(lut.find("transToSun * uSky.sunColor * uSky.sunIntensity"), std::string::npos)
+    EXPECT_NE(lut.find("* transToSrc;"), std::string::npos)
         << "the in-scatter source term must keep applying the transmittance itself";
+    EXPECT_NE(lut.find("vec3 sunRadiance = uSky.sunColor * uSky.sunIntensity;"), std::string::npos)
+        << "the sun's source enters above the atmosphere";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -537,6 +580,10 @@ TEST(SkySunColor, SkyViewLutStillAppliesItsOwnTransmittanceToTheSunColour)
 
 namespace
 {
+
+// A fog sun fallback that the sky branch replaces: straight down, white, unit intensity.
+const Engine::Renderer::ResolvedFogSun kFallbackFogSun{
+    Mathematics::Vector3(0.0f, -1.0f, 0.0f), ColorLinear(1.0f, 1.0f, 1.0f), /*Intensity=*/1.0f};
 
 // The consumers a source-side tint must reach, read from the production objects after an Update.
 struct SunColourFanout
@@ -703,9 +750,9 @@ TEST(SkySunColor, TheIblCaptureTakesTheSourceColourAndRebakesWhenItChanges)
     ASSERT_FALSE(source.empty())
         << "SkyEnvironmentSource.cpp not found via GE_RENDERER_REPO_ROOT";
 
-    EXPECT_NE(source.find("ubo.sunColor[i] = s.primarySunColor[i]"), std::string::npos)
+    EXPECT_NE(source.find("ubo.sunColor[0] = s.primarySunColor.r"), std::string::npos)
         << "the capture must bake the above-atmosphere source colour verbatim";
-    EXPECT_NE(source.find("mix(s.primarySunColor, sizeof(s.primarySunColor))"), std::string::npos)
+    EXPECT_NE(source.find("mix(&s.primarySunColor, sizeof(s.primarySunColor))"), std::string::npos)
         << "InputDigest must hash primarySunColor, or authoring the tint never rebakes the IBL";
 }
 
@@ -769,3 +816,40 @@ TEST(SkySunColor, TheTintChangesTheSourceAndLeavesTheTransportPhysical)
 }
 
 
+
+// The fog sun and the ambient gradient tint at 17:00, recorded on Windows. The relative tolerance
+// holds the math library differences of other platforms; each color has three different channels,
+// so a swapped or dropped channel fails.
+TEST(SkySunColor, TheFogSunAndTheAmbientTintMatchTheRecordedValues)
+{
+    constexpr float kRelativeTolerance = 1e-4f;
+    SkyTintHarness harness;
+    {
+        Components::SkyEnvironment updated = *harness.World.GetComponent<Components::SkyEnvironment>(harness.SkyEntity);
+        updated.AmbientTintSky = ColorLinear(0.9f, 0.8f, 0.7f);
+        updated.AmbientTintEquator = ColorLinear(0.6f, 0.5f, 0.4f);
+        updated.AmbientTintGround = ColorLinear(0.3f, 0.2f, 0.1f);
+        harness.World.AddComponentImmediate(harness.SkyEntity, updated);
+    }
+    harness.Run();
+
+    const Engine::Renderer::ResolvedFogSun fog = Engine::Renderer::ResolveFogSunLighting(
+        harness.Services, ::GameEngine::Rendering::ViewId{}, /*trackDirectionalLight=*/true,
+        /*sunIntensityScale=*/1.0f, kFallbackFogSun);
+    const ColorLinear expectedColor(0.614097f, 0.466805756f, 0.252171367f);
+    const Mathematics::Vector3 expectedDirection(-0.965925813f, 0.198266953f, -0.166365743f);
+    constexpr float kExpectedIntensity = 12098.748f;
+    EXPECT_NEAR(fog.Color.r, expectedColor.r, std::abs(expectedColor.r) * kRelativeTolerance);
+    EXPECT_NEAR(fog.Color.g, expectedColor.g, std::abs(expectedColor.g) * kRelativeTolerance);
+    EXPECT_NEAR(fog.Color.b, expectedColor.b, std::abs(expectedColor.b) * kRelativeTolerance);
+    EXPECT_NEAR(fog.Direction.x, expectedDirection.x, std::abs(expectedDirection.x) * kRelativeTolerance);
+    EXPECT_NEAR(fog.Direction.y, expectedDirection.y, std::abs(expectedDirection.y) * kRelativeTolerance);
+    EXPECT_NEAR(fog.Direction.z, expectedDirection.z, std::abs(expectedDirection.z) * kRelativeTolerance);
+    EXPECT_NEAR(fog.Intensity, kExpectedIntensity, kExpectedIntensity * kRelativeTolerance);
+
+    const Engine::Renderer::EnvironmentAmbientGradientTint tint =
+        Engine::Renderer::SkyEnvironmentSource(harness.Services).AmbientGradientTint();
+    EXPECT_EQ(tint.Sky, ColorLinear(0.9f, 0.8f, 0.7f));
+    EXPECT_EQ(tint.Equator, ColorLinear(0.6f, 0.5f, 0.4f));
+    EXPECT_EQ(tint.Ground, ColorLinear(0.3f, 0.2f, 0.1f));
+}

@@ -8,6 +8,7 @@
 #include "Particles/CompiledParticleStack.h"
 #include "Particles/ParticleFlipbook.h"
 #include "Particles/ParticleProcessor/ParticleProcessorRegistry.h"
+#include "Mathematics/Matrix4x4.h"
 #include "Particles/ParticleRuntime.h"
 #include "Particles/ParticleStack/ParticleStackAuthoring.h"
 #include "Particles/ParticleStack/ParticleStackBinary.h"

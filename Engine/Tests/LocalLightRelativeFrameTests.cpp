@@ -537,7 +537,7 @@ TEST(LocalLightRelativeFrame, AShadowPassInAnotherSectorReadsTheReceiverViewDept
         GTEST_SKIP() << "No Vulkan device available";
     const CameraData view = CameraAt(kFarBase + kEye);
     const CameraData passCamera = CameraAt(kFarBase + kEye + kOneSectorAhead);
-    ASSERT_EQ(CameraRenderOriginSector(passCamera).z, CameraRenderOriginSector(view).z + 1)
+    ASSERT_EQ(CameraRenderOriginSector(passCamera).Z, CameraRenderOriginSector(view).Z + 1)
         << "the pass camera is one sector ahead of the view";
     const std::vector<WorldPosition> points = WallPoints(kFarBase);
     const auto run =

@@ -25,6 +25,8 @@ class DDGIBlendComputeTest : public ::testing::Test
 {
   protected:
     using V4 = std::array<float, 4>;
+    // The world-space xyz of a vec4 UBO field, the form DDGIAtlasUploadState compares.
+    static GameEngine::Mathematics::Vector3 ToVector3(const V4& value) { return {value[0], value[1], value[2]}; }
     static constexpr uint32_t kRays = 64;
     static constexpr uint32_t kTexels = 64;
     struct Params

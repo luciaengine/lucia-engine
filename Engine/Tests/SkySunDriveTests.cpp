@@ -92,7 +92,7 @@ Math::Curve FlatCurve(float lux)
     return curve;
 }
 
-float GroundLuminance(const float source[3], float upDot)
+float GroundLuminance(const ColorLinear& source, float upDot)
 {
     return ColorUtils::LinearRec709Luminance(
         Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), source, upDot));
@@ -169,8 +169,9 @@ TEST(SkySunDrive, TheCurveSetsTheIntensityInTheLightsUnitAndTheColourIsHueOnly)
         const ColorLinear ground = Rendering::EvaluateGroundLevelSunColor(
             Rendering::ScatteringAtmosphere(), ColorLinear(1.0f, 1.0f, 1.0f), lux.Settings().scatteringSunDir[1]);
         const float groundLuminance = ColorUtils::LinearRec709Luminance(ground);
+        const float groundChannels[3] = {ground.r, ground.g, ground.b};
         for (int c = 0; c < 3; ++c)
-            EXPECT_NEAR(light.Color[c], ground[c] / groundLuminance, 1e-5f) << "hour " << hours << ", channel " << c;
+            EXPECT_NEAR(light.Color[c], groundChannels[c] / groundLuminance, 1e-5f) << "hour " << hours << ", channel " << c;
         ++checked;
     }
     EXPECT_GT(checked, 90);
@@ -263,7 +264,7 @@ TEST(SkySunDrive, TheSkyFollowsTheCurvesNoon)
     // The sky's sun at noon delivers the curve's noon: the reference times the noon extinction.
     const Components::SkyEnvironment sky = rig.Rig.Sky();
     const float noonElevation = Rendering::SolarNoonElevationDegrees(Components::SkySunPath::PathAngles(sky));
-    const float white[3] = {1.0f, 1.0f, 1.0f};
+    const ColorLinear white(1.0f, 1.0f, 1.0f);
     const float noonDelivered = reference * GroundLuminance(white, std::sin(noonElevation * 0.01745329252f));
     const float curveNoon = SunDrive::CurveIlluminanceLux(sky.SunIlluminanceCurve, 12.0f);
     EXPECT_NEAR(noonDelivered, curveNoon, curveNoon * 1e-5f);

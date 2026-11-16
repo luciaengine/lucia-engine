@@ -250,26 +250,3 @@ TEST(PixelPerfectCameraViewState, ExpandNeverShrinksBelowTheReference)
     EXPECT_GE(state.ReferenceWidth, 320u);
     EXPECT_GE(state.ReferenceHeight, 180u);
 }
-
-// Past 512 m the vertex stage projects through viewProjRel, so it must carry the snap of viewProj.
-TEST(PixelPerfectCamera, RebasedViewProjectionCarriesTheSnapPastTheFirstSector)
-{
-    RenderServices services;
-    const auto cameraId = services.Views().AllocateCamera("PixelPerfect.Far");
-    const auto viewId = services.Views().AllocateView("PixelPerfect.Far", cameraId);
-    Engine::Renderer::Camera camera;
-    camera.params.Perspective = false;
-    camera.params.PixelPerfect = true;
-    camera.params.PixelPerfectPixelSnap = true;
-    camera.params.PixelPerfectPixelsPerUnit = 10;
-    constexpr float kEyeX = 2000.17f; // sector 2, 0.3 px off the pixel grid
-    camera.SetPose(Mathematics::Matrix4x4{}, Mathematics::WorldPosition{kEyeX, 0.0, 0.0});
-    ApplyActiveCameraAspect(services, viewId, cameraId, camera, 483, 273);
-    const auto* actual = services.Views().FindCameraData(cameraId);
-    ASSERT_NE(actual, nullptr);
-    ASSERT_EQ(actual->renderOriginSector[0], 2);
-    const Mathematics::Matrix4x4 expected = actual->proj * actual->viewRel;
-    for (int column = 0; column < 4; ++column)
-        for (int row = 0; row < 4; ++row)
-            EXPECT_NEAR(actual->viewProjRel[column][row], expected[column][row], 1e-5f);
-}

@@ -16,6 +16,8 @@
 #include "ScopedShaderCompileTarget.h"
 #include "StagedTestPaths.h"
 #include "TestTempDir.h"
+#include "Rendering/Core/HotReloadIntegration.h"
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <atomic>
@@ -30,11 +32,14 @@
 
 #include <gtest/gtest.h>
 #include <spirv/unified1/spirv.hpp>
+#include "Engine/Rendering/ShaderCompilationCache.h"
+#include "Engine/Rendering/ShaderCompileErrorLog.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Engine::Renderer;
 using namespace GameEngine::Rendering;
 
+#include "StagedTestPaths.h"
 namespace
 {
 
@@ -62,9 +67,9 @@ ShaderCacheKey MakeTestKey(const std::string& surfaceShader)
 // is a material that never recompiles.
 bool NamesIdentity(const ShaderFileDependents& deps, const std::string& surfaceShaderPath,
                    const std::string& vertexModifierPath,
-                   const std::filesystem::path& materialAssetPath = {})
+                   const std::filesystem::path& materialDirectory = {})
 {
-    const ShaderSourceKey wanted{surfaceShaderPath, vertexModifierPath, materialAssetPath};
+    const ShaderSourceKey wanted{surfaceShaderPath, vertexModifierPath, materialDirectory.lexically_normal()};
     return std::find(deps.Identities.begin(), deps.Identities.end(), wanted)
            != deps.Identities.end();
 }
@@ -133,7 +138,7 @@ TEST_F(ShaderCompilationCacheTest, Clear_RemovesGlobalEntries)
 {
     const MaterialCompileSpec spec = MakeTestSpec("surface_a.glsl");
     m_cache.GetOrCompile(MakeTestKey("surface_a.glsl"), spec, m_fakeContext, "MatA",
-                         ShaderSourceKind::SpirV);
+                         {}, ShaderSourceKind::SpirV);
     ShaderCacheKey forwardPlusKey = MakeTestKey("surface_a.glsl");
     forwardPlusKey.VariantKey.materialKeywords |= MaterialKeyword::ForwardPlus;
     m_cache.GetOrCompile(forwardPlusKey, spec, m_fakeContext, "MatA", {}, ShaderSourceKind::SpirV);
@@ -199,11 +204,17 @@ class ShaderCompilationCacheEpochTest : public ::testing::Test
         if (!std::filesystem::exists(m_shaderDir, ec))
             GTEST_SKIP() << "Staged shader directory not found: " << m_shaderDir.string();
 
-        // Per-TEST project root AND cache root, unique to this process and this
-        // test: the on-disk shaderpkg key folds the composed source, which
+        // Per-TEST project root AND cache root. Keyed by test name, not just the
+        // gtest seed (which is 0 without --gtest_shuffle, i.e. the same for every
+        // test): the on-disk shaderpkg key folds the composed source, which
         // carries the surface's absolute path, so a shared root makes sibling
         // tests share cache entries.
-        m_projectRoot = TestUtils::MakeUniqueTempDirectory("ge_shader_epoch");
+        m_projectRoot =
+            std::filesystem::temp_directory_path()
+            / (std::string("ge_shader_epoch_")
+               + ::testing::UnitTest::GetInstance()->current_test_info()->name());
+        std::error_code rmEc;
+        std::filesystem::remove_all(m_projectRoot, rmEc); // residue from a killed run
         std::filesystem::create_directories(m_projectRoot);
 
         m_ctx.AdapterShaderDir = m_shaderDir;
@@ -229,15 +240,19 @@ class ShaderCompilationCacheEpochTest : public ::testing::Test
     void WriteSurface(const char* colorExpr) const
     {
         const auto path = m_projectRoot / kSurfaceFile;
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(out.good()) << "could not open " << path.string();
-        out << "SurfaceOutput EvaluateSurface(SurfaceInput sIn) {\n"
-               "    SurfaceOutput o = DefaultSurfaceOutput();\n"
-               "    o.baseColor = "
-            << colorExpr
-            << ";\n"
-               "    return o;\n"
-               "}\n";
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            ASSERT_TRUE(out.good()) << "could not open " << path.string();
+            out << "SurfaceOutput EvaluateSurface(SurfaceInput sIn) {\n"
+                   "    SurfaceOutput o = DefaultSurfaceOutput();\n"
+                   "    o.baseColor = "
+                << colorExpr
+                << ";\n"
+                   "    return o;\n"
+                   "}\n";
+        }
+        // The editor's watcher announces the edit; the compile path re-reads no held source until it is.
+        GameEngine::Rendering::NotifyShaderSourcesChanged();
     }
 
     static MaterialCompileSpec MakeSpec()
@@ -415,7 +430,12 @@ class ShaderCompilationCacheClosureTest : public ::testing::Test
 
         // Per-TEST roots for the same reason as the epoch fixture: the disk key
         // folds the surface's absolute path via the composed source.
-        m_projectRoot = TestUtils::MakeUniqueTempDirectory("ge_shader_closure");
+        m_projectRoot =
+            std::filesystem::temp_directory_path()
+            / (std::string("ge_shader_closure_")
+               + ::testing::UnitTest::GetInstance()->current_test_info()->name());
+        std::error_code rmEc;
+        std::filesystem::remove_all(m_projectRoot, rmEc);
         std::filesystem::create_directories(m_projectRoot);
 
         m_ctx.AdapterShaderDir = m_shaderDir;
@@ -433,9 +453,13 @@ class ShaderCompilationCacheClosureTest : public ::testing::Test
     void WriteFile(const char* file, const std::string& text) const
     {
         const auto path = m_projectRoot / file;
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        ASSERT_TRUE(out.good()) << "could not open " << path.string();
-        out << text;
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            ASSERT_TRUE(out.good()) << "could not open " << path.string();
+            out << text;
+        }
+        // The editor's watcher announces the edit; the compile path re-reads no held source until it is.
+        GameEngine::Rendering::NotifyShaderSourcesChanged();
     }
 
     // A helper include owning the base color, and a surface that consumes it.
@@ -597,10 +621,10 @@ TEST_F(ShaderCompilationCacheClosureTest, SharedInclude_DropsEverySurfaceRidingI
     WriteIncludingSurface("closure_surface_b.glsl", kHelperFile);
 
     ASSERT_NE(m_cache.GetOrCompile(MakeKey("closure_surface_a.glsl"),
-                                   MakeSpec("closure_surface_a.glsl"), m_ctx, "A", ShaderSourceKind::SpirV),
+                                   MakeSpec("closure_surface_a.glsl"), m_ctx, "A", {}, ShaderSourceKind::SpirV),
               nullptr);
     ASSERT_NE(m_cache.GetOrCompile(MakeKey("closure_surface_b.glsl"),
-                                   MakeSpec("closure_surface_b.glsl"), m_ctx, "B", ShaderSourceKind::SpirV),
+                                   MakeSpec("closure_surface_b.glsl"), m_ctx, "B", {}, ShaderSourceKind::SpirV),
               nullptr);
     ASSERT_EQ(m_cache.GetEntryCount(), 2u);
 
@@ -688,7 +712,8 @@ TEST_F(ShaderCompilationCacheClosureTest, ClearKeepsClosureRows)
 
 // Two materials in DIFFERENT directories can author the SAME surface filename and
 // resolve to different files. The closure row is keyed on the full source
-// identity — material asset path included — so they get SEPARATE rows and an
+// identity — the material directory included, because each surface resolves
+// beside its own material — so they get SEPARATE rows and an
 // edit to one's private helper leaves the other's entry alone. Keying the row on
 // (surface, vertex-modifier) alone shared one row between them, which then had to
 // union both helper sets to avoid a missed invalidation, and that union cost the
@@ -729,33 +754,124 @@ TEST_F(ShaderCompilationCacheClosureTest, SameNamedSurfaceInTwoDirs_GetSeparateC
     spec.surfaceShaderPath = "shared_surface.glsl";
     spec.lightingModel = "StandardPBR";
 
-    auto vA = m_cache.GetOrCompile(makeKey(dirA / "a.material"), spec, m_ctx, "ProbeA", dirA / "a.material",
-                                   ShaderSourceKind::SpirV);
+    auto vA = m_cache.GetOrCompile(makeKey(dirA / "a.material"), spec, m_ctx, "ProbeA", dirA / "a.material", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(vA, nullptr);
-    auto vB = m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material",
-                                   ShaderSourceKind::SpirV);
+    auto vB = m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(vB, nullptr);
-    ASSERT_EQ(m_cache.GetEntryCount(), 2u) << "distinct materialAssetPath => two entries";
+    ASSERT_EQ(m_cache.GetEntryCount(), 2u) << "each surface resolves beside its own material => two identities";
     ASSERT_NE(vA->fragmentBytes, vB->fragmentBytes) << "the two surfaces really are different code";
 
     // A's helper: A drops and is named, B is untouched and still serves.
     const auto depsA = m_cache.InvalidateEntriesForShaderFile("helper_a.glsl");
     EXPECT_EQ(depsA.DroppedEntries, 1u)
         << "editing A's helper must drop A's entry and only A's";
-    EXPECT_TRUE(NamesIdentity(depsA, "shared_surface.glsl", "", dirA / "a.material"))
+    EXPECT_TRUE(NamesIdentity(depsA, "shared_surface.glsl", "", dirA))
         << "A's build must record its own helper under A's identity";
-    EXPECT_FALSE(NamesIdentity(depsA, "shared_surface.glsl", "", dirB / "b.material"))
+    EXPECT_FALSE(NamesIdentity(depsA, "shared_surface.glsl", "", dirB))
         << "B resolves a different file of the same name — it must not ride along";
     EXPECT_EQ(m_cache.GetEntryCount(), 1u) << "B's entry must survive A's helper edit";
-    EXPECT_EQ(m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material",
-                                   ShaderSourceKind::SpirV), vB)
+    EXPECT_EQ(m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material", {}, ShaderSourceKind::SpirV), vB)
         << "B's surviving entry must still serve as a hit";
 
     // ...and symmetrically, so the pass above is not an artifact of row order.
     const auto depsB = m_cache.InvalidateEntriesForShaderFile("helper_b.glsl");
     EXPECT_EQ(depsB.DroppedEntries, 1u);
-    EXPECT_TRUE(NamesIdentity(depsB, "shared_surface.glsl", "", dirB / "b.material"));
-    EXPECT_FALSE(NamesIdentity(depsB, "shared_surface.glsl", "", dirA / "a.material"));
+    EXPECT_TRUE(NamesIdentity(depsB, "shared_surface.glsl", "", dirB));
+    EXPECT_FALSE(NamesIdentity(depsB, "shared_surface.glsl", "", dirA));
+}
+
+// The common case the material directory must stay out of: materials in many
+// directories authoring one surface that lives under a shader root. They share
+// one identity, so each keyword variant compiles once and every material receives
+// that compile, and an edit to the surface's include still names the identity.
+TEST_F(ShaderCompilationCacheClosureTest, RootResolvedSurface_OneCompileForEveryMaterialDir)
+{
+    WriteHelper("vec3(0.0, 1.0, 0.0)");
+    WriteIncludingSurface(kSurfaceFile, kHelperFile);
+    const auto materialA = m_projectRoot / "Data" / "planes" / "a.material";
+    const auto materialB = m_projectRoot / "Data" / "ground" / "b.material";
+    std::filesystem::create_directories(materialA.parent_path());
+    std::filesystem::create_directories(materialB.parent_path());
+
+    ShaderCacheKey keyA = MakeKey();
+    keyA.Source = MakeShaderSourceKey(kSurfaceFile, "", materialA);
+    ShaderCacheKey keyB = MakeKey();
+    keyB.Source = MakeShaderSourceKey(kSurfaceFile, "", materialB);
+    ASSERT_EQ(keyA, keyB) << "neither directory holds the surface, so both materials name the same source";
+
+    const auto vA = m_cache.GetOrCompile(keyA, MakeSpec(), m_ctx, "A", materialA, ShaderSourceKind::SpirV);
+    ASSERT_NE(vA, nullptr);
+    EXPECT_EQ(m_cache.GetOrCompile(keyB, MakeSpec(), m_ctx, "B", materialB, ShaderSourceKind::SpirV), vA)
+        << "the second material must receive the first one's compile";
+    EXPECT_EQ(m_cache.GetEntryCount(), 1u);
+
+    const auto deps = m_cache.InvalidateEntriesForShaderFile(kHelperFile);
+    EXPECT_EQ(deps.DroppedEntries, 1u);
+    EXPECT_TRUE(NamesIdentity(deps, kSurfaceFile, ""))
+        << "the shared identity is what the affected-material scan matches every rider against";
+}
+
+// A shared compile reports its failure against the material that ran it. The
+// recompile after the fix may run for another material sharing the key; it must
+// still clear the row, or the Shader Errors panel keeps a fixed shader listed.
+TEST_F(ShaderCompilationCacheClosureTest, SharedKeyFailure_ClearedBySuccessForAnotherMaterial)
+{
+    ShaderCompileErrorLog errors;
+    m_cache.SetErrorLog(&errors);
+    WriteFile(kSurfaceFile, "SurfaceOutput EvaluateSurface(SurfaceInput sIn) { return undefined_symbol; }\n");
+    // Real files: a failure for a material file that no longer exists is dropped as a rename.
+    const auto materialA = m_projectRoot / "A" / "a.material";
+    const auto materialB = m_projectRoot / "B" / "b.material";
+    for (const auto& material : {materialA, materialB})
+    {
+        std::filesystem::create_directories(material.parent_path());
+        std::ofstream(material) << "{}";
+    }
+    ShaderCacheKey key = MakeKey();
+    key.Source = MakeShaderSourceKey(kSurfaceFile, "", materialA);
+
+    ASSERT_EQ(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "A", materialA, ShaderSourceKind::SpirV), nullptr);
+    ASSERT_EQ(errors.Count(), 1u) << "the failure is reported once, against the material that compiled it";
+
+    WriteHelper("vec3(0.0, 1.0, 0.0)");
+    WriteIncludingSurface(kSurfaceFile, kHelperFile);
+    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
+    ASSERT_NE(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "B", materialB, ShaderSourceKind::SpirV), nullptr);
+    EXPECT_EQ(errors.Count(), 0u) << "B's successful compile of the shared key must clear the row A reported";
+    m_cache.SetErrorLog(nullptr);
+}
+
+// After an edit that still fails, another material sharing the key may run the
+// failing compile and report its own row. The fix must clear both rows, whichever
+// material compiles it.
+TEST_F(ShaderCompilationCacheClosureTest, SharedKeyRefailure_ClearedForEveryReporter)
+{
+    ShaderCompileErrorLog errors;
+    m_cache.SetErrorLog(&errors);
+    WriteFile(kSurfaceFile, "SurfaceOutput EvaluateSurface(SurfaceInput sIn) { return undefined_symbol; }\n");
+    const auto materialA = m_projectRoot / "A" / "a.material";
+    const auto materialB = m_projectRoot / "B" / "b.material";
+    const auto materialC = m_projectRoot / "C" / "c.material";
+    for (const auto& material : {materialA, materialB, materialC})
+    {
+        std::filesystem::create_directories(material.parent_path());
+        std::ofstream(material) << "{}";
+    }
+    ShaderCacheKey key = MakeKey();
+    key.Source = MakeShaderSourceKey(kSurfaceFile, "", materialA);
+
+    ASSERT_EQ(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "A", materialA, ShaderSourceKind::SpirV), nullptr);
+    WriteFile(kSurfaceFile, "SurfaceOutput EvaluateSurface(SurfaceInput sIn) { return still_undefined; }\n");
+    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
+    ASSERT_EQ(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "B", materialB, ShaderSourceKind::SpirV), nullptr);
+    ASSERT_EQ(errors.Count(), 2u) << "each failing compile reports against the material that ran it";
+
+    WriteHelper("vec3(0.0, 1.0, 0.0)");
+    WriteIncludingSurface(kSurfaceFile, kHelperFile);
+    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
+    ASSERT_NE(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "C", materialC, ShaderSourceKind::SpirV), nullptr);
+    EXPECT_EQ(errors.Count(), 0u) << "the fixed shared shader must clear the rows of A and B";
+    m_cache.SetErrorLog(nullptr);
 }
 
 TEST(ShaderCacheIdentity, RetainedKeysStayStableAndDistinctAcrossProfilesAndRehash)
@@ -783,10 +899,18 @@ TEST(ShaderCacheIdentity, RetainedKeysStayStableAndDistinctAcrossProfilesAndReha
     EXPECT_NE(otherTarget, compatible);
 }
 
-    const auto deps = m_cache.InvalidateEntriesForShaderFile(kHelperFile);
-    EXPECT_EQ(deps.DroppedEntries, 1u);
-    EXPECT_TRUE(NamesIdentity(deps, kSurfaceFile, ""))
-        << "the shared identity is what the affected-material scan matches every rider against";
+TEST_F(ShaderCompilationCacheTest, FailedProgramsAreCachedSeparatelyForEachStageSourceKind)
+{
+    const auto key = MakeTestKey("surface_a.glsl");
+    const auto spec = MakeTestSpec("surface_a.glsl");
+    int compiles = 0;
+    m_cache.SetCompileEnteredHookForTesting([&compiles] { ++compiles; });
+    EXPECT_EQ(m_cache.GetOrCompile(key, spec, m_fakeContext, "Spirv", {}, ShaderSourceKind::SpirV), nullptr);
+    EXPECT_EQ(m_cache.GetOrCompile(key, spec, m_fakeContext, "Wgsl", {}, ShaderSourceKind::Wgsl), nullptr);
+    EXPECT_EQ(compiles, 2);
+    EXPECT_EQ(m_cache.GetEntryCount(), 2u);
+    EXPECT_EQ(m_cache.GetOrCompile(key, spec, m_fakeContext, "SpirvAgain", {}, ShaderSourceKind::SpirV), nullptr);
+    EXPECT_EQ(compiles, 2);
 }
 
 namespace
@@ -828,41 +952,6 @@ bool TargetMetaNames(const ShaderMeta& meta, std::string_view name)
     return false;
 }
 } // namespace
-
-    WriteHelper("vec3(0.0, 1.0, 0.0)");
-    WriteIncludingSurface(kSurfaceFile, kHelperFile);
-    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
-    ASSERT_NE(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "B", materialB, ShaderSourceKind::SpirV), nullptr);
-    EXPECT_EQ(errors.Count(), 0u) << "B's successful compile of the shared key must clear the row A reported";
-    m_cache.SetErrorLog(nullptr);
-}
-
-TEST_F(ShaderCompilationCacheEpochTest, CbtHeadProgramsKeepProfileBindingsInBothInsertionOrders)
-{
-    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
-    const auto packages = TestPaths::ExecutableDirectory() / "Assets/Shaders";
-    ASSERT_TRUE(std::filesystem::is_regular_file(packages / "CBT/cbt_surface.glsl"));
-    m_ctx.PackageShaderDirs.push_back(packages);
-    for (const bool compatibleFirst : {false, true})
-    {
-        std::filesystem::create_directories(material.parent_path());
-        std::ofstream(material) << "{}";
-    }
-}
-
-    ASSERT_EQ(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "A", materialA, ShaderSourceKind::SpirV), nullptr);
-    WriteFile(kSurfaceFile, "SurfaceOutput EvaluateSurface(SurfaceInput sIn) { return still_undefined; }\n");
-    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
-    ASSERT_EQ(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "B", materialB, ShaderSourceKind::SpirV), nullptr);
-    ASSERT_EQ(errors.Count(), 2u) << "each failing compile reports against the material that ran it";
-
-    WriteHelper("vec3(0.0, 1.0, 0.0)");
-    WriteIncludingSurface(kSurfaceFile, kHelperFile);
-    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
-    ASSERT_NE(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "C", materialC, ShaderSourceKind::SpirV), nullptr);
-    EXPECT_EQ(errors.Count(), 0u) << "the fixed shared shader must clear the rows of A and B";
-    m_cache.SetErrorLog(nullptr);
-}
 
 TEST_F(ShaderCompilationCacheEpochTest, InFlightReliefCompileKeepsItsCapturedTargetAfterDefaultsChange)
 {
@@ -910,6 +999,48 @@ TEST_F(ShaderCompilationCacheEpochTest, InFlightReliefCompileKeepsItsCapturedTar
     EXPECT_TRUE(TargetMetaNames(*second->meta, "ge_MaterialTextures0"));
     EXPECT_FALSE(TargetMetaNames(*second->meta, "ge_BindlessTextures"));
     EXPECT_EQ(m_cache.GetEntryCount(), 2u);
+}
+
+TEST_F(ShaderCompilationCacheEpochTest, CbtHeadProgramsKeepProfileBindingsInBothInsertionOrders)
+{
+    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
+    const auto packages = TestPaths::ExecutableDirectory() / "Assets/Shaders";
+    ASSERT_TRUE(std::filesystem::is_regular_file(packages / "CBT/cbt_surface.glsl"));
+    m_ctx.PackageShaderDirs.push_back(packages);
+    for (const bool compatibleFirst : {false, true})
+    {
+        m_cache.Clear();
+        std::shared_ptr<SharedShaderVariant> desktop;
+        std::shared_ptr<SharedShaderVariant> compatible;
+        for (const bool compatibility : {compatibleFirst, !compatibleFirst, compatibleFirst})
+        {
+            ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, compatibility, false});
+            ShaderCacheKey key = MakeTestKey("CBT/cbt_surface.glsl");
+            key.Source.VertexModifierPath = "CBT/cbt_vertex_modifier.glsl";
+            key.VariantKey.vertexFlags = VertexAttributeFlags::None;
+            key.VariantKey.materialKeywords = MaterialKeyword::CustomVertexShader |
+                MaterialKeyword::HasVertexOutputMod | MaterialKeyword::Instanced |
+                MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::IBL;
+            MaterialCompileSpec spec = MakeTestSpec("CBT/cbt_surface.glsl");
+            spec.vertexModifierPath = key.Source.VertexModifierPath;
+            spec.customVertexShader = true;
+            const auto program = m_cache.GetOrCompile(key, spec, m_ctx, "CbtProfileHead", {}, ShaderSourceKind::SpirV);
+            ASSERT_NE(program, nullptr);
+            ASSERT_NE(program->meta, nullptr);
+            EXPECT_EQ(TargetMetaNames(*program->meta, "gCbtChain"), !compatibility);
+            EXPECT_EQ(TargetMetaNames(*program->meta, "gCbtDrawLevel"), !compatibility);
+            auto& retained = compatibility ? compatible : desktop;
+            if (retained)
+            {
+                EXPECT_EQ(program, retained);
+            }
+            else
+            {
+                retained = program;
+            }
+        }
+        EXPECT_EQ(m_cache.GetEntryCount(), 2u);
+    }
 }
 
 TEST_F(ShaderCompilationCacheEpochTest, ContentEditsInvalidateEveryRetainedTarget)

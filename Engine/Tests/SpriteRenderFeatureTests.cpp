@@ -209,7 +209,7 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     const auto secondCameraId = Services.Views().AllocateCamera("SpriteOtherOrigin");
     const auto secondViewId = Services.Views().AllocateView("SpriteOtherOrigin", secondCameraId);
     Services.Views().SetViewWorldId(secondViewId, 12);
-    Services.Views().SetViewRenderLayerMask(secondViewId, 0xFFFFFFFFu);
+    Services.Views().SetViewRenderLayerMask(secondViewId, GameEngine::Rendering::RenderLayerMask::All());
     Rendering::BufferHandle firstViewInstances;
     Rendering::BufferHandle firstViewLights;
     for (int viewIndex = 0; viewIndex < 2; ++viewIndex)
@@ -253,7 +253,7 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     EXPECT_FLOAT_EQ(firstLight[0].PositionType[0], 512.5f);
     Device->UnmapBuffer(firstViewLights);
 
-    Services.Views().SetViewRenderLayerMask(viewId, 0u);
+    Services.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::None());
     Feature->BuildViewDraws(Services, viewId, batches);
     EXPECT_TRUE(batches.empty());
 }

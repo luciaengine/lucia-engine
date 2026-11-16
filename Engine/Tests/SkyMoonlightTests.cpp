@@ -1,6 +1,6 @@
 // Moonlight in lux (SkyEnvironment::MoonlightIlluminance): what the light the sky drives delivers at
-// full night, absolute rather than a fraction of the sun, and what the night sky and the moon disc are
-// lit by. At the default it reproduces the night the sky has always had.
+// full night under a full moon, absolute rather than a fraction of the sun, and what the night sky and
+// the moon disc are lit by. The default is a real full moon's 0.25 lx; the phase scales it.
 
 #include <gtest/gtest.h>
 
@@ -58,7 +58,7 @@ struct NightRig
 
     // The light's colour as the sky's own bodies give it, rebuilt from the rendered sun and moon with
     // the handover the frame used and `moonScale` on the moon.
-    void ExpectedColour(float moonScale, float out[3]) const
+    ColorLinear ExpectedColour(float moonScale) const
     {
         const Rendering::SkySystemConfig config{};
         Rendering::SkySystemState state{};
@@ -75,20 +75,21 @@ struct NightRig
 };
 } // namespace
 
-// The default moonlight is today's: at full night the shipped 100 000 lx sun light is the moon's
-// ground colour times the exact stylized scale, bit for bit, and the night sky's source is the clear
-// sun's lifted value times the moon's scale, as it always was.
-TEST(SkyMoonlight, TheDefaultReproducesTodaysNight)
+// The default moonlight is a real full moon's: 0.25 lx overhead, so at full night under the default
+// full moon the shipped 100 000 lx sun light is the moon's ground colour times the physical
+// moon-to-sun ratio, bit for bit, and the moon's own source in the sky is the clear sun's lifted value
+// times the same ratio.
+TEST(SkyMoonlight, TheDefaultIsARealFullMoon)
 {
     NightRig rig(Components::kClearNoonSunIlluminanceLux, Components::LightUnit::Lux,
                  Components::kDefaultMoonlightIlluminanceLux);
     rig.RunAt(kMidnightHours);
     const Rendering::SkySystemConfig config{};
-    float expected[3];
-    rig.ExpectedColour(config.moonLightIlluminanceScale, expected);
-    for (int c = 0; c < 3; ++c)
-        EXPECT_EQ(rig.Light().Color[c], expected[c]) << "channel " << c;
-    EXPECT_NEAR(Components::kDefaultMoonlightIlluminanceLux, 5.158f, 0.001f);
+    const ColorLinear expected = rig.ExpectedColour(config.moonLightIlluminanceScale);
+    EXPECT_EQ(rig.Light().Color[0], expected.r);
+    EXPECT_EQ(rig.Light().Color[1], expected.g);
+    EXPECT_EQ(rig.Light().Color[2], expected.b);
+    EXPECT_NEAR(Components::kDefaultMoonlightIlluminanceLux, 0.25f, 1e-4f);
 
     const float clearSun =
         Components::LightIntensityToUnitless(Components::kClearNoonSunIlluminanceLux, Components::LightUnit::Lux) *
@@ -107,7 +108,7 @@ TEST(SkyMoonlight, NightIlluminanceIsAbsolute)
     soft.RunAt(kMidnightHours);
     unitless.RunAt(kMidnightHours);
     const float night = Components::SkySunIlluminance::DeliveredLux(clear.Light());
-    ASSERT_GT(night, 1.0f);
+    ASSERT_GT(night, 0.01f);
     EXPECT_NEAR(Components::SkySunIlluminance::DeliveredLux(soft.Light()), night, night * 1e-5f);
     EXPECT_NEAR(Components::SkySunIlluminance::DeliveredLux(unitless.Light()), night, night * 1e-5f);
 }
@@ -160,20 +161,48 @@ TEST(SkyMoonlight, ZeroIsADarkNightNotAnError)
     EXPECT_TRUE(logLines.empty()) << logLines.front();
 }
 
-// The night horizon band (the sky's night horizon colour and the rim's night tint) is lit by the same
-// moonlight as the dome above it: twice the moonlight doubles it, and at the default it is the
-// authored keys exactly.
-TEST(SkyMoonlight, TheNightHorizonFollowsTheMoonlight)
+// The night sky's own glow at the horizon is the sky's, not the moon's: the same keys under any
+// moonlight, so a moonless night keeps its airglow and a bright moon does not brighten it.
+TEST(SkyMoonlight, TheNightGlowIsTheSkysOwn)
 {
     NightRig base(100000.0f, Components::LightUnit::Lux, Components::kDefaultMoonlightIlluminanceLux);
     NightRig bright(100000.0f, Components::LightUnit::Lux, 2.0f * Components::kDefaultMoonlightIlluminanceLux);
     base.RunAt(kMidnightHours);
     bright.RunAt(kMidnightHours);
     const Components::SkyEnvironment defaults{};
-    for (int c = 0; c < 3; ++c)
+    const float* midnight = defaults.NightSkyHorizonColorKeys.Midnight;
+    for (const Rendering::SkySettings* settings : {&base.Settings(), &bright.Settings()})
     {
         EXPECT_EQ(settings->nightSkyHorizonColor.r, midnight[0]);
         EXPECT_EQ(settings->nightSkyHorizonColor.g, midnight[1]);
         EXPECT_EQ(settings->nightSkyHorizonColor.b, midnight[2]);
     }
+}
+
+// The phase is the moon's place on its cycle: a quarter moon lights the sky and the ground with
+// Krisciunas and Schaefer's 0.091 of a full moon's light (2.6 magnitudes fainter), a new moon with
+// nothing. The sky's source carries no extinction, so its ratio is the phase law's alone.
+TEST(SkyMoonlight, AQuarterMoonGivesTheFractionOfFullThePhaseLawSays)
+{
+    auto sourceAt = [](float arcPosition)
+    {
+        NightRig rig(100000.0f, Components::LightUnit::Lux, Components::kDefaultMoonlightIlluminanceLux);
+        Components::SkyEnvironment sky = rig.Rig.Sky();
+        sky.MoonArcPosition = arcPosition;
+        rig.Rig.SetSky(sky);
+        rig.RunAt(kMidnightHours);
+        return rig.Settings().moonIntensity;
+    };
+    const float full = sourceAt(0.5f);
+    ASSERT_GT(full, 0.0f);
+    EXPECT_NEAR(sourceAt(0.25f) / full, 0.0910f, 0.0005f);
+    EXPECT_NEAR(sourceAt(0.75f) / full, 0.0910f, 0.0005f);
+    EXPECT_EQ(sourceAt(0.0f), 0.0f);
+
+    Components::SkyEnvironment fullSky{};
+    Components::SkyEnvironment quarterSky{};
+    quarterSky.MoonArcPosition = 0.25f;
+    EXPECT_NEAR(Components::SkySunDrive::MoonlightLux(quarterSky, 1.0f) /
+                    Components::SkySunDrive::MoonlightLux(fullSky, 1.0f),
+                0.0910f, 0.0005f);
 }
