@@ -19,7 +19,7 @@ namespace GameEngine.InteropTests
         [Test]
         public void GuidBytesUseNativeOrderAndPackedComponentOffsets()
         {
-            var guid = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+            var guid = AssetGuid.Parse("00112233-4455-6677-8899-aabbccddeeff");
             var prefab = new PrefabRef(guid);
             Span<byte> bytes = stackalloc byte[16];
             MemoryMarshal.Write(bytes, in prefab);
@@ -37,7 +37,7 @@ namespace GameEngine.InteropTests
         public void EmptyReferenceAndEqualityFollowTheGuid()
         {
             Assert.That(default(PrefabRef).IsNone, Is.True);
-            var guid = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+            var guid = AssetGuid.Parse("00112233-4455-6677-8899-aabbccddeeff");
             var prefab = new PrefabRef(guid);
             Assert.That(prefab.IsNone, Is.False);
             Assert.That(prefab == new PrefabRef(guid), Is.True);

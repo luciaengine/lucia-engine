@@ -101,7 +101,7 @@ TEST(WorldPositionTests, ToSectorEqualsTheDecodeSplitForThirtyTwoBitPositions)
                 Vector3Int outSector;
                 Vector3 outLocal;
                 WorldPosition::FromVector3(Vector3(x, x, x)).ToSector(outSector, outLocal);
-                EXPECT_EQ(outSector.x, DecodeSplit(x)) << "x " << x;
+                EXPECT_EQ(outSector.X, DecodeSplit(x)) << "x " << x;
             }
         }
     }
@@ -111,7 +111,7 @@ TEST(WorldPositionTests, ToSectorEqualsTheDecodeSplitForThirtyTwoBitPositions)
     Vector3Int outSector;
     Vector3 outLocal;
     WorldPosition{nearTie, 0.0, 0.0}.ToSector(outSector, outLocal);
-    EXPECT_EQ(outSector.x, 292);
+    EXPECT_EQ(outSector.X, 292);
     EXPECT_EQ(DecodeSplit(static_cast<float>(nearTie)), 293);
 }
 

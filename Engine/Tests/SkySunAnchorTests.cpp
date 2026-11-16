@@ -846,41 +846,14 @@ TEST(SkyLinkedSun, TheFogSunAtNightIsUnchanged)
         EXPECT_EQ(lit != nullptr, expected.ShowMoon)
             << "moon " << (expected.ShowMoon ? "shown" : "hidden") << ": the fog sun selection";
 
-        const float fallbackDir[3] = {0.0f, -1.0f, 0.0f};
-        const float fallbackColor[3] = {1.0f, 1.0f, 1.0f};
-        const auto fog = Engine::Renderer::ResolveHeightFogSunLighting(
-            services, view, /*trackDirectionalLight=*/true, /*sunIntensityScale=*/1.0f, fallbackDir,
-            fallbackColor, /*fallbackIntensity=*/1.0f);
-        const float delivered = ColorUtils::LinearRec709Luminance(fog.color) * fog.intensity;
+        const Engine::Renderer::ResolvedFogSun fallback{
+            Mathematics::Vector3(0.0f, -1.0f, 0.0f), ColorLinear(1.0f, 1.0f, 1.0f), /*Intensity=*/1.0f};
+        const auto fog = Engine::Renderer::ResolveFogSunLighting(
+            services, view, /*trackDirectionalLight=*/true, /*sunIntensityScale=*/1.0f, fallback);
+        const float delivered = ColorUtils::LinearRec709Luminance(fog.Color) * fog.Intensity;
         EXPECT_NEAR(delivered, expected.DeliveredLuminance, expected.DeliveredLuminance * kRecordedPrecision)
             << "moon " << (expected.ShowMoon ? "shown" : "hidden") << ": the fog's sun at 00:00";
     }
-}
-
-TEST(SkySunAnchor, DayCyclePreviewChangesTheRenderedSunWithoutWritingTheClock)
-{
-    SkySunAnchorHarness harness;
-    harness.AddDefaultSky();
-    auto sky = harness.Sky();
-    sky.AutoSunMoon = true;
-    sky.TimeOfDayHours = 10.0f;
-    sky.AnimateTimeOfDay = true;
-    harness.SetSky(sky);
-
-    harness.System.Update(harness.World, 0.0f);
-    auto* feature = harness.Services.GetFeature<Engine::Renderer::SkyRenderFeature>();
-    ASSERT_NE(feature, nullptr);
-    const float originalElevation = feature->GetSystemState().sunDirWS[1];
-
-    const auto worldId = harness.World.GetWorldId();
-    harness.System.SetPreviewHour(worldId, 18.5f);
-    harness.System.Update(harness.World, 1.0f);
-    EXPECT_NE(feature->GetSystemState().sunDirWS[1], originalElevation);
-    EXPECT_FLOAT_EQ(harness.Sky().TimeOfDayHours, 10.0f);
-
-    harness.System.ClearPreviewHour(worldId);
-    harness.System.Update(harness.World, 0.0f);
-    EXPECT_FLOAT_EQ(feature->GetSystemState().sunDirWS[1], originalElevation);
 }
 
 // ---- The planet the sky wraps ---------------------------------------------------------------------

@@ -438,7 +438,7 @@ TEST(CascadeReaderRelativeFrame, ACasterHidesTheSunGlareAtAFarSectorAsNearTheOri
 
     const CameraData nearCamera = CameraAt(kNearBase + kEye, kGlareForward);
     const CameraData farCamera = CameraAt(kFarBase + kEye, kGlareForward);
-    ASSERT_EQ(CameraRenderOriginSector(farCamera).x, 98) << "the far view is in sector (98, 0, 98)";
+    ASSERT_EQ(CameraRenderOriginSector(farCamera).X, 98) << "the far view is in sector (98, 0, 98)";
     const std::optional<float> nearVisibility = RunGlareCasters(*device, glare, nearCamera);
     const std::optional<float> farVisibility = RunGlareCasters(*device, glare, farCamera);
     ASSERT_TRUE(nearVisibility.has_value() && farVisibility.has_value());

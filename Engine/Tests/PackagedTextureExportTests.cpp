@@ -174,7 +174,7 @@ TEST_F(PackagedTextureExportTest, ShipsCookedTexturesAndKeepsOnlySourcesAPathRea
         player.Shutdown();
     }
 
-    // Direct CPU and GPU-upload readers use the owning engine outside an async load.
+    // A direct CPU reader uses the owning engine outside an async load.
     Engine.Shutdown();
     ApplicationConfig runtime;
     runtime.WorkspaceDirectory = Output.string();
@@ -200,10 +200,6 @@ TEST_F(PackagedTextureExportTest, ShipsCookedTexturesAndKeepsOnlySourcesAPathRea
     ASSERT_NE(cpu.GetPixelData(), nullptr);
     EXPECT_NEAR(cpu.GetPixelData()[0], 80, 2);
     EXPECT_NEAR(cpu.GetPixelData()[2], 180, 2);
-    TextureAsset upload(color, Output / "Assets/Color.tga");
-    upload.SetAdoptCookedArtifacts(true);
-    ASSERT_TRUE(upload.Load());
-    EXPECT_EQ(upload.GetFormat(), IsTextureCookEncoderAvailable() ? TextureFormat::BC7 : TextureFormat::RGBA8);
 }
 
 TEST_F(PackagedTextureExportTest, TemplateSymbolsFollowTheRequestedBuildConfiguration)

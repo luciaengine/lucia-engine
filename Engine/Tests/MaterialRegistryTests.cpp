@@ -53,7 +53,7 @@ TEST(MaterialPrewarmVariantsTest, IncludesBaseColorDepthAndSkinnedLayouts)
     base.lightingModel = HashStringId("StandardPBR");
     base.materialKeywords = MaterialKeyword::AlphaTest | MaterialKeyword::ClearCoat;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
     // The base, 16 colour keys, and the coverage head and its crossfade tail on the standard and skinned depth
     // layouts, without and with the vertex-colour stream.
     ASSERT_EQ(keys.size(), 25u);
@@ -75,7 +75,7 @@ TEST(MaterialPrewarmVariantsTest, GlassIncludesGrabVariants)
     ShaderVariantKey base{};
     base.materialKeywords = MaterialKeyword::Transmission;
     const auto keys = MaterialPrewarmVariantKeys(base, MaterialKeyword::ForwardPlus, false,
-                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
+                                                 MaterialAlphaMode::Opaque);
     ASSERT_EQ(keys.size(), 27u);
     EXPECT_EQ(std::count_if(keys.begin(), keys.end(), [](const auto& key) {
         return HasKeyword(key.materialKeywords, MaterialKeyword::SceneColorGrab);
@@ -88,22 +88,6 @@ TEST(MaterialPrewarmVariantsTest, GlassIncludesGrabVariants)
     EXPECT_EQ(std::count_if(keys.begin(), keys.end(), [](const auto& key) {
         return HasKeyword(key.materialKeywords, MaterialKeyword::DepthOnlyTransmissionColor);
     }), 2);
-}
-
-// A runtime with no shader compiler warms no crossfade tail: the material cook ships none, so the
-// key can never resolve there, and the world pass draws a cold tail with its head variant.
-TEST(MaterialPrewarmVariantsTest, SkippedCrossfadeTailsWarmNoLodCrossfadeKey)
-{
-    ShaderVariantKey base{};
-    const auto isTail = [](const auto& key) { return HasKeyword(key.materialKeywords, MaterialKeyword::LodCrossfade); };
-    const auto warmed = MaterialPrewarmVariantKeys(base, MaterialKeyword::Instanced, false, MaterialAlphaMode::Mask,
-                                                   CrossfadeTailWarmup::Warm);
-    const auto skipped = MaterialPrewarmVariantKeys(base, MaterialKeyword::Instanced, false, MaterialAlphaMode::Mask,
-                                                    CrossfadeTailWarmup::Skip);
-    ASSERT_GT(std::count_if(warmed.begin(), warmed.end(), isTail), 0);
-    EXPECT_EQ(std::count_if(skipped.begin(), skipped.end(), isTail), 0);
-    for (const auto& key : skipped)
-        EXPECT_NE(std::find(warmed.begin(), warmed.end(), key), warmed.end());
 }
 
 // Every key the warm-up requests for a glass material composes and compiles through the real
@@ -136,8 +120,7 @@ TEST(MaterialPrewarmVariantsTest, EveryGlassWarmKeyCompiles)
     base.materialKeywords = MaterialKeyword::Transmission | MaterialKeyword::TransmissionThick;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::IBL |
                        MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false,
-                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Opaque);
     ASSERT_FALSE(keys.empty());
     for (const auto& key : keys)
     {
@@ -198,7 +181,7 @@ void ExpectEveryParallaxWarmKeyCompiles(MaterialAlphaMode alphaMode)
     base.lightingModel = HashStringId("StandardPBR");
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::IBL |
                        MaterialKeyword::Instanced | MaterialKeyword::SSSRNormalRoughness | MaterialKeyword::GTAO;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, alphaMode, CrossfadeTailWarmup::Warm);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, alphaMode);
     ASSERT_FALSE(keys.empty());
     size_t marching = 0;
     for (const auto& key : keys)
@@ -247,8 +230,7 @@ TEST(MaterialPrewarmVariantsTest, IncludesAssetPreviewPassVariants)
     ShaderVariantKey base{};
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false,
-                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Opaque);
     ASSERT_EQ(keys.size(), 19u);
     constexpr auto standard = VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasNormal |
                               VertexAttributeFlags::HasUV0;
@@ -274,8 +256,7 @@ TEST(MaterialPrewarmVariantsTest, IncludesAssetPreviewPassVariants)
 
     ShaderVariantKey modified = base;
     modified.materialKeywords = MaterialKeyword::HasVertexMod;
-    const auto modifiedKeys = MaterialPrewarmVariantKeys(modified, color, false,
-                                                         MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
+    const auto modifiedKeys = MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Opaque);
     EXPECT_EQ(countWithKeywords(modifiedKeys, MaterialKeyword::HasVertexMod | kAssetPreviewPassKeywords), 4);
 }
 
@@ -288,8 +269,7 @@ TEST(MaterialPrewarmVariantsTest, IncludesLodCrossfadeTailVariants)
     ShaderVariantKey base{};
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false,
-                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Opaque);
     const auto has = [&](VertexAttributeFlags flags, MaterialKeyword keywords) {
         ShaderVariantKey key = base;
         key.vertexFlags = flags;
@@ -308,8 +288,7 @@ TEST(MaterialPrewarmVariantsTest, IncludesLodCrossfadeTailVariants)
     EXPECT_TRUE(has(skinned, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment |
                                  MaterialKeyword::LodCrossfade));
 
-    const auto procedural = MaterialPrewarmVariantKeys(base, color, true,
-                                                       MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
+    const auto procedural = MaterialPrewarmVariantKeys(base, color, true, MaterialAlphaMode::Opaque);
     EXPECT_EQ(std::count_if(procedural.begin(), procedural.end(), [](const auto& key) {
         return HasKeyword(key.materialKeywords, MaterialKeyword::LodCrossfade);
     }), 0);
@@ -325,8 +304,7 @@ TEST(MaterialPrewarmVariantsTest, MaskIncludesCoverageDepthVariant)
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     base.materialKeywords = MaterialKeyword::AlphaTest;
     const auto color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false,
-                                                 MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
     constexpr auto standard = VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasNormal |
                               VertexAttributeFlags::HasUV0;
     for (const auto flags : {standard, standard | VertexAttributeFlags::Skinned})
@@ -389,7 +367,7 @@ TEST(MaterialPrewarmVariantsTest, OnlyTheCameraPrepassWritesTheReliefDepth)
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     base.materialKeywords = MaterialKeyword::Parallax;
     const auto keys = MaterialPrewarmVariantKeys(base, MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced, false,
-                                                 MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
+                                                 MaterialAlphaMode::Opaque);
     ShaderVariantKey warmed = base;
     warmed.vertexFlags = VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasNormal | VertexAttributeFlags::HasUV0;
     warmed.materialKeywords = MaterialKeyword::Parallax | MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment |
@@ -594,7 +572,7 @@ TEST(MaterialPrewarmVariantsTest, AVertexModifiedMaterialWarmsTheDepthHeadsItDra
                        VertexAttributeFlags::HasUV0 | VertexAttributeFlags::HasUV1;
     base.materialKeywords = MaterialKeyword::HasVertexMod | MaterialKeyword::AlphaTest;
     const MaterialKeyword color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
     const VertexAttributeFlags tangentLayout =
         VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasNormal | VertexAttributeFlags::HasUV0 |
         VertexAttributeFlags::HasTangent;
@@ -654,7 +632,7 @@ TEST(MaterialPrewarmVariantsTest, AMaskHeadReadsTheColorStreamItsColourPassReads
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     base.materialKeywords = MaterialKeyword::AlphaTest;
     const MaterialKeyword color = MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | MaterialKeyword::Instanced;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
     constexpr VertexAttributeFlags standard = stripped;
     constexpr VertexAttributeFlags warmedLayouts[] = {
         standard, standard | VertexAttributeFlags::HasTangent, standard | VertexAttributeFlags::Skinned,
@@ -698,7 +676,7 @@ TEST(MaterialPrewarmVariantsTest, AVertexColourMaskWarmsTheDepthHeadsItDrawsBesi
     ShaderVariantKey base{};
     base.vertexFlags = VertexAttributeFlags::StandardMesh;
     base.materialKeywords = MaterialKeyword::AlphaTest;
-    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm);
+    const auto keys = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask);
     Vector<ShaderVariantKey> expected;
     for (const DepthPassType pass : {DepthPassType::Prepass, DepthPassType::ShadowCascade})
     {
@@ -740,7 +718,7 @@ TEST(MaterialPrewarmVariantsTest, AVertexColourMaskWarmsTheDepthHeadsItDrawsBesi
     }
 
     // Ignoring vertex colour: the same set without the vertex-colour heads.
-    const auto ignoring = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm, true);
+    const auto ignoring = MaterialPrewarmVariantKeys(base, color, false, MaterialAlphaMode::Mask, true);
     EXPECT_EQ(std::count_if(ignoring.begin(), ignoring.end(), hasColor), 0);
     Vector<ShaderVariantKey> withoutColorHeads;
     std::copy_if(keys.begin(), keys.end(), std::back_inserter(withoutColorHeads),
@@ -750,14 +728,14 @@ TEST(MaterialPrewarmVariantsTest, AVertexColourMaskWarmsTheDepthHeadsItDrawsBesi
     // Opaque: the depth draws decide coverage without the surface.
     ShaderVariantKey opaque = base;
     opaque.materialKeywords = MaterialKeyword::None;
-    const auto opaqueKeys = MaterialPrewarmVariantKeys(opaque, color, false, MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
+    const auto opaqueKeys = MaterialPrewarmVariantKeys(opaque, color, false, MaterialAlphaMode::Opaque);
     EXPECT_EQ(std::count_if(opaqueKeys.begin(), opaqueKeys.end(), hasColor), 0);
 
     // Vertex-modified: reading or ignoring vertex colour warms the same set.
     ShaderVariantKey modified = base;
     modified.materialKeywords |= MaterialKeyword::HasVertexMod;
-    EXPECT_EQ(MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm),
-              MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Mask, CrossfadeTailWarmup::Warm, true));
+    EXPECT_EQ(MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Mask),
+              MaterialPrewarmVariantKeys(modified, color, false, MaterialAlphaMode::Mask, true));
 }
 
 TEST(MaterialPrewarmVariantsTest, ProceduralVariantsAreClampedAndDeduplicated)
@@ -765,7 +743,7 @@ TEST(MaterialPrewarmVariantsTest, ProceduralVariantsAreClampedAndDeduplicated)
     ShaderVariantKey base{};
     base.userKeywordHash = 42;
     const auto keys = MaterialPrewarmVariantKeys(base, MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced,
-                                                 true, MaterialAlphaMode::Opaque, CrossfadeTailWarmup::Warm);
+                                                 true, MaterialAlphaMode::Opaque);
     ASSERT_EQ(keys.size(), 3u);
     for (const auto& key : keys)
     {
@@ -1504,10 +1482,10 @@ class MaterialShaderIdentityTest : public ::MaterialRegistryTest
 
     static std::shared_ptr<SharedShaderVariant> ReadProgram(
         RenderServices& services, const ShaderCacheKey& key, const MaterialCompileSpec& spec,
-        const Rendering::MaterialBuildContext& context)
+        const Rendering::MaterialBuildContext& context, const std::filesystem::path& materialAssetPath)
     {
         return services.Materials().m_ShaderCompilationCache.GetOrCompile(
-            key, spec, context, "CapturedPrewarm", Rendering::ShaderSourceKind::SpirV);
+            key, spec, context, "CapturedPrewarm", materialAssetPath, Rendering::ShaderSourceKind::SpirV);
     }
 
 };
@@ -1765,7 +1743,7 @@ TEST_F(MaterialTargetPrewarmTest, QueuedVariantSetRetainsItsAdmissionTarget)
     HoldPrewarmJobs(services, jobs);
     constexpr auto kPassKeywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced | MaterialKeyword::Shadows;
     const auto keys = MaterialPrewarmVariantKeys(material->GetVariantKey(), kPassKeywords, false,
-                                                material->GetAlphaMode(), CrossfadeTailWarmup::Warm);
+                                                material->GetAlphaMode());
     ASSERT_GT(keys.size(), 1u);
     int entered = 0;
     SetCompileHook(services, [&entered] { ++entered; });
@@ -1788,8 +1766,8 @@ TEST_F(MaterialTargetPrewarmTest, QueuedVariantSetRetainsItsAdmissionTarget)
         key.VariantKey = variant;
         key.Source.SurfaceShaderPath = material->GetCompileSpec().surfaceShaderPath;
         key.Source.VertexModifierPath = material->GetCompileSpec().vertexModifierPath;
-        key.Source.MaterialAssetPath = material->GetMaterialAssetPath();
-        const auto program = ReadProgram(services, key, material->GetCompileSpec(), context);
+        const auto program =
+            ReadProgram(services, key, material->GetCompileSpec(), context, material->GetMaterialAssetPath());
         ASSERT_NE(program, nullptr);
         EXPECT_FALSE(program->vertexBytes.empty());
     }

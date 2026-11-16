@@ -320,3 +320,79 @@ TEST(MorphTargetDeepPathTests, WeightAnimationRewritesTheRuntimeMeshInPlace)
     rs.Shutdown();
     device->Shutdown();
 }
+
+// A rewrite writes only the morphed streams. When the source mesh changes under
+// a live runtime mesh (a model reload), the next weight change registers the
+// runtime mesh again, so the streams a morph does not touch follow the source.
+TEST(MorphTargetDeepPathTests, ChangedSourceRegistersTheRuntimeMeshAgain)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device.get()));
+    auto& registry = rs.GetMeshGPURegistry();
+
+    const GUID modelGuid = GUID::Generate();
+    auto model = std::make_unique<ModelAsset>(modelGuid,
+                                              std::filesystem::path("Synthetic://MorphSourceChange"));
+    Mesh source = MakeMorphSourceMesh();
+    source.TexCoords1 = {0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f};
+    Vector<Mesh> meshes;
+    meshes.push_back(source);
+    model->SetMeshesForTest(std::move(meshes));
+    ASSERT_TRUE(model->IsLoaded());
+
+    MorphTargetSystem morphSystem(&rs);
+    morphSystem.SetModelResolverForTest(
+        [&](const GUID& guid) { return guid == modelGuid ? model.get() : nullptr; });
+
+    ECS::World world(nullptr);
+    ECS::Entity e = world.Create();
+    Components::MeshRenderer mr{};
+    mr.modelAssetGuid.Set(modelGuid);
+    mr.meshId = 0;
+    e.Set(mr);
+    e.Set(Components::MorphTargetWeights{});
+    e.Set(Components::LocalBounds{});
+    world.ProcessCommands();
+
+    uint64_t frame = 0;
+    const auto stepWithWeight = [&](float weight)
+    {
+        registry.BeginFrame(++frame);
+        if (auto* w = world.GetComponentForWrite<Components::MorphTargetWeights>(e.GetHandle()))
+        {
+            w->weights[0] = weight;
+            ++w->version;
+        }
+        morphSystem.Update(world, kDt);
+    };
+
+    stepWithWeight(0.25f);
+    stepWithWeight(0.5f);
+    size_t unregisterNotifications = 0;
+    auto token = registry.SubscribeReload([&](const GUID&) { ++unregisterNotifications; });
+    stepWithWeight(0.75f);
+    ASSERT_EQ(unregisterNotifications, 0u) << "setup: a weight change on an unchanged source rewrites in place";
+
+    // The reload: same vertex count, new UV1 stream, uploaded again under the source key.
+    Mesh reloaded = source;
+    reloaded.TexCoords1 = {0.5f, 0.5f, 0.5f, 1.0f, 1.0f, 0.5f};
+    ASSERT_TRUE(registry.RegisterSubmesh({modelGuid, 0}, reloaded).IsValid());
+    meshes.clear();
+    meshes.push_back(reloaded);
+    model->SetMeshesForTest(std::move(meshes));
+
+    stepWithWeight(1.0f);
+    EXPECT_EQ(unregisterNotifications, 1u)
+        << "a weight change after a source change must register the runtime mesh again";
+    const auto* weights = world.GetComponent<Components::MorphTargetWeights>(e.GetHandle());
+    ASSERT_NE(weights, nullptr);
+    EXPECT_NE(weights->runtimeMeshGpuHandleId, 0u);
+
+    token.Reset();
+    rs.Shutdown();
+    device->Shutdown();
+}

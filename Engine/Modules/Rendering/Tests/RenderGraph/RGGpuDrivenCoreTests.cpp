@@ -718,7 +718,8 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
     auto device = DeviceFactory::CreateDevice(deviceDesc);
     if (!device || !device->Initialize(deviceDesc))
         GTEST_SKIP() << "Requested core culling backend unavailable";
-    ASSERT_EQ(device->GetAPI(), graphicsAPI);
+    if (device->GetAPI() != graphicsAPI)
+        GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
     if (const char* missing =
             FirstUnloadablePkg({"Shaders/frustum_culling.shaderpkg",
                                 "Shaders/hzb_culling.shaderpkg",
@@ -1297,6 +1298,26 @@ struct WarmScatterCounts
 
 // Registers one color slice of view 1 for each of `cascades`, in that order, and schedules
 // `registry` on each of `frameCount` frames.
+// The allocations of one scatter set as the record pass uses it: create, one batch write and one bind.
+// A backend may build the set's residency list at its first bind (Metal does).
+uint64_t CountOneScatterSet(IDevice& device, GPUDrawStreamBuilder& builder, const DescriptorSetDesc& setDesc,
+                            std::span<const DescriptorWrite> writes)
+{
+    using GameEngine::Memory::AllocationCountScope;
+    using GameEngine::Memory::CountWindow;
+    const PipelineHandle pipeline = builder.GetOrCreateScatterPipeline();
+    auto list = device.CreateCommandList(IDevice::QueueType::Compute);
+    list->Begin();
+    list->SetPipeline(pipeline);
+    const AllocationCountScope count(CountWindow::ThisThread);
+    const DescriptorSetHandle set = device.CreateDescriptorSet(setDesc);
+    device.WriteDescriptorSet(set, writes);
+    list->BindDescriptorSet(0, set, pipeline);
+    const uint64_t allocations = count.Count();
+    list->End();
+    return allocations;
+}
+
 WarmScatterCounts CountWarmScatter(IDevice& device, GPUScene& scene, BufferHandle visibility,
                                    const BatchRegistry& registry, std::span<const uint8_t> cascades,
                                    uint32_t frameCount)
@@ -1319,11 +1340,7 @@ WarmScatterCounts CountWarmScatter(IDevice& device, GPUScene& scene, BufferHandl
     {
         RGFrame frame(&device, &pools.Persistent, &pools.Transient, &pools.Ring);
         frame.BeginFrame(f);
-        {
-            const AllocationCountScope set(CountWindow::ThisThread);
-            device.WriteDescriptorSet(device.CreateDescriptorSet(setDesc), writes);
-            counts.deviceSetAllocations = set.Count();
-        }
+        counts.deviceSetAllocations = CountOneScatterSet(device, builder, setDesc, writes);
         const RGBuffer vis = frame.ImportExternalBuffer("Vis", visibility);
         const GPUScene::GPUSceneFrameRG sceneRG = scene.ImportFrameResources(frame);
         builder.BeginArenaFrame();
@@ -1437,7 +1454,7 @@ TEST(RGGpuDriven, ScatterPublishesTheSlicesOfAViewInKeyOrder)
 }
 
 // On a warm frame, the scatter record pass allocates per slice only what the device allocates
-// for one transient set and one batch write. A per-binding update adds three vectors per binding.
+// for one transient set, one batch write and one bind. A per-binding update adds three vectors per binding.
 TEST(RGGpuDriven, WarmScatterRecordAllocatesOnlyTheDeviceSetPerSlice)
 {
     RG_REQUIRE_DEVICE(dev);
@@ -3482,7 +3499,8 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI, bool instanceCompac
     auto device = DeviceFactory::CreateDevice(description);
     if (!device || !device->Initialize(description))
         GTEST_SKIP() << "Requested unified scatter backend unavailable";
-    ASSERT_EQ(device->GetAPI(), graphicsAPI);
+    if (device->GetAPI() != graphicsAPI)
+        GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
     GPUScene::SetCullingShaderLoader(&TestShaderLoader);
     ScatterBuilder::SetShaderLoader(&TestShaderLoader);
     GPUScene scene(device.get());
