@@ -382,6 +382,49 @@ TEST(MeshClusterLOD, CollapsesAlongAUvSeamWithoutOpeningIt)
     EXPECT_LT(seamRows.size(), kGridWidth);
 }
 
+TEST(MeshClusterLOD, KeepsAMirroredUvSeamWithoutMixingTangentHandedness)
+{
+    if (!IsMeshLODGenerationAvailable())
+        GTEST_SKIP() << "meshoptimizer not compiled in";
+    // The right half mirrors the UVs: its seam wedges differ from the left half only in handedness.
+    Mesh source = MakeCurvedGrid();
+    constexpr uint32 kSeamColumn = kGridWidth / 2;
+    for (Vertex& vertex : source.Vertices)
+        if (vertex.Position[0] > kSeamColumn)
+            vertex.Tangent[3] = -1.0f;
+    for (uint32 row = 0; row < kGridWidth; ++row)
+    {
+        Vertex duplicate = source.Vertices[row * kGridWidth + kSeamColumn];
+        duplicate.Tangent[3] = -1.0f;
+        source.Vertices.push_back(duplicate);
+    }
+    for (size_t offset = 0; offset < source.Indices.size(); offset += 3)
+    {
+        const bool rightSide = std::any_of(source.Indices.begin() + offset,
+            source.Indices.begin() + offset + 3, [](uint32 index)
+            { return index % kGridWidth > kSeamColumn; });
+        if (!rightSide)
+            continue;
+        for (size_t corner = offset; corner < offset + 3; ++corner)
+            if (source.Indices[corner] % kGridWidth == kSeamColumn)
+                source.Indices[corner] = kGridWidth * kGridWidth + source.Indices[corner] / kGridWidth;
+    }
+    Vector<MeshClusterLODGroup> groups;
+    String error;
+    ASSERT_TRUE(GenerateMeshClusterLODs(source, TestConfig(), groups, error)) << error;
+    for (const MeshClusterLODGroup& group : groups)
+    {
+        const Mesh& coarse = group.Coarse;
+        for (size_t offset = 0; offset < coarse.Indices.size(); offset += 3)
+        {
+            const float handedness = coarse.Vertices[coarse.Indices[offset]].Tangent[3];
+            EXPECT_EQ(coarse.Vertices[coarse.Indices[offset + 1]].Tangent[3], handedness);
+            EXPECT_EQ(coarse.Vertices[coarse.Indices[offset + 2]].Tangent[3], handedness);
+        }
+    }
+    EXPECT_EQ(BoundaryEdges(JoinCoarseGroups(groups)), BoundaryEdges(source));
+}
+
 TEST(MeshClusterLOD, ClustersVerticesWhenSeamsStopTheAttributeSimplifier)
 {
     if (!IsMeshLODGenerationAvailable())

@@ -175,8 +175,9 @@ bool FindPositionLocks(const Mesh& mesh, const MeshClusterLODConfig& config,
     {
         const uint32 position = positions[index];
         const uint32 previous = firstVertex[position];
+        const Vertex& vertex = mesh.Vertices[index];
         if (previous != kMeshClusterLODUnusedVertex &&
-            !std::equal(std::begin(mesh.Vertices[index].TexCoords), std::end(mesh.Vertices[index].TexCoords),
+            !std::equal(std::begin(vertex.TexCoords), std::end(vertex.TexCoords),
                         std::begin(mesh.Vertices[previous].TexCoords)))
             locked[position] |= meshopt_SimplifyVertex_Protect;
         firstVertex[position] = index;
