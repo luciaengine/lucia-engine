@@ -690,6 +690,8 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         namespace RG = GameEngine::Rendering::RenderGraph;
         GPUScene::SetCullingShaderLoader([](const char* name)
                                          { return Utils::LoadShaderFile(name); });
+        GPUCullingPipeline::SetHzbCullingShaderLoader([](const char* name)
+                                                      { return Utils::LoadShaderFile(name); });
         if (!m_Culling)
         {
             m_CullPersistent = std::make_unique<RG::RGResourcePool>(m_Device.get());
@@ -714,6 +716,7 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         input.instanceCount = m_Scene->GetInstanceCount();
         input.renderLayerMask = GameEngine::Rendering::RenderLayerMask{mask};
         input.dropEditorHidden = dropEditorHidden;
+        input.reserveOcclusionSlice = m_CullOcclusionPhaseA;
         if (fused)
         {
             CascadeCullingGroup group{};
@@ -753,7 +756,11 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         ASSERT_FALSE(ranges.empty());
         // Every fused cascade has the same frustum: use the last to exercise
         // the group's slice offset rather than accidentally testing slice zero.
-        const auto range = ranges.back();
+        // An occlusion view also publishes its phase-B slice; read phase A.
+        auto range = ranges.back();
+        for (const auto& candidate : ranges)
+            if (candidate.slicePhase == 0u)
+                range = candidate;
         const size_t bytes = input.instanceCount * sizeof(uint32_t);
         frame.AddPass("LayerTest.CopyVisibility", 0, [&](RG::RGPassBuilder& p)
                       { p.Read(source, RG::RGBufferRead::CopySrc); p.PreventCulling(); }, [=](RG::RGContext& ctx)
@@ -771,6 +778,7 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
     void ExpectConservativeBoundsPreserveReferenceSwitchesAndBias();
     void ExpectLodBandHistoryIsIndexedPerInstanceNotPerSlot();
     void ExpectCrossfadeLevelChangeEmitsItsPairIntoTheTailNotTheHead();
+    void ExpectDeformationMarginWidensTheCullSphereAndLeavesTheLevelAlone();
 
     std::unique_ptr<RenderGraph::RGResourcePool> m_CullPersistent;
     std::unique_ptr<RenderGraph::RGTransientPool> m_CullTransient;
@@ -780,6 +788,8 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
     uint64_t m_CullFrameNumber = 0;
     // Per-material deformation margins CullInto hands the production cull.
     std::vector<float> m_CullDeformationMargins;
+    // CullInto's single-view cull runs as phase A of the HZB occlusion cull (hzb_culling.comp).
+    bool m_CullOcclusionPhaseA = false;
     std::unique_ptr<IDevice> m_Device;
     std::unique_ptr<GPUScene> m_Scene;
     std::unique_ptr<GPUDrawStreamBuilder> m_Builder;
@@ -1794,6 +1804,18 @@ TEST_P(BatchScatterComputeTest, ConservativeBoundsPreserveReferenceSwitchesAndBi
 // The margin change lands on an idle, settled cull, so it also proves the
 // margins are part of what the cull's idle elision compares.
 TEST_P(BatchScatterComputeTest, DeformationMarginWidensTheCullSphereAndLeavesTheLevelAlone)
+{
+    ExpectDeformationMarginWidensTheCullSphereAndLeavesTheLevelAlone();
+}
+
+// The same through the HZB kernel: phase A of an occlusion view tests the frustum with the margins.
+TEST_P(BatchScatterComputeTest, DeformationMarginWidensTheHzbPhaseACullSphere)
+{
+    m_CullOcclusionPhaseA = true;
+    ExpectDeformationMarginWidensTheCullSphereAndLeavesTheLevelAlone();
+}
+
+void BatchScatterComputeTest::ExpectDeformationMarginWidensTheCullSphereAndLeavesTheLevelAlone()
 {
     const uint32_t mesh = m_Scene->AddMesh(MakeMultiLevelHysteresisMesh());
     struct Placement
