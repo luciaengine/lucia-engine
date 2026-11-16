@@ -13,6 +13,7 @@
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Logger/Logger.h"
+#include "Types/Fnv1a.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/CommandList.h"
@@ -69,19 +70,13 @@ constexpr uint64_t kFnvPrime       = 1099511628211ull;
 
 void HashBytes(uint64_t& hash, const void* data, size_t bytes)
 {
-    const auto* cursor = static_cast<const uint8_t*>(data);
-    for (size_t i = 0; i < bytes; ++i)
-    {
-        hash ^= cursor[i];
-        hash *= kFnvPrime;
-    }
+    hash = Hashing::Fnv1a64(data, bytes, hash);
 }
 
 template <typename T>
 void HashValue(uint64_t& hash, const T& value)
 {
-    static_assert(std::is_trivially_copyable_v<T>, "hashed value must be trivially copyable");
-    HashBytes(hash, &value, sizeof(T));
+    hash = Hashing::Fnv1a64Value(hash, value);
 }
 
 bool IsSaneTransform(const Mathematics::Matrix4x4& transform, float boundingRadius)
@@ -275,7 +270,7 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
         const SceneBvh::UberMaterial baked = BakeUberMaterial(
             found != materialBySlot.end() ? found->second : nullptr, m_MapAtlas);
 
-        uint64_t materialHash = kFnvOffsetBasis;
+        uint64_t materialHash = Hashing::kFnv1a64OffsetBasis;
         HashBytes(materialHash, &baked, sizeof(baked));
         const auto range = m_PlanMaterialSlotByHash.equal_range(materialHash);
         for (auto it = range.first; it != range.second; ++it)
@@ -380,7 +375,7 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
     // Values do not affect BVH topology. Keep table layout, map bindings and
     // instance slot assignments structural so deduplication changes cannot
     // patch a record still shared by a different material.
-    uint64_t structureHash = kFnvOffsetBasis;
+    uint64_t structureHash = Hashing::kFnv1a64OffsetBasis;
     HashValue(structureHash, m_PlanMeshes.size());
     HashValue(structureHash, m_PlanParticipants.size());
     HashValue(structureHash, m_PlanMaterials.size());
@@ -407,7 +402,7 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
 
     // Full: the structure plus the world transforms, which is what the packed
     // instance records actually hold.
-    uint64_t transformHash = kFnvOffsetBasis;
+    uint64_t transformHash = Hashing::kFnv1a64OffsetBasis;
     for (const Participant& participant : m_PlanParticipants)
         HashBytes(transformHash, participant.WorldFromLocal.Data(), sizeof(float) * 16);
     uint64_t fullHash = structureHash;

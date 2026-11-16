@@ -2,6 +2,7 @@
 
 #include "NativeScripting/EngineBuildIdentity.h"
 #include "NativeScripting/NativeBuildConfig.h"
+#include "Types/Fnv1a.h"
 
 #include <cstdio>
 #include <fstream>

@@ -398,7 +398,7 @@ void TilePaletteGrid::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx, const 
                                                     cu0, cv0, cu1, cv1, ctx.ClipIndex);
         // Pixel art must not blur: nearest sampling in the shader, so the
         // result does not depend on which sampler the texture cache handed out.
-        quad.PointFilter = 1.0f;
+        quad.ModeAndFlags |= UI::kPrimPointFilterBit;
         ctx.Emit(quad);
     };
 
@@ -422,7 +422,7 @@ void TilePaletteGrid::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx, const 
     if (ctx.Manager != nullptr && ctx.Textures != nullptr && !m_AtlasTexture.IsNull())
     {
         const Rendering::TextureHandle texture =
-            ctx.Manager->TryGetBackgroundTextureHandleByGuid(m_AtlasTexture);
+            ctx.Manager->BackgroundImages().TryGetHandle(m_AtlasTexture);
         if (texture.IsValid())
             slot = ctx.Textures->Register(texture, ctx.Manager->GetNearestClampSampler());
     }

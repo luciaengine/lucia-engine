@@ -4,14 +4,14 @@
 // This pins the immediate-mode design's core perf claim — and fails loudly if
 // someone reintroduces per-frame vector churn.
 //
-// Counted by the allocation counter in a process-wide window around the
-// steady-state frame.
+// Counting uses the engine's allocation hook (Memory::AllocationCountScope) on this thread,
+// around the steady-state frame.
 
 #include "Rendering/Core/RenderGraph/RGGraph.h"
 
-#include <gtest/gtest.h>
-
 #include "Memory/AllocationCountScope.h"
+
+#include <gtest/gtest.h>
 
 #include <cstdio>
 
@@ -112,9 +112,9 @@ TEST(RGAlloc, SteadyStateFrameHeapAllocationsAreBounded)
 
     uint64_t allocs = 0;
     {
-        const GameEngine::Memory::AllocationCountScope frame(GameEngine::Memory::CountWindow::Process);
+        GameEngine::Memory::AllocationCountScope scope(GameEngine::Memory::CountWindow::ThisThread);
         BuildRepresentativeFrame(g); // frame 2: steady state
-        allocs = frame.Count();
+        allocs = scope.Count();
     }
     std::printf("[RenderGraph] steady-state frame heap allocations: %llu\n",
                 static_cast<unsigned long long>(allocs));

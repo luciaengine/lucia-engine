@@ -65,4 +65,10 @@ struct RenderPassReorderPayload
     std::string displayLabel;
 };
 
+struct TilePaletteLayerReorderPayload
+{
+    uint32_t layerId = 0;
+    std::string displayLabel;
+};
+
 } // namespace GameEngine::Editor

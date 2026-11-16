@@ -481,7 +481,7 @@ size_t& GetTextMeasureCtxUsed();
 // unused entries.
 void TrimTextMeasureCtxPool();
 
-void ConfigureUiFontAtlas(GameEngine::Rendering::Text::FontAtlas& atlas);
+void ConfigureUiFontAtlas(GameEngine::Rendering::Text::FontAtlas& atlas, const std::string& language);
 std::chrono::milliseconds ComputeFontRequestBackoff(uint32_t failCount);
 
 // An element as a log line names it: `#id`, else its first class, else

@@ -52,6 +52,7 @@ class ConfirmActionModal;
 
 namespace ECS { class World; struct EntityHandle; }
 namespace Editor { class InspectorVcsController; class UndoRedoService; class EditorChangeNotifications; }
+namespace EditorUI { class PostedRefresh; }
 
 struct InspectorSelectionHistoryEntry {
     enum class Kind { Empty, Entity, Entities, Assets, Script, SmartFolder };
@@ -286,6 +287,8 @@ private:
     // often it is asked. A section's refresh callback asks for it while the panel runs
     // the callbacks the rebuild destroys, so the rebuild never runs inside that call.
     void RequestEntityRefresh();
+    // Rebuilds the sections of the inspected entity when it is still valid.
+    void RefreshInspectedEntity();
     // Asks for RequestEntityRefresh once no text field of the panel has the focus, so the rebuild
     // never ends an edit.
     void RequestEntityRefreshAfterTextEdit();
@@ -486,7 +489,9 @@ private:
     bool m_PendingShowSuppressHistory = false;
     bool m_PendingShowKeepMultiSelection = true;
     bool m_ModuleInspectorRefreshPending = false;
-    bool m_EntityRefreshPosted = false;
+    // The posted rebuilds of the entity and the asset view; a rebuild drained after the panel is destroyed does nothing.
+    std::unique_ptr<EditorUI::PostedRefresh> m_EntityRefresh;
+    std::unique_ptr<EditorUI::PostedRefresh> m_AssetRefresh;
     bool m_EntityRefreshAfterTextEdit = false;
     // The entity header and its name field of a single selection, for the in-place name mark (not owned).
     UIElement* m_EntityNameHeader = nullptr;

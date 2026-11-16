@@ -218,10 +218,8 @@ TEST(ClassBackgroundImageQueryTests, EmptyWhenNothingDeclaresAPath)
                     .empty());
 }
 
-// The six filenames the deleted table spelled out by hand. They were correct;
-// this pins that reading them from CSS returns the same bytes, so the launcher
-// did not quietly change icon when the table went away.
-TEST(ClassBackgroundImageQueryTests, ShippedIconsMatchTheDeletedTablesValues)
+// Shipped class names resolve to the paths authored in the global theme cascade.
+TEST(ClassBackgroundImageQueryTests, ShippedIconClassesResolveTheirAuthoredPaths)
 {
     const std::vector<StylesheetHandle> cascade = ShippedGlobalCascade();
     ASSERT_GE(cascade.size(), 10u) << "theme.css cascade did not parse; the rest is vacuous";

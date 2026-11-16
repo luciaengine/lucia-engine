@@ -633,6 +633,18 @@ public:
     virtual TextInput* GetAsTextInput() { return nullptr; }
     virtual UIElement* GetMountTarget() { return nullptr; }
 
+    // Calls `fn` for each owned child, then for the mount target. A mounted panel is not owned, so it
+    // is not in GetChildren(); a tree walk that must reach mounted panels goes through here.
+    template <typename Fn>
+    void ForEachLogicalChild(Fn&& fn)
+    {
+        for (const auto& child : GetChildren())
+            if (child)
+                fn(child.get());
+        if (UIElement* target = GetMountTarget())
+            fn(target);
+    }
+
     // Cached interface pointer set by text-bearing subclasses (Label, TextInput, TextArea)
     // during construction. Non-text elements leave this null for zero overhead at lookup time.
     ITextMeasurable* GetTextMeasurable() const { return m_TextMeasurable; }

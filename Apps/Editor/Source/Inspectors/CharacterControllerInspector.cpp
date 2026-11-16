@@ -15,6 +15,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <utility>
 
 namespace GameEngine
 {
@@ -452,6 +453,14 @@ class CharacterControllerInspectorSection final : public UIElement
 
 void RegisterCharacterControllerInspector()
 {
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Character Controller";
+        traits.EnableToggleTooltip = "Off removes its physics character; on rebuilds it from these values.";
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::CharacterController>(), std::move(traits));
+    }
+
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())

@@ -3,6 +3,7 @@
 #include "Graph/SgGraphModelBridge.h"
 
 #include "Rendering/ShaderGraph/SgTagParser.h"
+#include "Types/StringUtils.h"
 
 #include <sstream>
 #include <string>
@@ -24,12 +25,13 @@ std::string TrimCopy(std::string_view text)
 
 std::string StripCommentPrefix(std::string_view line)
 {
-    const std::string trimmed = TrimCopy(line);
-    if (trimmed.rfind("//", 0) != 0)
-        return trimmed;
-    std::string_view body = std::string_view(trimmed).substr(2);
-    if (!body.empty() && body.front() == ' ')
-        body.remove_prefix(1);
+    std::string_view body = TrimWhitespaceView(line);
+    if (body.starts_with("//"))
+    {
+        body.remove_prefix(2);
+        if (!body.empty() && body.front() == ' ')
+            body.remove_prefix(1);
+    }
     return std::string(body);
 }
 

@@ -12,6 +12,8 @@
 #include "UI/UIManager.h"
 #include "UI/UIPrimitive.h"
 
+#include "TestTempDir.h"
+
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 
@@ -82,7 +84,8 @@ struct ScrollClipFixture
         Ui = std::make_unique<UIManager>(Dev);
         Ui->SetRoot(std::move(root));
 
-        const auto css = std::filesystem::temp_directory_path() / "ui_drain_clip_scroll.css";
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_drain_clip_scroll"));
+        const auto css = tempDir.Path() / "ui_drain_clip_scroll.css";
         {
             std::ofstream f(css);
             f << "#root { display: flex; flex-direction: column; width: 220px; height: 220px; }\n"

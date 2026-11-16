@@ -23,6 +23,8 @@
 #include "UI/UIManager.h"
 #include "UIRgTestHarness.h"
 
+#include "TestTempDir.h"
+
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -76,8 +78,8 @@ TextInput* FindEditor(FloatField& field)
 // before the order means anything.
 std::filesystem::path WriteFocusRowStylesheet()
 {
-    const std::filesystem::path css =
-        std::filesystem::temp_directory_path() / "ui_disabled_control_focus_row.css";
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("ui_disabled_control_focus_row")};
+    const std::filesystem::path css = directory.Path() / "ui_disabled_control_focus_row.css";
     std::ofstream file(css);
     file << "#root { display: flex; width: 400px; height: 40px; }\n"
          << "#group { display: flex; width: 200px; height: 20px; }\n"

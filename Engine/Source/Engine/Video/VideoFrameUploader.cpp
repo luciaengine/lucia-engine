@@ -180,7 +180,7 @@ void VideoFrameUploader::Submit()
     // move it forward, and a later value on the same timeline still covers this
     // copy — over-waiting on slot reuse is safe, under-waiting is not.
     const uint32_t slot = m_Staging.GetCurrentSlot();
-    m_SlotTokens[slot] = m_Device->LastGraphicsSubmissionToken();
+    m_SlotTokens[slot] = m_Device->LastSubmissionToken(Rendering::IDevice::QueueType::Graphics);
     // Recorded whether or not a token came back: on a backend with no graphics
     // timeline this is the only evidence the slot is in flight.
     m_SlotWriteSeq[slot] = m_DeviceFrameSeq;

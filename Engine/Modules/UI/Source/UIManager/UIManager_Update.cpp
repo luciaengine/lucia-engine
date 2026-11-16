@@ -301,7 +301,7 @@ void UIManager::Update(float deltaTime, bool interactive)
         if (!fontBytes.empty())
         {
             auto fa = std::make_unique<FontAtlas>();
-            ConfigureUiFontAtlas(*fa);
+            ConfigureUiFontAtlas(*fa, m_TextLanguage);
             if (fa->LoadFontBytes(fontBytes.data(), fontBytes.size(), kUiFontAtlasPx))
             {
                 m_FontAtlas = std::move(fa);

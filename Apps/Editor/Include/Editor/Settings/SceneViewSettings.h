@@ -244,6 +244,7 @@ public:
             m_GridOpacity2D = opF;
         }
         prefs.TryGetBool("sceneView.toolOverlayBorderless", m_ToolOverlayBorderless);
+        prefs.TryGetBool("sceneView.toolOverlayVisible", m_ToolOverlayVisible);
         prefs.TryGetBool("sceneView.pixelPerfect2D", m_PixelPerfect2D);
         prefs.TryGetBool("sceneView.cameraFrameGuide", m_CameraFrameGuide);
         prefs.TryGetBool("sceneView.postProcessingEnabled", m_PostProcessingEnabled);
@@ -423,6 +424,7 @@ public:
         prefs.SetDouble("sceneView.gridOpacity3D", static_cast<double>(m_GridOpacity3D));
         prefs.SetDouble("sceneView.gridOpacity2D", static_cast<double>(m_GridOpacity2D));
         prefs.SetBool("sceneView.toolOverlayBorderless", m_ToolOverlayBorderless);
+        prefs.SetBool("sceneView.toolOverlayVisible", m_ToolOverlayVisible);
         prefs.SetBool("sceneView.pixelPerfect2D", m_PixelPerfect2D);
         prefs.SetBool("sceneView.cameraFrameGuide", m_CameraFrameGuide);
         prefs.SetBool("sceneView.postProcessingEnabled", m_PostProcessingEnabled);
@@ -501,6 +503,9 @@ public:
     uint32_t GetMeasureColor() const { return m_MeasureColor; }
     float GetRulerIndicatorThickness() const { return m_RulerIndicatorThickness; }
     bool GetToolOverlayBorderless() const { return m_ToolOverlayBorderless; }
+    /// True when the tool mode buttons float over the viewport; false (the default)
+    /// docks them in the Scene View toolbar row.
+    bool GetToolOverlayVisible() const { return m_ToolOverlayVisible; }
     HoverHighlightMode GetHoverHighlightMode() const { return m_HoverHighlightMode; }
     HoverHighlightModifier GetHoverHighlightModifier() const { return m_HoverHighlightModifier; }
     // Modifier key that, when held while hovering, reveals outline highlights
@@ -771,6 +776,12 @@ public:
     void SetToolOverlayBorderless(bool value)
     {
         m_ToolOverlayBorderless = value;
+        Save();
+    }
+
+    void SetToolOverlayVisible(bool value)
+    {
+        m_ToolOverlayVisible = value;
         Save();
     }
 
@@ -1308,6 +1319,7 @@ private:
     float m_GridOpacity3D = 0.3f;
     float m_GridOpacity2D = 0.15f;
     bool m_ToolOverlayBorderless = false;
+    bool m_ToolOverlayVisible = false;
     HoverHighlightMode m_HoverHighlightMode = HoverHighlightMode::WithModifier;
     HoverHighlightModifier m_HoverHighlightModifier = HoverHighlightModifier::Control;
     // Held to reveal outlines on hidden (disabled) objects while hovering.

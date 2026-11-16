@@ -211,7 +211,7 @@ void TileSetAtlasPreview::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx, co
     uint32_t atlasWidthPx = 0;
     uint32_t atlasHeightPx = 0;
     const Rendering::TextureHandle texture =
-        ctx.Manager->TryGetBackgroundTextureHandleByGuid(m_TextureGuid, &atlasWidthPx, &atlasHeightPx);
+        ctx.Manager->BackgroundImages().TryGetHandle(m_TextureGuid, &atlasWidthPx, &atlasHeightPx);
     if (!texture.IsValid() || atlasWidthPx == 0 || atlasHeightPx == 0)
         return;
 
@@ -1033,7 +1033,7 @@ void TileSetEditorPanel::RequestAtlasSize()
         return;
 
     std::weak_ptr<int> alive = m_AsyncLifetime;
-    manager->RequestBackgroundTexture(
+    manager->BackgroundImages().Request(
         atlas, [this, alive, atlas](Rendering::TextureHandle handle, uint32_t width, uint32_t height) {
             if (alive.expired() || !handle.IsValid())
                 return;

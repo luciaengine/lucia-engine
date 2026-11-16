@@ -272,6 +272,118 @@ TEST(UIFontLoadingTests, PendingFamilyUsesExplicitDefaultInsteadOfArbitraryLoade
     EXPECT_TRUE((bool)pendingRoboto);
 }
 
+
+TEST(UIFontLoadingTests, PrewarmIsPendingUntilTheRequestedFaceLoadsThenReady)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "Device init failed";
+
+    UIManager ui(dev);
+    const auto bytes = LoadRobotoBytes();
+    ASSERT_FALSE(bytes.empty()) << "staged Roboto-Regular.ttf not found";
+    ASSERT_TRUE(ui.SetDefaultFontBytes(bytes));
+
+    UIManager::FontResolveCallback complete;
+    int calls = 0;
+    ui.SetFontResolver([&](const std::string&, int weight, FontStyle style, FontVariant,
+                           UIManager::FontResolveCallback onReady)
+                       {
+                           EXPECT_EQ(weight, 700);
+                           EXPECT_EQ(style, FontStyle::Italic);
+                           ++calls;
+                           complete = std::move(onReady);
+                       });
+
+    UIManager::FontWarmupRequest request;
+    request.Family = "Level Title";
+    request.Text = "Cave 0123456789";
+    request.Weight = 700;
+    request.Style = FontStyle::Italic;
+    using Status = UIManager::FontWarmupStatus;
+    EXPECT_EQ(ui.PrewarmFontText(request), Status::Pending);
+    EXPECT_EQ(ui.PrewarmFontText(request), Status::Pending);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(ui.GetFontLoadProgress().Pending, 1u);
+    EXPECT_FALSE(ui.GetFontLoadProgress().Ready());
+
+    UIManager::FontResolveResult result;
+    result.Bytes = bytes;
+    complete(std::move(result));
+    ui.DrainDeferredActionsOnce();
+    EXPECT_EQ(ui.PrewarmFontText(request), Status::Ready);
+    EXPECT_EQ(calls, 1);
+    EXPECT_TRUE(ui.GetFontLoadProgress().Ready());
+}
+
+TEST(UIFontLoadingTests, AReplacedResolverCannotClearTheNewRequest)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "Device init failed";
+
+    UIManager ui(dev);
+    UIManager::FontResolveCallback oldComplete;
+    UIManager::FontResolveCallback newComplete;
+    ui.SetFontResolver([&](const std::string&, int, FontStyle, FontVariant,
+                           UIManager::FontResolveCallback onReady) { oldComplete = std::move(onReady); });
+    ui.RequestFontFamily("Same Family");
+    int newCalls = 0;
+    ui.SetFontResolver([&](const std::string&, int, FontStyle, FontVariant,
+                           UIManager::FontResolveCallback onReady)
+                       {
+                           ++newCalls;
+                           newComplete = std::move(onReady);
+                       });
+    ui.RequestFontFamily("Same Family");
+    oldComplete(UIManager::FontResolveResult{});
+    ui.DrainDeferredActionsOnce();
+    ui.RequestFontFamily("Same Family");
+    EXPECT_EQ(newCalls, 1);
+    EXPECT_EQ(ui.GetFontLoadProgress().Pending, 1u);
+    EXPECT_EQ(ui.GetFontLoadProgress().Failed, 0u);
+
+    UIManager::FontResolveResult result;
+    result.Bytes = LoadRobotoBytes();
+    ASSERT_FALSE(result.Bytes.empty()) << "staged Roboto-Regular.ttf not found";
+    newComplete(std::move(result));
+    ui.DrainDeferredActionsOnce();
+    EXPECT_TRUE(ui.GetFontLoadProgress().Ready());
+}
+
+TEST(UIFontLoadingTests, PrewarmReportsAMissingFaceAndInvalidSizesAsFailed)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "Device init failed";
+
+    UIManager ui(dev);
+    const auto bytes = LoadRobotoBytes();
+    ASSERT_FALSE(bytes.empty()) << "staged Roboto-Regular.ttf not found";
+    ASSERT_TRUE(ui.SetDefaultFontBytes(bytes));
+    ui.SetFontResolver([](const std::string&, int, FontStyle, FontVariant,
+                          UIManager::FontResolveCallback onReady) { onReady(UIManager::FontResolveResult{}); });
+
+    using Status = UIManager::FontWarmupStatus;
+    UIManager::FontWarmupRequest missing;
+    missing.Family = "Missing Face";
+    missing.Text = "Loading";
+    ui.PrewarmFontText(missing);
+    ui.DrainDeferredActionsOnce();
+    EXPECT_EQ(ui.PrewarmFontText(missing), Status::Failed);
+    EXPECT_EQ(ui.GetFontLoadProgress().Failed, 1u);
+    EXPECT_FALSE(ui.GetFontLoadProgress().Ready());
+
+    UIManager::FontWarmupRequest defaultFace;
+    defaultFace.Text = "Loading";
+    EXPECT_EQ(ui.PrewarmFontText(defaultFace), Status::Ready);
+    defaultFace.PixelSize = 0.0f;
+    EXPECT_EQ(ui.PrewarmFontText(defaultFace), Status::Failed);
+    defaultFace.PixelSize = 20.0f;
+    defaultFace.LetterSpacing = std::nanf("");
+    EXPECT_EQ(ui.PrewarmFontText(defaultFace), Status::Failed);
+}
+
 namespace
 {
 enum class FontUpdateMode

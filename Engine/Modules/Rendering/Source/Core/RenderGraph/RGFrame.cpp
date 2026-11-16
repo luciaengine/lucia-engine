@@ -583,7 +583,7 @@ void RGFrame::DiscardRecordedPasses()
     // submission still uses node-owned resources. Retirement must join it too.
     WaitForPendingWork();
     if (m_Graph.PassCount() == 0 && m_Graph.Arena().GetMarker().DestructorCount == 0 &&
-        m_ExecutionLifetimes.empty() && !m_RequiresGraphicsQueue && m_SubmissionAttempts.empty())
+        m_ExecutionLifetimes.empty() && m_SubmissionAttempts.empty())
         return;
     ResetRecording();
 }
@@ -616,7 +616,6 @@ void RGFrame::ResetRecording()
 {
     m_Graph.BeginFrame(); // resets the arena → runs last frame's exec-lambda dtors
     m_ExecutionLifetimes.clear();
-    m_RequiresGraphicsQueue = false;
     m_SubmissionAttempts.clear();
     m_Exec.clear();
     m_Prepare.clear();
@@ -928,13 +927,6 @@ void RGFrame::Execute()
     // Each attempt has its own counters, including a replay or rejected owner.
     // Submission history and completion tokens remain monotonic/device-owned.
     m_Stats = FrameStats{};
-    if (m_RequiresGraphicsQueue &&
-        std::any_of(std::begin(m_PhysicalQueueOf), std::end(m_PhysicalQueueOf),
-                    [](uint8_t queue) { return queue != 0; }))
-    {
-        m_Stats.ExecutionRejected = true;
-        return;
-    }
     for (const auto& lifetime : m_ExecutionLifetimes)
         if (lifetime.expired())
         {
@@ -1023,14 +1015,6 @@ void RGFrame::Execute()
         m_Graph.SetCompletedTimelineValues(completedValues);
         m_Graph.BuildSubmissionPlan(m_PhysicalQueueOf);
         m_Stats.BuildSubmissionPlanMs = elapsedMs(planBegin);
-
-        if (m_RequiresGraphicsQueue &&
-            std::any_of(m_Graph.Submissions().begin(), m_Graph.Submissions().end(),
-                        [](const auto& submission) { return submission.PhysicalQueue != 0; }))
-        {
-            m_Stats.ExecutionRejected = true;
-            return;
-        }
 
         // Record real command buffers per submission (barriers → render passes →
         // pass lambdas with ctx.Cmd) and submit with timeline-semaphore sync.

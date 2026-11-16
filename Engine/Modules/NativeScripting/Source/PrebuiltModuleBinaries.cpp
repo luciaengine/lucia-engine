@@ -1,6 +1,7 @@
 #include "NativeScripting/PrebuiltModuleBinaries.h"
 
 #include "NativeScripting/BuildCacheRecord.h"
+#include "Types/Fnv1a.h"
 
 #include <system_error>
 
@@ -57,7 +58,7 @@ std::string ToolchainFingerprintShortHash(const GE_ToolchainFingerprint& fingerp
         text += std::to_string(field);
         text += ':';
     }
-    return ToHexDigest(Fnv1aHash(text)).substr(0, 8);
+    return ToHexDigest(Hashing::Fnv1a64(text)).substr(0, 8);
 }
 
 std::string PrebuiltPlatformDirName(const GE_ToolchainFingerprint& fingerprint)

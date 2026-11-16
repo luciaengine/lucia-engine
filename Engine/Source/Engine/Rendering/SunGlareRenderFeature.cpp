@@ -169,10 +169,11 @@ bool SunGlareRenderFeature::Initialize(IDevice* device)
 
     // Linear CLAMP, and the clamp is the load-bearing half: the transmittance LUT's u axis
     // is the ray's zenith cosine, so a repeating address mode would wrap a sun near the
-    // horizon onto the opposite horizon's optical depth. The depth probe ignores the filter
-    // entirely (texelFetch).
+    // horizon onto the opposite horizon's optical depth. Depth uses a separate
+    // point sampler: texelFetch still requires a sampler valid for its format.
     m_Sampler = device->CreateSampler(SamplerDesc::MaterialLinearClamp("SunGlare_Sampler"));
-    if (!m_Sampler.IsValid())
+    m_DepthSampler = device->CreateSampler(SamplerDesc::PointClamp("SunGlare_DepthSampler"));
+    if (!m_Sampler.IsValid() || !m_DepthSampler.IsValid())
     {
         m_InitializeFailed = true;
         return false;
@@ -283,6 +284,7 @@ void SunGlareRenderFeature::OnDeviceRebuilt(IDevice* device)
     // The sampler is created eagerly in Initialize, whose m_Initialized guard means it will
     // not recreate it; do so here. The interned pipeline self-heals via warm recompile.
     m_Sampler = device->CreateSampler(SamplerDesc::MaterialLinearClamp("SunGlare_Sampler"));
+    m_DepthSampler = device->CreateSampler(SamplerDesc::PointClamp("SunGlare_DepthSampler"));
     m_ShadowSampler = device->CreateSampler(SamplerDesc::ShadowComparePCF("SunGlare_ShadowPCF"));
 }
 

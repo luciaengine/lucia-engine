@@ -20,6 +20,7 @@ namespace GameEngine {
 
 class AssetManager;
 struct MeshClusterLODManifest;
+class ModelBoneLOD;
 struct ModelAssetFbxTestAccess;
 namespace Animation { struct SkeletonData; class AnimationClip; }
 struct AssetDecodeInput;
@@ -237,6 +238,14 @@ struct Mesh {
     }
 };
 
+// Writes the vertices of sourceMesh with the first weightCount morph targets applied into
+// outVertices, which ends at the source vertex count; one outVertices reused across calls keeps
+// its storage. A target that moves normals renormalizes them, and the whole mesh gets new
+// tangents when the source carries tangents. The other streams of the mesh do not change.
+void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weightCount,
+                       Vector<Vertex>& outVertices);
+// A copy of sourceMesh with ApplyMorphTargets on its vertices, no morph targets and bounds that
+// enclose the morphed positions.
 Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weightCount);
 void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate = false);
 // FNV-1a over every stream a GPU upload of `mesh` reads, its LODs included. MeshGPURegistry compares it to
@@ -420,6 +429,7 @@ public:
     virtual ~ModelAsset();
 
     uint32 GetSkeletonId() const { return m_SkeletonId; }
+    const SharedPtr<const ModelBoneLOD>& GetBoneLOD() const { return m_BoneLOD; }
 
     /**
      * @brief Load model from file
@@ -668,6 +678,7 @@ protected:
 private:
     bool LoadClusterLOD(std::span<const uint8> data);
     bool ReloadFromData(std::span<const uint8> data) override;
+    void BuildBoneLOD();
 
     friend struct ModelAssetFbxTestAccess;
 
@@ -795,6 +806,7 @@ private:
     void SetExtras(std::shared_ptr<const ModelExtras> extras);
     uint32 m_TotalVertexCount;
     uint32 m_TotalIndexCount;
+    SharedPtr<const ModelBoneLOD> m_BoneLOD;
     uint32 m_SkeletonId = 0;
     uint64 m_SourceContentHash = 0;
     // Hash of the resolved format-specific parse options that shaped the parsed

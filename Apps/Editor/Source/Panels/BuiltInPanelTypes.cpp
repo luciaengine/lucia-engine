@@ -7,6 +7,8 @@
 #include "Panels/AssetViewPanel.h"
 #include "Panels/AssetsPanel.h"
 #include "Panels/BookmarksPanel.h"
+#include "Panels/TilePalettePanel.h"
+#include "Panels/TileSetEditorPanel.h"
 #include "Panels/BuildPanel.h"
 #include "Panels/CpuProfilerPanel.h"
 #include "Panels/DiffPanel.h"
@@ -101,6 +103,8 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"AnimationClipEditorPanel", &MakePanel<AnimationClipEditorPanel>},
     {"MixerPanel", &MakePanel<MixerPanel>},
     {"UndoHistoryPanel", &MakePanel<UndoHistoryPanel>},
+    {"TilePalettePanel", &MakePanel<TilePalettePanel>},
+    {"TileSetEditorPanel", &MakePanel<TileSetEditorPanel>},
     {"NodeGraphPanel", &MakeMaterialGraphPanel},
     {"ShaderGraphPanel", &MakeMaterialGraphPanel},
     {"AnimationGraphPanel", &MakeAnimationGraphPanel},
@@ -127,6 +131,8 @@ constexpr FallbackDockPanel kFallbackDockPanels[] = {
     {EditorPanelIds::ShaderErrors, "ShaderErrorsPanel"},
     {EditorPanelIds::AnimationGraph, "AnimationGraphPanel"},
     {EditorPanelIds::GameLogicGraph, "GameLogicGraphPanel"},
+    {EditorPanelIds::TilePalette, "TilePalettePanel"},
+    {EditorPanelIds::TileSetEditor, "TileSetEditorPanel"},
 };
 
 } // namespace

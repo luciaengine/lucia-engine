@@ -6,6 +6,7 @@
 #include "Assets/AssetManager.h"
 #include "Rendering/Core/Device.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 #include "UI/Parsers/XMLParser.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIEvents.h"
@@ -36,8 +37,8 @@ TEST(UIManagerHoverTests, MouseEnterAndLeaveOnlyOnTransitions)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_hover_transitions.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_hover_transitions"));
+    const auto css = tempDir.Path() / "ui_hover_transitions.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -128,8 +129,8 @@ TEST(UIManagerHoverTests, CursorLeaveDispatchesMouseLeave)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_hover_cursor_leave.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_hover_cursor_leave"));
+    const auto css = tempDir.Path() / "ui_hover_cursor_leave.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -205,8 +206,8 @@ TEST(UIManagerHoverTests, PointerEventsNoneIsIgnoredForHover)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_pointer_events_hover.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_pointer_events_hover"));
+    const auto css = tempDir.Path() / "ui_pointer_events_hover.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -276,7 +277,8 @@ TEST(UIManagerHoverTests, OverlayLayerPriorityMatchesRenderOrdering)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "ui_overlay_hit_order.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_overlay_hit_order"));
+    const auto css = tempDir.Path() / "ui_overlay_hit_order.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -333,7 +335,8 @@ TEST(UIManagerHoverTests, NestedDropdownKeepsContainingModalPriority)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "ui_nested_overlay_hit_order.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_nested_overlay_hit_order"));
+    const auto css = tempDir.Path() / "ui_nested_overlay_hit_order.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -390,7 +393,8 @@ TEST(UIManagerHoverTests, BlockingDialogOutranksLaterModalFloatingPanel)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "ui_blocking_dialog_hit_order.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_blocking_dialog_hit_order"));
+    const auto css = tempDir.Path() / "ui_blocking_dialog_hit_order.css";
     {
         std::ofstream f(css);
         f << R"(

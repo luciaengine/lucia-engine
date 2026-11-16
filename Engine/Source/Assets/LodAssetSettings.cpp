@@ -3,6 +3,7 @@
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
 #include "Types/FormatNumber.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <charconv>
@@ -67,7 +68,7 @@ void LodAssetSettings::DecodeFloatCsv(std::string_view csv, float* out, uint32 m
     while (index < maxCount && pos <= csv.size()) {
         const size_t comma = csv.find(',', pos);
         const size_t tokenEnd = (comma == std::string_view::npos) ? csv.size() : comma;
-        const std::string_view token = Trim(csv.substr(pos, tokenEnd - pos));
+        const std::string_view token = TrimWhitespaceView(csv.substr(pos, tokenEnd - pos));
         if (!token.empty()) {
             float parsed = 0.0f;
             if (ParseFloat(token, parsed))

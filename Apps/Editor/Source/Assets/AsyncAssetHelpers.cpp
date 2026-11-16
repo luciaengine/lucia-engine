@@ -21,6 +21,8 @@ struct PendingLoad
     uint64 WorldGeneration = 0;
     std::function<void()> OnReady;
     std::string Label;
+    // Set by RunWhenReady in place of a load: polled each frame until it returns true.
+    std::function<bool()> IsReady;
 };
 
 // Main thread only: filled by RunWhenAssetLoaded, drained by PollPendingAssetLoads.
@@ -30,8 +32,21 @@ std::vector<PendingLoad>& PendingLoads()
     return s_PendingLoads;
 }
 
+// True when the continuation's target or world is gone: it is dropped without running.
+bool IsAbandoned(const PendingLoad& load)
+{
+    if (load.HasTarget && !load.Target.Get())
+        return true;
+    // The world was cleared for another scene: what the drop aimed at is gone.
+    return load.World && load.World->GetLifecycleResetGeneration() != load.WorldGeneration;
+}
+
 bool HasFinished(PendingLoad& load)
 {
+    if (IsAbandoned(load))
+        return true;
+    if (load.IsReady)
+        return load.IsReady();
     return !load.Future.Valid() ||
            load.Future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
 }
@@ -63,6 +78,26 @@ void RunWhenAssetLoaded(AssetManager& assets,
                                          std::move(pendingLabel)});
 }
 
+void RunWhenReady(std::function<bool()> isReady,
+                  UIElement* postTarget,
+                  const ECS::World* world,
+                  std::function<void()> onReady,
+                  std::string pendingLabel)
+{
+    if (!onReady || !isReady)
+        return;
+
+    if (isReady())
+    {
+        onReady();
+        return;
+    }
+
+    PendingLoads().push_back(PendingLoad{AssetFuture({}, nullptr, GUID{}), postTarget != nullptr, UIElement::MakeWeakRef(postTarget),
+                                         world, world ? world->GetLifecycleResetGeneration() : 0,
+                                         std::move(onReady), std::move(pendingLabel), std::move(isReady)});
+}
+
 void PollPendingAssetLoads()
 {
     std::vector<PendingLoad>& pending = PendingLoads();
@@ -82,12 +117,8 @@ void PollPendingAssetLoads()
     // Taken out of the list first: a continuation may start loads of its own.
     for (PendingLoad& load : finished)
     {
-        if (load.HasTarget && !load.Target.Get())
-            continue;
-        // The world was cleared for another scene: what the drop aimed at is gone.
-        if (load.World && load.World->GetLifecycleResetGeneration() != load.WorldGeneration)
-            continue;
-        load.OnReady();
+        if (!IsAbandoned(load))
+            load.OnReady();
     }
 }
 

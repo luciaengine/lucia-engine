@@ -22,6 +22,13 @@
 namespace GameEngine {
 namespace Hlod {
 
+MemberMeshSource MemberMeshSource::Of(const Components::MeshRenderer& renderer) {
+    const GUID model = renderer.modelAssetGuid.ToGuid();
+    if (model.IsNull())
+        return MemberMeshSource{GUID::Null(), 0, 0, renderer.meshGpuHandleId};
+    return MemberMeshSource{model, renderer.meshId, renderer.MeshNameId, 0};
+}
+
 namespace {
 
 // Synthetic mesh identity for a cluster's proxy submeshes (C7): namespaced under
@@ -175,13 +182,13 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
 
         // Capture the C3 staleness baseline.
         cluster.MemberTransformVersion.reserve(rc.Members.size());
-        cluster.MemberMeshHandleId.reserve(rc.Members.size());
+        cluster.MemberMeshSources.reserve(rc.Members.size());
         cluster.MemberMaterialGuid.reserve(rc.Members.size());
         for (GameEngine::ECS::EntityHandle member : rc.Members) {
             const auto* wt = world.GetComponent<Components::WorldTransform>(member);
             const auto* mr = world.GetComponent<Components::MeshRenderer>(member);
             cluster.MemberTransformVersion.push_back(wt ? wt->Version : 0u);
-            cluster.MemberMeshHandleId.push_back(mr ? mr->meshGpuHandleId : 0u);
+            cluster.MemberMeshSources.push_back(mr ? MemberMeshSource::Of(*mr) : MemberMeshSource{});
             cluster.MemberMaterialGuid.push_back(mr ? mr->materialAssetGuid.ToGuid() : GUID::Null());
         }
 

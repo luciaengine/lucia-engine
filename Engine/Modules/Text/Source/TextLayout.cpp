@@ -1,6 +1,14 @@
 #include "Rendering/Text/TextLayout.h"
 #include "FontAtlas_Internal.h"
 #include <algorithm>
+#include <limits>
+#include <memory>
+#include <unicode/ubrk.h>
+#include <unicode/ubidi.h>
+#include <unicode/uchar.h>
+#include <unicode/utf8.h>
+#include <unicode/utf16.h>
+#include <unicode/utext.h>
 
 namespace GameEngine
 {
@@ -9,17 +17,85 @@ namespace Rendering
 namespace Text
 {
 
+namespace
+{
+struct StyledPiece
+{
+    const StyledRun* Run;
+    size_t Begin;
+    size_t End;
+};
+
+std::vector<StyledPiece> OrderStyledLine(const std::vector<StyledRun>& runs, std::string& text)
+{
+    std::vector<StyledPiece> logical;
+    for (const auto& run : runs)
+    {
+        const auto begin = text.size();
+        text.append(run.Text);
+        if (text.size() != begin) logical.push_back({&run, begin, text.size()});
+    }
+    if (text.empty() || text.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max()) ||
+        std::all_of(text.begin(), text.end(), [](unsigned char c) { return c < 0x80; }))
+        return logical;
+    std::vector<UChar> unicode;
+    std::vector<size_t> bytes;
+    for (int32_t offset = 0; offset < static_cast<int32_t>(text.size());)
+    {
+        const size_t begin = static_cast<size_t>(offset);
+        UChar32 cp;
+        U8_NEXT(text.data(), offset, static_cast<int32_t>(text.size()), cp);
+        if (cp < 0) cp = 0xfffd;
+        bytes.push_back(begin);
+        if (cp > 0xffff)
+        {
+            unicode.push_back(U16_LEAD(cp));
+            bytes.push_back(begin);
+            unicode.push_back(U16_TRAIL(cp));
+        }
+        else unicode.push_back(static_cast<UChar>(cp));
+    }
+    bytes.push_back(text.size());
+    UErrorCode error = U_ZERO_ERROR;
+    std::unique_ptr<UBiDi, decltype(&ubidi_close)> bidi(ubidi_open(), ubidi_close);
+    if (!bidi) return logical;
+    ubidi_setPara(bidi.get(), unicode.data(), static_cast<int32_t>(unicode.size()),
+                  UBIDI_DEFAULT_LTR, nullptr, &error);
+    const auto count = ubidi_countRuns(bidi.get(), &error);
+    if (U_FAILURE(error)) return logical;
+    std::vector<StyledPiece> visual;
+    for (int32_t index = 0; index < count; ++index)
+    {
+        int32_t start = 0, length = 0;
+        const bool rtl = ubidi_getVisualRun(bidi.get(), index, &start, &length) == UBIDI_RTL;
+        const auto first = visual.size();
+        for (const auto& piece : logical)
+        {
+            const auto begin = std::max(piece.Begin, bytes[start]);
+            const auto end = std::min(piece.End, bytes[start + length]);
+            if (begin < end) visual.push_back({piece.Run, begin, end});
+        }
+        if (rtl) std::reverse(visual.begin() + first, visual.end());
+    }
+    return visual;
+}
+}
+
 uint64_t TextLayout::ShapingContextKey(std::string_view text)
 {
-#if defined(GE_HAVE_HARFBUZZ)
-    Detail::HBDirScript properties = Detail::DetectDirScriptUtf8(text);
-    if (properties.script == HB_SCRIPT_INVALID)
-        properties = Detail::GuessDirScriptUtf8(text);
-    return (static_cast<uint64_t>(properties.script) << 32) | static_cast<uint64_t>(properties.dir);
-#else
-    (void)text;
+    // The shaper takes the paragraph direction from the first strong character
+    // (UBIDI_DEFAULT_LTR); nothing else in the text changes how another line shapes.
+    const auto length = static_cast<int32_t>(std::min<size_t>(text.size(), std::numeric_limits<int32_t>::max()));
+    for (int32_t offset = 0; offset < length;)
+    {
+        UChar32 cp;
+        U8_NEXT(text.data(), offset, length, cp);
+        if (cp < 0) continue;
+        const auto direction = u_charDirection(cp);
+        if (direction == U_LEFT_TO_RIGHT) return 1;
+        if (direction == U_RIGHT_TO_LEFT || direction == U_RIGHT_TO_LEFT_ARABIC) return 2;
+    }
     return 0;
-#endif
 }
 
 TextLayout::MultilineShapeResult TextLayout::ShapeMultiline(std::span<const StyledRun> runs,
@@ -65,24 +141,34 @@ TextLayout::MultilineShapeResult TextLayout::ShapeMultiline(std::span<const Styl
         ShapedLine line{};
         line.GlyphStart = out.Glyphs.size();
         float penX = 0.0f;
-        // Runs sit on their own font's ascender; the tallest one carries the
-        // line's baseline, matching how Height takes the max ascent+descent.
+        // All styled runs share a baseline, including runs with different
+        // font sizes. Reserve the largest ascent and descent independently.
         float maxAscender = 0.0f;
+        float maxDescender = 0.0f;
         for (const auto& run : lineRuns)
         {
+            if (!run.Font || run.Text.empty()) continue;
+            const auto metrics = run.Font->GetFontLineMetrics(run.PixelSize);
+            maxAscender = std::max(maxAscender, metrics.ascender);
+            maxDescender = std::max(maxDescender, metrics.descender);
+        }
+        line.Height = std::max(1.0f, maxAscender + maxDescender);
+        std::string context;
+        const auto pieces = OrderStyledLine(lineRuns, context);
+        for (const auto& piece : pieces)
+        {
+            const auto& run = *piece.Run;
             if (!run.Font || run.Text.empty()) continue;
             auto* font = const_cast<FontAtlas*>(run.Font);
             FontAtlas::ShapeResult sr;
             uint32_t rgba = packRgba(run.Color);
-            font->ShapeText(run.Text, run.PixelSize, sr, rgba, run.LetterSpacingPx);
+            font->ShapeTextRange(context, piece.Begin, piece.End, run.PixelSize, sr, rgba, run.LetterSpacingPx);
             if (sr.atlasChanged) out.AtlasChanged = true;
             auto lm = font->GetFontLineMetrics(run.PixelSize);
-            line.Height = std::max(line.Height, std::max(1.0f, lm.ascender + lm.descender));
-            maxAscender = std::max(maxAscender, lm.ascender);
             for (auto& gp : sr.glyphs)
             {
                 gp.x += penX;
-                gp.y += lineY;
+                gp.y += lineY + maxAscender - lm.ascender;
                 out.Glyphs.push_back(gp);
             }
             penX += sr.metrics.width;
@@ -140,9 +226,8 @@ TextLayout::MultilineShapeResult TextLayout::ShapeMultiline(std::span<const Styl
                                      (nl == std::string::npos) ? (run.Text.size() - start) : (nl - start));
                 if (!seg.empty())
                 {
-                    StyledRun r{run.Font, std::string(seg), run.PixelSize,
-                                {run.Color[0], run.Color[1], run.Color[2], run.Color[3]}};
-                    r.PreferFastAscii = run.PreferFastAscii;
+                    StyledRun r = run;
+                    r.Text.assign(seg);
                     lineRuns.push_back(std::move(r));
                 }
                 minLineH = std::max(minLineH, lineHForRun(&run));
@@ -167,7 +252,7 @@ TextLayout::MultilineShapeResult TextLayout::ShapeMultiline(std::span<const Styl
         float advance = 0.0f;
         bool isWhitespace = false;
         bool isNewline = false;
-        bool isHyphen = false;
+        bool breakAfter = false;
     };
 
     auto utf8Next = [](std::string_view s, size_t i, uint32_t& outCp) -> size_t {
@@ -182,11 +267,32 @@ TextLayout::MultilineShapeResult TextLayout::ShapeMultiline(std::span<const Styl
 
     auto isWrapWhitespace = [](uint32_t cp) -> bool { return (cp == ' ' || cp == '\t' || cp == '\r'); };
 
-    // UAX #14 class HY: a break opportunity follows a hyphen-minus, which is
-    // why browsers split "well-known" into "well-" / "known". The hyphen stays
-    // on the preceding line and, unlike a space, keeps counting toward its
-    // width.
-    auto isWrapHyphen = [](uint32_t cp) -> bool { return cp == '-'; };
+    // Find opportunities in the complete paragraph, not each styled span:
+    // styling must not create breaks inside a word. UText keeps offsets in
+    // UTF-8 bytes, matching the shaping clusters and public line ranges.
+    std::string paragraph;
+    for (const auto& run : runs)
+        paragraph += run.Text;
+    std::vector<bool> breakAfter(paragraph.size() + 1, false);
+    bool haveUnicodeBreaks = false;
+    if (paragraph.size() <= static_cast<size_t>(std::numeric_limits<int32_t>::max()))
+    {
+        UErrorCode status = U_ZERO_ERROR;
+        std::unique_ptr<UText, decltype(&utext_close)> text(
+            utext_openUTF8(nullptr, paragraph.data(), static_cast<int64_t>(paragraph.size()), &status),
+            &utext_close);
+        std::unique_ptr<UBreakIterator, decltype(&ubrk_close)> breaks(
+            ubrk_open(UBRK_LINE, "root", nullptr, 0, &status), &ubrk_close);
+        if (U_SUCCESS(status))
+            ubrk_setUText(breaks.get(), text.get(), &status);
+        if (U_SUCCESS(status))
+        {
+            haveUnicodeBreaks = true;
+            for (int32_t boundary = ubrk_first(breaks.get()); boundary != UBRK_DONE;
+                 boundary = ubrk_next(breaks.get()))
+                breakAfter[static_cast<size_t>(boundary)] = true;
+        }
+    }
 
     std::vector<Atom> atoms;
     atoms.reserve(64);
@@ -203,10 +309,16 @@ TextLayout::MultilineShapeResult TextLayout::ShapeMultiline(std::span<const Styl
         }
         auto* font = const_cast<FontAtlas*>(run.Font);
         // Maps the bytes from runStart, shaped as inside the whole run;
-        // caretX[k] is the insertion point of byte runStart + k.
+        // caretX[k] is the insertion point of byte runStart + k. Cluster bytes index the whole run.
         std::vector<float> caretX;
+        std::vector<FontAtlas::TextCluster> clusters;
         const bool caretOk = font->BuildCaretMapUtf8(run.Text, run.PixelSize, caretX,
-                                                     run.LetterSpacingPx, runStart);
+                                                     run.LetterSpacingPx, runStart, &clusters) &&
+                             !clusters.empty();
+        std::sort(clusters.begin(), clusters.end(), [](const auto& left, const auto& right)
+        {
+            return left.ByteStart < right.ByteStart;
+        });
         if (!caretOk || caretX.size() < run.Text.size() - runStart + 1)
         {
             size_t start = runStart;
@@ -233,14 +345,18 @@ TextLayout::MultilineShapeResult TextLayout::ShapeMultiline(std::span<const Styl
             uint32_t cp = 0;
             size_t next = utf8Next(run.Text, i, cp);
             if (next <= i) next = i + 1;
+            const auto cluster = std::lower_bound(clusters.begin(), clusters.end(), i,
+                [](const auto& value, size_t byte) { return value.ByteStart < byte; });
+            const bool hasCluster = cluster != clusters.end() && cluster->ByteStart == i;
+            if (hasCluster) next = cluster->ByteEnd;
             if (run.Text[i] == '\n')
                 atoms.push_back(Atom{&run, i, next, globalOffset + i, globalOffset + next, 0.0f, false, true});
             else
             {
-                const size_t caretNext = next - runStart;
-                float adv = (caretNext < caretX.size()) ? (caretX[caretNext] - caretX[i - runStart]) : 0.0f;
+                float adv = hasCluster ? cluster->Right - cluster->Left : 0.0f;
                 atoms.push_back(Atom{&run, i, next, globalOffset + i, globalOffset + next, adv,
-                                     isWrapWhitespace(cp), false, isWrapHyphen(cp)});
+                                     isWrapWhitespace(cp), false, cp == '-' || (cp != '/' &&
+                                     (haveUnicodeBreaks ? breakAfter[globalOffset + next] : isWrapWhitespace(cp)))});
             }
             i = next;
         }
@@ -346,7 +462,10 @@ TextLayout::MultilineShapeResult TextLayout::ShapeMultiline(std::span<const Styl
             }
         }
         curWidth = nextWidth;
-        if (atom.isWhitespace || atom.isHyphen || wordBreak == WordBreak::BreakAll) lastBreak = i;
+        const bool allowedBreak = wordBreak == WordBreak::KeepAll
+            ? (atom.isWhitespace || (atom.end > atom.start && atom.run->Text[atom.end - 1] == '-'))
+            : atom.breakAfter;
+        if (allowedBreak || wordBreak == WordBreak::BreakAll) lastBreak = i;
         ++i;
     }
     if (curStart < atoms.size())

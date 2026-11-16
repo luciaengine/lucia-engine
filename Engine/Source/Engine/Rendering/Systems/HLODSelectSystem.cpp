@@ -7,6 +7,7 @@
 #include "Components/Transform.h"
 #include "Engine/Rendering/HlodRuntime.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Platform/Environment.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/GPUScene.h"
 
@@ -21,15 +22,10 @@ namespace Engine::Renderer {
 
 namespace {
 
-// GE_HLOD=0 disables the runtime switch entirely (zero overhead); unset / any
-// other value keeps it on. Read once.
+// GE_HLOD=0 disables the runtime switch entirely (zero overhead); unset keeps
+// it on. Read once.
 bool IsHlodRuntimeEnabled() {
-    static bool s_Enabled = []() {
-        const char* env = std::getenv("GE_HLOD");
-        if (!env || !*env)
-            return true;
-        return !(env[0] == '0' && env[1] == '\0');
-    }();
+    static bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_HLOD", true);
     return s_Enabled;
 }
 
@@ -105,7 +101,7 @@ bool HLODSelectSystem::RefreshStaleness(ECS::World& world, Rendering::GPUScene& 
             break;
         }
         if (wt->Version != cluster.MemberTransformVersion[i] ||
-            mr->meshGpuHandleId != cluster.MemberMeshHandleId[i] ||
+            Hlod::MemberMeshSource::Of(*mr) != cluster.MemberMeshSources[i] ||
             mr->materialAssetGuid.ToGuid() != cluster.MemberMaterialGuid[i]) {
             nowStale = true;
             break;
@@ -118,7 +114,7 @@ bool HLODSelectSystem::RefreshStaleness(ECS::World& world, Rendering::GPUScene& 
     if (cluster.ProxyActive) {
         // Fall back to members-only immediately: the proxy geometry is now wrong.
         ExitProxy(world, scene, cluster);
-        m_RenderServices->RequestHlodResidencyExtraction();
+        m_RenderServices->RequestResidencyExtraction();
     }
     return true;
 }
@@ -203,7 +199,7 @@ void HLODSelectSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
 
     // Any residency flip re-adds a set via the full lane (Op::Add).
     if (anyFlip)
-        m_RenderServices->RequestHlodResidencyExtraction();
+        m_RenderServices->RequestResidencyExtraction();
 }
 
 } // namespace Engine::Renderer

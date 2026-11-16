@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -54,6 +55,16 @@ struct SettingsFieldDescriptor
     std::string SectionHeader;
     std::string SectionDescription;
 
+    // Optional explanation shown as a collapsible info card under the row.
+    std::string InfoCard;
+
+    // Optional. The row, its section break and its info card are hidden while
+    // this returns false. Re-evaluated after layout and after every toggle or
+    // dropdown change on the page, so a toggle can pick which rows below it
+    // apply, and a condition outside the page (a panel becoming the active
+    // tab) takes effect without a rebuild. Called often: keep it cheap.
+    std::function<bool()> IsVisible;
+
     // Editor preferences key ("onlineAssets.polyHaven"). When set, the panel
     // loads the initial value from Preferences.json and persists every change
     // (Editor::OpenEditorPreferences). Leave empty when the owning settings
@@ -78,15 +89,43 @@ struct SettingsFieldDescriptor
         float DefaultValue = 0.0f;
         // The row seeds itself from Get() clamped to [MinValue, MaxValue], so
         // this range must admit every value the backing store accepts. A
-        // narrower widget shows a value the file does not hold, and Set then
-        // persists that clamp over the user's setting.
+        // narrower widget shows a value the file does not hold, and the next
+        // commit persists that clamp over the user's setting.
         float MinValue = 0.0f;
         float MaxValue = 1.0f;
         float Step = 0.0f;
         std::function<float()> Get;
-        // Fired once at build time with Get()'s own value; see ToggleField::Set
-        // for the obligation that puts on a Set that persists.
+        // Live feedback while the thumb or the label is dragged: one call per
+        // drag tick, so it must not persist. Optional; without it nothing
+        // changes until the commit.
+        std::function<void(float)> Preview;
+        // The commit: thumb or label release, value-field entry, double-click
+        // reset, undo and redo. Never fired at build time: the value the row
+        // opens with is already live, and a Preview may have left the live
+        // value equal to the one being committed, so Set persists without
+        // comparing against it.
         std::function<void(float)> Set;
+    };
+    // A typed number without a slider: a value field whose label drags it.
+    // Preview and Set follow SliderField.
+    struct NumberField
+    {
+        float DefaultValue = 0.0f;
+        float MinValue = std::numeric_limits<float>::lowest();
+        float MaxValue = std::numeric_limits<float>::max();
+        std::function<float()> Get; // optional when PrefKey is set
+        std::function<void(float)> Preview;
+        std::function<void(float)> Set;
+    };
+    // NumberField for whole numbers.
+    struct IntegerField
+    {
+        int DefaultValue = 0;
+        int MinValue = std::numeric_limits<int>::min();
+        int MaxValue = std::numeric_limits<int>::max();
+        std::function<int()> Get; // optional when PrefKey is set
+        std::function<void(int)> Preview;
+        std::function<void(int)> Set;
     };
     struct DropdownField
     {
@@ -107,6 +146,8 @@ struct SettingsFieldDescriptor
     };
     struct ColorField
     {
+        bool ShowHexField = true;
+        std::function<void(uint32_t)> Preview;
         uint32_t DefaultArgb = 0xFF000000u;
         std::function<uint32_t()> Get;
         std::function<void(uint32_t)> Set;
@@ -176,8 +217,8 @@ struct SettingsFieldDescriptor
         std::function<std::unique_ptr<UIElement>()> CreateRow;
     };
 
-    std::variant<ToggleField, SliderField, DropdownField, ColorField, ToggleColorField,
-                 StringField, PathField, ButtonField, CustomField>
+    std::variant<ToggleField, SliderField, NumberField, IntegerField, DropdownField, ColorField,
+                 ToggleColorField, StringField, PathField, ButtonField, CustomField>
         Control = ToggleField{};
 };
 

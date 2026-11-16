@@ -8,6 +8,7 @@
 #include "AssetCore/GUID.h"
 #include "ECS/Systems.h"
 #include "Types/FlatMap.h"
+#include "Types/ScopedSubscription.h"
 #include "Types/Types.h"
 
 #include <array>
@@ -28,6 +29,7 @@ namespace GameEngine::Ocean
 {
 
 class OceanFFTCollisionAsset;
+class OceanRenderFeature;
 class OceanPresetAsset;
 class OceanSettingsAsset;
 
@@ -50,7 +52,15 @@ public:
     const char* GetName() const override { return "OceanExtraction"; }
     void Update(ECS::World& world, float32 deltaTime) override;
 
+    // The world's ocean term in the reflection probe scene digest: 0 without a
+    // surface, otherwise a hash of the surface's presence and its foam and normal
+    // textures. Wave, color and clarity values are left out, so an inspector drag
+    // does not recapture a "Once" probe every frame.
+    static uint64 ComputeOceanContentDigest(bool hasSurface, const GUID& foamTexture, const GUID& normalTexture);
+
 private:
+    void PublishWorldContent(OceanRenderFeature& feature, uint64 worldId, uint64 digest);
+
     Engine::Renderer::RenderServices* m_RenderServices = nullptr;
     float32 m_Time = 0.0f;
 
@@ -102,6 +112,9 @@ private:
     OceanCustomTimeProvider m_CustomTimeProvider;
     OceanNetworkOffsetTimeProvider m_NetworkTimeProvider;
     OceanTimelineTimeProvider m_TimelineTimeProvider;
+    // Keeps this world's entry in the feature's content digest table while the
+    // system, and so its world, lives.
+    ScopedSubscription m_WorldContentTracking;
 };
 
 } // namespace GameEngine::Ocean

@@ -175,11 +175,12 @@ GUID GUID::Derive(const GUID& parent, const String& subKey) {
     // FROZEN — changing it re-keys every derived asset and requires a coordinated re-bake.
     const auto& parentBytes = parent.GetData();
 
-    // Lower 64 bits: FNV-1a over parentBytes || '|' || subKey.
-    uint64_t h1 = FnvHash(parentBytes.data(), kSize);
+    // Lower 64 bits: FNV-1a over parentBytes || '|' || subKey. Hashing::Fnv1a64 keeps a
+    // uint64_t accumulator, so a 32-bit build derives the same GUID as the 64-bit editor.
+    uint64_t h1 = Hashing::Fnv1a64(parentBytes.data(), kSize);
     const uint8 separator = '|';
-    h1 = FnvHash(&separator, 1, h1);
-    h1 = FnvHash(reinterpret_cast<const uint8*>(subKey.data()), subKey.size(), h1);
+    h1 = Hashing::Fnv1a64(&separator, 1, h1);
+    h1 = Hashing::Fnv1a64(subKey.data(), subKey.size(), h1);
 
     // Upper 64 bits: the SplitMix64 output function of the lower hash, so the upper word
     // does not correlate with the lower one. Identity entropy is about 64 bits, which is

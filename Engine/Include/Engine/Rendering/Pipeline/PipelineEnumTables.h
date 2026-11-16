@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rendering/Core/Device.h"
+#include "Types/StringUtils.h"
 
 #include <cstdint>
 #include <optional>
@@ -26,7 +27,7 @@ enum class BlendMode : uint8_t
     Additive
 };
 
-// One string->enum row. Names are stored lowercase; Lookup lowercases input.
+// One string->enum row. Names are stored lowercase; Lookup matches input in any case.
 template <typename T>
 struct EnumTableEntry
 {
@@ -49,7 +50,7 @@ class EnumStringTable
     std::optional<T> Lookup(std::string_view name) const
     {
         for (const auto& e : m_Entries)
-            if (CaseInsensitiveEquals(e.Name, name))
+            if (EqualsIgnoreCase(e.Name, name))
                 return e.Value;
         return std::nullopt;
     }

@@ -26,7 +26,7 @@ namespace
 {
 
 // One request samples a route, not a scene: a few thousand stations is the whole
-// of a long approach road at 0.5 m spacing, and the cap keeps a typo from asking
+// of a Hobbiton arrival at 0.5 m spacing, and the cap keeps a typo from asking
 // the editor to bilinear-sample a million points on the main thread.
 constexpr std::size_t kMaxGroundSamples = 8192u;
 

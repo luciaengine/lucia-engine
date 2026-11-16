@@ -253,7 +253,7 @@ TEST_P(PreparedCopyTest, FinalizeChainPreparesDescriptorsAndDrawsTheColdFirstFra
                               << "all finalize descriptors must exist before the first record callback";
                   });
     Passes::TonemapParams tonemap{};
-    tonemap.look = Passes::kTonemapNoLookArm; // No display transform keeps saturated green unchanged.
+    tonemap.look = 0; // Neutral: it desaturates the green source a little.
     ASSERT_TRUE(Passes::AddTonemapPassRG(frame, source, linear, tonemap).IsValid());
     ASSERT_TRUE(Passes::AddSRGBEncodePassRG(
         frame, linear, encoded, {Passes::FinalizeInputSpace::Linear, Passes::FinalizeQuantizer::None}).IsValid());
@@ -281,11 +281,14 @@ TEST_P(PreparedCopyTest, FinalizeChainPreparesDescriptorsAndDrawsTheColdFirstFra
     EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
     const auto* pixels = static_cast<const uint8_t*>(device->MapBuffer(readback));
     ASSERT_NE(pixels, nullptr);
+    // Clearly green and opaque: the chain drew the source in the cold first frame.
+    constexpr uint8_t kMaxOtherChannel = 64;
+    constexpr uint8_t kMinGreen = 200;
     for (uint32_t offset = 0; offset < kReadbackBytes; offset += kPixelBytes)
     {
-        EXPECT_LE(pixels[offset], 1u);
-        EXPECT_GE(pixels[offset + 1], 254u);
-        EXPECT_LE(pixels[offset + 2], 1u);
+        EXPECT_LE(pixels[offset], kMaxOtherChannel);
+        EXPECT_GE(pixels[offset + 1], kMinGreen);
+        EXPECT_LE(pixels[offset + 2], kMaxOtherChannel);
         EXPECT_GE(pixels[offset + 3], 254u);
     }
     device->UnmapBuffer(readback);

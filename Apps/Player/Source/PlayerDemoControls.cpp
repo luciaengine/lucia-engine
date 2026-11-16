@@ -88,7 +88,7 @@ void PlayerDemoControls::Update(Input::InputSystem& input, Platform::Window& win
                           Mathematics::Quaternion::FromAxisAngle({1.0f, 0.0f, 0.0f}, m_Pitch);
     const auto forward = rotation.Rotate({0.0f, 0.0f, 1.0f});
     world->SetComponentDirect(camera->entity, Components::Transform::FromTRS(
-        m_Target - forward * m_Distance, rotation, {1.0f, 1.0f, 1.0f}));
+        m_Target + forward * -m_Distance, rotation, {1.0f, 1.0f, 1.0f}));
 }
 
 void PlayerDemoControls::CreateOverlay(RuntimeFrameReadback& readback)

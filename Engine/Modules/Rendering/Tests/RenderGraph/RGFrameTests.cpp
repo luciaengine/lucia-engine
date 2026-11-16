@@ -1276,37 +1276,19 @@ void DeclareScopedReplayPass(RGFrame& frame, std::weak_ptr<const void> lifetime,
 }
 } // namespace
 
-TEST(RGFrame, GraphicsQueueRequirementRejectsALateMapChangeBeforePreparation)
+TEST(RGFrame, SubmissionObserversRunOnEveryAttemptUntilDiscard)
 {
     RG_REQUIRE_DEVICE(device);
     FramePools pools(device.get());
     RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
     frame.BeginFrame(0);
-    frame.RequireGraphicsQueue();
-    uint32_t prepared = 0;
     uint32_t recorded = 0;
     uint32_t attempted = 0;
+    auto lifetime = std::make_shared<const uint8_t>(0);
+    DeclareScopedReplayPass(frame, lifetime, recorded);
     frame.OnSubmissionAttempt([&attempted]() noexcept { ++attempted; });
-    const auto output = frame.CreateTexture("GraphicsQueueOnly", ColorDesc());
-    frame.AddPass("GraphicsQueueOnly", 0,
-                  [output, &prepared](RGPassBuilder& pass)
-                  {
-                      pass.AttachColor(0, output, {.Load = RGLoadOp::Clear});
-                      pass.Prepare([&prepared](RGPrepareContext&) { ++prepared; return true; });
-                  },
-                  [&recorded](RGContext&) { ++recorded; });
-    frame.MarkOutput(output);
-    frame.SetPhysicalQueueMap(RGFrame::kIdentityQueueMap);
-    frame.Execute();
-    EXPECT_TRUE(frame.Stats().ExecutionRejected);
-    EXPECT_EQ(prepared, 0u);
-    EXPECT_EQ(recorded, 0u);
-    EXPECT_EQ(attempted, 0u);
-    EXPECT_EQ(pools.Transient.Allocs(), 0u);
-    frame.SetPhysicalQueueMap(RGFrame::kSingleQueueMap);
     frame.Execute();
     EXPECT_FALSE(frame.Stats().ExecutionRejected);
-    EXPECT_EQ(prepared, 1u);
     EXPECT_EQ(recorded, 1u);
     EXPECT_EQ(attempted, 1u);
     frame.Execute();
@@ -1314,11 +1296,10 @@ TEST(RGFrame, GraphicsQueueRequirementRejectsALateMapChangeBeforePreparation)
 
     frame.DiscardRecordedPasses();
     frame.SetPhysicalQueueMap(RGFrame::kIdentityQueueMap);
-    auto lifetime = std::make_shared<const uint8_t>(0);
     DeclareScopedReplayPass(frame, lifetime, recorded);
     frame.OnSubmissionAttempt([&attempted]() noexcept { ++attempted; });
     frame.Execute();
-    EXPECT_FALSE(frame.Stats().ExecutionRejected) << "discard clears the old queue requirement";
+    EXPECT_FALSE(frame.Stats().ExecutionRejected);
     EXPECT_EQ(recorded, 3u);
     EXPECT_EQ(attempted, 3u) << "discard also clears the old submission observer";
 }

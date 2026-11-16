@@ -308,6 +308,18 @@ class SceneViewController
     void SetGridVisible(bool visible) { m_ShowGrid = visible; }
     bool IsGridVisible() const { return m_ShowGrid; }
 
+    /// The 2D mode grid's authored cells in world XY (a tile map's cells). Unset = zoom-based decades.
+    struct Grid2DCells
+    {
+        float OriginX = 0.0f;
+        float OriginY = 0.0f;
+        float Width = 0.0f;
+        float Height = 0.0f;
+        bool Valid = false;
+    };
+    void SetGrid2DCells(const Grid2DCells& cells) { m_Grid2DCells = cells; }
+    void ClearGrid2DCells() { m_Grid2DCells = {}; }
+
     // Post-processing master toggle for the Scene View (LDR stack + tonemap curve).
     // When disabled, a per-view PostProcessSettings override strips bloom, color filter,
     // CAS, CRT, and uses Neutral tonemap; gameplay views are unaffected.
@@ -732,6 +744,7 @@ class SceneViewController
     bool m_ShowMarkupGizmos = true;
     bool m_ShowCameraFrameGuide = false;
     bool m_ShowGrid = false;
+    Grid2DCells m_Grid2DCells;
     bool m_PostProcessingEnabled = true;
     bool m_GridSnapEnabled = false;
     bool m_FrameGraphBuildEnabled = true;

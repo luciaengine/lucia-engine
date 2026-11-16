@@ -366,6 +366,13 @@ uint64 RenderServices::GetWorldRenderContentDigest(uint64 worldId) const
     return it != m_WorldRenderContentDigests.end() ? it->second : 0;
 }
 
+uint64 RenderServices::ComputeFeatureContentDigest(uint64 worldId) const
+{
+    uint64 digest = 0;
+    ForEachFeature([&](const IRenderFeature& feature) { digest += feature.ContentDigest(worldId); });
+    return digest;
+}
+
 const PostProcessSettings& RenderServices::GetEffectivePostProcessSettings(Rendering::ViewId viewId, uint64 worldId) const
 {
     // A registry override REPLACES the world settings rather than blending into

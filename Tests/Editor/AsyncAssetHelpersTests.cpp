@@ -112,6 +112,42 @@ TEST(AsyncAssetHelpersTests, AContinuationWhoseWorldWasClearedIsDropped)
     EXPECT_FALSE(ran) << "a continuation aimed at the world before it was cleared ran";
 }
 
+// A drop on a mesh still being prepared for picking waits through RunWhenReady: its continuation
+// runs from the poll once the check turns true, and the wait is named meanwhile.
+TEST(AsyncAssetHelpersTests, AReadyCheckContinuationRunsOnceTheCheckTurnsTrue)
+{
+    Editor::ClearPendingAssetLoads();
+
+    bool ready = false;
+    bool ran = false;
+    Editor::RunWhenReady([&ready] { return ready; }, nullptr, nullptr, [&ran] { ran = true; }, "dropped.glb");
+    Editor::PollPendingAssetLoads();
+    EXPECT_FALSE(ran) << "the continuation ran before its check was true";
+    ASSERT_EQ(Editor::PendingAssetLoadLabels().size(), 1u);
+    EXPECT_EQ(Editor::PendingAssetLoadLabels().front(), "dropped.glb");
+
+    ready = true;
+    Editor::PollPendingAssetLoads();
+    EXPECT_TRUE(ran) << "the continuation did not run once its check was true";
+    EXPECT_TRUE(Editor::PendingAssetLoadLabels().empty());
+}
+
+TEST(AsyncAssetHelpersTests, AReadyCheckContinuationWhoseWorldWasClearedIsDropped)
+{
+    Editor::ClearPendingAssetLoads();
+
+    ECS::World world;
+    bool ran = false;
+    uint32_t checks = 0;
+    Editor::RunWhenReady([&checks] { return ++checks > 1; }, nullptr, &world, [&ran] { ran = true; },
+                         std::string());
+    world.Clear();
+    Editor::PollPendingAssetLoads();
+    EXPECT_FALSE(ran) << "a continuation aimed at the world before it was cleared ran";
+    EXPECT_EQ(checks, 1u) << "the check ran after its world was cleared";
+    EXPECT_TRUE(Editor::PendingAssetLoadLabels().empty());
+}
+
 // A model inspector's settings change on a model that is neither loaded nor loading requests the
 // model and returns: the load is named while pending, never waited for on the calling thread.
 TEST(AsyncAssetHelpersTests, ASettingsReloadOfAModelThatIsNotLoadedRequestsItInsteadOfWaiting)

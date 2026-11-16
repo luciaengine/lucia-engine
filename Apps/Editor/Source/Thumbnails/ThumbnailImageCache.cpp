@@ -4,12 +4,14 @@
 #include "Assets/AssetRegistry.h"
 
 #include "AssetCore/SharedFileRead.h"
-#include <stb_image.h>
-#include <stb_image_write.h>
-#include <limits>
+#include "Image/Encode.h"
+#include "Types/Fnv1a.h"
 
-#include <algorithm>
+#include <limits>
+#include <span>
 #include <system_error>
+
+#include <stb_image.h>
 
 namespace GameEngine
 {
@@ -52,20 +54,20 @@ bool WritePng(const std::filesystem::path& path, const ThumbnailImage& image)
         return false;
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    return stbi_write_png(path.string().c_str(), image.Width, image.Height, 4,
-                          image.Pixels.data(), image.Width * 4) != 0;
+    return Image::WritePngFile(path, std::span<const uint8_t>(image.Pixels.data(), image.Pixels.size()),
+                               static_cast<uint32_t>(image.Width), static_cast<uint32_t>(image.Height));
 }
 
 void HashCombine(std::size_t& seed, std::size_t value)
 {
-    seed ^= value + 0x9E3779B97F4A7C15ull + (seed << 6) + (seed >> 2);
+    seed = static_cast<std::size_t>(Hashing::Fnv1a64Value(static_cast<uint64_t>(seed), value));
 }
 
 void HashPathAndWriteTime(std::size_t& seed, const std::filesystem::path& path)
 {
-    HashCombine(seed, std::hash<std::string>{}(path.generic_string()));
-    HashCombine(seed, std::hash<int64>{}(
-                          WriteTimeOrDefault(path).time_since_epoch().count()));
+    const std::string text = path.generic_string();
+    seed = static_cast<std::size_t>(Hashing::Fnv1a64(text.data(), text.size(), static_cast<uint64_t>(seed)));
+    HashCombine(seed, static_cast<std::size_t>(WriteTimeOrDefault(path).time_since_epoch().count()));
 }
 
 void RemoveStaleCacheFiles(const std::filesystem::path& cacheRoot,

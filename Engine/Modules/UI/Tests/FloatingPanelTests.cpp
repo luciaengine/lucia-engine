@@ -21,6 +21,8 @@
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 
+#include "TestTempDir.h"
+
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -63,10 +65,7 @@ public:
 
         namespace fs = std::filesystem;
         const fs::path assetRoot = ApplicationPaths::GetExecutableDirectory() / "Assets";
-        const fs::path scratch = fs::temp_directory_path() / "ui_floating_panel_tests";
-        std::error_code ec;
-        fs::remove_all(scratch, ec);
-        fs::create_directories(scratch, ec);
+        const fs::path& scratch = m_ScratchDirectory.Path();
 
         m_Pool = std::make_unique<JobSystem::WorkStealingThreadPool>(2);
         if (!m_Assets.Initialize(assetRoot, m_Pool.get(), scratch / "AssetDatabase.assetdb",
@@ -138,6 +137,9 @@ private:
     // First member: destroyed last, after this fixture's UIManager released its buffers.
     SharedDeviceReleaseRetirement m_ReleaseRetirement;
     Rendering::IDevice* m_Device = nullptr;
+    // Holds the asset database and its cache; declared before the pool and the asset manager so
+    // it outlives both.
+    TestUtils::ScopedTempDir m_ScratchDirectory{TestUtils::MakeUniqueTempDirectory("ui_floating_panel_tests")};
     std::unique_ptr<JobSystem::WorkStealingThreadPool> m_Pool;
     AssetManager m_Assets;
     std::unique_ptr<UiRgHarness> m_Rg;

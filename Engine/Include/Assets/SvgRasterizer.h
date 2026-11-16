@@ -38,6 +38,10 @@ bool CalculateSvgRasterDimensions(float32 sourceWidth,
                                   uint32& outWidth,
                                   uint32& outHeight);
 
+/// Initialize the shared ThorVG SVG backend once for raster and mesh users.
+/// Returns false when ThorVG is unavailable or initialization failed.
+bool EnsureSvgBackendInitialized();
+
 /// Set/get the default longest-axis raster size for SVG texture assets that do
 /// not carry a per-asset kSvgRasterSizeMetaKey override. UI draws of an SVG do
 /// not use it: they rasterize at the drawn size through

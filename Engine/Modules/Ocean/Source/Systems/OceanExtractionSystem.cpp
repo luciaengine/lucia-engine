@@ -2,6 +2,7 @@
 
 #include "AssetCore/SharedFileRead.h"
 #include "Mathematics/Interpolation.h"
+#include "Types/Fnv1a.h"
 #include "Ocean/OceanCollisionProvider.h"
 #include "Ocean/OceanFFTCollisionAsset.h"
 #include "Ocean/OceanInputDrawSource.h"
@@ -3093,7 +3094,28 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     }
     feature.SetHasOcean(found);
     feature.PublishDepthClaim();
+    PublishWorldContent(feature, world.GetWorldId(),
+                        ComputeOceanContentDigest(found, oceanFoamTextureGuid, oceanNormalTextureGuid));
     feature.ProcessQueuedSurfaceQueries();
+}
+
+uint64 OceanExtractionSystem::ComputeOceanContentDigest(bool hasSurface, const GUID& foamTexture,
+                                                        const GUID& normalTexture)
+{
+    if (!hasSurface)
+        return 0u;
+    uint64 digest = Hashing::Fnv1a64("OceanSurface");
+    digest = Hashing::Fnv1a64Value(digest, foamTexture);
+    digest = Hashing::Fnv1a64Value(digest, normalTexture);
+    return digest;
+}
+
+void OceanExtractionSystem::PublishWorldContent(OceanRenderFeature& feature, uint64 worldId, uint64 digest)
+{
+    Engine::Renderer::WorldContentDigestTable& content = feature.GetWorldContent();
+    if (!m_WorldContentTracking)
+        m_WorldContentTracking = content.Track(worldId);
+    content.Set(worldId, digest);
 }
 
 } // namespace GameEngine::Ocean

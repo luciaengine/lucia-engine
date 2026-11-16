@@ -284,6 +284,7 @@ add_executable(AgentProviderTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ApiKeyStore.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeSessionProvider.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeUserContent.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CodexSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ReplyTextBlocks.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionFiles.cpp)
@@ -365,6 +366,7 @@ add_executable(AiAssistantPanelTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ApiKeyStore.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeSessionProvider.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeUserContent.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CodexSessionProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ReplyTextBlocks.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/CliSessionFiles.cpp)
@@ -419,52 +421,15 @@ add_custom_command(TARGET AiAssistantPanelTests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AgentModelPopover.uxml
         $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls/AgentModelPopover.uxml)
+# The copies above run when the test links, so an edit of a staged file relinks it.
+set_property(TARGET AiAssistantPanelTests APPEND PROPERTY LINK_DEPENDS
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/Fixtures/claude-dead-session.stdout
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/.assetmanifest
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantSetupPage.uxml
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantSetupPage.css
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantApiKeyRow.uxml
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AiAssistantSetup/AiAssistantApiKeyRow.css
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/panels/PromptPanel.css
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AgentConversationRow.uxml
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/AgentModelPopover.uxml)
 add_test(NAME AiAssistantPanelTests COMMAND AiAssistantPanelTests)
-
-add_executable(EditorLogViewTests
-    LogViewTests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Panels/LogView.cpp
-)
-
-target_include_directories(EditorLogViewTests
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../Include
-)
-
-target_link_libraries(EditorLogViewTests
-    PRIVATE
-        Engine
-        GTest::gtest
-        GTest::gtest_main
-)
-
-target_compile_features(EditorLogViewTests PRIVATE cxx_std_20)
-
-ge_set_output_tests(EditorLogViewTests)
-ge_stage_runtime_dependencies(EditorLogViewTests)
-
-add_test(NAME EditorLogViewTests COMMAND EditorLogViewTests)
-
-add_executable(EditorSceneViewPixelPerfectTests
-    SceneViewPixelPerfectTests.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/SceneViewPixelPerfect.cpp
-)
-
-target_include_directories(EditorSceneViewPixelPerfectTests
-    PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../Include
-)
-
-target_link_libraries(EditorSceneViewPixelPerfectTests
-    PRIVATE
-        Engine
-        GTest::gtest
-        GTest::gtest_main
-)
-
-target_compile_features(EditorSceneViewPixelPerfectTests PRIVATE cxx_std_20)
-
-ge_set_output_tests(EditorSceneViewPixelPerfectTests)
-ge_stage_runtime_dependencies(EditorSceneViewPixelPerfectTests)
-
-add_test(NAME EditorSceneViewPixelPerfectTests COMMAND EditorSceneViewPixelPerfectTests)

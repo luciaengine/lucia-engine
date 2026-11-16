@@ -9,7 +9,7 @@ GameEngine::ApplicationConfig BuildEditorApplicationConfig(const EditorCommandLi
                                                            const GameEngine::EngineArgs& engineArgs)
 {
     GameEngine::ApplicationConfig config;
-    config.Name = "Open Engine Editor";
+    config.Name = "Lucia Engine";
     config.EnableEditor = true;
 
     if (editorArgs.projectRoot.has_value())

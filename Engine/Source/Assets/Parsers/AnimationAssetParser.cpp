@@ -1,7 +1,45 @@
 #include "Assets/Parsers/AnimationAssetParser.h"
 
+#include "Animation/Compression/AnimationClipArchive.h"
+#include "AssetCore/SharedFileRead.h"
+
+#include <fstream>
+
 namespace GameEngine
 {
+
+bool AnimationAssetParser::CookForPackage(const AssetPackageCookContext& context, std::string& error) const
+{
+    ByteBuffer source;
+    if (!ReadFileBytesShared(context.StagedFile, source, Animation::AnimationClipArchive::MaximumEncodedBytes()))
+    {
+        error = "Could not read the staged animation clip within the 256 MiB source limit.";
+        return false;
+    }
+    AnimationClip clip(GUID::Generate(), context.StagedFile);
+    if (!clip.LoadFromData(source))
+    {
+        error = "The staged animation clip is invalid. Repair its source and export again.";
+        return false;
+    }
+    if (Animation::AnimationClipArchive::IsArchive(source))
+        return true;
+    std::vector<uint8> encoded;
+    if (!Animation::AnimationClipArchive::Encode(source, encoded))
+    {
+        error = "The animation clip exceeds the 256 MiB source limit or could not be compressed.";
+        return false;
+    }
+    std::ofstream output(context.StagedFile, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
+    output.close();
+    if (!output)
+    {
+        error = "Could not write the packaged animation clip.";
+        return false;
+    }
+    return true;
+}
 
 // AnimationClip's serializer (AnimationClip::SaveToData) emits version,
 // duration, selectedAnimationIndex, source { path, animationIndex }, and

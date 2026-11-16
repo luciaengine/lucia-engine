@@ -6,12 +6,14 @@
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECSModules/Rendering/Systems/ReflectionProbeSystem.h"
+#include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"
 #include "Scene/SceneSchemaRegistry.h"
 
 #include <gtest/gtest.h>
+#include <map>
 
 #include <string>
 #include <string_view>
@@ -19,6 +21,30 @@
 
 using namespace GameEngine;
 using namespace GameEngine::Engine::Renderer;
+
+namespace
+{
+// One coordinate of a world position, in meters from the world origin.
+float Coordinate(const Mathematics::WorldPosition& position, int axis)
+{
+    return (position - Mathematics::WorldPosition{})[static_cast<std::size_t>(axis)];
+}
+// A render feature with one content digest per world, as the terrain and ocean features keep.
+class ProbeContentFeature final : public IRenderFeature
+{
+  public:
+    void SetContent(uint64_t worldId, uint64_t digest) { m_Content[worldId] = digest; }
+    uint64_t ContentDigest(uint64_t worldId) const override
+    {
+        const auto it = m_Content.find(worldId);
+        return it != m_Content.end() ? it->second : 0u;
+    }
+
+  private:
+    std::map<uint64_t, uint64_t> m_Content;
+};
+
+} // namespace
 
 TEST(ReflectionProbeSchema, InfluenceShapeRoundTripsThroughTheReflectedSchema)
 {
@@ -116,7 +142,7 @@ void AddBoxProbeAndCamera(ECS::World& world, const Vector3& scale, const Vector3
 {
     ECS::EntityHandle probeEntity = world.CreateEntity();
     Components::ReflectionProbe probe{};
-    probe.BoxProjection = true;
+    probe.InfluenceShape = Components::ReflectionProbeInfluenceShape::Box;
     probe.BlendDistance = 0.0f;
     world.AddComponentImmediate(probeEntity, probe);
     world.AddComponentImmediate(probeEntity, MakeTransform(Vector3(), scale));
@@ -219,8 +245,8 @@ TEST(ReflectionProbeSystem, EllipsoidRetainsVolumeAndOffsetWithoutCamera)
     ASSERT_NE(desc, nullptr);
     EXPECT_FALSE(desc->BoxProjection);
     EXPECT_FLOAT_EQ(desc->BoxHalfExtents[0], 2.0f);
-    EXPECT_FLOAT_EQ(desc->BoxCenter[0], 7.0f);
-    EXPECT_FLOAT_EQ(desc->Position[0], 7.5f);
+    EXPECT_FLOAT_EQ(Coordinate(desc->BoxCenter, 0), 7.0f);
+    EXPECT_FLOAT_EQ(Coordinate(desc->Position, 0), 7.5f);
     EXPECT_FLOAT_EQ(desc->BlendDistance, 0.75f);
 }
 
@@ -293,9 +319,11 @@ TEST(ReflectionProbeSystem, GpuWeightsBlendRoomsSkyPriorityAndCaptureReadiness)
         auto& probe = probes[i];
         probe.WorldId = 1;
         probe.SourceKey = i + 1;
-        probe.Position[0] = probe.BoxCenter[0] = i == 0 ? -2.0f : 2.0f;
-        probe.Position[1] = 0.5f; // deliberately offset the capture from the volume center
-        for (auto& extent : probe.BoxHalfExtents) extent = 4.0f;
+        const float x = i == 0 ? -2.0f : 2.0f;
+        probe.BoxCenter = Mathematics::WorldPosition::FromVector3(Mathematics::Vector3(x, 0.0f, 0.0f));
+        // The capture is offset from the volume center on purpose.
+        probe.Position = Mathematics::WorldPosition::FromVector3(Mathematics::Vector3(x, 0.5f, 0.0f));
+        probe.BoxHalfExtents = Mathematics::Vector3(4.0f, 4.0f, 4.0f);
         probe.BlendDistance = 2.0f;
         probe.CaptureResolution = 32;
     }
@@ -436,9 +464,9 @@ TEST(ReflectionProbeSystem, ProjectionBoundsDoNotChangeInfluenceBounds)
     EXPECT_EQ(desc->InfluenceShape, 1u);
     EXPECT_FLOAT_EQ(desc->BoxHalfExtents[0], 2);
     EXPECT_FLOAT_EQ(desc->ProjectionHalfExtents[0], 4);
-    EXPECT_FLOAT_EQ(desc->ProjectionCenter[2], 3);
-    EXPECT_FLOAT_EQ(desc->BoxCenter[2], 0);
-    EXPECT_FLOAT_EQ(desc->Position[1], 0.5f);
+    EXPECT_FLOAT_EQ(Coordinate(desc->ProjectionCenter, 2), 3);
+    EXPECT_FLOAT_EQ(Coordinate(desc->BoxCenter, 2), 0);
+    EXPECT_FLOAT_EQ(Coordinate(desc->Position, 1), 0.5f);
     EXPECT_GT(desc->InfluenceRadius, 6.0f) << "Capture range must include the projection room's walls";
     probe = world.GetComponentForWrite<Components::ReflectionProbe>(entity);
     probe->InfluenceShape = Components::ReflectionProbeInfluenceShape::Ellipsoid;
@@ -580,12 +608,12 @@ TEST(ReflectionProbeSystem, LayerAndBoundsEditsRefreshCachedCaptureMembership)
 {
     ECS::World world;
     const auto probe = AddProbe(world, 0);
-    world.GetComponentForWrite<Components::ReflectionProbe>(probe)->CullMask = 1;
+    world.GetComponentForWrite<Components::ReflectionProbe>(probe)->CapturedLayers = Rendering::RenderLayerMask{1u};
     const auto object = world.CreateEntity();
     Components::MeshRenderer mesh{};
     const GUID material = GUID::Generate();
     mesh.materialAssetGuid.Set(material);
-    mesh.renderLayerMask = 2;
+    mesh.RenderLayers = Rendering::RenderLayerMask{2u};
     world.AddComponentImmediate(object, mesh);
     world.AddComponentImmediate(object, Components::LocalBounds{});
     world.AddComponentImmediate(object, MakeTransform(0, 1));
@@ -598,7 +626,7 @@ TEST(ReflectionProbeSystem, LayerAndBoundsEditsRefreshCachedCaptureMembership)
     ASSERT_NE(capture(), nullptr);
     EXPECT_TRUE(capture()->MaterialKeys.empty());
     for (int frame = 0; frame < 3; ++frame) system.Update(world, 0);
-    world.GetComponentForWrite<Components::MeshRenderer>(object)->renderLayerMask = 1;
+    world.GetComponentForWrite<Components::MeshRenderer>(object)->RenderLayers = Rendering::RenderLayerMask{1u};
     system.Update(world, 0);
     EXPECT_EQ(capture()->MaterialKeys, std::vector<GUID>{material});
     const auto included = capture()->SceneEditDigest;
@@ -633,5 +661,41 @@ TEST(ReflectionProbeSystem, RemovingAllProbesAndAddingOneRebuildsTheDescriptor)
     const auto* replacement = feature->GetLocalProbeDesc(world.GetWorldId(), 0);
     ASSERT_NE(replacement, nullptr);
     EXPECT_NE(replacement->SourceKey, firstKey);
-    EXPECT_EQ(replacement->Position[0], 20);
+    EXPECT_EQ(Coordinate(replacement->Position, 0), 20);
+}
+
+// A terrain or an ocean reaches every capture, as a directional light does: its content change
+// recaptures both "Once" probes. Content of another world and an unchanged value do not.
+TEST(ReflectionProbeSystem, FeatureContentChangesRefreshOnceCapturesInTheirWorldOnly)
+{
+    ECS::World world;
+    AddProbe(world, 0);
+    AddProbe(world, 20);
+    RenderServices rs;
+    auto& content = rs.EnsureFeature<ProbeContentFeature>();
+    ReflectionProbeSystem system(&rs);
+    system.Update(world, 0.016f);
+    auto* ibl = rs.GetFeature<ImageBasedLightingFeature>();
+    ASSERT_NE(ibl, nullptr);
+    auto digest = [&](uint32_t index) { return ibl->GetLocalProbeDesc(world.GetWorldId(), index)->SceneEditDigest; };
+    const auto west = digest(0), east = digest(1);
+
+    content.SetContent(world.GetWorldId() + 1u, 0x5eedu);
+    system.Update(world, 0.016f);
+    EXPECT_EQ(digest(0), west) << "Content of another world must not recapture this world's probes";
+    EXPECT_EQ(digest(1), east);
+
+    content.SetContent(world.GetWorldId(), 0x7e44a1du);
+    system.Update(world, 0.016f);
+    EXPECT_NE(digest(0), west) << "A terrain or ocean that appears must recapture every probe";
+    EXPECT_NE(digest(1), east);
+
+    const auto westWithContent = digest(0);
+    system.Update(world, 0.016f);
+    EXPECT_EQ(digest(0), westWithContent) << "Unchanged content must not keep static probes baking";
+
+    content.SetContent(world.GetWorldId(), 0u);
+    system.Update(world, 0.016f);
+    EXPECT_EQ(digest(0), west) << "Content that goes away returns the probe to its empty-scene digest";
+    EXPECT_EQ(digest(1), east);
 }

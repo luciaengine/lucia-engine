@@ -17,7 +17,11 @@ set(ANIMATION_SOURCES
     Source/AnimationPlayer.cpp
     Source/AnimationPose.cpp
     Source/AnimationTimeline.cpp
+    Source/BoneEvaluationPlan.cpp
     Source/BoneMask.cpp
+    Source/Compression/AnimationClipArchive.cpp
+    Source/Compression/AnimationClipData.cpp
+    Source/Compression/AnimationClipStorage.cpp
     Source/HumanBone.cpp
     Source/Humanoid/HumanoidImport.cpp
     Source/Humanoid/HumanoidNameMatcher.cpp
@@ -74,6 +78,7 @@ target_include_directories(Animation
 )
 
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
 
 target_link_libraries(Animation
     PUBLIC
@@ -85,6 +90,7 @@ target_link_libraries(Animation
     PRIVATE
         Logger
         Serialization
+        ZLIB::ZLIB
 )
 
 # cgltf is header-only via vcpkg. Animation only INCLUDES cgltf.h (no

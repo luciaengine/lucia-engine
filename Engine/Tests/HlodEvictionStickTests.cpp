@@ -184,7 +184,7 @@ TEST(HlodEvictionStick, EvictedMemberIsNotReAddedAndSurvivesBothLanes) {
     h.StepFrame();
     EXPECT_EQ(h.Stats().FastFrame, 0u) << "residency request must force the full lane";
     EXPECT_NE(h.Stats().EscalationReasonBits &
-                  RenderExtractionSystem::kEscalationHlodResidency, 0u);
+                  RenderExtractionSystem::kEscalationResidency, 0u);
     mg = h.Gpu(e);
     EXPECT_EQ(mg->instanceIndex, 0xFFFFFFFFu) << "evicted member was re-added by the full lane";
     EXPECT_TRUE(mg->hlodEvicted);

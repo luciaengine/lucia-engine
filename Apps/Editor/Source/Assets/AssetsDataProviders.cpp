@@ -6,6 +6,7 @@
 #include "Editor/Vcs/EditorVcsProviderRegistry.h"
 #include "VCSIntegration/IVCSIntegration.h"
 #include "Types/PathUtils.h"
+#include "Types/Fnv1a.h"
 #include "Types/StringUtils.h"
 #include "VCSIntegration/VCSFileStatus.h"
 #include <algorithm>
@@ -867,7 +868,7 @@ static uint64_t StableHashPath(const std::filesystem::path& p)
         abs = p;
     }
     const std::string key = abs.lexically_normal().generic_string();
-    return Fnv1a64(key.data(), key.size());
+    return Hashing::Fnv1a64(key);
 }
 } // namespace
 
