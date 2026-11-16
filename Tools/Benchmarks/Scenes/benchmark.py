@@ -45,6 +45,9 @@ DEFAULT_THRESHOLD_PCT = 3.0
 PASS_FLOOR_MS = 0.05
 # The noise threshold of a metric is this many relative standard deviations of the repeat runs.
 NOISE_SIGMAS = 3.0
+# A scene is not valid when the 1-minute load average is above this when it ends. The Player's own
+# threads raise the load, so this limit is above --max-load; other work on the machine passes it.
+MAX_LOAD_AFTER_SCENE = 6.0
 
 
 # ---------------------------------------------------------------- statistics
@@ -291,7 +294,7 @@ def parse_swapchain(log_text):
     return None
 
 
-def run_scene(name, settings, manifest, project, player, out_dir, timeout):
+def run_scene(name, settings, manifest, project, player, out_dir, timeout, check_load):
     width, height = manifest["resolution"]
     config = {"gameName": f"LuciaBenchmark{name}", "startupScene": settings["scene"],
               "window": {"width": width, "height": height, "vsync": False}}
@@ -342,6 +345,9 @@ def run_scene(name, settings, manifest, project, player, out_dir, timeout):
             result["poses"].append(pose)
     else:
         problems.append("the Player wrote no benchmark result")
+    if check_load and result["loadAfter"] is not None and result["loadAfter"] > MAX_LOAD_AFTER_SCENE:
+        problems.append(f"the 1-minute load average rose to {result['loadAfter']} during the scene, above "
+                        f"{MAX_LOAD_AFTER_SCENE}: other work shared the machine")
     result["problems"] = problems
     result["valid"] = not problems
     return result
@@ -372,7 +378,7 @@ def command_run(args):
               "resolution": manifest["resolution"], "run": manifest["run"], "scenes": {}}
     for name in scenes:
         result["scenes"][name] = run_scene(name, manifest["scenes"][name], manifest, project, player, work,
-                                           args.timeout)
+                                           args.timeout, bool(args.max_load))
         scene = result["scenes"][name]
         for pose in scene["poses"]:
             frame, gpu = pose["frameMs"], pose["gpuMs"]

@@ -55,7 +55,7 @@ The runner refuses a scene, and marks it not valid, when the Player exits with a
 
 ## Run the benchmark
 
-The reference machine is the Steam Machine (12 cores, RADV). Run nothing else on it during a run: the runner refuses to start above a 1-minute load average of 1.5.
+The reference machine is the Steam Machine (12 cores, RADV). Run nothing else on it during a run: the runner refuses to start above a 1-minute load average of 1.5, and marks a scene not valid when the load average is above 6 at its end.
 
 1. Build the Player and the cook tool in Release:
 
