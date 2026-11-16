@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/IRenderFeature.h"
+#include "Types/Types.h"
 
 #include <memory>
 
@@ -23,6 +24,12 @@ class ClusterLODFeature final : public IRenderFeature
     bool Initialize(RenderServices& services, AssetManager& assets);
     /// Caller-thread, exclusive ECS preparation; freezes the cut for this app frame.
     void Prepare(ECS::World& world);
+    /// Caps the triangles that all cluster LOD instances of the world draw. The pixel error budget
+    /// stays the floor: only a group whose projected error is above it can refine. Under the cap,
+    /// groups refine in order of largest projected error first until the next group does not fit.
+    /// Forced LOD 0 and LOD selection off ignore the cap. 0 removes the cap (the default).
+    /// Takes effect at the next Prepare.
+    void SetTriangleBudget(uint64 triangles);
     bool BindWorldGeometry(Rendering::RenderGraph::RGFrame& frame, RenderServices& services,
                            std::weak_ptr<const void> owner) override;
     void OnDeviceRebuilt(Rendering::IDevice* device) override;

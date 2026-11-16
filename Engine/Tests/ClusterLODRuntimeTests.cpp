@@ -5,6 +5,7 @@
 #include "Assets/MeshLODGenerator.h"
 #include "ClusterLODTestMesh.h"
 #include "Components/Rendering/DDGIVolume.h"
+#include "Components/Rendering/LODGroup.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Transform.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
@@ -14,6 +15,7 @@
 #include "ECS/SystemScheduling.h"
 #include "Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MeshLODThresholds.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "JobSystem/WorkStealingThreadPool.h"
@@ -160,6 +162,27 @@ class ClusterLODRuntimeTest : public ::testing::Test
     {
         m_Services.BeginWorldDrawFrame();
         m_Feature->Prepare(m_World);
+    }
+
+    ViewId AddSseView(const Vector3& eye, const Vector3& center)
+    {
+        CameraData camera{};
+        const auto projection = Mathematics::MakePerspectiveLH_ZO_ReverseZ(
+            1.0471976f, 1.5f, 0.1f, 2'000'000.0f);
+        const auto view = Mathematics::MakeLookAtLH(eye, center, Vector3(0, 1, 0));
+        camera.proj = projection;
+        camera.view = view;
+        const auto viewProjection = projection * view;
+        camera.viewProj = viewProjection;
+        SetCameraEye(camera, Mathematics::WorldPosition::FromVector3(eye));
+        auto& views = m_Services.Views();
+        const auto cameraId = views.AllocateCamera("Cluster SSE union");
+        views.SetCameraData(cameraId, camera, CameraRanges{0.1f, 2'000'000.0f});
+        const auto id = views.AllocateView("Cluster SSE union", cameraId);
+        views.SetViewWorldId(id, m_World.GetWorldId());
+        views.SetViewRenderLayerMask(id, RenderLayerMask::FromLayer(0));
+        views.PerView(id).WorldViewportHeight = 1080;
+        return id;
     }
 
     MeshGPUHandle CurrentHandle() const
@@ -528,27 +551,6 @@ class ClusterLODMultipleViewTest : public ClusterLODRuntimeTest,
                                    public ::testing::WithParamInterface<bool>
 {
   protected:
-    ViewId AddSseView(const Vector3& eye, const Vector3& center)
-    {
-        CameraData camera{};
-        const auto projection = Mathematics::MakePerspectiveLH_ZO_ReverseZ(
-            1.0471976f, 1.5f, 0.1f, 2'000'000.0f);
-        const auto view = Mathematics::MakeLookAtLH(eye, center, Vector3(0, 1, 0));
-        camera.proj = projection;
-        camera.view = view;
-        const auto viewProjection = projection * view;
-        camera.viewProj = viewProjection;
-        SetCameraEye(camera, Mathematics::WorldPosition::FromVector3(eye));
-        auto& views = m_Services.Views();
-        const auto cameraId = views.AllocateCamera("Cluster SSE union");
-        views.SetCameraData(cameraId, camera, CameraRanges{0.1f, 2'000'000.0f});
-        const auto id = views.AllocateView("Cluster SSE union", cameraId);
-        views.SetViewWorldId(id, m_World.GetWorldId());
-        views.SetViewRenderLayerMask(id, RenderLayerMask::FromLayer(0));
-        views.PerView(id).WorldViewportHeight = 1080;
-        return id;
-    }
-
     // A view whose eye is `origin + localEye`. The view matrix comes from the small local vectors,
     // and the exact eye goes in after it, so a far origin does not round the orientation.
     ViewId AddSseViewAt(const Mathematics::WorldPosition& origin, const Vector3& localEye, const Vector3& localCenter)
@@ -641,6 +643,160 @@ TEST_P(ClusterLODMultipleViewTest, NearDemandAtALargeTranslationMatchesTheOrigin
 }
 
 INSTANTIATE_TEST_SUITE_P(ViewRegistrationOrder, ClusterLODMultipleViewTest, ::testing::Bool());
+
+// Two refinable groups of the fixture model, each drawn by its own instance, seen by one view at
+// a pixel budget that both groups exceed. The triangle budget decides which group refines.
+class ClusterLODTriangleBudgetTest : public ClusterLODRuntimeTest
+{
+  protected:
+    void SetUp() override
+    {
+        ClusterLODRuntimeTest::SetUp();
+        if (IsSkipped() || HasFatalFailure())
+            return;
+        const auto manifest = m_Model->GetClusterLODManifest();
+        for (uint32 submesh = 0; submesh < manifest->Pages.size() && m_Other == ~0u; ++submesh)
+        {
+            if (submesh != m_Submesh && manifest->Pages[submesh].Error > 0.0f &&
+                manifest->Pages[submesh].IndexCount > m_Model->GetMesh(submesh).Indices.size())
+                m_Other = submesh;
+        }
+        ASSERT_NE(m_Other, ~0u) << "the fixture must contain two real coarse reductions";
+        ASSERT_GT(manifest->Pages[m_Submesh].Error, 0.0f);
+        m_OtherCoarse = m_Services.GetMeshGPURegistry().FindHandle({m_Model->GetGUID(), m_Other});
+        ASSERT_TRUE(m_OtherCoarse.IsValid());
+        Components::MeshRenderer renderer = *m_World.GetComponent<Components::MeshRenderer>(m_Entity);
+        renderer.meshId = m_Other;
+        renderer.meshGpuHandleId = m_OtherCoarse.id;
+        m_OtherEntity = m_World.Create().Set<Components::MeshRenderer>(renderer)
+            .Set<Components::WorldTransform>({}).Set<Components::LODGroup>({}).GetHandle();
+        m_World.ProcessCommands();
+        ASSERT_TRUE(m_Services.Views().ReleaseView(m_View));
+        m_Services.SetLODForceLevel(~0u);
+        m_Services.GetMeshGPURegistry().SetLodSelectionMode(LodSelectionMode::Sse);
+        m_Services.SetLODErrorBudgetPx(kPixelBudget);
+        const Vector3 middle = (Center(m_Submesh) + Center(m_Other)) * 0.5f;
+        m_Eye = middle + Vector3(0, 60, -60);
+        AddSseView(m_Eye, middle);
+    }
+
+    bool IsFine(ECS::EntityHandle entity) const
+    {
+        const auto* renderer = m_World.GetComponent<Components::MeshRenderer>(entity);
+        const auto* entry = renderer ? m_Services.GetMeshGPURegistry().Find(MeshGPUHandle(renderer->meshGpuHandleId)) : nullptr;
+        return entry && entry->StorageDomain == MeshGPUStorageDomain::ClusterFine;
+    }
+
+    void PrepareFrames()
+    {
+        for (uint32 frame = 0; frame < 4; ++frame)
+            Prepare();
+    }
+
+    uint64 CoarseTriangles(uint32 submesh) const { return m_Model->GetMesh(submesh).Indices.size() / 3; }
+    uint64 Refinement(uint32 submesh) const
+    {
+        return m_Model->GetClusterLODManifest()->Pages[submesh].IndexCount / 3 - CoarseTriangles(submesh);
+    }
+    uint64 CoarseTotal() const { return CoarseTriangles(m_Submesh) + CoarseTriangles(m_Other); }
+
+    Vector3 Center(uint32 submesh) const
+    {
+        const auto& mesh = m_Model->GetMesh(submesh);
+        return (Vector3(mesh.MinBounds[0], mesh.MinBounds[1], mesh.MinBounds[2]) +
+                Vector3(mesh.MaxBounds[0], mesh.MaxBounds[1], mesh.MaxBounds[2])) * 0.5f;
+    }
+
+    // The projected error of a group at bias 0, with the rule the feature applies to an identity
+    // transform: the Frobenius norm of the identity basis, sqrt(3), bounds its scale.
+    double ErrorPx(uint32 submesh) const
+    {
+        const auto& mesh = m_Model->GetMesh(submesh);
+        const double scale = std::sqrt(3.0);
+        const Vector3 extent(mesh.MaxBounds[0] - mesh.MinBounds[0], mesh.MaxBounds[1] - mesh.MinBounds[1],
+                             mesh.MaxBounds[2] - mesh.MinBounds[2]);
+        return ClusterGroupErrorPx(m_Model->GetClusterLODManifest()->Pages[submesh].Error, scale,
+                                   (Center(submesh) - m_Eye).Length(), extent.Length() * 0.5 * scale,
+                                   1.0 / std::tan(0.5 * kVerticalFieldOfView), kViewportHeight,
+                                   m_Services.GetLODGlobalBias(), false);
+    }
+
+    // Sets the other group's LOD bias so that its projected error is `ratio` times the error of
+    // the fixture group.
+    void SetOtherErrorRatio(double ratio)
+    {
+        const double baseRatio = ErrorPx(m_Other) / ErrorPx(m_Submesh);
+        m_World.GetComponentForWrite<Components::LODGroup>(m_OtherEntity)->Bias =
+            static_cast<float>(std::log2(ratio / baseRatio));
+    }
+
+    static constexpr float kPixelBudget = 0.01f;
+    // The projection and the viewport height of AddSseView.
+    static constexpr double kVerticalFieldOfView = 1.0471976;
+    static constexpr uint32 kViewportHeight = 1080;
+    uint32 m_Other = ~0u;
+    MeshGPUHandle m_OtherCoarse;
+    ECS::EntityHandle m_OtherEntity;
+    Vector3 m_Eye;
+};
+
+TEST_F(ClusterLODTriangleBudgetTest, RefinesTheLargestProjectedErrorFirstWithinTheBudget)
+{
+    ASSERT_GT(ErrorPx(m_Submesh), kPixelBudget * kClusterRefineBudgetScale);
+    ASSERT_GT(ErrorPx(m_Other), kPixelBudget * kClusterRefineBudgetScale);
+    SetOtherErrorRatio(0.5);
+    m_Feature->SetTriangleBudget(CoarseTotal() + Refinement(m_Submesh));
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity)) << "the larger error refines first";
+    EXPECT_FALSE(IsFine(m_OtherEntity)) << "the next group does not fit";
+
+    m_Feature->SetTriangleBudget(CoarseTotal() + Refinement(m_Submesh) - 1);
+    PrepareFrames();
+    EXPECT_FALSE(IsFine(m_Entity));
+    EXPECT_FALSE(IsFine(m_OtherEntity)) << "a smaller error never refines before a larger one";
+
+    m_Feature->SetTriangleBudget(CoarseTotal() + Refinement(m_Submesh) + Refinement(m_Other));
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity));
+    EXPECT_TRUE(IsFine(m_OtherEntity));
+
+    m_Services.SetLODErrorBudgetPx(1'000'000.0f);
+    PrepareFrames();
+    EXPECT_FALSE(IsFine(m_Entity)) << "the pixel budget stays the floor";
+    EXPECT_FALSE(IsFine(m_OtherEntity));
+
+    m_Services.SetLODErrorBudgetPx(kPixelBudget);
+    m_Feature->SetTriangleBudget(0);
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity)) << "0 removes the cap";
+    EXPECT_TRUE(IsFine(m_OtherEntity));
+
+    m_Feature->SetTriangleBudget(1);
+    m_Services.SetLODForceLevel(0);
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity)) << "forced LOD 0 ignores the cap";
+    EXPECT_TRUE(IsFine(m_OtherEntity));
+}
+
+TEST_F(ClusterLODTriangleBudgetTest, AFineGroupKeepsItsPageUntilAnotherErrorLeavesTheHysteresisBand)
+{
+    m_Feature->SetTriangleBudget(CoarseTotal() + std::max(Refinement(m_Submesh), Refinement(m_Other)));
+    SetOtherErrorRatio(0.5);
+    PrepareFrames();
+    ASSERT_TRUE(IsFine(m_Entity));
+    ASSERT_FALSE(IsFine(m_OtherEntity));
+
+    const double band = kClusterRefineBudgetScale / kClusterKeepFineBudgetScale;
+    SetOtherErrorRatio(0.9 * band);
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity)) << "a larger error inside the band does not take the page";
+    EXPECT_FALSE(IsFine(m_OtherEntity));
+
+    SetOtherErrorRatio(1.1 * band);
+    PrepareFrames();
+    EXPECT_FALSE(IsFine(m_Entity));
+    EXPECT_TRUE(IsFine(m_OtherEntity)) << "an error past the band takes the page";
+}
 
 TEST_F(ClusterLODRuntimeTest, TheNextScheduledSystemSeesFineAndCoarseInTheSameCycle)
 {

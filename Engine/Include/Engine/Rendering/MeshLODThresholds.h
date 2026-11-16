@@ -52,6 +52,7 @@
 // level — a quality loss and a two-level pop, not a conservative fallback.
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <iterator>
 #include <string_view>
@@ -332,6 +333,30 @@ inline constexpr float ResolveLodBudgetPx(float globalBudgetPx,
     const float percent =
         std::clamp(classOverride.BudgetPercent, kMinLodBudgetPercent, kMaxLodBudgetPercent);
     return globalBudgetPx * (percent / 100.0f);
+}
+
+// --- Cluster LOD group selection ---------------------------------------------
+
+// A coarse cluster group refines when its projected error is above the view budget times
+// kClusterRefineBudgetScale. A fine group stays fine down to kClusterKeepFineBudgetScale times
+// the budget. The band stops a group at the switch distance changing every frame.
+inline constexpr double kClusterRefineBudgetScale = 1.2;
+inline constexpr double kClusterKeepFineBudgetScale = 0.8;
+
+/// The projected error in pixels of one cluster group in one view.
+/// `error` is the group's simplification error in mesh-local units; `scale` bounds the largest
+/// axis scale of the instance. `centerDistance` is the distance from the eye to the center of the
+/// group's bounding sphere and `radius` is the sphere radius, both in world units. A perspective
+/// view measures at the near surface of the sphere. `projectionScaleY` is proj[1][1].
+/// Positive `lodBias` keeps detail: it multiplies the error by exp2(lodBias).
+inline double ClusterGroupErrorPx(double error, double scale, double centerDistance, double radius,
+                                  double projectionScaleY, std::uint32_t viewportHeight, float lodBias,
+                                  bool orthographic)
+{
+    const double distance = std::max(0.001, centerDistance - radius);
+    const double pixelsPerUnit = std::abs(projectionScaleY) * viewportHeight * 0.5;
+    return error * scale * pixelsPerUnit * std::exp2(static_cast<double>(lodBias)) /
+           (orthographic ? 1.0 : distance);
 }
 
 // --- Derivation ---------------------------------------------------------------

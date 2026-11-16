@@ -8,9 +8,11 @@
 #include "Assets/ImportedMaterialCache.h"
 #include "Assets/MeshLODGenerator.h"
 #include "Assets/Parsers/ModelAssetParser.h"
+#include "Engine/Rendering/MeshLODThresholds.h"
 #include "ModelAssetFbxTestAccess.h"
 #include "ClusterLODTestMesh.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "Mathematics/Vector3.h"
 #include "TestTempDir.h"
 #include "Types/Fnv1a.h"
 
@@ -100,6 +102,54 @@ void ExpectRefusal(const Mesh& mesh, const MeshClusterLODConfig& config)
     EXPECT_FALSE(error.empty());
     ASSERT_EQ(groups.size(), 1u);
     EXPECT_EQ(groups.front().Coarse.Name, "Unpublished");
+}
+
+// Counts the edges of a cut that leave a crack: an edge that only one triangle uses and that is
+// not open in the source, an edge that more than two triangles use, or a shared edge that both
+// triangles walk in the same direction.
+size_t CountCutCracks(const Vector<const Mesh*>& cut, const std::set<Edge>& sourceBoundary)
+{
+    std::map<Edge, uint32> counts;
+    std::map<Edge, int32> orientation;
+    for (const Mesh* mesh : cut)
+    {
+        for (const Triangle& triangle : OrientedTriangles(*mesh))
+        {
+            for (size_t corner = 0; corner < 3; ++corner)
+            {
+                const uint32 first = triangle[corner];
+                const uint32 second = triangle[(corner + 1) % 3];
+                const Edge edge{std::min(first, second), std::max(first, second)};
+                ++counts[edge];
+                orientation[edge] += first < second ? 1 : -1;
+            }
+        }
+    }
+    size_t cracks = 0;
+    for (const auto& [edge, count] : counts)
+    {
+        const bool open = count == 1 && !sourceBoundary.contains(edge);
+        cracks += open || count > 2 || (count == 2 && orientation[edge] != 0) ? 1 : 0;
+    }
+    return cracks;
+}
+
+// The cracks of the cut that draws the fine page of each refined group and the coarse mesh of
+// every other group of a cooked model.
+size_t CountSelectedCutCracks(const ModelAsset& model, const Vector<Mesh>& fine, const Vector<bool>& refined,
+                              const std::set<Edge>& sourceBoundary)
+{
+    Vector<const Mesh*> cut;
+    cut.reserve(refined.size());
+    for (uint32 group = 0; group < refined.size(); ++group)
+        cut.push_back(refined[group] ? &fine[group] : &model.GetMesh(group));
+    return CountCutCracks(cut, sourceBoundary);
+}
+
+bool IsMixedCut(const Vector<bool>& refined)
+{
+    const auto fineGroups = std::count(refined.begin(), refined.end(), true);
+    return fineGroups != 0 && fineGroups != static_cast<std::ptrdiff_t>(refined.size());
 }
 
 TEST(MeshClusterLOD, PartitionsEveryOrientedSourceTriangleExactlyOnce)
@@ -545,6 +595,88 @@ TEST_F(MeshClusterLODAssetTest, FineRangesReconstructEveryOrientedSourceTriangle
     }
     std::sort(triangles.begin(), triangles.end());
     EXPECT_EQ(triangles, OrientedTriangles(m_Source.GetMesh(0)));
+}
+
+// Selects cuts of the cooked model with the runtime rule (ClusterGroupErrorPx against the pixel
+// budget) from several cameras and budgets, and every largest-error-first prefix that a triangle
+// budget can select. No cut may open an edge that is closed in the source.
+TEST_F(MeshClusterLODAssetTest, EverySelectedCutOfTheCookedModelIsCrackFree)
+{
+    Mesh curved = Testing::MakeClusterLODGrid();
+    curved.MaterialIndex = 0;
+    for (Vertex& vertex : curved.Vertices)
+        vertex.Position[1] = 2.0f * std::sin(vertex.Position[0] * 0.2f) * std::cos(vertex.Position[2] * 0.2f);
+    m_Source.SetMeshesForTest({curved});
+    const auto path = m_Temporary.Path() / "cracks.gecluster";
+    ASSERT_TRUE(Cook(path)) << m_Error;
+    ModelAsset model(GUID::Generate(), path);
+    ASSERT_TRUE(model.Load());
+    const auto manifest = model.GetClusterLODManifest();
+    ASSERT_NE(manifest, nullptr);
+    SharedFileReader store(ResolveMeshClusterLODStore(path, {}, *manifest));
+    const uint32 groupCount = model.GetMeshCount();
+    Vector<Mesh> fine(groupCount);
+    size_t reducedGroups = 0;
+    for (uint32 group = 0; group < groupCount; ++group)
+    {
+        const auto& page = manifest->Pages[group];
+        Vector<uint8> bytes(static_cast<size_t>(page.Bytes));
+        ASSERT_TRUE(store.SeekTo(page.Offset));
+        ASSERT_EQ(store.Read(bytes.data(), bytes.size()), static_cast<int64>(bytes.size()));
+        ASSERT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(group), fine[group], m_Error)) << m_Error;
+        reducedGroups += page.IndexCount > model.GetMesh(group).Indices.size() && page.Error > 0.0f ? 1 : 0;
+    }
+    ASSERT_GT(reducedGroups, groupCount / 2) << "the cuts must choose between real reductions";
+    const auto sourceBoundary = BoundaryEdges(curved);
+
+    // The feature bounds the instance scale by the Frobenius norm of its basis: sqrt(3) for identity.
+    const double scale = std::sqrt(3.0);
+    constexpr double kVerticalFieldOfView = 1.0471976; // 60 degrees
+    const double projectionScaleY = 1.0 / std::tan(0.5 * kVerticalFieldOfView);
+    constexpr uint32 kViewportHeight = 1080;
+    const std::array<Mathematics::Vector3, 5> eyes{{
+        {24.0f, 3.0f, 24.0f}, {-6.0f, 4.0f, -6.0f}, {60.0f, 10.0f, 24.0f}, {10.0f, 1.5f, 40.0f}, {24.0f, 80.0f, -40.0f}}};
+    const std::array<float, 4> budgetsPx{0.25f, 1.0f, 4.0f, 16.0f};
+    size_t mixedCuts = 0;
+    size_t cuts = 0;
+    Vector<double> errorPx(groupCount);
+    Vector<uint32> order(groupCount);
+    for (const auto& eye : eyes)
+    {
+        for (uint32 group = 0; group < groupCount; ++group)
+        {
+            const Mesh& coarse = model.GetMesh(group);
+            const Mathematics::Vector3 low(coarse.MinBounds[0], coarse.MinBounds[1], coarse.MinBounds[2]);
+            const Mathematics::Vector3 high(coarse.MaxBounds[0], coarse.MaxBounds[1], coarse.MaxBounds[2]);
+            const double radius = (high - low).Length() * 0.5 * scale;
+            const double centerDistance = ((low + high) * 0.5f - eye).Length();
+            errorPx[group] = Rendering::ClusterGroupErrorPx(manifest->Pages[group].Error, scale, centerDistance, radius,
+                                                            projectionScaleY, kViewportHeight, 0.0f, false);
+        }
+        for (const float budgetPx : budgetsPx)
+        {
+            Vector<bool> refined(groupCount);
+            for (uint32 group = 0; group < groupCount; ++group)
+                refined[group] = errorPx[group] > budgetPx * Rendering::kClusterRefineBudgetScale;
+            EXPECT_EQ(CountSelectedCutCracks(model, fine, refined, sourceBoundary), 0u)
+                << "eye " << eye.x << ',' << eye.y << ',' << eye.z << " budget " << budgetPx;
+            mixedCuts += IsMixedCut(refined) ? 1 : 0;
+            ++cuts;
+        }
+        for (uint32 group = 0; group < groupCount; ++group)
+            order[group] = group;
+        std::stable_sort(order.begin(), order.end(), [&errorPx](uint32 a, uint32 b) { return errorPx[a] > errorPx[b]; });
+        Vector<bool> refined(groupCount, false);
+        for (uint32 prefix = 0; prefix < groupCount; ++prefix)
+        {
+            refined[order[prefix]] = true;
+            EXPECT_EQ(CountSelectedCutCracks(model, fine, refined, sourceBoundary), 0u)
+                << "eye " << eye.x << ',' << eye.y << ',' << eye.z << " prefix " << prefix + 1;
+            mixedCuts += IsMixedCut(refined) ? 1 : 0;
+            ++cuts;
+        }
+    }
+    EXPECT_GT(mixedCuts, cuts / 2) << "most cuts must mix coarse and fine groups";
 }
 
 TEST_F(MeshClusterLODAssetTest, RejectsTruncatedAndCorruptedAssetsTransactionally)
