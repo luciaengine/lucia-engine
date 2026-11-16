@@ -2724,7 +2724,8 @@ if(GTest_FOUND)
             Tests/ProjectSurfaceSceneGrabTests.cpp
             Tests/ForwardAdapterVariantCompileTests.cpp
             Tests/VertexDeformationClockTests.cpp
-            Tests/DeformationMotionVariantTests.cpp)
+            Tests/DeformationMotionVariantTests.cpp
+            Tests/ImpostorBakeVariantTests.cpp)
         target_link_libraries(ShaderVariantKeyTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
         target_include_directories(ShaderVariantKeyTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
         # Module-private headers (Source/Materials/ShaderSourceCache.h) by module path.

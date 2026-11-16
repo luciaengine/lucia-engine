@@ -83,6 +83,7 @@ enum class MaterialKeyword : uint64_t
     DepthPixelationBand = 1ull << 46, // Per-band color coverage.
     UV1Crossfade = 1ull << 47, // Vertex-alpha weight blends UV0 and UV1 material samples.
     VirtualShadowMaps = 1ull << 48, // Pass keyword (set per view only in a frame whose virtual shadow page table and depth atlas are published): the sun, spot and point shadow lookups try a resident virtual page first (Includes/virtual_shadow_lookup.glsl: ge_virtualShadowDepth at set-0 b58, VirtualShadowPageTable b59, VirtualShadowProjections b60, ge_virtualShadowDepthCompare b61) and use the conventional map where no page is resident. Without the keyword none of it is in the SPIR-V
+    ImpostorBake = 1ull << 49, // Pass keyword (set on the draws of an impostor bake, ImpostorBaker): the forward adapter runs the material's surface and its alpha cutoff and writes the surface instead of shading it: location 0 base colour and coverage, location 1 the normal (the bake draws the mesh untransformed, so object space) and the depth along the frame axis. No lighting, fog, exposure or SSSR. Mutually exclusive with DepthOnlyFragment, MotionVectors and DepthOnlyTransmissionColor (the adapter refuses each pairing by name). Without the keyword none of it is in the SPIR-V
 };
 
 inline constexpr MaterialKeyword operator|(MaterialKeyword a, MaterialKeyword b)
@@ -295,7 +296,8 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
     // Dropping it here is what makes such a key compose the same program as the
     // same key without it.
     const bool shadesNothing = HasKeyword(key.materialKeywords, MaterialKeyword::DepthOnlyFragment)
-                            || HasKeyword(key.materialKeywords, MaterialKeyword::MotionVectors);
+                            || HasKeyword(key.materialKeywords, MaterialKeyword::MotionVectors)
+                            || HasKeyword(key.materialKeywords, MaterialKeyword::ImpostorBake);
     if (HasKeyword(key.materialKeywords, MaterialKeyword::SSSRNormalRoughness) && !shadesNothing)
         defs.push_back("GE_SSSR_NORMAL_ROUGHNESS");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::Iridescence))
@@ -314,6 +316,8 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
         defs.push_back("GE_DDGI_ENABLED");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::MotionVectors))
         defs.push_back("GE_MOTION_VECTORS");
+    if (HasKeyword(key.materialKeywords, MaterialKeyword::ImpostorBake))
+        defs.push_back("GE_IMPOSTOR_BAKE");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::Parallax))
         defs.push_back("GE_PARALLAX_ENABLED");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::ParallaxStepsView))
