@@ -357,3 +357,74 @@ TEST(RenderPipelineCallbackLifetime, RemovingAnUnregisteredFrameDoesNotDiscardIt
     }
     device->Shutdown();
 }
+
+namespace
+{
+class ViewGrowthProbeNode final : public IRenderPipelineNode
+{
+public:
+    explicit ViewGrowthProbeNode(int& observed) : m_Observed(observed) {}
+    const char* GetTypeName() const override { return "ViewGrowthProbe"; }
+    bool Initialize(std::string, std::string, std::string*) override { return true; }
+    void DeclareForView(ViewDeclare& d) override
+    {
+        const auto id = d.View.id;
+        d.Services.Views().SetViewRenderLayerMask(id, GameEngine::Rendering::RenderLayerMask::FromLayer(1));
+        // The declaration keeps the frame's input, even if a utility capture
+        // changes or grows the live registry while a node is declaring.
+        EXPECT_EQ(d.View.renderLayerMask, GameEngine::Rendering::RenderLayerMask::Default());
+        for (int i = 0; i < 128; ++i)
+        {
+            const auto camera = d.Services.Views().AllocateCamera("UtilityCamera");
+            d.Services.Views().AllocateView("UtilityCapture", camera,
+                ViewPurpose::UtilityCapture, ViewParticipation::OnDemand);
+        }
+        EXPECT_EQ(d.View.id, id);
+        EXPECT_EQ(d.View.renderLayerMask, GameEngine::Rendering::RenderLayerMask::Default());
+        ++m_Observed;
+    }
+private:
+    int& m_Observed;
+};
+}
+
+TEST(RenderPipelineViewLifetime, UtilityViewAllocationKeepsDeclarationSnapshotAlive)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device) GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    const auto camera = services.Views().AllocateCamera("MainCamera");
+    const auto view = services.Views().AllocateView("MainView", camera);
+    services.Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
+    int observed = 0;
+    ASSERT_TRUE(services.Spine().RegisterPipelineNodeType("ViewGrowthProbe", [&]
+        { return std::make_unique<ViewGrowthProbeNode>(observed); }, true));
+    RenderPipelineBlueprint blueprint;
+    blueprint.pipelineName = "ViewGrowth";
+    blueprint.contentHash = 0xACCE551;
+    RenderPipelineBlueprint::Pass pass;
+    pass.id = "Grow"; pass.type = "ViewGrowthProbe";
+    pass.enabled = true; pass.perView = true;
+    pass.passJson = R"({"type":"ViewGrowthProbe"})";
+    blueprint.passes.push_back(pass);
+    services.Spine().SetActiveRenderPipelineBlueprint(blueprint);
+    RenderGraph::RGResourcePool persistent(device.get());
+    RenderGraph::RGTransientPool transient(device.get());
+    RenderGraph::RGUploadRing ring(device.get(), 2, 262144);
+    RenderGraph::RGFrame frame(device.get(), &persistent, &transient, &ring);
+    Testing::ScopedPipelineFrame registration(services.Spine(), frame);
+    frame.BeginFrame(0);
+    TextureDesc desc{};
+    desc.width = desc.height = 16;
+    desc.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
+    desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+    const auto color = frame.CreateTexture("ViewGrowth.Color", desc);
+    services.BeginWorldDrawFrame();
+    services.BuildWorldBatchKeys();
+    const ViewTargetsRG targets{view, color, {}, {}};
+    RenderServices::FrameGraphBuildParamsRG params{};
+    params.ViewTargets = std::span<const ViewTargetsRG>(&targets, 1);
+    services.Spine().BuildFrameGraph(frame, params);
+    EXPECT_EQ(observed, 1);
+}
