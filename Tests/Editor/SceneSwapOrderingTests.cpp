@@ -186,7 +186,7 @@ TEST(SceneSwapOrdering, TheSharedStepReleasesTheSplineGenerators)
 // The editor releases the shared recipe system before the scene is replaced.
 TEST(SceneSwapOrdering, EditorApplicationWiresTheSplineGeneratorRelease)
 {
-    const std::string source = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication.cpp");
+    const std::string source = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication" / "EditorApplication.cpp");
     const size_t wire = source.find("SetSceneScopedGeneratorRelease(");
     ASSERT_NE(wire, std::string::npos);
     const size_t callbackEnd = source.find("});", wire);
@@ -319,7 +319,7 @@ namespace
 {
 std::string PlacementSource(const char* fileName)
 {
-    return ReadFile(EditorSourceRoot() / "Source" / "Placement" / fileName);
+    return ReadFile(EditorSourceRoot().parent_path().parent_path() / "Engine" / "Modules" / "SplineRecipes" / "Source" / fileName);
 }
 } // namespace
 
@@ -347,7 +347,7 @@ TEST(SceneSwapOrdering, EveryGeneratorDropsItsCacheOnAWorldReset)
     for (const Generator& g : generators)
     {
         const std::string src = PlacementSource(g.File);
-        ASSERT_FALSE(src.empty()) << g.File << " not found under " << GE_EDITOR_SOURCE_DIR;
+        ASSERT_FALSE(src.empty()) << g.File << " not found under Engine/Modules/SplineRecipes/Source";
 
         const std::string body = FunctionBody(src, g.Qualifier, g.UpdateSignature);
         ASSERT_FALSE(body.empty()) << "Update definition not found in " << g.File;
@@ -397,7 +397,7 @@ TEST(SceneSwapOrdering, EveryGroundReadingGeneratorHoldsItsFirstBuildForProvisio
     for (const Generator& g : generators)
     {
         const std::string src = PlacementSource(g.File);
-        ASSERT_FALSE(src.empty()) << g.File << " not found under " << GE_EDITOR_SOURCE_DIR;
+        ASSERT_FALSE(src.empty()) << g.File << " not found under Engine/Modules/SplineRecipes/Source";
 
         const std::string body = FunctionBody(src, g.Qualifier, g.UpdateSignature);
         ASSERT_FALSE(body.empty()) << "Update definition not found in " << g.File;
@@ -441,7 +441,7 @@ using ScopedEntity = GameEngine::PolyhavenDownloadManager::ScopedEntity;
 
 std::string PolyhavenManagerSource()
 {
-    return ReadFile(EditorSourceRoot() / "Source" / "Assets" / "PolyhavenDownloadManager.cpp");
+    return ReadFile(EditorSourceRoot() / "Source" / "Assets" / "Polyhaven" / "PolyhavenDownloadManager.cpp");
 }
 
 // Body of the SECOND definition matching `signature`. AssignHDRIToSkyboxOnComplete

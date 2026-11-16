@@ -43,7 +43,7 @@ namespace
 // that consumes the frozen preview. ViewSnapshotTexture is the sanctioned owner
 // of a raw handle and is excluded by name.
 const char* const kScannedHeaders[] = {
-    "Include/SceneViewController.h",
+    "Include/SceneView/SceneViewController.h",
     "Include/SceneView/ViewPresentationSnapshot.h",
     "Include/UI/Controls/Widgets/CameraBookmarksWidget.h",
 };

@@ -36,7 +36,7 @@ std::string ReadEditorFile(const std::string& relativePath)
 
 std::string SkyInspector()
 {
-    return ReadEditorFile("Source/Inspectors/SkyEnvironmentInspector.cpp");
+    return ReadEditorFile("Source/Sky/SkyEnvironment/SkyEnvironmentInspector.cpp");
 }
 
 // The source with every run of whitespace collapsed to one space and the space after an open
@@ -127,7 +127,7 @@ TEST(SkyInspectorSections, TheThreeGroupsAreSectionsBuiltByTheSharedHelper)
 // section nobody can close — which is exactly the complaint the split was meant to fix.
 TEST(SkyInspectorSections, SectionsRememberTheirExpansionRatherThanHardcodingIt)
 {
-    const std::string helper = ReadEditorFile("Source/Inspectors/InspectorComponentSection.cpp");
+    const std::string helper = ReadEditorFile("Source/Inspectors/InspectorComponent/InspectorComponentSection.cpp");
     ASSERT_FALSE(helper.empty()) << "the shared section helper did not read; this test is vacuous";
     EXPECT_NE(helper.find("SetExpanded(expanded)"), std::string::npos)
         << "the shared helper no longer seeds a section from its remembered state";
@@ -266,7 +266,7 @@ TEST(SkyInspectorSections, SunIlluminanceRowIsRoutedThroughTheHelper)
     ASSERT_NE(row, std::string::npos) << "the Sun illuminance row is not in the Physical section";
     EXPECT_GT(row, picker) << "the Sun illuminance row must follow the Sun Light picker";
 
-    const std::string rowSource = Flattened(ReadEditorFile("Source/Inspectors/SkySunIlluminanceRow.cpp"));
+    const std::string rowSource = Flattened(ReadEditorFile("Source/Sky/SkySun/SkySunIlluminanceRow.cpp"));
     ASSERT_FALSE(rowSource.empty()) << "the row source did not read; this test is vacuous";
     for (const char* call : {"SunIlluminance::EditableSunLight(", "SunIlluminance::ResolvedSunLight(",
                              "SunIlluminance::LuxFromLightIntensity(", "SunIlluminance::LightIntensityFromLux(",

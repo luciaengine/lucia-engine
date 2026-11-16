@@ -46,10 +46,17 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/Assets)
   endif()
   add_custom_target(StageTestAssets
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-            ${CMAKE_SOURCE_DIR}/Assets
+            ${CMAKE_SOURCE_DIR}/Apps/Editor/ProjectTemplates
+            ${CMAKE_BINARY_DIR}/Apps/Editor/ProjectTemplates
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC=${CMAKE_SOURCE_DIR}/Apps/Editor/ProjectTemplates
+            -DDST=${CMAKE_BINARY_DIR}/Apps/Editor/ProjectTemplates
+            -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_SOURCE_DIR}/Engine/Assets
             ${CMAKE_BINARY_DIR}/Assets
     COMMAND ${CMAKE_COMMAND}
-            -DSRC=${CMAKE_SOURCE_DIR}/Assets
+            -DSRC=${CMAKE_SOURCE_DIR}/Engine/Assets
             -DDST=${CMAKE_BINARY_DIR}/Assets
             -P ${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different

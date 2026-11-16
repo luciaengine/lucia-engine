@@ -417,7 +417,7 @@ TEST(PanelDefaultTabIcon, EveryDefaultIconClassResolvesInAuthoredCss)
 TEST(PanelDefaultTabIcon, KindResolvedIconsExistInAnimationPanelSource)
 {
     const std::string src =
-        ReadFile(EditorSourceRoot() / "Source" / "Panels" / "AnimationWindowPanel.cpp");
+        ReadFile(EditorSourceRoot() / "Source" / "Panels" / "Animation" / "AnimationWindowPanel.cpp");
     ASSERT_FALSE(src.empty());
     for (const auto& [typeKey, icon] : kKindResolvedIcons)
         EXPECT_NE(src.find("\"" + icon + "\""), std::string::npos)
