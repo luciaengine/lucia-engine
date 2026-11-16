@@ -30,7 +30,6 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "HeldPipelineBuilds.h"
 #include "SceneDrawWarm.h"
-#include "Engine/Rendering/SceneProbeRecaptureSchedule.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PipelineCache.h"
 #include "Rendering/Core/PipelineTypes.h"

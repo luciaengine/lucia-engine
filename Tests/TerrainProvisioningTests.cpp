@@ -62,17 +62,11 @@ using GameEngine::CBTTerrainECS::TerrainPreset;
 
 namespace
 {
-// Planar base depth 1, spherical 5; the decode-precision ceiling is baseDepth + the cap the
-// ACTIVE gVertex representation carries: kMaxDecodeSubdiv (40 — the fp32-world-store cap,
-// raised from the old fp32-exact rung of 23 in slice 1) with the flag off, and
-// DeepDecode::kDeepDecodeSubdiv (50 — the (sector, local) df64 store, decode-precision arc
-// S2b) for a SPHERICAL terrain with the flag on. Every deepDecode=false expectation below is
-// pinned UNCHANGED from before the S2b lift (the #617 rule: the flag off must be bywise the
-// shipped behavior).
-constexpr uint32_t kPlanarCeiling = 1u + GameEngine::CBTTerrain::kMaxDecodeSubdiv;  // 41
-constexpr uint32_t kSphereCeiling = 5u + GameEngine::CBTTerrain::kMaxDecodeSubdiv;  // 45
-constexpr uint32_t kSphereDeepCeiling =
-    5u + GameEngine::CBTTerrain::DeepDecode::kDeepDecodeSubdiv; // 55
+// Planar base depth 1, spherical 5; the decode-precision ceiling is baseDepth + the cap of
+// the domain's gVertex store on the wide arm: kMaxDecodeSubdiv (40, the fp32 world store)
+// for planar, DeepDecode::kDeepDecodeSubdiv (50, the (sector, local) df64 store) for the sphere.
+constexpr uint32_t kPlanarCeiling = 1u + GameEngine::CBTTerrain::kMaxDecodeSubdiv;          // 41
+constexpr uint32_t kSphereCeiling = 5u + GameEngine::CBTTerrain::DeepDecode::kDeepDecodeSubdiv; // 55
 } // namespace
 
 // ---- Planar: derived cap tracks the provisioned heightfield lattice ----
@@ -189,12 +183,9 @@ constexpr uint64_t kSamplePaths[3] = {0xAAAAAAAAAAAAAAAAull, 0x5555555555555555u
 
 TEST(TerrainMaxDepth, DecodeCapMatchesWhatTheRepresentationCanCarry)
 {
-    // The invariant that makes the flag->cap coupling load-bearing: at the cap either mode
-    // derives at Earth radius, the mode's OWN storage representation must keep its decode/
-    // store error under 25% of the facet short edge (the S1 degeneracy criterion; err/short
-    // was 8.6% at the fp32 cap 40 and 275% at 50 — design §1's measured table). CAN-FAIL:
-    // force the flag-off spherical cap to 50 (e.g. by lifting kMaxDecodeSubdiv or breaking
-    // SubdivCapFor's coupling) and the fp32 leg below measures ~2.7x the facet -> red.
+    // At the cap each arm derives for the sphere at Earth radius, that arm's own store keeps its
+    // error under 25% of the facet short edge: (sector, local) on the wide arm, fp32 world on the
+    // narrow arm. Handing the narrow arm the deep cap 50 makes the fp32 error 2.7x the facet: red.
     namespace DD = GameEngine::CBTTerrain::DeepDecode;
     using GameEngine::CBTTerrain::BuildSphereRoots;
     using GameEngine::CBTTerrain::kSphereBaseDepth;
@@ -207,15 +198,15 @@ TEST(TerrainMaxDepth, DecodeCapMatchesWhatTheRepresentationCanCarry)
     const uint32_t wideCap =
         DeriveTerrainMaxDepth(TerrainDomain::Spherical, 0.0f, 0.0f, 0.0f, 6371000.0f, false) -
         kSphereBaseDepth;
-    ASSERT_EQ(offCap, GameEngine::CBTTerrain::kMaxDecodeSubdiv);
-    ASSERT_EQ(onCap, DD::kDeepDecodeSubdiv);
+    ASSERT_EQ(narrowCap, GameEngine::CBTTerrain::kHeap32DecodeSubdiv);
+    ASSERT_EQ(wideCap, DD::kDeepDecodeSubdiv);
     // The int64 LEB walk is exact only to numSubdiv ~52 (scale = 2^52 < 2^63) — no cap may
-    // ever exceed it, in any mode.
-    ASSERT_LE(onCap, 52u);
+    // ever exceed it.
+    ASSERT_LE(wideCap, 52u);
 
     for (const bool deep : {false, true})
     {
-        const uint32_t cap = deep ? onCap : offCap;
+        const uint32_t cap = deep ? wideCap : narrowCap;
         double maxErr = 0.0;
         double minShort = 1e30;
         for (uint32_t root : kSampleRoots)
@@ -231,8 +222,8 @@ TEST(TerrainMaxDepth, DecodeCapMatchesWhatTheRepresentationCanCarry)
                     DD::DecodeExact(num, kEarthR, 0.0, c[corner]);
                     if (!deep)
                     {
-                        // fp32 world store: one float cast per component (what legacy
-                        // Kernel_VertexEval persists into gVertex).
+                        // fp32 world store: one float cast per component (what the narrow
+                        // arm's Kernel_VertexEval persists into gVertex).
                         const double f[3] = {double(float(c[corner][0])),
                                              double(float(c[corner][1])),
                                              double(float(c[corner][2]))};
@@ -268,7 +259,7 @@ TEST(TerrainMaxDepth, DecodeCapMatchesWhatTheRepresentationCanCarry)
                     deep ? 1 : 0, cap, minShort, maxErr, 100.0 * ratio);
         EXPECT_LT(ratio, 0.25) << (deep ? "deep (sector, local) store" : "fp32 world store")
                                << " cannot carry the facets at its own derived cap ("
-                               << cap << ") — the flag->cap coupling is broken";
+                               << cap << ")";
     }
 }
 
@@ -410,7 +401,7 @@ TEST(TerrainMaxDepth, PlanarImportedHeightmapCapsAtTheImportsSpacing)
     // 512 m at 2 samples per metre (lattice 1024 intervals, cap 21) gives 2 x log2(512) = 18,
     // depth 19.
     EXPECT_EQ(ResolveTerrainMaxDepth(MakePlanar(512.0f, 512.0f, 2.0f), ImportedHeightSource{513u, 513u},
-                                     false, false),
+                                     false),
               19u);
 
     // Tiled terrains keep their lattice cap, with or without an import (3000 x 400 m at 1 spm, the
@@ -419,7 +410,7 @@ TEST(TerrainMaxDepth, PlanarImportedHeightmapCapsAtTheImportsSpacing)
     // (PlanarTiledCapKeepsEveryImportSampleOnTheOverhangingGrid).
     EXPECT_EQ(ResolveTerrainMaxDepth(MakePlanar(3000.0f, 400.0f, 1.0f), {}, false), 25u);
     EXPECT_EQ(ResolveTerrainMaxDepth(MakePlanar(3000.0f, 400.0f, 1.0f), ImportedHeightSource{577u, 577u},
-                                     false, false),
+                                     false),
               25u);
 }
 
@@ -439,7 +430,7 @@ TEST(TerrainMaxDepth, PlanarTiledCapKeepsEveryImportSampleOnTheOverhangingGrid)
 
     const float importSpacing = 576.0f / 576.0f;
     const uint32_t cap = ResolveTerrainMaxDepth(MakePlanar(576.0f, 576.0f, 2.0f),
-                                                ImportedHeightSource{577u, 577u}, false, false);
+                                                ImportedHeightSource{577u, 577u}, false);
     EXPECT_LE(PlanarCapLegMetres(gridMetres, cap), importSpacing * (1.0f + 1e-4f))
         << "cap " << cap << " skips import samples on the tile grid";
     EXPECT_EQ(cap, 21u);
@@ -665,7 +656,7 @@ TEST(TerrainDebugView, DefaultsOffAndValuesAreLockstep)
     EXPECT_EQ(static_cast<uint32_t>(TerrainDebugView::AtlasSlots), 2u);
 }
 
-TEST(TerrainDebugView, SurfaceParamsLayoutLockstep)
+TEST(TerrainDebugView, SurfaceParamsDefaultsTakeNoOptionalBranch)
 {
     // A terrain that sets nothing takes no debug or atlas branch in cbt_surface.glsl, because
     // every optional CBTSurfaceParams field defaults to 0. The struct size and field offsets
@@ -1147,7 +1138,7 @@ TEST(TerrainModifierMigration, TwoModifiersOnOneEntityStackInLoadOrder)
 // two independent constructions they were free to disagree, and did: a bare
 // block produced SplinePath while an authored one produced SplineArea, so the
 // same closed spline meant a swept band in one scene and a filled area in the
-// next. AddDefault, the IPC's create_component and blueprint overrides all
+// next. AddDefault, the IPC's create_component and prefab overrides all
 // arrive here.
 TEST(TerrainModifierMigration, BareSplineModifierBlockLoadsTheSameRegionAsADefaultOne)
 {
@@ -1934,7 +1925,9 @@ TEST(TerrainSurfaceRulesSchema, ARowIndexTooLargeForUint32IsRejectedRatherThanWr
     // Nothing was written to the row the wrap would have selected.
     const auto* loaded = w.GetComponent<TerrainSurfaceRulesEffect>(e);
     if (loaded)
+    {
         EXPECT_EQ(loaded->Rules[0].MaterialSlot, 0u) << "the wrapped index reached row 0";
+    }
 
     World w2;
     const auto e2 = w2.CreateEntity();

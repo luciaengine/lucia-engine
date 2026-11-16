@@ -2,6 +2,7 @@
 
 #include "EditorPanelIds.h"
 #include "Input/InputSystem.h"
+#include "Input/KeyCodes.h"
 #include "Engine/GameUI/GameUIHost.h"
 #include "Panels/GameViewPanel.h"
 #include "UI/Controls/Button.h"

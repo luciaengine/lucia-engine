@@ -754,9 +754,9 @@ TEST_F(ShaderCompilationCacheClosureTest, SameNamedSurfaceInTwoDirs_GetSeparateC
     spec.surfaceShaderPath = "shared_surface.glsl";
     spec.lightingModel = "StandardPBR";
 
-    auto vA = m_cache.GetOrCompile(makeKey(dirA / "a.material"), spec, m_ctx, "ProbeA", dirA / "a.material", {}, ShaderSourceKind::SpirV);
+    auto vA = m_cache.GetOrCompile(makeKey(dirA / "a.material"), spec, m_ctx, "ProbeA", dirA / "a.material", ShaderSourceKind::SpirV);
     ASSERT_NE(vA, nullptr);
-    auto vB = m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material", {}, ShaderSourceKind::SpirV);
+    auto vB = m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material", ShaderSourceKind::SpirV);
     ASSERT_NE(vB, nullptr);
     ASSERT_EQ(m_cache.GetEntryCount(), 2u) << "each surface resolves beside its own material => two identities";
     ASSERT_NE(vA->fragmentBytes, vB->fragmentBytes) << "the two surfaces really are different code";
@@ -770,7 +770,7 @@ TEST_F(ShaderCompilationCacheClosureTest, SameNamedSurfaceInTwoDirs_GetSeparateC
     EXPECT_FALSE(NamesIdentity(depsA, "shared_surface.glsl", "", dirB))
         << "B resolves a different file of the same name — it must not ride along";
     EXPECT_EQ(m_cache.GetEntryCount(), 1u) << "B's entry must survive A's helper edit";
-    EXPECT_EQ(m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material", {}, ShaderSourceKind::SpirV), vB)
+    EXPECT_EQ(m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material", ShaderSourceKind::SpirV), vB)
         << "B's surviving entry must still serve as a hit";
 
     // ...and symmetrically, so the pass above is not an artifact of row order.

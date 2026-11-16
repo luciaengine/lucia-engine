@@ -1482,10 +1482,10 @@ class MaterialShaderIdentityTest : public ::MaterialRegistryTest
 
     static std::shared_ptr<SharedShaderVariant> ReadProgram(
         RenderServices& services, const ShaderCacheKey& key, const MaterialCompileSpec& spec,
-        const Rendering::MaterialBuildContext& context)
+        const Rendering::MaterialBuildContext& context, const std::filesystem::path& materialAssetPath)
     {
         return services.Materials().m_ShaderCompilationCache.GetOrCompile(
-            key, spec, context, "CapturedPrewarm", Rendering::ShaderSourceKind::SpirV);
+            key, spec, context, "CapturedPrewarm", materialAssetPath, Rendering::ShaderSourceKind::SpirV);
     }
 
 };
@@ -1743,7 +1743,7 @@ TEST_F(MaterialTargetPrewarmTest, QueuedVariantSetRetainsItsAdmissionTarget)
     HoldPrewarmJobs(services, jobs);
     constexpr auto kPassKeywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced | MaterialKeyword::Shadows;
     const auto keys = MaterialPrewarmVariantKeys(material->GetVariantKey(), kPassKeywords, false,
-                                                material->GetAlphaMode(), CrossfadeTailWarmup::Warm);
+                                                material->GetAlphaMode());
     ASSERT_GT(keys.size(), 1u);
     int entered = 0;
     SetCompileHook(services, [&entered] { ++entered; });
@@ -1766,8 +1766,8 @@ TEST_F(MaterialTargetPrewarmTest, QueuedVariantSetRetainsItsAdmissionTarget)
         key.VariantKey = variant;
         key.Source.SurfaceShaderPath = material->GetCompileSpec().surfaceShaderPath;
         key.Source.VertexModifierPath = material->GetCompileSpec().vertexModifierPath;
-        key.Source.MaterialAssetPath = material->GetMaterialAssetPath();
-        const auto program = ReadProgram(services, key, material->GetCompileSpec(), context);
+        const auto program =
+            ReadProgram(services, key, material->GetCompileSpec(), context, material->GetMaterialAssetPath());
         ASSERT_NE(program, nullptr);
         EXPECT_FALSE(program->vertexBytes.empty());
     }

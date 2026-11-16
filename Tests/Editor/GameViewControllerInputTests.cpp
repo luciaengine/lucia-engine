@@ -15,6 +15,7 @@
 #include "EditorChangeNotifications.h"
 #include "GameView/GameViewController.h"
 #include "Input/InputSystem.h"
+#include "Input/KeyCodes.h"
 #include "UI/Controls/Button.h"
 #include "UI/Internal/LayoutAccess.h"
 #include "UI/UIManager.h"

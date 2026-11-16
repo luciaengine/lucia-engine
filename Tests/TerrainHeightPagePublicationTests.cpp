@@ -334,7 +334,8 @@ TEST_F(TerrainHeightPagePublication, AbandonedUploadRetainsSubmittedTableAndRetr
     ASSERT_FALSE(m_Pages->Uploads().empty());
     const PackedPageTable* requestedTable = m_Pages->PackedTable(replacement.Terrain);
     ASSERT_NE(requestedTable, nullptr);
-    ASSERT_NE(requestedTable->Version(), committedVersion);
+    const uint64 requestedVersion = requestedTable->Version();
+    ASSERT_NE(requestedVersion, committedVersion);
     m_Publication->Publish(*m_Pages);
     m_Frame->BeginFrame(2);
     DeclareUpload();
