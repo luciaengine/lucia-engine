@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Mathematics/Matrix4x4.h"
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
@@ -18,8 +19,11 @@ struct VirtualShadowViewInputs
     uint64_t ProjectionsBytes = 0;
     Rendering::SamplerHandle DepthSampler{};
     Rendering::SamplerHandle CompareSampler{};
-    /// The sun mask of the view's first world pass this frame (VirtualShadowSunMask), when one ran.
+    /// The view's latest sun mask this frame (VirtualShadowSunMask), and the prepass depth and
+    /// camera it was resolved from. A world pass reads it only when its depth and camera match.
     Rendering::RenderGraph::RGTexture SunMask{};
+    Rendering::RenderGraph::RGTexture SunMaskDepth{};
+    Mathematics::Matrix4x4 SunMaskViewProjection{};
 
     bool IsValid() const
     {

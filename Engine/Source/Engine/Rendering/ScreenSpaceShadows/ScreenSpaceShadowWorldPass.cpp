@@ -2,15 +2,10 @@
 
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
-#include "Types/StringId.h"
 #include <optional>
 
 namespace GameEngine::Engine::Renderer
 {
-namespace
-{
-constexpr StringId kShadowConstantsBindingId = HashStringId("ShadowData");
-}
 
 bool TakesScreenSpaceShadowMask(RenderServices& services, uint64_t worldId, const ResolvedShadowSettings& settings,
                                 bool transmissiveOnly, Rendering::MaterialKeyword keywords)
@@ -51,20 +46,18 @@ Rendering::MaterialKeyword ContributeScreenSpaceShadows(
             view.Settings.Filter == Components::DirectionalShadowFilter::Grid3x3;
         if (gridFilter && !view.HasRayTracedMask && shadowMap.IsValid())
         {
-            if (auto* instance = services.Spine().PipelineInstanceForFrame(frame))
-                if (const auto* resources = instance->FrameResourcesFor(&frame))
-                    resources->ForEachBufferBinding(view.ViewId,
-                        [&](StringId nameId, const Pipeline::PipelineBufferBindingRG& binding)
-                        {
-                            if (nameId == kShadowConstantsBindingId)
-                            {
-                                filter.Constants = binding.Buffer;
-                                filter.Offset = binding.Offset;
-                                filter.Bytes = binding.Size;
-                                filter.Resolution = frame.Graph().ResourceDesc(shadowMap.Id).Width;
-                                filter.Quality = static_cast<uint32_t>(view.Settings.Filter);
-                            }
-                        });
+            const auto* instance = services.Spine().PipelineInstanceForFrame(frame);
+            const auto* resources = instance ? instance->FrameResourcesFor(&frame) : nullptr;
+            if (const auto binding = resources ? resources->FindBufferBinding(view.ViewId, "ShadowData")
+                                               : Pipeline::PipelineBufferBindingRG{};
+                binding.IsValid())
+            {
+                filter.Constants = binding.Buffer;
+                filter.Offset = binding.Offset;
+                filter.Bytes = binding.Size;
+                filter.Resolution = frame.Graph().ResourceDesc(shadowMap.Id).Width;
+                filter.Quality = static_cast<uint32_t>(view.Settings.Filter);
+            }
         }
         mask = passes->DeclareMaskPass(frame, view.ViewId, view.Depth, *view.Camera,
             towardLight->v, view.Settings.ScreenSpaceShadowThickness, &filter);

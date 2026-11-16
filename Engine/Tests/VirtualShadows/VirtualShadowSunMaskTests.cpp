@@ -1,13 +1,12 @@
-// The sun mask pass (virtual_shadow_sun_mask.comp) must give each prepass receiver the
-// visibility that the world pass's in-shader lookup (GE_TryVirtualShadowDirectional)
-// gives the same receiver. The fixture is a sloped receiver seen by a rotated, jittered
-// camera over virtual pages with a lit page, a page with an occluder edge and a missing
-// page; the reference shader runs the lookup at the positions the CPU computes.
+// The sun mask pass gives each prepass receiver the visibility that GE_TryVirtualShadowDirectional
+// gives it in the world pass. Fixture: a sloped receiver, a rotated jittered camera, and a lit page,
+// an occluder page and a missing page.
 
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowLookup.h"
 
 #include "Mathematics/MatrixOps.h"
+#include "Mathematics/Vector4.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
@@ -41,25 +40,27 @@ constexpr float kSteps = 254.0f;        // kGE_VirtualShadowSunMaskSteps
 // Mirrors VirtualShadowSunMaskParams in virtual_shadow_sun_mask.comp.
 struct MaskParams
 {
-    float ClipToPosition[16];
-    float ViewDepth[4];
-    float CameraPosition[4];
-    float TowardLight[4];
-    int32_t Viewport[4];
+    Math::Matrix4x4 ClipToPosition;
+    Math::Vector4 ViewDepth;
+    Math::Vector4 CameraPosition;
+    Math::Vector4 TowardLight;
+    int32_t Viewport[4]; // ivec4: origin xy, size zw in pixels
 };
 
 // Mirrors Probe and SunMaskTestParams in virtual_shadow_sun_mask_test.comp.
 struct Probe
 {
-    float Position[4];
-    float Normal[4];
-    float Screen[4];
+    Math::Vector4 Position;
+    Math::Vector4 Normal;
+    Math::Vector4 Screen;
 };
 struct ReferenceParams
 {
-    float TowardLight[4];
-    uint32_t Count[4];
+    Math::Vector4 TowardLight;
+    uint32_t Count[4]; // uvec4: x = probe count
 };
+
+static_assert(sizeof(MaskParams) == 128 && sizeof(Probe) == 48 && sizeof(ReferenceParams) == 32);
 
 struct Fixture
 {
@@ -86,13 +87,10 @@ Fixture BuildFixture()
     const Math::Matrix4x4 clipToPosition = Math::Inverse(viewProjection);
 
     Fixture fixture;
-    std::memcpy(fixture.Mask.ClipToPosition, clipToPosition.Data(), sizeof(fixture.Mask.ClipToPosition));
-    for (int column = 0; column < 4; ++column)
-        fixture.Mask.ViewDepth[column] = view[column][2];
-    fixture.Mask.CameraPosition[0] = eye.x;
-    fixture.Mask.CameraPosition[1] = eye.y;
-    fixture.Mask.CameraPosition[2] = eye.z;
-    fixture.Mask.TowardLight[1] = 1.0f;
+    fixture.Mask.ClipToPosition = clipToPosition;
+    fixture.Mask.ViewDepth = Math::Vector4(view[0][2], view[1][2], view[2][2], view[3][2]);
+    fixture.Mask.CameraPosition = Math::Vector4(eye.x, eye.y, eye.z, 1.0f);
+    fixture.Mask.TowardLight = Math::Vector4(0.0f, 1.0f, 0.0f, 0.0f);
     fixture.Mask.Viewport[2] = fixture.Mask.Viewport[3] = static_cast<int32_t>(kSide);
 
     const glm::vec3 normal = glm::normalize(glm::vec3(-kSlope, 1.0f, 0.0f));
@@ -117,16 +115,9 @@ Fixture BuildFixture()
             // The position the mask pass reconstructs from this depth.
             glm::vec4 position = Multiply(clipToPosition, glm::vec4(ndcX, ndcY, depth, 1.0f));
             position /= position.w;
-            Probe probe{};
-            probe.Position[0] = position.x;
-            probe.Position[1] = position.y;
-            probe.Position[2] = position.z;
-            probe.Normal[0] = normal.x;
-            probe.Normal[1] = normal.y;
-            probe.Normal[2] = normal.z;
-            probe.Screen[0] = static_cast<float>(x) + 0.5f;
-            probe.Screen[1] = static_cast<float>(y) + 0.5f;
-            fixture.Probes.push_back(probe);
+            fixture.Probes.push_back({Math::Vector4(position.x, position.y, position.z, 1.0f),
+                                      Math::Vector4(normal.x, normal.y, normal.z, 0.0f),
+                                      Math::Vector4(static_cast<float>(x) + 0.5f, static_cast<float>(y) + 0.5f, 0, 0)});
             fixture.ProbePixel.push_back(y * kSide + x);
         }
     return fixture;
@@ -326,7 +317,7 @@ TEST_F(VirtualShadowSunMaskTest, MaskVisibilityEqualsTheInShaderLookupPerReceive
     const auto shadowBuffer = CreateBuffer(sizeof(shadowData), uniform, BufferMemoryUsage::Upload, &shadowData);
     const auto maskParams = CreateBuffer(sizeof(MaskParams), uniform, BufferMemoryUsage::Upload, &fixture.Mask);
     ReferenceParams referenceParams{};
-    referenceParams.TowardLight[1] = 1.0f;
+    referenceParams.TowardLight = Math::Vector4(0.0f, 1.0f, 0.0f, 0.0f);
     referenceParams.Count[0] = static_cast<uint32_t>(fixture.Probes.size());
     const auto referenceParamBuffer =
         CreateBuffer(sizeof(referenceParams), uniform, BufferMemoryUsage::Upload, &referenceParams);

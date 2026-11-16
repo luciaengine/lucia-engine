@@ -4,6 +4,7 @@
 #include "Engine/Rendering/VirtualShadows/VirtualShadowViewInputs.h"
 #include "Logger/Logger.h"
 #include "Mathematics/MatrixOps.h"
+#include "Mathematics/Vector4.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
@@ -12,7 +13,6 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <cstdio>
-#include <cstring>
 #include <string>
 
 namespace GameEngine::Engine::Renderer
@@ -25,14 +25,14 @@ constexpr const char* kShader = "Shaders/virtual_shadow_sun_mask.shaderpkg";
 constexpr uint32_t kPushConstantBudget = 128;
 constexpr uint32_t kGroupSize = 8; // virtual_shadow_sun_mask.comp local_size_xy
 
-// Mirrors VirtualShadowSunMaskParams in virtual_shadow_sun_mask.comp (std140, vec4 members only).
+// Mirrors VirtualShadowSunMaskParams in virtual_shadow_sun_mask.comp (std140, 16-byte members only).
 struct SunMaskParams
 {
-    float ClipToPosition[16];
-    float ViewDepth[4];
-    float CameraPosition[4];
-    float TowardLight[4];
-    int32_t Viewport[4];
+    Mathematics::Matrix4x4 ClipToPosition;
+    Mathematics::Vector4 ViewDepth;
+    Mathematics::Vector4 CameraPosition;
+    Mathematics::Vector4 TowardLight;
+    int32_t Viewport[4]; // ivec4: origin xy, size zw in pixels
 };
 static_assert(sizeof(SunMaskParams) == 128, "must match VirtualShadowSunMaskParams");
 
@@ -43,19 +43,14 @@ SunMaskParams BuildParams(const VirtualShadowSunMaskRequest& request, uint32_t w
 {
     const Rendering::CameraData& camera = *request.Camera;
     SunMaskParams params{};
-    const Mathematics::Matrix4x4 viewProjection = camera.viewProjRel;
-    const Mathematics::Matrix4x4 clipToPosition = Mathematics::Inverse(viewProjection);
-    std::memcpy(params.ClipToPosition, clipToPosition.Data(), sizeof(params.ClipToPosition));
+    params.ClipToPosition = Mathematics::Inverse(camera.viewProjRel);
     // Row 2 of the view matrix gives the view-space depth (the forward lighting's linearDepth).
-    const Mathematics::Matrix4x4 view = camera.viewRel;
-    for (int column = 0; column < 4; ++column)
-        params.ViewDepth[column] = view[column][2];
+    const Mathematics::Matrix4x4& view = camera.viewRel;
+    params.ViewDepth = Mathematics::Vector4(view[0][2], view[1][2], view[2][2], view[3][2]);
     const Mathematics::Matrix4x4 viewToPosition = Mathematics::Inverse(view);
-    for (int axis = 0; axis < 3; ++axis)
-    {
-        params.CameraPosition[axis] = viewToPosition[3][axis];
-        params.TowardLight[axis] = request.TowardLight[axis];
-    }
+    params.CameraPosition =
+        Mathematics::Vector4(viewToPosition[3][0], viewToPosition[3][1], viewToPosition[3][2], 1.0f);
+    params.TowardLight = Mathematics::Vector4(request.TowardLight.x, request.TowardLight.y, request.TowardLight.z, 0.0f);
     const ViewLetterbox& letterbox = request.Letterbox;
     const bool letterboxed = letterbox.active && letterbox.width > 0 && letterbox.height > 0;
     params.Viewport[0] = letterboxed ? static_cast<int32_t>(letterbox.x) : 0;
@@ -162,7 +157,7 @@ RenderGraph::RGTexture VirtualShadowSunMask::Declare(RenderGraph::RGFrame& frame
     const Pipeline::PipelineBufferBindingRG shadowData = request.ShadowData;
     const RenderGraph::RGTexture depth = request.Depth;
     frame.AddComputePass(name, Rendering::PassPhase::kDefault,
-        [&](RenderGraph::RGPassBuilder& pass)
+        [this, depth, inputs, shadowData, mask](RenderGraph::RGPassBuilder& pass)
         {
             pass.UsePipeline(m_Pipeline);
             pass.Read(depth, RenderGraph::RGTextureRead::Sampled);

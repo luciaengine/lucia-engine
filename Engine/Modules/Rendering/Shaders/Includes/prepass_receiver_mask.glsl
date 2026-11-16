@@ -1,11 +1,9 @@
 #ifndef GE_PREPASS_RECEIVER_MASK_GLSL
 #define GE_PREPASS_RECEIVER_MASK_GLSL
 
-// One R32_UINT texel of a screen-space mask that a compute pass writes for the
-// prepass receiver of its pixel. The high 24 bits keep the receiver depth: the
-// sign, the exponent and the upper 15 mantissa bits (relative truncation error
-// <= 3.052e-5). The low byte keeps the value of the pass. A texel with a zero
-// depth has no receiver.
+// An R32_UINT screen-space mask texel for the prepass receiver of its pixel. High 24 bits: the
+// receiver depth (relative truncation error <= 3.052e-5). Low byte: the value of the pass.
+// A zero depth means no receiver.
 
 uint GE_PackPrepassReceiver(float receiverDepth, uint value)
 {
@@ -17,12 +15,9 @@ uint GE_PrepassReceiverValue(uint packed)
     return packed & 255u;
 }
 
-// True when the fragment at fragmentDepth is the receiver that the texel holds.
-// This rejects the phase-B recovered surfaces, the transparent layers and the
-// forward-only surfaces at another depth. The resolved MSAA depth comes from a
-// sample in the pixel, and the fragment can evaluate its depth at the center:
-// footprint is fwidth(gl_FragCoord.z), and half of it is allowed on top of the
-// packed-depth error, so a sloped receiver still matches.
+// True when the fragment is the receiver of the texel; other surfaces at the pixel are rejected.
+// footprint = fwidth(gl_FragCoord.z): half of it is allowed, because the resolved MSAA depth is a
+// sample in the pixel and the fragment depth is at its center.
 bool GE_IsPrepassReceiver(uint packed, float fragmentDepth, float footprint)
 {
     float receiverDepth = uintBitsToFloat(packed & 0xffffff00u);

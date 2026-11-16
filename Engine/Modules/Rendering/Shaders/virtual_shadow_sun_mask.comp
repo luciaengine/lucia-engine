@@ -1,15 +1,9 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
-// Resolves the sun's virtual shadow page lookup once per prepass receiver, so the
-// world pass reads one texel for the sun instead of running the PCSS taps per
-// fragment (overdraw). The lookup is GE_TryVirtualShadowDirectional, unchanged.
-// The mask has the prepass depth's resolution and pixel grid; the position comes
-// from the same jittered camera the prepass rasterized with.
-//
-// The normal offset bias uses the receiver's geometric normal from the depth
-// (no prepass writes a normal). The in-shader lookup uses the shaded normal,
-// so on normal-mapped receivers the two biases differ by the normal-map tilt.
+// Runs GE_TryVirtualShadowDirectional once per prepass receiver, at the prepass pixel grid and jittered
+// camera, so each world pass fragment reads one texel instead of the kernel taps.
+// The normal offset bias uses the geometric normal from the depth, not the shaded normal.
 
 #include "Includes/screen_position.glsl"
 #include "Includes/shadow_data.glsl"
