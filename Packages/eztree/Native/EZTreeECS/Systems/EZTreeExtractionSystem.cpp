@@ -267,9 +267,9 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                   const ECS::DisabledInHierarchy* inactive, const ECS::ComponentDisabled<Components::EZTree>* treeOff)
         {
             if (world.GetComponent<Components::MeshRenderer>(entity))
-                world.RemoveComponentImmediate<Components::MeshRenderer>(entity);
+                world.RemoveComponent<Components::MeshRenderer>(entity);
             if (world.GetComponent<Components::MeshGPUData>(entity))
-                world.RemoveComponentImmediate<Components::MeshGPUData>(entity);
+                world.RemoveComponent<Components::MeshGPUData>(entity);
 
             const uint64 hash = EZTree::HashOptions(tree.Options) ^ static_cast<uint64>(tree.RandomizeCounter);
             TreeBinding* binding = m_Bindings.Find(BindingKey{worldId, entity.id});
@@ -295,9 +295,11 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                 const TreeVariant variant = service->AcquireVariant(hash, tree.Options);
                 binding->Hash = hash;
                 frameVariants.InsertOrAssign(hash, variant);
+                // Deferred: an immediate add moves the entity to another archetype
+                // under this query and leaves `tree` pointing at the old row.
                 Components::LocalBounds bounds{};
                 bounds.Box = variant.Bounds;
-                world.AddComponentImmediate(entity, bounds);
+                world.AddComponent(entity, bounds);
             }
             else if (tree.RuntimeOptionsHash == 0)
             {
@@ -319,19 +321,20 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
             }
 
             const auto* worldTransform = world.GetComponent<Components::WorldTransform>(entity);
-            const auto* bounds = world.GetComponent<Components::LocalBounds>(entity);
-            if (!worldTransform || !bounds)
+            if (!worldTransform)
                 return;
 
+            Components::LocalBounds bounds{};
+            bounds.Box = variant->Bounds;
             const float inflation =
                 WindBoundsInflation(tree.Options, LargestAxisScale(*worldTransform), volumeSpeedBound);
-            SubmitPart(*m_RenderServices, world, entity, *worldTransform, *bounds, variant->Branches,
+            SubmitPart(*m_RenderServices, world, entity, *worldTransform, bounds, variant->Branches,
                        SelectBarkMaterial(*m_RenderServices, variant->Materials), inflation,
                        tree.RuntimeBranchInstanceIndex);
-            SubmitPart(*m_RenderServices, world, entity, *worldTransform, *bounds, variant->Leaves,
+            SubmitPart(*m_RenderServices, world, entity, *worldTransform, bounds, variant->Leaves,
                        SelectLeafMaterial(*m_RenderServices, variant->Materials), inflation,
                        tree.RuntimeLeafInstanceIndex);
-            SubmitPart(*m_RenderServices, world, entity, *worldTransform, *bounds, variant->Trellis,
+            SubmitPart(*m_RenderServices, world, entity, *worldTransform, bounds, variant->Trellis,
                        variant->Materials.Trellis, inflation, tree.RuntimeTrellisInstanceIndex);
             binding->Instances = PartInstances(tree);
         });
