@@ -379,6 +379,33 @@ TEST(TextAreaIncrementalWrap, TailCaretMapMatchesTheWholeStringInsideALongCluste
     }
 }
 
+TEST(TextAreaIncrementalWrap, TailCaretMapMatchesTheWholeStringAfterASpace)
+{
+    auto atlas = GameEngine::UITesting::LoadRobotoAtlas();
+    if (!atlas)
+        GTEST_SKIP() << "Staged Roboto-Regular.ttf not found next to the test executable";
+    constexpr float kPixelSize = 16.0f;
+    constexpr float kCaretEpsPx = 1e-3f;
+    std::string text = "Wave fit ";
+    text += "e";
+    for (int mark = 0; mark < 6; ++mark)
+        text += "\xCC\x81";
+    text += " office AV";
+    std::vector<float> whole;
+    ASSERT_TRUE(atlas->BuildCaretMapUtf8(text, kPixelSize, whole));
+    for (size_t first = 1; first < text.size(); ++first)
+    {
+        if ((static_cast<unsigned char>(text[first]) & 0xC0u) == 0x80u)
+            continue;
+        std::vector<float> tail;
+        ASSERT_TRUE(atlas->BuildCaretMapUtf8(text, kPixelSize, tail, 0.0f, first));
+        ASSERT_EQ(tail.size(), text.size() - first + 1);
+        for (size_t k = 0; k < tail.size(); ++k)
+            EXPECT_NEAR(tail[k], whole[first + k] - whole[first], kCaretEpsPx)
+                << "first byte " << first << ", byte " << first + k;
+    }
+}
+
 TEST(TextAreaIncrementalWrap, WidthAndFontMetricsInvalidateRetainedLines)
 {
     IsolatedUIFixture fixture;

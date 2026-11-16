@@ -47,9 +47,9 @@ void SortingLayerSettingsView::LoadLayout()
         return;
     }
     m_Loaded = true;
-    m_Layers = FindById("SortingLayerList");
-    m_Error = dynamic_cast<Label*>(FindById("SortingLayerError"));
-    auto* add = dynamic_cast<Button*>(FindById("SortingLayerAdd"));
+    m_Layers = FindById("SortingLayerList"_sid);
+    m_Error = dynamic_cast<Label*>(FindById("SortingLayerError"_sid));
+    auto* add = dynamic_cast<Button*>(FindById("SortingLayerAdd"_sid));
     if (!m_Layers || !m_Error || !add)
     {
         Logger::Log::Error("Sorting Layers: settings layout is missing its list, error label, or add button.");
@@ -83,12 +83,12 @@ void SortingLayerSettingsView::AppendLayer(const Rendering::SortingLayer& layer)
         Logger::Log::Error("Sorting Layers: cannot load the layer row layout.");
         return;
     }
-    auto* name = dynamic_cast<TextField*>(rowPointer->FindById("LayerName"));
-    auto* priority = dynamic_cast<TextField*>(rowPointer->FindById("LayerPriority"));
-    auto* identity = dynamic_cast<Label*>(rowPointer->FindById("LayerIdentity"));
-    auto* remove = dynamic_cast<Button*>(rowPointer->FindById("LayerRemove"));
-    auto* back = dynamic_cast<Button*>(rowPointer->FindById("LayerBack"));
-    auto* forward = dynamic_cast<Button*>(rowPointer->FindById("LayerForward"));
+    auto* name = dynamic_cast<TextField*>(rowPointer->FindById("LayerName"_sid));
+    auto* priority = dynamic_cast<TextField*>(rowPointer->FindById("LayerPriority"_sid));
+    auto* identity = dynamic_cast<Label*>(rowPointer->FindById("LayerIdentity"_sid));
+    auto* remove = dynamic_cast<Button*>(rowPointer->FindById("LayerRemove"_sid));
+    auto* back = dynamic_cast<Button*>(rowPointer->FindById("LayerBack"_sid));
+    auto* forward = dynamic_cast<Button*>(rowPointer->FindById("LayerForward"_sid));
     if (!name || !priority || !identity || !remove || !back || !forward)
     {
         Logger::Log::Error("Sorting Layers: layer row layout is missing a required field.");

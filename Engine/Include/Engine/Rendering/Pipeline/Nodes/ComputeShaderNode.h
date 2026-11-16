@@ -142,6 +142,7 @@ class ComputeShaderNode final : public IRenderPipelineNode
     GameEngine::Rendering::IDevice* m_Device = nullptr;
     GameEngine::Engine::Renderer::RenderServices* m_RenderServices = nullptr;
     GameEngine::Rendering::SamplerHandle m_LinearClampSampler{};
+    GameEngine::Rendering::SamplerHandle m_PointClampSampler{};
     std::unique_ptr<GameEngine::Rendering::ShaderMeta> m_ShaderMeta;
     GameEngine::Rendering::ComputePipelineId m_PipelineId{};
     GameEngine::Rendering::DescriptorSetLayoutDesc m_Set0Layout;

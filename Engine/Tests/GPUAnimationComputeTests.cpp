@@ -1038,7 +1038,7 @@ TEST_F(GPUAnimationAdmissionTest, RefusedClipUploadLeavesCharacterOnCpuPlayback)
     RG::RGFrame frame(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Upload);
     frame.BeginFrame(0);
     services.GetPerFrameWritePool().BeginFrame(0);
-    services.GetSkinPaletteAtlas().BeginFrame(services.GetPerFrameWritePool());
+    services.GetSkinPaletteAtlas().BeginFrame(services.GetPerFrameWritePool(), 0);
     auto& store = services.GetGPUAnimationDataStore();
     store.BeginFrame(0);
     services.ScheduleGpuSkinningAndRetarget(frame);
@@ -1232,7 +1232,7 @@ TEST_F(GPUAnimationAdmissionTest, RefusedInstanceUsesCpuSamplingAndUploadsItsOwn
     RG::RGFrame frame(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Upload);
     frame.BeginFrame(0);
     services.GetPerFrameWritePool().BeginFrame(0);
-    services.GetSkinPaletteAtlas().BeginFrame(services.GetPerFrameWritePool());
+    services.GetSkinPaletteAtlas().BeginFrame(services.GetPerFrameWritePool(), 0);
     auto& store = services.GetGPUAnimationDataStore();
     store.BeginFrame(0);
     services.ScheduleGpuSkinningAndRetarget(frame);
@@ -1280,7 +1280,7 @@ TEST_F(GPUAnimationAdmissionTest, RefusedInstanceUsesCpuSamplingAndUploadsItsOwn
     Device().RefuseInstanceCreation = false;
     store.BeginFrame(1);
     services.GetPerFrameWritePool().BeginFrame(1);
-    services.GetSkinPaletteAtlas().BeginFrame(services.GetPerFrameWritePool());
+    services.GetSkinPaletteAtlas().BeginFrame(services.GetPerFrameWritePool(), 0);
     constexpr float kRetryTime = 0.75f;
     world.GetComponentForWrite<Components::AnimatorRef>(entity)->Time = kRetryTime;
     const auto gpuExpected = SampleCpuReference(rig.SkeletonId, rig.ClipIndex, kRetryTime);

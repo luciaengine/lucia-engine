@@ -714,6 +714,7 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                 float CamDistance = 0.0f;
                 float Opacity = 1.0f;
                 uint32_t Color = 0;
+                float Cells[4] = {0, 0, 0, 0};
             } grid;
             grid.Show = m_ShowGrid;
             grid.CamPos[0] = static_cast<float>(m_CamPos[0]);
@@ -721,13 +722,33 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
             grid.CamPos[2] = static_cast<float>(m_CamPos[2]);
             grid.Is2D = m_Is2DMode;
             grid.CamDistance = m_CamDistance;
+            if (m_Grid2DCells.Valid)
+            {
+                grid.Cells[0] = m_Grid2DCells.OriginX;
+                grid.Cells[1] = m_Grid2DCells.OriginY;
+                grid.Cells[2] = m_Grid2DCells.Width;
+                grid.Cells[3] = m_Grid2DCells.Height;
+            }
             grid.Opacity = m_Is2DMode ? svSettings.GetGridOpacity2D() : svSettings.GetGridOpacity3D();
             grid.Color = m_Is2DMode ? svSettings.GetGridColor2D() : svSettings.GetGridColor3D();
 
+            PipelineHandle* gridPipeline = frame.AllocatePassData<PipelineHandle>();
             frame.AddPass(
                 "SV.Gizmos_Overlay", kOverlayPhase,
                 [&](RenderGraph::RGPassBuilder& p)
                 {
+                    p.Prepare([gridRenderer = &m_GridRenderer, grid, gridPipeline](RenderGraph::RGPrepareContext& context)
+                              {
+                                  if (grid.Show)
+                                      *gridPipeline = gridRenderer->PrepareRG(context, grid.Is2D);
+                                  return true;
+                              });
+                    p.UsePipeline(idLinesVisible);
+                    p.UsePipeline(idLinesOccluded);
+                    p.UsePipeline(idTrisVisible);
+                    p.UsePipeline(idTrisOccluded);
+                    p.UsePipeline(idLinesAlways);
+                    p.UsePipeline(idTrisAlways);
                     RenderGraph::RGAttachmentOps colorOps{};
                     colorOps.Load = RenderGraph::RGLoadOp::Clear;
                     colorOps.Store = RenderGraph::RGStoreOp::Store;
@@ -748,7 +769,7 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                  set0 = GizmoCameraSet0Layout(), camBuf = camAlloc.Buffer,
                  camOff = camAlloc.Offset, camValid = camAlloc.Valid(), lineBuf,
                  lineDraws = std::move(lineDraws), triBuf, triDraws = std::move(triDraws), w, h,
-                 cam, grid, gridRenderer = &m_GridRenderer](RenderGraph::RGContext& ctx)
+                 cam, grid, gridRenderer = &m_GridRenderer, gridPipeline](RenderGraph::RGContext& ctx)
                 {
                     auto* cl = ctx.Cmd;
                     auto* dev = ctx.GetDevice();
@@ -759,9 +780,9 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                     cl->SetScissor(0, 0, static_cast<int>(w), static_cast<int>(h));
 
                     if (grid.Show)
-                        gridRenderer->RecordRG(ctx, &cam, grid.CamPos, grid.Is2D,
+                        gridRenderer->RecordRG(ctx, *gridPipeline, &cam, grid.CamPos, grid.Is2D,
                                                 grid.CamDistance, static_cast<float>(h),
-                                                grid.Opacity, grid.Color);
+                                                grid.Opacity, grid.Color, grid.Cells);
 
                     if (!camValid || (!lineDraws.size() && !triDraws.size()))
                         return;
@@ -899,6 +920,7 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                 RenderGraph::RGAttachmentOps ops{};
                 ops.Load = RenderGraph::RGLoadOp::Load; // blend over the scene (derives ColorLoad)
                 ops.Store = RenderGraph::RGStoreOp::Store;
+                p.UsePipeline(idComposite);
                 p.AttachColor(0, finalColor, ops);
                 p.Read(gizmoColor, RenderGraph::RGTextureRead::Sampled);
             },
@@ -1326,6 +1348,11 @@ void SceneViewController::DeclareSelectionOutlineRG(RenderGraph::RGFrame& frame,
             "SV.SelectionMask", kOverlayPhase,
             [&](RenderGraph::RGPassBuilder& p)
             {
+                p.UsePipeline(idStatic);
+                if (idSkinned.IsValid())
+                    p.UsePipeline(idSkinned);
+                if (idAlpha.IsValid())
+                    p.UsePipeline(idAlpha);
                 RenderGraph::RGAttachmentOps ops{};
                 ops.Load = RenderGraph::RGLoadOp::Clear;
                 ops.Store = RenderGraph::RGStoreOp::Store;
@@ -1472,6 +1499,7 @@ void SceneViewController::DeclareSelectionOutlineRG(RenderGraph::RGFrame& frame,
             RenderGraph::RGAttachmentOps ops{};
             ops.Load = RenderGraph::RGLoadOp::Load; // blend over the scene (derives ColorLoad)
             ops.Store = RenderGraph::RGStoreOp::Store;
+            p.UsePipeline(idOutline);
             p.AttachColor(0, finalColor, ops);
             p.Read(maskTex, RenderGraph::RGTextureRead::Sampled);
         },

@@ -12,6 +12,7 @@
 
 #include "Logger/Logger.h"
 #include "Logger/RingBufferSink.h"
+#include "TestTempDir.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -51,7 +52,7 @@ class FileLogLevelTest : public ::testing::Test
     {
         SetFileLogLevelEnv(nullptr);
 
-        m_Path = std::filesystem::temp_directory_path() /
+        m_Path = m_TempDir.Path() /
                  ("ge_file_log_level_" +
                   std::string(::testing::UnitTest::GetInstance()->current_test_info()->name()) + ".log");
         std::error_code ec;
@@ -97,6 +98,7 @@ class FileLogLevelTest : public ::testing::Test
         return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     }
 
+    GameEngine::TestUtils::ScopedTempDir m_TempDir{GameEngine::TestUtils::MakeUniqueTempDirectory("ge_file_log_level")};
     std::filesystem::path m_Path;
     RingBufferSink* m_Ring = nullptr;
 };

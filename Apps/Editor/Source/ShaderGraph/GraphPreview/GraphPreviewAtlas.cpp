@@ -1,6 +1,7 @@
 #include "ShaderGraph/GraphPreview/GraphPreviewAtlas.h"
 
 #include "Engine/Rendering/CameraUtils.h"
+#include "Engine/Rendering/ExposureReadbackFeature.h"
 #include "Engine/Rendering/IEnvironmentSource.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
@@ -22,6 +23,7 @@
 #include "Mathematics/MatrixOps.h"
 #include "Mathematics/Vector3.h"
 #include "Rendering/Core/PassPhase.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Core/ViewParamsLayout.h"
@@ -35,7 +37,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
-#include <optional>
+#include <mutex>
 
 namespace GameEngine::Editor
 {
@@ -109,75 +111,245 @@ float SphereScaleForFill(float fill)
 
 } // namespace
 
-struct GraphPreviewAtlas::PreparedPass
+struct GraphPreviewAtlas::AtlasGeneration
+{
+    Rendering::IDevice* Device = nullptr;
+    std::weak_ptr<std::atomic<bool>> ServiceLifetime;
+    Rendering::TextureHandle Texture{};
+
+    ~AtlasGeneration()
+    {
+        const auto alive = ServiceLifetime.lock();
+        if (alive && alive->load(std::memory_order_acquire) && Device && Texture.IsValid())
+            Device->DestroyTexture(Texture);
+    }
+};
+
+struct GraphPreviewAtlas::Completion
+{
+    std::shared_ptr<AtlasGeneration> Generation;
+    uint64_t Revision = 0;
+    uint64_t Digest = 0;
+    uint32_t Undrawn = 0;
+};
+
+struct GraphPreviewAtlas::State
+{
+    std::atomic<bool> Active{true};
+    std::atomic<uint64_t> Revision{0};
+    std::atomic<uint64_t> Serial{0};
+    std::mutex CompletionMutex;
+    std::shared_ptr<const Completion> Completed;
+
+    std::shared_ptr<const Completion> ExchangeCompletion(std::shared_ptr<const Completion> completion)
+    {
+        std::lock_guard lock(CompletionMutex);
+        Completed.swap(completion);
+        return completion;
+    }
+};
+
+struct GraphPreviewAtlas::FramePlan
 {
     struct Cell
     {
-        CellDraw Draw;
+        CellDraw Request;
+        uint32_t X = 0, Y = 0;
+        PreviewPushConstants Constants{};
+    };
+    struct PreparedCell
+    {
         Engine::Renderer::PreparedDrawBindings Bindings;
+        PreviewPushConstants Constants{};
+        uint32_t X = 0, Y = 0;
         uint32_t MaterialIndex = 0;
-        std::optional<uint32_t> ServedVersion;
+        uint32_t ServedVersion = 0;
+        bool HasServedVersion = false;
     };
 
+    Engine::Renderer::RenderServices* Services = nullptr;
+    std::weak_ptr<std::atomic<bool>> ServiceLifetime;
+    std::shared_ptr<State> Owner;
+    std::shared_ptr<AtlasGeneration> Generation;
+    std::shared_ptr<Completion> Result;
+    RG::RGFrameStamp Frame;
+    RG::RGTexture Atlas;
+    uint64_t Serial = 0, Revision = 0;
     Engine::Renderer::PassBindingContext Inputs;
+    Rendering::MeshGPUEntryBindings Geometry;
+    Rendering::MeshGPUHandle Sphere;
+    uint64_t UploadSequence = 0;
     Rendering::VertexAttributeFlags VertexFlags{};
-    bool UseIbl = false;
-    std::vector<CellDraw> PendingDraws;
+    Rendering::IndexType IndexType = Rendering::IndexType::Uint16;
+    uint32_t IndexCount = 0, FirstIndex = 0;
+    int32_t VertexOffset = 0;
+    uint32_t Missing = 0;
+    bool Ibl = false;
+    bool GeometryRecorded = false, Acknowledged = false;
     std::vector<Cell> Cells;
-};
+    std::vector<PreparedCell> Prepared;
 
-bool GraphPreviewAtlas::PrepareDraws(RG::RGPrepareContext& context, PreparedPass& pass)
-{
-    pass.Inputs.FrameSlot = context.GetDevice()->GetFrameIndex();
-    pass.Inputs.Samples = context.GetCurrentSampleCount();
-    pass.Cells.clear();
-    pass.Cells.reserve(pass.PendingDraws.size());
-    auto& materials = m_Services->Materials();
-    for (const CellDraw& draw : pass.PendingDraws)
+    bool IsCurrent() const
     {
-        const auto* material = materials.Registry().Find(draw.MaterialGuid);
-        if (!material)
-            continue;
-        Rendering::PipelineHandle pipeline{};
-        const Engine::Renderer::PipelineVariantCache::VariantServeUnit* served = nullptr;
-        if (pass.UseIbl)
+        const auto alive = ServiceLifetime.lock();
+        return alive && alive->load(std::memory_order_acquire) &&
+            Owner->Active.load(std::memory_order_acquire) && !Acknowledged &&
+            Owner->Serial.load(std::memory_order_acquire) == Serial &&
+            Owner->Revision.load(std::memory_order_acquire) == Revision &&
+            Services && Services->GetDevice() == Generation->Device &&
+            Frame.Frame && Frame.IsFor(*Frame.Frame);
+    }
+
+    bool Prepare(RG::RGPrepareContext& context)
+    {
+        Prepared.clear();
+        GeometryRecorded = false;
+        if (!IsCurrent() || context.GetTexture(Atlas) != Generation->Texture ||
+            !context.GetDevice()->IsTextureAlive(Generation->Texture))
+            return false;
+        Result->Undrawn = Missing;
+        auto& meshes = Services->GetMeshGPURegistry();
+        const auto* sphere = meshes.Find(Sphere);
+        Rendering::MeshGPUEntryBindings current{};
+        if (!sphere || sphere->uploadSeq != UploadSequence ||
+            sphere->vertexFlags != VertexFlags || sphere->indexType != static_cast<uint32_t>(IndexType) ||
+            !meshes.TryGetDrawableBindings(*sphere, current) ||
+            current.coreVB != Geometry.coreVB || current.tangentVB != Geometry.tangentVB ||
+            current.colorVB != Geometry.colorVB || current.uv1VB != Geometry.uv1VB ||
+            current.indexBuffer != Geometry.indexBuffer || sphere->indexCount != IndexCount ||
+            sphere->firstIndex != FirstIndex || sphere->vertexOffset != static_cast<uint32_t>(VertexOffset))
+            return false;
+        auto pass = Inputs;
+        pass.FrameSlot = context.GetDevice()->GetFrameIndex();
+        pass.Samples = context.GetCurrentSampleCount();
+        auto& materials = Services->Materials();
+        auto& registry = materials.Registry();
+        for (const auto& cell : Cells)
         {
-            const auto variant = materials.Variants().PrepareColorVariant(
-                *material, pass.VertexFlags, Rendering::PrimitiveTopology::TriangleList,
-                MaterialKeyword::IBL, Rendering::FrontFace::CounterClockwise, context);
-            pipeline = variant.first;
-            served = variant.second;
+            const auto& request = cell.Request;
+            if (registry.GetRegistrationGeneration(request.MaterialGuid) != request.Registration)
+                return false;
+            const auto* material = registry.Find(request.MaterialGuid);
+            if (!material || material->GetVersion() != request.Version ||
+                material->GetContentRevision() != request.ContentRevision)
+                return false;
+            Rendering::PipelineHandle pipeline{};
+            const Engine::Renderer::PipelineVariantCache::VariantServeUnit* served = nullptr;
+            if (Ibl)
+            {
+                // The keyword variant must keep the base material's device-aware winding.
+                Rendering::GraphicsPipelineDesc basePipeline{};
+                if (!context.GetDevice()->CopyGraphicsPipeline(material->GetGraphicsPipelineId(), basePipeline))
+                {
+                    ++Result->Undrawn;
+                    continue;
+                }
+                const auto variant = materials.Variants().PrepareColorVariant(
+                    *material, VertexFlags, Rendering::PrimitiveTopology::TriangleList,
+                    MaterialKeyword::IBL, basePipeline.Rasterization.frontFace, context);
+                pipeline = variant.first;
+                served = variant.second;
+            }
+            else
+                pipeline = context.PreparePipeline(material->GetGraphicsPipelineIdForFlags(
+                    VertexFlags, context.GetDevice()));
             if (!pipeline.IsValid())
             {
-                m_RecordSkippedDraws.fetch_add(1, std::memory_order_relaxed);
+                ++Result->Undrawn;
                 continue;
             }
+            const auto bindings = materials.Binder().PrepareMaterialForDraw(
+                pass, *material, pipeline,
+                served ? served->VariantMeta.get() : material->GetShaderMeta().get(), {}, 0,
+                served ? std::span<const Rendering::DescriptorSetLayoutId>(served->SetLayouts)
+                       : std::span<const Rendering::DescriptorSetLayoutId>{});
+            if (!bindings.Pipeline.IsValid())
+                return false;
+            PreparedCell draw{bindings, cell.Constants, cell.X, cell.Y,
+                              material->GetGpuSceneMaterialIndex(), served ? served->MaterialVersion : 0u,
+                              served != nullptr};
+            Prepared.push_back(draw);
+            if (served && served->MaterialVersion != request.Version)
+                ++Result->Undrawn;
         }
-        else
-        {
-            pipeline = context.PreparePipeline(
-                material->GetGraphicsPipelineIdForFlags(pass.VertexFlags, m_Services->GetDevice()));
-        }
-        if (!pipeline.IsValid())
-            continue;
-        const auto bindings = materials.Binder().PrepareMaterialForDraw(
-            pass.Inputs, *material, pipeline,
-            served ? served->VariantMeta.get() : material->GetShaderMeta().get(), {}, 0,
-            served ? std::span<const Rendering::DescriptorSetLayoutId>(served->SetLayouts)
-                   : std::span<const Rendering::DescriptorSetLayoutId>{});
-        if (!bindings.Pipeline.IsValid())
-            continue;
-        PreparedPass::Cell cell{draw, bindings, material->GetGpuSceneMaterialIndex(), {}};
-        if (served)
-            cell.ServedVersion = served->MaterialVersion;
-        pass.Cells.push_back(std::move(cell));
+        return true;
     }
-    return true;
+
+    void Record(RG::RGContext& context)
+    {
+        if (!context.Cmd || !IsCurrent())
+            return;
+        auto* commands = context.Cmd;
+        auto& binder = Services->Materials().Binder();
+        Engine::Renderer::PassBindingContext pass{};
+        pass.Cmd = commands;
+        const Rendering::BufferHandle vertices[] =
+            {Geometry.coreVB, Geometry.tangentVB, Geometry.colorVB, Geometry.uv1VB};
+        for (uint32_t slot = 0; slot < 4u; ++slot)
+            if (vertices[slot].IsValid())
+                commands->SetVertexBuffer(vertices[slot], slot);
+        commands->SetIndexBuffer(Geometry.indexBuffer, IndexType);
+        for (const auto& draw : Prepared)
+        {
+            constexpr uint32_t kCellPx = GraphPreviewAtlasLayout::kCellPx;
+            commands->SetViewport(static_cast<float>(draw.X), static_cast<float>(draw.Y),
+                                  static_cast<float>(kCellPx), static_cast<float>(kCellPx));
+            commands->SetScissor(draw.X, draw.Y, kCellPx, kCellPx);
+            const auto constants = std::span<const std::byte>(
+                reinterpret_cast<const std::byte*>(&draw.Constants), sizeof(draw.Constants));
+            if (!binder.BindPreparedForDraw(pass, draw.Bindings, constants).IsValid())
+                continue;
+            commands->DrawIndexed(IndexCount, 1, FirstIndex, VertexOffset, 0);
+            if (draw.HasServedVersion)
+                Services->Materials().Variants().RecordServedGeneration(
+                    draw.MaterialIndex, Engine::Renderer::ServedPassClass::Color, draw.ServedVersion);
+        }
+        GeometryRecorded = true;
+    }
+
+    void Acknowledge(RG::RGContext& context)
+    {
+        if (!context.Cmd || !IsCurrent() || !GeometryRecorded ||
+            context.GetTexture(Atlas) != Generation->Texture)
+            return;
+        Acknowledged = true;
+        Owner->ExchangeCompletion(Result);
+    }
+};
+
+GraphPreviewAtlas::~GraphPreviewAtlas()
+{
+    Shutdown();
+}
+
+void GraphPreviewAtlas::MarkDirty()
+{
+    m_Dirty = true;
+    if (m_State)
+        m_State->Revision.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void GraphPreviewAtlas::DrainCompletion()
+{
+    if (!m_State)
+        return;
+    const auto result = m_State->ExchangeCompletion({});
+    if (!result || result->Generation != m_Generation)
+        return;
+    m_AtlasInitialized = true;
+    if (result->Revision != m_State->Revision.load(std::memory_order_acquire))
+        return;
+    m_ContentDigest = result->Digest;
+    m_UndrawnCells = result->Undrawn;
+    m_Dirty = false;
 }
 
 void GraphPreviewAtlas::Initialize(Engine::Renderer::RenderServices* services)
 {
     m_Services = services;
+    m_ServiceLifetime = services ? services->LifetimeToken() : std::weak_ptr<std::atomic<bool>>{};
+    if (!m_State)
+        m_State = std::make_shared<State>();
     if (!m_UiResourceName.empty())
         return;
 
@@ -196,10 +368,11 @@ void GraphPreviewAtlas::Initialize(Engine::Renderer::RenderServices* services)
 
 void GraphPreviewAtlas::Shutdown()
 {
-    if (m_Services)
+    if (m_State)
+        m_State->Active.store(false, std::memory_order_release);
+    const auto alive = m_ServiceLifetime.lock();
+    if (m_Services && alive && alive->load(std::memory_order_acquire) && m_Services->GetDevice())
     {
-        // View before camera: ReleaseCamera refuses while any view still
-        // references the camera, so the reverse order would leak the slot.
         if (m_ViewId != 0)
             m_Services->Views().ReleaseView(m_ViewId);
         if (m_CameraId != 0)
@@ -207,15 +380,17 @@ void GraphPreviewAtlas::Shutdown()
     }
     m_ViewId = 0;
     m_CameraId = 0;
-    if (m_Services && m_AtlasTexture.IsValid())
-    {
-        if (auto* device = m_Services->GetDevice())
-            device->DestroyTexture(m_AtlasTexture);
-    }
+    m_Generation.reset();
+    m_State.reset();
     m_AtlasTexture = {};
     m_AtlasInitialized = false;
+    m_UiBound = false;
+    m_Dirty = true;
+    m_ContentDigest = 0;
+    m_UndrawnCells = 0;
     m_Requests.clear();
     m_Services = nullptr;
+    m_ServiceLifetime.reset();
 }
 
 bool GraphPreviewAtlas::SetRequests(uint64_t windowId, std::vector<NodeRequest> requests)
@@ -251,7 +426,7 @@ bool GraphPreviewAtlas::SetRequests(uint64_t windowId, std::vector<NodeRequest> 
     for (const NodeRequest& r : m_Requests)
         keys.push_back(r.NodeId);
     m_Layout.Reconcile(keys);
-    m_Dirty = true;
+    MarkDirty();
     return true;
 }
 
@@ -279,7 +454,7 @@ void GraphPreviewAtlas::SetRequestYaw(const std::string& nodeId, float yawRadian
         if (request.YawRadians == yawRadians)
             return;
         request.YawRadians = yawRadians;
-        m_Dirty = true;
+        MarkDirty();
         return;
     }
 }
@@ -290,7 +465,7 @@ bool GraphPreviewAtlas::ClearRequests()
         return false;
     m_Requests.clear();
     m_Layout.Reconcile({});
-    m_Dirty = true;
+    MarkDirty();
     return true;
 }
 
@@ -313,7 +488,7 @@ bool GraphPreviewAtlas::TryGetBinding(const std::string& nodeId,
     return true;
 }
 
-bool GraphPreviewAtlas::ContentDigestMoved()
+uint64_t GraphPreviewAtlas::ComputeContentDigest() const
 {
     uint64_t digest = Hashing::Fnv1a64Value(
         0x9E37'79B9'7F4A'7C15ull, Engine::Renderer::Material::GetGlobalContentEpoch());
@@ -321,14 +496,15 @@ bool GraphPreviewAtlas::ContentDigestMoved()
     for (const NodeRequest& r : m_Requests)
     {
         const Engine::Renderer::Material* mat = registry.Find(r.MaterialGuid);
+        digest = Hashing::Fnv1a64Value(digest, registry.GetRegistrationGeneration(r.MaterialGuid));
         digest = Hashing::Fnv1a64Value(digest, mat ? mat->GetVersion() : 0u);
         digest = Hashing::Fnv1a64Value(
             digest, (mat && mat->GetGraphicsPipelineId().IsValid()) ? 1u : 0u);
     }
-    if (digest == m_ContentDigest)
-        return false;
-    m_ContentDigest = digest;
-    return true;
+    digest = Hashing::Fnv1a64Value(digest, m_IblEnabled && IblAvailable());
+    digest = Hashing::Fnv1a64Value(digest, m_Services->GetDefaultMSAASampleCount());
+    digest = Hashing::Fnv1a64Value(digest, static_cast<uint32_t>(m_Services->GetDepthFormat()));
+    return digest;
 }
 
 void GraphPreviewAtlas::EnsureView()
@@ -356,9 +532,6 @@ bool GraphPreviewAtlas::EnsureAtlasTexture(uint32_t width, uint32_t height)
     if (!device || width == 0 || height == 0)
         return false;
 
-    if (m_AtlasTexture.IsValid())
-        device->DestroyTexture(m_AtlasTexture);
-
     Rendering::TextureDesc td{};
     td.width = width;
     td.height = height;
@@ -373,9 +546,15 @@ bool GraphPreviewAtlas::EnsureAtlasTexture(uint32_t width, uint32_t height)
     td.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget)
                | static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
     td.debugName = m_AtlasResourceKey.c_str();
-    m_AtlasTexture = device->CreateTexture(td);
-    if (!m_AtlasTexture.IsValid())
+    auto generation = std::make_shared<AtlasGeneration>();
+    generation->Device = device;
+    generation->ServiceLifetime = m_ServiceLifetime;
+    generation->Texture = device->CreateTexture(td);
+    if (!generation->Texture.IsValid())
         return false;
+    m_Generation = std::move(generation);
+    m_AtlasTexture = m_Generation->Texture;
+    MarkDirty();
 
     m_AtlasWidth = width;
     m_AtlasHeight = height;
@@ -448,7 +627,7 @@ void GraphPreviewAtlas::SetIblEnabled(bool enabled)
     if (m_IblEnabled == enabled)
         return;
     m_IblEnabled = enabled;
-    m_Dirty = true;
+    MarkDirty();
 }
 
 bool GraphPreviewAtlas::IblAvailable() const
@@ -459,15 +638,26 @@ bool GraphPreviewAtlas::IblAvailable() const
     return ibl != nullptr && ibl->IsInitialized();
 }
 
+void GraphPreviewAtlas::PublishToUi(UIManager* ui, RG::RGFrame& frame,
+                                    RG::RGTexture atlas, bool hasPlannedProducer)
+{
+    // Planned producers are protected by preparation and the UI's graph read.
+    // An idle graph publishes only previously recorded content.
+    if (!ui || (!m_AtlasInitialized && !hasPlannedProducer))
+        return;
+    ui->SetExternalTextureRG(m_UiResourceName, m_AtlasWidth, m_AtlasHeight,
+                             UI::UITextureSpace::DisplayLinearSdr(),
+                             Rendering::TextureFormat::R16G16B16A16_FLOAT);
+    ui->PublishExternalTextureRG(m_UiResourceName, frame, atlas);
+    m_UiBound = true;
+}
+
 void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& frame)
 {
     if (!m_Services || windowId == 0 || windowId != m_WindowId)
         return;
 
-    /* Cold IBL variants skip their draw at record time (the publish-gate
-       enqueues the compile); the atomic brings the retry back to this thread. */
-    if (m_RecordSkippedDraws.exchange(0, std::memory_order_relaxed) != 0)
-        m_Dirty = true;
+    DrainCompletion();
 
     if (m_Requests.empty())
     {
@@ -496,24 +686,11 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
     if (!atlas.IsValid())
         return;
 
-    // Publishing an atlas that has never been rendered would hand the UI a
-    // texture whose contents are undefined, so the name stays unresolved (the
-    // thumb simply paints nothing) until the first render lands.
-    const auto publishToUi = [&]
-    {
-        if (!ui || !m_AtlasInitialized)
-            return;
-        ui->SetExternalTextureRG(m_UiResourceName, m_AtlasWidth, m_AtlasHeight,
-                                 UI::UITextureSpace::DisplayLinearSdr(),
-                                 Rendering::TextureFormat::R16G16B16A16_FLOAT);
-        ui->PublishExternalTextureRG(m_UiResourceName, frame, atlas);
-        m_UiBound = true;
-    };
-
-    const bool contentMoved = ContentDigestMoved();
+    const uint64_t contentDigest = ComputeContentDigest();
+    const bool contentMoved = contentDigest != m_ContentDigest;
     if (!m_Dirty && !contentMoved && m_UndrawnCells == 0)
     {
-        publishToUi();
+        PublishToUi(ui, frame, atlas, false);
         return;
     }
 
@@ -527,9 +704,8 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
         return;
     }
 
-    // Collect the cells whose material can actually be drawn this frame. A
-    // material whose base pipeline is still compiling simply skips its cell and
-    // the pass re-declares next frame — that is the whole readiness protocol.
+    // Missing materials remain pending. Preparation selects each ready variant
+    // against this pass's formats and copies its bindings into the frame plan.
     std::vector<CellDraw> draws;
     draws.reserve(m_Requests.size());
     uint32_t undrawn = 0;
@@ -545,13 +721,14 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
             ++undrawn;
             continue;
         }
-        draws.push_back(
-            CellDraw{cell, request.MaterialGuid, request.YawRadians, request.FillFraction});
+        draws.push_back(CellDraw{cell, request.MaterialGuid,
+            registry.GetRegistrationGeneration(request.MaterialGuid), mat->GetVersion(),
+            mat->GetContentRevision(), request.YawRadians, request.FillFraction});
     }
     if (draws.empty())
     {
         m_UndrawnCells = undrawn;
-        publishToUi();
+        PublishToUi(ui, frame, atlas, false);
         return;
     }
 
@@ -669,6 +846,14 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
         resources.Buffers.push_back({HashStringId("MaterialParams"), materialParams.Buffer,
                                      materialParams.Offset, materialParams.Size});
 
+        // The preview meters no exposure: an unwritten state makes the shader use its static scale.
+        const auto exposureUpload = frame.AllocUpload<Engine::Renderer::ExposureReadbackFeature::State>();
+        if (!exposureUpload.Valid())
+            return;
+        *exposureUpload.Ptr = Engine::Renderer::ExposureReadbackFeature::State{};
+        resources.Buffers.push_back({HashStringId("ExposureHistory"), exposureUpload.Buffer, exposureUpload.Offset,
+                                     Engine::Renderer::ExposureReadbackFeature::kStateBytes});
+
         /* IBL: the environment cubes, BRDF LUT and EnvData UBO are
            engine-shared and view-independent — bound exactly the way the
            world pass binds them (RenderServicesWorldPass, IBL keyword block). */
@@ -687,107 +872,78 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
         }
     }
 
-    const uint32_t cellPx = GraphPreviewAtlasLayout::kCellPx;
-
-    auto prepared = std::make_shared<PreparedPass>();
-    prepared->Inputs.View = m_ViewId;
-    prepared->Inputs.PassKeywords = useIbl ? MaterialKeyword::IBL : MaterialKeyword::None;
-    prepared->Inputs.PassResources = std::move(resources);
-    prepared->VertexFlags = sphere->vertexFlags;
-    prepared->UseIbl = useIbl;
-    prepared->PendingDraws = std::move(draws);
-
+    auto* plan = frame.AllocatePassData<FramePlan>();
+    plan->Services = m_Services;
+    plan->ServiceLifetime = m_ServiceLifetime;
+    plan->Owner = m_State;
+    plan->Generation = m_Generation;
+    plan->Frame.Stamp(frame);
+    plan->Atlas = atlas;
+    plan->Serial = m_State->Serial.fetch_add(1, std::memory_order_acq_rel) + 1u;
+    plan->Revision = m_State->Revision.load(std::memory_order_acquire);
+    plan->Result = std::make_shared<Completion>();
+    plan->Result->Generation = m_Generation;
+    plan->Result->Revision = plan->Revision;
+    plan->Result->Digest = contentDigest;
+    plan->Inputs.View = m_ViewId;
+    plan->Inputs.PassKeywords = useIbl ? MaterialKeyword::IBL : MaterialKeyword::None;
+    plan->Inputs.PassResources = std::move(resources);
+    plan->Geometry = sphereBindings;
+    plan->Sphere = meshRegistry.FindHandle({Engine::Renderer::PrimitiveGenerator::SphereGuid(), 0});
+    plan->UploadSequence = sphere->uploadSeq;
+    plan->VertexFlags = sphere->vertexFlags;
+    plan->IndexType = static_cast<Rendering::IndexType>(sphere->indexType);
+    plan->IndexCount = sphere->indexCount;
+    plan->FirstIndex = sphere->firstIndex;
+    plan->VertexOffset = static_cast<int32_t>(sphere->vertexOffset);
+    plan->Missing = undrawn;
+    plan->Ibl = useIbl;
+    plan->Cells.reserve(draws.size());
+    for (const auto& draw : draws)
+    {
+        FramePlan::Cell cell;
+        cell.Request = draw;
+        m_Layout.CellOrigin(draw.Cell, cell.X, cell.Y);
+        const float scale = SphereScaleForFill(draw.FillFraction);
+        const float cy = std::cos(draw.YawRadians), sy = std::sin(draw.YawRadians);
+        auto& pc = cell.Constants;
+        pc.uM[0] = scale * cy;
+        pc.uM[2] = -scale * sy;
+        pc.uM[8] = scale * sy;
+        pc.uM[10] = scale * cy;
+        pc.uM[5] = scale;
+        pc.uM[15] = 1.0f;
+        pc.uN0[0] = cy;
+        pc.uN0[2] = -sy;
+        pc.uN1[1] = 1.0f;
+        pc.uN2[0] = sy;
+        pc.uN2[2] = cy;
+        const auto* material = registry.Find(draw.MaterialGuid);
+        const uint32_t materialIndex = material->GetGpuSceneMaterialIndex();
+        std::memcpy(&pc.uExtra[0], &materialIndex, sizeof(materialIndex));
+        plan->Cells.push_back(cell);
+    }
     frame.AddPass(
         m_PassName.c_str(), Rendering::PassPhase::kWorldRender,
-        [this, prepared, msaa, msaaColor, hdr, depth](RG::RGPassBuilder& p)
+        [plan, msaa, msaaColor, hdr, depth](RG::RGPassBuilder& pass)
         {
-            p.Prepare([this, prepared](RG::RGPrepareContext& context)
-                      { return PrepareDraws(context, *prepared); });
             RG::RGAttachmentOps color{};
             color.Load = RG::RGLoadOp::Clear;
             color.Store = RG::RGStoreOp::Store;
             if (msaa)
-                p.AttachColorResolve(0, msaaColor, hdr, color);
+                pass.AttachColorResolve(0, msaaColor, hdr, color);
             else
-                p.AttachColor(0, hdr, color);
+                pass.AttachColor(0, hdr, color);
 
             RG::RGAttachmentOps depthOps{};
             depthOps.Load = RG::RGLoadOp::Clear;
             depthOps.Store = RG::RGStoreOp::Store;
             // Reverse-Z: the far value is 0.
             depthOps.Clear.Depth = Rendering::ReverseZ::kClearFar;
-            p.AttachDepth(depth, depthOps, RG::RGDepthAccess::ReadWrite);
+            pass.AttachDepth(depth, depthOps, RG::RGDepthAccess::ReadWrite);
+            pass.Prepare([plan](RG::RGPrepareContext& context) { return plan->Prepare(context); });
         },
-        [this, prepared, sphere, sphereBindings](RG::RGContext& ctx)
-        {
-            auto* cl = ctx.Cmd;
-            if (!cl)
-                return;
-
-            auto& binder = m_Services->Materials().Binder();
-            auto pass = binder.BeginPass(*cl, m_ViewId, ctx,
-                                         prepared->Inputs.PassKeywords, {}, 0);
-
-            const auto setVb = [cl](Rendering::BufferHandle vb, uint32_t slot)
-            {
-                if (vb.IsValid())
-                    cl->SetVertexBuffer(vb, slot);
-            };
-            setVb(sphereBindings.coreVB, 0);
-            setVb(sphereBindings.tangentVB, 1);
-            setVb(sphereBindings.colorVB, 2);
-            setVb(sphereBindings.uv1VB, 3);
-            cl->SetIndexBuffer(sphereBindings.indexBuffer,
-                               static_cast<Rendering::IndexType>(sphere->indexType));
-
-            for (const PreparedPass::Cell& cell : prepared->Cells)
-            {
-                const CellDraw& draw = cell.Draw;
-                uint32_t cellX = 0;
-                uint32_t cellY = 0;
-                m_Layout.CellOrigin(draw.Cell, cellX, cellY);
-                cl->SetViewport(static_cast<float>(cellX), static_cast<float>(cellY),
-                                static_cast<float>(cellPx), static_cast<float>(cellPx));
-                cl->SetScissor(cellX, cellY, cellPx, cellPx);
-
-                /* Column-major yaw about Y, scaled uniformly. Rotating the
-                   sphere rather than the camera keeps one camera for the whole
-                   pass, which is what lets every cell share one draw setup. */
-                const float sphereScale = SphereScaleForFill(draw.FillFraction);
-                const float cy = std::cos(draw.YawRadians);
-                const float sy = std::sin(draw.YawRadians);
-                PreviewPushConstants pc{};
-                pc.uM[0] = sphereScale * cy;
-                pc.uM[2] = sphereScale * -sy;
-                pc.uM[8] = sphereScale * sy;
-                pc.uM[10] = sphereScale * cy;
-                pc.uM[5] = sphereScale;
-                pc.uM[15] = 1.0f;
-                // Uniform scale: the normal matrix is the rotation part, which
-                // the shader renormalizes, so the scale cancels.
-                pc.uN0[0] = cy;
-                pc.uN0[2] = -sy;
-                pc.uN1[1] = 1.0f;
-                pc.uN2[0] = sy;
-                pc.uN2[2] = cy;
-                const uint32_t materialIndex = cell.MaterialIndex;
-                std::memcpy(&pc.uExtra[0], &materialIndex, sizeof(materialIndex));
-
-                const auto pushConstants = std::span<const std::byte>(
-                    reinterpret_cast<const std::byte*>(&pc), sizeof(pc));
-                const auto bound = binder.BindPreparedForDraw(pass, cell.Bindings, pushConstants);
-                if (!bound.IsValid())
-                    continue;
-
-                cl->DrawIndexed(sphere->indexCount, 1, sphere->firstIndex,
-                                static_cast<int32_t>(sphere->vertexOffset), 0);
-                if (cell.ServedVersion)
-                    m_Services->Materials().Variants().RecordServedGeneration(
-                        cell.MaterialIndex, Engine::Renderer::ServedPassClass::Color, *cell.ServedVersion);
-            }
-
-            binder.EndPass(pass);
-        });
+        [plan](RG::RGContext& context) { plan->Record(context); });
 
     Rendering::Passes::TonemapParams tmParams{};
     tmParams.preserveAlpha = 1;
@@ -797,11 +953,19 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
     if (!tonemap.IsValid())
         return;
 
+    // Required tonemap preparation guarantees its fullscreen draw before this acknowledgment.
+    const auto acknowledgment = frame.AddPass(
+        (m_PassName + ".Acknowledge").c_str(), Rendering::PassPhase::kFinalize,
+        [plan, atlas](RG::RGPassBuilder& pass)
+        {
+            pass.Read(atlas, RG::RGTextureRead::Sampled);
+            pass.PreventCulling();
+            pass.Prepare([plan](RG::RGPrepareContext&) { return plan->IsCurrent(); });
+        },
+        [plan](RG::RGContext& context) { plan->Acknowledge(context); });
+    frame.AddOrderingEdge(tonemap, acknowledgment);
     frame.MarkOutput(atlas, RG::RGImageLayout::ShaderReadOnly);
-    m_AtlasInitialized = true;
-    m_Dirty = false;
-    m_UndrawnCells = undrawn;
-    publishToUi();
+    PublishToUi(ui, frame, atlas, true);
 }
 
 } // namespace GameEngine::Editor

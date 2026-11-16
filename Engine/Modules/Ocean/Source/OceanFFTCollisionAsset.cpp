@@ -1,6 +1,7 @@
 #include "Ocean/OceanFFTCollisionAsset.h"
 
 #include "AssetCore/SharedFileRead.h"
+#include "Types/Fnv1a.h"
 
 #include <algorithm>
 #include <cmath>
@@ -49,17 +50,10 @@ OceanFFTDisplacementSample Lerp(const OceanFFTDisplacementSample& a,
             a.Z + (b.Z - a.Z) * t};
 }
 
-uint64 Fnv1a64(const void* data, size_t bytes, uint64 seed = 1469598103934665603ull)
-{
-    const auto* values = static_cast<const uint8*>(data);
-    uint64 hash = seed;
-    for (size_t i = 0; i < bytes; ++i)
-    {
-        hash ^= static_cast<uint64>(values[i]);
-        hash *= 1099511628211ull;
-    }
-    return hash;
-}
+// Seed of the spectrum hash. It is not the FNV-1a offset basis (one digit short),
+// but SpectrumHash is written into every baked collision file and compared on
+// load: changing it makes every existing bake incompatible.
+constexpr uint64 kSpectrumHashSeed = 1469598103934665603ull;
 } // namespace
 
 bool OceanFFTCollisionAsset::Reset(const OceanFFTCollisionAssetDesc& desc,
@@ -310,7 +304,7 @@ uint64 OceanFFTCollisionAsset::ComputeSpectrumHash(const OceanFFTParamsGPU& para
 {
     OceanFFTParamsGPU stable = params;
     stable.Time = 0.0f;
-    return Fnv1a64(&stable, sizeof(stable));
+    return Hashing::Fnv1a64(&stable, sizeof(stable), kSpectrumHashSeed);
 }
 
 bool BakeOceanFFTCollision(const OceanFFTCollisionAssetDesc& desc,

@@ -130,11 +130,11 @@ class PendingUpdate
             return false;
         m_Submitted = true;
 
-        const auto before = m_Device.LastGraphicsSubmissionToken();
+        const auto before = m_Device.LastSubmissionToken(IDevice::QueueType::Graphics);
         m_CompletionCommands->Begin();
         m_CompletionCommands->End();
         m_Device.ExecuteCommandLists({m_CompletionCommands.get()});
-        m_Token = m_Device.LastGraphicsSubmissionToken();
+        m_Token = m_Device.LastSubmissionToken(IDevice::QueueType::Graphics);
         return m_Token.IsValid() && (m_Token.sem != before.sem || m_Token.value > before.value);
     }
 
@@ -199,7 +199,7 @@ std::vector<uint32_t> ReadIdentityIndices(IDevice& device, CBTInstance& instance
         source, ResourceState::CopySource, ResourceState::IndexBuffer));
     commands->End();
     device.ExecuteCommandLists({commands.get()});
-    EXPECT_TRUE(device.WaitGpuSyncToken(device.LastGraphicsSubmissionToken()));
+    EXPECT_TRUE(device.WaitGpuSyncToken(device.LastSubmissionToken(IDevice::QueueType::Graphics)));
     std::vector<uint32_t> words(wordCount);
     const void* mapped = device.MapBuffer(readback);
     EXPECT_NE(mapped, nullptr);
@@ -687,7 +687,7 @@ TEST(CBTSourceRebind, NativeMetalBindsAndResizesWithoutADeviceDrain)
     if (!device || !device->Initialize(description))
         GTEST_SKIP() << "native Metal device unavailable";
     ASSERT_EQ(device->GetAPI(), GraphicsAPI::Metal);
-    ASSERT_FALSE(device->LastGraphicsSubmissionToken().IsValid());
+    ASSERT_FALSE(device->LastSubmissionToken(IDevice::QueueType::Graphics).IsValid());
     CBTKernelSet kernels;
     ASSERT_TRUE(kernels.Initialize(*device, ShaderOutputDir()));
     CBTInstance instance;

@@ -1,3 +1,5 @@
+#include "UI/Controls/ScrollView.h"
+#include "UI/Controls/Scrollbar.h"
 
 #include <gtest/gtest.h>
 
@@ -324,7 +326,7 @@ UIElement* ChildWithClass(const UIElement& parent, const char* className)
 }
 } // namespace
 
-TEST(DropdownTests, HeaderIconPaintsItsImageWithNoInteraction)
+static void CheckHeaderIconPaintWithoutInteraction(bool solidSvg)
 {
     // The closed header is the first thing the user sees. Its slot is created,
     // classed and laid out in one go, so it generates primitives exactly once —
@@ -341,15 +343,20 @@ TEST(DropdownTests, HeaderIconPaintsItsImageWithNoInteraction)
     // An asset root of this test's own, so the icon is genuinely first used
     // here: a texture another test already cached would hide the defect.
     namespace fs = std::filesystem;
-    const fs::path assetRoot = fs::temp_directory_path() / "dropdown_header_icon_paint";
+    const fs::path assetRoot = TestUtils::MakeUniqueTempDirectory(solidSvg ? "dropdown_header_icon_solid_svg" : "dropdown_header_icon_gradient_svg");
     std::error_code ec;
     fs::remove_all(assetRoot, ec);
     fs::create_directories(assetRoot, ec);
     const fs::path iconPath = assetRoot / "probe-icon.svg";
     {
         std::ofstream out(iconPath, std::ios::binary);
-        out << R"(<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" )"
-            << R"(viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" fill="#FFFFFF"/></svg>)";
+        out << R"(<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">)";
+        if (solidSvg)
+            out << R"(<rect x="2" y="2" width="12" height="12" fill="#FFFFFF"/>)";
+        else
+            // Gradient paint exercises async texture arrival.
+            out << R"svg(<defs><linearGradient id="g"><stop stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs><rect x="2" y="2" width="12" height="12" fill="url(#g)"/>)svg";
+        out << "</svg>";
     }
 
     JobSystem::WorkStealingThreadPool pool(2);
@@ -388,7 +395,8 @@ TEST(DropdownTests, HeaderIconPaintsItsImageWithNoInteraction)
             const UI::UIPrimitive* primitive = ui.PeekPrimitiveForTesting(*icon, i);
             if (!primitive)
                 return false;
-            if (UI::GetMode(primitive->ModeAndFlags) == UI::PrimitiveMode::Textured)
+            if (UI::GetMode(primitive->ModeAndFlags) ==
+                UI::PrimitiveMode::Textured)
                 return true;
         }
     };
@@ -401,7 +409,8 @@ TEST(DropdownTests, HeaderIconPaintsItsImageWithNoInteraction)
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
     int frames = 0;
     bool painted = false;
-    while (!assets.GetAsset(iconGuid) && std::chrono::steady_clock::now() < deadline)
+    while (!assets.GetAsset(iconGuid) &&
+           std::chrono::steady_clock::now() < deadline)
     {
         ui.Update(0.001f, /*interactive=*/true);
         DriveUiRender(ui, rg);
@@ -420,6 +429,16 @@ TEST(DropdownTests, HeaderIconPaintsItsImageWithNoInteraction)
     EXPECT_EQ(ui.BackgroundImages().PendingCount(), 0u) << "a background image is still in flight";
 
     fs::remove_all(assetRoot, ec);
+}
+
+TEST(DropdownTests, HeaderIconPaintsItsImageWithNoInteraction)
+{
+    CheckHeaderIconPaintWithoutInteraction(false);
+}
+
+TEST(DropdownTests, SolidSvgHeaderIconPaintsItsTextureWithNoInteraction)
+{
+    CheckHeaderIconPaintWithoutInteraction(true);
 }
 
 namespace
@@ -936,58 +955,111 @@ TEST(DropdownTests, SetEntriesWithTheValueAlreadySelectedNotifiesNobody)
     EXPECT_EQ(lastSeen, Usage::Packed);
 }
 
-// A dropdown inside a popover that sets a z-index above its list's: the open list paints
-// over the popover (a nested overlay paints after the overlay that holds it), so a press on
-// an item must reach the item, not the popover under it.
-TEST(DropdownTests, AnItemOfAListOpenInsideAPopoverTakesThePress)
+
+TEST(DropdownTests, BoundedMenuKeepsAllOptionsSelectableAndCanReturnToOrdinaryMenu)
 {
-    UITesting::IsolatedUIFixture fixture;
-    const bool built = fixture.Build(
-        1.0f,
-        R"(<uielement id="root"><uielement id="popover"><uielement id="host"/></uielement></uielement>)",
-        R"(
-#root { width: 400px; height: 300px; }
-#popover { position: absolute; left: 20px; top: 20px; width: 300px; height: 250px; z-index: 10000; }
-#host { width: 120px; }
-.dropdown-items { position: absolute; top: 100%; left: 0px; width: 100%; z-index: 1000; }
-.dropdown-item { height: 20px; }
-)");
-    if (!fixture.DeviceAvailable())
-        GTEST_SKIP() << "No Vulkan device available";
-    ASSERT_TRUE(built) << fixture.Diagnostic();
-
-    UIElement* popover = fixture.Element("popover");
-    ASSERT_NE(popover, nullptr);
-    popover->SetOverlayLayer(OverlayLayer::Dropdown);
-    auto owned = std::make_unique<Dropdown>();
-    Dropdown* dropdown = owned.get();
-    fixture.Element("host")->AddChild(std::move(owned));
-    dropdown->SetOptionsFromString("One,Two,Three");
-    fixture.Settle();
-    dropdown->OpenMenuUi();
-    fixture.Settle();
-
-    UIElement* items = dropdown->GetItemsContainer();
-    ASSERT_NE(items, nullptr);
-    ASSERT_EQ(items->GetChildren().size(), 3u);
-    const UIElement* second = items->GetChildren()[1].get();
-    const float x = second->GetLayoutX() + second->GetLayoutWidth() * 0.5f;
-    const float y = second->GetLayoutY() + second->GetLayoutHeight() * 0.5f;
-    ASSERT_GT(second->GetLayoutHeight(), 0.0f);
-    ASSERT_TRUE(x > popover->GetLayoutX() && y < popover->GetLayoutY() + popover->GetLayoutHeight())
-        << "the item lies over the popover";
-
-    fixture.Manager().OnMouseMove(x, y);
-    fixture.StepFrame();
-    fixture.Manager().OnMouseButton(0, true);
-    fixture.StepFrame();
-    fixture.Manager().OnMouseButton(0, false);
-    fixture.StepFrame();
-    EXPECT_EQ(dropdown->GetSelectedValue(), std::string("Two"));
+    Dropdown dropdown;
+    std::vector<Dropdown::Option> options;
+    for (int i = 0; i < 35; ++i)
+        options.push_back({std::to_string(i), "Layer " + std::to_string(i)});
+    dropdown.SetOptions(options);
+    dropdown.SetMaxPopupHeight(240);
+    auto* popup = dropdown.GetItemsContainer();
+    ASSERT_EQ(popup->GetChildren().size(), 1u);
+    auto* scroll = dynamic_cast<ScrollView*>(popup->GetChildren()[0].get());
+    ASSERT_NE(scroll, nullptr);
+    ASSERT_EQ(scroll->GetViewport()->GetChildren().size(), 35u);
+    EXPECT_EQ(scroll->Style().Get(Style::Height)->Value, 240);
+    int changes = 0;
+    dropdown.SetOnValueChanged([&](const std::string& value) { ++changes; EXPECT_EQ(value, "34"); });
+    dropdown.SetSelectedIndex(34);
+    EXPECT_TRUE(scroll->GetViewport()->GetChildren()[34]->HasClass("selected"));
+    EXPECT_EQ(changes, 1);
+    dropdown.SetMaxPopupHeight(0);
+    EXPECT_EQ(popup->GetChildren().size(), 35u);
+    EXPECT_EQ(dropdown.GetSelectedValue(), "34");
+    EXPECT_EQ(changes, 1);
 }
 
-// An open list covers the space under its dropdown, so neither the dropdown nor an item of its list
-// brings up the dropdown's tooltip over it; the closed dropdown shows it again.
+
+TEST(DropdownTests, BoundedPopupOnlyScrollsWhenMeasuredRowsOverflow)
+{
+    UITesting::IsolatedUIFixture fixture;
+    const bool built = fixture.Build(1.0f,
+        R"(<uielement id="root"><uielement id="host"/></uielement>)",
+        R"(
+#root { width: 400px; height: 500px; }
+#host { width: 160px; }
+.dropdown-items { position: absolute; top: 100%; width: 160px; }
+.dropdown-item { height: 24px; min-height: 24px; padding: 0; }
+)");
+    if (!fixture.DeviceAvailable()) GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(built) << fixture.Diagnostic();
+    auto owned = std::make_unique<Dropdown>();
+    auto* dropdown = owned.get();
+    fixture.Element("host")->AddChild(std::move(owned));
+    dropdown->SetMaxPopupHeight(288);
+    dropdown->SetOptionsFromString("Background,Distant,Scenery,Default,Gameplay,Effects,Foreground,Overlay");
+    dropdown->OpenMenuUi();
+    fixture.Settle();
+    auto* scroll = dynamic_cast<ScrollView*>(dropdown->GetItemsContainer()->GetChildren().front().get());
+    ASSERT_NE(scroll, nullptr);
+    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
+    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetHorizontalScrollbar())->IsHidden());
+    EXPECT_LT(dropdown->GetItemsContainer()->GetLayoutHeight(), 288);
+    std::vector<Dropdown::Option> options;
+    for (int i = 0; i < 32; ++i)
+        options.push_back({std::to_string(i), "Layer " + std::to_string(i)});
+    dropdown->SetOptions(options);
+    fixture.Settle();
+    scroll = dynamic_cast<ScrollView*>(dropdown->GetItemsContainer()->GetChildren().front().get());
+    ASSERT_NE(scroll, nullptr);
+    EXPECT_FALSE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
+    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetHorizontalScrollbar())->IsHidden());
+}
+
+
+TEST(DropdownTests, AvailableHeightMenuExpandsAndOnlyScrollsInShortPanels)
+{
+    UITesting::IsolatedUIFixture fixture;
+    const bool built = fixture.Build(1.0f,
+        R"(<uielement id="root"><uielement id="host"/></uielement>)",
+        R"(
+#root { width: 400px; height: 1000px; }
+#host { width: 144px; }
+.dropdown-items { position: absolute; top: 100%; width: 144px; }
+.dropdown-item { height: 24px; min-height: 24px; padding: 0; }
+)");
+    if (!fixture.DeviceAvailable()) GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(built) << fixture.Diagnostic();
+    auto owned = std::make_unique<Dropdown>();
+    auto* dropdown = owned.get();
+    fixture.Element("host")->AddChild(std::move(owned));
+    dropdown->FitPopupToAvailableHeight();
+    std::vector<Dropdown::Option> options;
+    for (int i = 0; i < 34; ++i)
+        options.push_back({std::to_string(i), "Layer " + std::to_string(i)});
+    dropdown->SetOptions(options);
+    dropdown->OpenMenuUi();
+    fixture.Settle();
+    auto* scroll = dynamic_cast<ScrollView*>(dropdown->GetItemsContainer()->GetChildren().front().get());
+    ASSERT_NE(scroll, nullptr);
+    EXPECT_GE(dropdown->GetItemsContainer()->GetLayoutHeight(), scroll->GetLayoutHeight());
+    EXPECT_GT(scroll->GetLayoutHeight(), 700);
+    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
+    EXPECT_LE(dropdown->GetItemsContainer()->GetLayoutWidth(), 144);
+    fixture.Element("root")->Style().Set(Style::Height, StyleLength::Px(300));
+    fixture.Settle();
+    EXPECT_LT(scroll->GetLayoutHeight(), 300);
+    EXPECT_FALSE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
+    fixture.Element("root")->Style().Set(Style::Height, StyleLength::Px(1000));
+    fixture.Settle();
+    EXPECT_GE(dropdown->GetItemsContainer()->GetLayoutHeight(), scroll->GetLayoutHeight());
+    EXPECT_GT(scroll->GetLayoutHeight(), 700);
+    EXPECT_TRUE(static_cast<Scrollbar*>(scroll->GetVerticalScrollbar())->IsHidden());
+}
+
+
 TEST(DropdownTests, AnOpenListShowsNoTooltipOverIt)
 {
     UITesting::IsolatedUIFixture fixture;

@@ -132,46 +132,52 @@ void OceanCombineSim::FillParams(OceanCombineParamsGPU& out)
     out = m_Params;
 }
 
-void OceanCombineSim::RecordDispatch(IDevice* device, CommandList* cl,
-                                     BufferHandle paramsBuffer, uint64 paramsOffset)
+OceanPreparedDispatch OceanCombineSim::PrepareDispatch(
+    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset) const
 {
-    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
-        return;
+    if (!m_Ready || !device || !paramsBuffer.IsValid())
+        return {};
     if (!m_FFTDisplacement.IsValid() || !m_FFTSampler.IsValid())
-        return;
+        return {};
 
     const TextureHandle combineTex = m_Combine.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
     if (!pipe)
-        return;
+        return {};
 
     // The combine target moves ShaderResource -> UnorderedAccess for the write,
     // then back to ShaderResource for the world pass. Every texel is overwritten,
     // so there is no read of the previous contents (no clear needed).
-    cl->Barrier(ResourceBarrier::CreateTextureBarrier(
-        combineTex, ResourceState::ShaderResource, ResourceState::UnorderedAccess, 0, 1, 0, layers));
-
-    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanCombine_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
+    if (!ds.IsValid())
+        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanCombineParamsGPU));
     device->UpdateCombinedImageSamplerBinding(ds, 1, m_FFTDisplacement, m_FFTSampler);
     device->UpdateStorageImageBinding(ds, 2, combineTex);
 
-    cl->BindDescriptorSet(0, ds, pipe);
-
     const uint32 g8 = (m_Resolution + 7u) / 8u;
-    cl->Dispatch(g8, g8, layers);
+    return {pipe, ds, g8, g8, layers, combineTex};
+}
 
+void OceanCombineSim::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
+{
+    if (!cl || !dispatch.IsValid())
+        return;
     cl->Barrier(ResourceBarrier::CreateTextureBarrier(
-        combineTex, ResourceState::UnorderedAccess, ResourceState::ShaderResource, 0, 1, 0, layers));
+        dispatch.Target, ResourceState::ShaderResource, ResourceState::UnorderedAccess,
+        0, 1, 0, dispatch.GroupsZ));
+    RecordOceanPreparedDispatch(cl, dispatch);
+    cl->Barrier(ResourceBarrier::CreateTextureBarrier(
+        dispatch.Target, ResourceState::UnorderedAccess, ResourceState::ShaderResource,
+        0, 1, 0, dispatch.GroupsZ));
 }
 
 RenderGraph::RGTexture OceanCombineSim::ImportRG(RenderGraph::RGFrame& frame) const

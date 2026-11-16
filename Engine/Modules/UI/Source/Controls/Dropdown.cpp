@@ -1,16 +1,19 @@
 #include "UI/Controls/Dropdown.h"
 
 #include "../Layout/DropdownPopupPlacement.h"
+#include "UI/Layout/ElementOverrideHelpers.h"
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
 #include "UI/Controls/Label.h"
-#include "UI/Layout/ElementOverrideHelpers.h"
+#include "UI/Controls/ScrollView.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <limits>
 #include <cstring>
 #include <sstream>
 
@@ -336,7 +339,7 @@ void Dropdown::SyncItemSelectionClasses()
 {
     if (!m_ItemsContainer)
         return;
-    const auto& children = m_ItemsContainer->GetChildren();
+    const auto& children = (m_ItemsContent ? m_ItemsContent : m_ItemsContainer)->GetChildren();
     for (size_t i = 0; i < children.size() && i < m_Options.size(); ++i)
     {
         auto* raw = dynamic_cast<Label*>(children[i].get());
@@ -412,8 +415,28 @@ void Dropdown::UpdatePopupPlacement()
         return;
     }
     const float rowHeight = m_OptionArt == OptionArt::Picture ? kEstimatedPictureRowHeight : kEstimatedRowHeight;
-    UI::Layout::PlaceDropdownPopup(*this, *m_ItemsContainer,
-                                   kEstimatedPopupPadding + static_cast<float>(m_Options.size()) * rowHeight);
+    const float estimatedHeight = kEstimatedPopupPadding + static_cast<float>(m_Options.size()) * rowHeight;
+    ScrollView* scroll = nullptr;
+    if (m_MaxPopupHeight > 0 && !m_ItemsContainer->GetChildren().empty())
+        scroll = dynamic_cast<ScrollView*>(m_ItemsContainer->GetChildren().front().get());
+    if (!scroll)
+    {
+        UI::Layout::PlaceDropdownPopup(*this, *m_ItemsContainer, estimatedHeight);
+        return;
+    }
+
+    // A bounded list is estimated from its whole content, so a menu grows again when the panel gets taller.
+    float contentHeight = scroll->GetContentHeight();
+    if (contentHeight <= 0.0f)
+        contentHeight = estimatedHeight;
+    const UI::Layout::DropdownPopupRoom room = UI::Layout::PlaceDropdownPopup(
+        *this, *m_ItemsContainer, std::min(m_MaxPopupHeight, std::ceil(contentHeight)) + kEstimatedPopupPadding);
+    const float roomLayout = room.Height / room.WindowPerLayoutY;
+    const float height =
+        std::max(1.0f, std::min({m_MaxPopupHeight, std::ceil(contentHeight), roomLayout - kEstimatedPopupPadding}));
+    scroll->Style().Set(Style::Height, StyleLength::Px(height));
+    // The absolute popup follows its scroller: auto height can keep an earlier flex measurement.
+    m_ItemsContainer->Style().Set(Style::Height, StyleLength::Px(height + kEstimatedPopupPadding));
 }
 
 void Dropdown::EnsureHeader()
@@ -589,6 +612,20 @@ void Dropdown::EnsureItemsContainer()
     AddChild(std::move(container));
 }
 
+void Dropdown::FitPopupToAvailableHeight()
+{
+    SetMaxPopupHeight(std::numeric_limits<float>::max());
+}
+
+void Dropdown::SetMaxPopupHeight(float height)
+{
+    height = std::max(0.0f, height);
+    if (m_MaxPopupHeight == height)
+        return;
+    m_MaxPopupHeight = height;
+    RebuildUiItems();
+}
+
 void Dropdown::RebuildUiItems()
 {
     // If this is called from within an event dispatch (e.g. the header's
@@ -607,6 +644,21 @@ void Dropdown::RebuildUiItems()
 
     // Clear any existing items.
     m_ItemsContainer->RemoveAllChildren();
+    m_ItemsContent = m_ItemsContainer;
+    m_ItemsContainer->Style().Reset(Style::Height);
+    if (m_MaxPopupHeight > 0)
+    {
+        auto scroll = std::make_unique<ScrollView>();
+        scroll->Style().Set(Style::Height,
+            StyleLength::Px(std::min(m_MaxPopupHeight, 4.0f + 29.0f * m_Options.size())))
+            .Set(Style::FlexShrink, 0.0f);
+        // Dropdown rows clip long labels; they never require horizontal panning.
+        scroll->Style().Set(Style::OverflowXProp, Overflow::Hidden);
+        scroll->Style().SetCustomNumber(HashStringId("--ui_scrollview_measure_horizontal"), 0.0f);
+        scroll->SetFocusProxy(this);
+        m_ItemsContent = scroll->GetViewport();
+        m_ItemsContainer->AddChild(std::move(scroll));
+    }
 
     for (size_t i = 0; i < m_Options.size(); ++i)
     {
@@ -647,7 +699,9 @@ void Dropdown::RebuildUiItems()
             e.Stop();
         });
 
-        m_ItemsContainer->AddChild(std::move(lbl));
+        if (m_MaxPopupHeight > 0)
+            raw->Style().Set(Style::FlexShrink, 0.0f);
+        m_ItemsContent->AddChild(std::move(lbl));
     }
 }
 

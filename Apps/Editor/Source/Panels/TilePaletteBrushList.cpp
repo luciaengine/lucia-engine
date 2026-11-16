@@ -59,7 +59,7 @@ public:
             ctx.Manager == nullptr || ctx.Textures == nullptr || m_AtlasTexture.IsNull())
             return;
         const Rendering::TextureHandle texture =
-            ctx.Manager->TryGetBackgroundTextureHandleByGuid(m_AtlasTexture);
+            ctx.Manager->BackgroundImages().TryGetHandle(m_AtlasTexture);
         if (!texture.IsValid())
             return;
         const uint32 slot = ctx.Textures->Register(texture, ctx.Manager->GetNearestClampSampler());
@@ -89,7 +89,7 @@ public:
                 UI::UIPrimitive quad = UI::MakeTexturedQuad(
                     originX + cell * static_cast<float>(column), originY + cell * static_cast<float>(row),
                     cell, cell, slot, kIconTint, u0, v0, u1, v1, ctx.ClipIndex);
-                quad.PointFilter = 1.0f;
+                quad.ModeAndFlags |= UI::kPrimPointFilterBit;
                 ctx.Emit(quad);
             }
     }

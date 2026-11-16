@@ -11,6 +11,7 @@
 #include "Assets/TextureCook.h"
 #include "Core/Engine.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Mathematics/MatrixOps.h"
 #include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
@@ -164,11 +165,7 @@ uint64_t UploadedCompatInstanceListBytes(const ResolvedPassResources& resources)
 
 bool DrawAttributionEnabled()
 {
-    static const bool s_Enabled = []
-    {
-        const char* env = std::getenv("GE_DRAW_ATTRIBUTION");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_DRAW_ATTRIBUTION", false);
     return s_Enabled;
 }
 

@@ -7,10 +7,13 @@
 // the draw pass, so the harness never calls Execute(): the target is a declared,
 // never-realized attachment and its dimensions are immaterial to the assertions. Pools
 // are owned once and reused; each call declares a fresh frame (immediate-mode rebuild).
+#include <atomic>
 #include <cstdint>
+#include <string>
 #include <memory>
 
 #include "SharedHeadlessDevice.h"
+#include "TestTempDir.h"
 
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"

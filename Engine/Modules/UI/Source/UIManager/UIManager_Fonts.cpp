@@ -15,15 +15,16 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 using namespace GameEngine::Rendering::Text;
 
-void ConfigureUiFontAtlas(FontAtlas& /*atlas*/)
+void ConfigureUiFontAtlas(FontAtlas& atlas, const std::string& language)
 {
-    // No configuration needed — Slug works at any size with no precomputation parameters.
+    atlas.SetTextLanguage(language);
 }
 
 namespace
@@ -145,12 +146,12 @@ std::string UIManager::NormalizeFontFamilyKey(const std::string& family)
 
 void UIManager::OnFontResolved(const std::string& fontKey, FontResolveResult&& result, uint64_t resolverGeneration)
 {
-    m_FontFamilyInFlight.erase(fontKey);
-
     if (resolverGeneration != m_FontResolverGeneration)
     {
         return;
     }
+    // After the generation check: a replaced resolver's late result must not clear the new request.
+    m_FontFamilyInFlight.erase(fontKey);
 
     const auto now = std::chrono::steady_clock::now();
 
@@ -183,7 +184,7 @@ void UIManager::OnFontResolved(const std::string& fontKey, FontResolveResult&& r
     }
 
     auto fa = std::make_unique<FontAtlas>();
-    ConfigureUiFontAtlas(*fa);
+    ConfigureUiFontAtlas(*fa, m_TextLanguage);
     if (!fa->LoadFontBytes(result.Bytes.data(), result.Bytes.size(), kUiFontAtlasPx))
     {
         const uint32_t fails = ++m_FontFamilyFailCount[fontKey];
@@ -363,7 +364,7 @@ bool UIManager::SetDefaultFontBytes(const std::vector<std::uint8_t>& bytes, GUID
         return false;
 
     auto fa = std::make_shared<FontAtlas>();
-    ConfigureUiFontAtlas(*fa);
+    ConfigureUiFontAtlas(*fa, m_TextLanguage);
     if (!fa->LoadFontBytes(bytes.data(), bytes.size(), kUiFontAtlasPx))
         return false;
 
@@ -459,7 +460,7 @@ FontAtlas* UIManager::GetOrRequestFontFamilyInternal(const std::string& family,
         }
 
         auto fa = std::make_unique<FontAtlas>();
-        ConfigureUiFontAtlas(*fa);
+        ConfigureUiFontAtlas(*fa, m_TextLanguage);
         if (!fa->LoadFontBytes(fontBytes.data(), fontBytes.size(), kUiFontAtlasPx))
         {
             const uint32_t fails = ++m_FontFamilyFailCount[key];
@@ -527,4 +528,47 @@ FontAtlas* UIManager::GetOrRequestFontFamilyInternal(const std::string& family,
     }
 
     return nullptr;
+}
+
+bool UIManager::SetTextLanguage(const std::string& language)
+{
+    FontAtlas validation;
+    if (!validation.SetTextLanguage(language))
+        return false;
+    if (m_TextLanguage == language)
+        return true;
+    m_TextLanguage = language;
+    if (m_FontAtlas)
+        m_FontAtlas->SetTextLanguage(language);
+    for (auto& [key, font] : m_FontAtlases)
+        font->SetTextLanguage(language);
+    m_FontResolvedDirty = true;
+    MarkStyleDirtyAll();
+    RequestRelayout();
+    return true;
+}
+
+UIManager::FontWarmupStatus UIManager::PrewarmFontText(const FontWarmupRequest& request)
+{
+    if (!std::isfinite(request.PixelSize) || request.PixelSize <= 0.0f || !std::isfinite(request.LetterSpacing))
+        return FontWarmupStatus::Failed;
+
+    FontAtlas* atlas = request.Family.empty()
+        ? m_FontAtlas.get()
+        : GetOrRequestFontFamilyInternal(request.Family, request.Weight, request.Style, request.Variant);
+    if (!atlas)
+    {
+        const std::string key =
+            BuildFontKey(NormalizeFontFamilyKey(request.Family), request.Weight, request.Style, request.Variant);
+        return m_FontFamilyInFlight.contains(key) ? FontWarmupStatus::Pending : FontWarmupStatus::Failed;
+    }
+
+    FontAtlas::ShapeResult shaped;
+    atlas->ShapeText(request.Text, request.PixelSize, shaped, 0xFFFFFFFFu, request.LetterSpacing);
+    return FontWarmupStatus::Ready;
+}
+
+UIManager::FontLoadProgress UIManager::GetFontLoadProgress() const
+{
+    return {m_FontFamilyInFlight.size(), m_FontFamilyFailCount.size()};
 }

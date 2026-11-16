@@ -1,5 +1,6 @@
-// CSS value/keyword parsers and declaration expansion. Split out of
-// CSSParser.cpp (P4f); cold parse-time code, not on the per-frame cascade path.
+// CSS value/keyword parsers and declaration expansion. Parse-time code; the
+// cascade reaches it only through AppendDeclarationProperties when a var()
+// declaration misses the deferred-declaration memo.
 
 #include "Mathematics/Interpolation.h"
 #include "UI/Parsers/CSSParser.h"
@@ -1030,11 +1031,11 @@ static StyleValue ParseFontSizeValue(const std::string& raw)
         return std::monostate{};
     // Math functions fold as they do for every length (ParseLengthComponent): after var()
     // substitution, `calc(14px * var(--scale))` reads `calc(14px * 1.5)`. A viewport
-    // unit does not resolve on font-size.
+    // unit does not resolve on font-size, and a negative size keeps the cascaded value.
     if (CssMath::IsMathFunctionToken(v))
     {
         StyleLength folded{};
-        if (CssMath::EvalToLength(v, folded) && !folded.IsViewport())
+        if (CssMath::EvalToLength(v, folded) && !folded.IsViewport() && folded.Value >= 0.0f)
             return folded;
         return std::monostate{};
     }

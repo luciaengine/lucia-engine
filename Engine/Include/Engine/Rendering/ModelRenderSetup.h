@@ -42,6 +42,12 @@ struct SkeletonResolveState;
 class RenderServices;
 class SceneResolveService;
 
+// Opt-in for players that explicitly stream inactive destinations. Set before
+// scene loading, not during a frame. Default false preserves editor/prewarm
+// behavior. Enabling a MeshRenderer later still uses normal change-filter binding.
+void SetDeferredDisabledRendererLoading(bool deferred);
+bool GetDeferredDisabledRendererLoading();
+
 // Result of registering a model's render resources (meshes + materials).
 struct ModelRenderResources
 {

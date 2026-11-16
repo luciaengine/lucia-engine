@@ -306,6 +306,45 @@ TEST(ClaudeApiProviderTests, RequestBodyStreamsTheSystemPromptHistoryAndUserTurn
     EXPECT_FALSE(body.contains("temperature"));
 }
 
+// The new message's images go as base64 blocks before its text; an earlier message resends its text
+// with its text files' blocks, never its images.
+TEST(ClaudeApiProviderTests, RequestBodySendsTheNewMessagesImagesAndEarlierFilesAsText)
+{
+    PromptFile notes;
+    notes.Path = "/project/notes.txt";
+    notes.Name = "notes.txt";
+    notes.Bytes = "remember";
+    PromptFile oldShot;
+    oldShot.Kind = PromptFileKind::Image;
+    oldShot.MediaType = "image/png";
+    oldShot.Bytes = "old";
+    std::vector<ConversationMessage> history(2);
+    history[0].Role = MessageRole::User;
+    history[0].Text = "first";
+    history[0].Files = {notes, oldShot};
+    history[1].Role = MessageRole::Assistant;
+    history[1].Text = "reply";
+
+    PromptFile shot;
+    shot.Kind = PromptFileKind::Image;
+    shot.MediaType = "image/png";
+    shot.Bytes = "foo";
+    AgentTurnRequest request;
+    request.History = history;
+    request.UserText = "what is this?";
+    request.Images = std::span<const PromptFile>(&shot, 1);
+
+    const nlohmann::json body = nlohmann::json::parse(ClaudeApiProvider::BuildRequestBody(request));
+
+    const nlohmann::json expectedMessages = nlohmann::json::parse(R"([
+        {"role":"user","content":"first\n\n<file name=\"notes.txt\" path=\"/project/notes.txt\">\nremember\n</file>"},
+        {"role":"assistant","content":"reply"},
+        {"role":"user","content":[
+            {"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}},
+            {"type":"text","text":"what is this?"}]}])");
+    EXPECT_EQ(body["messages"], expectedMessages);
+}
+
 TEST(ClaudeApiProviderTests, WithoutAKeyTheTurnIsRefusedNamingTheSettingsPage)
 {
     const ScopedEnvironmentVariable noKey("ANTHROPIC_API_KEY", nullptr);

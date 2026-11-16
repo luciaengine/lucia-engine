@@ -53,6 +53,7 @@
 #include "Panels/ConfirmActionModal.h"
 #include "Panels/SettingsPanel.h"
 #include "UI/ControlLayoutLoader.h"
+#include "UI/PostedRefresh.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Foldout.h"
@@ -1639,6 +1640,8 @@ InspectorPanel::InspectorPanel()
     : DockPanel("Inspector")
 {
     m_VcsController = std::make_unique<Editor::InspectorVcsController>(*this);
+    m_EntityRefresh = std::make_unique<EditorUI::PostedRefresh>(*this, [this]() { RefreshInspectedEntity(); });
+    m_AssetRefresh = std::make_unique<EditorUI::PostedRefresh>(*this, [this]() { RefreshCurrentAssetInspector(); });
     // Generate unique instance ID for this inspector panel
     m_InstanceId = "Inspector_" + std::to_string(++s_InspectorInstanceCounter);
     SetId(m_InstanceId);
@@ -2220,8 +2223,7 @@ void InspectorPanel::RefreshCurrentAssetInspector()
 
     if (UIElement::IsInEventDispatch())
     {
-        this->PostAction([this]()
-                         { this->RefreshCurrentAssetInspector(); });
+        m_AssetRefresh->Request();
         return;
     }
 
@@ -2242,8 +2244,11 @@ void InspectorPanel::AddAssetSelectionRows(const std::vector<std::filesystem::pa
     ctx.Undo = m_Undo;
     ctx.ChangeNotifications = m_ChangeNotifications;
     ctx.PingAsset = m_PingAsset;
-    ctx.RequestInspectorRefresh = [this]()
-    { RefreshCurrentAssetInspector(); };
+    ctx.RequestInspectorRefresh = [panel = UIElement::MakeWeakRef(this)]()
+    {
+        if (InspectorPanel* current = panel.Get())
+            current->RefreshCurrentAssetInspector();
+    };
     for (const InspectorFn& row : InspectorRegistry::Get().GetAssetSelectionRows())
         row(ctx);
     if (rows->GetChildren().empty())
@@ -2252,17 +2257,13 @@ void InspectorPanel::AddAssetSelectionRows(const std::vector<std::filesystem::pa
 
 void InspectorPanel::RequestEntityRefresh()
 {
-    if (m_EntityRefreshPosted)
-        return;
-    m_EntityRefreshPosted = true;
-    const bool posted = PostAction([this]()
-                                   {
-        m_EntityRefreshPosted = false;
-        if (m_World && m_Entity.IsValid() && m_World->IsValid(m_Entity))
-            ShowEntity(m_World, m_Entity, true); });
-    // A dropped action never runs to clear the latch, and every later request would be ignored.
-    if (!posted)
-        m_EntityRefreshPosted = false;
+    m_EntityRefresh->Request();
+}
+
+void InspectorPanel::RefreshInspectedEntity()
+{
+    if (m_World && m_Entity.IsValid() && m_World->IsValid(m_Entity))
+        ShowEntity(m_World, m_Entity, true);
 }
 
 void InspectorPanel::RequestEntityRefreshAfterTextEdit()
@@ -3296,8 +3297,11 @@ void InspectorPanel::ShowSelectedAssets(const std::vector<std::filesystem::path>
     ctx.OpenScript = m_OpenScript;
     ctx.OpenMaterialGraph = m_OpenMaterialGraph;
     ctx.OpenAsset = m_OpenAsset;
-    ctx.RequestInspectorRefresh = [this]()
-    { RefreshCurrentAssetInspector(); };
+    ctx.RequestInspectorRefresh = [panel = UIElement::MakeWeakRef(this)]()
+    {
+        if (InspectorPanel* current = panel.Get())
+            current->RefreshCurrentAssetInspector();
+    };
     ctx.AssetReloadedCallbacks = &m_AssetReloadedCallbacks;
     ctx.Window = m_Window;
     ctx.EditorCtx = m_Context;
@@ -3383,8 +3387,11 @@ void InspectorPanel::BuildComponentSectionBody(InspectorSection* section, ECS::C
     ctx.PingAssetPreserveInspector = m_PingAssetPreserveInspector;
     ctx.SelectEntity = m_SelectEntity;
     ctx.OpenAsset = m_OpenAsset;
-    ctx.RequestInspectorRefresh = [this]()
-    { RequestEntityRefresh(); };
+    ctx.RequestInspectorRefresh = [panel = UIElement::MakeWeakRef(this)]()
+    {
+        if (InspectorPanel* current = panel.Get())
+            current->RequestEntityRefresh();
+    };
     ctx.GetWorld = [this]() -> ECS::World*
     { return m_World; };
     ctx.Window = m_Window;

@@ -32,7 +32,7 @@ bool SourceLocationOpener::OpenInScriptEditor(const SourceLocation& location) co
     if (!m_ScriptEditor)
         return false;
 
-    m_PanelManager->ShowOrActivateScriptEditorPanel(m_Window);
+    m_PanelManager->ShowOrActivatePanel(m_Window, "ScriptEditor");
     m_ScriptEditor->OpenScript(location.Path);
     if (location.Line > 0)
         m_ScriptEditor->ScrollToLine(location.Line, {}, location.Column);

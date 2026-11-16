@@ -9,8 +9,9 @@
 # is compared like any other, rather than reading as not installed; a port
 # absent from the install root is reported as not checked, never as current;
 # and on a macOS triplet a port in cmake/macos-ports/
-# (GE_VCPKG_MACOS_OVERLAY_PORTS) is held to the same rule, named by its own
-# directory, while off macOS that directory is not read; an install newer than
+# (GE_VCPKG_PLATFORM_OVERLAY_PORTS) is held to the same rule, named by its own
+# directory, while off macOS that directory is not read; a stale port in
+# cmake/linux-ports/ is refused on a Linux triplet; an install newer than
 # that directory declares is accepted with a warning naming the directory.
 if(NOT DEFINED SCRIPT OR NOT DEFINED WORK)
     message(FATAL_ERROR "OverlayPortGuardTest.cmake: SCRIPT and WORK are required")
@@ -19,27 +20,30 @@ endif()
 set(_source "${WORK}/source")
 set(_installed "${_source}/build/preset/vcpkg_installed")
 set(_macosPorts "${_source}/cmake/macos-ports")
+set(_linuxPorts "${_source}/cmake/linux-ports")
 
 file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${_installed}/vcpkg")
 
 # The guard is a function over directory-scope variables, so the child process
 # needs a driver that sets them and calls it. write_driver() sets the triplet
-# (also the one install_port() records) and GE_VCPKG_MACOS_OVERLAY_PORTS the
-# way Dependencies.cmake does: cmake/macos-ports/ for *-osx triplets, empty
-# otherwise.
+# (also the one install_port() records) and GE_VCPKG_PLATFORM_OVERLAY_PORTS the
+# way Dependencies.cmake does: cmake/macos-ports/ for *-osx triplets,
+# cmake/linux-ports/ for *-linux triplets, empty otherwise.
 set(_driver "${WORK}/drive.cmake")
 function(write_driver triplet)
-    set(_macosDir "")
+    set(_platformDir "")
     if(triplet MATCHES "-osx")
-        set(_macosDir "${_macosPorts}")
+        set(_platformDir "${_macosPorts}")
+    elseif(triplet MATCHES "-linux")
+        set(_platformDir "${_linuxPorts}")
     endif()
     file(WRITE "${_driver}"
         "set(CMAKE_CURRENT_SOURCE_DIR \"${_source}\")\n"
         "set(CMAKE_BINARY_DIR \"${_source}/build/preset\")\n"
         "set(VCPKG_INSTALLED_DIR \"${_installed}\")\n"
         "set(VCPKG_TARGET_TRIPLET \"${triplet}\")\n"
-        "set(GE_VCPKG_MACOS_OVERLAY_PORTS \"${_macosDir}\")\n"
+        "set(GE_VCPKG_PLATFORM_OVERLAY_PORTS \"${_platformDir}\")\n"
         "include(\"${SCRIPT}\")\n"
         "ge_check_overlay_port_freshness()\n")
     set(_triplet "${triplet}" PARENT_SCOPE)
@@ -188,5 +192,17 @@ install_port(macosport 3.1 0 "plain prose")
 expect_guard_ok("a macOS-only overlay port installed at a newer version"
     "'macosport' is installed as 3.1#0 but cmake/macos-ports/macosport declares 3.0#1"
     "1 mismatched")
+
+# --- a port in cmake/linux-ports/ ---------------------------------------------
+# The same rule on a Linux triplet, for the Linux-only directory.
+
+declare_port(linuxport 4.0 1 "${_linuxPorts}")
+write_driver(x64-linux)
+reset_install_root()
+install_port(freshport 2.0 0 "plain prose")
+install_port(linuxport 4.0 0 "plain prose")
+expect_guard_refused("a stale Linux-only overlay port"
+    "Stale overlay port: 'linuxport' is installed as 4.0#0"
+    "cmake/linux-ports/linuxport declares 4.0#1")
 
 file(REMOVE_RECURSE "${WORK}")

@@ -35,6 +35,36 @@ using json = nlohmann::json;
 using namespace Engine::Renderer;
 namespace fs = std::filesystem;
 
+// The baker works in 32-bit world space; a baked scene sits near the origin.
+glm::vec3 PoseOrigin(const Components::WorldTransform& transform)
+{
+    const auto& p = transform.Position;
+    return {static_cast<float>(p.X), static_cast<float>(p.Y), static_cast<float>(p.Z)};
+}
+
+// The basis Z axis: the direction a light faces.
+glm::vec3 PoseForward(const Components::WorldTransform& transform)
+{
+    const float* basis = transform.Basis.Data();
+    return {basis[6], basis[7], basis[8]};
+}
+
+glm::mat4 PoseMatrix(const Components::WorldTransform& transform)
+{
+    const glm::vec3 origin = PoseOrigin(transform);
+    return glm::make_mat4(transform.ToMatrix4x4(Mathematics::Vector3{origin.x, origin.y, origin.z}).Data());
+}
+
+bool SamePose(const Components::WorldTransform& a, const Components::WorldTransform& b)
+{
+    return std::memcmp(&a, &b, Components::kTransformPoseBytes) == 0;
+}
+
+bool CastsShadows(const Components::MeshRenderer& renderer)
+{
+    return renderer.shadowCasting != Components::ShadowCasting::Off;
+}
+
 struct CpuTexture
 {
     int Width = 0, Height = 0;
@@ -216,7 +246,7 @@ Snapshot SnapshotMesh(ECS::World& world, uint32_t id, bool receiver, AssetManage
     const auto& geometry = model.GetMesh(index);
     if (!inspectOnly) result.Geometry = geometry;
     if (geometry.HasMorphTargets()) throw std::runtime_error("Morph-target geometry is not supported by static lightmap baking.");
-    result.BakeMesh.LocalToWorld = glm::make_mat4(transform->matrix) * glm::make_mat4(geometry.SourceNodeTransform);
+    result.BakeMesh.LocalToWorld = PoseMatrix(*transform) * glm::make_mat4(geometry.SourceNodeTransform);
     if (receiver && (!geometry.HasTexCoords1() || geometry.HasOwnVertexLODs()))
         throw std::runtime_error("Receiver needs a second UV set for lightmaps, shared by all of its detail levels.");
     fs::path materialPath = model.GetPath();
@@ -385,7 +415,7 @@ std::vector<uint32_t> CollectSceneLightmapReceivers(std::vector<std::string>& sk
     if (!world) return receivers;
     auto& assets=EngineCore::GetInstance().GetAssetManager();
     world->Query<ECS::Read<Components::MeshRenderer>>().Each([&](ECS::EntityHandle entity,const Components::MeshRenderer& mesh) {
-        if (!world->HasComponent<ECS::ComponentDisabled<Components::MeshRenderer>>(entity) && mesh.castShadows && !world->GetComponent<ECS::Disabled>(entity))
+        if (!world->HasComponent<ECS::ComponentDisabled<Components::MeshRenderer>>(entity) && CastsShadows(mesh) && !world->GetComponent<ECS::Disabled>(entity))
             candidates.push_back(entity.id);
     });
     std::sort(candidates.begin(),candidates.end());
@@ -442,7 +472,7 @@ json LightmapBakeService::Start(const json& p)
             try
             {
                 auto snapshot = SnapshotMesh(*world,id,receiverSet.contains(id),assets);
-                if (!snapshot.Renderer.castShadows) throw std::runtime_error("Bake geometry must cast shadows; exclude disabled casters.");
+                if (!CastsShadows(snapshot.Renderer)) throw std::runtime_error("Bake geometry must cast shadows; exclude disabled casters.");
                 job->Meshes.push_back(std::move(snapshot));
             }
             catch (const std::exception& e)
@@ -495,7 +525,7 @@ json LightmapBakeService::Start(const json& p)
         if (!light || !transform || world->HasComponent<ECS::ComponentDisabled<Components::Light>>(sun) || !light->CastsLight || world->GetComponent<ECS::Disabled>(sun) || light->Type!=Components::LightType::Directional)
             return {{"error","lightEntity must be the active primary directional light."}};
         job->Lights.push_back({sun,*light,*transform});
-        options.DirectionToLight = -glm::normalize(glm::vec3(transform->matrix[8],transform->matrix[9],transform->matrix[10]));
+        options.DirectionToLight = -glm::normalize(PoseForward(*transform));
         options.AngularRadiusRadians = light->ShadowAngularDiameter * (3.14159265359f/360.0f);
         float color[3], intensity; Components::ResolveLightColorIntensity(*light,color,intensity);
         options.LightRadiance = glm::vec3(color[0],color[1],color[2])*intensity;
@@ -510,7 +540,7 @@ json LightmapBakeService::Start(const json& p)
                 LightmapBounceLight b;
                 b.Kind = l.Type==Components::LightType::Directional ? LightmapBounceLight::Type::Directional :
                     l.Type==Components::LightType::Spot ? LightmapBounceLight::Type::Spot : LightmapBounceLight::Type::Point;
-                b.Position = {t.matrix[12],t.matrix[13],t.matrix[14]}; b.Direction={t.matrix[8],t.matrix[9],t.matrix[10]};
+                b.Position = PoseOrigin(t); b.Direction = PoseForward(t);
                 Components::ResolveLightColorIntensity(l,color,intensity); b.Radiance=glm::vec3(color[0],color[1],color[2])*intensity;
                 b.Range=l.Range; b.InnerAngle=l.InnerAngle; b.OuterAngle=l.OuterAngle; options.BounceLights.push_back(b);
             });
@@ -570,8 +600,8 @@ json LightmapBakeService::Poll()
         auto* transform=world->GetComponent<Components::WorldTransform>(s.Entity);
         if (!mr || !transform || mr->modelAssetGuid!=s.Renderer.modelAssetGuid || mr->meshId!=s.Renderer.meshId ||
             mr->materialAssetGuid!=s.Renderer.materialAssetGuid || mr->MeshNameId!=s.Renderer.MeshNameId ||
-            world->HasComponent<ECS::ComponentDisabled<Components::MeshRenderer>>(s.Entity) || mr->castShadows!=s.Renderer.castShadows ||
-            world->GetComponent<ECS::Disabled>(s.Entity) || std::memcmp(transform->matrix,s.Transform.matrix,sizeof(s.Transform.matrix))) unchanged=false;
+            world->HasComponent<ECS::ComponentDisabled<Components::MeshRenderer>>(s.Entity) || CastsShadows(*mr)!=CastsShadows(s.Renderer) ||
+            world->GetComponent<ECS::Disabled>(s.Entity) || !SamePose(*transform,s.Transform)) unchanged=false;
         for (const auto& [path,stamp] : s.SourceStamps)
         {
             std::error_code ec;
@@ -583,7 +613,7 @@ json LightmapBakeService::Poll()
         const auto* light=world->GetComponent<Components::Light>(s.Entity);
         const auto* transform=world->GetComponent<Components::WorldTransform>(s.Entity);
         if (!light || !transform || world->GetComponent<ECS::Disabled>(s.Entity) || std::memcmp(light,&s.Light,sizeof(s.Light)) ||
-            std::memcmp(transform->matrix,s.Transform.matrix,sizeof(s.Transform.matrix))) unchanged=false;
+            !SamePose(*transform,s.Transform)) unchanged=false;
     }
     size_t activeLightCount=0;
     world->Query<ECS::Read<Components::Light>,ECS::Read<Components::WorldTransform>,ECS::Optional<ECS::Disabled>>()

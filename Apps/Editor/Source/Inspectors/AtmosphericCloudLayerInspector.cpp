@@ -1,7 +1,7 @@
 #include "Inspectors/AtmosphericCloudLayerInspector.h"
 
 #include "InspectorRegistry.h"
-#include "Mathematics/Interpolation.h"
+#include "Inspectors/InspectorColorSwatchRow.h"
 #include "Platform/SystemMetrics.h"
 
 #include "Components/Rendering/PostProcessEffects/AtmosphericCloudLayer.h"
@@ -117,29 +117,13 @@ void RegisterAtmosphericCloudLayerInspector()
             0.62f, "Overall visual weight of the layer", {}, 0.0f, 1.0f);
 
         {
-            UIElement* row = InspectorUI::AddRow(ctx.Parent);
-            Label* colorLabel = InspectorUI::AddLabel(row, "CloudColor", "HDR cloud scattering color (click to open color picker; double-click to reset to white)");
-            if (colorLabel) colorLabel->AddClass("inspector-label-no-drag");
-            UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
-            fieldContainer->Style()
-                .Set(Style::FlexDir, FlexDirection::Row)
-                .Set(Style::AlignItems, AlignItems::Center)
-                .Set(Style::Gap, StyleLength::Px(6.0f));
-
-            const uint32_t argb = CloudRgbToArgb(layer->CloudColor);
-
-            auto swatch = std::make_unique<UIElement>();
-            UIElement* swatchRaw = swatch.get();
-            StyleSwatch(swatchRaw, argb);
-            fieldContainer->AddChild(std::move(swatch));
-
-            auto rgbLabel = std::make_unique<Label>();
-            rgbLabel->AddClass("inspector-text");
-            rgbLabel->SetText(FormatRgb(layer->CloudColor));
-            rgbLabel->Style()
-                .Set(Style::Cursor, CursorStyle::Pointer);
-            Label* rgbLabelRaw = rgbLabel.get();
-            fieldContainer->AddChild(std::move(rgbLabel));
+            const InspectorUI::ColorSwatchRow swatchRow = InspectorUI::AddColorSwatchRow(
+                ctx.Parent, "CloudColor", "HDR cloud scattering color (click to open color picker; double-click to reset to white)",
+                CloudRgbToArgb(layer->CloudColor),
+                InspectorUI::FormatColorRgb(layer->CloudColor[0], layer->CloudColor[1], layer->CloudColor[2]));
+            Label* colorLabel = swatchRow.Name;
+            UIElement* swatchRaw = swatchRow.Swatch;
+            Label* rgbLabelRaw = swatchRow.Value;
 
             // The picker's callbacks outlive an inspector rebuild: resolve the row through
             // weak refs instead of holding the freed widgets.
@@ -149,8 +133,8 @@ void RegisterAtmosphericCloudLayerInspector()
                 UIElement* swatch = swatchRef.Get();
                 Label* rgbLabel = rgbLabelRef.Get();
                 if (!c || !swatch || !rgbLabel) return;
-                StyleSwatch(swatch, CloudRgbToArgb(c->CloudColor));
-                rgbLabel->SetText(FormatRgb(c->CloudColor));
+                InspectorUI::StyleColorSwatch(swatch, CloudRgbToArgb(c->CloudColor));
+                rgbLabel->SetText(InspectorUI::FormatColorRgb(c->CloudColor[0], c->CloudColor[1], c->CloudColor[2]));
             };
 
             auto clickHandler = [w, e, n, undo, openPicker, updateUI](UIEvent& ev) {

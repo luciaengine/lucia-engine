@@ -268,7 +268,7 @@ TEST(MorphTargetDeepPathTests, WeightAnimationRewritesTheRuntimeMeshInPlace)
     ASSERT_NE(entry->gpuMeshIndex, ~0u) << "setup: the runtime mesh must own a GPUScene row";
     const uint32_t gpuMeshIndex = entry->gpuMeshIndex;
     const uint32_t firstIndex = entry->firstIndex;
-    const uint64_t indexOffsetBytes = entry->indexSubAlloc.offset;
+    const uint64_t indexOffsetBytes = entry->indexSubAlloc.Offset;
 
     size_t unregisterNotifications = 0;
     auto token = registry.SubscribeReload([&](const GUID&) { ++unregisterNotifications; });
@@ -294,7 +294,7 @@ TEST(MorphTargetDeepPathTests, WeightAnimationRewritesTheRuntimeMeshInPlace)
         ASSERT_NE(entry, nullptr) << "the runtime mesh entry was released (step " << step << ")";
         EXPECT_EQ(entry->gpuMeshIndex, gpuMeshIndex) << "the GPUScene row moved";
         EXPECT_EQ(entry->firstIndex, firstIndex) << "the index data was uploaded again";
-        EXPECT_EQ(entry->indexSubAlloc.offset, indexOffsetBytes);
+        EXPECT_EQ(entry->indexSubAlloc.Offset, indexOffsetBytes);
         // Vertex 0 rises by 2 * weight, so the box spans y in [-1, 1 + 2w].
         EXPECT_NEAR(entry->bounds.halfExtents.y, 1.0f + weight, 1e-5f)
             << "the rewritten vertices did not reach the entry bounds";

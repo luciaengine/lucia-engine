@@ -399,10 +399,13 @@ TEST(TerrainRoleMaterials, TheGridIsOneCardPerLiveMaterialThenTheAddTile)
 // The row has to reach the width the fields beside it reach. Cards of one fixed width divide it
 // with a remainder, and the remainder showed as a dead third on the right of the only row.
 //
-// BOUNDARY: this asserts the inputs Yoga wraps and distributes on — the grid's stretch and wrap,
-// and each cell's basis, growth and cap. It does NOT measure the laid-out result: no layout pass
-// runs in this process, so the number of rows at a given panel width is not observable here and is
-// not claimed.
+// The stretch, the wrap and each cell's basis, growth and cap are the stylesheet's
+// (.terrain-role-material-grid and .terrain-role-material-card in inspector.css). This asserts
+// that every cell takes the card class and that code no longer sizes a cell itself: a size set
+// from code would beat the stylesheet, and the two would drift.
+//
+// BOUNDARY: no stylesheet is loaded and no layout pass runs in this process, so the number of
+// rows at a given panel width is not observable here and is not claimed.
 TEST(TerrainRoleMaterials, CardsShareOutTheRowRatherThanLeavingItShort)
 {
     TerrainMaterialLibraryAsset library(GUID(kLibraryGuid), "Assets/Lib.terrainmatlib");
@@ -445,11 +448,12 @@ TEST(TerrainRoleMaterials, CardsShareOutTheRowRatherThanLeavingItShort)
 // Limestone Scre", which names no material at all.
 //
 // Two lines are RESERVED rather than grown into, so every card keeps one height and a row of them
-// stays a grid. A third line is clipped: the UI module has no line-clamp and no text-overflow, so
-// an ellipsis cannot be asked for — losing the tail of a very long name beats losing its start.
+// stays a grid; .terrain-role-material-name in inspector.css holds the wrap, the alignment, the
+// word breaking and the two-line height, and the card clips what spills past them.
 //
-// BOUNDARY: this asserts the inputs the text layout acts on, not the laid-out lines. No layout pass
-// runs in this process, so "it occupies exactly two lines" is not observable here.
+// BOUNDARY: no stylesheet is loaded and no layout pass runs in this process, so "it occupies
+// exactly two lines" is not observable here. This asserts the class hooks, that code no longer
+// styles the name itself, and that the name is carried whole.
 TEST(TerrainRoleMaterials, ALongNameWrapsToASecondLineFromItsStart)
 {
     TerrainMaterialLibraryAsset library(GUID(kLibraryGuid), "Assets/Lib.terrainmatlib");

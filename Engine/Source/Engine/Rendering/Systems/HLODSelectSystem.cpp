@@ -7,6 +7,7 @@
 #include "Components/Transform.h"
 #include "Engine/Rendering/HlodRuntime.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Platform/Environment.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/GPUScene.h"
 
@@ -21,15 +22,10 @@ namespace Engine::Renderer {
 
 namespace {
 
-// GE_HLOD=0 disables the runtime switch entirely (zero overhead); unset / any
-// other value keeps it on. Read once.
+// GE_HLOD=0 disables the runtime switch entirely (zero overhead); unset keeps
+// it on. Read once.
 bool IsHlodRuntimeEnabled() {
-    static bool s_Enabled = []() {
-        const char* env = std::getenv("GE_HLOD");
-        if (!env || !*env)
-            return true;
-        return !(env[0] == '0' && env[1] == '\0');
-    }();
+    static bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_HLOD", true);
     return s_Enabled;
 }
 

@@ -43,9 +43,7 @@ selection or establish a memory/performance improvement.
 
 Set `GE_CLUSTER_LOD=1` before starting the Editor or Player. Fine pages run on
 Vulkan and Metal devices with buffer device addresses; on any other device fine
-mode stays disabled. Fine pages need each frame on one queue. On a GPU with a
-separate compute queue family, also set `GE_ASYNC_COMPUTE=0`; without it, fine
-mode stays disabled and the log says why. Apple GPUs have one queue family.
+mode stays disabled. Fine pages work with async compute on.
 Ray tracing reads the coarse model: scene acceleration structures skip fine pages.
 Import the generated `.gecluster` model normally. Fine pages use the existing
 asset IO service; pending or failed reads keep the complete coarse cover.

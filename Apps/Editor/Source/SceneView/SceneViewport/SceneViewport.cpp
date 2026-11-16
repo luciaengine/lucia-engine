@@ -363,6 +363,13 @@ void SceneViewport::UpdateHoverPill()
         return;
     }
 
+    // The active tool's status (what its next click needs) takes the place of the pick's name, at the bottom center.
+    if (const std::string_view status = activeTool ? activeTool->StatusText() : std::string_view{}; !status.empty())
+    {
+        m_HoverPill->Show(std::string(status), false, m_PointerLocal, HoverPillLabels());
+        return;
+    }
+
     // A pick name hides during a camera drag: a pill that follows the pointer changes the layout every frame.
     const Editor::SceneViewSettings& settings = Editor::SceneViewSettings::Get();
     if (m_CameraGesture.Dragging || !settings.GetHoverNamePillEnabled() || controller->IsHoverNamePillSuppressedBySource())

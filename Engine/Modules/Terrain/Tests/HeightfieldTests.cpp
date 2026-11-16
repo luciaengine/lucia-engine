@@ -1,4 +1,5 @@
 #include "Terrain/Heightfield.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -72,7 +73,8 @@ namespace
 {
 std::filesystem::path WriteTempRawU16(const char* name, const uint16* samples, std::size_t count)
 {
-    const auto path = std::filesystem::temp_directory_path() / name;
+    static const TestUtils::ScopedTempDir directory(TestUtils::MakeUniqueTempDirectory("ge_heightfield_rawu16"));
+    const auto path = directory.Path() / name;
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     out.write(reinterpret_cast<const char*>(samples),
               static_cast<std::streamsize>(count * sizeof(uint16)));
@@ -113,8 +115,8 @@ TEST(HeightfieldTests, LoadFromRawUInt16_ShortFileFails)
 TEST(HeightfieldTests, LoadFromRawUInt16_MissingFileFails)
 {
     HeightfieldData hf;
-    const auto path = std::filesystem::temp_directory_path() / "ge_heightfield_rawu16_missing.r16";
-    std::filesystem::remove(path);
+    const auto path =
+        TestUtils::MakeUniqueTempDirectory("ge_heightfield_rawu16_missing") / "ge_heightfield_rawu16_missing.r16";
     EXPECT_FALSE(hf.LoadFromRawUInt16(path, 2, 2));
 }
 

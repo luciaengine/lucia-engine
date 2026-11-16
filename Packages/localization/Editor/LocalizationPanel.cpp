@@ -207,63 +207,63 @@ LocalizationPanel::~LocalizationPanel() = default;
 
 void LocalizationPanel::OnLayoutBound()
 {
-    auto* scroll = dynamic_cast<ScrollView*>(FindById("EntryScroll"));
-    auto* content = FindById("EntryContent");
+    auto* scroll = dynamic_cast<ScrollView*>(FindById("EntryScroll"_sid));
+    auto* content = FindById("EntryContent"_sid);
     if (!scroll || !content)
     { Logger::Log::Error("Localization layout requires the EntryScroll scroll view and its EntryContent."); return; }
     scroll->AddContent(scroll->TakeChild(content));
-    m_CatalogName = dynamic_cast<Label*>(FindById("CatalogName"));
-    m_KeysEmpty = dynamic_cast<Label*>(FindById("KeysEmpty"));
-    m_EntryTitlePrefix = dynamic_cast<Label*>(FindById("EntryTitlePrefix"));
-    m_EntryTitleLast = dynamic_cast<Label*>(FindById("EntryTitleLast"));
-    m_KeyFixed = dynamic_cast<Label*>(FindById("KeyFixed"));
-    m_KeyLabel = dynamic_cast<Label*>(FindById("KeyLabel"));
-    m_TranslationLabel = dynamic_cast<Label*>(FindById("TranslationLabel"));
-    m_KeyError = dynamic_cast<Label*>(FindById("KeyError"));
-    m_SourceError = dynamic_cast<Label*>(FindById("SourceError"));
-    m_TranslationError = dynamic_cast<Label*>(FindById("TranslationError"));
-    m_ArgumentsError = dynamic_cast<Label*>(FindById("ArgumentsError"));
-    m_NewLocaleError = dynamic_cast<Label*>(FindById("NewLocaleError"));
-    m_Preview = dynamic_cast<Label*>(FindById("Preview"));
-    m_Status = dynamic_cast<Label*>(FindById("Status"));
-    m_Key = dynamic_cast<TextField*>(FindById("TranslationKey"));
-    m_Language = dynamic_cast<TextField*>(FindById("NewLocale"));
-    m_Arguments = dynamic_cast<TextField*>(FindById("Arguments"));
-    m_Source = dynamic_cast<TextArea*>(FindById("Source"));
-    m_Translation = dynamic_cast<TextArea*>(FindById("Translation"));
-    m_Context = dynamic_cast<TextArea*>(FindById("Context"));
-    m_Notes = dynamic_cast<TextArea*>(FindById("Notes"));
-    m_Locales = dynamic_cast<Dropdown*>(FindById("Locales"));
-    m_Keys = dynamic_cast<ListView*>(FindById("Keys"));
-    m_MissingOnly = dynamic_cast<Checkbox*>(FindById("MissingOnly"));
-    m_Pseudo = dynamic_cast<Checkbox*>(FindById("Pseudo"));
-    m_Apply = dynamic_cast<Button*>(FindById("Apply"));
-    m_DiscardButton = dynamic_cast<Button*>(FindById("Discard"));
-    m_TranslationGroup = FindById("TranslationGroup");
-    m_DraftBadge = dynamic_cast<Label*>(FindById("DraftBadge"));
-    m_PreviewNote = dynamic_cast<Label*>(FindById("PreviewNote"));
-    m_SourceNotes = dynamic_cast<Label*>(FindById("SourceNotes"));
-    m_TranslationCount = dynamic_cast<Label*>(FindById("TranslationCount"));
-    m_Body = FindById("LocalizationBody");
-    m_Splitter = FindById("LocalizationSplitter");
-    m_KeysPane = dynamic_cast<WeightedPane*>(FindById("KeysPane"));
-    m_EntryPane = dynamic_cast<WeightedPane*>(FindById("EntryPane"));
+    m_CatalogName = dynamic_cast<Label*>(FindById("CatalogName"_sid));
+    m_KeysEmpty = dynamic_cast<Label*>(FindById("KeysEmpty"_sid));
+    m_EntryTitlePrefix = dynamic_cast<Label*>(FindById("EntryTitlePrefix"_sid));
+    m_EntryTitleLast = dynamic_cast<Label*>(FindById("EntryTitleLast"_sid));
+    m_KeyFixed = dynamic_cast<Label*>(FindById("KeyFixed"_sid));
+    m_KeyLabel = dynamic_cast<Label*>(FindById("KeyLabel"_sid));
+    m_TranslationLabel = dynamic_cast<Label*>(FindById("TranslationLabel"_sid));
+    m_KeyError = dynamic_cast<Label*>(FindById("KeyError"_sid));
+    m_SourceError = dynamic_cast<Label*>(FindById("SourceError"_sid));
+    m_TranslationError = dynamic_cast<Label*>(FindById("TranslationError"_sid));
+    m_ArgumentsError = dynamic_cast<Label*>(FindById("ArgumentsError"_sid));
+    m_NewLocaleError = dynamic_cast<Label*>(FindById("NewLocaleError"_sid));
+    m_Preview = dynamic_cast<Label*>(FindById("Preview"_sid));
+    m_Status = dynamic_cast<Label*>(FindById("Status"_sid));
+    m_Key = dynamic_cast<TextField*>(FindById("TranslationKey"_sid));
+    m_Language = dynamic_cast<TextField*>(FindById("NewLocale"_sid));
+    m_Arguments = dynamic_cast<TextField*>(FindById("Arguments"_sid));
+    m_Source = dynamic_cast<TextArea*>(FindById("Source"_sid));
+    m_Translation = dynamic_cast<TextArea*>(FindById("Translation"_sid));
+    m_Context = dynamic_cast<TextArea*>(FindById("Context"_sid));
+    m_Notes = dynamic_cast<TextArea*>(FindById("Notes"_sid));
+    m_Locales = dynamic_cast<Dropdown*>(FindById("Locales"_sid));
+    m_Keys = dynamic_cast<ListView*>(FindById("Keys"_sid));
+    m_MissingOnly = dynamic_cast<Checkbox*>(FindById("MissingOnly"_sid));
+    m_Pseudo = dynamic_cast<Checkbox*>(FindById("Pseudo"_sid));
+    m_Apply = dynamic_cast<Button*>(FindById("Apply"_sid));
+    m_DiscardButton = dynamic_cast<Button*>(FindById("Discard"_sid));
+    m_TranslationGroup = FindById("TranslationGroup"_sid);
+    m_DraftBadge = dynamic_cast<Label*>(FindById("DraftBadge"_sid));
+    m_PreviewNote = dynamic_cast<Label*>(FindById("PreviewNote"_sid));
+    m_SourceNotes = dynamic_cast<Label*>(FindById("SourceNotes"_sid));
+    m_TranslationCount = dynamic_cast<Label*>(FindById("TranslationCount"_sid));
+    m_Body = FindById("LocalizationBody"_sid);
+    m_Splitter = FindById("LocalizationSplitter"_sid);
+    m_KeysPane = dynamic_cast<WeightedPane*>(FindById("KeysPane"_sid));
+    m_EntryPane = dynamic_cast<WeightedPane*>(FindById("EntryPane"_sid));
     m_CollapsibleButtons.clear();
     for (const char* id : {"Discard", "Apply", "Import", "Export"})
-        m_CollapsibleButtons.push_back(dynamic_cast<Button*>(FindById(id)));
+        m_CollapsibleButtons.push_back(dynamic_cast<Button*>(FindById(HashStringId(id))));
     for (const char* id : {"Open", "Save", "Import", "Export", "AddLocale", "CancelLocale", "NewKey", "Discard", "Apply"})
-        FindById(id)->RequestSubtreeStyleAssetPath("Editor/UI/controls/LocalizationButton.css", kAssetSourceAlias);
-    m_AddLanguageRow = FindById("AddLanguageRow");
+        FindById(HashStringId(id))->RequestSubtreeStyleAssetPath("Editor/UI/controls/LocalizationButton.css", kAssetSourceAlias);
+    m_AddLanguageRow = FindById("AddLanguageRow"_sid);
     BindKeyList();
     BindSearch();
     BindNotesSection();
-    FindById("Open")->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { Open(); });
-    FindById("Save")->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { Save(); });
-    FindById("Import")->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { Exchange(true); });
-    FindById("Export")->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { Exchange(false); });
-    FindById("AddLocale")->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { AddLanguage(); });
-    FindById("CancelLocale")->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { HideAddLanguage(); });
-    FindById("NewKey")->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { NewKey(); });
+    FindById("Open"_sid)->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { Open(); });
+    FindById("Save"_sid)->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { Save(); });
+    FindById("Import"_sid)->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { Exchange(true); });
+    FindById("Export"_sid)->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { Exchange(false); });
+    FindById("AddLocale"_sid)->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { AddLanguage(); });
+    FindById("CancelLocale"_sid)->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { HideAddLanguage(); });
+    FindById("NewKey"_sid)->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { NewKey(); });
     m_Apply->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { ApplyEntry(); });
     m_DiscardButton->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { Discard(); });
     m_Locales->SetOnValueChanged([this](const std::string& value) { OnLocaleChosen(value); });
@@ -361,7 +361,7 @@ void LocalizationPanel::ShowCompact(bool compact)
 
 void LocalizationPanel::RevealInEntry(UIElement* field)
 {
-    auto* scroll = dynamic_cast<ScrollView*>(FindById("EntryScroll"));
+    auto* scroll = dynamic_cast<ScrollView*>(FindById("EntryScroll"_sid));
     if (!scroll || !field) return;
     // The field's caption above stays in view with it, and the view stops in the gap over the
     // caption (narrower than the entry's 3 px column gap), so no edge of the element above shows.
@@ -380,8 +380,8 @@ void LocalizationPanel::BindNotesSection()
 {
     // Context and notes sit in the Inspector's own section, collapsed until opened, so the
     // header, disclosure and spacing match the Inspector's.
-    UIElement* host = FindById("NotesHost");
-    UIElement* content = FindById("NotesContent");
+    UIElement* host = FindById("NotesHost"_sid);
+    UIElement* content = FindById("NotesContent"_sid);
     auto section = std::make_unique<InspectorSection>("Context and translator notes");
     section->SetShowEnabledToggle(false);
     section->SetCollapsed(true);
@@ -413,12 +413,12 @@ void LocalizationPanel::BindSearch()
 {
     // The key filter is the shared editor search bar, built into its slot; it filters as typed.
     const auto refilter = [this](const std::string&) { RefreshKeys(); };
-    PanelSearchBarBuilt search = BuildPanelSearchBar("LocalizationSearch", {}, refilter, refilter);
+    PanelSearchBarBuilt search = BuildPanelSearchBar("LocalizationSearch", refilter, refilter);
     search.RootPtr->SetPlaceholder("Filter keys");
     search.RootPtr->AddClass("localization-search");
     search.RootPtr->RequestSubtreeStyleAssetPath("Editor/UI/controls/LocalizationSearchBar.css", kAssetSourceAlias);
     m_Search = search.FieldPtr;
-    FindById("SearchHost")->AddChild(std::move(search.Root));
+    FindById("SearchHost"_sid)->AddChild(std::move(search.Root));
 }
 
 Localization::TranslationEntry LocalizationPanel::DraftEntry() const
@@ -555,7 +555,7 @@ void LocalizationPanel::Discard()
 void LocalizationPanel::Open()
 {
     if (!m_Dirty && !DraftChanged()) { ChooseCatalog(); return; }
-    auto* confirm = dynamic_cast<ConfirmActionModal*>(FindById("LocalizationOpenConfirm"));
+    auto* confirm = dynamic_cast<ConfirmActionModal*>(FindById("LocalizationOpenConfirm"_sid));
     if (!confirm)
     {
         auto modal = std::make_unique<ConfirmActionModal>();

@@ -28,6 +28,8 @@
 #include "UI/UIPlatform.h"
 #include "UI/UIPrimitive.h"
 
+#include "TestTempDir.h"
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -93,8 +95,9 @@ struct WrappedLabelFixture
         Ui->SetPlatform(Platform.get());
         Ui->SetRoot(std::move(root));
 
+        const TestUtils::ScopedTempDir cssDirectory(TestUtils::MakeUniqueTempDirectory("ui_multiline"));
         const auto css =
-            std::filesystem::temp_directory_path() /
+            cssDirectory.Path() /
             ("ui_multiline_" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ".css");
         {
             std::ofstream f(css);
@@ -836,8 +839,9 @@ struct TextAreaFixture
         Ui->SetPlatform(Platform.get());
         Ui->SetRoot(std::move(root));
 
+        const TestUtils::ScopedTempDir cssDirectory(TestUtils::MakeUniqueTempDirectory("ui_textarea"));
         const auto css =
-            std::filesystem::temp_directory_path() /
+            cssDirectory.Path() /
             ("ui_textarea_" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ".css");
         {
             std::ofstream f(css);

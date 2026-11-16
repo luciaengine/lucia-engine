@@ -4,9 +4,10 @@ These directories override the upstream vcpkg registry ports of the same name
 (wired via `vcpkg-configuration.json` → `overlay-ports: ["cmake/ports"]`).
 They exist to carry engine-specific patches.
 
-`cmake/macos-ports` holds overlays that only macOS triplets use (see
-[below](#macos-only-overlays-cmakemacos-ports)). The rules on this page apply
-to them as well.
+`cmake/macos-ports` holds overlays that only macOS triplets use, and
+`cmake/linux-ports` those that only Linux triplets use (see
+[below](#platform-only-overlays-cmakemacos-ports-and-cmakelinux-ports)). The
+rules on this page apply to them as well.
 
 ## The one rule: every behavioural edit bumps `port-version`
 
@@ -142,20 +143,21 @@ flag and assertions are compiled out, so the Debug and Release libraries encode
 the same bytes (checked on the texture-cook fixtures when the port was added).
 It is built without `--opt=fast-math`, which changes the bytes as well.
 
-## macOS-only overlays (`cmake/macos-ports`)
+## Platform-only overlays (`cmake/macos-ports` and `cmake/linux-ports`)
 
 An overlay in `cmake/ports` reaches every triplet, and vcpkg hashes its files
 into the port's ABI wherever it applies, so even a copy of a registry port that
-changes only `supports` reinstalls that port on Windows and Linux and makes
+changes only `supports` reinstalls that port on every other platform and makes
 `cmake/VcpkgInstallGuard.cmake` refuse every existing build directory there. A
-port changed for macOS alone therefore lives in `cmake/macos-ports`, which
-`cmake/Dependencies.cmake` hands to vcpkg for `*-osx` triplets only, through
-the `VCPKG_OVERLAY_PORTS` environment variable that the toolchain's manifest
-install and the installs `install_required_packages()` and
-`verify_dependencies()` run all inherit. Windows and Linux keep the registry
-ports and their installed ABIs. The freshness guard and the configure
-dependencies cover this directory on macOS, so a port edit there bumps
-`port-version` like any other.
+port changed for one platform alone therefore lives in that platform's
+directory: `cmake/macos-ports` for `*-osx` triplets and `cmake/linux-ports` for
+`*-linux` triplets. `cmake/Dependencies.cmake` hands the directory to vcpkg
+(`GE_VCPKG_PLATFORM_OVERLAY_PORTS`) through the `VCPKG_OVERLAY_PORTS`
+environment variable that the toolchain's manifest install and the installs
+`install_required_packages()` and `verify_dependencies()` run all inherit.
+Other platforms keep the registry ports and their installed ABIs. The freshness
+guard and the configure dependencies cover the directory, so a port edit there
+bumps `port-version` like any other.
 
 `cmake/steamdeck-ports` is also a platform-only directory, but the Steam Deck
 presets pass it through the toolchain's `VCPKG_OVERLAY_PORTS` cache variable.
@@ -165,6 +167,15 @@ one without a preset, where `cmake/Dependencies.cmake` works out the triplet
 itself. The cache variable also stays in `CMakeCache.txt`, and the build
 directory then fails to configure a checkout without the directory ("Overlay
 path ... must be an existing directory").
+
+### harfbuzz (Linux) — the debug variant links
+
+The baseline registry port (harfbuzz 15.0.0, registry baseline `a4f7741c`)
+fails to link its debug variant with GCC 13 and 14: meson's debug build defines
+`_GLIBCXX_ASSERTIONS`, and harfbuzz links with the C driver, so
+`std::__glibcxx_assert_fail` from libstdc++ is missing. The overlay is the
+registry port with `-Db_ndebug=true` for the debug variant only, which drops
+the libstdc++ assertions there. Release is unchanged.
 
 ### directxtex and directx-headers — the BC encoder on macOS hosts
 

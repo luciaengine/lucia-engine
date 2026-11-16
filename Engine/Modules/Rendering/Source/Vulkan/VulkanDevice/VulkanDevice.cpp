@@ -8925,16 +8925,15 @@ bool VulkanDevice::HasGraphicsTimelineSemaphore() const
     return (it != m_TimelineSemaphores.end()) && (it->second.sem != VK_NULL_HANDLE) && it->second.isTimeline;
 }
 
-IDevice::GpuSyncToken VulkanDevice::LastGraphicsSubmissionToken() const
+IDevice::GpuSyncToken VulkanDevice::LastSubmissionToken(QueueType queue) const
 {
-    if (!HasGraphicsTimelineSemaphore())
+    // The context's last signalled value is what the most recent submit on that physical queue
+    // signalled, so waiting it retires that submit and every earlier one on the queue. Zero
+    // (no submit yet) gives an invalid token, which reads as GpuSyncStatus::Unknown.
+    const QueueSubmitContext& context = SubmitContextFor(queue);
+    if (!context.HasTimeline())
         return {};
-    // The graphics context's last signalled value is what the most recent graphics submit
-    // signalled, so waiting it retires that submit and every earlier one on this queue. Zero
-    // (no submit yet) yields an invalid token, which reads as GpuSyncStatus::Unknown — the
-    // caller decides what "no submit yet" means for it.
-    const QueueSubmitContext& graphics = SubmitContextFor(QueueType::Graphics);
-    return GpuSyncToken{graphics.Timeline(), graphics.LastSignalled()};
+    return GpuSyncToken{context.Timeline(), context.LastSignalled()};
 }
 
 uint64_t VulkanDevice::GetGraphicsTimelineCompletedValue() const

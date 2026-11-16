@@ -41,7 +41,7 @@ UIManager::TextWarmupStatus UIManager::PrepareTextSubtree(UIElement* root)
         MergeSheetsHandles(node.Sheets, element->GetStylesheets());
         // A clean root does not imply that descendant classes or inherited
         // font styles have been resolved. Never certify an old descendant face.
-        if (element->IsDirty(UIElement::StyleDirty) || element->Overrides().NeedsCascadeRerun())
+        if (element->IsDirty(UIElement::StyleDirty) || element->Style().NeedsCascadeRerun())
         {
             if (!node.HiddenAncestor) return TextWarmupStatus::Pending;
             std::vector<const Stylesheet*> sheets;

@@ -1,5 +1,6 @@
 #include "Editor/Hierarchy/HierarchyRowEye.h"
 
+#include "Editor/Settings/SettingsStore.h"
 #include "SceneView/SceneViewEye.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/UIElement.h"
@@ -10,9 +11,25 @@
 
 namespace GameEngine::Editor
 {
+namespace
+{
+constexpr const char* kShowEyePreference = "hierarchy.showSceneViewEye";
+} // namespace
 
 HierarchyRowEye::HierarchyRowEye(HierarchyRowEyeHost host) : m_Host(std::move(host))
 {
+    auto preferences = OpenEditorPreferences();
+    (void)preferences.Load(nullptr);
+    (void)preferences.TryGetBool(kShowEyePreference, m_Shown);
+}
+
+void HierarchyRowEye::ToggleShown()
+{
+    m_Shown = !m_Shown;
+    auto preferences = OpenEditorPreferences();
+    (void)preferences.Load(nullptr);
+    preferences.SetBool(kShowEyePreference, m_Shown);
+    (void)preferences.Save(nullptr);
 }
 
 void HierarchyRowEye::AddTo(UIElement& row)
@@ -28,7 +45,7 @@ void HierarchyRowEye::AddTo(UIElement& row)
 void HierarchyRowEye::Present(UIElement& row, ECS::EntityHandle entity, bool hasChildren)
 {
     ECS::World* world = m_Host.World ? m_Host.World() : nullptr;
-    const bool shown = hasChildren || (world && DescribeSceneViewEye(*world, entity).HasMesh);
+    const bool shown = m_Shown && (hasChildren || (world && DescribeSceneViewEye(*world, entity).HasMesh));
     for (const auto& child : row.GetChildren())
     {
         if (child && child->HasClass("hierarchy-eye"))

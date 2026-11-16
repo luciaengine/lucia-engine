@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string_view>
+
 /**
  * Centralized panel and layout element IDs used when wiring EditorApplication.
  * Avoids fragile string literals scattered in EditorApplication.cpp.
@@ -19,6 +21,8 @@ inline constexpr const char* UiDemo = "UI Demo";
 inline constexpr const char* Build = "Build";
 inline constexpr const char* Mixer = "Mixer";
 inline constexpr const char* NodeGraph = "NodeGraph";
+inline constexpr const char* TilePalette = "TilePalette";
+inline constexpr const char* TileSetEditor = "TileSetEditor";
 inline constexpr const char* AnimationGraph = "AnimationGraph";
 inline constexpr const char* GameLogicGraph = "GameLogicGraph";
 inline constexpr const char* ScriptEditor = "ScriptEditor";
@@ -64,6 +68,7 @@ inline constexpr const char* TopToolbarVram = "TopToolbarVram";
 inline constexpr const char* TopToolbarCpuProfiler = "TopToolbarCpuProfiler";
 inline constexpr const char* TopToolbarPanelMenu = "TopToolbarPanelMenu";
 inline constexpr const char* TopToolbarNodeGraph = "TopToolbarNodeGraph";
+inline constexpr const char* TopToolbarTilePalette = "TopToolbarTilePalette";
 inline constexpr const char* TopToolbarSettings = "TopToolbarSettings";
 inline constexpr const char* TopToolbarHelp = "TopToolbarHelp";
 inline constexpr const char* TopToolbarBookmarks = "TopToolbarBookmarks";
@@ -79,6 +84,10 @@ inline constexpr const char* TopToolbarCenter4 = "TopToolbarCenter4";
 inline constexpr const char* TopToolbarLeft1 = "TopToolbarLeft1";
 inline constexpr const char* TopToolbarLeft2 = "TopToolbarLeft2";
 inline constexpr const char* TopToolbarLeft3 = "TopToolbarLeft3";
+
+/// The panel whose dock leaf a closed `panelId` joins when it opens:
+/// Settings and the editors join the Scene View, tools join the Hierarchy or the Inspector.
+const char* DefaultPanelLeafAnchor(std::string_view panelId);
 
 } // namespace EditorPanelIds
 } // namespace GameEngine

@@ -1,6 +1,7 @@
 #include "NativeScripting/EngineBuildIdentity.h"
 
-#include "NativeScripting/BuildCacheRecord.h" // Fnv1aHash / ToHexDigest
+#include "NativeScripting/BuildCacheRecord.h" // ToHexDigest
+#include "Types/Fnv1a.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -321,7 +322,7 @@ const std::string& EngineBuildIdentity()
     // relinked underneath a running process.
     static const std::string identity = [] {
         const std::string stamp = ReadImageStamp();
-        return stamp.empty() ? std::string{} : ToHexDigest(Fnv1aHash(stamp));
+        return stamp.empty() ? std::string{} : ToHexDigest(Hashing::Fnv1a64(stamp));
     }();
     return identity;
 }

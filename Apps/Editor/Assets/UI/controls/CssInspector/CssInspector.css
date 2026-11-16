@@ -3,7 +3,7 @@
  * The Ctrl+I hover card and the outline around the inspected element. CssInspector
  * requests this sheet on both elements it adds to the window root. The C++ sets only
  * their per-frame placement and visibility, their pointer-events (off from the first
- * frame, before this sheet resolves), and each colour chip's own colour.
+ * frame, before this sheet resolves), and each color chip's own color.
  */
 
 /* Outline around the inspected element's border box. */
@@ -50,11 +50,11 @@
 	color: var(--ui_color_text_bright);
 }
 
-/* Chip before a colour value; its fill is the value itself. */
+/* Chip before a color value; its fill is the value itself. */
 .css-inspector-swatch {
 	width: 14px;
 	height: 14px;
 	margin-right: 4px;
 	border-width: 1px;
-	border-color: var(--ui_color_swatch_border);
+	border-color: var(--ui_color_css_inspector_swatch_border);
 }
