@@ -68,6 +68,14 @@ class IRenderFeature
     // light culling, SDSM, HZB). Read once per frame on the render thread.
     virtual bool WritesDynamicDepth() const { return false; }
 
+    // Digest of what this feature renders into world `worldId` that a reflection
+    // probe photographs: what exists (a terrain, an ocean surface) and its source
+    // assets, not animation or continuous shape values. Every probe in the world
+    // adds the sum over features to its scene digest, so a change recaptures a
+    // "Once" probe. 0 means the feature renders nothing into that world. Called
+    // from the probe system, which may run on a job worker.
+    virtual uint64_t ContentDigest(uint64_t /*worldId*/) const { return 0; }
+
     /// Retire owned view state without registering features or waiting for GPU work.
     /// Keep in-flight resources alive until their recorded submissions complete.
     virtual void OnViewReleased(::GameEngine::Rendering::ViewId /*viewId*/) {}

@@ -8,9 +8,11 @@
 #include "Assets/ImportedMaterialCache.h"
 #include "Assets/MeshLODGenerator.h"
 #include "Assets/Parsers/ModelAssetParser.h"
+#include "Engine/Rendering/MeshLODThresholds.h"
 #include "ModelAssetFbxTestAccess.h"
 #include "ClusterLODTestMesh.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "Mathematics/Vector3.h"
 #include "TestTempDir.h"
 #include "Types/Fnv1a.h"
 
@@ -100,6 +102,54 @@ void ExpectRefusal(const Mesh& mesh, const MeshClusterLODConfig& config)
     EXPECT_FALSE(error.empty());
     ASSERT_EQ(groups.size(), 1u);
     EXPECT_EQ(groups.front().Coarse.Name, "Unpublished");
+}
+
+// Counts the edges of a cut that leave a crack: an edge that only one triangle uses and that is
+// not open in the source, an edge that more than two triangles use, or a shared edge that both
+// triangles walk in the same direction.
+size_t CountCutCracks(const Vector<const Mesh*>& cut, const std::set<Edge>& sourceBoundary)
+{
+    std::map<Edge, uint32> counts;
+    std::map<Edge, int32> orientation;
+    for (const Mesh* mesh : cut)
+    {
+        for (const Triangle& triangle : OrientedTriangles(*mesh))
+        {
+            for (size_t corner = 0; corner < 3; ++corner)
+            {
+                const uint32 first = triangle[corner];
+                const uint32 second = triangle[(corner + 1) % 3];
+                const Edge edge{std::min(first, second), std::max(first, second)};
+                ++counts[edge];
+                orientation[edge] += first < second ? 1 : -1;
+            }
+        }
+    }
+    size_t cracks = 0;
+    for (const auto& [edge, count] : counts)
+    {
+        const bool open = count == 1 && !sourceBoundary.contains(edge);
+        cracks += open || count > 2 || (count == 2 && orientation[edge] != 0) ? 1 : 0;
+    }
+    return cracks;
+}
+
+// The cracks of the cut that draws the fine page of each refined group and the coarse cover of
+// every other group.
+size_t CountSelectedCutCracks(const Vector<Mesh>& coarse, const Vector<Mesh>& fine, const Vector<bool>& refined,
+                              const std::set<Edge>& sourceBoundary)
+{
+    Vector<const Mesh*> cut;
+    cut.reserve(refined.size());
+    for (uint32 group = 0; group < refined.size(); ++group)
+        cut.push_back(refined[group] ? &fine[group] : &coarse[group]);
+    return CountCutCracks(cut, sourceBoundary);
+}
+
+bool IsMixedCut(const Vector<bool>& refined)
+{
+    const auto fineGroups = std::count(refined.begin(), refined.end(), true);
+    return fineGroups != 0 && fineGroups != static_cast<std::ptrdiff_t>(refined.size());
 }
 
 TEST(MeshClusterLOD, PartitionsEveryOrientedSourceTriangleExactlyOnce)
@@ -323,6 +373,142 @@ TEST(MeshClusterLOD, PreservesDuplicatePositionWedgeAttributes)
     EXPECT_EQ(seamWedges.size(), kGridWidth * 2u);
 }
 
+// The test grid with a smooth height field, so no simplified triangle is exactly collinear.
+Mesh MakeCurvedGrid()
+{
+    Mesh mesh = Testing::MakeClusterLODGrid();
+    for (Vertex& vertex : mesh.Vertices)
+        vertex.Position[1] = 0.5f * std::sin(0.4f * vertex.Position[0]) * std::cos(0.3f * vertex.Position[2]);
+    return mesh;
+}
+
+// Every coarse triangle of every group, as one mesh: its open edges are the source's open edges
+// only when no group border and no seam opens.
+Mesh JoinCoarseGroups(const Vector<MeshClusterLODGroup>& groups)
+{
+    Mesh joined;
+    for (const MeshClusterLODGroup& group : groups)
+    {
+        const auto base = static_cast<uint32>(joined.Vertices.size());
+        joined.Vertices.insert(joined.Vertices.end(), group.Coarse.Vertices.begin(), group.Coarse.Vertices.end());
+        for (const uint32 index : group.Coarse.Indices)
+            joined.Indices.push_back(base + index);
+    }
+    return joined;
+}
+
+TEST(MeshClusterLOD, CollapsesAlongAUvSeamWithoutOpeningIt)
+{
+    if (!IsMeshLODGenerationAvailable())
+        GTEST_SKIP() << "meshoptimizer not compiled in";
+    Mesh source = MakeCurvedGrid();
+    constexpr uint32 kSeamColumn = kGridWidth / 2;
+    for (uint32 row = 0; row < kGridWidth; ++row)
+    {
+        Vertex duplicate = source.Vertices[row * kGridWidth + kSeamColumn];
+        duplicate.TexCoords[0] += 1.0f;
+        source.Vertices.push_back(duplicate);
+    }
+    for (size_t offset = 0; offset < source.Indices.size(); offset += 3)
+    {
+        const bool rightSide = std::any_of(source.Indices.begin() + offset,
+            source.Indices.begin() + offset + 3, [](uint32 index)
+            { return index % kGridWidth > kSeamColumn; });
+        if (!rightSide)
+            continue;
+        for (size_t corner = offset; corner < offset + 3; ++corner)
+            if (source.Indices[corner] % kGridWidth == kSeamColumn)
+                source.Indices[corner] = kGridWidth * kGridWidth + source.Indices[corner] / kGridWidth;
+    }
+    Vector<MeshClusterLODGroup> groups;
+    String error;
+    ASSERT_TRUE(GenerateMeshClusterLODs(source, TestConfig(), groups, error)) << error;
+    const Mesh coarse = JoinCoarseGroups(groups);
+    EXPECT_EQ(BoundaryEdges(coarse), BoundaryEdges(source));
+    std::set<uint32> seamRows;
+    for (const Vertex& vertex : coarse.Vertices)
+        if (vertex.Position[0] == kSeamColumn)
+            seamRows.insert(static_cast<uint32>(vertex.Position[2]));
+    EXPECT_LT(seamRows.size(), kGridWidth);
+}
+
+TEST(MeshClusterLOD, KeepsAMirroredUvSeamWithoutMixingTangentHandedness)
+{
+    if (!IsMeshLODGenerationAvailable())
+        GTEST_SKIP() << "meshoptimizer not compiled in";
+    // The right half mirrors the UVs: its seam wedges differ from the left half only in handedness.
+    Mesh source = MakeCurvedGrid();
+    constexpr uint32 kSeamColumn = kGridWidth / 2;
+    for (Vertex& vertex : source.Vertices)
+        if (vertex.Position[0] > kSeamColumn)
+            vertex.Tangent[3] = -1.0f;
+    for (uint32 row = 0; row < kGridWidth; ++row)
+    {
+        Vertex duplicate = source.Vertices[row * kGridWidth + kSeamColumn];
+        duplicate.Tangent[3] = -1.0f;
+        source.Vertices.push_back(duplicate);
+    }
+    for (size_t offset = 0; offset < source.Indices.size(); offset += 3)
+    {
+        const bool rightSide = std::any_of(source.Indices.begin() + offset,
+            source.Indices.begin() + offset + 3, [](uint32 index)
+            { return index % kGridWidth > kSeamColumn; });
+        if (!rightSide)
+            continue;
+        for (size_t corner = offset; corner < offset + 3; ++corner)
+            if (source.Indices[corner] % kGridWidth == kSeamColumn)
+                source.Indices[corner] = kGridWidth * kGridWidth + source.Indices[corner] / kGridWidth;
+    }
+    Vector<MeshClusterLODGroup> groups;
+    String error;
+    ASSERT_TRUE(GenerateMeshClusterLODs(source, TestConfig(), groups, error)) << error;
+    for (const MeshClusterLODGroup& group : groups)
+    {
+        const Mesh& coarse = group.Coarse;
+        for (size_t offset = 0; offset < coarse.Indices.size(); offset += 3)
+        {
+            const float handedness = coarse.Vertices[coarse.Indices[offset]].Tangent[3];
+            EXPECT_EQ(coarse.Vertices[coarse.Indices[offset + 1]].Tangent[3], handedness);
+            EXPECT_EQ(coarse.Vertices[coarse.Indices[offset + 2]].Tangent[3], handedness);
+        }
+    }
+    EXPECT_EQ(BoundaryEdges(JoinCoarseGroups(groups)), BoundaryEdges(source));
+}
+
+TEST(MeshClusterLOD, ClustersVerticesWhenSeamsStopTheAttributeSimplifier)
+{
+    if (!IsMeshLODGenerationAvailable())
+        GTEST_SKIP() << "meshoptimizer not compiled in";
+    // Every triangle has its own UV island, so every vertex is on a UV seam.
+    const Mesh grid = MakeCurvedGrid();
+    Mesh source = grid;
+    source.Vertices.clear();
+    source.Indices.clear();
+    for (size_t corner = 0; corner < grid.Indices.size(); ++corner)
+    {
+        Vertex vertex = grid.Vertices[grid.Indices[corner]];
+        vertex.TexCoords[0] = static_cast<float>(corner % 3);
+        vertex.TexCoords[1] = static_cast<float>(corner / 3);
+        source.Vertices.push_back(vertex);
+        source.Indices.push_back(static_cast<uint32>(corner));
+    }
+    const MeshClusterLODConfig config = TestConfig();
+    Vector<MeshClusterLODGroup> groups;
+    String error;
+    ASSERT_TRUE(GenerateMeshClusterLODs(source, config, groups, error)) << error;
+    size_t fineIndices = 0;
+    size_t coarseIndices = 0;
+    for (const MeshClusterLODGroup& group : groups)
+    {
+        fineIndices += group.Fine.Indices.size();
+        coarseIndices += group.Coarse.Indices.size();
+        EXPECT_EQ(BoundaryEdges(group.Coarse), BoundaryEdges(group.Fine));
+        EXPECT_LE(group.Error, config.RelativeError * (kGridWidth - 1));
+    }
+    EXPECT_LT(coarseIndices * 4, fineIndices * 3);
+    EXPECT_EQ(BoundaryEdges(JoinCoarseGroups(groups)), BoundaryEdges(grid));
+}
+
 TEST(MeshClusterLOD, RejectsUnsupportedRawStreamsWithoutPublishing)
 {
     for (uint32 stream = 0; stream < 8; ++stream)
@@ -503,21 +689,25 @@ TEST_F(MeshClusterLODAssetTest, LoadsTheCoarseAssetWithoutTheSourceOrFineStore)
     ASSERT_TRUE(model.Load());
     const auto manifest = model.GetClusterLODManifest();
     ASSERT_NE(manifest, nullptr);
-    ASSERT_GT(model.GetMeshCount(), 1u);
-    EXPECT_EQ(manifest->Pages.size(), model.GetMeshCount());
+    // One coarse mesh per source mesh; its groups tile its index buffer in page order.
+    ASSERT_EQ(model.GetMeshCount(), 1u);
+    ASSERT_GT(manifest->Pages.size(), 1u);
+    uint32 firstIndex = 0;
+    for (const auto& page : manifest->Pages)
+    {
+        EXPECT_EQ(page.Mesh, 0u);
+        EXPECT_EQ(page.CoarseFirstIndex, firstIndex);
+        firstIndex += page.CoarseIndexCount;
+    }
+    EXPECT_EQ(firstIndex, model.GetMesh(0).Indices.size());
     ASSERT_TRUE(std::filesystem::remove(ResolveMeshClusterLODStore(path, {}, *manifest)));
     EXPECT_FALSE(std::filesystem::exists(m_Source.GetPath()));
     ModelAsset coarseOnly(GUID::Generate(), path);
     ASSERT_TRUE(coarseOnly.Load());
     coarseOnly.PostLoad();
-    EXPECT_EQ(coarseOnly.GetMeshCount(), model.GetMeshCount());
-    std::set<String> names;
-    for (const Mesh& mesh : coarseOnly.GetMeshes())
-    {
-        EXPECT_TRUE(mesh.ExtraLODs.empty());
-        EXPECT_FALSE(mesh.Indices.empty());
-        EXPECT_TRUE(names.insert(mesh.Name).second);
-    }
+    ASSERT_EQ(coarseOnly.GetMeshCount(), 1u);
+    EXPECT_FALSE(coarseOnly.GetMesh(0).Indices.empty());
+    EXPECT_EQ(coarseOnly.GetMesh(0).Name, m_Source.GetMesh(0).Name);
 }
 
 TEST_F(MeshClusterLODAssetTest, FineRangesReconstructEveryOrientedSourceTriangle)
@@ -531,20 +721,182 @@ TEST_F(MeshClusterLODAssetTest, FineRangesReconstructEveryOrientedSourceTriangle
     SharedFileReader store(ResolveMeshClusterLODStore(path, {}, *manifest));
     ASSERT_EQ(store.Size(), static_cast<int64>(manifest->StoreBytes));
     Vector<Triangle> triangles;
-    for (uint32 group = 0; group < model.GetMeshCount(); ++group)
+    Vector<Triangle> coarseTriangles;
+    for (const auto& page : manifest->Pages)
+    {
+        Vector<uint8> bytes(static_cast<size_t>(page.Bytes));
+        ASSERT_TRUE(store.SeekTo(page.Offset));
+        ASSERT_EQ(store.Read(bytes.data(), bytes.size()), static_cast<int64>(bytes.size()));
+        Mesh fine;
+        ASSERT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(page.Mesh), fine, m_Error)) << m_Error;
+        const auto groupTriangles = OrientedTriangles(fine);
+        triangles.insert(triangles.end(), groupTriangles.begin(), groupTriangles.end());
+        // The fine page replaces exactly its coarse range: both have the same open border.
+        const Mesh coarse = ExtractMeshClusterLODCoarseGroup(model.GetMesh(page.Mesh), page);
+        EXPECT_EQ(BoundaryEdges(fine), BoundaryEdges(coarse));
+        const auto coarseGroup = OrientedTriangles(coarse);
+        coarseTriangles.insert(coarseTriangles.end(), coarseGroup.begin(), coarseGroup.end());
+    }
+    std::sort(coarseTriangles.begin(), coarseTriangles.end());
+    EXPECT_EQ(coarseTriangles, OrientedTriangles(model.GetMesh(0)));
+    std::sort(triangles.begin(), triangles.end());
+    EXPECT_EQ(triangles, OrientedTriangles(m_Source.GetMesh(0)));
+}
+
+TEST_F(MeshClusterLODAssetTest, StoresEachFinePageLosslesslyInLessThanHalfItsRawSize)
+{
+    const auto path = m_Temporary.Path() / "generated.gecluster";
+    ASSERT_TRUE(Cook(path)) << m_Error;
+    ModelAsset model(GUID::Generate(), path);
+    ASSERT_TRUE(model.Load());
+    const auto manifest = model.GetClusterLODManifest();
+    ASSERT_NE(manifest, nullptr);
+    Vector<MeshClusterLODGroup> groups;
+    ASSERT_TRUE(GenerateMeshClusterLODs(m_Source.GetMesh(0), TestConfig(), groups, m_Error)) << m_Error;
+    ASSERT_EQ(groups.size(), manifest->Pages.size());
+    SharedFileReader store(ResolveMeshClusterLODStore(path, {}, *manifest));
+    uint64 storedBytes = 0;
+    for (size_t index = 0; index < groups.size(); ++index)
+    {
+        const auto& page = manifest->Pages[index];
+        const Mesh& expected = groups[index].Fine;
+        Vector<uint8> bytes(static_cast<size_t>(page.Bytes));
+        ASSERT_TRUE(store.SeekTo(page.Offset));
+        ASSERT_EQ(store.Read(bytes.data(), bytes.size()), static_cast<int64>(bytes.size()));
+        Mesh fine;
+        ASSERT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(0), fine, m_Error)) << m_Error;
+        ASSERT_EQ(fine.Vertices.size(), expected.Vertices.size());
+        EXPECT_EQ(std::memcmp(fine.Vertices.data(), expected.Vertices.data(), fine.Vertices.size() * sizeof(Vertex)), 0);
+        EXPECT_EQ(OrientedTriangles(fine), OrientedTriangles(expected));
+        const uint64 rawBytes = expected.Vertices.size() * sizeof(Vertex) + expected.Indices.size() * sizeof(uint32);
+        EXPECT_LT(page.Bytes * 2, rawBytes);
+        storedBytes += page.Bytes;
+    }
+    EXPECT_EQ(storedBytes, manifest->StoreBytes);
+}
+
+TEST_F(MeshClusterLODAssetTest, RefusesAFinePageWithACorruptStreamHeaderEvenWithAMatchingChecksum)
+{
+    const auto path = m_Temporary.Path() / "generated.gecluster";
+    ASSERT_TRUE(Cook(path)) << m_Error;
+    ModelAsset model(GUID::Generate(), path);
+    ASSERT_TRUE(model.Load());
+    const auto manifest = model.GetClusterLODManifest();
+    ASSERT_NE(manifest, nullptr);
+    auto page = manifest->Pages.front();
+    SharedFileReader store(ResolveMeshClusterLODStore(path, {}, *manifest));
+    Vector<uint8> bytes(static_cast<size_t>(page.Bytes));
+    ASSERT_TRUE(store.SeekTo(page.Offset));
+    ASSERT_EQ(store.Read(bytes.data(), bytes.size()), static_cast<int64>(bytes.size()));
+    // The first byte of each meshopt stream is its header.
+    for (const size_t header : {size_t{0}, static_cast<size_t>(page.EncodedVertexBytes)})
+    {
+        SCOPED_TRACE(std::format("stream header at byte {}", header));
+        const uint8 original = bytes[header];
+        bytes[header] = 0;
+        page.ContentHash = Hashing::Fnv1a64(bytes.data(), bytes.size());
+        Mesh output;
+        output.Name = "Previous valid mesh";
+        EXPECT_FALSE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(0), output, m_Error));
+        EXPECT_EQ(output.Name, "Previous valid mesh");
+        bytes[header] = original;
+    }
+    page.ContentHash = Hashing::Fnv1a64(bytes.data(), bytes.size());
+    for (const uint32 split : {static_cast<uint32>(page.Bytes), static_cast<uint32>(page.Bytes) + 1u})
+    {
+        auto oversized = page;
+        oversized.EncodedVertexBytes = split;
+        Mesh output;
+        EXPECT_FALSE(DecodeMeshClusterLODFinePage(bytes, oversized, model.GetMesh(0), output, m_Error));
+    }
+    Mesh output;
+    EXPECT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(0), output, m_Error)) << m_Error;
+}
+
+// Selects cuts of the cooked model with the runtime rule (ClusterGroupErrorPx against the pixel
+// budget) from several cameras and budgets, and every largest-error-first prefix that a triangle
+// budget can select. No cut may open an edge that is closed in the source.
+TEST_F(MeshClusterLODAssetTest, EverySelectedCutOfTheCookedModelIsCrackFree)
+{
+    Mesh curved = Testing::MakeClusterLODGrid();
+    curved.MaterialIndex = 0;
+    for (Vertex& vertex : curved.Vertices)
+        vertex.Position[1] = 2.0f * std::sin(vertex.Position[0] * 0.2f) * std::cos(vertex.Position[2] * 0.2f);
+    m_Source.SetMeshesForTest({curved});
+    const auto path = m_Temporary.Path() / "cracks.gecluster";
+    ASSERT_TRUE(Cook(path)) << m_Error;
+    ModelAsset model(GUID::Generate(), path);
+    ASSERT_TRUE(model.Load());
+    const auto manifest = model.GetClusterLODManifest();
+    ASSERT_NE(manifest, nullptr);
+    SharedFileReader store(ResolveMeshClusterLODStore(path, {}, *manifest));
+    const uint32 groupCount = static_cast<uint32>(manifest->Pages.size());
+    Vector<Mesh> coarse(groupCount);
+    Vector<Mesh> fine(groupCount);
+    size_t reducedGroups = 0;
+    for (uint32 group = 0; group < groupCount; ++group)
     {
         const auto& page = manifest->Pages[group];
         Vector<uint8> bytes(static_cast<size_t>(page.Bytes));
         ASSERT_TRUE(store.SeekTo(page.Offset));
         ASSERT_EQ(store.Read(bytes.data(), bytes.size()), static_cast<int64>(bytes.size()));
-        Mesh fine;
-        ASSERT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(group), fine, m_Error)) << m_Error;
-        const auto groupTriangles = OrientedTriangles(fine);
-        triangles.insert(triangles.end(), groupTriangles.begin(), groupTriangles.end());
-        EXPECT_EQ(BoundaryEdges(fine), BoundaryEdges(model.GetMesh(group)));
+        ASSERT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(page.Mesh), fine[group], m_Error)) << m_Error;
+        coarse[group] = ExtractMeshClusterLODCoarseGroup(model.GetMesh(page.Mesh), page);
+        reducedGroups += page.IndexCount > page.CoarseIndexCount && page.Error > 0.0f ? 1 : 0;
     }
-    std::sort(triangles.begin(), triangles.end());
-    EXPECT_EQ(triangles, OrientedTriangles(m_Source.GetMesh(0)));
+    ASSERT_GT(reducedGroups, groupCount / 2) << "the cuts must choose between real reductions";
+    const auto sourceBoundary = BoundaryEdges(curved);
+
+    // The feature bounds the instance scale by the Frobenius norm of its basis: sqrt(3) for identity.
+    const double scale = std::sqrt(3.0);
+    constexpr double kVerticalFieldOfView = 1.0471976; // 60 degrees
+    const double projectionScaleY = 1.0 / std::tan(0.5 * kVerticalFieldOfView);
+    constexpr uint32 kViewportHeight = 1080;
+    const std::array<Mathematics::Vector3, 5> eyes{{
+        {24.0f, 3.0f, 24.0f}, {-6.0f, 4.0f, -6.0f}, {60.0f, 10.0f, 24.0f}, {10.0f, 1.5f, 40.0f}, {24.0f, 80.0f, -40.0f}}};
+    const std::array<float, 4> budgetsPx{0.25f, 1.0f, 4.0f, 16.0f};
+    size_t mixedCuts = 0;
+    size_t mixedThresholdCuts = 0;
+    size_t cuts = 0;
+    Vector<double> errorPx(groupCount);
+    Vector<uint32> order(groupCount);
+    for (const auto& eye : eyes)
+    {
+        for (uint32 group = 0; group < groupCount; ++group)
+        {
+            const Mathematics::Vector3& low = manifest->Pages[group].MinBounds;
+            const Mathematics::Vector3& high = manifest->Pages[group].MaxBounds;
+            const double radius = (high - low).Length() * 0.5 * scale;
+            const double centerDistance = ((low + high) * 0.5f - eye).Length();
+            errorPx[group] = Rendering::ClusterGroupErrorPx(manifest->Pages[group].Error, scale, centerDistance, radius,
+                                                            projectionScaleY, kViewportHeight, 0.0f, false);
+        }
+        for (const float budgetPx : budgetsPx)
+        {
+            Vector<bool> refined(groupCount);
+            for (uint32 group = 0; group < groupCount; ++group)
+                refined[group] = errorPx[group] > budgetPx * Rendering::kClusterRefineBudgetScale;
+            EXPECT_EQ(CountSelectedCutCracks(coarse, fine, refined, sourceBoundary), 0u)
+                << "eye " << eye.x << ',' << eye.y << ',' << eye.z << " budget " << budgetPx;
+            mixedThresholdCuts += IsMixedCut(refined) ? 1 : 0;
+            mixedCuts += IsMixedCut(refined) ? 1 : 0;
+            ++cuts;
+        }
+        for (uint32 group = 0; group < groupCount; ++group)
+            order[group] = group;
+        std::stable_sort(order.begin(), order.end(), [&errorPx](uint32 a, uint32 b) { return errorPx[a] > errorPx[b]; });
+        Vector<bool> refined(groupCount, false);
+        for (uint32 prefix = 0; prefix < groupCount; ++prefix)
+        {
+            refined[order[prefix]] = true;
+            EXPECT_EQ(CountSelectedCutCracks(coarse, fine, refined, sourceBoundary), 0u)
+                << "eye " << eye.x << ',' << eye.y << ',' << eye.z << " prefix " << prefix + 1;
+            mixedCuts += IsMixedCut(refined) ? 1 : 0;
+            ++cuts;
+        }
+    }
+    EXPECT_GT(mixedCuts, cuts / 2) << "most cuts must mix coarse and fine groups";
+    EXPECT_GE(mixedThresholdCuts, eyes.size()) << "the camera cuts must mix coarse and fine groups";
 }
 
 TEST_F(MeshClusterLODAssetTest, RejectsTruncatedAndCorruptedAssetsTransactionally)
@@ -769,26 +1121,33 @@ TEST_F(MeshClusterLODAssetTest, RefusesNonopaqueNonfiniteAndUnresolvedTextureMat
     }
 }
 
-TEST_F(MeshClusterLODAssetTest, ManualLodGenerationAndCookingKeepTheSingleCookedLevel)
+// The far chain simplifies the whole coarse mesh. LOD0 stays the coarse cover that fine pages
+// replace, and every generated level carries the coarse error on top of its own.
+TEST_F(MeshClusterLODAssetTest, LodGenerationBuildsAFarChainOverTheUnchangedCoarseCover)
 {
+    Mesh wavy = Testing::MakeClusterLODGrid();
+    wavy.MaterialIndex = 0;
+    for (auto& vertex : wavy.Vertices)
+        vertex.Position[1] = std::sin(vertex.Position[0] * 0.21f) * std::sin(vertex.Position[2] * 0.19f);
+    m_Source.SetMeshesForTest({std::move(wavy)});
     const auto path = m_Temporary.Path() / "generated.gecluster";
     ASSERT_TRUE(Cook(path)) << m_Error;
     ModelAsset model(GUID::Generate(), path);
     ASSERT_TRUE(model.Load());
     const auto original = model.GetClusterLODManifest();
-    Vector<std::set<Edge>> boundaries;
-    for (const Mesh& mesh : model.GetMeshes())
-        boundaries.push_back(BoundaryEdges(mesh));
-    EXPECT_EQ(model.GenerateLODs({}, false), 1u);
-    const auto cache = m_Temporary.Path() / "refused.gelod";
-    EXPECT_EQ(model.CookLODCache({}, false, cache), 0u);
-    EXPECT_FALSE(std::filesystem::exists(cache));
+    const Vector<uint32> coarseIndices = model.GetMesh(0).Indices;
+    const float coarseError = MeshClusterLODRelativeCoarseError(*original, 0, model.GetMesh(0));
+    ASSERT_GT(coarseError, 0.0f);
+    EXPECT_GT(model.GenerateLODs({}, false), 1u);
     EXPECT_EQ(model.GetClusterLODManifest(), original);
-    for (size_t group = 0; group < boundaries.size(); ++group)
-    {
-        EXPECT_TRUE(model.GetMesh(static_cast<uint32>(group)).ExtraLODs.empty());
-        EXPECT_EQ(BoundaryEdges(model.GetMesh(static_cast<uint32>(group))), boundaries[group]);
-    }
+    const Mesh& mesh = model.GetMesh(0);
+    EXPECT_EQ(mesh.Indices, coarseIndices);
+    ASSERT_FALSE(mesh.ExtraLODErrors.empty());
+    for (size_t level = 0; level < mesh.ExtraLODErrors.size(); ++level)
+        if (mesh.ExtraLODSloppy.empty() || mesh.ExtraLODSloppy[level] == 0)
+            EXPECT_GE(mesh.ExtraLODErrors[level], coarseError);
+    const auto cache = m_Temporary.Path() / "chain.gelod";
+    EXPECT_GT(model.CookLODCache({}, false, cache), 0u);
 }
 
 TEST_F(MeshClusterLODAssetTest, RefusesRecookingAnAlreadyClusteredSource)
@@ -824,12 +1183,19 @@ TEST_F(MeshClusterLODAssetTest, RejectsRehashedInvalidDirectoriesBeforePublishin
     ASSERT_TRUE(Testing::ReadTestFileBytes(path, valid));
     constexpr size_t kMaterialLengthOffset = 36;
     constexpr size_t kMaterialTextOffset = 40;
+    // A page record: offset, bytes, hash, encoded vertex bytes, vertex and index counts, error,
+    // coarse range, bounds.
+    constexpr size_t kPageBytes = 3 * sizeof(uint64) + 4 * sizeof(uint32) + 2 * sizeof(uint32) + 6 * sizeof(float);
     uint32 materialBytes = 0;
     ASSERT_GT(valid.size(), kMaterialTextOffset);
     std::memcpy(&materialBytes, valid.data() + kMaterialLengthOffset, sizeof(materialBytes));
-    const size_t firstPage = kMaterialTextOffset + materialBytes + 2 * sizeof(uint32);
-    ASSERT_GT(valid.size(), firstPage + 36);
-    for (uint32 fault = 0; fault < 5; ++fault)
+    const size_t meshCount = kMaterialTextOffset + materialBytes + sizeof(uint32);
+    MeshClusterLODAssetData decoded;
+    ASSERT_TRUE(DecodeMeshClusterLODAsset(valid, decoded, m_Error)) << m_Error;
+    ASSERT_EQ(decoded.CoarseMeshes.size(), 1u);
+    // The one mesh's page table ends the file.
+    const size_t firstPage = valid.size() - decoded.Manifest.Pages.size() * kPageBytes;
+    for (uint32 fault = 0; fault < 9; ++fault)
     {
         SCOPED_TRACE(fault);
         Vector<uint8> bytes = valid;
@@ -839,14 +1205,18 @@ TEST_F(MeshClusterLODAssetTest, RejectsRehashedInvalidDirectoriesBeforePublishin
         {
         case 0: std::memcpy(bytes.data() + 28, &maximumBytes, sizeof(maximumBytes)); break;
         case 1: std::memcpy(bytes.data() + kMaterialTextOffset + materialBytes, &maximumCount, sizeof(maximumCount)); break;
-        case 2: std::memcpy(bytes.data() + firstPage - sizeof(uint32), &maximumCount, sizeof(maximumCount)); break;
-        case 3: std::memcpy(bytes.data() + firstPage + 24, &maximumCount, sizeof(maximumCount)); break;
-        case 4:
+        case 2: std::memcpy(bytes.data() + meshCount, &maximumCount, sizeof(maximumCount)); break;
+        case 3: std::memcpy(bytes.data() + firstPage - sizeof(uint32), &maximumCount, sizeof(maximumCount)); break;
+        case 4: std::memcpy(bytes.data() + firstPage + 28, &maximumCount, sizeof(maximumCount)); break;
+        case 5:
         {
             const float invalid = std::numeric_limits<float>::quiet_NaN();
-            std::memcpy(bytes.data() + firstPage + 32, &invalid, sizeof(invalid));
+            std::memcpy(bytes.data() + firstPage + 36, &invalid, sizeof(invalid));
             break;
         }
+        case 6: std::memcpy(bytes.data() + firstPage + 44, &maximumCount, sizeof(maximumCount)); break;
+        case 7: std::memcpy(bytes.data() + firstPage + 24, &maximumCount, sizeof(maximumCount)); break;
+        case 8: std::memcpy(bytes.data() + firstPage + 32, &maximumCount, sizeof(maximumCount)); break;
         }
         constexpr size_t kHeaderBytes = 20;
         const uint64 checksum = Hashing::Fnv1a64(bytes.data() + kHeaderBytes, bytes.size() - kHeaderBytes);

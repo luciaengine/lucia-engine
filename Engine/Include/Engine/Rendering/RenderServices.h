@@ -447,14 +447,13 @@ class RenderServices
     Hlod::HlodRuntime& GetHlodRuntime() { return *m_HlodRuntime; }
     const Hlod::HlodRuntime& GetHlodRuntime() const { return *m_HlodRuntime; }
 
-    // HLOD residency-flip escalation (design v0.2 §5.1). A cluster flip evicts the
-    // losing set directly, but re-adding the winning set (proxy on enter, members
-    // on exit) is a full-lane Op::Add. HLODSelectSystem requests the full lane
-    // here on any flip; RenderExtractionSystem consumes the request when it
-    // evaluates fast-path preconditions. Routed through RenderServices so the two
-    // systems stay decoupled (neither holds a pointer to the other).
-    void RequestHlodResidencyExtraction() { m_HlodResidencyPending.store(true, std::memory_order_relaxed); }
-    bool ConsumeHlodResidencyExtractionPending() { return m_HlodResidencyPending.exchange(false, std::memory_order_relaxed); }
+    // Residency-flip escalation. A system that swaps which entities draw (an HLOD
+    // cluster flip, a cluster LOD split) evicts the losing set directly, but re-adding
+    // the winning set is a full-lane Op::Add. The system requests the full lane here;
+    // RenderExtractionSystem consumes the request when it evaluates fast-path
+    // preconditions, so neither system holds a pointer to the other.
+    void RequestResidencyExtraction() { m_ResidencyExtractionPending.store(true, std::memory_order_relaxed); }
+    bool ConsumeResidencyExtractionPending() { return m_ResidencyExtractionPending.exchange(false, std::memory_order_relaxed); }
 
     // L1a point-shadow whole-light on-dirty caching signal. A per-world monotonic
     // version of the renderable scene's shadow-caster content. RenderExtractionSystem
@@ -1652,6 +1651,10 @@ class RenderServices
     void SetWorldRenderContentDigest(uint64 worldId, uint64 digest);
     // Returns the world's last published content digest (0 = never published).
     uint64 GetWorldRenderContentDigest(uint64 worldId) const;
+    /// Wrapping sum of every feature's IRenderFeature::ContentDigest for worldId: the
+    /// terrain, ocean and other feature content a reflection probe photographs.
+    /// Feature order cannot move it. Thread-safe.
+    uint64 ComputeFeatureContentDigest(uint64 worldId) const;
 
     // Blends the registry override (if any) with the world fallback — stays on
     // RenderServices because both halves are reachable only here.
@@ -2080,7 +2083,7 @@ class RenderServices
     // Initialize). The residency-flip request routed from HLODSelectSystem to
     // RenderExtractionSystem lives here so neither system references the other.
     std::unique_ptr<Hlod::HlodRuntime> m_HlodRuntime;
-    std::atomic<bool> m_HlodResidencyPending{false};
+    std::atomic<bool> m_ResidencyExtractionPending{false};
 
     // The material stack (A1.3). Owns the registry, compiler, shader-compilation
     // cache, pipeline-variant cache, prewarm service + drain, build context, the

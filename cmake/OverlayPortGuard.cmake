@@ -1,8 +1,8 @@
 # Overlay-port freshness guard.
 #
-# The overlay ports in cmake/ports/, and on macOS those in cmake/macos-ports/
-# (GE_VCPKG_MACOS_OVERLAY_PORTS, set by Dependencies.cmake for *-osx
-# triplets), only reach a build if the vcpkg install
+# The overlay ports in cmake/ports/, and those in the platform directory
+# (GE_VCPKG_PLATFORM_OVERLAY_PORTS, set by Dependencies.cmake: cmake/macos-ports/
+# for *-osx and cmake/linux-ports/ for *-linux triplets), only reach a build if the vcpkg install
 # root the build links against was populated AFTER the port changed. Tracking
 # the port files as configure dependencies (see the CMAKE_CONFIGURE_DEPENDS
 # block in the top-level CMakeLists.txt) makes an edit trigger a reconfigure,
@@ -92,8 +92,8 @@ function(ge_check_overlay_port_freshness)
     string(REPLACE ";" "\;" statusText "${statusText}")
 
     set(portManifestGlobs "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ports/*/vcpkg.json")
-    if(GE_VCPKG_MACOS_OVERLAY_PORTS)
-        list(APPEND portManifestGlobs "${GE_VCPKG_MACOS_OVERLAY_PORTS}/*/vcpkg.json")
+    if(GE_VCPKG_PLATFORM_OVERLAY_PORTS)
+        list(APPEND portManifestGlobs "${GE_VCPKG_PLATFORM_OVERLAY_PORTS}/*/vcpkg.json")
     endif()
     file(GLOB portManifests ${portManifestGlobs})
     set(checkedCount 0)
@@ -102,7 +102,7 @@ function(ge_check_overlay_port_freshness)
     foreach(manifestPath IN LISTS portManifests)
         file(READ "${manifestPath}" manifestJson)
         # The port's directory as the messages name it: cmake/ports/<port> or
-        # cmake/macos-ports/<port>.
+        # the platform directory's <port>.
         cmake_path(GET manifestPath PARENT_PATH portDir)
         file(RELATIVE_PATH portDirText "${CMAKE_CURRENT_SOURCE_DIR}" "${portDir}")
 

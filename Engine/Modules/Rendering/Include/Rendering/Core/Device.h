@@ -2162,16 +2162,14 @@ class IDevice
         return WaitTimelineSemaphoreValue(t.sem, t.value, timeoutNs);
     }
 
-    // The graphics timeline value the most recent graphics submit will signal. Waiting it
-    // retires exactly the graphics work already submitted — the scoped alternative to
-    // WaitForIdle for a caller that must not rewrite state (descriptor elements, persistent
-    // buffers) the GPU may still be reading. Unlike a device drain it makes no device-wide
-    // idleness claim, so it never reroutes deferred destruction to the immediate path.
-    // Invalid before the first submit, and on a backend that keeps no graphics timeline —
-    // the same condition under which the rest of this token vocabulary (readback rings,
-    // SubmitTextureUploads, RGFrame::SubmissionToken) is unavailable. Both cases read as
-    // GpuSyncStatus::Unknown, so a caller that must distinguish them owns its own evidence.
-    virtual GpuSyncToken LastGraphicsSubmissionToken() const { return {}; }
+    /// The timeline value of the newest submit on `queue`; waiting it retires all work submitted there.
+    /// A queue with no dedicated family shares the token of the queue it aliases. Invalid (reads as
+    /// GpuSyncStatus::Unknown) before the first submit on that queue or without a timeline for it.
+    virtual GpuSyncToken LastSubmissionToken(QueueType queue) const
+    {
+        (void)queue;
+        return {};
+    }
 
     // True when the most recently submitted graphics work has completed on the
     // GPU (a non-blocking timeline/fence poll — never stalls). A consumer that

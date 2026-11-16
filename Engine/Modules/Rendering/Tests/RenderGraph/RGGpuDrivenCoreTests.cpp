@@ -789,7 +789,7 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
     pipeline->BeginFrame(&frame, scene.get());
     ViewCullingInput hzbView = MakeView(/*viewId=*/9, kInstances);
     hzbView.reserveOcclusionSlice = true;
-    hzbView.renderLayerMask = 1u;
+    hzbView.renderLayerMask = RenderLayerMask::FromLayer(0);
     hzbView.viewMatrix = Matrix4x4::Identity();
     hzbView.projMatrix = Matrix4x4::Identity();
     hzbView.viewProjMatrix = Matrix4x4::Identity();
@@ -797,7 +797,7 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
     auto frustumView = hzbView;
     frustumView.viewId = 10u;
     frustumView.reserveOcclusionSlice = false;
-    frustumView.renderLayerMask = 2u;
+    frustumView.renderLayerMask = RenderLayerMask::FromLayer(1);
     pipeline->SubmitView(frustumView);
     pipeline->EndFrame();
     ASSERT_TRUE(pipeline->GetVisibilityRG().IsValid());

@@ -97,6 +97,7 @@ struct HzbCullingPassData
     RenderGraph::RGBuffer Instances{}, Visibility{}, PrevVisible{}, Stats{};
     RenderGraph::RGTexture Hzb{};
     BufferHandle CullingData{}, StatsBuffer{};
+    CullDeformationMargins Margins{};
     size_t CullingDataOffset = 0;
     size_t InstanceBytes = 0;
     uint32_t VisibilityBytes = 0, PrevVisibleBytes = 0, StatsBytes = 0;
@@ -111,7 +112,7 @@ bool PrepareHzbCullingPass(RenderGraph::RGPrepareContext& context, HzbCullingPas
     data.StatsBuffer = {};
     IDevice* device = context.GetDevice();
     if (device == nullptr || !data.Pipeline.IsValid() || !data.Sampler.IsValid() ||
-        !data.CullingData.IsValid())
+        !data.CullingData.IsValid() || !data.Margins.Valid())
         return false;
     const BufferHandle instances = context.GetBuffer(data.Instances);
     const BufferHandle visibility = context.GetBuffer(data.Visibility);
@@ -135,6 +136,8 @@ bool PrepareHzbCullingPass(RenderGraph::RGPrepareContext& context, HzbCullingPas
     device->UpdateStorageBufferBinding(data.DescriptorSet, 3, previousVisible, 0, data.PrevVisibleBytes);
     device->UpdateCombinedImageSamplerBinding(data.DescriptorSet, 4, hzb, data.Sampler);
     device->UpdateStorageBufferBinding(data.DescriptorSet, 5, stats, 0, data.StatsBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 6, data.Margins.Buffer, data.Margins.Offset,
+                                      data.Margins.Bytes);
     data.StatsBuffer = stats;
     return true;
 }
@@ -863,6 +866,7 @@ void GPUCullingPipeline::ScheduleHzbCullPass(RenderGraph::RGFrame& frame,
     data->Hzb = hzb;
     data->CullingData = cd.Buffer;
     data->CullingDataOffset = cd.Offset;
+    data->Margins = margins;
     data->InstanceBytes = instanceBytes;
     data->VisibilityBytes = visBytes;
     data->PrevVisibleBytes = prevVisibleBytes;

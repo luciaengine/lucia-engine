@@ -127,7 +127,7 @@ bool CBTInstance::InitializeRoots(uint32_t domainMode)
     // A live re-seed replaces persistent topology behind its previous users. Retire their
     // graphics users first; unrelated compute/transfer work does not need a drain.
     if (!firstDrawResourceInit)
-        m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
+        m_Device->WaitGpuSyncToken(m_Device->LastSubmissionToken(IDevice::QueueType::Graphics));
 
     m_DomainMode = domainMode;
     m_BaseDepth = (domainMode == kDomainSpherical) ? kSphereBaseDepth : kDefaultBaseDepth;
@@ -324,7 +324,7 @@ void CBTInstance::SubmitUpdatesAndWait(CBTClassifyDesc classify, const CBTFrameP
         cl->End();
         std::vector<CommandList*> lists{cl.get()};
         m_Device->ExecuteCommandLists(lists);
-        m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
+        m_Device->WaitGpuSyncToken(m_Device->LastSubmissionToken(IDevice::QueueType::Graphics));
     }
 }
 
@@ -963,7 +963,7 @@ std::vector<uint32_t> CBTInstance::DebugReadWords(CBTBinding binding, uint32_t w
     cl->End();
     std::vector<CommandList*> lists{cl.get()};
     m_Device->ExecuteCommandLists(lists);
-    m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
+    m_Device->WaitGpuSyncToken(m_Device->LastSubmissionToken(IDevice::QueueType::Graphics));
     const void* mapped = m_Device->MapBuffer(readback);
     if (mapped)
     {
@@ -1012,7 +1012,7 @@ uint32_t CBTInstance::ReadSharedReadbackWord(CBTBinding binding, uint64_t readba
     cl->End();
     std::vector<CommandList*> lists{cl.get()};
     m_Device->ExecuteCommandLists(lists);
-    m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
+    m_Device->WaitGpuSyncToken(m_Device->LastSubmissionToken(IDevice::QueueType::Graphics));
 
     const void* mapped = m_Device->MapBuffer(readback);
     if (!mapped)

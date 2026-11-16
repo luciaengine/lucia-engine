@@ -5,8 +5,11 @@
 // Culling envelope: with W = length(windStrength.xyz), each term below is bounded
 // by its largest weight, with no assumption about the directions it adds along:
 // trunk .32 W, branch .35 W, flutter .34 x 1.45 W along windDir + .45 lateralDir,
-// lift .12 x .34 W. The sum is 1.204 W.
+// lift .12 x .34 W. The sum is 1.204 W. Wind volumes can make the wind stronger
+// than W; the tree extraction adds that bound to each instance's culling sphere.
 // @deformationEnvelope 1.21 scaledBy=windStrength
+
+#include "Includes/weather_wind_resolve.glsl"
 
 float EZTreeWindHash(vec3 p)
 {
@@ -15,9 +18,13 @@ float EZTreeWindHash(vec3 p)
 
 vec3 ModifyVertex(vec3 position, InstanceData inst)
 {
-    // Mat.uParams1: xyz = wind direction/strength, w = enabled.
-    // Mat.uParams2: x = frequency, y = spatial scale, z = tree height, w = base Y.
-    if (Mat.uParams1.w < 0.5)
+    // Mat.uParams1: xyz = authored wind in tree space times the part's strength scale,
+    // w = that strength scale, 0 when the tree has no wind.
+    // Mat.uParams2: x = authored gust frequency, y = authored spatial scale,
+    // z = tree height, w = base Y. All are per tree variant: the wind volumes at the
+    // instance position make the wind of each tree.
+    float strengthScale = Mat.uParams1.w;
+    if (strengthScale < 0.0001)
         return position;
 
     float heightScale = max(Mat.uParams2.z, 0.001);
@@ -25,8 +32,21 @@ vec3 ModifyVertex(vec3 position, InstanceData inst)
     float trunkWeight = height01 * height01 * (3.0 - 2.0 * height01);
     float branchWeight = pow(height01, 1.35);
 
-    float time = inst.deformationTimeSeconds * max(Mat.uParams2.x, 0.0);
-    float spatialScale = max(Mat.uParams2.y, 0.001);
+    // The authored wind turns and scales with the tree; the volumes blend over it in
+    // world space, as WindVolumeResolver::ResolveAt does on the CPU.
+    mat3 basis = mat3(inst.modelMatrix);
+    GE_ResolvedWind baseWind = GE_DefaultWind();
+    baseWind.velocity = basis * (Mat.uParams1.xyz / strengthScale);
+    baseWind.frequency = max(Mat.uParams2.x, 0.0);
+    baseWind.gustScale = max(Mat.uParams2.y, 0.001);
+    vec3 treeWorld = vec3(inst.sector) * GE_SECTOR_SIZE + inst.modelMatrix[3].xyz;
+    GE_ResolvedWind resolved = GE_ResolveWeatherWind(treeWorld, baseWind);
+    vec3 wind = vec3(dot(resolved.velocity, normalize(basis[0])),
+                     dot(resolved.velocity, normalize(basis[1])),
+                     dot(resolved.velocity, normalize(basis[2]))) * strengthScale;
+
+    float time = inst.deformationTimeSeconds * resolved.frequency;
+    float spatialScale = resolved.gustScale;
     float spatial = (position.x * 0.21 + position.y * 0.13 + position.z * 0.17) / spatialScale;
     // Every seed is the same at every vertex of a leaf card, so a card's corners never move with
     // unrelated phases and tear into a sliver; the card still bends smoothly with the position terms
@@ -49,7 +69,6 @@ vec3 ModifyVertex(vec3 position, InstanceData inst)
     float edgeFlutter = 0.35;
 #endif
 
-    vec3 wind = Mat.uParams1.xyz;
     float windMagnitude = length(wind);
     if (windMagnitude <= 0.0001)
         return position;

@@ -4,6 +4,7 @@
 #include "Engine/Rendering/FeatureDeclareContext.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowFeedback.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowPageCache.h"
 #include "Rendering/Core/ReverseZ.h"
 
 #include <algorithm>
@@ -27,7 +28,6 @@ struct VirtualShadowRenderFeature::PreparedPage
 
 namespace
 {
-constexpr uint32_t kPageDrawBudget = 24;
 
 std::optional<Rendering::CameraData> PageCamera(const VirtualShadowFeedbackProjection& projection,
     const VirtualShadowPage& page, const Rendering::CameraData& camera)
@@ -119,7 +119,7 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
     uint32_t renderCount = 0;
     for (const auto& work : plan.Work)
     {
-        if (work.Tile == kUnmappedShadowPage || (work.NeedsRender && renderCount == kPageDrawBudget))
+        if (work.Tile == kUnmappedShadowPage || (work.NeedsRender && renderCount == kVirtualShadowPageRenderBudget))
             continue;
         size_t index = 0;
         std::optional<uint32_t> bit;

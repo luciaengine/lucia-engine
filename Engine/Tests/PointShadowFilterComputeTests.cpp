@@ -4,7 +4,7 @@
 #include "Mathematics/Vector4.h"
 #include "Platform/Shell.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "TestDeviceHelper.h"
 
 #include <algorithm>
@@ -69,7 +69,9 @@ class PointShadowFilterComputeTest : public ::testing::Test
         m_Sampler = m_Device->CreateSampler(
             Rendering::SamplerDesc::ShadowComparePCF("Shadow.PointFilterRegression"));
         ASSERT_TRUE(m_Sampler.IsValid());
-        Renderer::PopulatePointShadowGeometry(m_Geometry, m_LightPosition, 20.0f, 0, 0, nullptr);
+        Renderer::PopulatePointShadowGeometry(m_Geometry,
+                                              GameEngine::Mathematics::WorldPosition::FromVector3(m_LightPosition),
+                                              20.0f, 0, 0, nullptr);
         ASSERT_TRUE(m_Geometry.valid);
     }
 

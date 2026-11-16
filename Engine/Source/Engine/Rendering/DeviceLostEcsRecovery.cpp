@@ -65,7 +65,7 @@ DeviceLostEcsRecoveryReport RecoverEcsComponentHandlesAfterDeviceRebuild(
     //     hook so the first extraction after resume takes the full lane even if the
     //     probe path is bypassed (extraction feed disabled, caches unprimed). One
     //     boolean, consumed once — free at steady state.
-    renderServices.RequestHlodResidencyExtraction();
+    renderServices.RequestResidencyExtraction();
     report.FullExtractionRequested = true;
 
     Logger::Log::Warning(

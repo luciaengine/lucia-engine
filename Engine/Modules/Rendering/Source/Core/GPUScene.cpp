@@ -144,6 +144,7 @@ struct SceneCullingPassData
     BufferHandle CullingData{};
     size_t CullingDataOffset = 0, InstanceBytes = 0;
     uint32_t VisibilityBytes = 0;
+    CullDeformationMargins Margins{};
     CullingPushConstants PushConstants{};
     DescriptorSetHandle DescriptorSet{};
 };
@@ -152,7 +153,7 @@ bool PrepareSceneCullingPass(RenderGraph::RGPrepareContext& context, SceneCullin
 {
     data.DescriptorSet = {};
     IDevice* device = context.GetDevice();
-    if (device == nullptr || !data.Pipeline.IsValid() || !data.CullingData.IsValid())
+    if (device == nullptr || !data.Pipeline.IsValid() || !data.CullingData.IsValid() || !data.Margins.Valid())
         return false;
     const BufferHandle instances = context.GetBuffer(data.Instances);
     const BufferHandle visibility = context.GetBuffer(data.Visibility);
@@ -170,6 +171,8 @@ bool PrepareSceneCullingPass(RenderGraph::RGPrepareContext& context, SceneCullin
     device->UpdateStorageBufferBinding(data.DescriptorSet, 1, data.CullingData, data.CullingDataOffset,
                                       sizeof(GPUCullingData));
     device->UpdateStorageBufferBinding(data.DescriptorSet, 2, visibility, 0, data.VisibilityBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 3, data.Margins.Buffer, data.Margins.Offset,
+                                      data.Margins.Bytes);
     return true;
 }
 
@@ -955,6 +958,7 @@ void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSce
     data->CullingDataOffset = cd.Offset;
     data->InstanceBytes = instBytes;
     data->VisibilityBytes = visibilityTotalBytes;
+    data->Margins = margins;
     data->PushConstants = pc;
 
     frame.AddPass(passName, static_cast<int32_t>(PassPhase::kEarlySetup),

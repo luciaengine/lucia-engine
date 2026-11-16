@@ -67,6 +67,7 @@
 #include <fstream>
 #include <memory>
 #include <tuple>
+#include <span>
 #include <vector>
 
 using namespace GameEngine;
@@ -108,7 +109,7 @@ struct SubmissionSnapshot
 };
 
 std::vector<SubmissionSnapshot> SnapshotSubmissions(
-    const std::vector<WorldSubmissionRecord>& subs)
+    std::span<const WorldSubmissionRecord> subs)
 {
     std::vector<SubmissionSnapshot> out;
     out.reserve(subs.size());
@@ -119,7 +120,7 @@ std::vector<SubmissionSnapshot> SnapshotSubmissions(
         snap.meshHandle = static_cast<uint64>(s.meshHandle);
         snap.materialGuid = s.material ? s.material->GetGuid() : GUID::Null();
         snap.instanceIndex = s.instanceIndex;
-        snap.renderLayerMask = s.renderLayerMask;
+        snap.renderLayerMask = s.renderLayerMask.Bits;
         snap.flagsMasked = s.flags & 0x0000FFFFu;
         out.push_back(snap);
     }
@@ -290,7 +291,7 @@ TEST_F(ExtractionFastPathTest, MeshRendererValueEditEscalatesViaProbe)
     ASSERT_NE(flagsBefore & 1u, 0u) << "castShadows expected on by default";
 
     if (auto* mr = h.world->GetComponentForWrite<MeshRenderer>(e.GetHandle()))
-        mr->castShadows = false;
+        mr->shadowCasting = ShadowCasting::Off;
     h.StepFrame();
     EXPECT_EQ(h.Stats().FastFrame, 0u);
     EXPECT_NE(h.Stats().EscalationReasonBits &
@@ -314,7 +315,7 @@ TEST_F(ExtractionFastPathTest, LayerOnlyChangesPublishPayloadAndInvalidateShadow
     const auto siblingSlot = h.world->GetComponent<MeshGPUData>(sibling.GetHandle())->instanceIndex;
     const auto original = h.rs.GetGPUScene()->GetInstances()[slot];
     const auto epoch = h.rs.ShadowCasterContentVersion(h.worldId);
-    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->renderLayerMask = 0;
+    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->RenderLayers = RenderLayerMask{0};
     h.StepFrame();
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[slot].renderLayerMask, 0u);
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[siblingSlot].renderLayerMask, 1u);
@@ -327,8 +328,8 @@ TEST_F(ExtractionFastPathTest, LayerOnlyChangesPublishPayloadAndInvalidateShadow
     h.StepFrame();
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[slot].renderLayerMask, 0u)
         << "transform feed must retain the authored mask";
-    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->renderLayerMask = 0x80000000u;
-    h.rs.Views().SetViewRenderLayerMask(h.viewId, 0x80000000u);
+    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->RenderLayers = RenderLayerMask{0x80000000u};
+    h.rs.Views().SetViewRenderLayerMask(h.viewId, RenderLayerMask{0x80000000u});
     h.StepFrame();
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[slot].renderLayerMask, 0x80000000u);
     ASSERT_EQ(h.extraction->GetSubmissionsForTest().size(), 1u);
@@ -409,7 +410,7 @@ TEST_F(ExtractionFastPathTest, LayerPayloadRecoversAnOutOfRangeDerivedSlot)
     MeshGPUData stale{};
     stale.instanceIndex = 64;
     actor.Set(stale);
-    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->renderLayerMask = 0;
+    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->RenderLayers = RenderLayerMask{0};
     h.StepFrame();
     const auto* gpu = h.world->GetComponent<MeshGPUData>(actor.GetHandle());
     ASSERT_NE(gpu, nullptr);
@@ -573,7 +574,7 @@ TEST_F(ExtractionFastPathTest, UnregisterSubmeshEventEscalates)
     e.Set(MakeTransformAt(3.0f, 0.0f, 0.0f));
     MeshRenderer mr{};
     mr.meshGpuHandleId = static_cast<uint64>(second);
-    mr.renderLayerMask = 0x1u;
+    mr.RenderLayers = RenderLayerMask{0x1u};
     mr.materialAssetGuid.Set(h.materialGuid);
     e.Set(mr);
     h.world->ProcessCommands();
@@ -623,7 +624,7 @@ TEST_F(ExtractionFastPathTest, ViewOpenCloseAndMaskEditEscalate)
     // Open a second matching view.
     ViewId second = h.rs.Views().AllocateView("FastPathView2", h.cameraId);
     h.rs.Views().SetViewWorldId(second, h.worldId);
-    h.rs.Views().SetViewRenderLayerMask(second, 0x1u);
+    h.rs.Views().SetViewRenderLayerMask(second, RenderLayerMask{0x1u});
     h.StepFrame();
     EXPECT_EQ(h.Stats().FastFrame, 0u);
     EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationViewSet,
@@ -633,7 +634,7 @@ TEST_F(ExtractionFastPathTest, ViewOpenCloseAndMaskEditEscalate)
     ASSERT_TRUE(h.PrimeToFastPath());
 
     // Layer-mask edit invalidates the cached per-view emission set.
-    h.rs.Views().SetViewRenderLayerMask(second, 0x2u);
+    h.rs.Views().SetViewRenderLayerMask(second, RenderLayerMask{0x2u});
     h.StepFrame();
     EXPECT_EQ(h.Stats().FastFrame, 0u);
     EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationViewSet,
@@ -663,7 +664,7 @@ TEST_F(ExtractionFastPathTest, OnDemandViewChurnLeavesContentVersions)
                                                Rendering::ViewPurpose::UtilityCapture,
                                                Rendering::ViewParticipation::OnDemand);
     h.rs.Views().SetViewWorldId(capture, h.worldId);
-    h.rs.Views().SetViewRenderLayerMask(capture, 0x1u);
+    h.rs.Views().SetViewRenderLayerMask(capture, RenderLayerMask{0x1u});
     ASSERT_TRUE(h.PrimeToFastPath());
     const uint64_t renderVersion = h.rs.RenderContentVersion(h.worldId);
     const uint64_t casterVersion = h.rs.ShadowCasterContentVersion(h.worldId);
@@ -684,7 +685,7 @@ TEST_F(ExtractionFastPathTest, OnDemandViewChurnLeavesContentVersions)
     EXPECT_EQ(h.rs.ShadowCasterContentVersion(h.worldId), casterVersion);
 
     ASSERT_TRUE(h.PrimeToFastPath());
-    h.rs.Views().SetViewRenderLayerMask(h.viewId, 0x2u);
+    h.rs.Views().SetViewRenderLayerMask(h.viewId, RenderLayerMask{0x2u});
     h.StepFrame();
     EXPECT_GT(h.rs.RenderContentVersion(h.worldId), renderVersion);
     EXPECT_GT(h.rs.ShadowCasterContentVersion(h.worldId), casterVersion);
@@ -701,7 +702,7 @@ TEST_F(ExtractionFastPathTest, OnDemandActivationWithAMoverStillBumps)
                                                Rendering::ViewPurpose::UtilityCapture,
                                                Rendering::ViewParticipation::OnDemand);
     h.rs.Views().SetViewWorldId(capture, h.worldId);
-    h.rs.Views().SetViewRenderLayerMask(capture, 0x1u);
+    h.rs.Views().SetViewRenderLayerMask(capture, RenderLayerMask{0x1u});
     ASSERT_TRUE(h.PrimeToFastPath());
     const uint64_t renderVersion = h.rs.RenderContentVersion(h.worldId);
     const uint64_t casterVersion = h.rs.ShadowCasterContentVersion(h.worldId);
@@ -832,13 +833,13 @@ TEST_F(ExtractionFastPathTest, UnsubscribedWorldStaysOnFullLane)
 
     ViewId thumbView = h.rs.Views().AllocateView("ThumbView", h.cameraId);
     h.rs.Views().SetViewWorldId(thumbView, thumbWorld->GetWorldId());
-    h.rs.Views().SetViewRenderLayerMask(thumbView, 0x1u);
+    h.rs.Views().SetViewRenderLayerMask(thumbView, RenderLayerMask{0x1u});
 
     ECS::Entity e = thumbWorld->Create();
     e.Set(MakeTransformAt(0.0f, 0.0f, 0.0f));
     MeshRenderer mr{};
     mr.meshGpuHandleId = static_cast<uint64>(h.meshHandle);
-    mr.renderLayerMask = 0x1u;
+    mr.RenderLayers = RenderLayerMask{0x1u};
     mr.materialAssetGuid.Set(h.materialGuid);
     e.Set(mr);
     thumbWorld->ProcessCommands();
@@ -1165,7 +1166,7 @@ TEST_F(ExtractionFastPathTest, FirstMorphWeightEditSwapsSubmissionMeshHandle)
         MeshRenderer mr{};
         mr.modelAssetGuid.Set(modelGuid);
         mr.meshId = 0;
-        mr.renderLayerMask = 0x1u;
+        mr.RenderLayers = RenderLayerMask{0x1u};
         mr.materialAssetGuid.Set(h.materialGuid);
         morph.Set(mr);
     }
@@ -1345,7 +1346,7 @@ TEST_F(ExtractionFastPathTest, SubsetOverCeilingPinsFullLane)
         e.Set(MakeTransformAt(static_cast<float>(i % 64), 0.0f, static_cast<float>(i / 64)));
         MeshRenderer mr{};
         mr.meshGpuHandleId = static_cast<uint64>(h.meshHandle);
-        mr.renderLayerMask = 0x1u;
+        mr.RenderLayers = RenderLayerMask{0x1u};
         mr.materialAssetGuid.Set(h.materialGuid);
         e.Set(mr);
         e.Set(AnimatorRef{});
@@ -1377,7 +1378,7 @@ namespace
 struct CasterChangeCopy
 {
     uint64_t Version = 0;
-    bool Unattributed = true;
+    ShadowCasterChangeScope Scope = ShadowCasterChangeScope::Unbounded;
     std::vector<ShadowCasterChangeSphere> Spheres;
 };
 
@@ -1445,7 +1446,7 @@ PoolParityCapture RunPoolParityScenario(Rendering::IDevice* device, bool fastPat
         cap.moverIndicesPerFrame.push_back(std::move(movers));
         const ShadowCasterChangeSet changes = h.rs.GetShadowCasterChanges(h.worldId);
         cap.casterChangesPerFrame.push_back(
-            {changes.Version, changes.Unattributed, {changes.Spheres.begin(), changes.Spheres.end()}});
+            {changes.Version, changes.Scope, {changes.Spheres.begin(), changes.Spheres.end()}});
         if (h.Stats().FastFrame != 0)
             ++cap.fastFrames;
     }
@@ -1489,7 +1490,7 @@ TEST_F(ExtractionFastPathTest, PatchLaneOnAPoolMatchesTheFullLane)
         const CasterChangeCopy& a = poolPatch.casterChangesPerFrame[f];
         const CasterChangeCopy& b = inlinePatch.casterChangesPerFrame[f];
         EXPECT_EQ(a.Version, b.Version) << "caster version diverged at frame " << f;
-        EXPECT_EQ(a.Unattributed, b.Unattributed) << "caster attribution diverged at frame " << f;
+        EXPECT_EQ(a.Scope, b.Scope) << "caster attribution diverged at frame " << f;
         ASSERT_EQ(a.Spheres.size(), b.Spheres.size()) << "frame " << f;
         EXPECT_EQ(0, std::memcmp(a.Spheres.data(), b.Spheres.data(),
                                  a.Spheres.size() * sizeof(ShadowCasterChangeSphere)))
@@ -1521,7 +1522,7 @@ TEST_F(ExtractionFastPathTest, PatchLaneOutputsDoNotDependOnTheFeedOrder)
             << "the frame-mover list (in order) depends on the feed order at frame " << f;
         const CasterChangeCopy& a = reverse.casterChangesPerFrame[f];
         const CasterChangeCopy& b = forward.casterChangesPerFrame[f];
-        EXPECT_EQ(a.Unattributed, b.Unattributed) << "caster attribution depends on the feed order at frame " << f;
+        EXPECT_EQ(a.Scope, b.Scope) << "caster attribution depends on the feed order at frame " << f;
         ASSERT_EQ(a.Spheres.size(), b.Spheres.size()) << "frame " << f;
         EXPECT_EQ(0, std::memcmp(a.Spheres.data(), b.Spheres.data(),
                                  a.Spheres.size() * sizeof(ShadowCasterChangeSphere)))
@@ -1590,7 +1591,7 @@ TEST_F(ExtractionFastPathTest, PatchLaneAttributesCastersAgainstTheirPreviousPos
         ASSERT_EQ(expected.size(), kMovers) << "frame " << frame;
 
         const ShadowCasterChangeSet changes = h.rs.GetShadowCasterChanges(h.worldId);
-        ASSERT_FALSE(changes.Unattributed) << "frame " << frame << " lost attribution under the cap";
+        ASSERT_EQ(changes.Scope, ShadowCasterChangeScope::Bounded) << "frame " << frame << " lost attribution under the cap";
         const std::vector<ShadowCasterChangeSphere> actual =
             SortedSpheres({changes.Spheres.begin(), changes.Spheres.end()});
         expected = SortedSpheres(std::move(expected));
@@ -2556,7 +2557,7 @@ TEST_F(ExtractionFastPathTest, ContinuityStampMovesOnAStableHandleMeshReload)
     e.Set(MakeTransformAt(0.0f, 0.0f, 0.0f));
     MeshRenderer mr{};
     mr.meshGpuHandleId = static_cast<uint64>(handles[0]);
-    mr.renderLayerMask = 0x1u;
+    mr.RenderLayers = RenderLayerMask{0x1u};
     mr.materialAssetGuid.Set(h.materialGuid);
     e.Set(mr);
     h.world->ProcessCommands();

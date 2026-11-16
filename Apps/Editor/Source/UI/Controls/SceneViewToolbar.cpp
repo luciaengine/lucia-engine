@@ -290,6 +290,35 @@ void SceneViewToolbar::ResolveWiredButtons()
     m_WiringAllResolved = !m_WiredButtons.empty() && unresolved == 0;
 }
 
+void SceneViewToolbar::ApplyToolOverlayVisible(bool visible)
+{
+    // The overlay lives in the viewport, outside this toolbar: search from the tree root.
+    UIElement* root = this;
+    while (root->GetParent())
+        root = root->GetParent();
+    if (UIElement* overlay = root->FindById("SceneToolOverlay"_sid))
+    {
+        if (visible)
+            overlay->RemoveClass("hidden");
+        else
+            overlay->AddClass("hidden");
+    }
+    if (UIElement* inlineButtons = FindById("InlineToolButtons"_sid))
+    {
+        if (visible)
+            inlineButtons->AddClass("hidden");
+        else
+            inlineButtons->RemoveClass("hidden");
+    }
+    if (UIElement* toggle = FindById("ToolOverlayToggle"_sid))
+    {
+        if (visible)
+            toggle->AddClass("icon-active");
+        else
+            toggle->RemoveClass("icon-active");
+    }
+}
+
 Button* SceneViewToolbar::AcquireUnwiredButton(std::string_view id)
 {
     if (!m_WiringPassOpen)
@@ -695,33 +724,11 @@ void SceneViewToolbar::WireControls()
     {
         btn->SetTooltip("Toggle Tool Overlay");
         btn->RegisterEventHandler(kEventButtonClick, [this](UIEvent& e) {
-            UIElement& b = *e.CurrentTarget;
-            // Find the SceneToolOverlay by walking up to the panel root
-            UIElement* panel = GetParent();
-            while (panel && panel->GetParent())
-                panel = panel->GetParent();
-            if (!panel)
-                return;
-            auto* overlay = panel->FindById("SceneToolOverlay"_sid);
-            auto* inlineButtons = FindById("InlineToolButtons"_sid);
-            bool isActive = b.HasClass("icon-active");
-            if (isActive)
-            {
-                if (overlay)
-                    overlay->AddClass("hidden");
-                if (inlineButtons)
-                    inlineButtons->RemoveClass("hidden");
-                b.RemoveClass("icon-active");
-            }
-            else
-            {
-                if (overlay)
-                    overlay->RemoveClass("hidden");
-                if (inlineButtons)
-                    inlineButtons->AddClass("hidden");
-                b.AddClass("icon-active");
-            }
+            const bool visible = !e.CurrentTarget->HasClass("icon-active");
+            Editor::SceneViewSettings::Get().SetToolOverlayVisible(visible);
+            ApplyToolOverlayVisible(visible);
         });
+        ApplyToolOverlayVisible(Editor::SceneViewSettings::Get().GetToolOverlayVisible());
     }
 
     // Wire the post-processing master toggle

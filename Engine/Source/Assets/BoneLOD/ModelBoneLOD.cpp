@@ -79,8 +79,7 @@ bool AddMeshSignificance(const Mesh& mesh, const Animation::SkeletonData& skelet
         }
     }
 
-    const uint32 jointCount = skeleton.SkinJointCount > 0u && skeleton.JointNodes.size() == skeleton.SkinJointCount
-        ? skeleton.SkinJointCount : skeleton.BoneCount;
+    const uint32 jointCount = skeleton.PaletteJointCount();
     const uint32 influenceCount = mesh.HasSkinning1() ? 8u : 4u;
     for (size_t vertex = 0; vertex < mesh.Vertices.size(); ++vertex)
     {

@@ -9,6 +9,7 @@
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
+#include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
 
 #include "Logger/Logger.h"
@@ -18,6 +19,7 @@
 #include <cstddef>
 #include <cstring>
 #include <limits>
+#include <memory_resource>
 #include <string>
 #include <vector>
 #include "RenderServicesDetail.h"
@@ -82,6 +84,8 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
         return;
     const std::vector<Rendering::GPUInstance>& instances = scene->GetInstances();
     const auto& meshRegistry = GetMeshGPURegistry();
+    const Rendering::ViewDesc* view = m_ViewRegistry.FindViewDesc(viewId);
+    const bool dropEditorHidden = view != nullptr && view->DropsEditorHidden();
 
     // Collect ORDER-DEPENDENT Blend instances. Transmission glass is coerced
     // to Opaque alpha mode (MaterialRegistry), so filtering on Blend naturally
@@ -112,6 +116,8 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     {
         if (!sub.material || !IsOrderDependentBlendMaterial(*sub.material))
             continue;
+        if (!Rendering::InstanceInColorPass(sub.flags, dropEditorHidden))
+            continue; // a color pass: no shadows-only mesh, and in the Scene View nothing its eye hides
         if (sub.instanceIndex >= instances.size())
             continue; // not resident in GPUScene yet (first frame)
         // Mesh entry must be resident to stage draw args; a not-yet-uploaded
@@ -153,10 +159,10 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
         SortedTransparentRunMaterialKey MatKey;
         SortedTransparentRunGeometryKey GeoKey;
     };
-    std::vector<RunKeyEntry> runKeys;
+    std::pmr::vector<RunKeyEntry> runKeys{&scratch.Resource()};
     // Per-unique-material key cache (materials repeat heavily across records).
-    std::vector<std::pair<const Material*, SortedTransparentRunMaterialKey>> matKeyCache;
-
+    std::pmr::vector<std::pair<const Material*, SortedTransparentRunMaterialKey>> matKeyCache{
+        &scratch.Resource()};
 
     std::pmr::vector<RenderSortKey> sortingKeys{&scratch.Resource()};
     std::pmr::vector<ECS::EntityHandle> sortingEntities{&scratch.Resource()};

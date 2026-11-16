@@ -59,17 +59,11 @@ Transform MakeTransformAt(float x, float y, float z) {
                               Mathematics::Vector3{1.0f, 1.0f, 1.0f});
 }
 
-void SetIdentityMatrix(float* m) {
-    for (int i = 0; i < 16; ++i)
-        m[i] = 0.0f;
-    m[0] = m[5] = m[10] = m[15] = 1.0f;
-}
-
 CameraData MakeIdentityCamera() {
     CameraData data{};
-    SetIdentityMatrix(data.view);
-    SetIdentityMatrix(data.proj);
-    SetIdentityMatrix(data.viewProj);
+    data.view = Mathematics::Matrix4x4::Identity();
+    data.proj = Mathematics::Matrix4x4::Identity();
+    data.viewProj = Mathematics::Matrix4x4::Identity();
     return data;
 }
 
@@ -118,7 +112,7 @@ struct EvictionHarness {
         rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(MakeIdentityCamera()), {0.1f, 1000.0f});
         ViewId viewId = rs.Views().AllocateView("HlodEvictView", cameraId);
         rs.Views().SetViewWorldId(viewId, worldId);
-        rs.Views().SetViewRenderLayerMask(viewId, 0x1u);
+        rs.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
 
         extraction = std::make_unique<RenderExtractionSystem>(&rs, /*feedFastPathEnabled=*/true);
         return true;
@@ -135,7 +129,7 @@ struct EvictionHarness {
         e.Set(MakeTransformAt(x, y, z));
         MeshRenderer mr{};
         mr.meshGpuHandleId = static_cast<uint64>(meshHandle);
-        mr.renderLayerMask = 0x1u;
+        mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
         mr.materialAssetGuid.Set(materialGuid);
         e.Set(mr);
         world->ProcessCommands();
@@ -190,7 +184,7 @@ TEST(HlodEvictionStick, EvictedMemberIsNotReAddedAndSurvivesBothLanes) {
     h.StepFrame();
     EXPECT_EQ(h.Stats().FastFrame, 0u) << "residency request must force the full lane";
     EXPECT_NE(h.Stats().EscalationReasonBits &
-                  RenderExtractionSystem::kEscalationHlodResidency, 0u);
+                  RenderExtractionSystem::kEscalationResidency, 0u);
     mg = h.Gpu(e);
     EXPECT_EQ(mg->instanceIndex, 0xFFFFFFFFu) << "evicted member was re-added by the full lane";
     EXPECT_TRUE(mg->hlodEvicted);

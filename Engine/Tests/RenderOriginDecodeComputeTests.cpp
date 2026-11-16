@@ -120,7 +120,7 @@ TEST_F(RenderOriginDecodeComputeTest, DeviceDecodeMatchesPack)
     for (uint32_t i = 0; i < n; ++i)
     {
         instances[i] = GPUInstance{}; // zeroes everything incl. the two packed words
-        Rendering::PackSector(cases[i].x, cases[i].y, cases[i].z, instances[i].sectorPacked[0],
+        Rendering::PackSector(cases[i].X, cases[i].Y, cases[i].Z, instances[i].sectorPacked[0],
                            instances[i].sectorPacked[1]);
     }
 
@@ -170,15 +170,15 @@ TEST_F(RenderOriginDecodeComputeTest, DeviceDecodeMatchesPack)
         // C++ mirror decode of the same bytes (sanity that the pack is what we think).
         int32_t cx, cy, cz;
         Rendering::UnpackSector(instances[i].sectorPacked[0], instances[i].sectorPacked[1], cx, cy, cz);
-        ASSERT_EQ(cx, cases[i].x);
-        ASSERT_EQ(cy, cases[i].y);
-        ASSERT_EQ(cz, cases[i].z);
+        ASSERT_EQ(cx, cases[i].X);
+        ASSERT_EQ(cy, cases[i].Y);
+        ASSERT_EQ(cz, cases[i].Z);
 
         // The DEVICE decode must equal the input — proves the shipped struct
         // offset + GLSL decode agree with the C++ pack on real hardware.
-        EXPECT_EQ(out[i].x, cases[i].x) << "case " << i << " x";
-        EXPECT_EQ(out[i].y, cases[i].y) << "case " << i << " y";
-        EXPECT_EQ(out[i].z, cases[i].z) << "case " << i << " z";
+        EXPECT_EQ(out[i].x, cases[i].X) << "case " << i << " x";
+        EXPECT_EQ(out[i].y, cases[i].Y) << "case " << i << " y";
+        EXPECT_EQ(out[i].z, cases[i].Z) << "case " << i << " z";
         EXPECT_EQ(out[i].w, 1) << "case " << i << " sentinel (shader ran + wrote)";
     }
 }

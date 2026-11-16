@@ -22,6 +22,8 @@
 #include "ECS/ECSTemplates.h"
 #include "AssetCore/GUID.h"
 #include "Rendering/Core/Device.h"
+#include "SceneLoadTracker/SceneLoadTracker.h"
+#include "SceneLoadTrackerTestAccess.h"
 
 #include "HeldAssetImportFixture.h"
 #include "TestDeviceHelper.h"

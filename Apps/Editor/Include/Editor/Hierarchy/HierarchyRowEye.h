@@ -42,14 +42,20 @@ class HierarchyRowEye
     /// Gives `row` its eye; once per pooled row.
     void AddTo(UIElement& row);
 
-    /// Shows the eye on `row`, bound to `entity`, only when the eye has something to hide there: the
-    /// entity has a mesh, or it has children that may. A leaf with no mesh shows none.
+    /// Shows the eye on `row`, bound to `entity`, only when the eye is on and has something to hide
+    /// there: the entity has a mesh, or it has children that may. A leaf with no mesh shows none.
     void Present(UIElement& row, ECS::EntityHandle entity, bool hasChildren);
+
+    /// Whether rows show the eye. The editor preferences keep the choice; on by default.
+    bool IsShown() const { return m_Shown; }
+    /// Turns the eye on or off on every row at the next Present, and saves the choice.
+    void ToggleShown();
 
   private:
     void OnMouseDown(UIElement& row, UIEvent& e);
 
     HierarchyRowEyeHost m_Host;
+    bool m_Shown = true;
 };
 
 } // namespace GameEngine::Editor
