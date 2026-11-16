@@ -148,9 +148,9 @@ std::vector<ProbeSample> ProbeSamples(const std::vector<WorldPosition>& points)
         point.ToSector(sector, local);
         ProbeSample sample{};
         sample.SectorLocal = Mathematics::Vector4{local, 0.0f};
-        sample.Sector[0] = sector.x;
-        sample.Sector[1] = sector.y;
-        sample.Sector[2] = sector.z;
+        sample.Sector[0] = sector.X;
+        sample.Sector[1] = sector.Y;
+        sample.Sector[2] = sector.Z;
         sample.Normal = Mathematics::Vector4{0.0f, 0.0f, -1.0f, 0.0f};
         samples.push_back(sample);
     }
@@ -537,7 +537,7 @@ TEST(LocalLightRelativeFrame, AShadowPassInAnotherSectorReadsTheReceiverViewDept
         GTEST_SKIP() << "No Vulkan device available";
     const CameraData view = CameraAt(kFarBase + kEye);
     const CameraData passCamera = CameraAt(kFarBase + kEye + kOneSectorAhead);
-    ASSERT_EQ(CameraRenderOriginSector(passCamera).z, CameraRenderOriginSector(view).z + 1)
+    ASSERT_EQ(CameraRenderOriginSector(passCamera).Z, CameraRenderOriginSector(view).Z + 1)
         << "the pass camera is one sector ahead of the view";
     const std::vector<WorldPosition> points = WallPoints(kFarBase);
     const auto run =

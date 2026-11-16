@@ -1326,8 +1326,8 @@ TEST(GameUIHostTests, DocumentRootScopesLookupToItsDocument)
     EXPECT_NE(docRootA->FindById("leafA"_sid), nullptr);
     EXPECT_EQ(docRootA->FindById("leafB"_sid), nullptr);
     EXPECT_NE(docRootB->FindById("leafB"_sid), nullptr);
-    EXPECT_NE(GameUI::FindElementById("leafA"_sid), nullptr);
-    EXPECT_NE(GameUI::FindElementById("leafB"_sid), nullptr);
+    EXPECT_NE(GameUI::FindElementById("leafA"), nullptr);
+    EXPECT_NE(GameUI::FindElementById("leafB"), nullptr);
 }
 
 // A .uxml edit reconciles the bound subtree through UIHotReload, NOT through
@@ -1423,18 +1423,18 @@ TEST(GameUIHostTests, NotifyGameplayStoppedDiscardsBoundDocumentsAndBumpsSession
     world.ProcessCommands();
 
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    ASSERT_NE(GameUI::FindElementById("take-damage"_sid), nullptr);
+    ASSERT_NE(GameUI::FindElementById("take-damage"), nullptr);
 
     const uint64_t session = GameUI::GetGameplaySession();
     const uint64_t gen = GameUI::GetBindGeneration();
     GameUI::NotifyGameplayStopped();
     EXPECT_GT(GameUI::GetGameplaySession(), session);
     EXPECT_GT(GameUI::GetBindGeneration(), gen);
-    EXPECT_EQ(GameUI::FindElementById("take-damage"_sid), nullptr)
+    EXPECT_EQ(GameUI::FindElementById("take-damage"), nullptr)
         << "play-stop discards bound documents; the next SyncFromWorld rebuilds them";
 
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    EXPECT_NE(GameUI::FindElementById("take-damage"_sid), nullptr);
+    EXPECT_NE(GameUI::FindElementById("take-damage"), nullptr);
 }
 
 TEST(GameUIHostTests, NotifyGameplayStoppedRebuildDropsPlayHandlers)
@@ -1468,7 +1468,7 @@ TEST(GameUIHostTests, NotifyGameplayStoppedRebuildDropsPlayHandlers)
     world.ProcessCommands();
 
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    auto* btn = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"_sid));
+    auto* btn = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"));
     ASSERT_NE(btn, nullptr);
 
     int clicks = 0;
@@ -1478,7 +1478,7 @@ TEST(GameUIHostTests, NotifyGameplayStoppedRebuildDropsPlayHandlers)
 
     GameUI::NotifyGameplayStopped();
     GameUIHostTestAccess::SyncFromWorld(host, world);
-    auto* rebuilt = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"_sid));
+    auto* rebuilt = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"));
     ASSERT_NE(rebuilt, nullptr);
     rebuilt->TriggerClick();
     EXPECT_EQ(clicks, 1) << "rebuilt HUD must not keep the play-session click subscription";
@@ -1549,7 +1549,7 @@ TEST(GameUIHostTests, FindElementByIdResolvesSharedIdDeterministically)
 
     // Unique id -> its owning document, reported through the out-param.
     uint64_t owner = 0;
-    UIElement* onlyA = GameUI::FindElementById("only-a"_sid, &owner);
+    UIElement* onlyA = GameUI::FindElementById("only-a", &owner);
     ASSERT_NE(onlyA, nullptr) << "unique id only-a not found across documents";
     EXPECT_EQ(owner, idA);
     EXPECT_EQ(onlyA, GameUI::FindDocumentRoot(idA)->FindById("only-a"_sid))
@@ -1557,14 +1557,14 @@ TEST(GameUIHostTests, FindElementByIdResolvesSharedIdDeterministically)
 
     // Absent id -> null, out-param untouched.
     owner = 0xABCDEF01ull;
-    EXPECT_EQ(GameUI::FindElementById("no-such-id"_sid, &owner), nullptr);
+    EXPECT_EQ(GameUI::FindElementById("no-such-id", &owner), nullptr);
     EXPECT_EQ(owner, 0xABCDEF01ull) << "outOwnerEntityId must not be written when nothing matches";
 
     // Shared id -> deterministic lowest-entity winner, and the reported owner must
     // resolve the identical element through its document root.
     const uint64_t expectedOwner = std::min({idA, idB, idC});
     owner = 0;
-    UIElement* shared = GameUI::FindElementById("bar"_sid, &owner);
+    UIElement* shared = GameUI::FindElementById("bar", &owner);
     ASSERT_NE(shared, nullptr);
     EXPECT_EQ(owner, expectedOwner) << "shared id must resolve to the lowest owning entity id";
     EXPECT_EQ(shared, GameUI::FindDocumentRoot(expectedOwner)->FindById("bar"_sid))
@@ -1628,7 +1628,7 @@ TEST(GameUIHostTests, SessionEventGoesInertAfterPlayStops)
     DriveUiRender(*host.GetUIManager(), rg);
 
     uint64_t owner = 0;
-    UIElement* btn = GameUI::FindElementById("take-damage"_sid, &owner);
+    UIElement* btn = GameUI::FindElementById("take-damage", &owner);
     ASSERT_NE(btn, nullptr);
     ASSERT_GT(btn->GetLayoutWidth(), 0.0f) << "button has no layout — the pointer could never hit it";
     EXPECT_EQ(owner, entity.GetHandle().id) << "owner out-param must name the document that matched";
@@ -1712,7 +1712,7 @@ TEST(GameUIHostTests, SessionEventDoesNotFireWhenTheCursorLeavesMidPress)
     GameUIHostTestAccess::Update(host, 0.0f, 200, 200);
     DriveUiRender(*host.GetUIManager(), rg);
 
-    auto* btn = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"_sid));
+    auto* btn = dynamic_cast<Button*>(GameUI::FindElementById("take-damage"));
     ASSERT_NE(btn, nullptr);
     ASSERT_GT(btn->GetLayoutWidth(), 0.0f) << "button has no layout — the pointer could never hit it";
 

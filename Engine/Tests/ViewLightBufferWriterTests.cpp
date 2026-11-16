@@ -45,9 +45,7 @@ TEST(ViewLightBufferWriter, BeginWorldDrawFrameDoesNotTouchThePerViewLightBuffer
 
     const auto* perView = rs.Views().FindPerView(viewId);
     ASSERT_NE(perView, nullptr);
-    const uint32_t slot =
-        device->GetFrameIndex();
-    const Rendering::BufferHandle lightBuffer = perView->LightBuffers[slot];
+    const Rendering::BufferHandle lightBuffer = perView->CurrentLightBuffer();
     ASSERT_TRUE(lightBuffer.IsValid()) << "setup: the writer must have allocated this slot";
 
     const float sentinel[4] = {kClockSentinel, kClockSentinel, kClockSentinel, kClockSentinel};
