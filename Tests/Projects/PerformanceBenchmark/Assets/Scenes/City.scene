@@ -1,0 +1,2862 @@
+[scene name="City" version=1]
+; City: unique procedural buildings drawn through cluster LOD.
+
+[entity id="e_cam"]
+Camera.enabled = true
+Camera.perspective = true
+Camera.fovY = 60
+Camera.nearZ = 0.1
+Camera.farZ = 3000
+Camera.exposureControl = 1
+Camera.manualExposureEV = 14
+Name.value = "Main Camera"
+Transform.position = (0, 2, -5)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_sky"]
+SkyEnvironment.AutoSunMoon = false
+Name.value = "Sky"
+Transform.position = (0, 0, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_sun"]
+Light.enabled = true
+Light.type = 0
+Light.color = (1, 0.96, 0.9)
+Light.intensity = 4
+Light.castsLight = true
+Light.castsShadows = true
+Light.cascadeCount = 4
+Name.value = "Sun"
+Transform.position = (0, 0, 0)
+Transform.rotation = (0.3368, 0.1632, -0.0594, 0.9254)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_ground"]
+MeshRenderer.meshPrimitive = Plane
+MeshRenderer.material = [path="Materials/Asphalt.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = Off
+MeshRenderer.receiveShadows = true
+Name.value = "e_ground"
+Transform.position = (0, 0, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1200, 1, 1200)
+
+[entity id="e_building_0_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building00.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, -270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building07.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, -270)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building14.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, -270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building21.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, -270)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, -270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, -270)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, -270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building17.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, -270)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building24.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, -270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building31.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, -270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building06.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, -270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building13.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, -270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building20.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, -270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building27.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, -270)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, -270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_0"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, -270)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building13.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, -234)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building20.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, -234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building27.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, -234)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, -234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, -234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, -234)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building23.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, -234)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building30.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, -234)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building05.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, -234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building12.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, -234)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building19.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, -234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building26.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, -234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building01.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, -234)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building08.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, -234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building15.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, -234)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_1"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, -234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building26.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, -198)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building01.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, -198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building08.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, -198)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building15.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, -198)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, -198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building29.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, -198)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building04.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, -198)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building11.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, -198)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building18.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, -198)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building25.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, -198)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building00.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, -198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building07.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, -198)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building14.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, -198)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building21.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, -198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, -198)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_2"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, -198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building07.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, -162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building14.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, -162)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building21.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, -162)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, -162)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, -162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, -162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building17.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, -162)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building24.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, -162)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building31.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, -162)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building06.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, -162)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building13.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, -162)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building20.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, -162)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building27.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, -162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, -162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, -162)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_3"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, -162)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building20.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, -126)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building27.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, -126)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, -126)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, -126)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, -126)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building23.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, -126)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building30.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, -126)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building05.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, -126)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building12.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, -126)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building19.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, -126)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building26.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, -126)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building01.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, -126)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building08.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, -126)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building15.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, -126)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, -126)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_4"]
+MeshRenderer.meshAsset = [path="Models/City/Building29.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, -126)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building01.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, -90)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building08.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, -90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building15.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, -90)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, -90)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building29.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, -90)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building04.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, -90)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building11.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, -90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building18.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, -90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building25.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, -90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building00.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, -90)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building07.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, -90)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building14.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, -90)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building21.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, -90)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, -90)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, -90)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_5"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, -90)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building14.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, -54)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building21.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, -54)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, -54)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, -54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, -54)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building17.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, -54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building24.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, -54)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building31.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, -54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building06.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, -54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building13.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, -54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building20.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, -54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building27.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, -54)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, -54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, -54)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, -54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_6"]
+MeshRenderer.meshAsset = [path="Models/City/Building23.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, -54)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building27.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, -18)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, -18)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, -18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, -18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building23.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, -18)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building30.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, -18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building05.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, -18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building12.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, -18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building19.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, -18)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building26.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, -18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building01.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, -18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building08.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, -18)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building15.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, -18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, -18)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building29.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, -18)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_7"]
+MeshRenderer.meshAsset = [path="Models/City/Building04.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, -18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building08.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, 18)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building15.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, 18)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, 18)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building29.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, 18)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building04.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, 18)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building11.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, 18)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building18.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, 18)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building25.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, 18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building00.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, 18)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building07.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, 18)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building14.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, 18)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building21.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, 18)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, 18)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, 18)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, 18)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_8"]
+MeshRenderer.meshAsset = [path="Models/City/Building17.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, 18)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building21.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, 54)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, 54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, 54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, 54)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building17.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, 54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building24.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, 54)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building31.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, 54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building06.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, 54)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building13.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, 54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building20.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, 54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building27.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, 54)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, 54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, 54)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, 54)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building23.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, 54)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_9"]
+MeshRenderer.meshAsset = [path="Models/City/Building30.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, 54)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, 90)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, 90)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, 90)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building23.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, 90)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building30.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, 90)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building05.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, 90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building12.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, 90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building19.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, 90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building26.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, 90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building01.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, 90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building08.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, 90)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building15.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, 90)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, 90)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building29.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, 90)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building04.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, 90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_10"]
+MeshRenderer.meshAsset = [path="Models/City/Building11.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, 90)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building15.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, 126)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, 126)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building29.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, 126)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building04.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, 126)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building11.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, 126)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building18.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, 126)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building25.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, 126)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building00.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, 126)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building07.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, 126)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building14.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, 126)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building21.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, 126)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, 126)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, 126)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, 126)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building17.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, 126)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_11"]
+MeshRenderer.meshAsset = [path="Models/City/Building24.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, 126)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, 162)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, 162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, 162)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building17.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, 162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building24.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, 162)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building31.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, 162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building06.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, 162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building13.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, 162)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building20.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, 162)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building27.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, 162)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, 162)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, 162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, 162)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building23.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, 162)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building30.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, 162)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_12"]
+MeshRenderer.meshAsset = [path="Models/City/Building05.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, 162)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, 198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, 198)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building23.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, 198)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building30.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, 198)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building05.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, 198)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building12.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, 198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building19.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, 198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building26.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, 198)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building01.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, 198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building08.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, 198)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building15.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, 198)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, 198)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building29.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, 198)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building04.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, 198)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building11.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, 198)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_13"]
+MeshRenderer.meshAsset = [path="Models/City/Building18.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, 198)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building22.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, 234)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building29.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, 234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building04.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, 234)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building11.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, 234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building18.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, 234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building25.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, 234)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building00.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, 234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building07.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, 234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building14.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, 234)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building21.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, 234)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building28.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, 234)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, 234)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, 234)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building17.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, 234)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building24.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, 234)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_14"]
+MeshRenderer.meshAsset = [path="Models/City/Building31.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, 234)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_0_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building03.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-270, 0, 270)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_1_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building10.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-234, 0, 270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_2_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building17.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-198, 0, 270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_3_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building24.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-162, 0, 270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_4_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building31.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-126, 0, 270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_5_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building06.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-90, 0, 270)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_6_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building13.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-54, 0, 270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_7_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building20.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (-18, 0, 270)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_8_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building27.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (18, 0, 270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_9_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building02.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (54, 0, 270)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_10_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building09.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (90, 0, 270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_11_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building16.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (126, 0, 270)
+Transform.rotation = (0, 1, 0, 0)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_12_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building23.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (162, 0, 270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_13_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building30.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (198, 0, 270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_14_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building05.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (234, 0, 270)
+Transform.rotation = (0, 0.7071, 0, 0.7071)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_building_15_15"]
+MeshRenderer.meshAsset = [path="Models/City/Building12.gecluster"]
+MeshRenderer.material = [path="Materials/Concrete.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "Building"
+Transform.position = (270, 0, 270)
+Transform.rotation = (0, 0.7071, 0, -0.7071)
+Transform.scale = (1, 1, 1)

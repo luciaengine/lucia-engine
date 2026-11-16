@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 3,
+  "materialName": "Ground",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Opaque",
+  "doubleSided": false,
+  "surfaceShader": "Surfaces/standard_pbr.glsl",
+  "properties": {
+    "baseColor": [
+      0.22,
+      0.27,
+      0.16,
+      1.0
+    ],
+    "metallic": 0.0,
+    "roughness": 0.95
+  },
+  "textures": {}
+}

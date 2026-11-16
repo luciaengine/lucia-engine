@@ -12,3 +12,8 @@ PlayerStartupReadiness.h
 
 PlayerRunOptions.cpp
 PlayerRunOptions.h
+
+Benchmark/PlayerBenchmark.cpp
+Benchmark/PlayerBenchmark.h
+Benchmark/PlayerBenchmarkPlan.cpp
+Benchmark/PlayerBenchmarkPlan.h

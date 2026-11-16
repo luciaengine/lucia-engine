@@ -1815,8 +1815,9 @@ TextureHandle MetalDevice::GetCurrentSwapchainImageHandle()
 
 TextureFormat MetalDevice::GetSwapchainTextureFormat() const
 {
+    // No swapchain (headless, or before a window target attaches): Unknown, as IDevice states.
     const MetalSwapchain* swapchain = GetSwapchain(m_ActiveWindowTarget);
-    return swapchain != nullptr ? swapchain->GetFormat() : TextureFormat::BGRA8_UNORM;
+    return swapchain != nullptr ? swapchain->GetFormat() : TextureFormat::Unknown;
 }
 
 } // namespace Rendering

@@ -1,0 +1,1144 @@
+[scene name="Interior" version=1]
+; Interior close-up: local lights, DDGI and reflection probes in a closed hall.
+
+[entity id="e_cam"]
+Camera.enabled = true
+Camera.perspective = true
+Camera.fovY = 60
+Camera.nearZ = 0.1
+Camera.farZ = 150
+Camera.exposureControl = 1
+Camera.manualExposureEV = 7
+Name.value = "Main Camera"
+Transform.position = (0, 2, -5)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_sky"]
+SkyEnvironment.IblIntensity = 0.02
+SkyEnvironment.GradientSkyIntensity = 40
+SkyEnvironment.AutoSunMoon = false
+Name.value = "Sky"
+Transform.position = (0, 0, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_wall_floor"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_wall_floor"
+Transform.position = (0, -0.1, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (24.4, 0.2, 24.4)
+
+[entity id="e_wall_ceiling"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_wall_ceiling"
+Transform.position = (0, 6.1, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (24.4, 0.2, 24.4)
+
+[entity id="e_wall_left"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_wall_left"
+Transform.position = (-12.1, 3, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.2, 6.4, 24.4)
+
+[entity id="e_wall_right"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/Blue.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_wall_right"
+Transform.position = (12.1, 3, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.2, 6.4, 24.4)
+
+[entity id="e_wall_back"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_wall_back"
+Transform.position = (0, 3, 12.1)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (24.4, 6.4, 0.2)
+
+[entity id="e_wall_front"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_wall_front"
+Transform.position = (0, 3, -12.1)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (24.4, 6.4, 0.2)
+
+[entity id="e_sphere_0"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_0"
+Transform.position = (-10, 0.6, -10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_1"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_1"
+Transform.position = (-6, 2.5, -10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_2"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Metal.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_2"
+Transform.position = (-2, 0.6, -10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_3"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_3"
+Transform.position = (2, 2.5, -10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_4"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_4"
+Transform.position = (6, 0.6, -10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_5"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_5"
+Transform.position = (10, 2.5, -10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_6"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Metal.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_6"
+Transform.position = (-10, 0.6, -6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_7"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_7"
+Transform.position = (-6, 2.5, -6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_8"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_8"
+Transform.position = (-2, 0.6, -6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_9"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_9"
+Transform.position = (2, 2.5, -6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_10"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Metal.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_10"
+Transform.position = (6, 0.6, -6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_11"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_11"
+Transform.position = (10, 2.5, -6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_12"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_12"
+Transform.position = (-10, 0.6, -2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_13"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_13"
+Transform.position = (-6, 2.5, -2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_14"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Metal.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_14"
+Transform.position = (-2, 0.6, -2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_15"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_15"
+Transform.position = (2, 2.5, -2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_16"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_16"
+Transform.position = (6, 0.6, -2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_17"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_17"
+Transform.position = (10, 2.5, -2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_18"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Metal.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_18"
+Transform.position = (-10, 0.6, 2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_19"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_19"
+Transform.position = (-6, 2.5, 2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_20"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_20"
+Transform.position = (-2, 0.6, 2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_21"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_21"
+Transform.position = (2, 2.5, 2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_22"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Metal.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_22"
+Transform.position = (6, 0.6, 2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_23"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_23"
+Transform.position = (10, 2.5, 2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_24"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_24"
+Transform.position = (-10, 0.6, 6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_25"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_25"
+Transform.position = (-6, 2.5, 6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_26"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Metal.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_26"
+Transform.position = (-2, 0.6, 6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_27"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_27"
+Transform.position = (2, 2.5, 6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_28"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_28"
+Transform.position = (6, 0.6, 6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_29"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_29"
+Transform.position = (10, 2.5, 6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_30"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Metal.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_30"
+Transform.position = (-10, 0.6, 10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_31"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_31"
+Transform.position = (-6, 2.5, 10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_32"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Red.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_32"
+Transform.position = (-2, 0.6, 10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_33"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_33"
+Transform.position = (2, 2.5, 10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_sphere_34"]
+MeshRenderer.meshPrimitive = Sphere
+MeshRenderer.material = [path="Materials/Metal.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_sphere_34"
+Transform.position = (6, 0.6, 10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1.2, 1.2, 1.2)
+
+[entity id="e_pillar_35"]
+MeshRenderer.meshPrimitive = Cube
+MeshRenderer.material = [path="Materials/White.material"]
+MeshRenderer.renderLayers = [0]
+MeshRenderer.shadowCasting = On
+MeshRenderer.receiveShadows = true
+Name.value = "e_pillar_35"
+Transform.position = (10, 2.5, 10)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (0.5, 5, 0.5)
+
+[entity id="e_light_0"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = true
+Name.value = "Light 0"
+Transform.position = (-11, 5.4, -11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_1"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 1"
+Transform.position = (-7.86, 5.4, -11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_2"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 2"
+Transform.position = (-4.72, 5.4, -11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_3"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 3"
+Transform.position = (-1.58, 5.4, -11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_4"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 4"
+Transform.position = (1.56, 5.4, -11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_5"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 5"
+Transform.position = (4.7, 5.4, -11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_6"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 6"
+Transform.position = (7.84, 5.4, -11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_7"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 7"
+Transform.position = (10.98, 5.4, -11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_8"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 8"
+Transform.position = (-11, 5.4, -6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_9"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 9"
+Transform.position = (-7.86, 5.4, -6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_10"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 10"
+Transform.position = (-4.72, 5.4, -6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_11"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 11"
+Transform.position = (-1.58, 5.4, -6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_12"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = true
+Name.value = "Light 12"
+Transform.position = (1.56, 5.4, -6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_13"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 13"
+Transform.position = (4.7, 5.4, -6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_14"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 14"
+Transform.position = (7.84, 5.4, -6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_15"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 15"
+Transform.position = (10.98, 5.4, -6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_16"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 16"
+Transform.position = (-11, 5.4, -2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_17"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 17"
+Transform.position = (-7.86, 5.4, -2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_18"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 18"
+Transform.position = (-4.72, 5.4, -2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_19"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 19"
+Transform.position = (-1.58, 5.4, -2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_20"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 20"
+Transform.position = (1.56, 5.4, -2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_21"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 21"
+Transform.position = (4.7, 5.4, -2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_22"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 22"
+Transform.position = (7.84, 5.4, -2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_23"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 23"
+Transform.position = (10.98, 5.4, -2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_24"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = true
+Name.value = "Light 24"
+Transform.position = (-11, 5.4, 2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_25"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 25"
+Transform.position = (-7.86, 5.4, 2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_26"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 26"
+Transform.position = (-4.72, 5.4, 2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_27"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 27"
+Transform.position = (-1.58, 5.4, 2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_28"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 28"
+Transform.position = (1.56, 5.4, 2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_29"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 29"
+Transform.position = (4.7, 5.4, 2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_30"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 30"
+Transform.position = (7.84, 5.4, 2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_31"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 31"
+Transform.position = (10.98, 5.4, 2.2)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_32"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 32"
+Transform.position = (-11, 5.4, 6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_33"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 33"
+Transform.position = (-7.86, 5.4, 6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_34"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 34"
+Transform.position = (-4.72, 5.4, 6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_35"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 35"
+Transform.position = (-1.58, 5.4, 6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_36"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = true
+Name.value = "Light 36"
+Transform.position = (1.56, 5.4, 6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_37"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 37"
+Transform.position = (4.7, 5.4, 6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_38"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 38"
+Transform.position = (7.84, 5.4, 6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_39"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 39"
+Transform.position = (10.98, 5.4, 6.6)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_40"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 40"
+Transform.position = (-11, 5.4, 11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_41"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 41"
+Transform.position = (-7.86, 5.4, 11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_42"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 42"
+Transform.position = (-4.72, 5.4, 11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_43"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 43"
+Transform.position = (-1.58, 5.4, 11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_44"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 44"
+Transform.position = (1.56, 5.4, 11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_45"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 45"
+Transform.position = (4.7, 5.4, 11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_46"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 46"
+Transform.position = (7.84, 5.4, 11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_light_47"]
+Light.enabled = true
+Light.type = 1
+Light.color = (1, 0.88, 0.7)
+Light.intensity = 25
+Light.range = 7
+Light.castsLight = true
+Light.castsShadows = false
+Name.value = "Light 47"
+Transform.position = (10.98, 5.4, 11)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (1, 1, 1)
+
+[entity id="e_ddgi"]
+DDGIVolume.Enabled = true
+DDGIVolume.ProbePlacement = 0
+DDGIVolume.Divisions = 12
+DDGIVolume.RaysPerProbe = 128
+Name.value = "DDGI Volume"
+Transform.position = (0, 3, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (23.6, 5.8, 23.6)
+
+[entity id="e_probe_0"]
+ReflectionProbe.Enabled = true
+ReflectionProbe.InfluenceShape = Box
+ReflectionProbe.BlendDistance = 2
+ReflectionProbe.CaptureResolution = 256
+ReflectionProbe.UpdateMode = Realtime
+ReflectionProbe.RealtimeUpdateInterval = 0.5
+Name.value = "Reflection Probe 0"
+Transform.position = (-6, 3, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (12.2, 6.2, 24.2)
+
+[entity id="e_probe_1"]
+ReflectionProbe.Enabled = true
+ReflectionProbe.InfluenceShape = Box
+ReflectionProbe.BlendDistance = 2
+ReflectionProbe.CaptureResolution = 256
+ReflectionProbe.UpdateMode = Realtime
+ReflectionProbe.RealtimeUpdateInterval = 0.5
+Name.value = "Reflection Probe 1"
+Transform.position = (6, 3, 0)
+Transform.rotation = (0, 0, 0, 1)
+Transform.scale = (12.2, 6.2, 24.2)

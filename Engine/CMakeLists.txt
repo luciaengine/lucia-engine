@@ -2850,6 +2850,7 @@ endif()
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTreeECS/EZTreePlugin.cpp"
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTreeECS/EZTreeRuntimeMaterials.cpp"
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTreeECS/EZTreeService.cpp"
+			        "${_GE_EZTREE_PKG_NATIVE}/EZTreeECS/EZTreeVariantMaterials.cpp"
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTreeECS/EZTreeSceneSchema.cpp"
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTreeECS/Systems/EZTreeExtractionSystem.cpp"
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTreeECS/Systems/RegisterEZTreeSystems.cpp"

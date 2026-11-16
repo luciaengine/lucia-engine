@@ -49,6 +49,39 @@ Audio::AudioOutput ResolveAudioOutput(int argc, const char* const* argv, const c
     return Audio::AudioOutput::Device;
 }
 
+// --benchmark <plan> and --benchmark-output <result>: both or neither, in a run that renders and
+// whose length the plan sets.
+bool ParseBenchmarkPaths(int argc, const char* const* argv, PlayerRunOptions& options)
+{
+    bool planPresent = false;
+    bool outputPresent = false;
+    const char* plan = ValueAfter(argc, argv, "--benchmark", planPresent);
+    const char* output = ValueAfter(argc, argv, "--benchmark-output", outputPresent);
+    if (!planPresent && !outputPresent)
+        return true;
+    if (!plan || plan[0] == '\0' || plan[0] == '-' || !output || output[0] == '\0' || output[0] == '-')
+    {
+        Logger::Log::Error("Player: a benchmark run needs both paths, for example --benchmark plan.json "
+                           "--benchmark-output result.json");
+        return false;
+    }
+    if (options.Headless)
+    {
+        Logger::Log::Error("Player: --benchmark measures rendered frames, so it cannot run with --headless. "
+                           "Remove --headless.");
+        return false;
+    }
+    if (options.QuitAfterFrames > 0)
+    {
+        Logger::Log::Error("Player: the benchmark plan sets the run's length, so --benchmark cannot run with "
+                           "--quit-after. Remove --quit-after.");
+        return false;
+    }
+    options.BenchmarkPlanPath = plan;
+    options.BenchmarkOutputPath = output;
+    return true;
+}
+
 // A headless run has no render device, so these flags ask for output it cannot make.
 constexpr const char* kDeviceOnlyFlags[] = {"--write-movie",   "--screenshot",    "--hdr",
                                             "--hdr-mode",      "--hdr-bit-depth", "--hdr-swapchain-bit-depth",
@@ -93,6 +126,9 @@ std::optional<PlayerRunOptions> ParsePlayerRunOptions(int argc, const char* cons
         Logger::Log::Error("Player: --quit-after requires a non-negative frame count, for example --quit-after 600");
         return std::nullopt;
     }
+
+    if (!ParseBenchmarkPaths(argc, argv, options))
+        return std::nullopt;
 
     const char* fixedFps = ValueAfter(argc, argv, "--fixed-fps", present);
     if (!options.Headless)

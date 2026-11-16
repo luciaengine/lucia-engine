@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace GameEngine
 {
@@ -19,11 +20,16 @@ struct PlayerRunOptions
     uint64_t QuitAfterFrames = 0;
     /// --silent-audio, else GE_AUDIO_OUTPUT: where the game's audio goes.
     Audio::AudioOutput AudioOutput = Audio::AudioOutput::Device;
+    /// --benchmark: the benchmark plan to run; empty for a normal run.
+    std::string BenchmarkPlanPath;
+    /// --benchmark-output: where the benchmark run writes its result.
+    std::string BenchmarkOutputPath;
 };
 
-/// Parses --headless, --fixed-fps, --quit-after and --silent-audio. Nullopt, with the reason and its
-/// fix logged, when the command line is refused: a --quit-after that is not a
-/// non-negative frame count, or under --headless a --fixed-fps that is not a positive
+/// Parses --headless, --fixed-fps, --quit-after, --silent-audio, --benchmark and --benchmark-output.
+/// Nullopt, with the reason and its fix logged, when the command line is refused: a --quit-after
+/// that is not a non-negative frame count; --benchmark without both paths, with --headless or with
+/// --quit-after (the plan sets the run's length); or under --headless a --fixed-fps that is not a positive
 /// rate or a flag whose output needs a render device (--write-movie, --screenshot and
 /// the HDR output flags). HDR that game.config or the environment enables is not
 /// refused: it describes the display a windowed run targets, and a headless run has

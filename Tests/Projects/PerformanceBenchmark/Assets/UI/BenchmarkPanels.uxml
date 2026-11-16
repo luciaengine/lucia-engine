@@ -1,0 +1,911 @@
+<uielement class="root">
+    <uielement class="panel panel-0">
+        <label class="panel-title" text="Panel 1" />
+        <uielement class="row">
+            <label class="row-name" text="Property 01" />
+            <progress class="row-bar" value="0" max="100" />
+            <label class="row-value" text="0.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 02" />
+            <progress class="row-bar" value="11" max="100" />
+            <label class="row-value" text="11.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 03" />
+            <progress class="row-bar" value="22" max="100" />
+            <label class="row-value" text="22.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 04" />
+            <progress class="row-bar" value="33" max="100" />
+            <label class="row-value" text="33.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 05" />
+            <progress class="row-bar" value="44" max="100" />
+            <label class="row-value" text="44.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 06" />
+            <progress class="row-bar" value="55" max="100" />
+            <label class="row-value" text="55.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 07" />
+            <progress class="row-bar" value="66" max="100" />
+            <label class="row-value" text="66.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 08" />
+            <progress class="row-bar" value="77" max="100" />
+            <label class="row-value" text="77.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 09" />
+            <progress class="row-bar" value="88" max="100" />
+            <label class="row-value" text="88.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 10" />
+            <progress class="row-bar" value="99" max="100" />
+            <label class="row-value" text="99.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 11" />
+            <progress class="row-bar" value="10" max="100" />
+            <label class="row-value" text="10.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 12" />
+            <progress class="row-bar" value="21" max="100" />
+            <label class="row-value" text="21.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 13" />
+            <progress class="row-bar" value="32" max="100" />
+            <label class="row-value" text="32.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 14" />
+            <progress class="row-bar" value="43" max="100" />
+            <label class="row-value" text="43.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 15" />
+            <progress class="row-bar" value="54" max="100" />
+            <label class="row-value" text="54.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 16" />
+            <progress class="row-bar" value="65" max="100" />
+            <label class="row-value" text="65.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 17" />
+            <progress class="row-bar" value="76" max="100" />
+            <label class="row-value" text="76.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 18" />
+            <progress class="row-bar" value="87" max="100" />
+            <label class="row-value" text="87.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 19" />
+            <progress class="row-bar" value="98" max="100" />
+            <label class="row-value" text="98.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 20" />
+            <progress class="row-bar" value="9" max="100" />
+            <label class="row-value" text="9.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 21" />
+            <progress class="row-bar" value="20" max="100" />
+            <label class="row-value" text="20.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 22" />
+            <progress class="row-bar" value="31" max="100" />
+            <label class="row-value" text="31.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 23" />
+            <progress class="row-bar" value="42" max="100" />
+            <label class="row-value" text="42.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 24" />
+            <progress class="row-bar" value="53" max="100" />
+            <label class="row-value" text="53.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 25" />
+            <progress class="row-bar" value="64" max="100" />
+            <label class="row-value" text="64.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 26" />
+            <progress class="row-bar" value="75" max="100" />
+            <label class="row-value" text="75.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 27" />
+            <progress class="row-bar" value="86" max="100" />
+            <label class="row-value" text="86.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 28" />
+            <progress class="row-bar" value="97" max="100" />
+            <label class="row-value" text="97.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 29" />
+            <progress class="row-bar" value="8" max="100" />
+            <label class="row-value" text="8.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 30" />
+            <progress class="row-bar" value="19" max="100" />
+            <label class="row-value" text="19.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 31" />
+            <progress class="row-bar" value="30" max="100" />
+            <label class="row-value" text="30.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 32" />
+            <progress class="row-bar" value="41" max="100" />
+            <label class="row-value" text="41.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 33" />
+            <progress class="row-bar" value="52" max="100" />
+            <label class="row-value" text="52.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 34" />
+            <progress class="row-bar" value="63" max="100" />
+            <label class="row-value" text="63.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 35" />
+            <progress class="row-bar" value="74" max="100" />
+            <label class="row-value" text="74.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 36" />
+            <progress class="row-bar" value="85" max="100" />
+            <label class="row-value" text="85.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 37" />
+            <progress class="row-bar" value="96" max="100" />
+            <label class="row-value" text="96.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 38" />
+            <progress class="row-bar" value="7" max="100" />
+            <label class="row-value" text="7.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 39" />
+            <progress class="row-bar" value="18" max="100" />
+            <label class="row-value" text="18.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 40" />
+            <progress class="row-bar" value="29" max="100" />
+            <label class="row-value" text="29.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 41" />
+            <progress class="row-bar" value="40" max="100" />
+            <label class="row-value" text="40.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 42" />
+            <progress class="row-bar" value="51" max="100" />
+            <label class="row-value" text="51.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 43" />
+            <progress class="row-bar" value="62" max="100" />
+            <label class="row-value" text="62.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 44" />
+            <progress class="row-bar" value="73" max="100" />
+            <label class="row-value" text="73.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 45" />
+            <progress class="row-bar" value="84" max="100" />
+            <label class="row-value" text="84.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 46" />
+            <progress class="row-bar" value="95" max="100" />
+            <label class="row-value" text="95.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 47" />
+            <progress class="row-bar" value="6" max="100" />
+            <label class="row-value" text="6.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 48" />
+            <progress class="row-bar" value="17" max="100" />
+            <label class="row-value" text="17.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 49" />
+            <progress class="row-bar" value="28" max="100" />
+            <label class="row-value" text="28.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 50" />
+            <progress class="row-bar" value="39" max="100" />
+            <label class="row-value" text="39.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 51" />
+            <progress class="row-bar" value="50" max="100" />
+            <label class="row-value" text="50.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 52" />
+            <progress class="row-bar" value="61" max="100" />
+            <label class="row-value" text="61.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 53" />
+            <progress class="row-bar" value="72" max="100" />
+            <label class="row-value" text="72.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 54" />
+            <progress class="row-bar" value="83" max="100" />
+            <label class="row-value" text="83.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 55" />
+            <progress class="row-bar" value="94" max="100" />
+            <label class="row-value" text="94.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 56" />
+            <progress class="row-bar" value="5" max="100" />
+            <label class="row-value" text="5.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 57" />
+            <progress class="row-bar" value="16" max="100" />
+            <label class="row-value" text="16.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 58" />
+            <progress class="row-bar" value="27" max="100" />
+            <label class="row-value" text="27.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 59" />
+            <progress class="row-bar" value="38" max="100" />
+            <label class="row-value" text="38.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 60" />
+            <progress class="row-bar" value="49" max="100" />
+            <label class="row-value" text="49.9" />
+        </uielement>
+    </uielement>
+    <uielement class="panel panel-1">
+        <label class="panel-title" text="Panel 2" />
+        <uielement class="row">
+            <label class="row-name" text="Property 01" />
+            <progress class="row-bar" value="37" max="100" />
+            <label class="row-value" text="37.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 02" />
+            <progress class="row-bar" value="48" max="100" />
+            <label class="row-value" text="48.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 03" />
+            <progress class="row-bar" value="59" max="100" />
+            <label class="row-value" text="59.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 04" />
+            <progress class="row-bar" value="70" max="100" />
+            <label class="row-value" text="70.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 05" />
+            <progress class="row-bar" value="81" max="100" />
+            <label class="row-value" text="81.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 06" />
+            <progress class="row-bar" value="92" max="100" />
+            <label class="row-value" text="92.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 07" />
+            <progress class="row-bar" value="3" max="100" />
+            <label class="row-value" text="3.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 08" />
+            <progress class="row-bar" value="14" max="100" />
+            <label class="row-value" text="14.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 09" />
+            <progress class="row-bar" value="25" max="100" />
+            <label class="row-value" text="25.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 10" />
+            <progress class="row-bar" value="36" max="100" />
+            <label class="row-value" text="36.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 11" />
+            <progress class="row-bar" value="47" max="100" />
+            <label class="row-value" text="47.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 12" />
+            <progress class="row-bar" value="58" max="100" />
+            <label class="row-value" text="58.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 13" />
+            <progress class="row-bar" value="69" max="100" />
+            <label class="row-value" text="69.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 14" />
+            <progress class="row-bar" value="80" max="100" />
+            <label class="row-value" text="80.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 15" />
+            <progress class="row-bar" value="91" max="100" />
+            <label class="row-value" text="91.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 16" />
+            <progress class="row-bar" value="2" max="100" />
+            <label class="row-value" text="2.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 17" />
+            <progress class="row-bar" value="13" max="100" />
+            <label class="row-value" text="13.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 18" />
+            <progress class="row-bar" value="24" max="100" />
+            <label class="row-value" text="24.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 19" />
+            <progress class="row-bar" value="35" max="100" />
+            <label class="row-value" text="35.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 20" />
+            <progress class="row-bar" value="46" max="100" />
+            <label class="row-value" text="46.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 21" />
+            <progress class="row-bar" value="57" max="100" />
+            <label class="row-value" text="57.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 22" />
+            <progress class="row-bar" value="68" max="100" />
+            <label class="row-value" text="68.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 23" />
+            <progress class="row-bar" value="79" max="100" />
+            <label class="row-value" text="79.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 24" />
+            <progress class="row-bar" value="90" max="100" />
+            <label class="row-value" text="90.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 25" />
+            <progress class="row-bar" value="1" max="100" />
+            <label class="row-value" text="1.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 26" />
+            <progress class="row-bar" value="12" max="100" />
+            <label class="row-value" text="12.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 27" />
+            <progress class="row-bar" value="23" max="100" />
+            <label class="row-value" text="23.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 28" />
+            <progress class="row-bar" value="34" max="100" />
+            <label class="row-value" text="34.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 29" />
+            <progress class="row-bar" value="45" max="100" />
+            <label class="row-value" text="45.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 30" />
+            <progress class="row-bar" value="56" max="100" />
+            <label class="row-value" text="56.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 31" />
+            <progress class="row-bar" value="67" max="100" />
+            <label class="row-value" text="67.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 32" />
+            <progress class="row-bar" value="78" max="100" />
+            <label class="row-value" text="78.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 33" />
+            <progress class="row-bar" value="89" max="100" />
+            <label class="row-value" text="89.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 34" />
+            <progress class="row-bar" value="0" max="100" />
+            <label class="row-value" text="0.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 35" />
+            <progress class="row-bar" value="11" max="100" />
+            <label class="row-value" text="11.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 36" />
+            <progress class="row-bar" value="22" max="100" />
+            <label class="row-value" text="22.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 37" />
+            <progress class="row-bar" value="33" max="100" />
+            <label class="row-value" text="33.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 38" />
+            <progress class="row-bar" value="44" max="100" />
+            <label class="row-value" text="44.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 39" />
+            <progress class="row-bar" value="55" max="100" />
+            <label class="row-value" text="55.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 40" />
+            <progress class="row-bar" value="66" max="100" />
+            <label class="row-value" text="66.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 41" />
+            <progress class="row-bar" value="77" max="100" />
+            <label class="row-value" text="77.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 42" />
+            <progress class="row-bar" value="88" max="100" />
+            <label class="row-value" text="88.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 43" />
+            <progress class="row-bar" value="99" max="100" />
+            <label class="row-value" text="99.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 44" />
+            <progress class="row-bar" value="10" max="100" />
+            <label class="row-value" text="10.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 45" />
+            <progress class="row-bar" value="21" max="100" />
+            <label class="row-value" text="21.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 46" />
+            <progress class="row-bar" value="32" max="100" />
+            <label class="row-value" text="32.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 47" />
+            <progress class="row-bar" value="43" max="100" />
+            <label class="row-value" text="43.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 48" />
+            <progress class="row-bar" value="54" max="100" />
+            <label class="row-value" text="54.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 49" />
+            <progress class="row-bar" value="65" max="100" />
+            <label class="row-value" text="65.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 50" />
+            <progress class="row-bar" value="76" max="100" />
+            <label class="row-value" text="76.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 51" />
+            <progress class="row-bar" value="87" max="100" />
+            <label class="row-value" text="87.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 52" />
+            <progress class="row-bar" value="98" max="100" />
+            <label class="row-value" text="98.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 53" />
+            <progress class="row-bar" value="9" max="100" />
+            <label class="row-value" text="9.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 54" />
+            <progress class="row-bar" value="20" max="100" />
+            <label class="row-value" text="20.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 55" />
+            <progress class="row-bar" value="31" max="100" />
+            <label class="row-value" text="31.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 56" />
+            <progress class="row-bar" value="42" max="100" />
+            <label class="row-value" text="42.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 57" />
+            <progress class="row-bar" value="53" max="100" />
+            <label class="row-value" text="53.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 58" />
+            <progress class="row-bar" value="64" max="100" />
+            <label class="row-value" text="64.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 59" />
+            <progress class="row-bar" value="75" max="100" />
+            <label class="row-value" text="75.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 60" />
+            <progress class="row-bar" value="86" max="100" />
+            <label class="row-value" text="86.9" />
+        </uielement>
+    </uielement>
+    <uielement class="panel panel-2">
+        <label class="panel-title" text="Panel 3" />
+        <uielement class="row">
+            <label class="row-name" text="Property 01" />
+            <progress class="row-bar" value="74" max="100" />
+            <label class="row-value" text="74.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 02" />
+            <progress class="row-bar" value="85" max="100" />
+            <label class="row-value" text="85.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 03" />
+            <progress class="row-bar" value="96" max="100" />
+            <label class="row-value" text="96.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 04" />
+            <progress class="row-bar" value="7" max="100" />
+            <label class="row-value" text="7.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 05" />
+            <progress class="row-bar" value="18" max="100" />
+            <label class="row-value" text="18.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 06" />
+            <progress class="row-bar" value="29" max="100" />
+            <label class="row-value" text="29.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 07" />
+            <progress class="row-bar" value="40" max="100" />
+            <label class="row-value" text="40.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 08" />
+            <progress class="row-bar" value="51" max="100" />
+            <label class="row-value" text="51.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 09" />
+            <progress class="row-bar" value="62" max="100" />
+            <label class="row-value" text="62.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 10" />
+            <progress class="row-bar" value="73" max="100" />
+            <label class="row-value" text="73.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 11" />
+            <progress class="row-bar" value="84" max="100" />
+            <label class="row-value" text="84.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 12" />
+            <progress class="row-bar" value="95" max="100" />
+            <label class="row-value" text="95.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 13" />
+            <progress class="row-bar" value="6" max="100" />
+            <label class="row-value" text="6.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 14" />
+            <progress class="row-bar" value="17" max="100" />
+            <label class="row-value" text="17.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 15" />
+            <progress class="row-bar" value="28" max="100" />
+            <label class="row-value" text="28.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 16" />
+            <progress class="row-bar" value="39" max="100" />
+            <label class="row-value" text="39.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 17" />
+            <progress class="row-bar" value="50" max="100" />
+            <label class="row-value" text="50.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 18" />
+            <progress class="row-bar" value="61" max="100" />
+            <label class="row-value" text="61.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 19" />
+            <progress class="row-bar" value="72" max="100" />
+            <label class="row-value" text="72.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 20" />
+            <progress class="row-bar" value="83" max="100" />
+            <label class="row-value" text="83.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 21" />
+            <progress class="row-bar" value="94" max="100" />
+            <label class="row-value" text="94.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 22" />
+            <progress class="row-bar" value="5" max="100" />
+            <label class="row-value" text="5.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 23" />
+            <progress class="row-bar" value="16" max="100" />
+            <label class="row-value" text="16.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 24" />
+            <progress class="row-bar" value="27" max="100" />
+            <label class="row-value" text="27.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 25" />
+            <progress class="row-bar" value="38" max="100" />
+            <label class="row-value" text="38.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 26" />
+            <progress class="row-bar" value="49" max="100" />
+            <label class="row-value" text="49.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 27" />
+            <progress class="row-bar" value="60" max="100" />
+            <label class="row-value" text="60.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 28" />
+            <progress class="row-bar" value="71" max="100" />
+            <label class="row-value" text="71.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 29" />
+            <progress class="row-bar" value="82" max="100" />
+            <label class="row-value" text="82.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 30" />
+            <progress class="row-bar" value="93" max="100" />
+            <label class="row-value" text="93.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 31" />
+            <progress class="row-bar" value="4" max="100" />
+            <label class="row-value" text="4.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 32" />
+            <progress class="row-bar" value="15" max="100" />
+            <label class="row-value" text="15.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 33" />
+            <progress class="row-bar" value="26" max="100" />
+            <label class="row-value" text="26.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 34" />
+            <progress class="row-bar" value="37" max="100" />
+            <label class="row-value" text="37.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 35" />
+            <progress class="row-bar" value="48" max="100" />
+            <label class="row-value" text="48.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 36" />
+            <progress class="row-bar" value="59" max="100" />
+            <label class="row-value" text="59.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 37" />
+            <progress class="row-bar" value="70" max="100" />
+            <label class="row-value" text="70.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 38" />
+            <progress class="row-bar" value="81" max="100" />
+            <label class="row-value" text="81.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 39" />
+            <progress class="row-bar" value="92" max="100" />
+            <label class="row-value" text="92.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 40" />
+            <progress class="row-bar" value="3" max="100" />
+            <label class="row-value" text="3.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 41" />
+            <progress class="row-bar" value="14" max="100" />
+            <label class="row-value" text="14.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 42" />
+            <progress class="row-bar" value="25" max="100" />
+            <label class="row-value" text="25.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 43" />
+            <progress class="row-bar" value="36" max="100" />
+            <label class="row-value" text="36.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 44" />
+            <progress class="row-bar" value="47" max="100" />
+            <label class="row-value" text="47.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 45" />
+            <progress class="row-bar" value="58" max="100" />
+            <label class="row-value" text="58.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 46" />
+            <progress class="row-bar" value="69" max="100" />
+            <label class="row-value" text="69.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 47" />
+            <progress class="row-bar" value="80" max="100" />
+            <label class="row-value" text="80.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 48" />
+            <progress class="row-bar" value="91" max="100" />
+            <label class="row-value" text="91.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 49" />
+            <progress class="row-bar" value="2" max="100" />
+            <label class="row-value" text="2.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 50" />
+            <progress class="row-bar" value="13" max="100" />
+            <label class="row-value" text="13.9" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 51" />
+            <progress class="row-bar" value="24" max="100" />
+            <label class="row-value" text="24.0" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 52" />
+            <progress class="row-bar" value="35" max="100" />
+            <label class="row-value" text="35.1" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 53" />
+            <progress class="row-bar" value="46" max="100" />
+            <label class="row-value" text="46.2" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 54" />
+            <progress class="row-bar" value="57" max="100" />
+            <label class="row-value" text="57.3" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 55" />
+            <progress class="row-bar" value="68" max="100" />
+            <label class="row-value" text="68.4" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 56" />
+            <progress class="row-bar" value="79" max="100" />
+            <label class="row-value" text="79.5" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 57" />
+            <progress class="row-bar" value="90" max="100" />
+            <label class="row-value" text="90.6" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 58" />
+            <progress class="row-bar" value="1" max="100" />
+            <label class="row-value" text="1.7" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 59" />
+            <progress class="row-bar" value="12" max="100" />
+            <label class="row-value" text="12.8" />
+        </uielement>
+        <uielement class="row">
+            <label class="row-name" text="Property 60" />
+            <progress class="row-bar" value="23" max="100" />
+            <label class="row-value" text="23.9" />
+        </uielement>
+    </uielement>
+</uielement>

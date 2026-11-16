@@ -937,8 +937,8 @@ float ResolvedFogDensity(Testing::ExtractionFastPath::ExtractionHarness& harness
 }
 
 // A 4 m box probe at `center` with its capture origin moved by `originOffset`, a camera at `eye`, and one
-// selection pass. Returns the probe source that the IBL feature captures, or null.
-const Origin::SceneReflectionProbeEnvironmentSource* SelectBoxProbeAt(
+// probe-system pass. Returns the description of the IBL feature's first local probe, or null.
+const Origin::SceneReflectionProbeEnvironmentDesc* SelectBoxProbeAt(
     Testing::ExtractionFastPath::ExtractionHarness& harness, const WorldPosition& center,
     const Vector3& originOffset, const WorldPosition& eye)
 {
@@ -959,8 +959,9 @@ const Origin::SceneReflectionProbeEnvironmentSource* SelectBoxProbeAt(
     Origin::ReflectionProbeSystem system(&harness.rs);
     system.Update(*harness.world, 0.016f);
     const auto* feature = harness.rs.GetFeature<Origin::ImageBasedLightingFeature>();
-    return feature ? dynamic_cast<const Origin::SceneReflectionProbeEnvironmentSource*>(feature->GetEnvironmentSource())
-                   : nullptr;
+    return feature && feature->GetLocalProbeCount(harness.worldId) > 0
+               ? feature->GetLocalProbeDesc(harness.worldId, 0)
+               : nullptr;
 }
 
 int32 UlpDistance(float a, float b)
@@ -1078,17 +1079,17 @@ TEST_F(RenderOriginExtraction, AFarProbeBoxIsExactRelativeToTheView)
     ASSERT_TRUE(harness.Initialize(m_Device.get(), /*fastPath*/ true));
     const WorldPosition center{100000.3, 2.0, 100000.0};
     const WorldPosition eye{100001.8, 2.5, 100000.0};
-    const auto* source = SelectBoxProbeAt(harness, center, Vector3{0.25f, 0.0f, 0.0f}, eye);
-    ASSERT_NE(source, nullptr);
+    const auto* probe = SelectBoxProbeAt(harness, center, Vector3{0.25f, 0.0f, 0.0f}, eye);
+    ASSERT_NE(probe, nullptr);
 
     const Rendering::CameraData cam = MakeCameraAtEye(eye);
     const Vector3 eyeRel = Origin::CameraEyeRelativeToOrigin(cam);
     const Vector3 toCorner =
-        Origin::ViewRelativePoint(cam, source->GetProbe().BoxCenter + Vector3{2.0f, 2.0f, 2.0f}) - eyeRel;
+        Origin::ViewRelativePoint(cam, probe->BoxCenter + Vector3{2.0f, 2.0f, 2.0f}) - eyeRel;
     EXPECT_NEAR(toCorner.x, 0.5f, 1.0e-4f);
     EXPECT_NEAR(toCorner.y, 1.5f, 1.0e-4f);
     EXPECT_NEAR(toCorner.z, 2.0f, 1.0e-4f);
-    const Vector3 toCapture = Origin::ViewRelativePoint(cam, source->GetProbe().Position) - eyeRel;
+    const Vector3 toCapture = Origin::ViewRelativePoint(cam, probe->Position) - eyeRel;
     EXPECT_NEAR(toCapture.x, -1.25f, 1.0e-4f);
     EXPECT_NEAR(toCapture.y, -0.5f, 1.0e-4f);
     EXPECT_NEAR(toCapture.z, 0.0f, 1.0e-4f);
@@ -1103,14 +1104,16 @@ TEST_F(RenderOriginExtraction, ANearProbeUploadsTheSameBoxCenterAndACapturePosit
     ASSERT_TRUE(harness.Initialize(m_Device.get(), /*fastPath*/ true));
     const WorldPosition center{198.13, 2.71, -40.07};
     const Vector3 offset{0.37f, -0.21f, 0.13f};
-    const auto* source = SelectBoxProbeAt(harness, center, offset, center);
-    ASSERT_NE(source, nullptr);
+    const auto* probe = SelectBoxProbeAt(harness, center, offset, center);
+    ASSERT_NE(probe, nullptr);
 
     const Vector3 roundedCenter =
         Components::Transform::FromTRS(center, Quaternion{}, Vector3{4.0f, 4.0f, 4.0f}).GetPosition() - WorldPosition{};
     const Vector3 fp32Capture = roundedCenter + Vector3{1.0f, 0.0f, 0.0f} * offset.x +
                                 Vector3{0.0f, 1.0f, 0.0f} * offset.y + Vector3{0.0f, 0.0f, 1.0f} * offset.z;
-    const Origin::EnvironmentLocalReflectionData uploaded = source->LocalReflectionData();
+    Origin::SceneReflectionProbeEnvironmentSource source(harness.rs);
+    source.SetProbe(*probe);
+    const Origin::EnvironmentLocalReflectionData uploaded = source.LocalReflectionData();
     ASSERT_TRUE(uploaded.BoxProjection);
     ExpectBitEqual(uploaded.BoxCenterWS, roundedCenter);
     EXPECT_LE(UlpDistance(uploaded.ProbePositionWS.x, fp32Capture.x), 1);

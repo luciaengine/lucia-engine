@@ -4,6 +4,7 @@
 #endif
 
 #include "PlayerApplication.h"
+#include "Benchmark/PlayerBenchmark.h"
 #include "PlayerHdrOptions.h"
 #include "PlayerLog.h"
 #include "PlayerRunOptions.h"
@@ -44,6 +45,9 @@
 #endif
 
 namespace {
+
+// A --benchmark run whose plan is refused or whose result is not written.
+constexpr int kBenchmarkFailedExitCode = 3;
 
 void TerminateHandler() noexcept
 {
@@ -586,6 +590,15 @@ static int PlayerMainImpl(int argc, char** argv)
         movieOptions,
 #endif
         runOptions->QuitAfterFrames, allowRuntimeHdrToggle, screenshotPath);
+    if (!runOptions->BenchmarkPlanPath.empty())
+    {
+        std::optional<GameEngine::PlayerBenchmarkPlan> plan =
+            GameEngine::LoadPlayerBenchmarkPlan(runOptions->BenchmarkPlanPath);
+        if (!plan)
+            return kBenchmarkFailedExitCode;
+        app.SetBenchmark(
+            std::make_unique<GameEngine::PlayerBenchmark>(std::move(*plan), runOptions->BenchmarkOutputPath));
+    }
     if (runOptions->Headless)
     {
         app.SetFixedFrameRate(runOptions->HeadlessFps);
@@ -603,6 +616,8 @@ static int PlayerMainImpl(int argc, char** argv)
         }
         const int exitCode = app.Run();
         app.Shutdown();
+        if (exitCode == 0 && !app.BenchmarkSucceeded())
+            return kBenchmarkFailedExitCode;
         return exitCode;
     }
     catch (const std::exception& e)
