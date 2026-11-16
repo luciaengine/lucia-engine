@@ -169,6 +169,7 @@ add_executable(EditorThumbnailRoutingTests
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Inspectors/CubeLut/CubeLutStripRequest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Inspectors/CubeLut/CubeLutThumbnailHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/FolderBakeReport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/SpriteFramesThumbnailHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/TextureThumbnailHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailBakeQueue.cpp
