@@ -2831,6 +2831,7 @@ if(TARGET Editor)
 	)
 	target_link_libraries(EditorProjectOpenTests PRIVATE
 		Engine
+		nlohmann_json::nlohmann_json
 		GTest::gtest
 		GTest::gtest_main
 	)

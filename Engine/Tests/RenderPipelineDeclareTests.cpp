@@ -12834,6 +12834,14 @@ bool ActivateCbtTerrain(TerrainFixture& f, TerrainECS::TerrainRenderFeature& ter
     return cbt.EnsureInitialized(*f.Device, *f.Rs);
 }
 
+// Fills a height page upload with one height: its bytes hold float32 heights.
+void FillPageHeights(TerrainECS::HeightPageUpload& upload, float height)
+{
+    const size_t count = upload.Bytes.size() / sizeof(float);
+    for (size_t i = 0; i < count; ++i)
+        std::memcpy(upload.Bytes.data() + i * sizeof(float), &height, sizeof(float));
+}
+
 std::vector<TerrainECS::HeightPageUpload> PublishCbtHeightPages(TerrainECS::TerrainPages& pages,
     TerrainECS::TerrainPageFeature& publication, uint64 identity, uint64 firstFrame, float height)
 {
@@ -12861,7 +12869,7 @@ std::vector<TerrainECS::HeightPageUpload> PublishCbtHeightPages(TerrainECS::Terr
         pages.Update(frameIndex, 1.0f / 60.0f, false, 2);
         for (auto& upload : pages.Uploads())
         {
-            std::fill(upload.Samples.begin(), upload.Samples.end(), height);
+            FillPageHeights(upload, height);
             pending.InsertOrAssign(upload.Slot, std::move(upload));
         }
         pages.Uploads().clear();
@@ -13889,7 +13897,7 @@ TEST(RenderPipelineDeclareTests, RegionalPageRewriteMatchesFullEvaluationOfTheSa
     const auto payload = std::find_if(payloads.begin(), payloads.end(), [slot](const auto& item) { return item.Slot == slot; });
     ASSERT_NE(payload, payloads.end());
     pages.Uploads().push_back(*payload);
-    std::fill(pages.Uploads().front().Samples.begin(), pages.Uploads().front().Samples.end(), 0.75f);
+    FillPageHeights(pages.Uploads().front(), 0.75f);
     pages.DirtyRects().clear();
     const float footprint = static_cast<float>(PageStreaming::kPageOwnedSamples + 1u) / 256.0f;
     pages.DirtyRects().push_back({3, 1, 0.0f, 0.0f, footprint, footprint});
@@ -13968,7 +13976,7 @@ TEST(RenderPipelineDeclareTests, RegionalPageRewriteMatchesFullEvaluationOfTheSa
     const uint64 beforeScreenRewrite = cbt.GetUpdateSubmissionCount();
     pages.Uploads() = payloads;
     for (auto& uploadPayload : pages.Uploads())
-        std::fill(uploadPayload.Samples.begin(), uploadPayload.Samples.end(), 0.5f);
+        FillPageHeights(uploadPayload, 0.5f);
     pages.DirtyRects().clear();
     pages.DirtyRects().push_back({3, 1, 0.0f, 0.0f, 1.0f, 1.0f});
     publication.Publish(pages);
@@ -14112,7 +14120,7 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
     EXPECT_EQ(cbt.PendingForceVertexEval(), 0u);
     pages.Uploads() = payloads;
     for (auto& payload : pages.Uploads())
-        std::fill(payload.Samples.begin(), payload.Samples.end(), 0.5f);
+        FillPageHeights(payload, 0.5f);
     publication.Publish(pages);
     EXPECT_TRUE(cbt.WritesDynamicDepth()) << "pending rewritten payload must invalidate depth before declaration";
     const uint64 beforeRewrite = cbt.GetUpdateSubmissionCount();

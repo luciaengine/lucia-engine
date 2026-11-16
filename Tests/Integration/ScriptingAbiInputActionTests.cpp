@@ -1,26 +1,28 @@
-// Action authoring through the scripting ABI, end to end on the runtime sink.
-//
-// The managed surface (Managed/Input.ABI/Input.cs) exposes RegisterAction, Bind
-// and GetActionState and does NOT expose PushContext, so a script's context is
-// only ever registered and enabled — never pushed. These drive the same C
-// exports that façade binds, so the chain a script actually gets is what is
-// pinned here rather than the C++ API underneath it.
+// The Input script API through its generated table, end to end on the runtime sink: the calls the
+// C# Input class makes (Managed/Scripting.Bindings/Generated/Input.g.cs), so the chain a script
+// actually gets is what is pinned here rather than the C++ API underneath it.
 #include "gtest/gtest.h"
 
 #include "Core/Engine.h"
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
 #include "Scripting/ScriptingABI.h"
+#include "scripting/Input.script.gen.h"
 
 namespace
 {
-// Ids the way the façade produces them (Input.Id -> InputIds.HashInput).
+using GameEngine::Input::ActionKind;
+using GameEngine::Input::ActionState;
+using GameEngine::Input::Key;
+using GameEngine::Input::ModifierFlags;
+using GameEngine::Input::PointerLockState;
+
+// Ids the way a script makes them (StringId from a name).
 constexpr uint64_t kScriptContext = GameEngine::Input::HashInput("Script.Gameplay");
 constexpr uint64_t kMoveForward = GameEngine::Input::HashInput("Script.Gameplay.MoveForward");
-constexpr int32_t kDeviceKeyboard = 0; // Input.DeviceType.Keyboard
 
-// Points the ABI at a sink this test owns, and puts the engine back afterwards
-// so no other suite inherits it.
+// Points the scripts' input at a sink this test owns, and puts the engine back afterwards so no
+// other suite inherits it.
 struct ScopedRuntimeInput
 {
     explicit ScopedRuntimeInput(GameEngine::Input::InputSystem& sink)
@@ -29,12 +31,23 @@ struct ScopedRuntimeInput
     }
     ~ScopedRuntimeInput() { GameEngine::EngineCore::GetInstance().SetRuntimeInput(nullptr); }
 };
+
+const GE_Input_Table_v1& InputTable()
+{
+    const void* table = nullptr;
+    uint32_t size = 0;
+    EXPECT_EQ(GE_Input_GetInterface(GE_Input_Hash, &table, &size), GE_Result_Ok);
+    EXPECT_EQ(size, sizeof(GE_Input_Table_v1));
+    return *static_cast<const GE_Input_Table_v1*>(table);
+}
+
 } // namespace
 
 TEST(ScriptingAbi_Input, BoundActionIsReadableWithoutPushingAContext)
 {
     GameEngine::Input::InputSystem sink{GameEngine::Input::SinkRole::Gameplay};
     ScopedRuntimeInput scoped(sink);
+    const GE_Input_Table_v1& input = InputTable();
 
     ASSERT_EQ(input.RegisterAction(kScriptContext, kMoveForward, ActionKind::Button), GE_Result_Ok);
     ASSERT_EQ(input.BindKey(kScriptContext, kMoveForward, Key::W, 1.0f, ModifierFlags::None, ModifierFlags::None), GE_Result_Ok);
@@ -61,6 +74,7 @@ TEST(ScriptingAbi_Input, DisablingTheContextWithdrawsTheClaimAndTheAction)
 {
     GameEngine::Input::InputSystem sink{GameEngine::Input::SinkRole::Gameplay};
     ScopedRuntimeInput scoped(sink);
+    const GE_Input_Table_v1& input = InputTable();
 
     ASSERT_EQ(input.RegisterAction(kScriptContext, kMoveForward, ActionKind::Button), GE_Result_Ok);
     ASSERT_EQ(input.BindKey(kScriptContext, kMoveForward, Key::W, 1.0f, ModifierFlags::None, ModifierFlags::None), GE_Result_Ok);
