@@ -653,7 +653,8 @@ class GPUScene
                                      uint32_t firstInstance, uint32_t instanceCount,
                                      const GPUCullingData& cullingData,
                                      const CullDeformationMargins& margins, uint64_t sliceStableKey);
-    void ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
+    // Returns false when no pass was declared (no candidates, or the kernel is not ready).
+    bool ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
                                             RenderGraph::RGBuffer visibility, uint32_t visibilityTotalBytes,
                                             const uint32_t* sliceOffsetsElements, uint32_t viewCount,
                                             uint32_t firstInstance, uint32_t instanceCount,
@@ -946,7 +947,7 @@ class GPUScene
     // Shared implementation for ScheduleCullingPassForRange (viewCount=1) and
     // ScheduleCullingPassForCascadeGroup (viewCount=N). `sliceOffsetsElements`
     // must point to at least `viewCount` entries; the rest are zeroed.
-    void ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
+    bool ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
                                  RenderGraph::RGBuffer visibility, uint32_t visibilityTotalBytes,
                                  PipelineHandle pipeline,
                                  const uint32_t* sliceOffsetsElements, uint32_t viewCount,

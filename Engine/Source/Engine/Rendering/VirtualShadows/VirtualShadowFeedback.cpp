@@ -150,6 +150,16 @@ std::optional<uint32_t> FindVirtualShadowFeedbackBit(
     return static_cast<uint32_t>(bit);
 }
 
+std::array<Mathematics::Vector4, 6> VirtualShadowPageCasterPlanes(
+    const Mathematics::Matrix4x4& pageViewProjection, VirtualShadowLight family)
+{
+    std::array<Mathematics::Vector4, 6> planes;
+    Rendering::ExtractFrustumPlanes(pageViewProjection, planes.data());
+    if (family == VirtualShadowLight::Directional)
+        planes[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    return planes;
+}
+
 bool VirtualShadowPageTouchedByCasters(const VirtualShadowFeedbackProjection& projection,
                                        const VirtualShadowPage& page,
                                        std::span<const ShadowCasterChangeSphere> changes)
@@ -175,10 +185,7 @@ bool VirtualShadowPageTouchedByCasters(const VirtualShadowFeedbackProjection& pr
     if (!cropped)
         return true;
 
-    Mathematics::Vector4 planes[6];
-    Rendering::ExtractFrustumPlanes(*cropped, planes);
-    if (page.Family == VirtualShadowLight::Directional)
-        planes[4] = {0.0f, 0.0f, 0.0f, 1.0f}; // The sun raster clamps near depth.
+    const auto planes = VirtualShadowPageCasterPlanes(*cropped, page.Family);
     return std::ranges::any_of(changes, [&planes](const auto& sphere)
     {
         if (!std::isfinite(sphere.X) || !std::isfinite(sphere.Y) || !std::isfinite(sphere.Z) ||
@@ -190,7 +197,7 @@ bool VirtualShadowPageTouchedByCasters(const VirtualShadowFeedbackProjection& pr
         constexpr float kPrecisionUlps = 8.0f * std::numeric_limits<float>::epsilon();
         const float scale = std::max({std::abs(sphere.X), std::abs(sphere.Y), std::abs(sphere.Z), 1.0f});
         return Rendering::TestSphereFrustum({sphere.X, sphere.Y, sphere.Z},
-                                             sphere.Radius + scale * kPrecisionUlps, planes);
+                                             sphere.Radius + scale * kPrecisionUlps, planes.data());
     });
 }
 

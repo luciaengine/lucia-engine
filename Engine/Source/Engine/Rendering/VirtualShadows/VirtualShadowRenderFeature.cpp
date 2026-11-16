@@ -197,7 +197,8 @@ void VirtualShadowRenderFeature::OnScheduleCulling(const FeatureCullingContext& 
         group.instanceCount = context.InstanceCount;
         group.frameIndex = context.FrameIndex;
         group.deltaTime = context.DeltaTime;
-        // A page can receive shadows from outside the camera and conventional cube-face culls.
+        // This all-caster slice proves resident pages and keeps off-camera casters animated.
+        // A page that renders draws from its own slice, which DeclarePages culls to the page.
         for (auto& plane : group.frustumPlanes[0])
             plane = Mathematics::Vector4{0.0f, 0.0f, 0.0f, 1.0f};
         context.CullingPipeline->SubmitCascadeGroup(group);
