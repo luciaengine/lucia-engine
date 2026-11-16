@@ -7,9 +7,11 @@
 #include "EZTree/EZTreeOptions.h"
 #include "EZTreeECS/EZTreeDefaultTextures.h"
 #include "EZTreeECS/EZTreeRuntimeMaterials.h"
+#include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/TextureService.h"
 #include "Mathematics/Geometry.h"
 #include "Rendering/Materials/MaterialDocument.h"
 
@@ -318,7 +320,8 @@ TreeVariantMaterials VariantMaterialGuids(uint32 slot)
                                 VariantMaterialGuid(slot, "bark-static"),
                                 VariantMaterialGuid(slot, "leaves"),
                                 VariantMaterialGuid(slot, "leaves-static"),
-                                VariantMaterialGuid(slot, "trellis")};
+                                VariantMaterialGuid(slot, "trellis"),
+                                VariantMaterialGuid(slot, "impostor")};
 }
 
 void RegisterVariantMaterials(Engine::Renderer::RenderServices& renderServices,
@@ -333,6 +336,40 @@ void RegisterVariantMaterials(Engine::Renderer::RenderServices& renderServices,
     MaterialDocument trellis = BuildTrellisMaterialDocument(options);
     PreloadMaterialDocumentTextures(renderServices, trellis);
     renderServices.Materials().RegisterMaterialFromDocument(materials.Trellis, trellis);
+}
+
+void RegisterImpostorMaterial(Engine::Renderer::RenderServices& renderServices,
+                              const GUID& material,
+                              const Engine::Renderer::ImpostorAtlas& atlas,
+                              const Mathematics::BoundingBox& bounds,
+                              uint32 framesPerSide,
+                              Mathematics::OctahedralLayout layout)
+{
+    MaterialDocument doc{};
+    doc.schemaVersion = 3;
+    doc.materialName = "Tree Generator Impostor";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/impostor.glsl";
+    doc.vertexModifier = "VertexModifiers/impostor_card.glsl";
+    doc.alphaMode = MaterialAlphaMode::Mask;
+    doc.doubleSided = true;
+    doc.properties["alphaCutoff"] = 0.5f;
+    doc.properties["impostorBounds"] =
+        std::vector<float>{bounds.center.x, bounds.center.y, bounds.center.z, bounds.Radius()};
+    doc.properties["impostorAtlas"] = std::vector<float>{
+        static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f, 0.0f, 0.0f};
+    doc.textures["albedoMap"] = std::string{};
+    doc.textures["normalMap"] = std::string{};
+    Engine::Renderer::Material* registered = renderServices.Materials().RegisterMaterialFromDocument(material, doc);
+    if (!registered)
+        return;
+    // The atlas is a runtime texture: bound by handle, as a video frame is.
+    const StringId albedo = HashStringId("albedoMap");
+    const StringId normal = HashStringId("normalMap");
+    registered->SetTexture(albedo, atlas.Color);
+    registered->SetBindlessTextureIndex(albedo, renderServices.Textures().GetBindlessIndex(atlas.Color));
+    registered->SetTexture(normal, atlas.NormalDepth);
+    registered->SetBindlessTextureIndex(normal, renderServices.Textures().GetBindlessIndex(atlas.NormalDepth));
 }
 
 bool VariantMaterialsReady(Engine::Renderer::RenderServices& renderServices, const TreeVariantMaterials& materials)

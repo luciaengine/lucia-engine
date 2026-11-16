@@ -167,6 +167,10 @@ add_custom_command(TARGET Player POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
             "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Surfaces"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Surfaces"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/VertexModifiers"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/VertexModifiers"
+            "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/VertexModifiers"
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
             "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Particles"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Particles"
