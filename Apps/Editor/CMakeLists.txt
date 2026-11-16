@@ -79,6 +79,7 @@ set(EDITOR_SOURCES
     Source/Editor/Settings/PhysicsProjectSettings.cpp
     Source/Editor/Settings/ProjectUIScaleBinding.cpp
     Source/Editor/Settings/Render/RenderProjectSettings.cpp
+    Source/Editor/Settings/AutoLodImportSettings.cpp
     Source/Editor/Settings/SvgRasterSettings.cpp
     Source/Editor/Settings/UIScaleProjectSettingsWriter.cpp
 	Source/Editor/RenderGraphTickRegistry.cpp
