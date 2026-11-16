@@ -373,7 +373,8 @@ set(EDITOR_SOURCES
 	Source/Inspectors/ShaderInspector.cpp
 	Source/Inspectors/ScriptInspector.cpp
 	Source/Inspectors/NativeSourceInspector.cpp
-	Source/Inspectors/RenderPipelineInspector.cpp
+	Source/Inspectors/RenderPipeline/RenderPipelineInspector.cpp
+	Source/Inspectors/RenderPipeline/ShadowMapPassFields.cpp
 	Source/Sky/SkyEnvironment/SkyEnvironmentInspector.cpp
 	Source/Inspectors/DayOfYearText.cpp
 	Source/Sky/SkyDayCurveRow.cpp
@@ -849,7 +850,8 @@ set(EDITOR_HEADERS
 	Include/Inspectors/MaterialInspector.h
 	Include/Inspectors/ShaderInspector.h
 	Include/Inspectors/ScriptInspector.h
-	Include/Inspectors/RenderPipelineInspector.h
+	Include/Inspectors/RenderPipeline/RenderPipelineInspector.h
+	Include/Inspectors/RenderPipeline/ShadowMapPassFields.h
 	Include/Sky/SkyEnvironment/SkyEnvironmentInspector.h
 	Include/Inspectors/DayOfYearText.h
 	Include/Sky/SkyDayCurveRow.h

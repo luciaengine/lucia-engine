@@ -779,7 +779,8 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/AnimatorInspector.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/TransformInspector.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/MeshRendererInspector.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/RenderPipelineInspector.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/RenderPipeline/RenderPipelineInspector.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/RenderPipeline/ShadowMapPassFields.cpp
 	# Inspectors build menus through CreateContextMenu(), which wraps them in
 	# the InterceptableContextMenu decorator (debug-server menu automation).
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Modules/EditorContextMenu/ContextMenuBackendPolicy.cpp

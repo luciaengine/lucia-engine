@@ -45,7 +45,7 @@
 #include "Inspectors/CharacterControllerInspector.h"
 #include "Inspectors/Physics/PhysicsColliderInspector.h"
 #include "Inspectors/PostProcessVolumeInspector.h"
-#include "Inspectors/RenderPipelineInspector.h"
+#include "Inspectors/RenderPipeline/RenderPipelineInspector.h"
 #include "Inspectors/RetargetMapInspector.h"
 #include "Inspectors/PostProcessEffects/ScreenSpaceReflectionsEffectInspector.h"
 #include "Inspectors/ScriptInspector.h"

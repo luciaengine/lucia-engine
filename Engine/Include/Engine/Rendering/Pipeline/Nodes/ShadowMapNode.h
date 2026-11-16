@@ -45,6 +45,17 @@ class ShadowMapNode final : public IRenderPipelineNode
   public:
     ~ShadowMapNode() override;
 
+    // Defaults and limits of the authored fields. The editor inspector and the parser share them.
+    static constexpr uint32_t kDefaultCascadeResolution = 2048u;
+    static constexpr uint32_t kMinCascadeResolution = 256u;
+    static constexpr uint32_t kMaxCascadeResolution = 8192u;
+    static constexpr uint32_t kDefaultCascadeCount = 4u;
+    static constexpr float kDefaultSplitLambda = 0.5f;
+    static constexpr float kDefaultMaxShadowDistance = 100.0f;
+
+    /// True when `resolution` is a power of two from kMinCascadeResolution to kMaxCascadeResolution.
+    static bool IsSupportedCascadeResolution(uint32_t resolution);
+
     const char* GetTypeName() const override { return "ShadowMap"; }
 
     bool Initialize(std::string nodeId, std::string nodeJson, std::string* outError) override;
@@ -68,8 +79,8 @@ class ShadowMapNode final : public IRenderPipelineNode
     uint32_t m_RGFrameCounter = 0;
 
     // Parsed from JSON.
-    uint32_t m_NumCascades = 4;
-    uint32_t m_Resolution = 2048;
+    uint32_t m_NumCascades = kDefaultCascadeCount;
+    uint32_t m_Resolution = kDefaultCascadeResolution;
     // Punctual (area/spot/point) shadow-map resolution, DECOUPLED from the
     // directional cascade resolution above (arc slice S0). Sentinel 0 means
     // "unset" — Initialize resolves it to m_Resolution so a .rendergraph that
@@ -88,8 +99,8 @@ class ShadowMapNode final : public IRenderPipelineNode
     // capture sharp depth discontinuities cleanly while keeping the texture
     // at 32 MiB per view. Allowed values: {512, 1024, 2048}.
     uint32_t m_MomentsResolution = 1024;
-    float m_SplitLambda = 0.5f;
-    float m_MaxShadowDistance = 100.0f;
+    float m_SplitLambda = kDefaultSplitLambda;
+    float m_MaxShadowDistance = kDefaultMaxShadowDistance;
     bool m_FitShadowDistanceToScene = false;
     // NDC-space anti-acne bias added to the receiver's reference depth before
     // the shadow comparison. Multiplied at sample time by per-cascade
