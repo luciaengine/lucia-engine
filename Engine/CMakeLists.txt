@@ -434,6 +434,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODFeature.cpp
+	Source/Engine/Rendering/Impostors/ImpostorAtlasCache.cpp
 	Source/Engine/Rendering/Impostors/ImpostorFrameCamera.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODSplits.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeature.cpp
@@ -2271,6 +2272,7 @@ endif()
 
             # Impostor frame cameras and atlas bookkeeping (Engine/Rendering/Impostors).
             ge_add_render_services_test(ImpostorTests
+                Tests/ImpostorAtlasCacheTests.cpp
                 Tests/ImpostorFrameCameraTests.cpp)
 
             ge_add_render_services_test(ComputeDescriptorScratchTests
