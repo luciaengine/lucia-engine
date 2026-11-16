@@ -69,10 +69,12 @@ DeformationEnvelopeDeclaration ReadDeclaration(const std::string& modifierText, 
     return table.DeformationEnvelope;
 }
 
-// ez_tree_wind.glsl reads its wind vector from Mat.uParams1 (xyz, w = enabled),
+// ez_tree_wind.glsl reads its wind vector from Mat.uParams1 (xyz, w = strength scale),
 // its frequency, spatial scale, tree height and base height from Mat.uParams2,
-// the clock and the instance index from InstanceData, and the leaf UV and seed
-// from aUV0 and aUV1. One invocation is one sample: x walks the clock, y the
+// the clock, the instance index, the model matrix and the sector from InstanceData,
+// the weather wind volumes from Light, and the leaf UV and seed from aUV0 and aUV1.
+// The samples place no wind volume: the declared envelope bounds the authored wind,
+// and the tree extraction adds the bound of the volumes. One invocation is one sample: x walks the clock, y the
 // wind direction and magnitude, z the height, the UV, the leaf seed, the
 // instance and the spatial scale. The result is the largest
 // |displacement| / |windStrength.xyz| as float bits (positive floats order as
@@ -84,11 +86,20 @@ constexpr uint32_t kShapeSamples = 6u * 4u * 4u * 4u * 2u;
 const char* const kEzTreeWindPrologue = R"(#version 450
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
+#include "Includes/instance_sector.glsl"
 struct InstanceData
 {
     float deformationTimeSeconds;
     uint instanceIndex;
+    mat4 modelMatrix;
+    ivec3 sector;
 };
+struct WeatherLightLanes
+{
+    vec4 uWeatherWindCount;
+    vec4 uWeatherWind[1];
+};
+WeatherLightLanes Light;
 struct LegacyMaterialLanes
 {
     vec4 uParams1;
@@ -128,6 +139,8 @@ void main()
     uint instanceIndex = (shapeIndex / 96u) % 4u;
     uint spatialIndex = shapeIndex / 384u;
 
+    Light.uWeatherWindCount = vec4(0.0);
+    Light.uWeatherWind[0] = vec4(0.0);
     Mat.uParams1 = vec4(windDir * magnitude, 1.0);
     Mat.uParams2 = vec4(1.0, spatialIndex == 0u ? 1.0 : 4.0, 10.0, 0.0);
     aUV0 = uvs[uvIndex];
@@ -136,6 +149,9 @@ void main()
     InstanceData inst;
     inst.deformationTimeSeconds = float(timeIndex) * 0.7371;
     inst.instanceIndex = instanceIndex * 37u + 3u;
+    inst.modelMatrix = mat4(1.0);
+    inst.modelMatrix[3] = vec4(float(instanceIndex) * 9.0, 0.0, 0.0, 1.0);
+    inst.sector = ivec3(0);
 
     vec3 position = vec3(float(timeIndex % 7u) * 1.3 - 4.0, heights[heightIndex],
                          float(timeIndex % 5u) * 1.7 - 3.0);
@@ -171,6 +187,7 @@ SampledBound SampleEzTreeWind(const std::string& modifierText)
     req.debugName = "EzTreeWindSampledBound";
     req.baseDirectory = kRepoRoot / "Packages" / "eztree" / "Assets" / "Shaders";
     req.cacheRoot = fs::temp_directory_path() / "ge_modifier_envelope_sampled_cache";
+    req.includeDirs = {kRepoRoot / "Engine" / "Modules" / "Rendering" / "Shaders"};
     ShaderStageCompileSpec cs{};
     cs.stage = "cs";
     cs.sourcePath = req.baseDirectory / "ez_tree_wind_sampled_bound.comp";
