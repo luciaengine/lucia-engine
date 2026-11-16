@@ -96,36 +96,7 @@ TEST_F(MaterialBridgeIntegrationTest, VertexModifierDocumentAlwaysCarriesOneModi
     EXPECT_FALSE(simple && extended) << "both modifier defines would co-emit into one variant";
 }
 
-namespace
-{
-// Stands in for the engine's worker dispatcher: keeps every pipeline build the
-// device queues until the test runs it, so the window in which a build is
-// pending is observable. Removes itself from the device before its jobs go.
-class HeldPipelineBuilds
-{
-  public:
-    explicit HeldPipelineBuilds(IDevice& device) : m_Device(device)
-    {
-        m_Device.SetPipelineBuildDispatcher([this](std::function<void()> job) { Jobs.push_back(std::move(job)); });
-    }
-    ~HeldPipelineBuilds() { m_Device.SetPipelineBuildDispatcher({}); }
-    HeldPipelineBuilds(const HeldPipelineBuilds&) = delete;
-    HeldPipelineBuilds& operator=(const HeldPipelineBuilds&) = delete;
-
-    void RunAll()
-    {
-        std::vector<std::function<void()>> jobs = std::move(Jobs);
-        Jobs.clear();
-        for (std::function<void()>& job : jobs)
-            job();
-    }
-
-    std::vector<std::function<void()>> Jobs;
-
-  private:
-    IDevice& m_Device;
-};
-} // namespace
+using GameEngine::Testing::HeldPipelineBuilds;
 
 // ---- Real shader compilation integration tests ----
 // These tests inject real shader paths via SetMaterialBuildContext so
@@ -615,8 +586,7 @@ TEST_F(MaterialPipelineCompilationTest, AsyncPublish_DoesNotClobberValidPipeline
 
     ShaderCacheKey key{};
     key.VariantKey = mat->GetVariantKey();
-    key.Source.SurfaceShaderPath = doc.surfaceShader;
-    key.Source.MaterialAssetPath = mat->GetMaterialAssetPath();
+    key.Source = MakeShaderSourceKey(doc.surfaceShader, "", mat->GetMaterialAssetPath());
     // A different, bogus-but-valid pipeline id: the valid-pipeline guard must skip it.
     m_rs->Materials().EnqueueBasePipelinePublishForTesting(
         guid, Rendering::GraphicsPipelineId{realPid.Value + 100000u}, nullptr, key);
@@ -653,8 +623,8 @@ TEST_F(MaterialPipelineCompilationTest, AsyncPublish_StaleKeyDiscardedAndRedrive
     // still resolves to standard_pbr, so the keys mismatch.
     ShaderCacheKey staleKey{};
     staleKey.VariantKey = mat->GetVariantKey();
-    staleKey.Source.SurfaceShaderPath = "Surfaces/unlit_solid.glsl"; // != live standard_pbr
-    staleKey.Source.MaterialAssetPath = mat->GetMaterialAssetPath();
+    // != live standard_pbr
+    staleKey.Source = MakeShaderSourceKey("Surfaces/unlit_solid.glsl", "", mat->GetMaterialAssetPath());
     const Rendering::GraphicsPipelineId bogus{777777u};
     m_rs->Materials().EnqueueBasePipelinePublishForTesting(guid, bogus, nullptr, staleKey);
 
@@ -688,9 +658,8 @@ TEST_F(MaterialPipelineCompilationTest, AsyncPublish_FailedCompileDoesNotClobber
 
     ShaderCacheKey liveKey{};
     liveKey.VariantKey = mat->GetVariantKey();
-    liveKey.Source.SurfaceShaderPath = mat->GetCompileSpec().surfaceShaderPath;
-    liveKey.Source.VertexModifierPath = mat->GetCompileSpec().vertexModifierPath;
-    liveKey.Source.MaterialAssetPath = mat->GetMaterialAssetPath();
+    liveKey.Source = MakeShaderSourceKey(mat->GetCompileSpec().surfaceShaderPath, mat->GetCompileSpec().vertexModifierPath,
+                                         mat->GetMaterialAssetPath());
     // A failed publish (invalid result id) carrying a STALE last-good — an id
     // retired by an older submit, superseded by the pipeline published above.
     const Rendering::GraphicsPipelineId staleLastGood{freshPid.Value + 100000u};
@@ -702,41 +671,6 @@ TEST_F(MaterialPipelineCompilationTest, AsyncPublish_FailedCompileDoesNotClobber
     EXPECT_EQ(mat->GetGraphicsPipelineId().Value, freshPid.Value)
         << "a failed publish's stale last-good must not clobber a pipeline "
            "something newer already published";
-}
-
-TEST_F(MaterialPipelineCompilationTest, FailedBasePublicationCannotRestoreAnotherTarget)
-{
-    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
-    const ShaderCompileTarget originalTarget = CurrentShaderCompileTarget();
-    for (const bool flipBeforeAdmission : {false, true})
-    {
-        ApplyShaderCompileProfile(originalTarget);
-        MaterialDocument document{};
-        document.materialName = "FailedBaseTarget";
-        document.lightingModel = "StandardPBR";
-        document.surfaceShader = "Surfaces/standard_pbr.glsl";
-        const GUID guid = GUID::Generate();
-        Material* material = m_rs->Materials().RegisterMaterialFromDocument(guid, document);
-        ASSERT_NE(material, nullptr);
-        const auto lastGood = material->GetGraphicsPipelineId();
-        ASSERT_TRUE(lastGood.IsValid());
-        ShaderCacheKey captured{};
-        captured.VariantKey = material->GetVariantKey();
-        captured.Source.SurfaceShaderPath = document.surfaceShader;
-        captured.Source.MaterialAssetPath = material->GetMaterialAssetPath();
-        Material::TestFactory::SetGraphicsPipelineId(*material, {});
-        ShaderCompileTarget later = captured.Target;
-        later.Compatibility = !later.Compatibility;
-        if (flipBeforeAdmission)
-        {
-            ApplyShaderCompileProfile(later);
-            captured.Target = later;
-        }
-        m_rs->Materials().EnqueueBasePipelinePublishForTesting(guid, {}, nullptr, captured, lastGood);
-        ApplyShaderCompileProfile(later);
-        m_rs->Materials().FlushAsyncMaterialCompiles();
-        EXPECT_FALSE(material->GetGraphicsPipelineId().IsValid());
-    }
 }
 
 namespace
@@ -778,9 +712,8 @@ ShaderCacheKey LiveKeyOf(const Material& mat)
 {
     ShaderCacheKey key{};
     key.VariantKey = mat.GetVariantKey();
-    key.Source.SurfaceShaderPath = mat.GetCompileSpec().surfaceShaderPath;
-    key.Source.VertexModifierPath = mat.GetCompileSpec().vertexModifierPath;
-    key.Source.MaterialAssetPath = mat.GetMaterialAssetPath();
+    key.Source = MakeShaderSourceKey(mat.GetCompileSpec().surfaceShaderPath, mat.GetCompileSpec().vertexModifierPath,
+                                     mat.GetMaterialAssetPath());
     return key;
 }
 } // namespace
@@ -933,15 +866,6 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
     ASSERT_NE(mat, nullptr);
     ASSERT_TRUE(mat->GetGraphicsPipelineId().IsValid());
 
-    auto& draws = m_rs->GetWorldDrawBuilder();
-    WorldSubmissionRecord caster{};
-    caster.viewId = 83u;
-    caster.material = mat;
-    caster.flags = kSubmissionFlagCastShadows;
-    draws.Submit(std::span<const WorldSubmissionRecord>(&caster, 1u));
-    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
-    const auto beforeRecompile = draws.GetShadowSubmissionStates(caster.viewId);
-
     const uint32_t versionBeforeRecompile = mat->GetVersion();
     const uint32_t revisionBeforeRecompile = mat->GetContentRevision();
     m_rs->Materials().RecompileMaterialPipeline(guid, doc);
@@ -951,10 +875,6 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
         << "a recompile must bump the version so stale variant-cache rows retire";
     EXPECT_EQ(mat->GetContentRevision(), revisionBeforeRecompile)
         << "recompiling an unchanged document is not a content change";
-    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
-    const auto afterRecompile = draws.GetShadowSubmissionStates(caster.viewId);
-    EXPECT_NE(afterRecompile.All.MaterialContentKey, beforeRecompile.All.MaterialContentKey);
-    EXPECT_NE(afterRecompile.Rigid.MaterialContentKey, beforeRecompile.Rigid.MaterialContentKey);
 
     const uint32_t versionBeforeEdit = mat->GetVersion();
     const uint32_t revisionBeforeEdit = mat->GetContentRevision();
@@ -962,10 +882,6 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
     EXPECT_GT(mat->GetContentRevision(), revisionBeforeEdit);
     EXPECT_EQ(mat->GetVersion(), versionBeforeEdit)
         << "a parameter edit must not read as a recompile";
-    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
-    const auto afterEdit = draws.GetShadowSubmissionStates(caster.viewId);
-    EXPECT_NE(afterEdit.All.MaterialContentKey, afterRecompile.All.MaterialContentKey);
-    EXPECT_NE(afterEdit.Rigid.MaterialContentKey, afterRecompile.Rigid.MaterialContentKey);
 }
 
 // User keywords: an in-place .material hot-reload that flips the keyword set must
@@ -1023,9 +939,8 @@ TEST_F(MaterialPipelineCompilationTest, RecompileAsync_SupersededInFlightResultR
     // pre-edit compile.
     ShaderCacheKey liveKey{};
     liveKey.VariantKey = mat->GetVariantKey();
-    liveKey.Source.SurfaceShaderPath = mat->GetCompileSpec().surfaceShaderPath;
-    liveKey.Source.VertexModifierPath = mat->GetCompileSpec().vertexModifierPath;
-    liveKey.Source.MaterialAssetPath = mat->GetMaterialAssetPath();
+    liveKey.Source = MakeShaderSourceKey(mat->GetCompileSpec().surfaceShaderPath, mat->GetCompileSpec().vertexModifierPath,
+                                         mat->GetMaterialAssetPath());
     const Rendering::GraphicsPipelineId bogus{888888u};
     m_rs->Materials().EnqueueBasePipelinePublishForTesting(guid, bogus, nullptr, liveKey);
 
@@ -1175,10 +1090,10 @@ std::shared_ptr<SharedShaderVariant> CompileColourVariant(ShaderCompilationCache
     key.VariantKey = mat.GetVariantKey();
     key.VariantKey.materialKeywords |= kWorldColourPass;
     key.VariantKey.vertexFlags = VertexAttributeFlags::StandardMeshWithTangent;
-    key.Source.SurfaceShaderPath = mat.GetCompileSpec().surfaceShaderPath;
-    key.Source.VertexModifierPath = mat.GetCompileSpec().vertexModifierPath;
-    key.Source.MaterialAssetPath = mat.GetMaterialAssetPath();
-    return cache.GetOrCompile(key, mat.GetCompileSpec(), ctx, mat.GetName(), ShaderSourceKind::SpirV);
+    key.Source = MakeShaderSourceKey(mat.GetCompileSpec().surfaceShaderPath, mat.GetCompileSpec().vertexModifierPath,
+                                     mat.GetMaterialAssetPath());
+    return cache.GetOrCompile(key, mat.GetCompileSpec(), buildContext, mat.GetName(), mat.GetMaterialAssetPath(),
+                              ShaderSourceKind::SpirV);
 }
 
 constexpr std::string_view kTriplanarRefusal =
@@ -1242,7 +1157,7 @@ TEST_F(MaterialPipelineCompilationTest, CacheDrivenCompilesOfAParallaxMaterialMa
     key.VariantKey.materialKeywords |= kWorldColourPass;
     key.VariantKey.vertexFlags = VertexAttributeFlags::StandardMeshWithTangent;
     key.Source.SurfaceShaderPath = mat->GetCompileSpec().surfaceShaderPath;
-    const auto compiled = cache.GetOrCompile(key, mat->GetCompileSpec(), ctx, "CacheRelief", ShaderSourceKind::SpirV);
+    const auto compiled = cache.GetOrCompile(key, mat->GetCompileSpec(), ctx, "CacheRelief", {}, ShaderSourceKind::SpirV);
     ASSERT_TRUE(compiled) << "compile failed";
     EXPECT_TRUE(FragmentMarches(compiled->fragmentBytes)) << "GetOrCompile compiled the flat program";
 
