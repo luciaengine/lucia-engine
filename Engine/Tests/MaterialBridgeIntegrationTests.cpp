@@ -28,6 +28,7 @@
 #include "ScopedShaderCompileTarget.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/SceneProbeWorldEpochs.h"
 #include "HeldPipelineBuilds.h"
 #include "SceneDrawWarm.h"
 #include "Rendering/Core/Device.h"
@@ -664,7 +665,6 @@ TEST_F(MaterialPipelineCompilationTest, FailedBasePublicationCannotRestoreAnothe
         ShaderCacheKey captured{};
         captured.VariantKey = material->GetVariantKey();
         captured.Source.SurfaceShaderPath = document.surfaceShader;
-        captured.Source.MaterialAssetPath = material->GetMaterialAssetPath();
         Material::TestFactory::SetGraphicsPipelineId(*material, {});
         ShaderCompileTarget later = captured.Target;
         later.Compatibility = !later.Compatibility;
@@ -884,7 +884,8 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
     caster.material = mat;
     caster.flags = kSubmissionFlagCastShadows;
     draws.Submit(std::span<const WorldSubmissionRecord>(&caster, 1u));
-    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
+    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry(), m_rs->Materials().MaterialColorClassSpan(),
+                         m_rs->Materials().MaterialSSBOGeneration());
     const auto beforeRecompile = draws.GetShadowSubmissionStates(caster.viewId);
 
     const uint32_t versionBeforeRecompile = mat->GetVersion();
@@ -896,7 +897,8 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
         << "a recompile must bump the version so stale variant-cache rows retire";
     EXPECT_EQ(mat->GetContentRevision(), revisionBeforeRecompile)
         << "recompiling an unchanged document is not a content change";
-    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
+    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry(), m_rs->Materials().MaterialColorClassSpan(),
+                         m_rs->Materials().MaterialSSBOGeneration());
     const auto afterRecompile = draws.GetShadowSubmissionStates(caster.viewId);
     EXPECT_NE(afterRecompile.All.MaterialContentKey, beforeRecompile.All.MaterialContentKey);
     EXPECT_NE(afterRecompile.Rigid.MaterialContentKey, beforeRecompile.Rigid.MaterialContentKey);
@@ -907,7 +909,8 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
     EXPECT_GT(mat->GetContentRevision(), revisionBeforeEdit);
     EXPECT_EQ(mat->GetVersion(), versionBeforeEdit)
         << "a parameter edit must not read as a recompile";
-    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
+    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry(), m_rs->Materials().MaterialColorClassSpan(),
+                         m_rs->Materials().MaterialSSBOGeneration());
     const auto afterEdit = draws.GetShadowSubmissionStates(caster.viewId);
     EXPECT_NE(afterEdit.All.MaterialContentKey, afterRecompile.All.MaterialContentKey);
     EXPECT_NE(afterEdit.Rigid.MaterialContentKey, afterRecompile.Rigid.MaterialContentKey);

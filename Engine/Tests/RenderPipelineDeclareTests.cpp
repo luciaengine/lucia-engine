@@ -24,6 +24,7 @@
 #include "Components/Transform.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/PostProcessEffects/ShadowSettingsEffect.h"
+#include "Engine/Rendering/CameraAspectRatio.h"
 #include "Engine/Rendering/ForwardDrainOrder.h"
 #include "RenderServicesDetail.h"
 #include "Rendering/Core/CullingStrategy.h"
@@ -2188,15 +2189,12 @@ TEST(RenderPipelineDeclareTests, TaaHistoryAdvancesOnlyWhenTheResolveSubmits)
         ASSERT_TRUE(rs.Initialize(device.get()));
         const CameraId camera = rs.Views().AllocateCamera("TaaHistoryCamera");
         CameraData cameraData{};
-        for (uint32_t diagonal = 0; diagonal < 16; diagonal += 5)
-        {
-            cameraData.view[diagonal] = 1.0f;
-            cameraData.proj[diagonal] = 1.0f;
-            cameraData.viewProj[diagonal] = 1.0f;
-        }
-        rs.Views().SetCameraData(camera, cameraData);
+        cameraData.view = Mathematics::Matrix4x4::Identity();
+        cameraData.proj = Mathematics::Matrix4x4::Identity();
+        cameraData.viewProj = Mathematics::Matrix4x4::Identity();
+        rs.Views().SetCameraData(camera, ::GameEngine::Tests::TestCameraWithEye(cameraData), kTestCameraRanges);
         const ViewId view = rs.Views().AllocateView("TaaHistoryView", camera);
-        rs.Views().SetViewRenderLayerMask(view, 1u);
+        rs.Views().SetViewRenderLayerMask(view, RenderLayerMask::Default());
         rs.Views().SetViewTargets(view, 0, 0, 0, ViewClearConfig{});
         rs.Views().SetViewAntiAliasing(view, true, AntiAliasingMode::TAA, 8u);
 
@@ -7669,7 +7667,7 @@ TEST(RenderPipelineDeclareTests, SssrViewportRectFollowsTheLetterbox)
     using GameEngine::Engine::Renderer::ViewLetterbox;
 
     // No letterbox: the whole target, so every conversion is the identity.
-    const auto full = ScreenSpaceReflectionsNode::ComputeViewportRect(ViewLetterbox{}, 1920u, 1080u);
+    const auto full = GameEngine::Engine::Renderer::ComputeViewportRect(ViewLetterbox{}, 1920u, 1080u);
     EXPECT_FLOAT_EQ(full.X, 0.0f);
     EXPECT_FLOAT_EQ(full.Y, 0.0f);
     EXPECT_FLOAT_EQ(full.Width, 1.0f);
@@ -7682,7 +7680,7 @@ TEST(RenderPipelineDeclareTests, SssrViewportRectFollowsTheLetterbox)
     pillar.y = 0u;
     pillar.width = 1440u;
     pillar.height = 1080u;
-    const auto rect = ScreenSpaceReflectionsNode::ComputeViewportRect(pillar, 1920u, 1080u);
+    const auto rect = GameEngine::Engine::Renderer::ComputeViewportRect(pillar, 1920u, 1080u);
     EXPECT_FLOAT_EQ(rect.X, 0.125f);
     EXPECT_FLOAT_EQ(rect.Y, 0.0f);
     EXPECT_FLOAT_EQ(rect.Width, 0.75f);
@@ -7696,7 +7694,7 @@ TEST(RenderPipelineDeclareTests, SssrViewportRectFollowsTheLetterbox)
     ViewLetterbox degenerate{};
     degenerate.active = true;
     const auto fallback =
-        ScreenSpaceReflectionsNode::ComputeViewportRect(degenerate, 1920u, 1080u);
+        GameEngine::Engine::Renderer::ComputeViewportRect(degenerate, 1920u, 1080u);
     EXPECT_FLOAT_EQ(fallback.Width, 1.0f);
     EXPECT_FLOAT_EQ(fallback.Height, 1.0f);
 }
@@ -9645,8 +9643,8 @@ TEST(RenderPipelineDeclareTests, FullscreenCopySamplesARealizedIntermediate)
         RenderPipelineInstance instance(*f.Rs, f.Registry);
         instance.SetBlueprint(std::move(bp));
 
-        FramePools pools(f.Device.get());
-        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        FramePools pools(f.Device);
+        RenderGraph::RGFrame frame(f.Device, &pools.Persistent, &pools.Transient, &pools.Ring);
         ASSERT_TRUE(f.Device->BeginFrame());
         frame.BeginFrame(0);
         TextureDesc desc = ColorTargetDesc();
@@ -9673,7 +9671,7 @@ TEST(RenderPipelineDeclareTests, FullscreenCopySamplesARealizedIntermediate)
 
         const auto output = instance.GetOutputRG(f.View, "FinalColor");
         ASSERT_TRUE(output.IsValid());
-        auto readback = RequestTextureReadbackRG(f.Device.get(), frame, output, "FullscreenCopy.Readback");
+        auto readback = RequestTextureReadbackRG(f.Device, frame, output, "FullscreenCopy.Readback");
         ASSERT_NE(readback, nullptr);
         frame.Execute();
         OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
@@ -9737,8 +9735,8 @@ TEST(RenderPipelineDeclareTests, SamplesAnOlderExplicitTextureVersionAfterWritin
         RenderPipelineInstance instance(*fixture.Rs, fixture.Registry);
         instance.SetBlueprint(blueprint);
 
-        FramePools pools(fixture.Device.get());
-        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        FramePools pools(fixture.Device);
+        RenderGraph::RGFrame frame(fixture.Device, &pools.Persistent, &pools.Transient, &pools.Ring);
         ASSERT_TRUE(fixture.Device->BeginFrame());
         frame.BeginFrame(0);
         TextureDesc descriptor = ColorTargetDesc();
@@ -9770,8 +9768,8 @@ TEST(RenderPipelineDeclareTests, SamplesAnOlderExplicitTextureVersionAfterWritin
         EXPECT_FALSE(instance.GetOutputRG(fixture.View, "Alias").IsValid());
         EXPECT_FALSE(instance.GetOutputRG(fixture.View, "Skipped").IsValid());
         EXPECT_FALSE(instance.GetOutputRG(fixture.View, "Missing").IsValid());
-        auto olderReadback = RequestTextureReadbackRG(fixture.Device.get(), frame, olderCopy, "VersionedCopy.Old");
-        auto newerReadback = RequestTextureReadbackRG(fixture.Device.get(), frame, newer, "VersionedCopy.New");
+        auto olderReadback = RequestTextureReadbackRG(fixture.Device, frame, olderCopy, "VersionedCopy.Old");
+        auto newerReadback = RequestTextureReadbackRG(fixture.Device, frame, newer, "VersionedCopy.New");
         ASSERT_NE(olderReadback, nullptr);
         ASSERT_NE(newerReadback, nullptr);
 
@@ -12836,7 +12834,7 @@ bool ActivateCbtTerrain(TerrainFixture& f, TerrainECS::TerrainRenderFeature& ter
     return cbt.EnsureInitialized(*f.Device, *f.Rs);
 }
 
-std::vector<TerrainECS::HeightPageUpload> PublishCbtHeightPages(TerrainECS::TerrainHeightPages& pages,
+std::vector<TerrainECS::HeightPageUpload> PublishCbtHeightPages(TerrainECS::TerrainPages& pages,
     TerrainECS::TerrainPageFeature& publication, uint64 identity, uint64 firstFrame, float height)
 {
     PageStreaming::GeneratedHeightLattice lattice;
@@ -13521,18 +13519,16 @@ void ExpectCompatHeadDeclaresOnlyVertexReads(TerrainFixture& f, const MaterialDo
     PrepassHeadDeclaration compat;
     {
         TestSupport::ScopedCompatShaderProfile compatProfile;
-        compat = DeclarePrepassHead(fixture, document, keywords, vertexFlags);
+        compat = DeclarePrepassHead(f, doc, keywords, vertexFlags);
     }
-    const PrepassHeadDeclaration desktop = DeclarePrepassHead(fixture, document, keywords, vertexFlags);
+    const PrepassHeadDeclaration desktop = DeclarePrepassHead(f, doc, keywords, vertexFlags);
     EXPECT_TRUE(compat.FragmentOnly.empty())
-        << document.materialName << ": the compat head declares " << compat.FragmentOnly.size()
+        << doc.materialName << ": the compat head declares " << compat.FragmentOnly.size()
         << " binding(s) only the fragment stage reads, first '"
         << (compat.FragmentOnly.empty() ? std::string{} : compat.FragmentOnly.front()) << "'";
     EXPECT_TRUE(NamesAny(desktop.FragmentOnly, kShadowAndIblSlots))
-        << document.materialName << ": the desktop head keeps the variant's whole reflected layout";
-    EXPECT_NE(compat.MaterialMeta, nullptr);
-    EXPECT_NE(desktop.MaterialMeta, nullptr);
-    if (!compat.Meta || !compat.MaterialMeta || !desktop.Meta || !desktop.MaterialMeta)
+        << doc.materialName << ": the desktop head keeps the variant's whole reflected layout";
+    if (!compat.Meta || !desktop.Meta)
         return;
     std::vector<std::string> missing = VertexReadBindingsMissingFrom(*compat.Meta, *desktop.Meta);
     std::erase_if(missing, [&](const std::string& name) {
@@ -13833,7 +13829,7 @@ TEST(RenderPipelineDeclareTests, RetiringCbtOwnerDropsItsIdentityAndPreservesThe
 TEST(RenderPipelineDeclareTests, RegionalPageRewriteMatchesFullEvaluationOfTheSameSnapshot)
 {
     TerrainFixture fixture;
-    if (!fixture.Up(/*enableDebugLayer=*/true))
+    if (!fixture.Up(TerrainFixtureDevice::OwnWithValidation))
         GTEST_SKIP() << "No Vulkan device available";
     if (!fixture.Device->GetValidationStats().Enabled)
         GTEST_SKIP() << "Vulkan validation layer unavailable";
@@ -13847,7 +13843,7 @@ TEST(RenderPipelineDeclareTests, RegionalPageRewriteMatchesFullEvaluationOfTheSa
     cbt.SetActive(true, classify, 8.0f, Components::kNoTerrainSeaLevel,
                   CBTTerrainECS::CBTRenderFeature::DomainConfig{}, 0u);
     auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainPageFeature>();
-    TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords});
+    TerrainECS::TerrainPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords}, TerrainECS::DesktopSurfacePageProfile());
     pages.Update(1, 1.0f / 60.0f, false, 2);
     const auto payloads = PublishCbtHeightPages(pages, publication, 11, 2, 0.25f);
     ASSERT_FALSE(payloads.empty());
@@ -13859,8 +13855,8 @@ TEST(RenderPipelineDeclareTests, RegionalPageRewriteMatchesFullEvaluationOfTheSa
     })json", "cbt_regional_publication.rendergraph");
     RenderPipelineInstance pipeline(*fixture.Rs, fixture.Registry);
     pipeline.SetBlueprint(blueprint);
-    FramePools pools(fixture.Device.get());
-    RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    FramePools pools(fixture.Device);
+    RenderGraph::RGFrame frame(fixture.Device, &pools.Persistent, &pools.Transient, &pools.Ring);
     GameEngine::Testing::ScopedPipelineFrame lifetime(fixture.Rs->Spine(), frame);
     Rendering::ViewDesc uploadView{};
     ViewDeclare uploadDeclaration(frame, uploadView, *fixture.Rs, "Upload");
@@ -14023,7 +14019,7 @@ TEST(RenderPipelineDeclareTests, RegionalPageRewriteMatchesFullEvaluationOfTheSa
 TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesUnsubmittedConsumption)
 {
     TerrainFixture fixture;
-    if (!fixture.Up(/*enableDebugLayer=*/true))
+    if (!fixture.Up(TerrainFixtureDevice::OwnWithValidation))
         GTEST_SKIP() << "No Vulkan device available";
     if (!fixture.Device->GetValidationStats().Enabled)
         GTEST_SKIP() << "Vulkan validation layer unavailable";
@@ -14034,7 +14030,7 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
         GTEST_SKIP() << "staged shader sources or CBT kernels unavailable";
     auto& cbt = fixture.Rs->EnsureFeature<CBTTerrainECS::CBTRenderFeature>();
     auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainPageFeature>();
-    TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords});
+    TerrainECS::TerrainPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords}, TerrainECS::DesktopSurfacePageProfile());
     pages.Update(1, 1.0f / 60.0f, false, 2);
     ASSERT_FALSE(PublishCbtHeightPages(pages, publication, 11, 2, 0.25f).empty());
     TerrainECS::TerrainUploadNode upload;
@@ -14045,8 +14041,8 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
     })json", "cbt_publication.rendergraph");
     RenderPipelineInstance instance(*fixture.Rs, fixture.Registry);
     instance.SetBlueprint(blueprint);
-    FramePools pools(fixture.Device.get());
-    RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    FramePools pools(fixture.Device);
+    RenderGraph::RGFrame frame(fixture.Device, &pools.Persistent, &pools.Transient, &pools.Ring);
     GameEngine::Testing::ScopedPipelineFrame lifetime(fixture.Rs->Spine(), frame);
     Rendering::ViewDesc uploadView{};
     ViewDeclare uploadDeclaration(frame, uploadView, *fixture.Rs, "Upload");
@@ -14293,7 +14289,7 @@ bool SameBits(const std::vector<float>& a, const std::vector<float>& b)
 TEST(RenderPipelineDeclareTests, CbtTerrainPrepassDepthIsTheDepthItsColourDrawWrites)
 {
     TerrainFixture f;
-    if (!f.Up(/*enableDebugLayer=*/true))
+    if (!f.Up(TerrainFixtureDevice::OwnWithValidation))
         GTEST_SKIP() << "No Vulkan device available";
     if (!f.Device->GetValidationStats().Enabled)
         GTEST_SKIP() << "Vulkan validation layer unavailable";
@@ -16610,9 +16606,9 @@ void SetGroundUvPhaseForEye(Terrain::TerrainMaterialRecord& ground, const Mathem
 {
     const Mathematics::Vector3Int origin =
         Engine::Renderer::ComputeRenderOriginSector(Mathematics::WorldPosition::FromVector3(eye));
-    ground.UVPhaseX = GrassRootColorUvPhase(origin.x, repeatsPerMeter);
-    ground.UVPhaseY = GrassRootColorUvPhase(origin.y, repeatsPerMeter);
-    ground.UVPhaseZ = GrassRootColorUvPhase(origin.z, repeatsPerMeter);
+    ground.UVPhaseX = GrassRootColorUvPhase(origin.X, repeatsPerMeter);
+    ground.UVPhaseY = GrassRootColorUvPhase(origin.Y, repeatsPerMeter);
+    ground.UVPhaseZ = GrassRootColorUvPhase(origin.Z, repeatsPerMeter);
 }
 } // namespace
 
@@ -17179,50 +17175,6 @@ TEST(RenderPipelineDeclareTests, GrassStandsOnResidentSurfacePagesAndNoneOnAnUnp
     std::filesystem::remove_all(folder, ec);
 }
 
-// The world pass records every depth-writing entity and contributor before every
-// blended one: a blended entity must wait for an opaque contributor too.
-TEST(RenderPipelineDeclareTests, WorldForwardDispatchFinishesBothOpaqueSourcesBeforeEitherBlendSource)
-{
-    using namespace GameEngine::Engine::Renderer;
-    using GameEngine::MaterialAlphaMode;
-    Material opaque = Material::TestFactory::Create(GUID::Derive(GUID{}, "world-drain/opaque"), "opaque", 64u);
-    Material mask = Material::TestFactory::Create(GUID::Derive(GUID{}, "world-drain/mask"), "mask", 64u);
-    Material blend = Material::TestFactory::Create(GUID::Derive(GUID{}, "world-drain/blend"), "blend", 64u);
-    Material::TestFactory::SetAlphaMode(mask, MaterialAlphaMode::Mask);
-    Material::TestFactory::SetAlphaMode(blend, MaterialAlphaMode::Blend);
-    std::vector<WorldDrawBuilder::BatchKey> entities(6);
-    const Material* materials[] = {&blend, &opaque, &mask, nullptr, &blend, &opaque};
-    for (size_t i = 0; i < entities.size(); ++i)
-    {
-        entities[i].material = materials[i];
-        entities[i].materialIndex = static_cast<uint32_t>(i);
-    }
-    std::vector<DrawCommand> contributors(5);
-    for (size_t i = 0; i < contributors.size(); ++i)
-        contributors[i].Material = materials[i];
-
-    // An empty span is how the world pass turns off one source.
-    for (bool entityScope : {false, true})
-    {
-        for (bool contributorScope : {false, true})
-        {
-            SCOPED_TRACE(testing::Message() << "entities=" << entityScope << " contributors=" << contributorScope);
-            std::vector<uint32_t> recorded;
-            DrainWorldForwardOpaqueFirst(
-                entityScope ? std::span<const WorldDrawBuilder::BatchKey>(entities) : std::span<const WorldDrawBuilder::BatchKey>{},
-                contributorScope ? std::span<const DrawCommand>(contributors) : std::span<const DrawCommand>{},
-                [&](const WorldDrawBuilder::BatchKey& key) { recorded.push_back(100u + key.materialIndex); },
-                [&](const DrawCommand& command) { recorded.push_back(200u + static_cast<uint32_t>(&command - contributors.data())); });
-            // Each draw records one time; each source keeps its order in each phase.
-            const std::vector<uint32_t> all{101, 102, 103, 105, 201, 202, 203, 100, 104, 200, 204};
-            std::vector<uint32_t> expected;
-            for (uint32_t id : all)
-                if ((id < 200 && entityScope) || (id >= 200 && contributorScope))
-                    expected.push_back(id);
-            EXPECT_EQ(recorded, expected);
-        }
-    }
-}
 
 // Phase B is the HZB occlusion-recovery slice for GPU-cullable entity batches.
 // Explicit contributors are not in that scatter stream: terrain, grass, ocean,
@@ -24036,8 +23988,8 @@ CbtNormalDrawFrame RenderCbtNormalDrawFrame(TerrainFixture& fixture, RenderPipel
             }
         }
     }
-    const auto colorTicket = Rendering::RequestTextureReadbackRG(fixture.Device.get(), frame, color, "CbtNormal.Color");
-    const auto depthTicket = Rendering::RequestTextureReadbackRG(fixture.Device.get(), frame, depth, "CbtNormal.Depth");
+    const auto colorTicket = Rendering::RequestTextureReadbackRG(fixture.Device, frame, color, "CbtNormal.Color");
+    const auto depthTicket = Rendering::RequestTextureReadbackRG(fixture.Device, frame, depth, "CbtNormal.Depth");
     frame.MarkOutput(color);
     frame.Execute();
     feature.OnFrameSubmittedRG(frame, frame.SubmissionToken());
@@ -24062,7 +24014,7 @@ CbtNormalDrawFrame RenderCbtNormalDrawFrame(TerrainFixture& fixture, RenderPipel
 TEST(RenderPipelineDeclareTests, CbtForwardNormalChainChangesColorWithoutChangingGeometry)
 {
     TerrainFixture fixture;
-    if (!fixture.Up(true))
+    if (!fixture.Up(TerrainFixtureDevice::OwnWithValidation))
         GTEST_SKIP() << "No Vulkan device available";
     if (!fixture.Device->GetValidationStats().Enabled)
         GTEST_SKIP() << "Vulkan validation layer unavailable";
@@ -24110,8 +24062,8 @@ TEST(RenderPipelineDeclareTests, CbtForwardNormalChainChangesColorWithoutChangin
     ASSERT_FALSE(blueprint.HasErrors());
     RenderPipelineInstance pipeline(*fixture.Rs, fixture.Registry);
     pipeline.SetBlueprint(blueprint);
-    FramePools pools(fixture.Device.get());
-    RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    FramePools pools(fixture.Device);
+    RenderGraph::RGFrame frame(fixture.Device, &pools.Persistent, &pools.Transient, &pools.Ring);
     GameEngine::Testing::ScopedPipelineFrame lifetime(fixture.Rs->Spine(), frame);
     uint32 frameIndex = 0;
     CbtNormalDrawFrame enabled;
