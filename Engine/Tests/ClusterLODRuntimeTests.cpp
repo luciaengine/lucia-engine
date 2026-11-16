@@ -873,6 +873,26 @@ TEST_F(ClusterLODTriangleBudgetTest, RefinesTheLargestProjectedErrorFirstWithinT
     EXPECT_TRUE(IsFine(m_Other));
 }
 
+TEST_F(ClusterLODTriangleBudgetTest, TheBudgetCountsTheCoarseTrianglesOfUnsplitInstances)
+{
+    // A third instance whose bias keeps its error below the pixel budget never splits.
+    const ECS::EntityHandle unsplit = m_World.Create()
+        .Set<Components::MeshRenderer>(*m_World.GetComponent<Components::MeshRenderer>(m_Entity))
+        .Set<Components::WorldTransform>({}).Set<Components::LODGroup>({-40.0f}).GetHandle();
+    m_World.ProcessCommands();
+    SetOtherErrorRatio(0.5);
+    m_Feature->SetTriangleBudget(3 * CoarseTriangles() + Refinement() - 1);
+    PrepareFrames();
+    EXPECT_FALSE(PartOf(m_World, unsplit).IsValid());
+    EXPECT_FALSE(IsFine(m_Entity)) << "the unsplit instance's coarse triangles count against the cap";
+    EXPECT_FALSE(IsFine(m_Other));
+
+    m_Feature->SetTriangleBudget(3 * CoarseTriangles() + Refinement());
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity));
+    EXPECT_FALSE(IsFine(m_Other));
+}
+
 TEST_F(ClusterLODTriangleBudgetTest, AFineGroupKeepsItsPageUntilAnotherErrorLeavesTheHysteresisBand)
 {
     m_Feature->SetTriangleBudget(2 * CoarseTriangles() + Refinement());

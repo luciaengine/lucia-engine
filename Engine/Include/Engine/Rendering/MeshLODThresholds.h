@@ -343,12 +343,9 @@ inline constexpr float ResolveLodBudgetPx(float globalBudgetPx,
 inline constexpr double kClusterRefineBudgetScale = 1.2;
 inline constexpr double kClusterKeepFineBudgetScale = 0.8;
 
-/// The projected error in pixels of one cluster group in one view.
-/// `error` is the group's simplification error in mesh-local units; `scale` bounds the largest
-/// axis scale of the instance. `centerDistance` is the distance from the eye to the center of the
-/// group's bounding sphere and `radius` is the sphere radius, both in world units. A perspective
-/// view measures at the near surface of the sphere. `projectionScaleY` is proj[1][1].
-/// Positive `lodBias` keeps detail: it multiplies the error by exp2(lodBias).
+/// The projected error in pixels of one cluster group: `error` (mesh-local) times `scale`, measured
+/// at the near surface of its bounding sphere (`centerDistance`, `radius` in world units) for a
+/// perspective view. `projectionScaleY` is proj[1][1]; positive `lodBias` keeps detail.
 inline double ClusterGroupErrorPx(double error, double scale, double centerDistance, double radius,
                                   double projectionScaleY, std::uint32_t viewportHeight, float lodBias,
                                   bool orthographic)

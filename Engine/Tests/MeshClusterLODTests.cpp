@@ -650,6 +650,7 @@ TEST_F(MeshClusterLODAssetTest, EverySelectedCutOfTheCookedModelIsCrackFree)
         {24.0f, 3.0f, 24.0f}, {-6.0f, 4.0f, -6.0f}, {60.0f, 10.0f, 24.0f}, {10.0f, 1.5f, 40.0f}, {24.0f, 80.0f, -40.0f}}};
     const std::array<float, 4> budgetsPx{0.25f, 1.0f, 4.0f, 16.0f};
     size_t mixedCuts = 0;
+    size_t mixedThresholdCuts = 0;
     size_t cuts = 0;
     Vector<double> errorPx(groupCount);
     Vector<uint32> order(groupCount);
@@ -671,6 +672,7 @@ TEST_F(MeshClusterLODAssetTest, EverySelectedCutOfTheCookedModelIsCrackFree)
                 refined[group] = errorPx[group] > budgetPx * Rendering::kClusterRefineBudgetScale;
             EXPECT_EQ(CountSelectedCutCracks(coarse, fine, refined, sourceBoundary), 0u)
                 << "eye " << eye.x << ',' << eye.y << ',' << eye.z << " budget " << budgetPx;
+            mixedThresholdCuts += IsMixedCut(refined) ? 1 : 0;
             mixedCuts += IsMixedCut(refined) ? 1 : 0;
             ++cuts;
         }
@@ -688,6 +690,7 @@ TEST_F(MeshClusterLODAssetTest, EverySelectedCutOfTheCookedModelIsCrackFree)
         }
     }
     EXPECT_GT(mixedCuts, cuts / 2) << "most cuts must mix coarse and fine groups";
+    EXPECT_GE(mixedThresholdCuts, eyes.size()) << "the camera cuts must mix coarse and fine groups";
 }
 
 TEST_F(MeshClusterLODAssetTest, RejectsTruncatedAndCorruptedAssetsTransactionally)

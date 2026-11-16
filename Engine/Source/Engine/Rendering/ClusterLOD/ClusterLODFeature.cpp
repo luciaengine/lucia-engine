@@ -106,11 +106,9 @@ double ScaleBound(const Components::WorldTransform& transform)
     return std::sqrt(squared);
 }
 
-// How much one cluster group of one instance wants its fine page: the largest projected error
-// over the views, divided by the view's switch threshold. Above 1 the group wants fine; 0 means no
-// view wants fine. Infinity means a view must draw fine: forced LOD 0, selection off or an
-// unusable projection. A group that draws fine is measured against the keep band, so the value
-// includes the hysteresis.
+// The largest projected error of one group over the views, divided by the switch threshold (the
+// keep band for a group that draws fine). Above 1 wants fine. Infinity: a view must draw fine
+// (forced LOD 0, selection off or an unusable projection).
 double FineDemand(const RenderServices& services, const Components::MeshRenderer& renderer,
                   const Components::WorldTransform& transform, const MeshClusterLODManifest::Page& page,
                   uint64 worldId, bool wasFine, float lodBias)
@@ -194,10 +192,9 @@ struct PartDemand
     bool Granted = false;
 };
 
-// Grants fine pages under a triangle budget. The count starts at `drawnTriangles`, the coarse
-// triangles of the unsplit instances, plus the coarse triangles of every part. Parts that want
-// fine refine in order of largest demand first, until the next one does not fit. A part that must
-// draw fine always refines and its triangles count. A budget of 0 grants every demand above 1.
+// The count starts at the coarse triangles of the unsplit instances and of every part. Parts refine
+// in order of largest demand until the next one does not fit; a part that must draw fine always
+// refines. A budget of 0 grants every demand above 1.
 void GrantFineDemands(std::vector<PartDemand>& demands, uint64 triangleBudget, uint64 drawnTriangles,
                       std::vector<uint32>& order)
 {
