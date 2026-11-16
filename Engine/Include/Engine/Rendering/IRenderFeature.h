@@ -95,6 +95,13 @@ class IRenderFeature
     {
     }
 
+    /// Declares passes that belong to no view, once per app frame, in the frame's global stage
+    /// after the GPU-driven prologue (the impostor bake). Declaration thread. Default: nothing.
+    virtual void DeclareFrameStage(::GameEngine::Rendering::RenderGraph::RGFrame& /*frame*/,
+                                   RenderServices& /*rs*/)
+    {
+    }
+
     /// Binds mutable world geometry before declaration. False rejects the graph.
     /// Register before the first declaration. Declaration-thread only.
     /// The hook must not mutate geometry or retain the weak owner strongly.
