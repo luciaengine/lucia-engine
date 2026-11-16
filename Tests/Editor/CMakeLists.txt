@@ -1268,6 +1268,9 @@ add_test(NAME AnimationEditingTests COMMAND $<TARGET_FILE:AnimationEditingTests>
 # anonymous namespaces contain duplicate helper names.
 add_executable(HierarchyEnableStateTests
 	HierarchyEnableStateTests.cpp
+	HierarchyRowEyeTests.cpp
+	# The row eye keeps its choice in the editor preferences: a scratch root per process.
+	EditorPreferencesEnvironment.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyEnableState.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRowActivity.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRowEye.cpp
@@ -1282,9 +1285,11 @@ target_include_directories(HierarchyEnableStateTests PRIVATE
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
 	# UIRgTestHarness.h: a headless device for the tree the row test lays out.
 	${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests
+	${CMAKE_SOURCE_DIR}/Tests
 )
 target_link_libraries(HierarchyEnableStateTests PRIVATE
 	Engine
+	EditorSDK
 	SharedHeadlessDeviceTestSupport
 	GTest::gtest
 	GTest::gtest_main
