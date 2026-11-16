@@ -831,7 +831,7 @@ bool DecodeMeshClusterLODFinePage(std::span<const uint8> bytes, const MeshCluste
                                  const Mesh& coarse, Mesh& output, String& error)
 {
     error.clear();
-    if (bytes.size() > kMaximumFileBytes || bytes.size() != page.Bytes ||
+    if (bytes.size() > kMaximumFileBytes || bytes.size() != page.Bytes || page.EncodedVertexBytes >= bytes.size() ||
         Hashing::Fnv1a64(bytes.data(), bytes.size()) != page.ContentHash)
     {
         error = "Cluster fine page is truncated or has the wrong checksum";

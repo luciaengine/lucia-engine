@@ -570,7 +570,6 @@ TEST_F(MeshClusterLODAssetTest, StoresEachFinePageLosslesslyInLessThanHalfItsRaw
     ASSERT_EQ(groups.size(), manifest->Pages.size());
     SharedFileReader store(ResolveMeshClusterLODStore(path, {}, *manifest));
     uint64 storedBytes = 0;
-    uint64 rawBytes = 0;
     for (size_t index = 0; index < groups.size(); ++index)
     {
         const auto& page = manifest->Pages[index];
@@ -583,11 +582,11 @@ TEST_F(MeshClusterLODAssetTest, StoresEachFinePageLosslesslyInLessThanHalfItsRaw
         ASSERT_EQ(fine.Vertices.size(), expected.Vertices.size());
         EXPECT_EQ(std::memcmp(fine.Vertices.data(), expected.Vertices.data(), fine.Vertices.size() * sizeof(Vertex)), 0);
         EXPECT_EQ(OrientedTriangles(fine), OrientedTriangles(expected));
+        const uint64 rawBytes = expected.Vertices.size() * sizeof(Vertex) + expected.Indices.size() * sizeof(uint32);
+        EXPECT_LT(page.Bytes * 2, rawBytes);
         storedBytes += page.Bytes;
-        rawBytes += expected.Vertices.size() * sizeof(Vertex) + expected.Indices.size() * sizeof(uint32);
     }
     EXPECT_EQ(storedBytes, manifest->StoreBytes);
-    EXPECT_LT(storedBytes * 2, rawBytes);
 }
 
 TEST_F(MeshClusterLODAssetTest, RefusesAFinePageWithACorruptStreamHeaderEvenWithAMatchingChecksum)
@@ -617,6 +616,13 @@ TEST_F(MeshClusterLODAssetTest, RefusesAFinePageWithACorruptStreamHeaderEvenWith
         bytes[header] = original;
     }
     page.ContentHash = Hashing::Fnv1a64(bytes.data(), bytes.size());
+    for (const uint32 split : {static_cast<uint32>(page.Bytes), static_cast<uint32>(page.Bytes) + 1u})
+    {
+        auto oversized = page;
+        oversized.EncodedVertexBytes = split;
+        Mesh output;
+        EXPECT_FALSE(DecodeMeshClusterLODFinePage(bytes, oversized, model.GetMesh(0), output, m_Error));
+    }
     Mesh output;
     EXPECT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(0), output, m_Error)) << m_Error;
 }
