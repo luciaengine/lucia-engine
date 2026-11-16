@@ -323,6 +323,99 @@ TEST(MeshClusterLOD, PreservesDuplicatePositionWedgeAttributes)
     EXPECT_EQ(seamWedges.size(), kGridWidth * 2u);
 }
 
+// The test grid with a smooth height field, so no simplified triangle is exactly collinear.
+Mesh MakeCurvedGrid()
+{
+    Mesh mesh = Testing::MakeClusterLODGrid();
+    for (Vertex& vertex : mesh.Vertices)
+        vertex.Position[1] = 0.5f * std::sin(0.4f * vertex.Position[0]) * std::cos(0.3f * vertex.Position[2]);
+    return mesh;
+}
+
+// Every coarse triangle of every group, as one mesh: its open edges are the source's open edges
+// only when no group border and no seam opens.
+Mesh JoinCoarseGroups(const Vector<MeshClusterLODGroup>& groups)
+{
+    Mesh joined;
+    for (const MeshClusterLODGroup& group : groups)
+    {
+        const auto base = static_cast<uint32>(joined.Vertices.size());
+        joined.Vertices.insert(joined.Vertices.end(), group.Coarse.Vertices.begin(), group.Coarse.Vertices.end());
+        for (const uint32 index : group.Coarse.Indices)
+            joined.Indices.push_back(base + index);
+    }
+    return joined;
+}
+
+TEST(MeshClusterLOD, CollapsesAlongAUvSeamWithoutOpeningIt)
+{
+    if (!IsMeshLODGenerationAvailable())
+        GTEST_SKIP() << "meshoptimizer not compiled in";
+    Mesh source = MakeCurvedGrid();
+    constexpr uint32 kSeamColumn = kGridWidth / 2;
+    for (uint32 row = 0; row < kGridWidth; ++row)
+    {
+        Vertex duplicate = source.Vertices[row * kGridWidth + kSeamColumn];
+        duplicate.TexCoords[0] += 1.0f;
+        source.Vertices.push_back(duplicate);
+    }
+    for (size_t offset = 0; offset < source.Indices.size(); offset += 3)
+    {
+        const bool rightSide = std::any_of(source.Indices.begin() + offset,
+            source.Indices.begin() + offset + 3, [](uint32 index)
+            { return index % kGridWidth > kSeamColumn; });
+        if (!rightSide)
+            continue;
+        for (size_t corner = offset; corner < offset + 3; ++corner)
+            if (source.Indices[corner] % kGridWidth == kSeamColumn)
+                source.Indices[corner] = kGridWidth * kGridWidth + source.Indices[corner] / kGridWidth;
+    }
+    Vector<MeshClusterLODGroup> groups;
+    String error;
+    ASSERT_TRUE(GenerateMeshClusterLODs(source, TestConfig(), groups, error)) << error;
+    const Mesh coarse = JoinCoarseGroups(groups);
+    EXPECT_EQ(BoundaryEdges(coarse), BoundaryEdges(source));
+    std::set<uint32> seamRows;
+    for (const Vertex& vertex : coarse.Vertices)
+        if (vertex.Position[0] == kSeamColumn)
+            seamRows.insert(static_cast<uint32>(vertex.Position[2]));
+    EXPECT_LT(seamRows.size(), kGridWidth);
+}
+
+TEST(MeshClusterLOD, ClustersVerticesWhenSeamsStopTheAttributeSimplifier)
+{
+    if (!IsMeshLODGenerationAvailable())
+        GTEST_SKIP() << "meshoptimizer not compiled in";
+    // Every triangle has its own UV island, so every vertex is on a UV seam.
+    const Mesh grid = MakeCurvedGrid();
+    Mesh source = grid;
+    source.Vertices.clear();
+    source.Indices.clear();
+    for (size_t corner = 0; corner < grid.Indices.size(); ++corner)
+    {
+        Vertex vertex = grid.Vertices[grid.Indices[corner]];
+        vertex.TexCoords[0] = static_cast<float>(corner % 3);
+        vertex.TexCoords[1] = static_cast<float>(corner / 3);
+        source.Vertices.push_back(vertex);
+        source.Indices.push_back(static_cast<uint32>(corner));
+    }
+    const MeshClusterLODConfig config = TestConfig();
+    Vector<MeshClusterLODGroup> groups;
+    String error;
+    ASSERT_TRUE(GenerateMeshClusterLODs(source, config, groups, error)) << error;
+    size_t fineIndices = 0;
+    size_t coarseIndices = 0;
+    for (const MeshClusterLODGroup& group : groups)
+    {
+        fineIndices += group.Fine.Indices.size();
+        coarseIndices += group.Coarse.Indices.size();
+        EXPECT_EQ(BoundaryEdges(group.Coarse), BoundaryEdges(group.Fine));
+        EXPECT_LE(group.Error, config.RelativeError * (kGridWidth - 1));
+    }
+    EXPECT_LT(coarseIndices * 4, fineIndices * 3);
+    EXPECT_EQ(BoundaryEdges(JoinCoarseGroups(groups)), BoundaryEdges(grid));
+}
+
 TEST(MeshClusterLOD, RejectsUnsupportedRawStreamsWithoutPublishing)
 {
     for (uint32 stream = 0; stream < 8; ++stream)
