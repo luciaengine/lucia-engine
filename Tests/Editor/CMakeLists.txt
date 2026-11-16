@@ -1087,6 +1087,9 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyNavigationBar.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/ItemSizeSlider.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/EditorSearchBars.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/SearchBarSettingsPage.cpp
+	SearchBarSettingsTests.cpp
+	PanelSearchBarLookTests.cpp
 	# The terrain panel's material surface: the library's materials as a grid, the channel-role
 	# binding under it, and the picker semantics both terrain material surfaces share. Sits over
 	# the library asset, UndoRedoService and the library inspector's tint encoding — that TU is

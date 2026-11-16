@@ -563,16 +563,9 @@
 	--ui_field_placeholder_lift: 2px;
 }
 
-/* A panel search (BuildPanelSearchBar) reads as a field at rest: the inspector value field's
-   fill and a subtle border, after the control's base rule so it wins over it. Hover lifts the
-   border; the focus rule after these has the same specificity, so focus wins over hover. */
-.panel-search-bar {
-	background-color: var(--ui_color_bg_field);
-	border-color: var(--ui_color_border_subtle);
-}
-
-.panel-search-bar:hover {
-	border-color: var(--ui_color_dropdown_outline_hover);
+/* The hint of a search field is upright. Other field hints stay italic (FieldPlaceholder.css). */
+.search-field-with-filter .field-placeholder {
+	font-style: normal;
 }
 
 .search-field-with-filter:focus-within {
