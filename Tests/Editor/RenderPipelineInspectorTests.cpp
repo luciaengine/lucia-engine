@@ -229,7 +229,6 @@ TEST_F(RenderPipelineInspectorTest, ShadowMapPassEditsTheCascadeResolutionInTheP
     ASSERT_NE(resolution, nullptr);
     EXPECT_EQ(resolution->GetSelectedValue(), "2048");
     EXPECT_EQ(resolution->GetSelectedLabel(), "2048");
-    EXPECT_NE(dynamic_cast<Dropdown*>(root.FindById("rp-pass-0-cascades"_sid)), nullptr);
     EXPECT_NE(dynamic_cast<FloatField*>(root.FindById("rp-pass-0-splitLambda"_sid)), nullptr);
     EXPECT_NE(dynamic_cast<Toggle*>(root.FindById("rp-pass-0-fitShadowDistanceToScene"_sid)), nullptr);
     EXPECT_NE(dynamic_cast<FloatField*>(root.FindById("rp-pass-0-maxShadowDistance"_sid)), nullptr);

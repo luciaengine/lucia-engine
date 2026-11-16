@@ -49,7 +49,6 @@ class ShadowMapNode final : public IRenderPipelineNode
     static constexpr uint32_t kDefaultCascadeResolution = 2048u;
     static constexpr uint32_t kMinCascadeResolution = 256u;
     static constexpr uint32_t kMaxCascadeResolution = 8192u;
-    static constexpr uint32_t kDefaultCascadeCount = 4u;
     static constexpr float kDefaultSplitLambda = 0.5f;
     static constexpr float kDefaultMaxShadowDistance = 100.0f;
 
@@ -79,7 +78,7 @@ class ShadowMapNode final : public IRenderPipelineNode
     uint32_t m_RGFrameCounter = 0;
 
     // Parsed from JSON.
-    uint32_t m_NumCascades = kDefaultCascadeCount;
+    uint32_t m_NumCascades = 4;
     uint32_t m_Resolution = kDefaultCascadeResolution;
     // Punctual (area/spot/point) shadow-map resolution, DECOUPLED from the
     // directional cascade resolution above (arc slice S0). Sentinel 0 means

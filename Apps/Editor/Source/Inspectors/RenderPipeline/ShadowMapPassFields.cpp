@@ -1,7 +1,6 @@
 #include "Inspectors/RenderPipeline/ShadowMapPassFields.h"
 
 #include "Engine/Rendering/Pipeline/Nodes/ShadowMapNode.h"
-#include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Types/StringUtils.h"
@@ -22,7 +21,6 @@ namespace GameEngine
 {
 namespace
 {
-using Engine::Renderer::kMaxShadowCascades;
 using Engine::Renderer::Pipeline::Nodes::ShadowMapNode;
 
 // The cascades are D32_FLOAT depth layers.
@@ -66,14 +64,6 @@ std::vector<Dropdown::Option> MakeCascadeResolutionOptions(uint32_t current, int
     return options;
 }
 
-std::vector<Dropdown::Option> MakeCascadeCountOptions()
-{
-    std::vector<Dropdown::Option> options;
-    for (uint32_t count = 1u; count <= kMaxShadowCascades; ++count)
-        options.push_back({std::to_string(count), std::to_string(count)});
-    return options;
-}
-
 double SavedFloat(float value)
 {
     return std::round(static_cast<double>(value) * kSavedFloatScale) / kSavedFloatScale;
@@ -109,20 +99,6 @@ void AddResolutionRow(UIElement& section, const nlohmann::json& pass, const std:
     dropdown->SetId(idPrefix + "-resolution");
     dropdown->SetOnValueChanged([commit](const std::string& value)
                                 { commit("resolution", static_cast<uint32_t>(std::stoul(value)), "Shadow Resolution"); });
-}
-
-void AddCascadeCountRow(UIElement& section, const nlohmann::json& pass, const std::string& idPrefix,
-                        const PipelinePassFieldCommit& commit)
-{
-    const std::vector<Dropdown::Option> options = MakeCascadeCountOptions();
-    const uint32_t count = ReadUnsigned(pass, "cascades", ShadowMapNode::kDefaultCascadeCount);
-    const int selectedIndex = InspectorUI::OptionIndexOfValue(options, std::to_string(count));
-    Dropdown* dropdown = InspectorUI::AddDropdownRow(
-        &section, "Cascades", options, selectedIndex,
-        "Number of directional shadow cascades. More cascades keep shadows sharp over a longer distance.");
-    dropdown->SetId(idPrefix + "-cascades");
-    dropdown->SetOnValueChanged([commit](const std::string& value)
-                                { commit("cascades", static_cast<uint32_t>(std::stoul(value)), "Cascades"); });
 }
 
 void AddSplitLambdaRow(UIElement& section, const nlohmann::json& pass, const std::string& idPrefix,
@@ -165,7 +141,6 @@ void BuildShadowMapPassFields(UIElement& passSection, const nlohmann::json& pass
                               PipelinePassFieldCommit commit)
 {
     AddResolutionRow(passSection, pass, idPrefix, commit);
-    AddCascadeCountRow(passSection, pass, idPrefix, commit);
     AddSplitLambdaRow(passSection, pass, idPrefix, commit);
     AddDistanceRows(passSection, pass, idPrefix, commit);
 }
