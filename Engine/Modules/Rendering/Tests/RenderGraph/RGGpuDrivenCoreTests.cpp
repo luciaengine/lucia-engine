@@ -718,7 +718,8 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
     auto device = DeviceFactory::CreateDevice(deviceDesc);
     if (!device || !device->Initialize(deviceDesc))
         GTEST_SKIP() << "Requested core culling backend unavailable";
-    ASSERT_EQ(device->GetAPI(), graphicsAPI);
+    if (device->GetAPI() != graphicsAPI)
+        GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
     if (const char* missing =
             FirstUnloadablePkg({"Shaders/frustum_culling.shaderpkg",
                                 "Shaders/hzb_culling.shaderpkg",
@@ -3424,7 +3425,8 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI, bool instanceCompac
     auto device = DeviceFactory::CreateDevice(description);
     if (!device || !device->Initialize(description))
         GTEST_SKIP() << "Requested unified scatter backend unavailable";
-    ASSERT_EQ(device->GetAPI(), graphicsAPI);
+    if (device->GetAPI() != graphicsAPI)
+        GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
     GPUScene::SetCullingShaderLoader(&TestShaderLoader);
     ScatterBuilder::SetShaderLoader(&TestShaderLoader);
     GPUScene scene(device.get());
