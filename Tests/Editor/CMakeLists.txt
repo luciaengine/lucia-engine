@@ -509,6 +509,8 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/WindowCursorLock.cpp
 	# Where the keyboard focus goes at Play and Stop, over a UI and a dock model with no device.
 	PlayModeGameViewFocusTests.cpp
+	EditorPanelDefaultPlacementTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/EditorPanelIds.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/PlayModeGameViewFocus.cpp
 	# The colour picker dialog's own routing: a UI-only chain, plus the
 	# eyedropper's screen-wide pointer grab and the Escape that ends it. Leaf TU

@@ -504,6 +504,7 @@ set(EDITOR_SOURCES
 	Modules/CssInspector/CssInspector.cpp
 
 	Source/EditorPanelManager.cpp
+	Source/EditorPanelIds.cpp
 	Source/EditorDebugMetrics.cpp
 	Source/Assets/EditorAssetRegistrations.cpp
 	Source/Graph/NodeColorSettings.cpp
