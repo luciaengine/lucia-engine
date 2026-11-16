@@ -69,9 +69,9 @@ struct Fixture
     MaskParams Mask{};
 };
 
-glm::vec4 Multiply(const Math::Matrix4x4& m, const glm::vec4& v)
+glm::vec4 Multiply(const Math::Matrix4x4& matrix, const glm::vec4& vector)
 {
-    return m[0] * v.x + m[1] * v.y + m[2] * v.z + m[3] * v.w;
+    return matrix[0] * vector.x + matrix[1] * vector.y + matrix[2] * vector.z + matrix[3] * vector.w;
 }
 
 Fixture BuildFixture()
@@ -437,25 +437,25 @@ TEST_F(VirtualShadowSunMaskTest, MaskVisibilityEqualsTheInShaderLookupPerReceive
     // One mask step of quantization, and the float error of the depth-reconstructed normal.
     constexpr float kTolerance = 1.0f / kSteps + 1e-3f;
     uint32_t lit = 0, shadowed = 0, penumbra = 0, noPage = 0;
-    for (size_t i = 0; i < fixture.Probes.size(); ++i)
+    for (size_t probe = 0; probe < fixture.Probes.size(); ++probe)
     {
-        const uint32_t pixel = fixture.ProbePixel[i];
+        const uint32_t pixel = fixture.ProbePixel[probe];
         const uint32_t texel = packed[pixel];
         uint32_t depthBits = 0;
         std::memcpy(&depthBits, &fixture.Depth[pixel], sizeof(depthBits));
         EXPECT_EQ(texel & 0xffffff00u, depthBits & 0xffffff00u) << "receiver depth, pixel " << pixel;
         const uint32_t value = texel & 255u;
-        if (reference[i] < 0.0f)
+        if (reference[probe] < 0.0f)
         {
             ++noPage;
             EXPECT_EQ(value, kNoPage) << "pixel " << pixel;
             continue;
         }
-        ASSERT_NE(value, kNoPage) << "pixel " << pixel << " reference " << reference[i];
-        EXPECT_NEAR(static_cast<float>(value) / kSteps, reference[i], kTolerance) << "pixel " << pixel;
-        lit += reference[i] > 0.95f;
-        shadowed += reference[i] < 0.05f;
-        penumbra += reference[i] >= 0.05f && reference[i] <= 0.95f;
+        ASSERT_NE(value, kNoPage) << "pixel " << pixel << " reference " << reference[probe];
+        EXPECT_NEAR(static_cast<float>(value) / kSteps, reference[probe], kTolerance) << "pixel " << pixel;
+        lit += reference[probe] > 0.95f;
+        shadowed += reference[probe] < 0.05f;
+        penumbra += reference[probe] >= 0.05f && reference[probe] <= 0.95f;
     }
     // The fixture covers every case: a lit page, the occluder, its penumbra and the missing page.
     EXPECT_GT(lit, 0u);
