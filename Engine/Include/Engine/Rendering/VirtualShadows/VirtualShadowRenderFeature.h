@@ -18,6 +18,8 @@ class RenderServices;
 struct ShadowCasterChangeSet;
 struct VirtualShadowFeedbackLayout;
 struct VirtualShadowPageWork;
+class VirtualShadowSunMask;
+struct VirtualShadowSunMaskRequest;
 
 /// Owns per-view virtual depth residency and submission certificates.
 /// Declaration, preparation, submission and view release are serialized by the renderer.
@@ -56,6 +58,11 @@ class VirtualShadowRenderFeature final : public IRenderFeature
         RenderServices& services, const FeatureDeclareContext& context, const RasterPlan& plan,
         const VirtualShadowFeedbackLayout& layout, std::span<const Rendering::CameraData> cameras);
 
+    /// Declare the pass that resolves the sun's page lookup once per prepass receiver.
+    /// Returns an invalid texture when the pass cannot run this frame.
+    Rendering::RenderGraph::RGTexture DeclareSunMask(Rendering::RenderGraph::RGFrame& frame,
+                                                     const VirtualShadowSunMaskRequest& request);
+
     /// Called by the table's single preparation task before publishing a resident mapping.
     bool ValidatePage(Rendering::ViewId view, const RasterPlan& plan,
                       const VirtualShadowPageWork& work, const DepthProducerState& producer);
@@ -89,5 +96,6 @@ class VirtualShadowRenderFeature final : public IRenderFeature
     uint64_t m_NextViewGeneration = 1;
     FlatMap<Rendering::ViewId, std::unique_ptr<ViewState>> m_Views;
     std::vector<std::unique_ptr<ViewState>> m_RetiredViews;
+    std::unique_ptr<VirtualShadowSunMask> m_SunMask;
 };
 } // namespace GameEngine::Engine::Renderer

@@ -18,6 +18,8 @@ struct VirtualShadowViewInputs
     uint64_t ProjectionsBytes = 0;
     Rendering::SamplerHandle DepthSampler{};
     Rendering::SamplerHandle CompareSampler{};
+    /// The sun mask of the view's first world pass this frame (VirtualShadowSunMask), when one ran.
+    Rendering::RenderGraph::RGTexture SunMask{};
 
     bool IsValid() const
     {

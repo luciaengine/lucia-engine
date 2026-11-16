@@ -1,0 +1,94 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Resolves the sun's virtual shadow page lookup once per prepass receiver, so the
+// world pass reads one texel for the sun instead of running the PCSS taps per
+// fragment (overdraw). The lookup is GE_TryVirtualShadowDirectional, unchanged.
+// The mask has the prepass depth's resolution and pixel grid; the position comes
+// from the same jittered camera the prepass rasterized with.
+//
+// The normal offset bias uses the receiver's geometric normal from the depth
+// (no prepass writes a normal). The in-shader lookup uses the shaded normal,
+// so on normal-mapped receivers the two biases differ by the normal-map tilt.
+
+#include "Includes/screen_position.glsl"
+#include "Includes/shadow_data.glsl"
+#include "Includes/shadow_pcss_taps.glsl"
+#include "Includes/shadow_filter.glsl"
+#include "Includes/virtual_shadow_directional.glsl"
+#include "Includes/virtual_shadow_sun_mask.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D uDepth;
+layout(set = 0, binding = 1, r32ui) uniform writeonly uimage2D uMask;
+layout(set = 0, binding = 2, std140) uniform VirtualShadowSunMaskParams
+{
+    mat4 uClipToPosition;    // Y-up NDC and depth to the render-origin-relative position
+    vec4 uViewDepth;         // dot with (position, 1): the view-space depth that selects cascades
+    vec4 uCameraPosition;    // xyz: the render-origin-relative camera position
+    vec4 uTowardLight;       // xyz: the unit direction toward the sun
+    ivec4 uViewport;         // xy: the world pass viewport origin, zw: its size (pixels)
+};
+
+vec3 ReceiverPosition(ivec2 pixel, float depth)
+{
+    vec2 uv = (vec2(pixel - uViewport.xy) + 0.5) / vec2(uViewport.zw);
+    vec4 position = uClipToPosition * vec4(GE_ViewportUVToYUpNdc(uv), depth, 1.0);
+    return position.xyz / position.w;
+}
+
+// The step from the receiver to the neighbor on the same surface along one axis:
+// of the two neighbors, the one with the smaller depth step. Zero when neither has a receiver.
+vec3 ReceiverTangent(ivec2 pixel, ivec2 axis, float depth, vec3 position)
+{
+    ivec2 lo = uViewport.xy;
+    ivec2 hi = uViewport.xy + uViewport.zw - 1;
+    ivec2 before = clamp(pixel - axis, lo, hi);
+    ivec2 after = clamp(pixel + axis, lo, hi);
+    float depthBefore = before == pixel ? 0.0 : texelFetch(uDepth, before, 0).r;
+    float depthAfter = after == pixel ? 0.0 : texelFetch(uDepth, after, 0).r;
+    float stepBefore = depthBefore > 0.0 ? abs(depth - depthBefore) : 1e10;
+    float stepAfter = depthAfter > 0.0 ? abs(depthAfter - depth) : 1e10;
+    if (depthBefore <= 0.0 && depthAfter <= 0.0)
+        return vec3(0.0);
+    return stepAfter <= stepBefore ? ReceiverPosition(after, depthAfter) - position
+                                   : position - ReceiverPosition(before, depthBefore);
+}
+
+uint ResolveSunMask(ivec2 pixel)
+{
+    float depth = texelFetch(uDepth, pixel, 0).r;
+    if (!(depth > 0.0))
+        return 0u;
+    vec3 position = ReceiverPosition(pixel, depth);
+    float linearDepth = dot(uViewDepth, vec4(position, 1.0));
+    if (dot(ge_shadowReferenceDepth.xyz, ge_shadowReferenceDepth.xyz) > 0.5)
+        linearDepth = dot(ge_shadowReferenceDepth, vec4(position, 1.0));
+    // The world pass ends the sun shadow before its virtual lookup here.
+    if (int(ge_shadowParams.z) <= 0 || linearDepth < 0.0 || linearDepth > ge_shadowParams.w)
+        return 0u;
+
+    vec3 toCamera = uCameraPosition.xyz - position;
+    vec3 normal = cross(ReceiverTangent(pixel, ivec2(1, 0), depth, position),
+                        ReceiverTangent(pixel, ivec2(0, 1), depth, position));
+    float normalLength = length(normal);
+    normal = normalLength > 0.0 ? normal / normalLength : normalize(toCamera);
+    if (dot(normal, toCamera) < 0.0)
+        normal = -normal;
+
+    float visibility;
+    bool resolved = GE_TryVirtualShadowDirectional(position, normal, dot(normal, uTowardLight.xyz),
+        vec2(pixel) + 0.5, int(ge_shadowDebug.w + 0.5), visibility);
+    return GE_PackPrepassReceiver(depth, GE_EncodeVirtualShadowSunMask(resolved, visibility));
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(uMask);
+    if (any(greaterThanEqual(pixel, size)))
+        return;
+    bool inViewport = all(greaterThanEqual(pixel, uViewport.xy)) &&
+                      all(lessThan(pixel, uViewport.xy + uViewport.zw));
+    imageStore(uMask, pixel, uvec4(inViewport ? ResolveSunMask(pixel) : 0u));
+}

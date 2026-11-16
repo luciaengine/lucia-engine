@@ -2,31 +2,14 @@
 
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
-#include "Mathematics/Vector3.h"
 #include "Types/StringId.h"
-#include <cmath>
 #include <optional>
 
 namespace GameEngine::Engine::Renderer
 {
 namespace
 {
-constexpr float kMinLightDirectionLength = 1e-6f;
 constexpr StringId kShadowConstantsBindingId = HashStringId("ShadowData");
-
-// Returns the unit direction toward the world's primary directional light, when that light casts
-// shadows from a finite direction.
-std::optional<Mathematics::Vector3> FindTowardShadowCastingSun(RenderServices& services, uint64_t worldId)
-{
-    const auto* sun = SelectPrimaryDirectional(services.GetWorldLights(worldId));
-    if (!sun || sun->castsShadows == 0)
-        return std::nullopt;
-    const Mathematics::Vector3 towardLight(-sun->directionWS[0], -sun->directionWS[1], -sun->directionWS[2]);
-    const float length = towardLight.Length();
-    if (!std::isfinite(length) || length <= kMinLightDirectionLength)
-        return std::nullopt;
-    return towardLight / length;
-}
 }
 
 bool TakesScreenSpaceShadowMask(RenderServices& services, uint64_t worldId, const ResolvedShadowSettings& settings,
@@ -34,7 +17,7 @@ bool TakesScreenSpaceShadowMask(RenderServices& services, uint64_t worldId, cons
 {
     return settings.ScreenSpaceShadows && !transmissiveOnly &&
            Rendering::HasKeyword(keywords, Rendering::MaterialKeyword::Shadows) &&
-           FindTowardShadowCastingSun(services, worldId).has_value();
+           TowardShadowCastingPrimaryDirectional(services.GetWorldLights(worldId)).has_value();
 }
 
 Rendering::MaterialKeyword ContributeScreenSpaceShadows(
@@ -50,7 +33,10 @@ Rendering::MaterialKeyword ContributeScreenSpaceShadows(
         return keywords;
 
     const bool canDeclareMask = view.CanDeclare && !mask.IsValid() && view.Depth.IsValid() && view.Camera;
-    if (const auto towardLight = canDeclareMask ? FindTowardShadowCastingSun(services, view.WorldId) : std::nullopt)
+    const auto towardLight = canDeclareMask
+                                 ? TowardShadowCastingPrimaryDirectional(services.GetWorldLights(view.WorldId))
+                                 : std::nullopt;
+    if (towardLight)
     {
         if (!passes)
             passes = std::make_unique<ScreenSpaceShadowPasses>(services.GetDevice());

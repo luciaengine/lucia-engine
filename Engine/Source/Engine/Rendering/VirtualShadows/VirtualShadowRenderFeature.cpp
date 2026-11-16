@@ -6,6 +6,7 @@
 #include "Engine/Rendering/ShadowCasterChanges.h"
 #include "Engine/Rendering/ShadowFrameInfo.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowFeedback.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowSunMask.h"
 #include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/GPUCulling.h"
 #include "Rendering/Core/RenderGraph/RGReadbackRing.h"
@@ -214,6 +215,18 @@ void VirtualShadowRenderFeature::OnDeviceRebuilt(Rendering::IDevice* device)
     m_Views.Clear();
     m_RetiredViews.clear();
     m_Device = device;
+    if (m_SunMask)
+        m_SunMask->OnDeviceRebuilt(device);
+}
+
+RenderGraph::RGTexture VirtualShadowRenderFeature::DeclareSunMask(RenderGraph::RGFrame& frame,
+                                                                  const VirtualShadowSunMaskRequest& request)
+{
+    if (!m_Device)
+        return {};
+    if (!m_SunMask)
+        m_SunMask = std::make_unique<VirtualShadowSunMask>(m_Device);
+    return m_SunMask->Declare(frame, request);
 }
 
 void VirtualShadowRenderFeature::CollectRetiredViews()

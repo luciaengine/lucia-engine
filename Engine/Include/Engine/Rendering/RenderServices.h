@@ -247,6 +247,11 @@ float DeliveredLuminance(const ExtractedLight& light);
 // fog) comes from here and falls back to the sky when this is null.
 const ExtractedLight* SelectLitPrimaryDirectional(std::span<const ExtractedLight> sortedLights);
 
+// The unit direction toward the primary directional when that light casts shadows from a finite
+// direction; nullopt otherwise. The screen-space shadow masks shadow this light.
+std::optional<Mathematics::Vector3> TowardShadowCastingPrimaryDirectional(
+    std::span<const ExtractedLight> sortedLights);
+
 // Directional lighting capacity: the primary (shadowed) directional plus up to
 // kMaxSecondaryDirectionals unshadowed secondaries evaluated additively with
 // the same BRDF. Secondaries deliberately carry NO shadow term (v1 semantic:

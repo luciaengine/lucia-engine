@@ -432,6 +432,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowRaster.cpp
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowPageRequests.cpp
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.cpp
+	Source/Engine/Rendering/VirtualShadows/VirtualShadowSunMask.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODFeature.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODSplits.cpp
@@ -2331,6 +2332,7 @@ endif()
                 Tests/VirtualShadows/VirtualShadowFeedbackTests.cpp
                 Tests/VirtualShadows/VirtualShadowPageMarkTests.cpp
                 Tests/VirtualShadows/VirtualShadowLookupTests.cpp
+                Tests/VirtualShadows/VirtualShadowSunMaskTests.cpp
                 Tests/VirtualShadows/VirtualShadowSurfaceComposeTests.cpp)
             # Engine/Tests: TestDeviceHelper.h and StagedTestPaths.h.
             target_include_directories(EngineVirtualShadowTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Tests")
