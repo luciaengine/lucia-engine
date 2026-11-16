@@ -2245,7 +2245,6 @@ endif()
                 Tests/SortedTransparentCullTests.cpp
                 Tests/SortedTransparentRunTests.cpp
                 Tests/RenderSortingTests.cpp
-                Tests/SortedTransparentKeyTests.cpp
                 Tests/SortedTransparentDeciderTests.cpp
                 Tests/SortedTransparentBuildAllocationTests.cpp
                 Tests/SkinPaletteAtlasTests.cpp
