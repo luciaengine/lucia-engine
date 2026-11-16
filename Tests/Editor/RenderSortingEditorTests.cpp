@@ -10,7 +10,10 @@
 #include "Panels/HierarchyCommandIds.h"
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
+#include "Engine/Rendering/RenderLayerNames.h"
 #include "Engine/Rendering/SortingLayers.h"
+#include "Inspectors/RenderLayers/RenderLayerField.h"
+#include "Rendering/RenderLayerMask.h"
 #include "Rendering/Sorting/RenderSortingEditor.h"
 #include "Rendering/Sorting/SortingLayerSettings.h"
 #include "Editor/Settings/SettingsStore.h"
@@ -19,7 +22,6 @@
 #include "UI/Controls/CollapsibleInfoCard.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/IntField.h"
-#include "UI/Controls/MaskField.h"
 #include "UI/UIElement.h"
 #include "UI/StyleProperties.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -179,9 +181,9 @@ TEST_F(RenderSortingEditorTests, BothLayerColumnsShareASkinnedRowAndAGhostRowHid
     ASSERT_TRUE(controls.HandleCommand(HierarchyCommandIds::kCmdShowRenderLayer));
     ASSERT_TRUE(controls.HandleCommand(HierarchyCommandIds::kCmdShowSortingLayer));
     controls.Present(World, entity, row, 600.0f, [entity]() { return std::vector{entity}; }, &Undo, nullptr);
-    auto* renderPicker = FindChildWithClass<MaskField>(row, "hierarchy-render-layer-dropdown");
+    auto* renderPicker = FindChildWithClass<Dropdown>(row, "hierarchy-render-layer-dropdown");
     ASSERT_NE(renderPicker, nullptr);
-    EXPECT_EQ(renderPicker->GetValue(), 0x8u);
+    EXPECT_EQ(renderPicker->GetSelectedValue(), "8");
     EXPECT_NE(FindChildWithClass<Dropdown>(row, "hierarchy-sorting-layer-dropdown"), nullptr);
     EXPECT_TRUE(row.HasClass("has-render-layer"));
     EXPECT_TRUE(row.HasClass("has-sorting-layer"));
@@ -190,6 +192,60 @@ TEST_F(RenderSortingEditorTests, BothLayerColumnsShareASkinnedRowAndAGhostRowHid
     controls.Hide(row);
     EXPECT_FALSE(row.HasClass("has-render-layer"));
     EXPECT_FALSE(row.HasClass("has-sorting-layer"));
+}
+
+// The render layer picker sets one project-named layer on every target in one undo step.
+TEST_F(RenderSortingEditorTests, TheRenderLayerPickerSetsOneNamedLayerOnTheSelectionInOneStep)
+{
+    Rendering::RenderLayerNames names{};
+    ASSERT_EQ(names.Set(3, "Props"), "");
+    Rendering::SetRenderLayerNames(names);
+    const auto first = Mesh();
+    const auto second = Mesh();
+    World.GetComponentForWrite<Components::MeshRenderer>(second)->RenderLayers.Bits = 0b0110u;
+    UIElement row;
+    HierarchyLayerControls controls;
+    ASSERT_TRUE(controls.HandleCommand(HierarchyCommandIds::kCmdShowRenderLayer));
+    controls.Present(World, first, row, 600.0f, [first, second]() { return std::vector{first, second}; }, &Undo,
+                     nullptr);
+    auto* picker = FindChildWithClass<Dropdown>(row, "hierarchy-render-layer-dropdown");
+    ASSERT_NE(picker, nullptr);
+
+    picker->SetSelectedValue(std::to_string(Rendering::RenderLayerMask::FromLayer(3).Bits));
+    EXPECT_EQ(picker->GetSelectedLabel(), "Props") << "the option carries the project's name";
+    EXPECT_EQ(World.GetComponent<Components::MeshRenderer>(first)->RenderLayers.Bits, 0b1000u);
+    EXPECT_EQ(World.GetComponent<Components::MeshRenderer>(second)->RenderLayers.Bits, 0b1000u);
+    EXPECT_EQ(Undo.GetUndoCount(), 1u);
+    Undo.Undo();
+    EXPECT_EQ(World.GetComponent<Components::MeshRenderer>(second)->RenderLayers.Bits, 0b0110u);
+    Rendering::SetRenderLayerNames({});
+}
+
+// A mask with more than one layer shows as a mask; a rename refreshes the column with only the render layer on.
+TEST_F(RenderSortingEditorTests, AMultiLayerMaskShowsAsAMaskAndARenameRefreshesTheNames)
+{
+    const auto entity = Mesh();
+    World.GetComponentForWrite<Components::MeshRenderer>(entity)->RenderLayers.Bits = 0b0110u;
+    UIElement row;
+    HierarchyLayerControls controls;
+    ASSERT_TRUE(controls.HandleCommand(HierarchyCommandIds::kCmdShowRenderLayer));
+    controls.Present(World, entity, row, 600.0f, [entity]() { return std::vector{entity}; }, &Undo, nullptr);
+    auto* picker = FindChildWithClass<Dropdown>(row, "hierarchy-render-layer-dropdown");
+    ASSERT_NE(picker, nullptr);
+    EXPECT_EQ(picker->GetSelectedLabel(), "Mask 0x00000006");
+    EXPECT_FALSE(controls.NeedsRefresh(World)) << "only the sorting column follows world changes";
+
+    Rendering::RenderLayerNames names{};
+    ASSERT_EQ(names.Set(0, "World"), "");
+    Rendering::SetRenderLayerNames(names);
+    RefreshRenderLayerFields();
+    EXPECT_TRUE(controls.NeedsRefresh(World)) << "a rename on the settings page refreshes the column";
+    EXPECT_FALSE(controls.NeedsRefresh(World));
+
+    World.GetComponentForWrite<Components::MeshRenderer>(entity)->RenderLayers.Bits = 0b0001u;
+    controls.Present(World, entity, row, 600.0f, [entity]() { return std::vector{entity}; }, &Undo, nullptr);
+    EXPECT_EQ(picker->GetSelectedLabel(), "World");
+    Rendering::SetRenderLayerNames({});
 }
 
 TEST_F(RenderSortingEditorTests, SavesCustomLayersWithoutChangingOtherProjectSettings)
