@@ -171,7 +171,7 @@ The `resolution` field of the `ShadowMap` node sets the size in texels of each d
 { "id": "ShadowMap", "type": "ShadowMap", "resolution": 4096 }
 ```
 
-Memory and render cost increase with the square of the resolution: 4096 uses 4 times and 8192 uses 16 times the memory of 2048. A pipeline with a value that is not a power of two from 256 to 8192 does not load, and the message names the field.
+Memory and render cost increase with the square of the resolution: 4096 uses 4 times and 8192 uses 16 times the memory of 2048. If the value is not a power of two from 256 to 8192, the `ShadowMap` node does not start, the view has no shadows, and the log names the field and the range.
 
 ### Virtual shadow pages
 
