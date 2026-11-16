@@ -20,6 +20,7 @@ SettingsCategoryDescriptor CreateDirectionalShadowSettingsSection(
     section.Description =
         "Applies to all directional cascades. The resolution field of the ShadowMap node in "
         "the render pipeline sets the cascade resolution.";
+    section.SearchKeywords = "shadow resolution cascade size shadowmap pipeline";
 
     SettingsFieldDescriptor projection;
     projection.Label = "Stable Projection";
@@ -36,7 +37,7 @@ SettingsCategoryDescriptor CreateDirectionalShadowSettingsSection(
         "back.";
     projection.SearchKeywords =
         "stable projection close fit shimmer shimmering crawl crawling dancing texel swim "
-        "flicker cascade sphere sdsm resolution";
+        "flicker cascade sphere sdsm";
 
     SettingsFieldDescriptor::ToggleField projectionToggle;
     projectionToggle.DefaultValue = kDefaultDirectionalShadowStableProjection;

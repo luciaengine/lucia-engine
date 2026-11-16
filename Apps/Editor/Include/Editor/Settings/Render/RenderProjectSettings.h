@@ -27,9 +27,7 @@ static constexpr bool kDefaultDirectionalShadowStableProjection = false;
 class SettingsStore;
 
 // Reads/writes the cascade projection mode in the already-loaded project
-// SettingsStore. True selects Stable. The caller owns Load()/Save(). The
-// cascade resolution is not a project setting: the pipeline's ShadowMap node
-// owns it ("resolution").
+// SettingsStore. True selects Stable. The caller owns Load()/Save().
 bool GetDirectionalShadowStableProjection(const SettingsStore& store);
 void SetDirectionalShadowStableProjection(SettingsStore& store, bool stable);
 

@@ -18,10 +18,10 @@
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
-#include <nlohmann/json.hpp>
-
 #include <bit>
 #include <string_view>
+
+#include <nlohmann/json.hpp>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 
