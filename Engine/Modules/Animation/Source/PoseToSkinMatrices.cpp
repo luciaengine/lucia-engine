@@ -134,10 +134,7 @@ void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
     if (!outCompactSkinMatrices)
         return;
 
-    const uint32_t jointCount =
-        (skeleton.SkinJointCount > 0 && skeleton.JointNodes.size() == skeleton.SkinJointCount)
-            ? skeleton.SkinJointCount
-            : boneCount;
+    const uint32_t jointCount = skeleton.PaletteJointCount();
     outCompactSkinMatrices->resize(static_cast<size_t>(jointCount) * 16u);
 
     const glm::mat4 meshRoot = glm::make_mat4(skeleton.MeshRootWorld);

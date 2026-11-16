@@ -76,6 +76,11 @@ struct SkeletonData {
     uint32 SkinJointCount = 0;
     std::vector<uint32> JointNodes;             // length = SkinJointCount
 
+    /// True when JointNodes holds SkinJointCount entries. Without a joint table, joint j is bone j.
+    bool HasJointTable() const { return SkinJointCount > 0 && JointNodes.size() == SkinJointCount; }
+    /// The matrices of one skin palette: SkinJointCount with a joint table, else one per bone.
+    uint32 PaletteJointCount() const { return HasJointTable() ? SkinJointCount : BoneCount; }
+
     // Optional: node index of the mesh that uses this skeleton (for model-relative skinning)
     int32 MeshRootNode = -1; // -1 if unknown
 

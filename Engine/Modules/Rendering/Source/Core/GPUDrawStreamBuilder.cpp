@@ -1722,6 +1722,9 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     BufferHandle StatsReadback{};
     BufferHandle TableRing{};
     BufferHandle HistoryStandIn{};
+    // The builder's cached set descriptions; the builder outlives every frame that records this pass.
+    const DescriptorSetDesc* ScatterSetDesc = nullptr;
+    const DescriptorSetDesc* CompactSetDesc = nullptr;
     uint32_t ColorTableOffset{};
     size_t ColorTableBytes{};
     uint32_t ColorBatchCount{};
@@ -1816,88 +1819,69 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         if (sliceBatchCount == 0u || sliceTableBytes == 0u)
             return true;
 
-        DescriptorSetDesc descriptorSetDescription{};
-        descriptorSetDescription.layout    = MakeScatterDescriptorSetLayout();
-        descriptorSetDescription.transient = true;
-        descriptorSetDescription.debugName = "GPUDrawScatter_DS0";
-        DescriptorSetHandle setHandle = device->CreateDescriptorSet(descriptorSetDescription);
+        DescriptorSetHandle setHandle = device->CreateDescriptorSet(*ScatterSetDesc);
         if (!setHandle.IsValid())
             return false;
 
-        device->UpdateStorageBufferBinding(setHandle, 0, visibilityBuffer,
-                                           slice.visibilityOffsetBytes,
-                                           visibilityReadBytes);
-        device->UpdateStorageBufferBinding(setHandle, 1, instanceBuffer, 0, instanceReadBytes);
-        device->UpdateStorageBufferBinding(setHandle, 2, meshBuffer, 0, meshReadBytes);
-        device->UpdateStorageBufferBinding(setHandle, 3, TableRing, sliceTableOffset,
-                                           sliceTableBytes);
-        device->UpdateStorageBufferBinding(setHandle, 4, Records, 0,
-                                           static_cast<size_t>(CallRecordBase + NeededRecords)
-                                               * kDrawCommandStride);
-        device->UpdateStorageBufferBinding(setHandle, 5, Cursors, 0,
-                                           static_cast<size_t>(CallCursorBase + NeededCursors)
-                                               * sizeof(uint32_t));
-        device->UpdateStorageBufferBinding(setHandle, 6, Indirection, 0,
-                                           static_cast<size_t>(CallRecordBase + NeededRecords)
-                                               * sizeof(uint32_t));
-        device->UpdateStorageBufferBinding(
-            setHandle, 7, Stats, 0,
-            static_cast<size_t>(kStatsSliceCapacity) * sizeof(ScatterSliceStats));
+        // One write per layout binding, sent to the device as one batch.
+        std::array<DescriptorWrite, kScatterBindingCount> writes{};
+        writes[0] = StorageBufferWrite(0, visibilityBuffer, slice.visibilityOffsetBytes, visibilityReadBytes);
+        writes[1] = StorageBufferWrite(1, instanceBuffer, 0, instanceReadBytes);
+        writes[2] = StorageBufferWrite(2, meshBuffer, 0, meshReadBytes);
+        writes[3] = StorageBufferWrite(3, TableRing, sliceTableOffset, sliceTableBytes);
+        writes[4] = StorageBufferWrite(4, Records, 0,
+                                       static_cast<size_t>(CallRecordBase + NeededRecords) * kDrawCommandStride);
+        writes[5] = StorageBufferWrite(5, Cursors, 0,
+                                       static_cast<size_t>(CallCursorBase + NeededCursors) * sizeof(uint32_t));
+        writes[6] = StorageBufferWrite(6, Indirection, 0,
+                                       static_cast<size_t>(CallRecordBase + NeededRecords) * sizeof(uint32_t));
+        writes[7] = StorageBufferWrite(7, Stats, 0,
+                                       static_cast<size_t>(kStatsSliceCapacity) * sizeof(ScatterSliceStats));
         // Every dispatch binds the color-class table. Only color slices
         // with merging enabled read it (classMode == Color).
-        device->UpdateStorageBufferBinding(setHandle, 8, TableRing, ClassBindOffset,
-                                           ClassBindBytes);
+        writes[8] = StorageBufferWrite(8, TableRing, ClassBindOffset, ClassBindBytes);
         // meshPoolGroup (draw consolidation). Bound on every dispatch so
         // the 10th layout binding is always valid; read only when
         // meshGroupMode != 0.
-        device->UpdateStorageBufferBinding(setHandle, 9, TableRing, GroupBindOffset,
-                                           GroupBindBytes);
-        BindHistory(device, setHandle, sliceIndex);
+        writes[9] = StorageBufferWrite(9, TableRing, GroupBindOffset, GroupBindBytes);
+        WriteHistory(writes, sliceIndex);
+        device->WriteDescriptorSet(setHandle, writes);
         PreparedSlices[sliceIndex].ScatterSet = setHandle;
         return true;
     }
 
-    void BindHistory(IDevice* device, DescriptorSetHandle setHandle, uint32_t sliceIndex)
+    // Writes bindings 10 to 13 of the scatter set: the slice's LOD history or its stand-ins.
+    void WriteHistory(std::array<DescriptorWrite, kScatterBindingCount>& writes, uint32_t sliceIndex) const
     {
         // prevLod (dwell band). Either this view's persistent history or
         // the never-read stand-in; SliceBand[sliceIndex] is 0 in the latter case,
         // which is what stops the shader touching it.
         const PrevLodBinding& previousLodBinding = SlicePrevLod[sliceIndex];
         if (previousLodBinding.handle.IsValid())
-            device->UpdateStorageBufferBinding(
-                setHandle, 10, previousLodBinding.handle, 0,
-                static_cast<size_t>(InstanceCount) * sizeof(uint32_t));
+            writes[10] = StorageBufferWrite(10, previousLodBinding.handle, 0,
+                                            static_cast<size_t>(InstanceCount) * sizeof(uint32_t));
         else
-            device->UpdateStorageBufferBinding(setHandle, 10, HistoryStandIn, 0,
-                                               static_cast<size_t>(kPerInstanceHistoryMinBytes));
+            writes[10] = StorageBufferWrite(10, HistoryStandIn, 0, static_cast<size_t>(kPerInstanceHistoryMinBytes));
         // Crossfading slices bind persistent fade state. Other slices bind a
         // stand-in; ge_UpdateLodFade returns before reading it when crossfadeTailActive is 0.
         const LodFadeBinding& fade = SliceFade[sliceIndex];
         if (fade.handle.IsValid())
-            device->UpdateStorageBufferBinding(setHandle, 11, fade.handle, 0, fade.bytes);
+            writes[11] = StorageBufferWrite(11, fade.handle, 0, fade.bytes);
         else
-            device->UpdateStorageBufferBinding(setHandle, 11, TableRing, ColorTableOffset,
-                                               ColorTableBytes);
+            writes[11] = StorageBufferWrite(11, TableRing, ColorTableOffset, ColorTableBytes);
         // Rendered history binds the rotated pair or a stand-in at both bindings.
         // renderedHistoryEnabled prevents shader access to the stand-in.
         const RenderedHistoryBinding& history = SliceRenderedHistory[sliceIndex];
-        const bool historyBound =
-            history.previous.IsValid() && history.current.IsValid();
+        const bool historyBound = history.previous.IsValid() && history.current.IsValid();
         if (historyBound)
         {
-            device->UpdateStorageBufferBinding(setHandle, 12, history.previous, 0,
-                                               history.bytes);
-            device->UpdateStorageBufferBinding(setHandle, 13, history.current, 0,
-                                               history.bytes);
+            writes[12] = StorageBufferWrite(12, history.previous, 0, history.bytes);
+            writes[13] = StorageBufferWrite(13, history.current, 0, history.bytes);
         }
         else
         {
-            device->UpdateStorageBufferBinding(
-                setHandle, 12, HistoryStandIn, 0,
-                static_cast<size_t>(kPerInstanceHistoryMinBytes));
-            device->UpdateStorageBufferBinding(
-                setHandle, 13, HistoryStandIn, 0,
-                static_cast<size_t>(kPerInstanceHistoryMinBytes));
+            writes[12] = StorageBufferWrite(12, HistoryStandIn, 0, static_cast<size_t>(kPerInstanceHistoryMinBytes));
+            writes[13] = StorageBufferWrite(13, HistoryStandIn, 0, static_cast<size_t>(kPerInstanceHistoryMinBytes));
         }
     }
 
@@ -1968,28 +1952,21 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             return true;
 
         // Head and tail share one set. Failure cancels preparation before either region records.
-        DescriptorSetDesc descriptorSetDescription{};
-        descriptorSetDescription.layout    = MakeGroupCompactDescriptorSetLayout();
-        descriptorSetDescription.transient = true;
-        descriptorSetDescription.debugName = "GPUDrawGroupCompact_DS0";
-        DescriptorSetHandle setHandle = device->CreateDescriptorSet(descriptorSetDescription);
+        DescriptorSetHandle setHandle = device->CreateDescriptorSet(*CompactSetDesc);
         if (!setHandle.IsValid())
             return false;
 
-        device->UpdateStorageBufferBinding(setHandle, 0, TableRing,
-                                           sliceTableOffset, sliceTableBytes);
-        device->UpdateStorageBufferBinding(
-            setHandle, 1, TableRing, sliceRowRunOffset,
-            static_cast<size_t>(sliceRowCount) * 2u * sizeof(uint32_t));
-        device->UpdateStorageBufferBinding(
-            setHandle, 2, Cursors, 0,
-            static_cast<size_t>(CallCursorBase + NeededCursors) * sizeof(uint32_t));
-        device->UpdateStorageBufferBinding(
-            setHandle, 3, Records, 0,
-            static_cast<size_t>(CallRecordBase + NeededRecords) * kDrawCommandStride);
-        device->UpdateStorageBufferBinding(
-            setHandle, 4, Indirection, 0,
-            static_cast<size_t>(CallRecordBase + NeededRecords) * sizeof(uint32_t));
+        const std::array<DescriptorWrite, kGroupCompactBindingCount> writes{
+            StorageBufferWrite(0, TableRing, sliceTableOffset, sliceTableBytes),
+            StorageBufferWrite(1, TableRing, sliceRowRunOffset,
+                               static_cast<size_t>(sliceRowCount) * 2u * sizeof(uint32_t)),
+            StorageBufferWrite(2, Cursors, 0, static_cast<size_t>(CallCursorBase + NeededCursors) * sizeof(uint32_t)),
+            StorageBufferWrite(3, Records, 0,
+                               static_cast<size_t>(CallRecordBase + NeededRecords) * kDrawCommandStride),
+            StorageBufferWrite(4, Indirection, 0,
+                               static_cast<size_t>(CallRecordBase + NeededRecords) * sizeof(uint32_t)),
+        };
+        device->WriteDescriptorSet(setHandle, writes);
 
         PreparedSlices[sliceIndex].CompactSet = setHandle;
         return true;
@@ -3147,6 +3124,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     pass->StatsReadback = m_SharedStatsReadback;
     pass->TableRing = m_TableRing;
     pass->HistoryStandIn = m_HistoryStandIn;
+    pass->ScatterSetDesc = &m_ScatterSetDesc;
+    pass->CompactSetDesc = &m_GroupCompactSetDesc;
     pass->ColorTableOffset = colorTableOffset;
     pass->ColorTableBytes = colorTableBytes;
     pass->ColorBatchCount = colorBatchCount;

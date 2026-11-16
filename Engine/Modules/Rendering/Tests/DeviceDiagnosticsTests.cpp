@@ -16,6 +16,8 @@
 #include <vector>
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
+#include "Logger/CallbackSink.h"
+#include "Logger/Logger.h"
 #include "Platform/Environment.h"
 #include "Source/Vulkan/ValidationStats.h"
 #include "Source/Vulkan/VulkanDebugUtilsLabels.h"

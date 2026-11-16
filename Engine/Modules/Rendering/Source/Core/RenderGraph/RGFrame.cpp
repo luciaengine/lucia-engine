@@ -562,6 +562,7 @@ void RGFrame::BeginFrame(uint64_t frameIndex)
         }
         m_ExportTimeline = {};
         m_ExportSignalValue = 0;
+        m_Graph.ResetCrossFrameAccesses();
         m_DeviceRebuildGen = rebuildGen;
     }
 

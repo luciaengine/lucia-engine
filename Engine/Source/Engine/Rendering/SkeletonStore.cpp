@@ -93,8 +93,7 @@ uint32 SkeletonStore::CreateRuntime(uint32 skeletonId)
     const uint64 generation = m_RuntimeCreateEpoch.fetch_add(1, std::memory_order_relaxed) + 1;
     m_PaletteBonesEpoch.fetch_add(1, std::memory_order_release);
 
-    const uint32 jointCount = skel->SkinJointCount > 0 && skel->JointNodes.size() == skel->SkinJointCount
-        ? skel->SkinJointCount : skel->BoneCount;
+    const uint32 jointCount = skel->PaletteJointCount();
 
     // Reuse a freed slot if available.
     if (!m_FreeRuntimeIds.empty())
@@ -169,7 +168,7 @@ size_t SkeletonStore::GetLivePaletteBoneCount()
     {
         const SkeletonData* skeleton = Get(m_Runtimes[i].SkeletonId.load(std::memory_order_acquire));
         if (skeleton)
-            bones += (skeleton->SkinJointCount > 0) ? skeleton->SkinJointCount : skeleton->BoneCount;
+            bones += skeleton->PaletteJointCount();
     }
     m_SummedPaletteBonesEpoch = epoch;
     m_SummedPaletteBones = bones;
