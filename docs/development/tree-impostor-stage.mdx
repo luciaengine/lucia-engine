@@ -1,0 +1,93 @@
+---
+title: Tree impostor stage
+description: Measured case and design for an impostor last stage for generated trees, after shared tree variants.
+---
+
+# Tree impostor stage
+
+## Question
+
+Does an impostor last stage make far forests faster, or does cluster level of detail make it unnecessary?
+
+Cluster level of detail does not help foliage. The cook refuses non-opaque materials (`Engine/Source/Assets/ClusterLOD/MeshClusterLODAsset.cpp`), and the runtime refines only opaque materials without vertex modifiers. Generated trees (`Packages/eztree`) have cutout leaves (`MaterialAlphaMode::Mask`) and a wind vertex modifier. HLOD does not help either: its member gather takes static `MeshRenderer` entities only (`Engine/Include/Assets/HlodMemberGather.h`), and the tree extraction removes the `MeshRenderer` from each tree.
+
+## Current state of generated trees
+
+- Each tree registers its own meshes. The key holds the entity id (`RuntimeGuidFromComponent` in `Packages/eztree/Native/EZTreeECS/Systems/EZTreeExtractionSystem.cpp`), so equal trees do not share a mesh.
+- Each tree has its own bark and leaf materials. The extraction writes the wind parameters into them every frame.
+- The tree meshes have no level of detail chain. The generator fills no `ExtraLODs`, and `MeshGPURegistry` uploads only the chain that the mesh carries.
+- A default tree is about 25,000 triangles (65,928 bark indices and 9,216 leaf indices) and about 25.7 m wide and 25.3 m high.
+
+## Measurement
+
+Content: the editor default scene plus a grid of 32 x 32 generated trees, 15 m apart, default options. The camera is 600 m from the grid center, and the nearest tree is about 364 m away. Hardware: Apple M1 Max, macOS 15.7. Build: Release, Vulkan through MoltenVK, vsync off, a 1280x720 window, the default pipeline with cascaded shadows. Date: 2026-11-16. Each value is the median of 3 runs of 20 samples. The machine load was 3 to 12.
+
+| Arm | GPU ms | CPU frame ms | Draw slots |
+|---|---|---|---|
+| No trees | 1.2 | 2.0 | 6 |
+| Trees as they are now | 28.5 | 45.3 | 12294 |
+| One seed, own mesh and materials per tree | 28.7 | 45.4 | 12294 |
+| One seed, one shared mesh and material set | 25.5 | 26.8 | 18 |
+| One tree-sized cutout quad per tree, shared | 4.7 | 5.3 | 12 |
+
+The shared arm used a scratch switch that keys the mesh and the materials by the options hash. The quad arm is the floor of an impostor: it has no texture fetches and casts no cascade shadows. A real impostor costs more than the floor.
+
+Diagnostic runs on a loaded machine (load 90 to 190, so the times show direction only) give these results:
+
+- Fewer bark triangles (2.9x fewer per tree) remove 2% of the tree cost.
+- Wind off does not change the GPU time.
+- A window with 4x fewer pixels does not make the main pass cheaper.
+- At 1024 trees, the main pass takes about 22 ms and each cascade takes less than 1 ms.
+- On the CPU, render graph execution takes 38 ms of a 49 ms frame. That time is the recording of 12,294 draw slots.
+
+## Decision rule and result
+
+The rule was written before the runs: build the stage only if the impostor floor removes at least 30% of the GPU time of the cheapest competitor, and the gain is larger than 3 times the control spread.
+
+- Against trees as they are now: (28.5 - 4.7) / 28.5 = 83%.
+- Against shared variants, the decisive competitor: (25.5 - 4.7) / 25.5 = 81%. The control spread is 0.2 ms.
+
+Shared variants cut the CPU frame time by 41% and the draw slots from 12,294 to 18, but cut the GPU time by only 11%. The far-forest GPU cost is the full tree geometry itself. An impostor removes it. Both steps are necessary: shared variants for the CPU, and impostors for the GPU.
+
+The main pass cost is not attributed to a single cause. Triangle count, wind, pixel count and draw count are ruled out. A hypothesis, not checked, is overdraw of cutout leaves. The impostor removes the cost whatever the cause.
+
+## Owner decision
+
+Verbatim: "use hemi octa for trees, both modes in the bake". The bake supports hemi-octahedral and full octahedral atlases. Hemi-octahedral is the default for trees and foliage. Full octahedral is for objects that the camera sees from all sides, as in flight and space games.
+
+## Design
+
+### Step 1: shared tree variants
+
+The tree package owns this step.
+
+- Key the generated meshes and materials by the options hash, with a reference count per variant. The last tree that releases a variant unregisters its meshes.
+- Move the per-tree wind variation out of the material. The material holds the variant's wind parameters. The vertex modifier derives a per-tree phase from the instance position, so equal trees do not sway in step.
+- Keep the wind volume response per tree through the instance data, or resolve it per variant and region. The first change measures which one keeps the look.
+- Acceptance: the 32 x 32 forest scene shows about 18 draw slots and a CPU frame time within 10% of the shared arm above, with the same look at a near pose.
+
+### Step 2: impostor bake
+
+The asset system owns the bake, beside the mesh level of detail cache and the HLOD baker.
+
+- The input is a mesh and its materials. The output is an impostor atlas of N x N frames, with base color and alpha, plus normal and depth.
+- Two layouts: hemi-octahedral (the upper hemisphere, the default for trees and foliage) and full octahedral (the full sphere).
+- The bake renders each frame through the render graph with an orthographic camera fitted to the bounds. The atlas is cached by the mesh content hash, the material hash, the layout and the resolution.
+- Generated trees bake one atlas per variant when the variant is first registered. This is why step 1 comes first. Without shared variants, every tree would need its own atlas.
+- The octahedral encode and decode functions go into `Mathematics` with unit tests (round trip, frame selection at the hemisphere edge).
+
+### Step 3: runtime last stage
+
+The GPU-driven draw path owns the selection.
+
+- `GPUMesh` gets an impostor link: the impostor material index and a coverage threshold below the last mesh level. `draw_command_scatter.comp` selects the impostor beyond the threshold and emits one quad draw per instance into the impostor batch.
+- The transition uses the dither crossfade that mesh levels already use (`Includes/lod_crossfade.glsl`).
+- The impostor surface shader picks the 3 nearest frames, blends them, and writes depth from the depth atlas. Then the depth prepass and the shadow passes see a correct silhouette.
+- Impostors cast cascade shadows from the depth atlas. An impostor has no wind, so far trees stop invalidating the cascade shadow cache. Today a forest with wind invalidates it every frame.
+- The stage applies to any mesh with a bake, not only trees: rocks and props in open worlds use hemi-octahedral, and objects seen from above or below in flight and space games use full octahedral.
+
+### Verification
+
+- Unit tests: the octahedral math, bake determinism (the same input gives the same atlas hash), and scatter selection at the threshold.
+- Performance: the 32 x 32 forest at the far pose, real impostors against shared variants, 3 runs on a quiet machine. Acceptance: at least 30% less GPU time than shared variants.
+- Look: a capture pair at the transition distance and at the far pose, at a game camera height and at a flight camera height.
