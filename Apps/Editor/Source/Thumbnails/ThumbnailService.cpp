@@ -374,7 +374,7 @@ std::string ThumbnailService::GetOrRequestInlineImage(const std::filesystem::pat
             onReady({});
         return {};
     }
-    return textures->GetOrRequestInlineImage(image, std::move(onReady));
+    return textures->GetOrRequestInlineImage(image, DeliverOnUiThread(std::move(onReady)));
 }
 
 SpriteFramesThumbnailHandler* ThumbnailService::FindSpriteFramesHandler() const
@@ -395,7 +395,7 @@ std::string ThumbnailService::GetOrRequestAtlasRegion(const std::filesystem::pat
             onReady({});
         return {};
     }
-    return sprites->GetOrRequestAtlasRegion(texturePath, uv, std::move(onReady));
+    return sprites->GetOrRequestAtlasRegion(texturePath, uv, DeliverOnUiThread(std::move(onReady)));
 }
 
 std::string ThumbnailService::GetOrRequestSpriteFrame(const std::filesystem::path& spriteFramesPath,
@@ -409,7 +409,7 @@ std::string ThumbnailService::GetOrRequestSpriteFrame(const std::filesystem::pat
             onReady({});
         return {};
     }
-    return sprites->GetOrRequestFrame(spriteFramesPath, animationName, flipX, std::move(onReady));
+    return sprites->GetOrRequestFrame(spriteFramesPath, animationName, flipX, DeliverOnUiThread(std::move(onReady)));
 }
 
 std::string ThumbnailService::GetOrRequestBrowser(const std::filesystem::path& assetPath,
@@ -523,6 +523,9 @@ std::string ThumbnailService::GetOrRequest(const std::filesystem::path& assetPat
 {
     std::filesystem::path normalizedStorage;
     const std::filesystem::path& path = NormalizedOrSelf(assetPath, normalizedStorage);
+
+    // Every ready callback leaves here bound to the UI thread, so a handler may finish on any thread.
+    onReady = DeliverOnUiThread(std::move(onReady));
 
     const uint64_t generation = m_ProjectGeneration.load(std::memory_order_acquire);
     const uint64_t cacheKey = MakeResultCacheKey(path, desiredSize, StaticModelListThumbnail, generation);
@@ -931,8 +934,39 @@ bool ThumbnailService::IsEngineThumbnailReadyForWindow(uint64_t windowId,
     return false;
 }
 
+std::function<void(const std::string& relPath)> ThumbnailService::DeliverOnUiThread(
+    std::function<void(const std::string& relPath)> onReady)
+{
+    if (!onReady)
+        return {};
+    return [pending = std::weak_ptr<PendingReadyState>(m_PendingReady),
+            generation = m_ProjectGeneration.load(std::memory_order_acquire),
+            onReady = std::move(onReady)](const std::string& relPath) {
+        if (const auto state = pending.lock())
+        {
+            std::lock_guard<std::mutex> lock(state->Mutex);
+            state->Callbacks.push_back({generation, onReady, relPath});
+        }
+    };
+}
+
 void ThumbnailService::BeginFrame()
 {
+    // Deliver first, outside every lock: a callback is UI code and may request another thumbnail,
+    // which re-enters this service.
+    {
+        std::vector<PendingReadyCallback> ready;
+        {
+            std::lock_guard<std::mutex> lock(m_PendingReady->Mutex);
+            ready.swap(m_PendingReady->Callbacks);
+        }
+        for (auto& item : ready)
+        {
+            if (item.Callback && item.Generation == m_ProjectGeneration.load(std::memory_order_acquire))
+                item.Callback(item.Path);
+        }
+    }
+
     ProcessBrowserRequests();
     std::unique_lock<std::mutex> lock(m_Mutex, std::try_to_lock);
     if (!lock.owns_lock())
