@@ -863,3 +863,135 @@ TEST_F(ShaderCompilationCacheEpochTest, CbtHeadProgramsKeepProfileBindingsInBoth
     EXPECT_EQ(errors.Count(), 0u) << "the fixed shared shader must clear the rows of A and B";
     m_cache.SetErrorLog(nullptr);
 }
+
+TEST_F(ShaderCompilationCacheEpochTest, InFlightReliefCompileKeepsItsCapturedTargetAfterDefaultsChange)
+{
+    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
+    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, false, true});
+    ShaderCacheKey captured = MakeTestKey("Surfaces/standard_pbr.glsl");
+    captured.VariantKey.materialKeywords |= MaterialKeyword::Parallax;
+    MaterialCompileSpec spec = MakeTestSpec("Surfaces/standard_pbr.glsl");
+    spec.parallax = true;
+    int entered = 0;
+    m_cache.SetCompileEnteredHookForTesting([&entered]
+    {
+        ++entered;
+        ApplyShaderCompileProfile({SpirvTarget::Spirv_1_6, true, false});
+    });
+    auto first = m_cache.GetOrCompile(captured, spec, m_ctx, "CapturedRelief", {}, ShaderSourceKind::SpirV);
+    Disarm();
+    ASSERT_EQ(entered, 1);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(first->meta, nullptr);
+    for (const auto* stage : {&first->vertexBytes, &first->fragmentBytes})
+    {
+        const auto words = TargetSpirvWords(*stage);
+        ASSERT_GE(words.size(), 5u);
+        EXPECT_EQ(words[1], 0x00010500u);
+    }
+    EXPECT_TRUE(HasInterpolationCapability(first->fragmentBytes));
+    EXPECT_TRUE(TargetMetaNames(*first->meta, "ge_BindlessTextures"));
+    EXPECT_FALSE(TargetMetaNames(*first->meta, "ge_MaterialTextures0"));
+    EXPECT_EQ(m_cache.GetOrCompile(captured, spec, m_ctx, "RetainedRelief", {}, ShaderSourceKind::SpirV), first);
+
+    ShaderCacheKey compatible = MakeTestKey("Surfaces/standard_pbr.glsl");
+    compatible.VariantKey.materialKeywords |= MaterialKeyword::Parallax;
+    auto second = m_cache.GetOrCompile(compatible, spec, m_ctx, "CompatibleRelief", {}, ShaderSourceKind::SpirV);
+    ASSERT_NE(second, nullptr);
+    ASSERT_NE(second->meta, nullptr);
+    EXPECT_NE(second, first);
+    for (const auto* stage : {&second->vertexBytes, &second->fragmentBytes})
+    {
+        const auto words = TargetSpirvWords(*stage);
+        ASSERT_GE(words.size(), 5u);
+        EXPECT_EQ(words[1], 0x00010600u);
+    }
+    EXPECT_FALSE(HasInterpolationCapability(second->fragmentBytes));
+    EXPECT_TRUE(TargetMetaNames(*second->meta, "ge_MaterialTextures0"));
+    EXPECT_FALSE(TargetMetaNames(*second->meta, "ge_BindlessTextures"));
+    EXPECT_EQ(m_cache.GetEntryCount(), 2u);
+}
+
+TEST_F(ShaderCompilationCacheEpochTest, ContentEditsInvalidateEveryRetainedTarget)
+{
+    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
+    WriteSurface("vec3(0.0, 1.0, 0.0)");
+    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, false, false});
+    const ShaderCacheKey desktop = MakeKey();
+    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, true, false});
+    const ShaderCacheKey compatible = MakeKey();
+    const auto desktopBefore = m_cache.GetOrCompile(desktop, MakeSpec(), m_ctx, "DesktopBefore", {}, ShaderSourceKind::SpirV);
+    const auto compatibleBefore = m_cache.GetOrCompile(compatible, MakeSpec(), m_ctx, "CompatibleBefore", {}, ShaderSourceKind::SpirV);
+    ASSERT_NE(desktopBefore, nullptr);
+    ASSERT_NE(compatibleBefore, nullptr);
+    ASSERT_EQ(m_cache.GetEntryCount(), 2u);
+
+    WriteSurface("vec3(1.0, 0.0, 0.0)");
+    m_cache.InvalidateGlobalEntry(desktop);
+    EXPECT_EQ(m_cache.GetEntryCount(), 0u);
+    const auto desktopAfter = m_cache.GetOrCompile(desktop, MakeSpec(), m_ctx, "DesktopAfter", {}, ShaderSourceKind::SpirV);
+    const auto compatibleAfter = m_cache.GetOrCompile(compatible, MakeSpec(), m_ctx, "CompatibleAfter", {}, ShaderSourceKind::SpirV);
+    ASSERT_NE(desktopAfter, nullptr);
+    ASSERT_NE(compatibleAfter, nullptr);
+    EXPECT_NE(desktopAfter->fragmentBytes, desktopBefore->fragmentBytes);
+    EXPECT_NE(compatibleAfter->fragmentBytes, compatibleBefore->fragmentBytes);
+}
+
+TEST_F(ShaderCompilationCacheEpochTest, AnotherTargetCompilesWhileTheFirstTargetIsHeld)
+{
+    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
+    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, false, false});
+    WriteSurface("vec3(0.0, 1.0, 0.0)");
+    const ShaderCacheKey desktop = MakeKey();
+    std::promise<void> firstEntered;
+    std::promise<void> releaseFirst;
+    const auto release = releaseFirst.get_future().share();
+    std::atomic<uint32_t> entered{0};
+    m_cache.SetCompileEnteredHookForTesting([&entered, &firstEntered, release]
+    {
+        if (entered.fetch_add(1) == 0u)
+        {
+            firstEntered.set_value();
+            release.wait();
+        }
+    });
+    auto first = std::async(std::launch::async, [this, desktop]
+    {
+        return m_cache.GetOrCompile(desktop, MakeSpec(), m_ctx, "HeldDesktop", {}, ShaderSourceKind::SpirV);
+    });
+    const bool started = firstEntered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_6, true, false});
+    const ShaderCacheKey compatible = MakeKey();
+    std::future<std::shared_ptr<SharedShaderVariant>> second;
+    try
+    {
+        second = std::async(std::launch::async, [this, compatible]
+        {
+            return m_cache.GetOrCompile(compatible, MakeSpec(), m_ctx, "ConcurrentCompatible", {}, ShaderSourceKind::SpirV);
+        });
+    }
+    catch (...)
+    {
+        releaseFirst.set_value();
+        first.wait();
+        throw;
+    }
+    const bool independentlyFinished = second.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+    releaseFirst.set_value();
+    const auto desktopProgram = first.get();
+    const auto compatibleProgram = second.get();
+    Disarm();
+    EXPECT_TRUE(started);
+    EXPECT_TRUE(independentlyFinished);
+    EXPECT_EQ(entered.load(), 2u);
+    ASSERT_NE(desktopProgram, nullptr);
+    ASSERT_NE(compatibleProgram, nullptr);
+    EXPECT_NE(desktopProgram, compatibleProgram);
+    const auto desktopWords = TargetSpirvWords(desktopProgram->vertexBytes);
+    const auto compatibleWords = TargetSpirvWords(compatibleProgram->vertexBytes);
+    ASSERT_GE(desktopWords.size(), 5u);
+    ASSERT_GE(compatibleWords.size(), 5u);
+    EXPECT_EQ(desktopWords[1], 0x00010500u);
+    EXPECT_EQ(compatibleWords[1], 0x00010600u);
+    EXPECT_EQ(m_cache.GetEntryCount(), 2u);
+}
