@@ -17,6 +17,11 @@ namespace GameEngine::Components
 struct EZTree;
 }
 
+namespace GameEngine::ECS
+{
+struct EntityHandle;
+}
+
 namespace GameEngine::EZTreeECS
 {
 
@@ -46,6 +51,9 @@ private:
         std::array<uint32, 3> Instances{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu}; // Branch, leaf, trellis.
     };
 
+    struct FrameContext;
+
+    void ExtractTree(FrameContext& frame, ECS::EntityHandle entity, Components::EZTree& tree, bool active);
     static void ReleaseVariantFields(Components::EZTree& tree);
     void ReleaseUnseenTrees(uint64 worldId, EZTreeService& service);
 

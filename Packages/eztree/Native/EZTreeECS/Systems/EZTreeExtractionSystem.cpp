@@ -56,12 +56,9 @@ float WindVolumeSpeedBound(ECS::World& world)
 
 float LargestAxisScale(const Components::WorldTransform& worldTransform)
 {
-    const Mathematics::Matrix4x4 basis = worldTransform.ToMatrix4x4(Mathematics::Vector3{});
-    const float* m = basis.Data();
-    const float sx = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
-    const float sy = std::sqrt(m[4] * m[4] + m[5] * m[5] + m[6] * m[6]);
-    const float sz = std::sqrt(m[8] * m[8] + m[9] * m[9] + m[10] * m[10]);
-    return std::max({sx, sy, sz});
+    return std::max({Mathematics::Vector3(worldTransform.Basis[0]).Length(),
+                     Mathematics::Vector3(worldTransform.Basis[1]).Length(),
+                     Mathematics::Vector3(worldTransform.Basis[2]).Length()});
 }
 
 // The culling sphere of a tree grows by the largest sway its wind can make, local meters.
@@ -71,10 +68,7 @@ float WindBoundsInflation(const EZTree::TreeOptions& options, float largestAxisS
     const float scale = WindScaleBound(options);
     if (scale <= 0.0f)
         return 0.0f;
-    const float authored = std::sqrt(options.wind.strength.x * options.wind.strength.x +
-                                     options.wind.strength.y * options.wind.strength.y +
-                                     options.wind.strength.z * options.wind.strength.z);
-    return kWindDisplacementEnvelope * scale * (authored * largestAxisScale + volumeSpeedBound);
+    return kWindDisplacementEnvelope * scale * (options.wind.strength.Length() * largestAxisScale + volumeSpeedBound);
 }
 
 void SubmitPart(Engine::Renderer::RenderServices& renderServices,
@@ -218,6 +212,17 @@ void WriteVariantToTree(const TreeVariant& variant, Components::EZTree& tree)
 
 } // namespace
 
+struct EZTreeExtractionSystem::FrameContext
+{
+    ECS::World& World;
+    EZTreeService& Service;
+    uint64 WorldId = 0;
+    float VolumeSpeedBound = 0.0f;
+    bool DeviceRebuilt = false;
+    // The variants this pass has read, so each one is copied out of the service once.
+    FlatMap<uint64, TreeVariant> Variants;
+};
+
 EZTreeExtractionSystem::~EZTreeExtractionSystem()
 {
     auto* service = EZTreeService::TryGet();
@@ -252,9 +257,7 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     service->Refresh(deviceGeneration);
 
     ++m_UpdateStamp;
-    const uint64 worldId = world.GetWorldId();
-    const float volumeSpeedBound = WindVolumeSpeedBound(world);
-    FlatMap<uint64, TreeVariant> frameVariants;
+    FrameContext frame{world, *service, world.GetWorldId(), WindVolumeSpeedBound(world), deviceRebuilt, {}};
 
     // Every tree is visited whatever its enable state: one that is switched off,
     // or whose entity is, releases the GPU instances this system gave it.
@@ -263,83 +266,90 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                 ECS::Optional<ECS::DisabledInHierarchy>,
                 ECS::Optional<ECS::ComponentDisabled<Components::EZTree>>>()
         .IncludeDisabled()
-        .Each([&](ECS::EntityHandle entity, Components::EZTree& tree, const ECS::Disabled* disabled,
-                  const ECS::DisabledInHierarchy* inactive, const ECS::ComponentDisabled<Components::EZTree>* treeOff)
-        {
-            if (world.GetComponent<Components::MeshRenderer>(entity))
-                world.RemoveComponent<Components::MeshRenderer>(entity);
-            if (world.GetComponent<Components::MeshGPUData>(entity))
-                world.RemoveComponent<Components::MeshGPUData>(entity);
+        .Each([this, &frame](ECS::EntityHandle entity, Components::EZTree& tree, const ECS::Disabled* disabled,
+                             const ECS::DisabledInHierarchy* inactive,
+                             const ECS::ComponentDisabled<Components::EZTree>* treeOff)
+        { ExtractTree(frame, entity, tree, !disabled && !inactive && !treeOff); });
 
-            const uint64 hash = EZTree::HashOptions(tree.Options) ^ static_cast<uint64>(tree.RandomizeCounter);
-            TreeBinding* binding = m_Bindings.Find(BindingKey{worldId, entity.id});
-            if (!binding)
-            {
-                // A tree this system has not seen holds no variant reference and no GPU
-                // instance of this system, whatever its runtime fields say: they may be
-                // bytes copied from another world.
-                ReleaseVariantFields(tree);
-                binding = &m_Bindings.InsertOrAssign(BindingKey{worldId, entity.id}, TreeBinding{});
-            }
-            binding->Stamp = m_UpdateStamp;
-            if (deviceRebuilt)
-            {
-                ReleasePartInstances(*m_RenderServices, tree);
-                binding->Instances = PartInstances(tree);
-            }
+    ReleaseUnseenTrees(frame.WorldId, *service);
+}
 
-            if (binding->Hash != hash)
-            {
-                if (binding->Hash != 0)
-                    service->ReleaseVariant(binding->Hash);
-                const TreeVariant variant = service->AcquireVariant(hash, tree.Options);
-                binding->Hash = hash;
-                frameVariants.InsertOrAssign(hash, variant);
-                // Deferred: an immediate add moves the entity to another archetype
-                // under this query and leaves `tree` pointing at the old row.
-                Components::LocalBounds bounds{};
-                bounds.Box = variant.Bounds;
-                world.AddComponent(entity, bounds);
-            }
-            else if (tree.RuntimeOptionsHash == 0)
-            {
-                // The editor marks a tree dirty with a zero hash. Equal options keep the
-                // variant; the materials register again for edited material assets.
-                service->InvalidateMaterials(hash);
-            }
+void EZTreeExtractionSystem::ExtractTree(FrameContext& frame,
+                                         ECS::EntityHandle entity,
+                                         Components::EZTree& tree,
+                                         bool active)
+{
+    // Deferred, as every structural change here: an immediate one moves the entity to
+    // another archetype under the query and leaves `tree` pointing at the old row.
+    if (frame.World.GetComponent<Components::MeshRenderer>(entity))
+        frame.World.RemoveComponent<Components::MeshRenderer>(entity);
+    if (frame.World.GetComponent<Components::MeshGPUData>(entity))
+        frame.World.RemoveComponent<Components::MeshGPUData>(entity);
 
-            const TreeVariant* variant = frameVariants.Find(hash);
-            if (!variant)
-                variant = &frameVariants.InsertOrAssign(hash, service->FindVariant(hash));
-            WriteVariantToTree(*variant, tree);
+    const uint64 hash = EZTree::HashOptions(tree.Options) ^ static_cast<uint64>(tree.RandomizeCounter);
+    TreeBinding* binding = m_Bindings.Find(BindingKey{frame.WorldId, entity.id});
+    if (!binding)
+    {
+        // A tree this system has not seen holds no variant reference and no GPU
+        // instance of this system, whatever its runtime fields say: they may be
+        // bytes copied from another world.
+        ReleaseVariantFields(tree);
+        binding = &m_Bindings.InsertOrAssign(BindingKey{frame.WorldId, entity.id}, TreeBinding{});
+    }
+    binding->Stamp = m_UpdateStamp;
+    if (frame.DeviceRebuilt)
+    {
+        ReleasePartInstances(*m_RenderServices, tree);
+        binding->Instances = PartInstances(tree);
+    }
 
-            if (disabled || inactive || treeOff)
-            {
-                ReleasePartInstances(*m_RenderServices, tree);
-                binding->Instances = PartInstances(tree);
-                return;
-            }
+    if (binding->Hash != hash)
+    {
+        if (binding->Hash != 0)
+            frame.Service.ReleaseVariant(binding->Hash);
+        const TreeVariant acquired = frame.Service.AcquireVariant(hash, tree.Options);
+        binding->Hash = hash;
+        frame.Variants.InsertOrAssign(hash, acquired);
+        Components::LocalBounds bounds{};
+        bounds.Box = acquired.Bounds;
+        frame.World.AddComponent(entity, bounds);
+    }
+    else if (tree.RuntimeOptionsHash == 0)
+    {
+        // The editor marks a tree dirty with a zero hash. Equal options keep the
+        // variant; the materials register again for edited material assets.
+        frame.Service.InvalidateMaterials(hash);
+    }
 
-            const auto* worldTransform = world.GetComponent<Components::WorldTransform>(entity);
-            if (!worldTransform)
-                return;
+    const TreeVariant* variant = frame.Variants.Find(hash);
+    if (!variant)
+        variant = &frame.Variants.InsertOrAssign(hash, frame.Service.FindVariant(hash));
+    WriteVariantToTree(*variant, tree);
 
-            Components::LocalBounds bounds{};
-            bounds.Box = variant->Bounds;
-            const float inflation =
-                WindBoundsInflation(tree.Options, LargestAxisScale(*worldTransform), volumeSpeedBound);
-            SubmitPart(*m_RenderServices, world, entity, *worldTransform, bounds, variant->Branches,
-                       SelectBarkMaterial(*m_RenderServices, variant->Materials), inflation,
-                       tree.RuntimeBranchInstanceIndex);
-            SubmitPart(*m_RenderServices, world, entity, *worldTransform, bounds, variant->Leaves,
-                       SelectLeafMaterial(*m_RenderServices, variant->Materials), inflation,
-                       tree.RuntimeLeafInstanceIndex);
-            SubmitPart(*m_RenderServices, world, entity, *worldTransform, bounds, variant->Trellis,
-                       variant->Materials.Trellis, inflation, tree.RuntimeTrellisInstanceIndex);
-            binding->Instances = PartInstances(tree);
-        });
+    if (!active)
+    {
+        ReleasePartInstances(*m_RenderServices, tree);
+        binding->Instances = PartInstances(tree);
+        return;
+    }
 
-    ReleaseUnseenTrees(worldId, *service);
+    const auto* worldTransform = frame.World.GetComponent<Components::WorldTransform>(entity);
+    if (!worldTransform)
+        return;
+
+    Components::LocalBounds bounds{};
+    bounds.Box = variant->Bounds;
+    const float inflation =
+        WindBoundsInflation(tree.Options, LargestAxisScale(*worldTransform), frame.VolumeSpeedBound);
+    SubmitPart(*m_RenderServices, frame.World, entity, *worldTransform, bounds, variant->Branches,
+               SelectBarkMaterial(*m_RenderServices, variant->Materials), inflation,
+               tree.RuntimeBranchInstanceIndex);
+    SubmitPart(*m_RenderServices, frame.World, entity, *worldTransform, bounds, variant->Leaves,
+               SelectLeafMaterial(*m_RenderServices, variant->Materials), inflation,
+               tree.RuntimeLeafInstanceIndex);
+    SubmitPart(*m_RenderServices, frame.World, entity, *worldTransform, bounds, variant->Trellis,
+               variant->Materials.Trellis, inflation, tree.RuntimeTrellisInstanceIndex);
+    binding->Instances = PartInstances(tree);
 }
 
 void EZTreeExtractionSystem::ReleaseVariantFields(Components::EZTree& tree)
@@ -354,7 +364,7 @@ void EZTreeExtractionSystem::ReleaseUnseenTrees(uint64 worldId, EZTreeService& s
 {
     // A tree the query did not visit this pass was destroyed or lost its component.
     auto* scene = m_RenderServices->GetGPUScene();
-    m_Bindings.EraseIf([&](const BindingKey& key, TreeBinding& binding)
+    m_Bindings.EraseIf([this, worldId, scene, &service](const BindingKey& key, TreeBinding& binding)
     {
         if (key.first != worldId || binding.Stamp == m_UpdateStamp)
             return false;
