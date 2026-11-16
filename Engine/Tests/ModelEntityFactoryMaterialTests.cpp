@@ -211,7 +211,7 @@ TEST(ModelEntityFactoryMaterials, DISABLED_SpawnTimingOfAResidentModel)
     ModelAsset model(modelGuid, "synthetic://piece.gltf");
     BuildPiece(model);
 
-    std::vector<Logger::LogMessage> lines;
+    std::vector<std::string> lines;
     std::vector<double> microseconds;
     microseconds.reserve(kSpawnCount);
     {
@@ -237,11 +237,10 @@ TEST(ModelEntityFactoryMaterials, DISABLED_SpawnTimingOfAResidentModel)
     size_t modelLoadLines = 0;
     for (const auto& line : lines)
     {
-        if (line.Message.find("[ModelLoad] 'Piece'") == std::string::npos)
+        if (line.find("[ModelLoad] 'Piece'") == std::string::npos)
             continue;
         if (modelLoadLines < 2)
-            std::printf("[SpawnTiming] %s line %zu: %s\n", line.Level == Logger::LogLevel::Info ? "Info" : "Debug",
-                        modelLoadLines + 1, line.Message.c_str());
+            std::printf("[SpawnTiming] line %zu: %s\n", modelLoadLines + 1, line.c_str());
         ++modelLoadLines;
     }
     std::printf("[SpawnTiming] %zu [ModelLoad] lines captured\n", modelLoadLines);

@@ -29,6 +29,7 @@
 using GameEngine::GUID;
 using GameEngine::Engine::Renderer::TextureGPUCache;
 using GameEngine::Rendering::TextureHandle;
+using Entry = TextureGPUCache::Entry;
 
 namespace
 {
@@ -52,6 +53,11 @@ TextureHandle MakeHandle(uint64_t n)
 {
     return TextureHandle{static_cast<GameEngine::Rendering::Detail::HandleType>(n + 1u)};
 }
+
+Entry MakeEntry(uint64_t n)
+{
+    return Entry{MakeHandle(n), {}};
+}
 } // namespace
 
 // --- Single-threaded semantics -----------------------------------------------
@@ -59,11 +65,11 @@ TextureHandle MakeHandle(uint64_t n)
 TEST(TextureGPUCacheTest, MissingKeyIsNotFoundAndLeavesTheOutputAlone)
 {
     TextureGPUCache cache;
-    TextureHandle out = MakeHandle(7);
+    Entry out = MakeEntry(7);
 
     EXPECT_FALSE(cache.TryGet(MakeGuid(1), out));
     EXPECT_FALSE(cache.Contains(MakeGuid(1)));
-    EXPECT_EQ(out, MakeHandle(7)) << "TryGet must not write to out on a miss";
+    EXPECT_EQ(out, MakeEntry(7)) << "TryGet must not write to out on a miss";
 }
 
 // A negative entry (GetOrUpload caching an invalid handle for a GUID with no
@@ -74,11 +80,11 @@ TEST(TextureGPUCacheTest, AnInvalidHandleIsStillACachedEntry)
     TextureGPUCache cache;
     const GUID guid = MakeGuid(1);
 
-    EXPECT_EQ(cache.PublishOrAdopt(guid, TextureHandle{}), TextureHandle{});
+    EXPECT_EQ(cache.PublishOrAdopt(guid, Entry{}), Entry{});
 
-    TextureHandle out = MakeHandle(7);
+    Entry out = MakeEntry(7);
     EXPECT_TRUE(cache.TryGet(guid, out)) << "a negative entry must read back as present";
-    EXPECT_FALSE(out.IsValid());
+    EXPECT_FALSE(out.Texture.IsValid());
     EXPECT_TRUE(cache.Contains(guid));
 }
 
@@ -87,39 +93,55 @@ TEST(TextureGPUCacheTest, PublishOrAdoptKeepsTheFirstHandleAndSetOverwritesIt)
     TextureGPUCache cache;
     const GUID guid = MakeGuid(1);
 
-    EXPECT_EQ(cache.PublishOrAdopt(guid, MakeHandle(10)), MakeHandle(10));
+    EXPECT_EQ(cache.PublishOrAdopt(guid, MakeEntry(10)), MakeEntry(10));
     // The second publisher is told which handle actually won, so it can retire
     // its own rather than overwrite the one already handed to callers.
-    EXPECT_EQ(cache.PublishOrAdopt(guid, MakeHandle(20)), MakeHandle(10));
+    EXPECT_EQ(cache.PublishOrAdopt(guid, MakeEntry(20)), MakeEntry(10));
 
-    TextureHandle out{};
+    Entry out{};
     ASSERT_TRUE(cache.TryGet(guid, out));
-    EXPECT_EQ(out, MakeHandle(10));
+    EXPECT_EQ(out, MakeEntry(10));
 
     // Set is the render-thread override (hot-swap restore over a negative entry).
-    cache.Set(guid, MakeHandle(30));
+    cache.Set(guid, MakeEntry(30));
     ASSERT_TRUE(cache.TryGet(guid, out));
-    EXPECT_EQ(out, MakeHandle(30));
+    EXPECT_EQ(out, MakeEntry(30));
+}
+
+// The companion is owned by its parent's entry: a losing publisher gets the winner's companion,
+// and Remove yields both, so a destroy site cannot leave the companion behind.
+TEST(TextureGPUCacheTest, AnEntryPublishesAndLeavesWithItsCompanion)
+{
+    TextureGPUCache cache;
+    const GUID guid = MakeGuid(1);
+    const Entry winner{MakeHandle(10), MakeHandle(11)};
+    EXPECT_EQ(cache.PublishOrAdopt(guid, winner), winner);
+    EXPECT_EQ(cache.PublishOrAdopt(guid, Entry{MakeHandle(20), MakeHandle(21)}), winner)
+        << "the losing publisher must adopt the winner's companion with its texture";
+
+    Entry removed{};
+    ASSERT_TRUE(cache.Remove(guid, removed));
+    EXPECT_EQ(removed.NormalVarianceCompanion, MakeHandle(11)) << "Remove must yield the companion with its parent";
 }
 
 TEST(TextureGPUCacheTest, RemoveYieldsTheStoredHandleOnceAndTakeEmptiesTheCache)
 {
     TextureGPUCache cache;
-    cache.Set(MakeGuid(1), MakeHandle(10));
-    cache.Set(MakeGuid(2), MakeHandle(20));
+    cache.Set(MakeGuid(1), MakeEntry(10));
+    cache.Set(MakeGuid(2), MakeEntry(20));
 
-    TextureHandle removed{};
+    Entry removed{};
     ASSERT_TRUE(cache.Remove(MakeGuid(1), removed));
-    EXPECT_EQ(removed, MakeHandle(10));
+    EXPECT_EQ(removed, MakeEntry(10));
     EXPECT_FALSE(cache.Contains(MakeGuid(1)));
     EXPECT_FALSE(cache.Remove(MakeGuid(1), removed)) << "a second Remove must not re-yield the handle";
 
     const auto taken = cache.Take();
     EXPECT_EQ(taken.size(), 1u);
-    EXPECT_EQ(taken.at(MakeGuid(2)), MakeHandle(20));
+    EXPECT_EQ(taken.at(MakeGuid(2)), MakeEntry(20));
     EXPECT_FALSE(cache.Contains(MakeGuid(2))) << "Take must leave the cache empty";
 
-    cache.Set(MakeGuid(3), MakeHandle(30));
+    cache.Set(MakeGuid(3), MakeEntry(30));
     cache.Clear();
     EXPECT_FALSE(cache.Contains(MakeGuid(3)));
 }
@@ -146,7 +168,7 @@ TEST(TextureGPUCacheTest, ConcurrentPublishesOfDistinctKeysAllSurvive)
             for (size_t i = 0; i < kKeysPerWriter; ++i)
             {
                 const uint64_t n = w * kKeysPerWriter + i;
-                cache.PublishOrAdopt(MakeGuid(n), MakeHandle(n));
+                cache.PublishOrAdopt(MakeGuid(n), MakeEntry(n));
             }
         });
     }
@@ -157,9 +179,9 @@ TEST(TextureGPUCacheTest, ConcurrentPublishesOfDistinctKeysAllSurvive)
     // Every key each writer published is present, with its own handle.
     for (uint64_t n = 0; n < kWriters * kKeysPerWriter; ++n)
     {
-        TextureHandle out{};
+        Entry out{};
         ASSERT_TRUE(cache.TryGet(MakeGuid(n), out)) << "entry " << n << " was lost by a concurrent insert";
-        EXPECT_EQ(out, MakeHandle(n));
+        EXPECT_EQ(out, MakeEntry(n));
     }
     EXPECT_EQ(cache.Take().size(), kWriters * kKeysPerWriter);
 }
@@ -178,7 +200,7 @@ TEST(TextureGPUCacheTest, ResolvesAreUndisturbedByConcurrentPublishes)
     TextureGPUCache cache;
     for (uint64_t i = 0; i < kTrackedCount; ++i)
     {
-        cache.Set(MakeGuid(i), MakeHandle(i));
+        cache.Set(MakeGuid(i), MakeEntry(i));
     }
 
     std::atomic<bool> start{false};
@@ -191,7 +213,7 @@ TEST(TextureGPUCacheTest, ResolvesAreUndisturbedByConcurrentPublishes)
         while (!start.load(std::memory_order_acquire)) { std::this_thread::yield(); }
         for (uint64_t i = 0; i < kKeysPerWriter; ++i)
         {
-            cache.PublishOrAdopt(MakeGuid(kGrowthBase + i), MakeHandle(kGrowthBase + i));
+            cache.PublishOrAdopt(MakeGuid(kGrowthBase + i), MakeEntry(kGrowthBase + i));
         }
         writerDone.store(true, std::memory_order_release);
     });
@@ -205,12 +227,12 @@ TEST(TextureGPUCacheTest, ResolvesAreUndisturbedByConcurrentPublishes)
             for (size_t n = 0; n < kResolvesPerReader; ++n)
             {
                 const uint64_t idx = (n + t) % kTrackedCount;
-                TextureHandle out{};
+                Entry out{};
                 if (!cache.TryGet(MakeGuid(idx), out))
                 {
                     misses.fetch_add(1, std::memory_order_relaxed);
                 }
-                else if (out != MakeHandle(idx))
+                else if (out != MakeEntry(idx))
                 {
                     mismatches.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -229,7 +251,7 @@ TEST(TextureGPUCacheTest, ResolvesAreUndisturbedByConcurrentPublishes)
     // The writer's keys landed too, so the storm was real rather than elided.
     for (uint64_t i = 0; i < kKeysPerWriter; ++i)
     {
-        TextureHandle out{};
+        Entry out{};
         ASSERT_TRUE(cache.TryGet(MakeGuid(kGrowthBase + i), out)) << "publish " << i << " was lost";
     }
 }
@@ -249,7 +271,7 @@ TEST(TextureGPUCacheTest, ConcurrentPublishesOfOneKeyAgreeOnASingleWinner)
         const GUID contested = MakeGuid(round);
 
         std::atomic<bool> start{false};
-        std::vector<TextureHandle> observed(kThreads);
+        std::vector<Entry> observed(kThreads);
 
         std::vector<std::thread> threads;
         threads.reserve(kThreads);
@@ -257,14 +279,14 @@ TEST(TextureGPUCacheTest, ConcurrentPublishesOfOneKeyAgreeOnASingleWinner)
         {
             threads.emplace_back([&, t] {
                 while (!start.load(std::memory_order_acquire)) { std::this_thread::yield(); }
-                observed[t] = cache.PublishOrAdopt(contested, MakeHandle(t));
+                observed[t] = cache.PublishOrAdopt(contested, MakeEntry(t));
             });
         }
 
         start.store(true, std::memory_order_release);
         for (auto& t : threads) { t.join(); }
 
-        TextureHandle stored{};
+        Entry stored{};
         ASSERT_TRUE(cache.TryGet(contested, stored));
 
         // One entry, and every thread was told about the same winner.

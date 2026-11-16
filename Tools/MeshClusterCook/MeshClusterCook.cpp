@@ -64,17 +64,15 @@ int main(int argc, char** argv)
         uint64 fineVertexCount = 0;
         float32 maximumCoarseError = 0.0f;
         size_t reducedGroupCount = 0;
-        for (size_t group = 0; group < manifest.Pages.size(); ++group)
+        for (const MeshClusterLODManifest::Page& page : manifest.Pages)
         {
-            const auto coarseCount = generated.GetMesh(static_cast<uint32>(group)).Indices.size();
-            const auto fineCount = manifest.Pages[group].IndexCount;
-            coarseIndexCount += coarseCount;
-            fineIndexCount += fineCount;
-            fineVertexCount += manifest.Pages[group].VertexCount;
-            maximumCoarseError = std::max(maximumCoarseError, manifest.Pages[group].Error);
-            reducedGroupCount += coarseCount < fineCount ? 1u : 0u;
+            coarseIndexCount += page.CoarseIndexCount;
+            fineIndexCount += page.IndexCount;
+            fineVertexCount += page.VertexCount;
+            maximumCoarseError = std::max(maximumCoarseError, page.Error);
+            reducedGroupCount += page.CoarseIndexCount < page.IndexCount ? 1u : 0u;
         }
-        std::cout << "Cluster groups: " << manifest.Pages.size()
+        std::cout << "Coarse meshes: " << generated.GetMeshCount() << ", cluster groups: " << manifest.Pages.size()
                   << ", coarse bytes: " << fs::file_size(output)
                   << ", fine bytes: " << manifest.StoreBytes << '\n';
         std::cout << "Triangles (coarse/fine): " << coarseIndexCount / kIndicesPerTriangle

@@ -389,6 +389,7 @@ private:
     HierarchySortDirection m_SortDirection = HierarchySortDirection::Ascending;
 
     void ApplySortSettings();
+    void ApplySceneViewEyeVisibility();
     // Rebinds the rows after the layer column changed what it shows.
     void RefreshLayerColumn();
     void SetHorizontalBarPresent(bool present);

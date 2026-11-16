@@ -43,12 +43,6 @@ using GameEngine::Engine::Renderer::ShadowMapRenderFeature;
 namespace
 {
 
-uint32_t ProjectShadowResolution(RenderServices& renderServices)
-{
-    const auto* feature = renderServices.GetFeature<ShadowMapRenderFeature>();
-    return feature ? feature->GetProjectResolutionOverride().value_or(0u) : 0u;
-}
-
 void SetEnvVar(const char* name, const char* value)
 {
 #if defined(_WIN32)
@@ -145,7 +139,6 @@ TEST_F(RenderProjectSettingsTest, AppliesEveryKnobTheProjectCarries)
 {
     const auto project = MakeProject("full", {{"aaMode", "taa"},
                                               {"msaa", "4"},
-                                              {"directionalShadowResolution", 4096},
                                               {"taaRenderScale", 0.6},
                                               {"drsMode", "fixed"},
                                               {"lodMode", "coverage"},
@@ -156,7 +149,6 @@ TEST_F(RenderProjectSettingsTest, AppliesEveryKnobTheProjectCarries)
 
     EXPECT_EQ(rs.GetDefaultAntiAliasingMode(), AntiAliasingMode::TAA);
     EXPECT_EQ(rs.GetDefaultMSAASampleCount(), 4u);
-    EXPECT_EQ(ProjectShadowResolution(rs), 4096u);
     EXPECT_FLOAT_EQ(rs.GetDefaultRenderScale(), 0.6f);
     EXPECT_EQ(rs.GetDynamicResolutionMode(), DynamicResolutionMode::Fixed);
     EXPECT_EQ(rs.GetMeshGPURegistry().GetLodSelectionMode(), gr::LodSelectionMode::Coverage);
@@ -198,7 +190,6 @@ TEST_F(RenderProjectSettingsTest,
 
     // Every other knob still must be, which is what lets the function write them
     // all unconditionally without changing launch behaviour.
-    EXPECT_EQ(ProjectShadowResolution(rs), ed::kDefaultDirectionalShadowResolution);
     EXPECT_FLOAT_EQ(rs.GetDefaultRenderScale(), 1.0f);
     EXPECT_EQ(rs.GetDynamicResolutionMode(), DynamicResolutionMode::Off);
 }
@@ -207,7 +198,6 @@ TEST_F(RenderProjectSettingsTest, SwitchingToAProjectWithNoKeysDropsThePreviousP
 {
     const auto projectA = MakeProject("A", {{"aaMode", "taa"},
                                             {"msaa", "4"},
-                                            {"directionalShadowResolution", 8192},
                                             {"taaRenderScale", 0.6},
                                             {"drsMode", "fixed"},
                                             {"lodMode", "coverage"}});
@@ -226,42 +216,24 @@ TEST_F(RenderProjectSettingsTest, SwitchingToAProjectWithNoKeysDropsThePreviousP
     const auto expected = er::ResolveDefaultAntiAliasing({});
     EXPECT_EQ(rs.GetDefaultAntiAliasingMode(), expected.Mode);
     EXPECT_EQ(rs.GetDefaultMSAASampleCount(), expected.SampleCount);
-    EXPECT_EQ(ProjectShadowResolution(rs), ed::kDefaultDirectionalShadowResolution);
     EXPECT_FLOAT_EQ(rs.GetDefaultRenderScale(), 1.0f);
     EXPECT_EQ(rs.GetDynamicResolutionMode(), DynamicResolutionMode::Off);
     EXPECT_EQ(rs.GetMeshGPURegistry().GetLodSelectionMode(), gr::LodSelectionMode::Sse);
 }
 
-TEST_F(RenderProjectSettingsTest, DirectionalShadowResolutionSupportsAllTiersAndSnapsInvalidValues)
+// The pipeline's ShadowMap node "resolution" is the one owner of the cascade
+// size. A project apply must keep the size that the pipeline set.
+TEST_F(RenderProjectSettingsTest, ApplyingProjectSettingsKeepsThePipelineCascadeResolution)
 {
+    const auto project = MakeEmptyProject("pipelineOwnsResolution");
+
     RenderServices rs;
-    for (uint32_t tier : {1024u, 2048u, 4096u, 8192u})
-    {
-        const auto project = MakeProject("tier" + std::to_string(tier),
-                                         {{"directionalShadowResolution", tier}});
-        ed::ApplyProjectRenderSettings(rs, project);
-        EXPECT_EQ(ProjectShadowResolution(rs), tier);
-    }
+    auto& feature = rs.EnsureFeature<ShadowMapRenderFeature>();
+    feature.SetResolution(4096u);
 
-    const auto invalid = MakeProject("invalidTier", {{"directionalShadowResolution", 5000}});
-    ed::ApplyProjectRenderSettings(rs, invalid);
-    EXPECT_EQ(ProjectShadowResolution(rs), 4096u);
-}
+    ed::ApplyProjectRenderSettings(rs, project);
 
-TEST_F(RenderProjectSettingsTest, DirectionalShadowSettingUsesTheLoadedSettingsStore)
-{
-    const auto project = MakeEmptyProject("storeApi");
-    ed::SettingsStore store = ed::OpenProjectSettings(project);
-    std::string error;
-    ASSERT_TRUE(store.Load(&error)) << error;
-
-    ed::SetDirectionalShadowResolution(store, 8192u);
-    EXPECT_EQ(ed::GetDirectionalShadowResolution(store), 8192u);
-    ASSERT_TRUE(store.Save(&error)) << error;
-
-    ed::SettingsStore reloaded = ed::OpenProjectSettings(project);
-    ASSERT_TRUE(reloaded.Load(&error)) << error;
-    EXPECT_EQ(ed::GetDirectionalShadowResolution(reloaded), 8192u);
+    EXPECT_EQ(feature.GetConfig().Resolution, 4096u);
 }
 
 TEST_F(RenderProjectSettingsTest, DynamicToFixedTakesTheIncomingProjectsScaleNotTheOutgoingOne)
@@ -749,7 +721,7 @@ TEST_F(RenderProjectSettingsTest, AnExplicitOffIsHonouredAndNotUpgradedToTheDefa
 TEST_F(RenderProjectSettingsTest, AMissingAaModeKeyWithNoLegacySamplesTakesTheCapabilityDefault)
 {
     // rendering exists but says nothing about AA — still "never chose".
-    const auto project = MakeProject("noAaKey", {{"directionalShadowResolution", 4096}});
+    const auto project = MakeProject("noAaKey", {{"directionalShadowProjection", "stable"}});
 
     RenderServices rs;
     ed::ApplyProjectRenderSettings(rs, project);

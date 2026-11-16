@@ -19,7 +19,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -394,16 +393,6 @@ class ShadowMapRenderFeature : public IRenderFeature
     // imports observe the new descriptor on the next frame and safely replace
     // the old physical after in-flight work retires.
     void SetResolution(uint32_t resolution);
-
-    // Editor project override for the directional cascade-map dimensions.
-    // Kept on the shadow feature (the texture owner), not on RenderServices.
-    // It may be set before Initialize(); initialization then combines it with
-    // the remaining pipeline-authored cascade config.
-    void SetProjectResolutionOverride(uint32_t resolution);
-    std::optional<uint32_t> GetProjectResolutionOverride() const
-    {
-        return m_ProjectResolutionOverride;
-    }
 
     // Push per-frame directional shadow overrides (from a volume ShadowSettingsEffect)
     // into the cascade config. Only the four per-frame tunables are writable here;
@@ -1166,7 +1155,6 @@ class ShadowMapRenderFeature : public IRenderFeature
   private:
     Rendering::IDevice* m_Device = nullptr;
     CascadedShadowConfig m_Config;
-    std::optional<uint32_t> m_ProjectResolutionOverride;
     // The adopted pooled physical plus the frame identity it was adopted FOR.
     // Validity is the (RGFrame*, FrameIndex) pair, never the pointer alone —
     // a stable per-window RGFrame is re-begun every app frame at the same

@@ -62,6 +62,10 @@ struct MeshGPUData {
     // (instanceIndex == 0xFFFFFFFF -> Op::Add). Also carried on proxy entities so
     // they stay non-resident until their cluster is proxy-active.
     bool hlodEvicted { false };
+
+    // Cluster LOD residency suppression, owned by ClusterLODSplits: set on a split instance,
+    // whose parts draw instead, and on a part until its instance activates. Extraction skips it.
+    bool clusterEvicted { false };
 };
 
 } } // namespace GameEngine::Components

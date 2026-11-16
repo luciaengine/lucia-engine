@@ -1,13 +1,15 @@
 #include "Engine/Rendering/ClusterLOD/ClusterLODFeature.h"
 
+#include "ClusterLODSplits.h"
+
 #include "Assets/AssetManager.h"
 #include "Assets/AssetDecodeCancellation.h"
 #include "Assets/ClusterLOD/MeshClusterLODAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Components/Rendering/DDGIVolume.h"
-#include "Components/Rendering/HLODVolume.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/LODGroup.h"
+#include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MorphTargetWeights.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
 #include "Components/Rendering/PlanarReflection.h"
@@ -16,7 +18,6 @@
 #include "Core/DebugMetrics.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
-#include "Engine/Rendering/HlodRuntime.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MeshLODThresholds.h"
@@ -25,11 +26,12 @@
 #include "Logger/Logger.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Rendering/Core/GPUScene.h"
-#include "Rendering/Core/RenderGraph/RGWindowFrame.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Types/Types.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <limits>
@@ -50,6 +52,11 @@ constexpr uint32 kMaximumPendingReads = 4;
 constexpr uint32 kMaximumAdmissionsPerFrame = 2;
 constexpr uint64 kPageWorkMultiplier = 8;
 constexpr uint64 kUnusedFrameGrace = 30;
+// A split registers the coarse part of every group of one mesh before its first frame.
+constexpr uint32 kMaximumCoarsePartsPerFrame = 512;
+// A frame can read fine pages on every queue. Graphics is first: its token is required.
+constexpr std::array<IDevice::QueueType, 3> kReaderQueues{
+    IDevice::QueueType::Graphics, IDevice::QueueType::Compute, IDevice::QueueType::Transfer};
 
 Mesh PageDescriptor(const Mesh& coarse)
 {
@@ -65,13 +72,11 @@ Mesh PageDescriptor(const Mesh& coarse)
     return descriptor;
 }
 
-bool HasUnsupportedConsumers(ECS::World& world, const RenderServices& services)
+bool HasUnsupportedConsumers(ECS::World& world)
 {
     return world.Query<ECS::Read<Components::DDGIVolume>, ECS::Read<Components::WorldTransform>>().Count() != 0 ||
-        world.Query<ECS::Read<Components::HLODVolume>>().Count() != 0 ||
         world.Query<ECS::Read<Components::ReflectionProbe>>().Count() != 0 ||
-        world.Query<ECS::Read<Components::PlanarReflection>>().Count() != 0 ||
-        services.GetHlodRuntime().HasClusters();
+        world.Query<ECS::Read<Components::PlanarReflection>>().Count() != 0;
 }
 
 bool SupportsFineInstance(RenderServices& services, ECS::World& world, ECS::EntityHandle entity,
@@ -101,25 +106,27 @@ double ScaleBound(const Components::WorldTransform& transform)
     return std::sqrt(squared);
 }
 
-// How much one instance of a cluster group wants its fine page: the largest projected error over
-// the views, divided by the view's switch threshold. Above 1 the group wants fine; 0 means no view
-// wants fine. Infinity means a view must draw fine: forced LOD 0, selection off or an unusable
-// projection. A group that draws fine is measured against the keep band, so the value includes
-// the hysteresis.
+// How much one cluster group of one instance wants its fine page: the largest projected error
+// over the views, divided by the view's switch threshold. Above 1 the group wants fine; 0 means no
+// view wants fine. Infinity means a view must draw fine: forced LOD 0, selection off or an
+// unusable projection. A group that draws fine is measured against the keep band, so the value
+// includes the hysteresis.
 double FineDemand(const RenderServices& services, const Components::MeshRenderer& renderer,
-                  const Components::WorldTransform& transform, const Mesh& coarse,
-                  const MeshClusterLODManifest::Page& page, uint64 worldId, bool wasFine, float lodBias)
+                  const Components::WorldTransform& transform, const MeshClusterLODManifest::Page& page,
+                  uint64 worldId, bool wasFine, float lodBias)
 {
     constexpr double kMustDrawFine = std::numeric_limits<double>::infinity();
-    if (page.IndexCount <= coarse.Indices.size())
+    if (page.IndexCount <= page.CoarseIndexCount)
         return 0.0;
+    const double minBounds[3]{page.MinBounds.x, page.MinBounds.y, page.MinBounds.z};
+    const double maxBounds[3]{page.MaxBounds.x, page.MaxBounds.y, page.MaxBounds.z};
     double localCenter[3]{};
     double localExtent[3]{};
     double localOffset[3]{};
     for (uint32 axis = 0; axis < 3; ++axis)
     {
-        localCenter[axis] = (static_cast<double>(coarse.MinBounds[axis]) + coarse.MaxBounds[axis]) * 0.5;
-        localExtent[axis] = (static_cast<double>(coarse.MaxBounds[axis]) - coarse.MinBounds[axis]) * 0.5;
+        localCenter[axis] = (minBounds[axis] + maxBounds[axis]) * 0.5;
+        localExtent[axis] = (maxBounds[axis] - minBounds[axis]) * 0.5;
     }
     for (uint32 row = 0; row < 3; ++row)
         for (uint32 column = 0; column < 3; ++column)
@@ -163,14 +170,22 @@ double FineDemand(const RenderServices& services, const Components::MeshRenderer
     return demand;
 }
 
-// One cluster instance in one preparation: what it wants and what the budget grants it.
-struct InstanceDemand
+bool WantsFine(const RenderServices& services, const Components::MeshRenderer& renderer,
+               const Components::WorldTransform& transform, const MeshClusterLODManifest::Page& page,
+               uint64 worldId, bool wasFine, float lodBias)
 {
-    ECS::EntityHandle Entity;
+    return FineDemand(services, renderer, transform, page, worldId, wasFine, lodBias) > 1.0;
+}
+
+// One part of a split instance in one preparation: what it wants and what the budget grants it.
+struct PartDemand
+{
+    ECS::EntityHandle Part;
     Components::MeshRenderer Renderer;
     std::shared_ptr<ModelAsset> Model;
-    uint32 Submesh = 0;
-    // FineDemand of the instance, or 0 when its material or components keep it coarse.
+    GUID ModelGuid;
+    uint32 PageIndex = 0;
+    // FineDemand of the part, or 0 when its material, components or HLOD keep it coarse.
     double Priority = 0.0;
     uint64 CoarseTriangles = 0;
     uint64 FineTriangles = 0;
@@ -179,11 +194,12 @@ struct InstanceDemand
     bool Granted = false;
 };
 
-// Grants fine pages under a triangle budget. Every instance starts at its coarse triangle count.
-// Instances that want fine refine in order of largest demand first, until the next one does not
-// fit. An instance that must draw fine always refines and its triangles count. A budget of 0 grants
-// every demand above 1.
-void GrantFineDemands(std::vector<InstanceDemand>& demands, uint64 triangleBudget, std::vector<uint32>& order)
+// Grants fine pages under a triangle budget. The count starts at `drawnTriangles`, the coarse
+// triangles of the unsplit instances, plus the coarse triangles of every part. Parts that want
+// fine refine in order of largest demand first, until the next one does not fit. A part that must
+// draw fine always refines and its triangles count. A budget of 0 grants every demand above 1.
+void GrantFineDemands(std::vector<PartDemand>& demands, uint64 triangleBudget, uint64 drawnTriangles,
+                      std::vector<uint32>& order)
 {
     if (triangleBudget == 0)
     {
@@ -191,7 +207,7 @@ void GrantFineDemands(std::vector<InstanceDemand>& demands, uint64 triangleBudge
             demand.Granted = demand.Priority > 1.0;
         return;
     }
-    uint64 triangles = 0;
+    uint64 triangles = drawnTriangles;
     order.clear();
     for (uint32 index = 0; index < demands.size(); ++index)
     {
@@ -200,7 +216,7 @@ void GrantFineDemands(std::vector<InstanceDemand>& demands, uint64 triangleBudge
         if (demands[index].Priority > 1.0)
             order.push_back(index);
     }
-    // Instances that must draw fine have infinite priority and sort first.
+    // Parts that must draw fine have infinite priority and sort first.
     std::stable_sort(order.begin(), order.end(), [&demands](uint32 a, uint32 b)
     { return demands[a].Priority > demands[b].Priority; });
     for (const uint32 index : order)
@@ -214,6 +230,58 @@ void GrantFineDemands(std::vector<InstanceDemand>& demands, uint64 triangleBudge
         demand.Granted = true;
     }
 }
+
+// The pages of one coarse mesh: the manifest keeps them in mesh order.
+std::pair<uint32, uint32> PageRange(const MeshClusterLODManifest& manifest, uint32 mesh)
+{
+    const auto byMesh = [](const MeshClusterLODManifest::Page& page, uint32 value) { return page.Mesh < value; };
+    const auto first = std::lower_bound(manifest.Pages.begin(), manifest.Pages.end(), mesh, byMesh);
+    const auto last = std::lower_bound(first, manifest.Pages.end(), mesh + 1, byMesh);
+    return {static_cast<uint32>(first - manifest.Pages.begin()), static_cast<uint32>(last - manifest.Pages.begin())};
+}
+
+// A conservative stand-in for every page of one mesh: the mesh bounds and the largest error.
+// When it does not want fine, no page of the mesh does.
+MeshClusterLODManifest::Page WholeMeshPage(const MeshClusterLODManifest& manifest, const Mesh& coarse,
+                                           std::pair<uint32, uint32> range)
+{
+    MeshClusterLODManifest::Page whole;
+    whole.MinBounds = {coarse.MinBounds[0], coarse.MinBounds[1], coarse.MinBounds[2]};
+    whole.MaxBounds = {coarse.MaxBounds[0], coarse.MaxBounds[1], coarse.MaxBounds[2]};
+    for (uint32 page = range.first; page < range.second; ++page)
+    {
+        const auto& source = manifest.Pages[page];
+        if (source.IndexCount <= source.CoarseIndexCount)
+            continue;
+        whole.Error = std::max(whole.Error, source.Error);
+        // Only a page with more fine than coarse indices refines anything.
+        whole.IndexCount = 1;
+    }
+    return whole;
+}
+
+// Parts copy the owner's renderer; the owner's handle is the only field they do not share.
+bool SameRendererState(const Components::MeshRenderer& owner, const Components::MeshRenderer& copied)
+{
+    return owner.meshId == copied.meshId && owner.MeshNameId == copied.MeshNameId &&
+        owner.materialAssetGuid == copied.materialAssetGuid && owner.modelAssetGuid == copied.modelAssetGuid &&
+        owner.RenderLayers == copied.RenderLayers && owner.shadowCasting == copied.shadowCasting &&
+        owner.receiveShadows == copied.receiveShadows && owner.motionVectors == copied.motionVectors;
+}
+
+// The registry key of a page's coarse part: after the model's own submesh keys.
+MeshGPUKey CoarsePartKey(const GUID& model, const ModelAsset& asset, uint32 page)
+{
+    return {model, static_cast<uint32>(asset.GetMeshes().size()) + page};
+}
+
+struct PendingSplit
+{
+    ECS::EntityHandle Owner;
+    Components::MeshRenderer Renderer;
+    GUID Model;
+    uint32 Mesh;
+};
 } // namespace
 
 struct ClusterLODFeature::State
@@ -286,7 +354,8 @@ struct ClusterLODFeature::State
         bool Pending = false;
         bool Failed = false;
         bool Retiring = false;
-        IDevice::GpuSyncToken RetirementToken;
+        // One token for each of kReaderQueues, taken when retirement first waits for readers.
+        std::array<IDevice::GpuSyncToken, kReaderQueues.size()> RetirementTokens{};
     };
 
     struct Lease
@@ -340,7 +409,8 @@ struct ClusterLODFeature::State
     FastHashMap<MeshGPUKey, std::shared_ptr<Page>> Pages;
     FastHashMap<RenderGraph::RGFrame*, std::weak_ptr<Lease>> Leases;
     std::vector<Binding> Bindings;
-    std::vector<InstanceDemand> Demands;
+    ClusterLODSplits Splits;
+    std::vector<PartDemand> PartDemands;
     std::vector<uint32> DemandOrder;
     std::vector<PendingWorldRestore> PendingWorldRestores;
     std::shared_ptr<DecodeAccounting> DecodedAccounting = std::make_shared<DecodeAccounting>();
@@ -352,6 +422,8 @@ struct ClusterLODFeature::State
     uint64 DeviceGeneration = 0;
     uint64 ChargedBytes = 0;
     uint64 TriangleBudget = 0;
+    // The coarse triangles of the unsplit cluster instances in this preparation.
+    uint64 UnsplitCoarseTriangles = 0;
     uint32 PendingReads = 0;
     bool Initialized = false;
     bool PolicyBlocked = false;
@@ -467,10 +539,8 @@ struct ClusterLODFeature::State
 
     bool MatchesSource(const Components::MeshRenderer& renderer, const Page& page) const
     {
-        if (renderer.modelAssetGuid.ToGuid() != page.Source.assetGuid)
-            return false;
-        const auto model = std::dynamic_pointer_cast<ModelAsset>(Assets->GetAsset(page.Source.assetGuid));
-        return model && ResolveSubmeshIndex(page.Source.assetGuid, *model, renderer) == page.Source.submeshIndex;
+        // A part has no model: its fine page always belongs to its own coarse part.
+        return renderer.modelAssetGuid.ToGuid().IsNull();
     }
 
     bool RestoreBinding(ECS::World& world, const Binding& binding)
@@ -630,6 +700,7 @@ struct ClusterLODFeature::State
             return;
         PolicyBlocked = true;
         CutOwner.reset();
+        // The next owner preparation ends every split (EndIdleSplits): Block can run inside the split pass.
         if (auto* world = ECS::World::FindLiveWorld(WorldId))
             RestoreBindings(*world, Bindings);
         else
@@ -639,7 +710,22 @@ struct ClusterLODFeature::State
             (void)key;
             page->Wanted = false;
         }
-        Logger::Log::Warning("Cluster LOD fine pages disabled: this prototype requires one cluster world without GI, reflection or HLOD consumers");
+        Logger::Log::Warning("Cluster LOD fine pages disabled: this prototype requires one cluster world without GI or reflection consumers");
+    }
+
+    // Takes the reader queue tokens once, then reports whether every one has completed. The
+    // graphics token is required. An invalid compute or transfer token means no submit on that
+    // queue yet, so no reader there.
+    static bool ReadersComplete(Page& page, const IDevice& device)
+    {
+        auto& tokens = page.RetirementTokens;
+        if (!tokens[0].IsValid())
+            for (size_t queue = 0; queue < kReaderQueues.size(); ++queue)
+                tokens[queue] = device.LastSubmissionToken(kReaderQueues[queue]);
+        if (!tokens[0].IsValid() || device.QueryGpuSyncToken(tokens[0]) != IDevice::GpuSyncStatus::Complete)
+            return false;
+        return std::all_of(tokens.begin() + 1, tokens.end(), [&device](const IDevice::GpuSyncToken& token)
+            { return !token.IsValid() || device.QueryGpuSyncToken(token) == IDevice::GpuSyncStatus::Complete; });
     }
 
     void RetireUnused(uint64 epoch)
@@ -673,10 +759,7 @@ struct ClusterLODFeature::State
                 page.Retiring = true;
                 if (page.MayHaveGpuReaders.load(std::memory_order_acquire))
                 {
-                    if (!page.RetirementToken.IsValid())
-                        page.RetirementToken = device->LastGraphicsSubmissionToken();
-                    if (DeviceGeneration != device->GetDeviceRebuildGeneration() || !page.RetirementToken.IsValid() ||
-                        device->QueryGpuSyncToken(page.RetirementToken) != IDevice::GpuSyncStatus::Complete)
+                    if (DeviceGeneration != device->GetDeviceRebuildGeneration() || !ReadersComplete(page, *device))
                     {
                         ++it;
                         continue;
@@ -691,58 +774,47 @@ struct ClusterLODFeature::State
         }
     }
 
-    void MeasureDemand(ECS::World& world, ECS::EntityHandle entity, const Components::MeshRenderer& renderer,
-                       const Components::WorldTransform& transform)
+    // Measures how much one part of a split instance wants its fine page. `transform` is the
+    // owner's world transform: a part sits at its owner's origin.
+    PartDemand MeasurePart(ECS::World& world, ECS::EntityHandle part, const Components::MeshRenderer& renderer,
+                           const Components::WorldTransform& transform, const GUID& guid,
+                           const std::shared_ptr<ModelAsset>& model, uint32 pageIndex, float bias) const
     {
-        auto& services = *Services;
-        const GUID guid = renderer.modelAssetGuid.ToGuid();
-        auto model = std::dynamic_pointer_cast<ModelAsset>(Assets->GetAsset(guid));
-        if (!model || !model->GetClusterLODManifest())
-            return;
-        if (WorldId == 0)
-        {
-            WorldId = world.GetWorldId();
-            WorldGeneration = world.GetEntityHandleEpoch();
-        }
-        const auto manifest = model->GetClusterLODManifest();
-        const uint32 submesh = ResolveSubmeshIndex(guid, *model, renderer);
-        if (submesh >= manifest->Pages.size() || submesh >= model->GetMeshes().size())
-            return;
-        const auto found = Pages.find(MeshGPUKey{guid, submesh});
-        InstanceDemand demand;
-        demand.Entity = entity;
+        const auto& directory = model->GetClusterLODManifest()->Pages[pageIndex];
+        const auto found = Pages.find(CoarsePartKey(guid, *model, pageIndex));
+        PartDemand demand;
+        demand.Part = part;
         demand.Renderer = renderer;
-        demand.Submesh = submesh;
+        demand.Model = model;
+        demand.ModelGuid = guid;
+        demand.PageIndex = pageIndex;
+        demand.CoarseTriangles = directory.CoarseIndexCount / 3;
+        demand.FineTriangles = std::max<uint64>(directory.IndexCount / 3, demand.CoarseTriangles);
         demand.WasFine = found != Pages.end() && found->second->FineHandle.IsValid() &&
             renderer.meshGpuHandleId == found->second->FineHandle.id;
-        demand.Supported = SupportsFineInstance(services, world, entity, renderer);
-        const auto& coarse = model->GetMeshes()[submesh];
-        const auto& page = manifest->Pages[submesh];
-        demand.CoarseTriangles = coarse.Indices.size() / 3;
-        demand.FineTriangles = std::max<uint64>(page.IndexCount / 3, demand.CoarseTriangles);
-        if (demand.Supported)
-        {
-            const auto* lod = world.GetComponent<Components::LODGroup>(entity);
-            const float bias = services.GetLODGlobalBias() + (lod ? lod->Bias : 0.0f);
-            demand.Priority = FineDemand(services, renderer, transform, coarse, page, world.GetWorldId(),
+        demand.Supported = SupportsFineInstance(*Services, world, part, renderer);
+        // A member that HLOD replaced with its cluster proxy draws nothing, so it wants the coarse cover.
+        const auto* gpu = world.GetComponent<Components::MeshGPUData>(part);
+        if (demand.Supported && !(gpu && gpu->hlodEvicted))
+            demand.Priority = FineDemand(*Services, renderer, transform, directory, world.GetWorldId(),
                                          demand.WasFine, bias);
-        }
-        demand.Model = std::move(model);
-        Demands.push_back(std::move(demand));
+        return demand;
     }
 
-    void Consider(const InstanceDemand& instance, uint64 epoch, std::vector<Candidate>& candidates,
-                  uint32& coarseRepairs)
+    // Selects coarse or fine for one part of a split instance with the demand the budget granted.
+    void Consider(const PartDemand& part, uint64 epoch, std::vector<Candidate>& candidates, uint32& coarseRepairs)
     {
         auto& registry = Services->GetMeshGPURegistry();
-        const ModelAsset& model = *instance.Model;
-        const uint32 submesh = instance.Submesh;
+        const ModelAsset& model = *part.Model;
+        const GUID& guid = part.ModelGuid;
+        const uint32 pageIndex = part.PageIndex;
         const auto manifest = model.GetClusterLODManifest();
-        const MeshGPUKey key{instance.Renderer.modelAssetGuid.ToGuid(), submesh};
+        const auto& directory = manifest->Pages[pageIndex];
+        const MeshGPUKey key = CoarsePartKey(guid, model, pageIndex);
         auto found = Pages.find(key);
-        const bool wasFine = instance.WasFine;
-        const bool supported = instance.Supported;
-        const bool demand = instance.Granted;
+        const bool wasFine = part.WasFine;
+        const bool supported = part.Supported;
+        const bool demand = part.Granted;
         if (found == Pages.end())
         {
             if (!demand || PolicyBlocked || Pages.size() >= kMaximumPageRecords)
@@ -754,8 +826,8 @@ struct ClusterLODFeature::State
             auto page = std::make_shared<State::Page>();
             page->Source = key;
             page->Incarnation = manifest->Incarnation;
-            page->Directory = manifest->Pages[submesh];
-            page->Descriptor = PageDescriptor(model.GetMeshes()[submesh]);
+            page->Directory = directory;
+            page->Descriptor = PageDescriptor(model.GetMeshes()[directory.Mesh]);
             page->Store = ResolveMeshClusterLODStore(model.GetPath(), Assets->GetAssetRoot(), *manifest);
             page->CoarseHandle = handle;
             found = Pages.emplace(key, std::move(page)).first;
@@ -772,7 +844,7 @@ struct ClusterLODFeature::State
         if (!coarseReady && coarseRepairs < kMaximumAdmissionsPerFrame)
         {
             ++coarseRepairs;
-            page->CoarseHandle = registry.RegisterSubmesh(key, model.GetMeshes()[submesh]);
+            page->CoarseHandle = RegisterCoarsePart(guid, model, pageIndex);
             coarseEntry = registry.Find(page->CoarseHandle);
             coarseReady = coarseEntry && registry.IsEntryDrawable(*coarseEntry);
         }
@@ -784,7 +856,166 @@ struct ClusterLODFeature::State
         page->Wanted |= fine;
         if (fine)
             page->LastWantedEpoch = epoch;
-        candidates.push_back({instance.Entity, instance.Renderer, std::move(page), fine, keepCover});
+        candidates.push_back({part.Part, part.Renderer, std::move(page), fine, keepCover});
+    }
+
+    MeshGPUHandle RegisterCoarsePart(const GUID& guid, const ModelAsset& model, uint32 pageIndex)
+    {
+        const auto& directory = model.GetClusterLODManifest()->Pages[pageIndex];
+        return Services->GetMeshGPURegistry().RegisterSubmesh(
+            CoarsePartKey(guid, model, pageIndex), ExtractMeshClusterLODCoarseGroup(model.GetMeshes()[directory.Mesh], directory));
+    }
+
+    float LodBias(ECS::World& world, ECS::EntityHandle entity) const
+    {
+        const auto* lod = world.GetComponent<Components::LODGroup>(entity);
+        return Services->GetLODGlobalBias() + (lod ? lod->Bias : 0.0f);
+    }
+
+    // An unsplit instance of a cluster mesh: it splits when a view wants one of its fine pages.
+    void ConsiderInstance(ECS::World& world, ECS::EntityHandle entity, const Components::MeshRenderer& renderer,
+                          const Components::WorldTransform& transform, std::vector<PendingSplit>& splits)
+    {
+        const GUID guid = renderer.modelAssetGuid.ToGuid();
+        if (guid.IsNull())
+            return;
+        const auto model = std::dynamic_pointer_cast<ModelAsset>(Assets->GetAsset(guid));
+        if (!model || !model->GetClusterLODManifest())
+            return;
+        if (WorldId == 0)
+        {
+            WorldId = world.GetWorldId();
+            WorldGeneration = world.GetEntityHandleEpoch();
+        }
+        // The parts of a split instance count their own triangles.
+        if (Splits.Find(entity))
+            return;
+        const auto& manifest = *model->GetClusterLODManifest();
+        const uint32 mesh = ResolveSubmeshIndex(guid, *model, renderer);
+        if (mesh >= model->GetMeshes().size())
+            return;
+        UnsplitCoarseTriangles += model->GetMeshes()[mesh].Indices.size() / 3;
+        if (PolicyBlocked || !SupportsFineInstance(*Services, world, entity, renderer))
+            return;
+        // An ended split restores the owner, so the owner's coarse mesh must draw before a split starts.
+        auto& registry = Services->GetMeshGPURegistry();
+        const auto* coverage = registry.Find(MeshGPUHandle(renderer.meshGpuHandleId));
+        if (!coverage || !registry.IsEntryDrawable(*coverage))
+            return;
+        const auto range = PageRange(manifest, mesh);
+        const float bias = LodBias(world, entity);
+        const uint64 worldId = world.GetWorldId();
+        if (!WantsFine(*Services, renderer, transform, WholeMeshPage(manifest, model->GetMeshes()[mesh], range), worldId, false, bias))
+            return;
+        for (uint32 page = range.first; page < range.second; ++page)
+            if (WantsFine(*Services, renderer, transform, manifest.Pages[page], worldId, false, bias))
+            {
+                splits.push_back({entity, renderer, guid, mesh});
+                return;
+            }
+    }
+
+    // Starts each pending split once every coarse part of its mesh can draw.
+    void BeginSplits(ECS::World& world, const std::vector<PendingSplit>& splits, uint64 epoch)
+    {
+        auto& registry = Services->GetMeshGPURegistry();
+        uint32 coarseRepairs = 0;
+        for (const PendingSplit& split : splits)
+        {
+            const auto model = std::dynamic_pointer_cast<ModelAsset>(Assets->GetAsset(split.Model));
+            if (!model || !model->GetClusterLODManifest())
+                continue;
+            const auto range = PageRange(*model->GetClusterLODManifest(), split.Mesh);
+            std::vector<MeshGPUHandle> parts;
+            std::vector<Mathematics::BoundingBox> bounds;
+            parts.reserve(range.second - range.first);
+            bounds.reserve(range.second - range.first);
+            for (uint32 page = range.first; page < range.second; ++page)
+            {
+                auto handle = registry.FindHandle(CoarsePartKey(split.Model, *model, page));
+                const auto* entry = registry.Find(handle);
+                if ((!entry || !registry.IsEntryDrawable(*entry)) && coarseRepairs < kMaximumCoarsePartsPerFrame)
+                {
+                    ++coarseRepairs;
+                    handle = RegisterCoarsePart(split.Model, *model, page);
+                    entry = registry.Find(handle);
+                }
+                if (!entry || !registry.IsEntryDrawable(*entry))
+                    break;
+                const auto& directory = model->GetClusterLODManifest()->Pages[page];
+                parts.push_back(handle);
+                bounds.push_back(Mathematics::BoundingBox::FromMinMax(directory.MinBounds, directory.MaxBounds));
+            }
+            if (parts.size() == range.second - range.first)
+                Splits.Begin(world, split.Owner, split.Renderer, split.Model, split.Mesh, range.first, parts, bounds, epoch);
+        }
+    }
+
+    // Measures every part of every split instance, grants fine pages under the triangle budget,
+    // selects each part, then swaps owners for parts that can draw.
+    void ConsiderSplits(ECS::World& world, uint64 epoch, std::vector<Candidate>& candidates, uint32& coarseRepairs)
+    {
+        auto* scene = Services->GetGPUScene();
+        auto& instances = Splits.Instances();
+        std::vector<ECS::EntityHandle> ended;
+        std::vector<bool> activate(instances.size(), false);
+        PartDemands.clear();
+        for (size_t index = 0; index < instances.size(); ++index)
+        {
+            auto& instance = instances[index];
+            const auto* owner = world.GetComponent<Components::MeshRenderer>(instance.Owner);
+            const auto* transform = world.GetComponent<Components::WorldTransform>(instance.Owner);
+            const auto model = std::dynamic_pointer_cast<ModelAsset>(Assets->GetAsset(instance.Model));
+            if (!owner || !transform || !model || !model->GetClusterLODManifest() || owner->modelAssetGuid.ToGuid() != instance.Model ||
+                ResolveSubmeshIndex(instance.Model, *model, *owner) != instance.Mesh || !scene ||
+                !SameRendererState(*owner, instance.Renderer) || !SupportsFineInstance(*Services, world, instance.Owner, *owner) ||
+                !ECS::Entity(&world, instance.Owner).IsEnabledInHierarchy())
+            {
+                ended.push_back(instance.Owner);
+                continue;
+            }
+            const float bias = LodBias(world, instance.Owner);
+            for (uint32 part = 0; part < instance.Parts.size(); ++part)
+            {
+                const auto* renderer = world.GetComponent<Components::MeshRenderer>(instance.Parts[part]);
+                if (!renderer)
+                {
+                    ended.push_back(instance.Owner);
+                    break;
+                }
+                PartDemand demand = MeasurePart(world, instance.Parts[part], *renderer, *transform, instance.Model,
+                                                model, instance.FirstPage + part, bias);
+                if (demand.Priority > 1.0)
+                    instance.LastWantedEpoch = epoch;
+                PartDemands.push_back(std::move(demand));
+            }
+            activate[index] = true;
+        }
+        GrantFineDemands(PartDemands, TriangleBudget, UnsplitCoarseTriangles, DemandOrder);
+        for (const PartDemand& part : PartDemands)
+            Consider(part, epoch, candidates, coarseRepairs);
+        PartDemands.clear();
+        bool flipped = false;
+        for (size_t index = 0; index < instances.size(); ++index)
+            if (activate[index])
+                flipped |= Splits.TryActivate(world, *scene, instances[index]);
+        for (const ECS::EntityHandle owner : ended)
+            Splits.End(world, scene, owner);
+        if (flipped || !ended.empty())
+            Services->RequestResidencyExtraction();
+    }
+
+    // Ends the splits whose fine pages no view wanted for the grace period.
+    void EndIdleSplits(ECS::World& world, uint64 epoch)
+    {
+        std::vector<ECS::EntityHandle> idle;
+        for (const auto& instance : Splits.Instances())
+            if (PolicyBlocked || epoch - instance.LastWantedEpoch >= kUnusedFrameGrace)
+                idle.push_back(instance.Owner);
+        for (const ECS::EntityHandle owner : idle)
+            Splits.End(world, Services->GetGPUScene(), owner);
+        if (!idle.empty())
+            Services->RequestResidencyExtraction();
     }
 
     void AdmitPages(uint64 epoch)
@@ -873,6 +1104,7 @@ struct ClusterLODFeature::State
         metrics.PushSample("ClusterLOD.DecodedElementBytes",
             static_cast<float>(DecodedAccounting->ElementBytes.load(std::memory_order_relaxed)));
         metrics.PushSample("ClusterLOD.TrackedPages", static_cast<float>(Pages.size()));
+        metrics.PushSample("ClusterLOD.SplitInstances", static_cast<float>(Splits.Count()));
         metrics.PushSample("ClusterLOD.ResidentPages", static_cast<float>(resident));
         metrics.PushSample("ClusterLOD.PendingReads", static_cast<float>(PendingReads));
         metrics.PushSample("ClusterLOD.ChargedPageWorkBytes", static_cast<float>(ChargedBytes));
@@ -892,15 +1124,12 @@ bool ClusterLODFeature::Initialize(RenderServices& services, AssetManager& asset
     auto* device = services.GetDevice();
     // Fine geometry needs a coherent write into host-visible device memory (TryWriteCoherentBuffer).
     // Scene acceleration structures skip the fine domain, so ray tracing reads the coarse mesh.
-    // Retirement waits for the graphics timeline only, so a bound frame must run on one queue.
     const GraphicsAPI api = device ? device->GetAPI() : GraphicsAPI::Auto;
     if (!device || (api != GraphicsAPI::Vulkan && api != GraphicsAPI::Metal) ||
-        !device->GetCapabilities().supportsBufferDeviceAddress ||
-        RenderGraph::WindowFramesUseAsyncCompute(*device) || !services.Spine().TryRequireCurrentWorldEpoch())
+        !device->GetCapabilities().supportsBufferDeviceAddress || !services.Spine().TryRequireCurrentWorldEpoch())
     {
-        Logger::Log::Warning("Cluster LOD fine pages are off: they need Vulkan or Metal with buffer device addresses "
-                             "and one queue for each frame (set GE_ASYNC_COMPUTE=0 on a GPU with a separate compute "
-                             "queue), and they start only with the first world.");
+        Logger::Log::Warning("Cluster LOD fine pages are off: they need Vulkan or Metal with buffer device addresses, "
+                             "and they start only with the first world.");
         return false;
     }
     state.Services = &services;
@@ -910,6 +1139,7 @@ bool ClusterLODFeature::Initialize(RenderServices& services, AssetManager& asset
     auto& metrics = Debug::DebugMetrics::Get();
     metrics.RegisterMonitor("ClusterLOD.DecodedElementBytes", Debug::MonitorType::Memory, "bytes");
     metrics.RegisterMonitor("ClusterLOD.TrackedPages", Debug::MonitorType::Quantity, "pages");
+    metrics.RegisterMonitor("ClusterLOD.SplitInstances", Debug::MonitorType::Quantity, "instances");
     metrics.RegisterMonitor("ClusterLOD.ResidentPages", Debug::MonitorType::Quantity, "pages");
     metrics.RegisterMonitor("ClusterLOD.PendingReads", Debug::MonitorType::Quantity, "reads");
     metrics.RegisterMonitor("ClusterLOD.ChargedPageWorkBytes", Debug::MonitorType::Memory, "bytes");
@@ -930,6 +1160,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
         if (!ownerWorld || ownerWorld->GetEntityHandleEpoch() != state.WorldGeneration)
         {
             state.Bindings.clear();
+            state.Splits.Clear();
             state.CutOwner.reset();
             state.Block();
             state.WorldGeneration = ownerWorld ? ownerWorld->GetEntityHandleEpoch() : 0;
@@ -940,7 +1171,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
         }
     }
     state.RestorePendingWorlds();
-    if (HasUnsupportedConsumers(world, services))
+    if (HasUnsupportedConsumers(world))
         state.Block();
     if (state.WorldId != 0 && state.WorldId != world.GetWorldId())
     {
@@ -975,23 +1206,24 @@ void ClusterLODFeature::Prepare(ECS::World& world)
         page->Wanted = false;
     }
 
-    state.Demands.clear();
-    world.Query<ECS::Read<Components::MeshRenderer>, ECS::Read<Components::WorldTransform>>()
-        .Each([&state, &world](ECS::EntityHandle entity, const Components::MeshRenderer& renderer,
-                               const Components::WorldTransform& transform)
-        {
-            state.MeasureDemand(world, entity, renderer, transform);
-        });
-    GrantFineDemands(state.Demands, state.TriangleBudget, state.DemandOrder);
     std::vector<State::Candidate> candidates;
     uint32 coarseRepairs = 0;
-    for (const auto& demand : state.Demands)
-        state.Consider(demand, epoch, candidates, coarseRepairs);
-    state.Demands.clear();
+    std::vector<PendingSplit> splits;
+    state.UnsplitCoarseTriangles = 0;
+    world.Query<ECS::Read<Components::MeshRenderer>, ECS::Read<Components::WorldTransform>>()
+        .Each([&state, &world, &splits](ECS::EntityHandle entity, const Components::MeshRenderer& renderer,
+                                        const Components::WorldTransform& transform)
+        {
+            state.ConsiderInstance(world, entity, renderer, transform, splits);
+        });
+    // A new split requests its pages in the frame it starts.
+    state.BeginSplits(world, splits, epoch);
+    state.ConsiderSplits(world, epoch, candidates, coarseRepairs);
 
     state.AdmitPages(epoch);
 
     state.ApplySelections(world, candidates);
+    state.EndIdleSplits(world, epoch);
     if (state.PolicyBlocked)
         state.RestoreWorld(world);
     state.RetireUnused(epoch);
@@ -1022,7 +1254,6 @@ bool ClusterLODFeature::BindWorldGeometry(RenderGraph::RGFrame& frame, RenderSer
     }
     if (!state.CutOwner)
         return false;
-    frame.RequireGraphicsQueue();
     if (!frame.RequireExecutionLifetime(state.CutOwner))
         return false;
     const auto existing = state.Leases.find(&frame);
@@ -1072,7 +1303,7 @@ void ClusterLODFeature::OnDeviceRebuilt(Rendering::IDevice* device)
         (void)key;
         page->MayHaveGpuReaders.store(false, std::memory_order_release);
         page->RetryEpoch = 0;
-        page->RetirementToken = {};
+        page->RetirementTokens = {};
     }
 }
 } // namespace GameEngine::Engine::Renderer

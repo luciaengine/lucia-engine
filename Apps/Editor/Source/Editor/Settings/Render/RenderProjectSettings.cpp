@@ -35,44 +35,6 @@ const nlohmann::json& FindRenderingSettings(const SettingsStore& store)
     return kEmptyRendering;
 }
 
-uint32_t NormalizeDirectionalShadowResolution(uint32_t requested)
-{
-    static constexpr uint32_t kTiers[] = {1024u, 2048u, 4096u, 8192u};
-    uint32_t snapped = kTiers[0];
-    uint32_t bestDistance = requested > snapped ? requested - snapped : snapped - requested;
-    for (uint32_t tier : kTiers)
-    {
-        const uint32_t distance = requested > tier ? requested - tier : tier - requested;
-        if (distance < bestDistance)
-        {
-            snapped = tier;
-            bestDistance = distance;
-        }
-    }
-    return snapped;
-}
-
-uint32_t LoadDirectionalShadowResolutionValue(const nlohmann::json& rendering)
-{
-    uint32_t requested = kDefaultDirectionalShadowResolution;
-    const auto it = rendering.find("directionalShadowResolution");
-    try
-    {
-        if (it != rendering.end() && it->is_number_unsigned())
-            requested = it->get<uint32_t>();
-        else if (it != rendering.end() && it->is_number_integer())
-            requested = static_cast<uint32_t>(std::max(0, it->get<int>()));
-        else if (it != rendering.end() && it->is_string())
-            requested = static_cast<uint32_t>(std::stoul(it->get<std::string>()));
-    }
-    catch (...)
-    {
-        requested = kDefaultDirectionalShadowResolution;
-    }
-
-    return NormalizeDirectionalShadowResolution(requested);
-}
-
 // Stored as a string so the file stays readable and a future third mode does
 // not have to reinterpret a bool.
 bool LoadDirectionalShadowStableProjectionValue(const nlohmann::json& rendering)
@@ -200,18 +162,6 @@ bool MaterializeDefaultAntiAliasing(SettingsStore& store,
     return true;
 }
 
-uint32_t GetDirectionalShadowResolution(const SettingsStore& store)
-{
-    return LoadDirectionalShadowResolutionValue(FindRenderingSettings(store));
-}
-
-void SetDirectionalShadowResolution(SettingsStore& store, uint32_t resolution)
-{
-    nlohmann::json rendering = FindRenderingSettings(store);
-    rendering["directionalShadowResolution"] = NormalizeDirectionalShadowResolution(resolution);
-    store.SetJson("rendering", rendering);
-}
-
 bool GetDirectionalShadowStableProjection(const SettingsStore& store)
 {
     return LoadDirectionalShadowStableProjectionValue(FindRenderingSettings(store));
@@ -232,7 +182,6 @@ void ApplyProjectRenderSettings(Engine::Renderer::RenderServices& renderServices
     {
         auto& shadowFeature =
             renderServices.EnsureFeature<Engine::Renderer::ShadowMapRenderFeature>();
-        shadowFeature.SetProjectResolutionOverride(LoadDirectionalShadowResolutionValue(rendering));
         shadowFeature.SetShadowProjection(
             LoadDirectionalShadowStableProjectionValue(rendering)
                 ? Engine::Renderer::ShadowProjection::Stable

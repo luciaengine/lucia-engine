@@ -33,8 +33,4 @@ inline constexpr uint64_t kWindowUploadRingInitialSlotBytes = 1u << 20;
 // (Platform::EnvironmentSwitchEnabled) keeps every pass on the graphics queue.
 RGWindowFrame MakeWindowRGFrame(IDevice& device);
 
-// True when MakeWindowRGFrame routes logical Compute passes to a second physical queue:
-// the device has a distinct compute queue family and GE_ASYNC_COMPUTE is not off.
-bool WindowFramesUseAsyncCompute(const IDevice& device);
-
 } // namespace GameEngine::Rendering::RenderGraph

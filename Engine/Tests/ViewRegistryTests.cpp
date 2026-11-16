@@ -66,8 +66,8 @@ TEST(ViewRegistryTests, ReleaseCameraRefusedWhileViewReferencesIt)
     EXPECT_TRUE(rs.Views().ReleaseCamera(cam)) << "camera releasable once no view references it";
 }
 
-// L5(c): ReleaseCamera erases the per-camera side tables (exposure + post-
-// process mask). CameraIds are increment-only (no recycling path exists), so
+// L5(c): ReleaseCamera erases the per-camera side tables (exposure + volume
+// layers). CameraIds are increment-only (no recycling path exists), so
 // this erase is defense-in-depth (A3-iii): the test pins the erase-on-release,
 // not recycling protection.
 TEST(ViewRegistryTests, ReleaseCameraErasesPerCameraSideTables)
@@ -78,15 +78,15 @@ TEST(ViewRegistryTests, ReleaseCameraErasesPerCameraSideTables)
     ViewRegistry::CameraExposure exposure{};
     exposure.Mode = 1;
     rs.Views().SetCameraExposure(cam, exposure);
-    rs.Views().SetCameraPostProcessMask(cam, 0x2u);
+    rs.Views().SetCameraVolumeLayers(cam, GameEngine::Rendering::RenderLayerMask{0x2u});
 
     ASSERT_NE(rs.Views().FindCameraExposure(cam), nullptr);
-    EXPECT_TRUE(rs.Views().HasCameraPostProcessMask(cam));
+    EXPECT_TRUE(rs.Views().HasCameraVolumeLayers(cam));
 
     ASSERT_TRUE(rs.Views().ReleaseCamera(cam));
 
     EXPECT_EQ(rs.Views().FindCameraExposure(cam), nullptr);
-    EXPECT_FALSE(rs.Views().HasCameraPostProcessMask(cam));
+    EXPECT_FALSE(rs.Views().HasCameraVolumeLayers(cam));
 }
 
 // L5(d) — S0 subset: ReleaseView succeeds exactly once (double-release is a
@@ -161,7 +161,7 @@ TEST(ViewRegistryTests, OnDemandViewStartsExpiredUntilArmed)
     const CameraId cam = rs.Views().AllocateCamera("cam");
     const ViewId view = rs.Views().AllocateView("onDemand", cam, ViewPurpose::EditorScene,
                                         ViewParticipation::OnDemand);
-    rs.Views().SetViewRenderLayerMask(view, 1u);
+    rs.Views().SetViewRenderLayerMask(view, Rendering::RenderLayerMask{1u});
 
     const ViewDesc* dormant = rs.Views().FindViewDesc(view);
     ASSERT_NE(dormant, nullptr);
@@ -187,7 +187,7 @@ TEST(ViewRegistryTests, A16_HideLapsesOnDemandViewWithoutReleasing)
     const CameraId cam = rs.Views().AllocateCamera("cam");
     const ViewId view = rs.Views().AllocateView("onDemand", cam, ViewPurpose::EditorScene,
                                         ViewParticipation::OnDemand);
-    rs.Views().SetViewRenderLayerMask(view, 1u);
+    rs.Views().SetViewRenderLayerMask(view, Rendering::RenderLayerMask{1u});
 
     // Visible frame: the pane declares, arming the view for this frame + the next.
     rs.Views().RequestViewFrame(view);
@@ -225,7 +225,7 @@ TEST(ViewRegistryTests, A16_QuickReshowReusesSameViewIdAndRearms)
     const CameraId cam = rs.Views().AllocateCamera("cam");
     const ViewId view = rs.Views().AllocateView("onDemand", cam, ViewPurpose::EditorScene,
                                         ViewParticipation::OnDemand);
-    rs.Views().SetViewRenderLayerMask(view, 1u);
+    rs.Views().SetViewRenderLayerMask(view, Rendering::RenderLayerMask{1u});
 
     // Visible, then hide -> lapse to dormant (two decrements, no re-arm).
     rs.Views().RequestViewFrame(view);
@@ -519,7 +519,9 @@ TEST(ViewRegistryTests, ACameraAt125KmMovingATenthOfAMeterPerSecondMovesOnEveryF
         rs.Views().SetCameraData(camera, active.ToCameraData(1.0f), active.ToCameraRanges());
         const float32 translationX = rs.Views().ResolveCameraData(view).viewRel[3][0];
         if (frame > 0)
+        {
             EXPECT_NE(translationX, previousTranslationX) << "frame " << frame;
+        }
         previousTranslationX = translationX;
     }
 }

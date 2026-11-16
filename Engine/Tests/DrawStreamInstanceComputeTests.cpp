@@ -515,7 +515,10 @@ TEST_F(DrawStreamInstanceComputeTest, InstancedIndirectRasterMatchesSingleInstan
     std::vector<uint32_t> words(69);
     std::iota(words.begin(), words.end(), 0u);
     const auto reference = Run(table, {67}, records, words, false);
-    const auto result = Run(table, {67}, records, words);
+    // Count emulation draws every record slot. As in production (ClearRecordRange), the raw records
+    // after the instance pass are cleared, so only the merged commands draw.
+    const bool emulatedCount = !m_Device->GetCapabilities().supportsDrawIndirectCountNative;
+    const auto result = Run(table, {67}, records, words, true, false, emulatedCount);
     ASSERT_EQ(result.Cursors[result.CountBase], 2u);
     ASSERT_GT(result.Commands[result.CommandBase].InstanceCount, 1u);
     const auto baseline = Raster(reference, 69);

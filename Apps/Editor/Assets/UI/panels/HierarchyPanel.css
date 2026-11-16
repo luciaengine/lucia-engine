@@ -94,6 +94,11 @@
 	margin-right: 46px;
 }
 
+/* With the eye off, the title ends before the lock only. */
+.hierarchy-panel .tree.tree-row-lock-enabled.hierarchy-eye-off .tree-item .tree-title {
+	margin-right: 27px;
+}
+
 .hierarchy-panel .tree .tree-item.has-render-layer .tree-title,
 .hierarchy-panel .tree .tree-item.has-sorting-layer .tree-title {
 	margin-right: 163px;

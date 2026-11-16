@@ -1,7 +1,10 @@
 #include "Engine/Rendering/VirtualShadows/VirtualShadowPageCache.h"
 
+#include <algorithm>
 #include <array>
 #include <set>
+#include <span>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -145,6 +148,94 @@ TEST(VirtualShadowPageCacheTests, InvalidPointFaceAndLocalMipCoordinatesDoNotCon
     ASSERT_EQ(work.size(), 1u);
     EXPECT_EQ(work[0].Page, kSun);
     EXPECT_EQ(work[0].Tile, 0u);
+}
+
+std::vector<VirtualShadowPage> SunRow(int64_t first, uint32_t count, uint8_t level = 0)
+{
+    std::vector<VirtualShadowPage> pages;
+    for (uint32_t index = 0; index < count; ++index)
+    {
+        auto page = kSun;
+        page.Projection = level;
+        page.X = first + index;
+        pages.push_back(page);
+    }
+    return pages;
+}
+
+std::vector<int64_t> RenderAll(VirtualShadowPageCache& cache, std::span<const VirtualShadowPageWork> rows)
+{
+    std::vector<int64_t> rendered;
+    for (const auto& row : rows)
+    {
+        EXPECT_NE(row.Tile, kUnmappedShadowPage);
+        if (row.NeedsRender && cache.MarkRendered(row))
+            rendered.push_back(row.Page.X);
+    }
+    return rendered;
+}
+
+TEST(VirtualShadowPageCacheTests, DeformedPagesStayPublishedAndTheFinestLevelRefreshesEveryFrame)
+{
+    VirtualShadowPageCache cache(64);
+    auto pages = SunRow(0, 4, 0);
+    const auto coarse = SunRow(100, 40, 3);
+    pages.insert(pages.end(), coarse.begin(), coarse.end());
+    ASSERT_EQ(RenderAll(cache, cache.Plan(pages, 1, 0)).size(), pages.size());
+
+    std::set<int64_t> coarseRefreshed;
+    for (uint64_t frame = 2; frame <= 3; ++frame)
+    {
+        cache.MarkDeformed();
+        const auto rows = cache.Plan(pages, frame, frame - 1);
+        EXPECT_EQ(std::ranges::count_if(rows, [](const VirtualShadowPageWork& row) { return !row.NeedsRender; }),
+                  static_cast<std::ptrdiff_t>(pages.size() - kVirtualShadowDeformedRefreshBudget));
+        const auto rendered = RenderAll(cache, rows);
+        ASSERT_EQ(rendered.size(), kVirtualShadowDeformedRefreshBudget);
+        EXPECT_EQ(std::vector<int64_t>(rendered.begin(), rendered.begin() + 4), (std::vector<int64_t>{0, 1, 2, 3}));
+        coarseRefreshed.insert(rendered.begin() + 4, rendered.end());
+    }
+    EXPECT_EQ(coarseRefreshed.size(), 2 * (kVirtualShadowDeformedRefreshBudget - 4));
+
+    uint64_t frame = 4;
+    while (!RenderAll(cache, cache.Plan(pages, frame, frame - 1)).empty() && frame < 8)
+        ++frame;
+    EXPECT_LT(frame, 8u);
+}
+
+TEST(VirtualShadowPageCacheTests, ADeformedPageOverItsAgeLimitRefreshesBeforeFinerPages)
+{
+    VirtualShadowPageCache cache(64);
+    auto pages = SunRow(0, kVirtualShadowDeformedRefreshBudget + 4, 0);
+    pages.push_back(SunRow(500, 1, 1).front());
+    ASSERT_EQ(RenderAll(cache, cache.Plan(pages, 1, 0)).size(), pages.size());
+
+    constexpr uint64_t kLevelOneLimit = kVirtualShadowDeformedMaxAgeFrames << 1;
+    uint64_t refreshedAt = 0;
+    for (uint64_t frame = 2; frame <= 1 + kLevelOneLimit && refreshedAt == 0; ++frame)
+    {
+        cache.MarkDeformed();
+        const auto rendered = RenderAll(cache, cache.Plan(pages, frame, frame - 1));
+        if (std::ranges::find(rendered, 500) != rendered.end())
+            refreshedAt = frame;
+    }
+    EXPECT_EQ(refreshedAt, 1 + kLevelOneLimit);
+}
+
+TEST(VirtualShadowPageCacheTests, MissingPagesTakeTheRenderBudgetBeforeDeformedPages)
+{
+    VirtualShadowPageCache cache(64);
+    const auto resident = SunRow(0, 10);
+    ASSERT_EQ(RenderAll(cache, cache.Plan(resident, 1, 0)).size(), resident.size());
+
+    cache.MarkDeformed();
+    auto demand = SunRow(100, kVirtualShadowPageRenderBudget - 3);
+    demand.insert(demand.end(), resident.begin(), resident.end());
+    const auto rows = cache.Plan(demand, 2, 1);
+    const auto refreshed = std::ranges::count_if(rows, [](const VirtualShadowPageWork& row)
+                                                 { return row.NeedsRender && row.Page.X < 100; });
+    EXPECT_EQ(refreshed, 3);
+    EXPECT_EQ(std::ranges::count_if(rows, &VirtualShadowPageWork::NeedsRender), kVirtualShadowPageRenderBudget);
 }
 
 TEST(VirtualShadowPageCacheTests, CropMapsTopLeftAtlasCoordinatesWithoutChangingPerspectiveDepth)

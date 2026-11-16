@@ -18,9 +18,10 @@
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
-#include <nlohmann/json.hpp>
-
+#include <bit>
 #include <string_view>
+
+#include <nlohmann/json.hpp>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 
@@ -30,6 +31,16 @@ using namespace ::GameEngine::Rendering;
 
 namespace
 {
+constexpr uint32_t kMinCascadeResolution = 256u;
+constexpr uint32_t kMaxCascadeResolution = 8192u;
+
+// The "resolution" key is the one owner of the directional cascade size.
+bool IsSupportedCascadeResolution(uint32_t resolution)
+{
+    return std::has_single_bit(resolution) && resolution >= kMinCascadeResolution &&
+           resolution <= kMaxCascadeResolution;
+}
+
 bool IsPreviewOrThumbnailViewName(const char* debugName)
 {
     if (!debugName)
@@ -290,8 +301,18 @@ bool ShadowMapNode::Initialize(std::string nodeId, std::string nodeJson, std::st
 
         if (j.contains("cascades") && j["cascades"].is_number_unsigned())
             m_NumCascades = std::min(j["cascades"].get<uint32_t>(), kMaxShadowCascades);
-        if (j.contains("resolution") && j["resolution"].is_number_unsigned())
-            m_Resolution = j["resolution"].get<uint32_t>();
+        if (j.contains("resolution"))
+        {
+            const auto& resolution = j["resolution"];
+            if (!resolution.is_number_unsigned() || !IsSupportedCascadeResolution(resolution.get<uint32_t>()))
+            {
+                if (outError)
+                    *outError = "ShadowMapNode: resolution must be a power of two from 256 to 8192, for "
+                                "example 2048. It sets the size of each directional cascade.";
+                return false;
+            }
+            m_Resolution = resolution.get<uint32_t>();
+        }
         if (j.contains("punctualResolution") && j["punctualResolution"].is_number_unsigned())
             m_PunctualResolution = j["punctualResolution"].get<uint32_t>();
         if (j.contains("pointShadowBudget") && j["pointShadowBudget"].is_number_unsigned())
@@ -357,10 +378,7 @@ void ShadowMapNode::Declare(RenderPipelineInstance& /*instance*/,
     virtualShadows.Configure(m_VirtualShadows);
     CascadedShadowConfig config{};
     config.NumCascades = m_NumCascades;
-    // Editor project Rendering Settings can override the pipeline-authored
-    // tier. Standalone runtimes leave the feature override empty and keep the
-    // asset. The override belongs to the feature that owns the cascade maps.
-    config.Resolution = feature.GetProjectResolutionOverride().value_or(m_Resolution);
+    config.Resolution = m_Resolution;
     config.MomentsResolution = m_MomentsResolution;
     config.SplitLambda = m_SplitLambda;
     config.MaxShadowDistance = m_MaxShadowDistance;

@@ -146,7 +146,7 @@ TEST(SortedTransparentCull, FarSectorCompositionMatchesNearOriginDecisions)
     // sector in +X, so the composition crosses one sector boundary.
     const Math::Vector3Int cameraSector{293, 0, -4};
     uint32_t p0 = 0, p1 = 0;
-    Rndr::PackSector(cameraSector.x + 1, cameraSector.y, cameraSector.z, p0, p1);
+    Rndr::PackSector(cameraSector.X + 1, cameraSector.Y, cameraSector.Z, p0, p1);
     const float sectorSize = static_cast<float>(Math::kWorldSectorSize);
     std::vector<TransparentSphere> farCandidates = refCandidates;
     for (TransparentSphere& c : farCandidates)
@@ -179,9 +179,9 @@ TEST(SortedTransparentCull, DerivedCameraForwardPointsIntoTheView)
     const Math::Matrix4x4 viewProj = proj * view;
 
     Rndr::CameraData cam{};
-    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
-    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
-    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
+    cam.view = view;
+    cam.proj = proj;
+    cam.viewProj = viewProj;
 
     const Rndr::CameraDerivedData derived = Rndr::DeriveCameraData(cam, {0.1f, 500.0f});
 

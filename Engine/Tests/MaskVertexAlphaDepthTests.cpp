@@ -22,6 +22,7 @@
 #include "Assets/ModelAsset.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
+#include "ECSModules/Rendering/SkeletonStore.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
 #include "Engine/Rendering/FeatureDeclareContext.h"
 #include "Engine/Rendering/Material.h"
@@ -83,7 +84,7 @@ struct TextureCoverageUploadTestAccess
 
     static void Publish(TextureService& service, const GUID& texture, TextureHandle uploaded)
     {
-        service.m_TextureGPUCache.PublishOrAdopt(texture, uploaded);
+        service.m_TextureGPUCache.PublishOrAdopt(texture, TextureGPUCache::Entry{uploaded, {}});
     }
 };
 }
@@ -168,11 +169,11 @@ CameraData MakeShadowTestCamera()
                                                Vector3(0.0f, -1.0f, 0.0f));
     const auto projection = Mathematics::MakeOrthographicLH_ZO_ReverseZ(-1.0f, 1.0f, -1.0f, 1.0f, 0.0f, 1.0f);
     const auto viewProjection = projection * view;
-    std::memcpy(camera.view, view.Data(), sizeof(camera.view));
-    std::memcpy(camera.viewRel, view.Data(), sizeof(camera.viewRel));
-    std::memcpy(camera.proj, projection.Data(), sizeof(camera.proj));
-    std::memcpy(camera.viewProj, viewProjection.Data(), sizeof(camera.viewProj));
-    std::memcpy(camera.viewProjRel, viewProjection.Data(), sizeof(camera.viewProjRel));
+    camera.view = view;
+    camera.viewRel = view;
+    camera.proj = projection;
+    camera.viewProj = viewProjection;
+    camera.viewProjRel = viewProjection;
     camera.cameraPos[2] = 1.0f;
     return camera;
 }
@@ -373,10 +374,10 @@ RenderGraph::RGTexture DeclareDepthComposition(RenderGraph::RGFrame& frame, Rend
         }
         *camera.Ptr = CameraData{};
         const auto identity = Matrix4x4::Identity();
-        std::memcpy(camera.Ptr->view, identity.Data(), sizeof(camera.Ptr->view));
-        std::memcpy(camera.Ptr->proj, identity.Data(), sizeof(camera.Ptr->proj));
-        std::memcpy(camera.Ptr->viewProj, fit->LightVP[0].Data(), sizeof(camera.Ptr->viewProj));
-        std::memcpy(camera.Ptr->viewProjRel, fit->LightVPRel[0].Data(), sizeof(camera.Ptr->viewProjRel));
+        camera.Ptr->view = identity;
+        camera.Ptr->proj = identity;
+        camera.Ptr->viewProj = fit->LightVP[0];
+        camera.Ptr->viewProjRel = fit->LightVPRel[0];
     }
     params.Casters = CascadeCasters::All;
     params.ViewportWidth = kTargetSize;
@@ -544,11 +545,11 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
         camera = MakeShadowTestCamera();
     rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {0.1f, 1000.0f});
     const ViewId viewId = rs.Views().AllocateView("MaskVertexAlpha.View", cameraId);
-    rs.Views().SetViewRenderLayerMask(viewId, 1u);
+    rs.Views().SetViewRenderLayerMask(viewId, RenderLayerMask::Default());
     rs.Views().SetViewWorldId(viewId, kWorldId);
     ViewClearConfig clear{};
     clear.clearColor = true;
-    clear.clearColorValue[3] = 1.0f;
+    clear.clearColorValue.a = 1.0f;
     clear.clearDepth = true;
     clear.clearDepthValue = 0.0f;
     rs.Views().SetViewTargets(viewId, 0, 0, 0, clear);
@@ -556,8 +557,8 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
     const uint32_t cardInstance = AddInstance(rs, *cardEntry, *card, cardMesh, shadowScenario);
     const uint32_t floorInstance = AddInstance(rs, *floorEntry, *floor, floorMesh, shadowScenario);
     std::array<WorldSubmissionRecord, 2> submissions{};
-    submissions[0] = {viewId, cardHandle, card, cardInstance, 0xFFFFFFFFu, 0u};
-    submissions[1] = {viewId, floorHandle, floor, floorInstance, 0xFFFFFFFFu, 0u};
+    submissions[0] = {viewId, cardHandle, card, cardInstance, RenderLayerMask::All(), {}};
+    submissions[1] = {viewId, floorHandle, floor, floorInstance, RenderLayerMask::All(), {}};
     const auto lastGood = card->GetGraphicsPipelineId();
     const uint64_t rigidEpoch = rs.RigidShadowCasterContentVersion(kWorldId);
     if (shadowScenario)
@@ -618,7 +619,8 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
         rs.GetPerFrameWritePool().BeginFrame(static_cast<uint32_t>(frameIndex));
         if (shadowScenario)
         {
-            rs.GetSkinPaletteAtlas().BeginFrame(rs.GetPerFrameWritePool());
+            rs.GetSkinPaletteAtlas().BeginFrame(rs.GetPerFrameWritePool(),
+                                                SkeletonStore::Instance().GetLivePaletteBoneCount());
             rs.NotifySkinPaletteContentChanged(kWorldId);
             ASSERT_EQ(rs.RigidShadowCasterContentVersion(kWorldId), rigidEpoch);
             ExtractedLight sun{};
@@ -633,9 +635,9 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
                 const uint32_t revision = card->GetContentRevision();
                 ShaderCacheKey key{};
                 key.VariantKey = card->GetVariantKey();
-                key.Source.SurfaceShaderPath = card->GetCompileSpec().surfaceShaderPath;
-                key.Source.VertexModifierPath = card->GetCompileSpec().vertexModifierPath;
-                key.Source.MaterialAssetPath = card->GetMaterialAssetPath();
+                key.Source = MakeShaderSourceKey(card->GetCompileSpec().surfaceShaderPath,
+                                                 card->GetCompileSpec().vertexModifierPath,
+                                                 card->GetMaterialAssetPath());
                 rs.Materials().EnqueueBasePipelinePublishForTesting(card->GetGuid(), {}, nullptr, key, lastGood);
                 rs.Materials().FlushAsyncMaterialCompiles();
                 ASSERT_EQ(card->GetGraphicsPipelineId(), lastGood);

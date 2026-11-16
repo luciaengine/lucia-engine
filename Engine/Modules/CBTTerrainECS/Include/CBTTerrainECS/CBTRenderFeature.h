@@ -25,6 +25,7 @@
 #include "Components/Terrain/Terrain.h" // kNoTerrainSeaLevel
 #include "Engine/Rendering/DrawBindings.h"
 #include "Engine/Rendering/IRenderFeature.h"
+#include "Engine/Rendering/WorldContentDigestTable.h"
 #include "Mathematics/Vector3.h"
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
 
@@ -152,6 +153,8 @@ class CBTRenderFeature final : public Engine::Renderer::IRenderFeature
     // The GetUpdateRecordCount value of the newest update that counted the census; 0 = none yet.
     uint64_t GetPoolCensusRecord() const { return m_PoolCensusRecord.load(std::memory_order_relaxed); }
     bool IsActive() const { return m_Active; }
+    Engine::Renderer::WorldContentDigestTable& GetWorldContent() { return m_WorldContent; }
+    uint64_t ContentDigest(uint64_t worldId) const override { return m_WorldContent.Get(worldId); }
     // The terrain's depth can change unless its update is at rest (IsUpdateAtRest): a tree that
     // splits or merges, and a sculpt or streamed height edit, change depth with a static camera
     // and no other elision key moving. Read by the frame spine before this frame's update is
@@ -460,6 +463,7 @@ class CBTRenderFeature final : public Engine::Renderer::IRenderFeature
     bool m_InitAttempted = false; // one bring-up attempt; failures don't retry-spam
     bool m_Active = false;
     bool m_MaterialAttempted = false;
+    Engine::Renderer::WorldContentDigestTable m_WorldContent;
 };
 
 } // namespace GameEngine::CBTTerrainECS

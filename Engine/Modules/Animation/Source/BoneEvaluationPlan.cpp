@@ -73,8 +73,7 @@ bool BoneEvaluationPlan::Build(const SkeletonData& skeleton, std::span<const uin
         return false;
 
     const uint32 count = skeleton.BoneCount;
-    const uint32 jointCount = skeleton.SkinJointCount > 0u && skeleton.JointNodes.size() == skeleton.SkinJointCount
-        ? skeleton.SkinJointCount : count;
+    const uint32 jointCount = skeleton.PaletteJointCount();
     for (uint32 joint = 0; joint < jointCount; ++joint)
     {
         const uint32 node = joint < skeleton.JointNodes.size() ? skeleton.JointNodes[joint] : joint;

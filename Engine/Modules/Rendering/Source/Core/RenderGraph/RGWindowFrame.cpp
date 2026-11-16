@@ -31,14 +31,10 @@ RGWindowFrame MakeWindowRGFrame(IDevice& device)
                                           out.TransientPool.get(), out.UploadRing.get());
     // Timeline semaphores order the cross-queue edges and resources use CONCURRENT
     // sharing across families, so the identity map needs no ownership transfers.
-    if (WindowFramesUseAsyncCompute(device))
+    if (AsyncComputeAllowed()
+        && device.GetComputeQueueFamilyIndex() != device.GetGraphicsQueueFamilyIndex())
         out.Frame->SetPhysicalQueueMap(RGFrame::kIdentityQueueMap);
     return out;
-}
-
-bool WindowFramesUseAsyncCompute(const IDevice& device)
-{
-    return AsyncComputeAllowed() && device.GetComputeQueueFamilyIndex() != device.GetGraphicsQueueFamilyIndex();
 }
 
 } // namespace GameEngine::Rendering::RenderGraph

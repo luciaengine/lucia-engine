@@ -121,7 +121,7 @@ TEST_P(SortedTransparentPixel, MeshOnlyInterleavedSurfacesCompositeBackToFront)
         submissions[submissionIndex].viewId = view;
         submissions[submissionIndex].material = materials[submissionIndex];
         submissions[submissionIndex].meshHandle = mesh;
-        submissions[submissionIndex].renderLayerMask = 1;
+        submissions[submissionIndex].renderLayerMask = Rendering::RenderLayerMask::Default();
         submissions[submissionIndex].instanceIndex = m_Services.GetGPUScene()->AddInstance(instance);
     }
     m_Services.SubmitWorldSubmissions(submissions);
