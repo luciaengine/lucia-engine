@@ -379,12 +379,16 @@ uint64_t VuidCount(const IDevice& device, std::string_view vuid, std::string* fi
 }
 
 // Registers a marching, centroid parallax colour material on `device` and builds its colour
-// pipeline at 4x MSAA. The program takes the pixel-centre footprint exactly when
-// `pixelCentreFootprint` is true.
-void BuildTheParallaxColourPipeline(IDevice& device, const std::filesystem::path& shaderDir, bool pixelCentreFootprint)
+// pipeline at 4x MSAA. The program takes the pixel-centre footprint exactly where the compile
+// profile has the interpolation functions. With `forceCentroidFootprint`, the profile turns them off
+// after RenderServices applied the device's profile.
+void BuildTheParallaxColourPipeline(IDevice& device, const std::filesystem::path& shaderDir, bool forceCentroidFootprint)
 {
     RenderServices services;
     ASSERT_TRUE(services.Initialize(&device));
+    if (forceCentroidFootprint)
+        SetInterpolationFunctionsAvailable(false);
+    const bool pixelCentreFootprint = AreInterpolationFunctionsAvailable();
     MaterialBuildContext context{};
     context.AdapterShaderDir = shaderDir;
     context.CacheRoot = std::filesystem::temp_directory_path() / ("ge_parallax_validity_" + GUID::Generate().ToString());
@@ -452,13 +456,8 @@ void CheckParallaxPipelineCapabilities(bool forceCentroidFootprint)
         GTEST_SKIP() << "Vulkan validation layer not active: the capability VUID cannot be observed";
     }
 
-    if (forceCentroidFootprint)
-        SetInterpolationFunctionsAvailable(false);
-    const bool pixelCentreFootprint =
-        !forceCentroidFootprint && device->GetCapabilities().supportsShaderInterpolationFunctions;
-
     device->ResetValidationStats();
-    BuildTheParallaxColourPipeline(*device, shaderDir, pixelCentreFootprint);
+    BuildTheParallaxColourPipeline(*device, shaderDir, forceCentroidFootprint);
     std::string message;
     EXPECT_EQ(VuidCount(*device, "VUID-VkShaderModuleCreateInfo-pCode-08740", &message), 0u) << message;
     device->Shutdown();
@@ -494,7 +493,7 @@ TEST(ParallaxPipelineOnAMetalDevice, TheCentroidParallaxColourPipelineBuildsWith
         GTEST_SKIP() << "This GPU has no pull-model interpolation";
     }
 
-    BuildTheParallaxColourPipeline(*device, shaderDir, true);
+    BuildTheParallaxColourPipeline(*device, shaderDir, false);
     device->Shutdown();
 }
 

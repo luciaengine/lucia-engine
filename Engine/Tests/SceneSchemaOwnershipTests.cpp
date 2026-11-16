@@ -100,9 +100,16 @@ TEST_F(SceneSchemaOwnership, NoReflectedComponentIsWrittenByBothAHandWrittenSche
             ++notCreatable; // reflected but not an ECS component of this process
             continue;
         }
+        // Creation adds the type's required components too; a schema that reads one of those
+        // stays present once the type itself is removed, and does not write this type.
+        std::vector<const Scene::ISceneComponentSchema*> present;
         for (const Scene::ISceneComponentSchema* schema : handWritten)
-        {
             if (schema->IsPresent(world, entity))
+                present.push_back(schema);
+        ASSERT_TRUE(world.RemoveComponentByTypeIdImmediate(entity, typeId));
+        for (const Scene::ISceneComponentSchema* schema : present)
+        {
+            if (!schema->IsPresent(world, entity))
                 doubleWritten.push_back(std::string(ECS::ComponentFieldRegistry::GetCanonicalName(typeId)) +
                                         " is written by '" + std::string(schema->GetComponentName()) +
                                         "' and by reflection as '" +

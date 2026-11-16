@@ -2111,6 +2111,11 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
                                      std::span<const Rendering::ViewDesc> views,
                                      float deltaTimeSeconds)
 {
+    // A node can allocate a utility view (a mirror or probe capture) while it declares, and the
+    // registry's vector then grows. The declaration reads this copy of the frame's views.
+    const std::vector<Rendering::ViewDesc> viewSnapshot(views.begin(), views.end());
+    views = viewSnapshot;
+
     if (m_BlueprintDirty)
         EnsureNodeInstances();
 
