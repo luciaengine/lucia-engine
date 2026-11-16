@@ -192,6 +192,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/Assets)
       EngineMaterialTests
       EngineTextureTests
       EngineRenderServicesTests
+      ReflectionProbeTests
       EngineWorldDrawTests
       RenderPipelineDeclareTests
       MaterialGraphCompilerTests

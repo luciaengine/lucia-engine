@@ -216,8 +216,14 @@ void PipelineVariantCache::RequestConcreteWarm(const Material& material,
         return;
     }
     const uint64_t warmKey = Rendering::PipelineCache::CombineGraphicsKey(id, formatKey);
-    std::lock_guard lock(m_ConcreteWarmMutex);
-    m_ConcreteWarmWaits.erase(warmKey);
+    bool waited = false;
+    {
+        std::lock_guard lock(m_ConcreteWarmMutex);
+        waited = m_ConcreteWarmWaits.erase(warmKey) != 0;
+    }
+    // A draw that waited on this build was skipped; it can draw now.
+    if (waited && state == Rendering::PipelineBuildState::Warm)
+        m_Materials->NotePipelineReady();
 }
 
 void PipelineVariantCache::QueueConcreteWarm(const Material& material,
@@ -258,17 +264,25 @@ void PipelineVariantCache::PruneSettledConcreteWarmWaits()
     // Asked outside the lock, as HasPipelineBuildsInFlight asks: a build the
     // device dropped unrun is queued again, since its materials still wait.
     Rendering::IDevice* device = m_Materials->GetDevice();
+    bool turnedWarm = false;
     std::erase_if(asked,
-                  [device](const AskedWait& wait)
+                  [device, &turnedWarm](const AskedWait& wait)
                   {
-                      return device->RequestGraphicsPipeline(wait.Id, wait.FormatKey) ==
-                             Rendering::PipelineBuildState::Pending;
+                      const Rendering::PipelineBuildState state =
+                          device->RequestGraphicsPipeline(wait.Id, wait.FormatKey);
+                      turnedWarm |= state == Rendering::PipelineBuildState::Warm;
+                      return state == Rendering::PipelineBuildState::Pending;
                   });
-    std::lock_guard lock(m_ConcreteWarmMutex);
-    for (const AskedWait& settled : asked)
-        if (auto it = m_ConcreteWarmWaits.find(settled.WarmKey);
-            it != m_ConcreteWarmWaits.end() && it->second.Generation == settled.Generation)
-            m_ConcreteWarmWaits.erase(it);
+    {
+        std::lock_guard lock(m_ConcreteWarmMutex);
+        for (const AskedWait& settled : asked)
+            if (auto it = m_ConcreteWarmWaits.find(settled.WarmKey);
+                it != m_ConcreteWarmWaits.end() && it->second.Generation == settled.Generation)
+                m_ConcreteWarmWaits.erase(it);
+    }
+    // The draws that waited on these builds were skipped; they can draw now. A failed build moves nothing.
+    if (turnedWarm)
+        m_Materials->NotePipelineReady();
 }
 
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
@@ -938,6 +952,7 @@ void PipelineVariantCache::ApplyPendingVariantPublishes()
         }
         for (const auto& format : warmFormats)
             RequestConcreteWarm(*rec.Key.material, rec.PipelineId, format);
+        m_Materials->NotePipelineReady();
         FireVariantPublished(rec.MaterialGuid);
     }
 }

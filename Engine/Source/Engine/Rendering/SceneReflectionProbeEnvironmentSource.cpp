@@ -282,11 +282,13 @@ uint64_t SceneReflectionProbeEnvironmentSource::BaseDigest() const
         ? m_Services->GetWorldRenderContentDigest(m_Desc.WorldId)
         : 0;
     HashBytes(h, &contentDigest, sizeof(contentDigest));
+    // A capture taken while a pipeline built is missing that draw. The epoch moves when the draw can draw.
+    const SceneProbeWorldEpochs epochs = WorldEpochs();
+    HashBytes(h, &epochs.Pipelines, sizeof(epochs.Pipelines));
     // A realtime probe also follows the world's epochs: every light, render content, shadow casters and
     // dynamic depth. BakeDue paces the recaptures to the interval while they move.
     if (m_Desc.UpdateMode == SceneReflectionProbeUpdateMode::Realtime)
     {
-        const SceneProbeWorldEpochs epochs = WorldEpochs();
         HashBytes(h, &epochs.Lights, sizeof(epochs.Lights));
         HashBytes(h, &epochs.RenderContent, sizeof(epochs.RenderContent));
         HashBytes(h, &epochs.ShadowCasters, sizeof(epochs.ShadowCasters));
