@@ -85,13 +85,18 @@ The asset system owns the bake, beside the mesh level of detail cache and the HL
 
 ### Step 3: runtime last stage
 
-The GPU-driven draw path owns the selection.
+The first runtime slice is built in the tree package, which owns the trees:
 
-- `GPUMesh` gets an impostor link: the impostor material index and a coverage threshold below the last mesh level. `draw_command_scatter.comp` selects the impostor beyond the threshold and emits one quad draw per instance into the impostor batch.
-- The transition uses the dither crossfade that mesh levels already use (`Includes/lod_crossfade.glsl`).
-- The impostor surface shader picks the 3 nearest frames, blends them, and writes depth from the depth atlas. Then the depth prepass and the shadow passes see a correct silhouette.
-- Impostors cast cascade shadows from the depth atlas. An impostor has no wind, so far trees stop invalidating the cascade shadow cache. Today a forest with wind invalidates it every frame.
-- The stage applies to any mesh with a bake, not only trees: rocks and props in open worlds use hemi-octahedral, and objects seen from above or below in flight and space games use full octahedral.
+- The tree extraction measures each tree's screen coverage from the viewpoint camera with the HLOD metric (`Hlod::ClusterCoverage`, `Hlod::UpdateProxyActive`) on the impostor sphere. Below the switch coverage (one atlas texel per screen pixel) it draws one card instance with the variant's impostor material instead of the bark and leaf parts. A tree keeps its mesh until its atlas is baked and its card pipeline is built.
+- The card material uses the engine's `Surfaces/impostor.glsl` and `VertexModifiers/impostor_card.glsl`. The CPU writes the instance's `custom0`: the hemi-octahedral code of the view direction in the tree's frame, and the tree's yaw for the normals. The card spans the selected frame's plane, so it matches the baked image.
+- Cards cast cascade shadows, but in shadow passes they face the camera, not the light.
+
+Not in this slice, and the next steps for the stage:
+
+- A `GPUMesh` impostor link selected in `draw_command_scatter.comp`, so any mesh with a bake gets the stage and the selection runs on the GPU.
+- The dither crossfade between mesh and card (`Includes/lod_crossfade.glsl`).
+- Depth from the atlas and blending of the 3 nearest frames.
+- Light-facing shadow cards.
 
 ### Verification
 
