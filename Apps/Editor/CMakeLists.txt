@@ -707,6 +707,7 @@ set(EDITOR_SOURCES
 	Source/DebugServer/AssistantSessionHandlers.cpp
 	Source/DebugServer/GpuToolingHandlers.cpp
 	Source/DebugServer/GroundQueryDebugHandlers.cpp
+	Source/DebugServer/ReflectionProbeDebugHandlers.cpp
 	Source/DebugServer/JobSystem/JobSystemDebugHandlers.cpp
 	Source/DebugServer/JobSystem/JobSystemReport.cpp
 	Source/DebugServer/MemoryDebugHandlers.cpp
@@ -763,6 +764,7 @@ set(EDITOR_HEADERS
 	Source/DebugServer/ElementPointerTarget.h
 	Source/DebugServer/GpuToolingHandlers.h
 	Source/DebugServer/GroundQueryDebugHandlers.h
+	Source/DebugServer/ReflectionProbeDebugHandlers.h
 	Source/DebugServer/JobSystem/JobSystemDebugHandlers.h
 	Source/DebugServer/JobSystem/JobSystemReport.h
 	Source/DebugServer/MemoryDebugHandlers.h
