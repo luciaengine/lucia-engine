@@ -89,6 +89,8 @@ set(EDITOR_SOURCES
 	Source/Editor/Hierarchy/HierarchyLightIconTint.cpp
 	Source/Editor/Hierarchy/HierarchyNavigationBar.cpp
 	Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
+	Source/Editor/Hierarchy/LayerControls/HierarchyLayerControls.cpp
+	Source/Editor/Hierarchy/LayerControls/HierarchyLayerPicker.cpp
 	Source/Editor/Hierarchy/HierarchyDataProvider.cpp
 	Source/Editor/Hierarchy/HierarchyReparentRules.cpp
 	Source/Startup/BuiltinAssetSync.cpp
@@ -944,6 +946,8 @@ set(EDITOR_HEADERS
 		Include/Editor/Entities/EntityDuplicate.h
 		Include/Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h
 		Include/Editor/Hierarchy/SpritePreview/SpritePreview.h
+		Include/Editor/Hierarchy/LayerControls/HierarchyLayerControls.h
+		Include/Editor/Hierarchy/LayerControls/HierarchyLayerPicker.h
     Include/Panels/LogPanel/LogChannelPopover.h
     Include/Panels/LogPanel.h
     Include/Panels/LogView.h

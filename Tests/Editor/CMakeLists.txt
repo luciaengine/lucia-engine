@@ -2863,6 +2863,12 @@ add_test(NAME AtlasRegionThumbnailTests COMMAND $<TARGET_FILE:AtlasRegionThumbna
 
 add_executable(RenderSortingEditorTests
     RenderSortingEditorTests.cpp
+    # The Hierarchy's Render Layer and Sorting Layer columns.
+    HierarchyLayerControlsTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/LayerControls/HierarchyLayerControls.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/LayerControls/HierarchyLayerPicker.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/RenderLayers/RenderLayerField.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/CollapsibleInfoCard.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingDiagnostic.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingFields.cpp

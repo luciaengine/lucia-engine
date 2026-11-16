@@ -94,10 +94,65 @@
 	margin-right: 46px;
 }
 
-.hierarchy-panel .tree .tree-item.has-render-layer .tree-title {
+/* The optional layer columns (Editor/Hierarchy/LayerControls), anchored to the row's right edge left of
+   the eye: the first at 45 px, the second 112 px further in (86 px in a narrow panel). The title reserves
+   the strip of the columns it shows; its selectors outrank the lock's 46 px reserve above. */
+.hierarchy-layer-picker {
+	position: absolute;
+	right: 45px;
+	top: 0px;
+	width: 104px;
+	min-width: 104px;
+	max-width: 104px;
+	height: 100%;
+	min-height: 0px;
+	justify-content: center;
+	font-size: 12px;
+}
+
+.hierarchy-layer-picker-second {
+	right: 157px;
+}
+
+.hierarchy-layer-picker-narrow {
+	width: 78px;
+	min-width: 78px;
+	max-width: 78px;
+}
+
+.hierarchy-layer-picker-second-narrow {
+	right: 131px;
+}
+
+/* A short control clips its label rather than wrapping it. */
+.hierarchy-layer-picker-header {
+	color: var(--ui_color_text_secondary);
+	padding: 0px 5px 0px 7px;
+	height: 100%;
+	min-height: 0px;
+	max-height: 20px;
+	font-size: 12px;
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.hierarchy-panel .tree .tree-item .tree-title.hierarchy-title-one-layer {
 	margin-right: 163px;
 }
 
-.hierarchy-panel .tree .tree-item.has-render-layer.render-layer-narrow .tree-title {
+.hierarchy-panel .tree .tree-item .tree-title.hierarchy-title-two-layers {
+	margin-right: 275px;
+}
+
+.hierarchy-panel .tree .tree-item .tree-title.hierarchy-title-one-layer-narrow {
 	margin-right: 133px;
+}
+
+.hierarchy-panel .tree .tree-item .tree-title.hierarchy-title-two-layers-narrow {
+	margin-right: 219px;
+}
+
+/* Below this row width the columns stop moving into the name; the panel clips the row instead. */
+.hierarchy-row-with-layers {
+	min-width: 391px;
 }

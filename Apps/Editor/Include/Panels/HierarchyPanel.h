@@ -9,6 +9,7 @@
 #include "ECS/ECS.h"
 #include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityRename.h"
 #include "Editor/Hierarchy/HierarchyRowActivity.h"
+#include "Editor/Hierarchy/LayerControls/HierarchyLayerControls.h"
 #include "EditorChangeNotifications.h"
 #include "Scene/SceneDocumentManager.h"
 #include "Scene/SceneIO.h"
@@ -384,10 +385,10 @@ private:
 
     HierarchySortMode m_SortMode = HierarchySortMode::Custom;
     HierarchySortDirection m_SortDirection = HierarchySortDirection::Ascending;
-    bool m_ShowRenderLayer = false;
+    // The optional Render Layer and Sorting Layer columns of the rows.
+    Editor::HierarchyLayerControls m_LayerControls;
 
     void ApplySortSettings();
-    void ApplyRenderLayerVisibility();
     void SetHorizontalBarPresent(bool present);
 
     std::function<void(TreeId, float, float)> m_ShowContextMenu;
