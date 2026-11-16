@@ -17,12 +17,12 @@ void CharacterControllerWritebackSystem::Update(ECS::World& world, float32 /*del
         return;
 
     uint32 composed = 0;
-    world.Query<ECS::Write<GameEngine::Components::Transform>,
-                ECS::Write<GameEngine::Components::WorldTransform>,
+    world.Query<ECS::Read<GameEngine::Components::Transform>,
+                ECS::Read<GameEngine::Components::WorldTransform>,
                 ECS::Write<GameEngine::Components::CharacterController>>()
         .Each([&](ECS::EntityHandle e,
-                  GameEngine::Components::Transform& t,
-                  GameEngine::Components::WorldTransform& wt,
+                  const GameEngine::Components::Transform& t,
+                  const GameEngine::Components::WorldTransform& wt,
                   GameEngine::Components::CharacterController& cc)
               {
                   if (!cc.initialized || !pw->IsCharacterValid(cc.character))

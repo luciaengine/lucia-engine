@@ -17,7 +17,7 @@ namespace
 {
 // Write the body pose of `e` into its Transform and WorldTransform. True when the pose changed.
 bool ComposeBodyPose(ECS::World& world, Physics::PhysicsWorld& pw, float32 alpha, ECS::EntityHandle e,
-                     Components::Transform& t, Components::WorldTransform& wt, Components::PhysicsBody& body)
+                     const Components::Transform& t, const Components::WorldTransform& wt, Components::PhysicsBody& body)
 {
     if (!body.initialized || !pw.IsBodyValid(body.body))
         return false;
@@ -38,16 +38,16 @@ void PhysicsWritebackSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 
     const float32 alpha = world.GetSimulationClock().GetAlpha();
     uint32 composed = 0;
-    const auto compose = [&world, pw, alpha, &composed](ECS::EntityHandle e, Components::Transform& t,
-                                                         Components::WorldTransform& wt, Components::PhysicsBody& body)
+    const auto compose = [&world, pw, alpha, &composed](ECS::EntityHandle e, const Components::Transform& t,
+                                                         const Components::WorldTransform& wt, Components::PhysicsBody& body)
     {
         if (ComposeBodyPose(world, *pw, alpha, e, t, wt, body))
             ++composed;
     };
 
     auto bodies = world.Query<
-        ECS::Write<GameEngine::Components::Transform>,
-        ECS::Write<GameEngine::Components::WorldTransform>,
+        ECS::Read<GameEngine::Components::Transform>,
+        ECS::Read<GameEngine::Components::WorldTransform>,
         ECS::Write<GameEngine::Components::PhysicsBody>>();
     // A kinematic body follows its Transform (PhysicsStepSystem moves it there over the frame's steps), so
     // the Transform is the source and is not written back. Leaving its chunks out of the visit also leaves
@@ -58,8 +58,8 @@ void PhysicsWritebackSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     // A moving platform is the exception: MovingPlatformSystem moves its kinematic body, and the body
     // pose is the source of its Transform.
     auto platforms = world.Query<
-        ECS::Write<GameEngine::Components::Transform>,
-        ECS::Write<GameEngine::Components::WorldTransform>,
+        ECS::Read<GameEngine::Components::Transform>,
+        ECS::Read<GameEngine::Components::WorldTransform>,
         ECS::Write<GameEngine::Components::PhysicsBody>>();
     platforms.With<GameEngine::Components::KinematicBody, GameEngine::Components::MovingPlatform>();
     platforms.Each(compose);

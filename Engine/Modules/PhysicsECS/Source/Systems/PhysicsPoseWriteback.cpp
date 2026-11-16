@@ -61,8 +61,8 @@ bool WritePhysicsPose(ECS::World& world,
                       const Physics::Transform& current,
                       const Physics::Transform* interpolateFrom,
                       float32 alpha,
-                      Components::Transform& transform,
-                      Components::WorldTransform& worldTransform,
+                      const Components::Transform& transform,
+                      const Components::WorldTransform& worldTransform,
                       Components::PhysicsWritebackRecord& record)
 {
     if (IsUnchanged(current, interpolateFrom, transform, worldTransform, record))
@@ -79,19 +79,20 @@ bool WritePhysicsPose(ECS::World& world,
                                            static_cast<float32>(rotationGlm.z)};
     const Components::Transform composed = Components::Transform::FromTRS(position, rotation, scale);
 
-    // Each target is gated on its own bytes, so a component that already holds the pose keeps its
-    // Version and emits no dirty-feed entry.
+    // Each target is gated on its own bytes and taken for write only when they change, so a
+    // component that already holds the pose keeps its column version and emits no dirty-feed entry.
     if (!SamePoseBytes(transform.Position, transform.Basis, composed.Position, composed.Basis))
-        transform = composed;
+        *world.GetComponentForWrite<Components::Transform>(entity) = composed;
 
     if (!SamePoseBytes(worldTransform.Position, worldTransform.Basis, composed.Position, composed.Basis))
     {
-        worldTransform.Position = composed.Position;
-        worldTransform.Basis = composed.Basis;
+        auto& written = *world.GetComponentForWrite<Components::WorldTransform>(entity);
+        written.Position = composed.Position;
+        written.Basis = composed.Basis;
         // A direct WorldTransform write: bump Version and emit the dirty-feed entry so this frame's
         // consumers (Scene TLAS, motion vectors, GPUScene upload) see the move; the hierarchy would
         // only re-derive it from the local Transform on the next frame.
-        Components::BumpWorldTransform(world, entity, worldTransform);
+        Components::BumpWorldTransform(world, entity, written);
     }
 
     record.Valid = interpolateFrom == nullptr || SamePose(*interpolateFrom, current);

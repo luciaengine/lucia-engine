@@ -46,8 +46,8 @@ bool WritePhysicsPose(ECS::World& world,
                       const Physics::Transform& current,
                       const Physics::Transform* interpolateFrom,
                       float32 alpha,
-                      Components::Transform& transform,
-                      Components::WorldTransform& worldTransform,
+                      const Components::Transform& transform,
+                      const Components::WorldTransform& worldTransform,
                       Components::PhysicsWritebackRecord& record);
 
 } // namespace GameEngine::PhysicsECS
