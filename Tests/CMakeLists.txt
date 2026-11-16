@@ -14,24 +14,31 @@ endif()
 # module's ResourceHandleManagerTests target (Engine/Modules/Rendering/Tests).
 
 # Many native tests assume `ApplicationConfig.assetDirectory = "Assets"` and run
-# with WORKING_DIRECTORY = ${CMAKE_BINARY_DIR}. Stage the repo Assets into the
-# per-preset build root so these tests remain hermetic (and we avoid global
-# configure-time copies in the top-level CMakeLists).
+# with WORKING_DIRECTORY = ${CMAKE_BINARY_DIR}. Stage the engine content
+# (Engine/Assets) into Assets/ under the per-preset build root so these tests
+# remain hermetic (and we avoid global configure-time copies in the top-level
+# CMakeLists).
 #
 # Test FIXTURES are staged the same way, mirroring their repo-relative paths
 # under the build root; suites resolve them exe-anchored via
 # Engine/Tests/StagedTestPaths.h (StagedRoot()) instead of climbing from the
 # CWD or __FILE__ into the source tree. Fixture roots staged here:
-#   Assets/                            asset-loading suites (also carries the
+#   Engine/Assets/ -> Assets/          asset-loading suites (also carries the
 #                                      optional, gitignored Models/FBXTest .fbx
 #                                      payload when a dev machine has it)
 #   Engine/Tests/Fixtures/             authored-LOD glTF/FBX fixtures
 #   Engine/Modules/Rendering/Shaders/  real-GLSL material compile tests
 #   Tests/Projects/Biggles/Assets/Scenes/  SceneIO real-scene fixture
+#   Tests/Projects/WASDDemo/Assets/, Tests/Projects/Biggles/Assets/Scripts/,
+#   Tests/EditorHarness/game-ui-hud-csharp/Assets/Scripts/
+#                                      committed C# the script-project gate compiles
 #   Tools/Web/smoke-project/Assets/Scenes/ web seed-project scenes
 #   Tools/Web/smoke-project/Assets/Particles/ the particle stack they reference
 #   Tests/Assets/TestData/BigglesCaseShadow.assetdb  frozen pre-migration journal
-if(EXISTS ${CMAKE_SOURCE_DIR}/Assets)
+#   Apps/Editor/ProjectTemplates/      shipped picker scenes and their assets
+#   Ocean, Includes, TerrainGrass, CBT shader folders -> bin/<Config>/Tests/Assets/Shaders/,
+#                                      the exe-anchored root every test executable shares
+if(EXISTS ${CMAKE_SOURCE_DIR}/Engine/Assets)
   # Each mirror is copy + orphan prune: copy_directory_if_different never
   # deletes, so without the prune a staged mirror keeps files whose sources
   # were deleted from the repo and suites keep passing against assets a fresh
