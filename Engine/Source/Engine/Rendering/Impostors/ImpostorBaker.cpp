@@ -258,8 +258,8 @@ void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderService
 
     ViewRegistry& views = services.Views();
     const Rendering::CameraData camera =
-        MakeImpostorFrameCamera(key.Layout, column, row, key.FramesPerSide, job.Request.Bounds);
-    const float radius = job.Request.Bounds.Radius();
+        MakeImpostorFrameCamera(key.Layout, column, row, key.FramesPerSide, job.Request.Center, job.Request.Radius);
+    const float radius = job.Request.Radius;
     views.SetCameraData(m_Camera, camera, Rendering::CameraRanges{radius, 3.0f * radius});
     views.SetViewLetterbox(m_View, ViewLetterbox{true, column * key.FrameSize, row * key.FrameSize, key.FrameSize, key.FrameSize});
 

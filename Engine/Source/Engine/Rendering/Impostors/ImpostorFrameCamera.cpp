@@ -1,7 +1,6 @@
 #include "Engine/Rendering/Impostors/ImpostorFrameCamera.h"
 
 #include "Engine/Rendering/RenderOrigin.h"
-#include "Mathematics/Geometry.h"
 #include "Mathematics/MatrixOps.h"
 #include "Mathematics/WorldPosition.h"
 
@@ -34,15 +33,16 @@ Rendering::CameraData MakeImpostorFrameCamera(Mathematics::OctahedralLayout layo
                                               uint32_t column,
                                               uint32_t row,
                                               uint32_t framesPerSide,
-                                              const Mathematics::BoundingBox& bounds)
+                                              const Mathematics::Vector3& center,
+                                              float sphereRadius)
 {
     const Mathematics::Vector3 direction = Mathematics::OctahedralFrameDirection(layout, column, row, framesPerSide);
-    const float radius = std::max(bounds.Radius(), kMinimumRadius);
-    const Mathematics::Vector3 eye = bounds.center + direction * (2.0f * radius);
+    const float radius = std::max(sphereRadius, kMinimumRadius);
+    const Mathematics::Vector3 eye = center + direction * (2.0f * radius);
     const ImpostorFrameAxes axes = MakeImpostorFrameAxes(direction);
 
     Rendering::CameraData camera{};
-    camera.view = Mathematics::MakeLookAtLH(eye, bounds.center, axes.Up);
+    camera.view = Mathematics::MakeLookAtLH(eye, center, axes.Up);
     camera.proj = Mathematics::MakeOrthographicLH_ZO_ReverseZ(-radius, radius, -radius, radius, radius, 3.0f * radius);
     camera.viewProj = camera.proj * camera.view;
     SetCameraEye(camera, Mathematics::WorldPosition::FromVector3(eye));

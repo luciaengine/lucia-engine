@@ -261,7 +261,8 @@ Engine::Renderer::ImpostorBakeRequest MakeImpostorBakeRequest(const TreeVariant&
     request.Key.Layout = Mathematics::OctahedralLayout::Hemisphere;
     request.Key.FramesPerSide = kImpostorFramesPerSide;
     request.Key.FrameSize = kImpostorFrameSize;
-    request.Bounds = variant.Bounds;
+    request.Center = variant.Bounds.center;
+    request.Radius = variant.ImpostorRadius;
     if (variant.Branches.IsValid())
         request.Parts.push_back({variant.Branches, variant.Materials.BarkStatic});
     if (variant.Leaves.IsValid())
@@ -385,7 +386,8 @@ void EZTreeExtractionSystem::RequestImpostors(FrameContext& frame)
         const bool atlasReady = atlas.Color.IsValid() && atlas.NormalDepth.IsValid();
         if (atlasReady && material->Color != atlas.Color)
         {
-            RegisterImpostorMaterial(*m_RenderServices, variant->Materials.Impostor, atlas, variant->Bounds,
+            RegisterImpostorMaterial(*m_RenderServices, variant->Materials.Impostor, atlas, variant->Bounds.center,
+                                     variant->ImpostorRadius,
                                      kImpostorFramesPerSide, Mathematics::OctahedralLayout::Hemisphere);
             material->Color = atlas.Color;
         }

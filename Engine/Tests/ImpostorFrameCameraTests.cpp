@@ -41,7 +41,7 @@ TEST(ImpostorFrameCamera, EveryFrameSeesTheBoundsCenterAtTheMiddleOfTheImage)
         {
             for (uint32_t column = 0; column < kFramesPerSide; ++column)
             {
-                const Rendering::CameraData camera = MakeImpostorFrameCamera(layout, column, row, kFramesPerSide, bounds);
+                const Rendering::CameraData camera = MakeImpostorFrameCamera(layout, column, row, kFramesPerSide, bounds.center, bounds.Radius());
                 const Mathematics::Vector3 center = Project(camera, bounds.center);
                 EXPECT_NEAR(center.x, 0.0f, kTolerance);
                 EXPECT_NEAR(center.y, 0.0f, kTolerance);
@@ -58,7 +58,7 @@ TEST(ImpostorFrameCamera, TheBoundingSphereFillsTheReverseZDepthRange)
     const Mathematics::Vector3 direction =
         Mathematics::OctahedralFrameDirection(Mathematics::OctahedralLayout::Hemisphere, 2u, 5u, kFramesPerSide);
     const Rendering::CameraData camera =
-        MakeImpostorFrameCamera(Mathematics::OctahedralLayout::Hemisphere, 2u, 5u, kFramesPerSide, bounds);
+        MakeImpostorFrameCamera(Mathematics::OctahedralLayout::Hemisphere, 2u, 5u, kFramesPerSide, bounds.center, radius);
     EXPECT_NEAR(Project(camera, bounds.center + direction * radius).z, 1.0f, kTolerance) << "near side is 1 (reverse-Z)";
     EXPECT_NEAR(Project(camera, bounds.center - direction * radius).z, 0.0f, kTolerance) << "far side is 0";
 }

@@ -36,7 +36,10 @@ struct ImpostorBakePart
 struct ImpostorBakeRequest
 {
     ImpostorAtlasKey Key;
-    Mathematics::BoundingBox Bounds{}; // Object space, as the parts' vertices.
+    // The sphere the frames fit, object space, as the parts' vertices: the tightest one around
+    // the vertices gives the sharpest frames.
+    Mathematics::Vector3 Center;
+    float Radius = 1.0f;
     std::vector<ImpostorBakePart> Parts;
 };
 

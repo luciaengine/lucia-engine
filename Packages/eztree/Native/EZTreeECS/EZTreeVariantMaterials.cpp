@@ -341,7 +341,8 @@ void RegisterVariantMaterials(Engine::Renderer::RenderServices& renderServices,
 void RegisterImpostorMaterial(Engine::Renderer::RenderServices& renderServices,
                               const GUID& material,
                               const Engine::Renderer::ImpostorAtlas& atlas,
-                              const Mathematics::BoundingBox& bounds,
+                              const Mathematics::Vector3& center,
+                              float radius,
                               uint32 framesPerSide,
                               Mathematics::OctahedralLayout layout)
 {
@@ -355,7 +356,7 @@ void RegisterImpostorMaterial(Engine::Renderer::RenderServices& renderServices,
     doc.doubleSided = true;
     doc.properties["alphaCutoff"] = 0.5f;
     doc.properties["impostorBounds"] =
-        std::vector<float>{bounds.center.x, bounds.center.y, bounds.center.z, bounds.Radius()};
+        std::vector<float>{center.x, center.y, center.z, radius};
     doc.properties["impostorAtlas"] = std::vector<float>{
         static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f, 0.0f, 0.0f};
     doc.textures["albedoMap"] = std::string{};

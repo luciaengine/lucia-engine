@@ -16,6 +16,7 @@ struct TreeOptions;
 namespace Mathematics
 {
 struct BoundingBox;
+struct Vector3;
 enum class OctahedralLayout : uint8_t;
 }
 namespace Engine::Renderer
@@ -54,7 +55,8 @@ void RegisterVariantMaterials(Engine::Renderer::RenderServices& renderServices,
 void RegisterImpostorMaterial(Engine::Renderer::RenderServices& renderServices,
                               const GUID& material,
                               const Engine::Renderer::ImpostorAtlas& atlas,
-                              const Mathematics::BoundingBox& bounds,
+                              const Mathematics::Vector3& center,
+                              float radius,
                               uint32 framesPerSide,
                               Mathematics::OctahedralLayout layout);
 
