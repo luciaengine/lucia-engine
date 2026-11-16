@@ -468,6 +468,9 @@ set(EDITOR_TEST_SOURCES
 	# (JobSystemStatistics + nlohmann).
 	JobSystemReportTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/JobSystem/JobSystemReport.cpp
+	# get_reflection_probe_state's reply: the retained probes and the digests a recapture check reads.
+	ReflectionProbeDebugHandlersTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/ReflectionProbeDebugHandlers.cpp
 	# get_ai_trace's reply: the fields of a traced agent's decisions on a test world. Leaf TU
 	# (AiTrace + nlohmann).
 	AiTraceReportTests.cpp
