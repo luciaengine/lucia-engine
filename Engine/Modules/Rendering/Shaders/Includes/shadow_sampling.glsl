@@ -66,59 +66,7 @@ vec3 ge_shadowReceiverDx = vec3(0.0);
 vec3 ge_shadowReceiverDy = vec3(0.0);
 #endif
 
-layout(set = 0, binding = 8, std140) uniform ShadowData
-{
-    mat4 ge_shadowVP[4];   // Light view-projection per cascade
-    vec4 ge_shadowSplits;  // View-space split distances (x=cascade0, y=cascade1, ...)
-    vec4 ge_shadowParams;  // x=depthBias, y=normalBias, z=numCascades, w=maxShadowDistance
-    vec4 ge_shadowDebug;   // x=debugMode, y=pcssActive (0=disabled, 1=PCSS on), z=frameIndex, w=pcfQuality
-    // x = softness multiplier (Poisson PCF fallback only),
-    // y = PCSS / Poisson disk tap count (runtime-bound loop, clamped to [8, 64]
-    //     in the shader; the 8/16/32/64 set comes from the CPU setter,
-    //     ShadowMapRenderFeature::SetPcssTapCount, not from this clamp),
-    // z = maxPenumbraWorld (world-space cap, converted per-cascade in the shader),
-    // w = receiverPlaneBias (0/1 toggle).
-    vec4 ge_shadowPcss;
-    // Per-cascade PCSS metrics (precomputed on CPU):
-    //   x = world-per-texel (world units per shadow-map texel)
-    //   y = depth span (world units, used to convert NDC depth delta to world delta)
-    //   z = bindless index for this cascade's raw-depth texture (PCSS blocker search);
-    //       unused under the compat profile, which reads ge_shadowMapRaw by layer
-    //   w = effective light size for this cascade (= global * falloff^cascadeIdx)
-    vec4 ge_shadowPcssCascades[4];
-    // Per-cascade PCSS min/max pyramid (ShadowMinMaxPyramid, R = min, G = max):
-    //   x = bindless index of this cascade's pyramid view; NEGATIVE means this
-    //       frame has no pyramid and the PCSS filter runs unaccelerated
-    //   y = mip levels in the pyramid
-    //   z = base downshift — level 0 covers a (1 << z) square of shadow texels
-    //   w = reserved
-    vec4 ge_shadowPcssPyramid[4];
-    // Frame-global filter params:
-    //   x = dither basis (0 = screen space, 1 = shadow space) — ShadowDitherBasis
-    //   y = authored distance fade fraction, zw = reserved (0)
-    vec4 ge_shadowFilterParams;
-    // The terrain's sun-space clearance map (terrain_shadow.glsl), ShadowDataGPU terrainShadow*:
-    //   grid0: x, y = grid centre X, Z; z, w = terrain corner X, Z (render-origin relative)
-    //   grid1: x, y = terrain extent X, Z; z, w = sun horizontal direction X, Z
-    //   grid2: x = tan(elevation); y = texel (m); z, w = u of sample 0, v of line 0
-    //   grid3: x = samples per line; y = lines; z = the terrain's base height (render-origin
-    //          relative); w = metres per normalized height
-    //   source: x = map bindless index; y = height texture bindless index; z = 1 when a map is
-    //           published for this view this frame; w = map side (texels)
-    //   field: x = the lit field's bindless index (0: none, TerrainShadowMap FieldLit); y = its levels
-    //   heightSpan: x, y = the extent the height texture spans X, Z (whole tiles; grid1.xy is the
-    //               authored size, the bound of "on the terrain")
-    // Order matters more than naming: std140 lays this block out by position, matching
-    // ShadowDataGPU member for member. A mismatch here is silent garbage, not a compile error.
-    vec4 ge_terrainShadowGrid0;
-    vec4 ge_terrainShadowGrid1;
-    vec4 ge_terrainShadowGrid2;
-    vec4 ge_terrainShadowGrid3;
-    uvec4 ge_terrainShadowSource;
-    vec4 ge_shadowReferenceDepth; // source-camera depth plane for mirror receivers
-    uvec4 ge_terrainShadowField;
-    vec4 ge_terrainShadowHeightSpan;
-};
+#include "shadow_data.glsl"
 
 layout(set = 0, binding = 9) uniform sampler2DArrayShadow ge_shadowMapArray;
 
@@ -235,58 +183,7 @@ float GE_TerrainShadow(vec3 posRel, float maxPenumbraRadius)
 #include "shadow_distance_fade.glsl"
 #include "shadow_filter.glsl"
 
-// Compile-time upper bound on the runtime-variable tap count. Drivers need a
-// constant loop bound for clean SPIR-V codegen; the actual iteration count is
-// capped at runtime via `tapCount` (clamped to [8, 64] from ge_shadowPcss.y).
-const int kPcssMaxTaps = 64;
-
-#include "vogel_disk.glsl"
-
-// Per-pixel pseudo-random rotation for the Vogel disk. Returns (cosA, sinA).
-//
-// Interleaved gradient noise (Jimenez 2014) over a basis chosen at runtime by
-// ge_shadowFilterParams.x:
-//
-//   Screen (0)      keys on gl_FragCoord. The noise field is nailed to the
-//                   SCREEN, so geometry slides under it as the camera moves —
-//                   the grain swims. High spatial frequency, which is what the
-//                   other basis gives up.
-//   ShadowSpace (1) keys on the shadow coordinate, welding the field to the
-//                   shadow lattice (and via the centre texel snap, to the
-//                   world). Under magnification adjacent screen pixels map to
-//                   nearby shadow coords and so decorrelate LESS: the noise
-//                   drops in frequency, reading blotchy rather than grainy.
-//
-// Neither is correct in general — the trade is range-dependent — so this is a
-// live toggle rather than a fix, and Screen stays the default because it is
-// what shipped.
-//
-// The shadow key is the CONTINUOUS product, never floor()ed. Flooring gives
-// every screen pixel inside one shadow texel the same angle, which under
-// magnification turns fine grain into texel-sized blocks — the exact artifact
-// this basis is meant to avoid. (The local families in clustered_lighting.glsl
-// do floor theirs; that is a known divergence, not a pattern to copy.)
-//
-// The temporal term feeds TAA accumulation; without TAA it would just turn the
-// penumbra into per-pixel shimmer, so it stays gated on GE_TAA_ENABLED.
-vec2 GE_PoissonRotation(vec2 screenPos, vec2 shadowUV, vec2 texSize)
-{
-    vec2 key = (ge_shadowFilterParams.x > 0.5) ? (shadowUV * texSize) : screenPos;
-#ifdef GE_TAA_ENABLED
-    key += ge_shadowDebug.z * 5.083;
-#endif
-    float angle = fract(52.9829189 * fract(dot(key, vec2(0.06711056, 0.00583715)))) * 6.2831853;
-    return vec2(cos(angle), sin(angle));
-}
-
-// Runtime tap count. This clamps the ENDS only and does not snap to the allowed
-// set: ShadowMapRenderFeature::SetPcssTapCount rounds to the nearest of
-// {8, 16, 32, 64} before upload, so the set is a CPU-side guarantee.
-int GE_PcssTapCount()
-{
-    int n = int(ge_shadowPcss.y + 0.5);
-    return clamp(n, 8, kPcssMaxTaps);
-}
+#include "shadow_pcss_taps.glsl"
 
 // Kernel width, in texels, from which the tap count grows past the authored one.
 const float kPcssTapRefTexels = 16.0;
@@ -1055,9 +952,13 @@ vec4 GE_SampleCascadeTint(vec3 biasedPos, int cascadeIdx)
 // near split boundaries and the distance fade before MaxShadowDistance.
 #ifdef GE_SCREEN_SPACE_SHADOWS_ENABLED
 layout(set = 0, binding = 48) uniform usampler2D ge_screenSpaceShadowMask;
-// Set before fragment control flow diverges; WGSL rejects derivatives inside
-// the per-light/receiver branches below.
-float ge_contactReceiverDepthFootprint = 0.0;
+#endif
+#if defined(GE_SCREEN_SPACE_SHADOWS_ENABLED) || (defined(GE_VIRTUAL_SHADOW_MAPS) && defined(GE_VIRTUAL_SHADOW_SUN_MASK))
+#include "prepass_receiver_mask.glsl"
+#define GE_READS_PREPASS_RECEIVER_MASK 1
+// fwidth(gl_FragCoord.z), set before fragment control flow diverges; WGSL rejects
+// derivatives inside the per-light/receiver branches below.
+float ge_prepassReceiverDepthFootprint = 0.0;
 #endif
 float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
 {
@@ -1070,17 +971,9 @@ float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
         all(lessThan(pixel, textureSize(ge_screenSpaceShadowMask, 0))))
     {
         uint packed = texelFetch(ge_screenSpaceShadowMask, pixel, 0).r;
-        float receiverDepth = uintBitsToFloat(packed & 0xffffff00u);
-        float visibility = float(packed & 255u) / 255.0;
-        // Only the depth-prepass receiver owns this value. This also rejects
-        // phase-B recovered surfaces and transparent layers at another depth.
-        // The resolved MSAA depth comes from a sample within this pixel,
-        // whereas the lighting invocation can evaluate depth at its center.
-        // Allow half a pixel of the receiver's own depth gradient as well as
-        // the packed-depth error; precision alone rejects sloping receivers.
-        float tolerance = max(abs(gl_FragCoord.z) * 3.1e-5, 1e-12)
-                        + 0.5 * ge_contactReceiverDepthFootprint;
-        if (receiverDepth > 0.0 && abs(receiverDepth - gl_FragCoord.z) <= tolerance)
+        float visibility = float(GE_PrepassReceiverValue(packed)) / 255.0;
+        // Only the depth-prepass receiver owns this value.
+        if (GE_IsPrepassReceiver(packed, gl_FragCoord.z, ge_prepassReceiverDepthFootprint))
         {
             float fade = GE_ShadowDistanceFade(linearDepth, ge_shadowParams.w, ge_shadowFilterParams.y);
             ge_lastContactShadowResult = mix(visibility, 1.0, fade);
@@ -1101,6 +994,7 @@ float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
 
 #ifdef GE_VIRTUAL_SHADOW_MAPS
 #include "virtual_shadow_directional.glsl"
+#include "virtual_shadow_sun_mask.glsl"
 #endif
 
 float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDirWS, vec2 screenPos)
@@ -1219,8 +1113,15 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     bool virtualResolved = false;
 #ifdef GE_VIRTUAL_SHADOW_MAPS
     // A resident virtual page replaces the cascade and its blend. The cascade stays the fallback.
-    virtualResolved = GE_TryVirtualShadowDirectional(posWS, normalWS, dot(normalWS, lightDirWS), screenPos,
-        (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER), shadow);
+    // The prepass receiver reads the visibility that the sun mask pass resolved for its pixel.
+    int sunMask = -1;
+#ifdef GE_VIRTUAL_SHADOW_SUN_MASK
+    sunMask = GE_ReadVirtualShadowSunMask(screenPos, gl_FragCoord.z, ge_prepassReceiverDepthFootprint, shadow);
+    virtualResolved = sunMask > 0;
+#endif
+    if (sunMask < 0)
+        virtualResolved = GE_TryVirtualShadowDirectional(posWS, normalWS, dot(normalWS, lightDirWS), screenPos,
+            (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER), shadow);
 #endif
     if (!virtualResolved)
         shadow = GE_SampleCascade(biasedPos, cascadeIdx, screenPos, receiverDx, receiverDy);

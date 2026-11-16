@@ -96,3 +96,21 @@ TEST_F(VirtualShadowSurfaceCompose, StandardSurfaceHasThePageLookupsOnlyWithTheK
         EXPECT_TRUE(FragmentNames(virtualShadows, lookup)) << lookup;
     }
 }
+
+TEST_F(VirtualShadowSurfaceCompose, StandardSurfaceReadsTheSunMaskOnlyWithTheKeyword)
+{
+    const MaterialBuildResult lookup = BuildStandardSurface(MaterialKeyword::VirtualShadowMaps);
+    const MaterialBuildResult sunMask =
+        BuildStandardSurface(MaterialKeyword::VirtualShadowMaps | MaterialKeyword::VirtualShadowSunMask);
+    for (const MaterialBuildResult* result : {&lookup, &sunMask})
+    {
+        for (const auto& error : result->errors)
+            ADD_FAILURE() << "Build error: " << error;
+        ASSERT_TRUE(result->success);
+        ASSERT_NE(result->package, nullptr);
+    }
+    EXPECT_FALSE(FragmentNames(lookup, "GE_ReadVirtualShadowSunMask"));
+    EXPECT_TRUE(FragmentNames(sunMask, "GE_ReadVirtualShadowSunMask"));
+    // A fragment that is not the prepass receiver keeps the lookup in the shader.
+    EXPECT_TRUE(FragmentNames(sunMask, "GE_TryVirtualShadowDirectional"));
+}
