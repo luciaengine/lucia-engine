@@ -129,7 +129,7 @@ def forest():
     return s, {
         "description": "Dense forest: 720 procedural trees from 12 seeds, global wind, a sun with virtual shadows.",
         "pipeline": {"virtualShadows": True},
-        "requiredPasses": ["Shadow"],
+        "requiredPasses": ["VirtualShadowDepth"],
         "poses": [pose("clearing", (0, 1.7, 0), 20, 2), pose("canopy", (0, 45, -130), 0, -18),
                   pose("edge", (-125, 2, -125), 45, 4)],
     }

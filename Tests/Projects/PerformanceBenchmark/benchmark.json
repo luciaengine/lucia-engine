@@ -19,7 +19,7 @@
         "virtualShadows": true
       },
       "requiredPasses": [
-        "Shadow"
+        "VirtualShadowDepth"
       ],
       "poses": [
         {
