@@ -3,11 +3,11 @@
 #include "AssetCore/GUID.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "ECS/Entity.h"
+#include "Engine/Rendering/ClusterLOD/ClusterLODCut.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Mathematics/Geometry.h"
 #include "Types/Types.h"
 
-#include <span>
 #include <vector>
 
 namespace GameEngine
@@ -17,10 +17,10 @@ namespace Rendering { class GPUScene; }
 namespace Engine::Renderer
 {
 
-/// The instances of cluster models that draw as one part per cluster group.
-/// An instance draws its coarse mesh as one entity until a group wants its fine page. Then the
-/// instance splits: it gets one runtime-only child per group, and its own GPU instance is evicted.
-/// The owner and its parts never draw in the same frame.
+/// The instances of cluster models that draw as one part per DAG unit of their cut.
+/// An instance draws its coarse mesh as one entity until a group under the resident level wants
+/// to refine. Then the instance splits: runtime-only children draw the units of its cut, and its
+/// own GPU instance is evicted. The owner and its parts never draw in the same frame.
 class ClusterLODSplits
 {
   public:
@@ -31,19 +31,33 @@ class ClusterLODSplits
         Components::MeshRenderer Renderer;
         GUID Model;
         uint32 Mesh = 0;
-        uint32 FirstPage = 0;
+        // Per group of the mesh: the decision of the cut that draws now.
+        std::vector<ClusterLODCutDecision> Decisions;
+        // Per unit of the mesh: the part, or a null handle, and the epoch it last drew.
         std::vector<ECS::EntityHandle> Parts;
+        std::vector<uint64> PartEpochs;
         uint64 LastWantedEpoch = 0;
-        // False until every part has a resolved world transform; the owner draws until then.
+        // False until the parts of the first cut can draw; the owner draws until then.
         bool Active = false;
     };
 
-    /// Creates evicted parts for `owner`, one per entry of `coarseParts`, in page order.
-    void Begin(ECS::World& world, ECS::EntityHandle owner, const Components::MeshRenderer& renderer, const GUID& model,
-               uint32 mesh, uint32 firstPage, std::span<const Rendering::MeshGPUHandle> coarseParts,
-               std::span<const Mathematics::BoundingBox> bounds, uint64 epoch);
-    /// Swaps the owner for its parts once the parts can draw. Returns true when the swap happened.
-    bool TryActivate(ECS::World& world, Rendering::GPUScene& scene, Instance& instance) const;
+    /// Starts an inactive split of `owner` with the cut `decisions` and no parts.
+    Instance& Begin(ECS::EntityHandle owner, const Components::MeshRenderer& renderer, const GUID& model, uint32 mesh,
+                    std::vector<ClusterLODCutDecision> decisions, uint32 unitCount, uint64 epoch);
+    /// Creates the evicted part of `unit`, or points its existing part at `geometry`.
+    void SetPart(ECS::World& world, Instance& instance, uint32 unit, Rendering::MeshGPUHandle geometry,
+                 const Mathematics::BoundingBox& bounds) const;
+    /// True when the part of `unit` exists, has a resolved world transform and draws `geometry`.
+    bool IsPartReady(const ECS::World& world, const Instance& instance, uint32 unit,
+                     Rendering::MeshGPUHandle geometry) const;
+    /// Draws or evicts the part of `unit`. Returns true when the part changed.
+    bool ShowPart(ECS::World& world, Rendering::GPUScene& scene, Instance& instance, uint32 unit, bool drawn,
+                  uint64 epoch) const;
+    /// Swaps the owner for the parts of the first cut. Call it when every part is ready.
+    void Activate(ECS::World& world, Rendering::GPUScene& scene, Instance& instance) const;
+    /// Destroys the evicted parts that have not drawn for `grace` frames.
+    void DestroyIdleParts(ECS::World& world, Rendering::GPUScene& scene, Instance& instance, uint64 epoch,
+                          uint64 grace) const;
     /// Restores the owner and destroys its parts.
     void End(ECS::World& world, Rendering::GPUScene* scene, ECS::EntityHandle owner);
     /// Forgets every instance and does not touch entities. Call it when the world changes generation.

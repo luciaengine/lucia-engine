@@ -1,11 +1,11 @@
 #include "Engine/Rendering/ClusterLOD/ClusterLODFeature.h"
+#include "Engine/Rendering/ClusterLOD/ClusterLODCut.h"
 
 #include "Assets/AssetManager.h"
 #include "Assets/ClusterLOD/MeshClusterLODAsset.h"
 #include "Assets/MeshLODGenerator.h"
 #include "ClusterLODTestMesh.h"
 #include "Components/Rendering/DDGIVolume.h"
-#include "Components/Rendering/LODGroup.h"
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/HLODVolume.h"
@@ -99,10 +99,12 @@ class ClusterLODRuntimeTest : public ::testing::Test
         m_Assets.RegisterLoadedAsset(m_Model->GetGUID(), m_Model);
         const auto manifest = m_Model->GetClusterLODManifest();
         ASSERT_NE(manifest, nullptr);
-        auto group = std::find_if(manifest->Pages.begin(), manifest->Pages.end(),
-                                  [](const auto& page) { return page.IndexCount > page.CoarseIndexCount; });
-        ASSERT_NE(group, manifest->Pages.end()) << "the fixture must contain a real coarse reduction";
-        m_Page = static_cast<uint32>(group - manifest->Pages.begin());
+        ASSERT_GE(manifest->Meshes[0].ResidentDepth, 1u) << "the fixture must stream units under its resident cut";
+        // A source unit: it draws only when the instance refines to the finest level.
+        const auto unit = std::find_if(manifest->Units.begin(), manifest->Units.end(), [](const auto& candidate)
+            { return candidate.IsStreamed() && candidate.Producer == kMeshClusterLODSourceGroup; });
+        ASSERT_NE(unit, manifest->Units.end());
+        m_Unit = static_cast<uint32>(unit - manifest->Units.begin());
         BeforeCoarseRegistration();
         const auto handles = m_Services.GetMeshGPURegistry().RegisterModelMeshes(m_Model->GetGUID(), *m_Model);
         AfterCoarseRegistration();
@@ -124,8 +126,11 @@ class ClusterLODRuntimeTest : public ::testing::Test
         renderer.modelAssetGuid.Set(m_Model->GetGUID());
         renderer.materialAssetGuid.Set(m_MaterialGuid);
         renderer.meshGpuHandleId = m_Coarse.id;
+        // A resolved world transform: parts copy it, so they may draw in their first frame.
+        Components::WorldTransform transform{};
+        transform.Version = 1;
         m_Entity = m_World.Create().Set<Components::MeshRenderer>(renderer)
-            .Set<Components::WorldTransform>({}).GetHandle();
+            .Set<Components::WorldTransform>(transform).GetHandle();
         m_World.ProcessCommands();
         const auto camera = m_Services.Views().AllocateCamera("Cluster runtime");
         m_View = m_Services.Views().AllocateView("Cluster runtime", camera);
@@ -184,13 +189,15 @@ class ClusterLODRuntimeTest : public ::testing::Test
         return id;
     }
 
-    // The part of m_Entity that draws the fixture's reduced page; invalid while the instance is not split.
+    // The part of m_Entity that draws the fixture's source unit; invalid while it has none.
     ECS::EntityHandle Part() { return PartOf(m_World, m_Entity); }
 
-    ECS::EntityHandle PartOf(ECS::World& world, ECS::EntityHandle owner) const
+    ECS::EntityHandle PartOf(ECS::World& world, ECS::EntityHandle owner) const { return PartOf(world, owner, m_Unit); }
+
+    ECS::EntityHandle PartOf(ECS::World& world, ECS::EntityHandle owner, uint32 unitIndex) const
     {
-        const auto& page = m_Model->GetClusterLODManifest()->Pages[m_Page];
-        const auto bounds = Mathematics::BoundingBox::FromMinMax(page.MinBounds, page.MaxBounds);
+        const auto& unit = m_Model->GetClusterLODManifest()->Units[unitIndex];
+        const auto bounds = Mathematics::BoundingBox::FromMinMax(unit.MinBounds, unit.MaxBounds);
         ECS::EntityHandle found;
         world.Query<ECS::Read<Components::Parent>, ECS::Read<Components::LocalBounds>>().Each(
             [owner, &bounds, &found](ECS::EntityHandle entity, const Components::Parent& parent,
@@ -202,31 +209,34 @@ class ClusterLODRuntimeTest : public ::testing::Test
         return found;
     }
 
-    // The registry entry the part draws; invalid while the instance is not split.
-    MeshGPUHandle PartHandle()
+    static bool IsEvicted(const ECS::World& world, ECS::EntityHandle entity)
     {
-        const ECS::EntityHandle part = Part();
-        return part.IsValid() ? MeshGPUHandle(m_World.GetComponent<Components::MeshRenderer>(part)->meshGpuHandleId)
-                              : MeshGPUHandle{};
+        const auto* gpu = world.GetComponent<Components::MeshGPUData>(entity);
+        return gpu && gpu->clusterEvicted;
     }
 
-    MeshGPUHandle CoarsePartHandle() const { return m_Services.GetMeshGPURegistry().FindHandle(CoarsePartKey()); }
-
-    // The registry key of the reduced page's coarse part.
-    MeshGPUKey CoarsePartKey() const
+    // The fine geometry that draws the source unit of `owner`, or m_Coarse while it does not draw.
+    MeshGPUHandle CurrentHandleOf(ECS::World& world, ECS::EntityHandle owner) const
     {
-        return {m_Model->GetGUID(), static_cast<uint32>(m_Model->GetMeshCount()) + m_Page};
-    }
-
-    // The geometry that draws the reduced page: its fine entry, else the coarse cover (m_Coarse).
-    MeshGPUHandle CurrentHandle()
-    {
-        const ECS::EntityHandle part = Part();
-        if (!part.IsValid())
+        const ECS::EntityHandle part = PartOf(world, owner);
+        if (!part.IsValid() || IsEvicted(world, part))
             return m_Coarse;
-        const MeshGPUHandle handle(m_World.GetComponent<Components::MeshRenderer>(part)->meshGpuHandleId);
+        const MeshGPUHandle handle(world.GetComponent<Components::MeshRenderer>(part)->meshGpuHandleId);
         const auto* entry = m_Services.GetMeshGPURegistry().Find(handle);
         return entry && entry->StorageDomain == MeshGPUStorageDomain::ClusterFine ? handle : m_Coarse;
+    }
+
+    MeshGPUHandle CurrentHandle() { return CurrentHandleOf(m_World, m_Entity); }
+
+    // Prepares frames until the source unit draws: each DAG level refines once its units can draw.
+    void PrepareUntilFine()
+    {
+        ASSERT_TRUE(GameEngine::Tests::WaitUntil([this]
+        {
+            Prepare();
+            return CurrentHandle() != m_Coarse;
+        }, std::chrono::seconds(20)));
+        ExpectFine();
     }
 
     Components::MeshRenderer WithOrdinarySource(Components::MeshRenderer renderer)
@@ -261,7 +271,7 @@ class ClusterLODRuntimeTest : public ::testing::Test
     ECS::EntityHandle m_Entity;
     MeshGPUHandle m_Coarse;
     GUID m_MaterialGuid;
-    uint32 m_Page = 0;
+    uint32 m_Unit = 0;
     ViewId m_View = 0;
 };
 
@@ -438,9 +448,7 @@ TEST_F(ClusterLODGpuReaderTest, TwoSubmittedReadersKeepFineStorageUntilTheirFixe
     ASSERT_EQ(m_Device->GetValidationStats().ErrorCount, 0u);
     if (m_Device->GetComputeQueueFamilyIndex() == m_Device->GetGraphicsQueueFamilyIndex())
         GTEST_SKIP() << "GPU gate release requires a physically independent compute queue family";
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto fine = CurrentHandle();
     const auto* entry = m_Services.GetMeshGPURegistry().Find(fine);
     ASSERT_NE(entry, nullptr);
@@ -535,9 +543,7 @@ TEST_F(ClusterLODGpuReaderTest, ComputeQueueReaderKeepsFineStorageUntilTheComput
     ASSERT_EQ(m_Device->GetValidationStats().ErrorCount, 0u);
     if (m_Device->GetComputeQueueFamilyIndex() == m_Device->GetGraphicsQueueFamilyIndex())
         GTEST_SKIP() << "a compute reader on its own queue requires a separate compute queue family";
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto fine = CurrentHandle();
     const auto* entry = m_Services.GetMeshGPURegistry().Find(fine);
     ASSERT_NE(entry, nullptr);
@@ -717,9 +723,10 @@ TEST_P(ClusterLODMultipleViewTest, NearDemandSurvivesFarViewAndRecoversAfterView
     m_Services.SetLODForceLevel(~0u);
     m_Services.GetMeshGPURegistry().SetLodSelectionMode(LodSelectionMode::Sse);
     m_Services.SetLODErrorBudgetPx(1.0f);
-    const auto& page = m_Model->GetClusterLODManifest()->Pages[m_Page];
-    ASSERT_GT(page.Error, 0.0f);
-    const Vector3 center = (page.MinBounds + page.MaxBounds) * 0.5f;
+    const auto& manifest = *m_Model->GetClusterLODManifest();
+    const auto& unit = manifest.Units[m_Unit];
+    ASSERT_GT(manifest.Groups[unit.Group].Error, 0.0f);
+    const Vector3 center = (unit.MinBounds + unit.MaxBounds) * 0.5f;
     const Vector3 nearEye = center + Vector3(0, 2, -2);
     const Vector3 farEye = center + Vector3(0, 0, -1'000'000);
     const auto first = AddSseView(GetParam() ? nearEye : farEye, center);
@@ -731,18 +738,14 @@ TEST_P(ClusterLODMultipleViewTest, NearDemandSurvivesFarViewAndRecoversAfterView
     ASSERT_EQ(CurrentHandle(), m_Coarse) << "the far view alone must select coarse";
 
     m_Services.Views().SetViewRenderLayerMask(nearView, RenderLayerMask::FromLayer(0));
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     ASSERT_TRUE(m_Services.Views().ReleaseView(nearView));
     Prepare();
     ASSERT_EQ(CurrentHandle(), m_Coarse);
     for (uint32 frame = 0; frame < 35; ++frame)
         Prepare();
     AddSseView(nearEye, center);
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
 }
 
 // The same near and far sequence, with the object and both cameras 100 km from the origin at a
@@ -753,11 +756,12 @@ TEST_P(ClusterLODMultipleViewTest, NearDemandAtALargeTranslationMatchesTheOrigin
     m_Services.SetLODForceLevel(~0u);
     m_Services.GetMeshGPURegistry().SetLodSelectionMode(LodSelectionMode::Sse);
     m_Services.SetLODErrorBudgetPx(1.0f);
-    const auto& page = m_Model->GetClusterLODManifest()->Pages[m_Page];
-    ASSERT_GT(page.Error, 0.0f);
+    const auto& manifest = *m_Model->GetClusterLODManifest();
+    const auto& unit = manifest.Units[m_Unit];
+    ASSERT_GT(manifest.Groups[unit.Group].Error, 0.0f);
     const Mathematics::WorldPosition origin{100000.03125, -60000.015625, 125000.0078125};
     m_World.GetComponentForWrite<Components::WorldTransform>(m_Entity)->Position = origin;
-    const Vector3 center = (page.MinBounds + page.MaxBounds) * 0.5f;
+    const Vector3 center = (unit.MinBounds + unit.MaxBounds) * 0.5f;
     const Vector3 nearEye = center + Vector3(0, 2, -2);
     const Vector3 farEye = center + Vector3(0, 0, -1'000'000);
     const auto first = AddSseViewAt(origin, GetParam() ? nearEye : farEye, center);
@@ -769,9 +773,7 @@ TEST_P(ClusterLODMultipleViewTest, NearDemandAtALargeTranslationMatchesTheOrigin
     ASSERT_EQ(CurrentHandle(), m_Coarse) << "the far view alone must select coarse";
 
     m_Services.Views().SetViewRenderLayerMask(nearView, RenderLayerMask::FromLayer(0));
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     ASSERT_TRUE(m_Services.Views().ReleaseView(nearView));
     Prepare();
     ASSERT_EQ(CurrentHandle(), m_Coarse);
@@ -779,86 +781,186 @@ TEST_P(ClusterLODMultipleViewTest, NearDemandAtALargeTranslationMatchesTheOrigin
 
 INSTANTIATE_TEST_SUITE_P(ViewRegistrationOrder, ClusterLODMultipleViewTest, ::testing::Bool());
 
-// Two instances of a model cooked to one refinable group, at the same place, seen by one view at a
-// pixel budget that both exceed. The LOD bias of the second instance sets the ratio of their
-// projected errors exactly. The triangle budget decides which instance refines.
+// A one-mesh DAG that is a chain of groups: group k holds one unit made by group k - 1 (the
+// source for group 0), with `triangles[k]` triangles. The last group is terminal.
+MeshClusterLODManifest MakeChainManifest(std::initializer_list<uint32> triangles)
+{
+    MeshClusterLODManifest manifest;
+    const auto count = static_cast<uint32>(triangles.size());
+    manifest.Meshes.push_back({0, count, 0, count, count - 1});
+    uint32 level = 0;
+    for (const uint32 unitTriangles : triangles)
+    {
+        MeshClusterLODManifest::Group group;
+        group.Depth = level;
+        group.Error = static_cast<float>(level + 1);
+        group.Terminal = level + 1 == count;
+        group.FirstUnit = level;
+        group.UnitCount = 1;
+        group.FirstProduced = level;
+        group.ProducedCount = group.Terminal ? 0 : 1;
+        manifest.Groups.push_back(group);
+        MeshClusterLODManifest::Unit unit;
+        unit.Group = level;
+        unit.Producer = level == 0 ? kMeshClusterLODSourceGroup : level - 1;
+        unit.IndexCount = unitTriangles * 3;
+        manifest.Units.push_back(unit);
+        if (!group.Terminal)
+            manifest.ProducedUnits.push_back(level + 1);
+        ++level;
+    }
+    return manifest;
+}
+
+// The states of a chain whose groups are all ready, with the demands from the finest group up.
+Vector<ClusterLODCutGroup> ReadyChain(std::initializer_list<double> demands)
+{
+    Vector<ClusterLODCutGroup> groups;
+    for (const double demand : demands)
+        groups.push_back({demand, false, true, true});
+    return groups;
+}
+
+TEST(ClusterLODCut, RefinesTheLargestDemandFirstWithinTheTriangleBudget)
+{
+    const auto manifest = MakeChainManifest({8, 4, 2});
+    auto first = ReadyChain({4.0, 8.0, 0.0});
+    auto second = ReadyChain({1.5, 3.0, 0.0});
+    Vector<ClusterLODCutDecision> firstCut(3);
+    Vector<ClusterLODCutDecision> secondCut(3);
+    const std::array<ClusterLODCutInstance, 2> instances{{{&manifest, 0, first, firstCut}, {&manifest, 0, second, secondCut}}};
+    EXPECT_EQ(SelectClusterLODCuts(instances, 0, 0), 16u) << "without a cap both draw their source unit";
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 0, firstCut));
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 0, secondCut));
+
+    // The first instance refines both its groups; the second instance's next step does not fit.
+    EXPECT_EQ(SelectClusterLODCuts(instances, 10, 0), 10u);
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 0, firstCut));
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 2, secondCut));
+
+    // One triangle less: the first source unit does not fit, a smaller step of the second does.
+    EXPECT_EQ(SelectClusterLODCuts(instances, 9, 0), 8u);
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 1, firstCut));
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 1, secondCut));
+
+    // The base triangles of unsplit instances count against the cap.
+    EXPECT_EQ(SelectClusterLODCuts(instances, 10, 4), 10u);
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 1, firstCut));
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 2, secondCut));
+}
+
+TEST(ClusterLODCut, AGroupThatMustRefineIgnoresTheBudget)
+{
+    const auto manifest = MakeChainManifest({8, 4, 2});
+    auto groups = ReadyChain({std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(), 0.0});
+    Vector<ClusterLODCutDecision> cut(3);
+    const ClusterLODCutInstance instance{&manifest, 0, groups, cut};
+    EXPECT_EQ(SelectClusterLODCuts({&instance, 1}, 1, 0), 8u);
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 0, cut));
+}
+
+TEST(ClusterLODCut, AGroupRefinesOnlyWhenItsUnitsCanDraw)
+{
+    const auto manifest = MakeChainManifest({8, 4, 2});
+    auto groups = ReadyChain({4.0, 8.0, 0.0});
+    groups[0].UnitsReady = false;
+    Vector<ClusterLODCutDecision> cut(3);
+    const ClusterLODCutInstance instance{&manifest, 0, groups, cut};
+    EXPECT_EQ(SelectClusterLODCuts({&instance, 1}, 0, 0), 4u);
+    EXPECT_EQ(cut[0], ClusterLODCutDecision::RefineBlocked);
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 1, cut));
+    EXPECT_FALSE(IsClusterLODUnitDrawn(manifest, 0, cut));
+}
+
+TEST(ClusterLODCut, ARefinedGroupStaysUntilItsProducedUnitsCanDraw)
+{
+    const auto manifest = MakeChainManifest({8, 4, 2});
+    auto groups = ReadyChain({0.5, 8.0, 0.0});
+    groups[0].WasRefined = true;
+    groups[1].WasRefined = true;
+    groups[0].ProducedReady = false;
+    Vector<ClusterLODCutDecision> cut(3);
+    const ClusterLODCutInstance instance{&manifest, 0, groups, cut};
+    SelectClusterLODCuts({&instance, 1}, 0, 0);
+    EXPECT_EQ(cut[0], ClusterLODCutDecision::CoarsenBlocked);
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 0, cut));
+    groups[0].ProducedReady = true;
+    SelectClusterLODCuts({&instance, 1}, 0, 0);
+    EXPECT_EQ(cut[0], ClusterLODCutDecision::Coarse);
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 1, cut));
+}
+
+TEST(ClusterLODCut, ACoarseGroupHidesEveryGroupUnderIt)
+{
+    const auto manifest = MakeChainManifest({8, 4, 2});
+    auto groups = ReadyChain({100.0, 0.5, 0.0});
+    Vector<ClusterLODCutDecision> cut(3);
+    const ClusterLODCutInstance instance{&manifest, 0, groups, cut};
+    EXPECT_EQ(SelectClusterLODCuts({&instance, 1}, 0, 0), 2u);
+    EXPECT_EQ(cut[0], ClusterLODCutDecision::Coarse) << "a group under a coarse group is not evaluated";
+    EXPECT_TRUE(IsClusterLODUnitDrawn(manifest, 2, cut));
+}
+
+// Two instances of the fixture at one place, seen by one view at a pixel budget that every group
+// exceeds. The runtime cut takes the scene-wide triangle budget.
 class ClusterLODTriangleBudgetTest : public ClusterLODRuntimeTest
 {
   protected:
-    uint32 MeshletsPerGroup() const override { return 128; }
-
     void SetUp() override
     {
         ClusterLODRuntimeTest::SetUp();
         if (IsSkipped() || HasFatalFailure())
             return;
-        const auto& pages = m_Model->GetClusterLODManifest()->Pages;
-        ASSERT_EQ(pages.size(), 1u) << "the fixture must cook to one group";
-        ASSERT_GT(pages[0].Error, 0.0f);
         m_Other = m_World.Create().Set<Components::MeshRenderer>(*m_World.GetComponent<Components::MeshRenderer>(m_Entity))
-            .Set<Components::WorldTransform>({}).Set<Components::LODGroup>({}).GetHandle();
+            .Set<Components::WorldTransform>(*m_World.GetComponent<Components::WorldTransform>(m_Entity)).GetHandle();
         m_World.ProcessCommands();
         ASSERT_TRUE(m_Services.Views().ReleaseView(m_View));
         m_Services.SetLODForceLevel(~0u);
         m_Services.GetMeshGPURegistry().SetLodSelectionMode(LodSelectionMode::Sse);
         m_Services.SetLODErrorBudgetPx(kPixelBudget);
-        const auto& page = pages[0];
-        const Vector3 center = (page.MinBounds + page.MaxBounds) * 0.5f;
-        const float extent = (page.MaxBounds - page.MinBounds).Length();
+        const Mesh& coarse = m_Model->GetMesh(0);
+        const Vector3 low{coarse.MinBounds[0], coarse.MinBounds[1], coarse.MinBounds[2]};
+        const Vector3 high{coarse.MaxBounds[0], coarse.MaxBounds[1], coarse.MaxBounds[2]};
+        const Vector3 center = (low + high) * 0.5f;
+        const float extent = (high - low).Length();
         AddSseView(center + Vector3(0.0f, 2.0f * extent, -2.0f * extent), center);
     }
 
-    // Sets the LOD bias of the second instance so that its projected error is `ratio` times the first's.
-    void SetOtherErrorRatio(double ratio)
-    {
-        m_World.GetComponentForWrite<Components::LODGroup>(m_Other)->Bias = static_cast<float>(std::log2(ratio));
-    }
+    bool IsFine(ECS::EntityHandle owner) { return CurrentHandleOf(m_World, owner) != m_Coarse; }
 
-    // Whether the part of `owner` draws the fine page.
-    bool IsFine(ECS::EntityHandle owner)
+    void PrepareUntilBothFine()
     {
-        const ECS::EntityHandle part = PartOf(m_World, owner);
-        if (!part.IsValid())
-            return false;
-        const auto* entry = m_Services.GetMeshGPURegistry().Find(
-            MeshGPUHandle(m_World.GetComponent<Components::MeshRenderer>(part)->meshGpuHandleId));
-        return entry && entry->StorageDomain == MeshGPUStorageDomain::ClusterFine;
+        ASSERT_TRUE(GameEngine::Tests::WaitUntil([this]
+        {
+            Prepare();
+            return IsFine(m_Entity) && IsFine(m_Other);
+        }, std::chrono::seconds(20)));
     }
 
     void PrepareFrames()
     {
-        for (uint32 frame = 0; frame < 6; ++frame)
+        for (uint32 frame = 0; frame < 40; ++frame)
             Prepare();
     }
 
-    uint64 CoarseTriangles() const { return m_Model->GetClusterLODManifest()->Pages[0].CoarseIndexCount / 3; }
-    uint64 Refinement() const { return m_Model->GetClusterLODManifest()->Pages[0].IndexCount / 3 - CoarseTriangles(); }
+    // The resident cut of both instances: no group under it fits.
+    uint64 ResidentTriangles() const { return 2 * m_Model->GetMesh(0).Indices.size() / 3; }
 
     static constexpr float kPixelBudget = 0.01f;
     ECS::EntityHandle m_Other;
 };
 
-TEST_F(ClusterLODTriangleBudgetTest, RefinesTheLargestProjectedErrorFirstWithinTheBudget)
+TEST_F(ClusterLODTriangleBudgetTest, TheBudgetCapsEverySplitAndForcedLodZeroIgnoresIt)
 {
-    SetOtherErrorRatio(0.5);
-    PrepareFrames();
-    ASSERT_TRUE(IsFine(m_Entity)) << "without a cap both instances refine";
-    ASSERT_TRUE(IsFine(m_Other));
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilBothFine()) << "without a cap both instances refine";
 
-    m_Feature->SetTriangleBudget(2 * CoarseTriangles() + Refinement());
-    PrepareFrames();
-    EXPECT_TRUE(IsFine(m_Entity)) << "the larger error refines first";
-    EXPECT_FALSE(IsFine(m_Other)) << "the next instance does not fit";
-
-    m_Feature->SetTriangleBudget(2 * CoarseTriangles() + Refinement() - 1);
+    m_Feature->SetTriangleBudget(ResidentTriangles());
     PrepareFrames();
     EXPECT_FALSE(IsFine(m_Entity));
     EXPECT_FALSE(IsFine(m_Other));
 
-    m_Feature->SetTriangleBudget(2 * (CoarseTriangles() + Refinement()));
-    PrepareFrames();
-    EXPECT_TRUE(IsFine(m_Entity));
-    EXPECT_TRUE(IsFine(m_Other));
+    m_Feature->SetTriangleBudget(0);
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilBothFine());
 
     m_Services.SetLODErrorBudgetPx(1'000'000.0f);
     PrepareFrames();
@@ -868,49 +970,7 @@ TEST_F(ClusterLODTriangleBudgetTest, RefinesTheLargestProjectedErrorFirstWithinT
     m_Services.SetLODErrorBudgetPx(kPixelBudget);
     m_Feature->SetTriangleBudget(1);
     m_Services.SetLODForceLevel(0);
-    PrepareFrames();
-    EXPECT_TRUE(IsFine(m_Entity)) << "forced LOD 0 ignores the cap";
-    EXPECT_TRUE(IsFine(m_Other));
-}
-
-TEST_F(ClusterLODTriangleBudgetTest, TheBudgetCountsTheCoarseTrianglesOfUnsplitInstances)
-{
-    // A third instance whose bias keeps its error below the pixel budget never splits.
-    const ECS::EntityHandle unsplit = m_World.Create()
-        .Set<Components::MeshRenderer>(*m_World.GetComponent<Components::MeshRenderer>(m_Entity))
-        .Set<Components::WorldTransform>({}).Set<Components::LODGroup>({-40.0f}).GetHandle();
-    m_World.ProcessCommands();
-    SetOtherErrorRatio(0.5);
-    m_Feature->SetTriangleBudget(3 * CoarseTriangles() + Refinement() - 1);
-    PrepareFrames();
-    EXPECT_FALSE(PartOf(m_World, unsplit).IsValid());
-    EXPECT_FALSE(IsFine(m_Entity)) << "the unsplit instance's coarse triangles count against the cap";
-    EXPECT_FALSE(IsFine(m_Other));
-
-    m_Feature->SetTriangleBudget(3 * CoarseTriangles() + Refinement());
-    PrepareFrames();
-    EXPECT_TRUE(IsFine(m_Entity));
-    EXPECT_FALSE(IsFine(m_Other));
-}
-
-TEST_F(ClusterLODTriangleBudgetTest, AFineGroupKeepsItsPageUntilAnotherErrorLeavesTheHysteresisBand)
-{
-    m_Feature->SetTriangleBudget(2 * CoarseTriangles() + Refinement());
-    SetOtherErrorRatio(0.5);
-    PrepareFrames();
-    ASSERT_TRUE(IsFine(m_Entity));
-    ASSERT_FALSE(IsFine(m_Other));
-
-    const double band = kClusterRefineBudgetScale / kClusterKeepFineBudgetScale;
-    SetOtherErrorRatio(0.9 * band);
-    PrepareFrames();
-    EXPECT_TRUE(IsFine(m_Entity)) << "a larger error inside the band does not take the page";
-    EXPECT_FALSE(IsFine(m_Other));
-
-    SetOtherErrorRatio(1.1 * band);
-    PrepareFrames();
-    EXPECT_FALSE(IsFine(m_Entity));
-    EXPECT_TRUE(IsFine(m_Other)) << "an error past the band takes the page";
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilBothFine()) << "forced LOD 0 ignores the cap";
 }
 
 TEST_F(ClusterLODRuntimeTest, TheNextScheduledSystemSeesFineAndCoarseInTheSameCycle)
@@ -925,8 +985,12 @@ TEST_F(ClusterLODRuntimeTest, TheNextScheduledSystemSeesFineAndCoarseInTheSameCy
     m_Services.BeginWorldDrawFrame();
     manager.Update(m_World, 0.0f);
     EXPECT_EQ(observed, m_Coarse.id) << "pending fine IO must preserve the complete coarse cover";
-    m_Services.BeginWorldDrawFrame();
-    manager.Update(m_World, 0.0f);
+    ASSERT_TRUE(GameEngine::Tests::WaitUntil([this, &manager]
+    {
+        m_Services.BeginWorldDrawFrame();
+        manager.Update(m_World, 0.0f);
+        return CurrentHandle() != m_Coarse;
+    }, std::chrono::seconds(20)));
     ASSERT_NO_FATAL_FAILURE(ExpectFine());
     EXPECT_EQ(observed, CurrentHandle().id) << "no command flush may be needed between these systems";
     m_Services.SetLODForceLevel(1);
@@ -936,63 +1000,74 @@ TEST_F(ClusterLODRuntimeTest, TheNextScheduledSystemSeesFineAndCoarseInTheSameCy
     EXPECT_EQ(observed, m_Coarse.id);
 }
 
-TEST_F(ClusterLODRuntimeTest, CoarseReRegistrationRefreshesTheCachedFallbackHandle)
+// A resident unit draws its range of the coarse mesh as its own registry entry. When that entry
+// goes away, the split registers it again before the unit draws.
+TEST_F(ClusterLODRuntimeTest, AResidentUnitRegistersAgainAfterItsEntryIsRemoved)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
-    const MeshGPUKey source = CoarsePartKey();
-    const auto previous = m_Services.GetMeshGPURegistry().FindHandle(source);
-    ASSERT_TRUE(m_Services.GetMeshGPURegistry().UnregisterSubmesh(source));
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+    const auto& manifest = *m_Model->GetClusterLODManifest();
+    const auto resident = std::find_if(manifest.Units.begin(), manifest.Units.end(), [](const auto& unit)
+        { return !unit.IsStreamed() && unit.Level == 0; });
+    ASSERT_NE(resident, manifest.Units.end());
+    const auto unit = static_cast<uint32>(resident - manifest.Units.begin());
+    const MeshGPUKey key{m_Model->GetGUID(), static_cast<uint32>(m_Model->GetMeshCount()) + unit};
+    auto& registry = m_Services.GetMeshGPURegistry();
+    const auto previous = registry.FindHandle(key);
+    ASSERT_TRUE(previous.IsValid());
+    ASSERT_TRUE(registry.UnregisterSubmesh(key));
+    // Away from forced LOD 0 the instance coarsens through the resident cut, which needs the unit.
     m_Services.SetLODForceLevel(1);
-    Prepare();
-    const auto refreshed = m_Services.GetMeshGPURegistry().FindHandle(source);
-    EXPECT_TRUE(refreshed.IsValid());
+    ASSERT_TRUE(GameEngine::Tests::WaitUntil([this, &registry, &key, unit]
+    {
+        Prepare();
+        const auto part = PartOf(m_World, m_Entity, unit);
+        return part.IsValid() && !IsEvicted(m_World, part) &&
+            m_World.GetComponent<Components::MeshRenderer>(part)->meshGpuHandleId == registry.FindHandle(key).id;
+    }, std::chrono::seconds(20)));
+    const auto refreshed = registry.FindHandle(key);
     EXPECT_NE(refreshed, previous);
-    EXPECT_EQ(PartHandle(), refreshed);
-    const auto* entry = m_Services.GetMeshGPURegistry().Find(refreshed);
+    const auto* entry = registry.Find(refreshed);
     ASSERT_NE(entry, nullptr);
-    EXPECT_TRUE(m_Services.GetMeshGPURegistry().IsEntryDrawable(*entry));
+    EXPECT_TRUE(registry.IsEntryDrawable(*entry));
 }
 
 // Far away, a cluster instance is one entity with one GPU instance. Near, it draws one part per
-// cluster group instead, and its own GPU instance is evicted, so the coarse mesh and the parts
-// never draw together. The split ends when no view wants a fine page for the grace period.
-TEST_F(ClusterLODRuntimeTest, ANearInstanceSplitsIntoOnePartPerGroupAndEvictsItsOwner)
+// unit of its cut instead, and its own GPU instance is evicted, so the coarse mesh and the parts
+// never draw together. The split ends when no view wants a streamed unit for the grace period.
+TEST_F(ClusterLODRuntimeTest, ANearInstanceSplitsIntoThePartsOfItsCutAndEvictsItsOwner)
 {
-    // A resolved world transform: the parts may draw in their first frame.
-    m_World.GetComponentForWrite<Components::WorldTransform>(m_Entity)->Version = 1;
-    const auto evicted = [this](ECS::EntityHandle entity)
-    {
-        const auto* gpu = m_World.GetComponent<Components::MeshGPUData>(entity);
-        return gpu && gpu->clusterEvicted;
-    };
-    const auto partCount = [this]
+    const auto partCount = [this](bool drawn)
     {
         uint32 count = 0;
         m_World.Query<ECS::Read<Components::Parent>>().Each(
-            [this, &count](const Components::Parent& parent) { count += parent.Entity == m_Entity ? 1u : 0u; });
+            [this, drawn, &count](ECS::EntityHandle entity, const Components::Parent& parent)
+            { count += parent.Entity == m_Entity && (!drawn || !IsEvicted(m_World, entity)) ? 1u : 0u; });
         return count;
     };
     m_Services.SetLODForceLevel(1);
     Prepare();
-    EXPECT_EQ(partCount(), 0u);
-    EXPECT_FALSE(evicted(m_Entity));
+    EXPECT_EQ(partCount(false), 0u);
+    EXPECT_FALSE(IsEvicted(m_World, m_Entity));
 
+    // The first cut is the resident cut: one part per unit of LOD0.
+    const auto& manifest = *m_Model->GetClusterLODManifest();
+    const auto residentUnits = std::count_if(manifest.Units.begin(), manifest.Units.end(), [&manifest](const auto& unit)
+    {
+        const auto& group = manifest.Groups[unit.Group];
+        return IsMeshClusterLODUnitInLevel(group.Depth, group.Terminal, manifest.Meshes[0].ResidentDepth);
+    });
     m_Services.SetLODForceLevel(0);
     Prepare();
-    EXPECT_EQ(partCount(), m_Model->GetClusterLODManifest()->Pages.size());
-    EXPECT_TRUE(evicted(m_Entity));
-    ASSERT_TRUE(Part().IsValid());
-    EXPECT_FALSE(evicted(Part()));
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    EXPECT_EQ(partCount(true), static_cast<uint32>(residentUnits));
+    EXPECT_TRUE(IsEvicted(m_World, m_Entity));
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+    EXPECT_TRUE(IsEvicted(m_World, m_Entity));
 
     m_Services.SetLODForceLevel(1);
     for (uint32 frame = 0; frame < 35; ++frame)
         Prepare();
-    EXPECT_EQ(partCount(), 0u);
-    EXPECT_FALSE(evicted(m_Entity));
+    EXPECT_EQ(partCount(false), 0u);
+    EXPECT_FALSE(IsEvicted(m_World, m_Entity));
     EXPECT_EQ(CurrentHandle(), m_Coarse);
 }
 
@@ -1007,9 +1082,7 @@ TEST_F(ClusterLODRuntimeTest, CoarseOnlyDemandDoesNotOccupyTheBoundedFinePageDir
     EXPECT_EQ(tracked, 0.0f);
 #endif
     m_Services.SetLODForceLevel(0);
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
 }
 
 // HLOD replaces distant groups with a merged proxy; cluster LOD refines the members near the camera.
@@ -1021,9 +1094,7 @@ TEST_F(ClusterLODRuntimeTest, FinePagesStartInAWorldWithHlodClusters)
     auto& clusters = m_Services.GetHlodRuntime().GetClusters();
     clusters.push_back(Hlod::RuntimeCluster{});
     clusters.back().Members.push_back(m_Entity);
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     clusters.clear();
 }
 
@@ -1039,9 +1110,7 @@ TEST_F(ClusterLODRuntimeTest, AnHlodEvictedMemberKeepsTheCoarseCover)
     EXPECT_EQ(CurrentHandle(), m_Coarse);
 
     m_World.GetComponentForWrite<Components::MeshGPUData>(m_Entity)->hlodEvicted = false;
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
 
     // An eviction during a split ends it: the proxy draws, the parts do not.
     m_World.GetComponentForWrite<Components::MeshGPUData>(m_Entity)->hlodEvicted = true;
@@ -1057,9 +1126,7 @@ TEST_F(ClusterLODRuntimeTest, TheFineSwitchKeepsTheMembersHlodMeshSource)
     const auto* renderer = m_World.GetComponent<Components::MeshRenderer>(m_Entity);
     ASSERT_NE(renderer, nullptr);
     const Hlod::MemberMeshSource coarseSource = Hlod::MemberMeshSource::Of(*renderer);
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     renderer = m_World.GetComponent<Components::MeshRenderer>(m_Entity);
     ASSERT_NE(renderer, nullptr);
     EXPECT_EQ(Hlod::MemberMeshSource::Of(*renderer), coarseSource);
@@ -1070,11 +1137,11 @@ TEST_F(ClusterLODRuntimeTest, MissingFineStoreKeepsCoarseCoverageAndFinishesTheR
     const auto store = ResolveMeshClusterLODStore(m_Model->GetPath(), {}, *m_Model->GetClusterLODManifest());
     const auto saved = store.string() + ".saved";
     std::filesystem::rename(store, saved);
-    // The instance requests every refining page, at most kMaximumPendingReads (4) per frame.
-    const auto& pages = m_Model->GetClusterLODManifest()->Pages;
-    const auto refining = std::count_if(pages.begin(), pages.end(),
-                                        [](const auto& page) { return page.IndexCount > page.CoarseIndexCount; });
-    for (int64 frame = 0; frame < (refining + 3) / 4 + 1; ++frame)
+    // The instance requests every streamed unit it wants, at most kMaximumPendingReads (8) per
+    // frame, after its first frame activates the split.
+    const auto& units = m_Model->GetClusterLODManifest()->Units;
+    const auto streamed = std::count_if(units.begin(), units.end(), [](const auto& unit) { return unit.IsStreamed(); });
+    for (int64 frame = 0; frame < (streamed + 7) / 8 + 3; ++frame)
         Prepare();
     EXPECT_EQ(CurrentHandle(), m_Coarse);
     EXPECT_EQ(m_Services.GetMeshGPURegistry().GetStorageDomainCapacityBytes(MeshGPUStorageDomain::ClusterFine), 0u);
@@ -1088,16 +1155,15 @@ TEST_F(ClusterLODRuntimeTest, MissingFineStoreKeepsCoarseCoverageAndFinishesTheR
     EXPECT_EQ(charge, 0.0f);
 #endif
     std::filesystem::rename(saved, store);
-    for (uint32 frame = 0; frame < 130; ++frame)
+    // A failed read retries after 120 frames.
+    for (uint32 frame = 0; frame < 120; ++frame)
         Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
 }
 
 TEST_F(ClusterLODRuntimeTest, LiveOpaqueToBlendAndBackChangesOnlyTheCachedGeometry)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     MaterialDocument blend;
     blend.lightingModel = "StandardPBR";
     blend.surfaceShader = "Surfaces/standard_pbr.glsl";
@@ -1109,16 +1175,13 @@ TEST_F(ClusterLODRuntimeTest, LiveOpaqueToBlendAndBackChangesOnlyTheCachedGeomet
     EXPECT_EQ(CurrentHandle(), m_Coarse);
     EXPECT_EQ(m_World.GetComponent<Components::MeshRenderer>(m_Entity)->materialAssetGuid.ToGuid(), blendGuid);
     m_World.GetComponentForWrite<Components::MeshRenderer>(m_Entity)->materialAssetGuid.Set(m_MaterialGuid);
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     EXPECT_EQ(m_World.GetComponent<Components::MeshRenderer>(m_Entity)->materialAssetGuid.ToGuid(), m_MaterialGuid);
 }
 
 TEST_F(ClusterLODRuntimeTest, ANewSkinComponentRestoresCoarseBeforeTheNextExtraction)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     m_World.AddComponent(m_Entity, Components::SkinnedMeshRenderer{});
     m_World.ProcessCommands();
     Prepare();
@@ -1127,9 +1190,7 @@ TEST_F(ClusterLODRuntimeTest, ANewSkinComponentRestoresCoarseBeforeTheNextExtrac
 
 TEST_F(ClusterLODRuntimeTest, AnAbandonedArenaReleasesDecodedOwnershipAndCannotReplayAReusedRow)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto fine = CurrentHandle();
     const uint32 oldRow = m_Services.GetMeshGPURegistry().Find(fine)->gpuMeshIndex;
 #if GE_ENABLE_METRICS
@@ -1158,9 +1219,7 @@ TEST_F(ClusterLODRuntimeTest, AnAbandonedArenaReleasesDecodedOwnershipAndCannotR
     EXPECT_EQ(decoded, 0.0f) << "the decoded payload's deleter must run despite the retained arena";
 #endif
     m_Services.SetLODForceLevel(0);
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     // Every fine page of the instance frees and reloads, so the old row can go to another part.
     bool reused = false;
     m_World.Query<ECS::Read<Components::Parent>, ECS::Read<Components::MeshRenderer>>().Each(
@@ -1180,9 +1239,7 @@ TEST_F(ClusterLODRuntimeTest, AnAbandonedArenaReleasesDecodedOwnershipAndCannotR
 
 TEST_F(ClusterLODRuntimeTest, AnOrdinarySecondWorldResealsItsOwnAppEpoch)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     ECS::World preview;
     m_Services.BeginWorldDrawFrame();
     m_Feature->Prepare(preview);
@@ -1194,9 +1251,7 @@ TEST_F(ClusterLODRuntimeTest, AnOrdinarySecondWorldResealsItsOwnAppEpoch)
 
 TEST_F(ClusterLODRuntimeTest, PreviewPreparationDoesNotSuppressOwnerSelectionInTheSameEpoch)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     ASSERT_NE(CurrentHandle(), m_Coarse);
     ECS::World preview;
     m_Services.BeginWorldDrawFrame();
@@ -1236,9 +1291,7 @@ TEST_F(ClusterLODRuntimeTest, PreviewPreparationDoesNotSuppressOwnerSelectionInT
 
 TEST_F(ClusterLODRuntimeTest, PreviewPreparationDoesNotSuppressOwnerMaterialRestorationInTheSameEpoch)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     ASSERT_NE(CurrentHandle(), m_Coarse);
     MaterialDocument blend;
     blend.lightingModel = "StandardPBR";
@@ -1259,20 +1312,16 @@ TEST_F(ClusterLODRuntimeTest, PreviewPreparationDoesNotSuppressOwnerMaterialRest
 
 TEST_F(ClusterLODRuntimeTest, LateGiRestoresTheLiveHandleBeforeExtraction)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     m_World.Create().Set<Components::DDGIVolume>({}).Set<Components::WorldTransform>({});
     m_World.ProcessCommands();
     Prepare();
     EXPECT_EQ(CurrentHandle(), m_Coarse);
 }
 
-TEST_F(ClusterLODRuntimeTest, DisabledOwnerWorldCloneRestoresItsCopiedFineCache)
+TEST_F(ClusterLODRuntimeTest, DisabledOwnerWorldCloneUnbindsItsCopiedFineCache)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto fine = CurrentHandle();
     const auto clone = ECS::Entity(&m_World, Part()).Clone().SetEnabled(false).GetHandle();
     m_World.ProcessCommands();
@@ -1282,15 +1331,13 @@ TEST_F(ClusterLODRuntimeTest, DisabledOwnerWorldCloneRestoresItsCopiedFineCache)
     ASSERT_NE(renderer, nullptr);
     ASSERT_EQ(renderer->meshGpuHandleId, fine.id);
     Prepare();
-    EXPECT_EQ(m_World.GetComponent<Components::MeshRenderer>(clone)->meshGpuHandleId, CoarsePartHandle().id);
+    EXPECT_EQ(m_World.GetComponent<Components::MeshRenderer>(clone)->meshGpuHandleId, MeshGPUHandle{}.id);
     EXPECT_EQ(CurrentHandle(), fine) << "the active original still requests fine geometry";
 }
 
 TEST_F(ClusterLODRuntimeTest, OwnerWorldCloneWithOrdinarySourceClearsItsCopiedFineCache)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto fine = CurrentHandle();
     const auto clone = ECS::Entity(&m_World, Part()).Clone().GetHandle();
     m_World.ProcessCommands();
@@ -1307,11 +1354,9 @@ TEST_F(ClusterLODRuntimeTest, OwnerWorldCloneWithOrdinarySourceClearsItsCopiedFi
     EXPECT_EQ(CurrentHandle(), fine) << "the active original still requests fine geometry";
 }
 
-TEST_F(ClusterLODRuntimeTest, SecondClusterWorldRestoresCopiedFineCachesIncludingDisabledEntities)
+TEST_F(ClusterLODRuntimeTest, SecondClusterWorldUnbindsCopiedFineCachesIncludingDisabledEntities)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto copied = *m_World.GetComponent<Components::MeshRenderer>(Part());
     ECS::World preview;
     const auto active = preview.Create().Set<Components::MeshRenderer>(copied)
@@ -1322,8 +1367,8 @@ TEST_F(ClusterLODRuntimeTest, SecondClusterWorldRestoresCopiedFineCachesIncludin
     m_Services.BeginWorldDrawFrame();
     m_Feature->Prepare(preview);
     EXPECT_EQ(CurrentHandle(), m_Coarse);
-    EXPECT_EQ(preview.GetComponent<Components::MeshRenderer>(active)->meshGpuHandleId, CoarsePartHandle().id);
-    EXPECT_EQ(preview.GetComponent<Components::MeshRenderer>(disabled)->meshGpuHandleId, CoarsePartHandle().id);
+    EXPECT_EQ(preview.GetComponent<Components::MeshRenderer>(active)->meshGpuHandleId, MeshGPUHandle{}.id);
+    EXPECT_EQ(preview.GetComponent<Components::MeshRenderer>(disabled)->meshGpuHandleId, MeshGPUHandle{}.id);
     RenderGraph::RGFrame frame(m_Device.get(), nullptr, nullptr, nullptr);
     EXPECT_TRUE(m_Services.Spine().BindWorldGeometry(frame));
     frame.DiscardRecordedPasses();
@@ -1331,9 +1376,7 @@ TEST_F(ClusterLODRuntimeTest, SecondClusterWorldRestoresCopiedFineCachesIncludin
 
 TEST_F(ClusterLODRuntimeTest, LateFineInstanceInvalidatesAnAlreadySealedCoarseCut)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto* fine = m_Services.GetMeshGPURegistry().Find(CurrentHandle());
     ASSERT_NE(fine, nullptr);
     const auto fineRow = fine->gpuMeshIndex;
@@ -1359,9 +1402,7 @@ TEST_F(ClusterLODRuntimeTest, LateFineInstanceInvalidatesAnAlreadySealedCoarseCu
 
 TEST_F(ClusterLODRuntimeTest, DisabledOnlyForeignFineCacheTriggersCoarseFallback)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto copied = *m_World.GetComponent<Components::MeshRenderer>(Part());
     ECS::World preview;
     const auto entity = preview.Create().Set<Components::MeshRenderer>(copied)
@@ -1370,14 +1411,12 @@ TEST_F(ClusterLODRuntimeTest, DisabledOnlyForeignFineCacheTriggersCoarseFallback
     m_Services.BeginWorldDrawFrame();
     m_Feature->Prepare(preview);
     EXPECT_EQ(CurrentHandle(), m_Coarse);
-    EXPECT_EQ(preview.GetComponent<Components::MeshRenderer>(entity)->meshGpuHandleId, CoarsePartHandle().id);
+    EXPECT_EQ(preview.GetComponent<Components::MeshRenderer>(entity)->meshGpuHandleId, MeshGPUHandle{}.id);
 }
 
 TEST_F(ClusterLODRuntimeTest, ForeignFineCacheWithChangedSourceIsClearedBeforeExtraction)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto copied = WithOrdinarySource(*m_World.GetComponent<Components::MeshRenderer>(Part()));
     ECS::World preview;
     const auto entity = preview.Create().Set<Components::MeshRenderer>(copied)
@@ -1389,49 +1428,9 @@ TEST_F(ClusterLODRuntimeTest, ForeignFineCacheWithChangedSourceIsClearedBeforeEx
     EXPECT_EQ(preview.GetComponent<Components::MeshRenderer>(entity)->meshGpuHandleId, 0u);
 }
 
-TEST_F(ClusterLODRuntimeTest, PendingForeignCoverSurvivesOwnerEpochsAndRetirementGrace)
-{
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
-    const auto fine = CurrentHandle();
-    const auto copied = *m_World.GetComponent<Components::MeshRenderer>(Part());
-    ECS::World preview;
-    const auto entity = preview.Create().Set<Components::MeshRenderer>(copied)
-        .Set<Components::WorldTransform>({}).SetEnabled(false).GetHandle();
-    preview.ProcessCommands();
-    const MeshGPUKey source = CoarsePartKey();
-    auto& registry = m_Services.GetMeshGPURegistry();
-    ASSERT_TRUE(registry.UnregisterSubmesh(source));
-    m_Services.BeginWorldDrawFrame();
-    m_Feature->Prepare(preview);
-    ASSERT_EQ(preview.GetComponent<Components::MeshRenderer>(entity)->meshGpuHandleId, fine.id);
-    m_World.Clear();
-    for (uint32 epoch = 0; epoch < 35; ++epoch)
-    {
-        Prepare();
-        RenderGraph::RGFrame blocked(m_Device.get(), nullptr, nullptr, nullptr);
-        EXPECT_FALSE(m_Services.Spine().BindWorldGeometry(blocked));
-        blocked.DiscardRecordedPasses();
-    }
-    EXPECT_NE(registry.Find(fine), nullptr) << "unresolved cached cover must retain its page mapping";
-    const auto repaired = registry.RegisterSubmesh(source, ExtractMeshClusterLODCoarseGroup(
-        m_Model->GetMesh(0), m_Model->GetClusterLODManifest()->Pages[m_Page]));
-    const auto* entry = registry.Find(repaired);
-    ASSERT_NE(entry, nullptr);
-    ASSERT_TRUE(registry.IsEntryDrawable(*entry));
-    Prepare();
-    EXPECT_EQ(preview.GetComponent<Components::MeshRenderer>(entity)->meshGpuHandleId, repaired.id);
-    RenderGraph::RGFrame recovered(m_Device.get(), nullptr, nullptr, nullptr);
-    EXPECT_TRUE(m_Services.Spine().BindWorldGeometry(recovered));
-    recovered.DiscardRecordedPasses();
-}
-
 TEST_F(ClusterLODRuntimeTest, OwnerNamespaceReplacementClearsCopiedFineCacheAndRejectsOldGraph)
 {
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto copied = WithOrdinarySource(*m_World.GetComponent<Components::MeshRenderer>(Part()));
     RenderGraph::RGFrame old(m_Device.get(), nullptr, nullptr, nullptr);
     ASSERT_TRUE(m_Services.Spine().BindWorldGeometry(old));
@@ -1455,19 +1454,17 @@ TEST_F(ClusterLODRuntimeTest, OwnerDestructionClearsOrdinarySourceCloneAndReject
     auto owner = std::make_unique<ECS::World>();
     const auto entity = owner->Create()
         .Set<Components::MeshRenderer>(*m_World.GetComponent<Components::MeshRenderer>(m_Entity))
-        .Set<Components::WorldTransform>({}).GetHandle();
+        .Set<Components::WorldTransform>(*m_World.GetComponent<Components::WorldTransform>(m_Entity)).GetHandle();
     owner->ProcessCommands();
     m_Services.Views().SetViewWorldId(m_View, owner->GetWorldId());
-    for (uint32 cycle = 0; cycle < 2; ++cycle)
+    ASSERT_TRUE(GameEngine::Tests::WaitUntil([this, &owner, entity]
     {
         m_Services.BeginWorldDrawFrame();
         m_Feature->Prepare(*owner);
-    }
+        return CurrentHandleOf(*owner, entity) != m_Coarse;
+    }, std::chrono::seconds(20)));
     const auto* selected = owner->GetComponent<Components::MeshRenderer>(PartOf(*owner, entity));
     ASSERT_NE(selected, nullptr);
-    const auto* fine = m_Services.GetMeshGPURegistry().Find(MeshGPUHandle(selected->meshGpuHandleId));
-    ASSERT_NE(fine, nullptr);
-    ASSERT_EQ(fine->StorageDomain, MeshGPUStorageDomain::ClusterFine);
     const auto copied = WithOrdinarySource(*selected);
     ECS::World preview;
     const auto clone = preview.Create().Set<Components::MeshRenderer>(copied)
@@ -1487,30 +1484,5 @@ TEST_F(ClusterLODRuntimeTest, OwnerDestructionClearsOrdinarySourceCloneAndReject
     old.DiscardRecordedPasses();
 }
 
-TEST_F(ClusterLODRuntimeTest, PendingForeignNamespaceReplacementIsRescannedDuringOwnerPrepare)
-{
-    Prepare();
-    Prepare();
-    ASSERT_NO_FATAL_FAILURE(ExpectFine());
-    const auto copied = *m_World.GetComponent<Components::MeshRenderer>(Part());
-    ECS::World preview;
-    preview.Create().Set<Components::MeshRenderer>(copied).Set<Components::WorldTransform>({}).SetEnabled(false);
-    preview.ProcessCommands();
-    const MeshGPUKey source = CoarsePartKey();
-    ASSERT_TRUE(m_Services.GetMeshGPURegistry().UnregisterSubmesh(source));
-    m_Services.BeginWorldDrawFrame();
-    m_Feature->Prepare(preview);
-    preview.Clear();
-    const auto changed = WithOrdinarySource(copied);
-    const auto replacement = preview.Create().Set<Components::MeshRenderer>(changed)
-        .Set<Components::WorldTransform>({}).SetEnabled(false).GetHandle();
-    preview.ProcessCommands();
-    Prepare();
-    const auto* renderer = preview.GetComponent<Components::MeshRenderer>(replacement);
-    ASSERT_NE(renderer, nullptr);
-    EXPECT_EQ(renderer->meshGpuHandleId, 0u);
-    EXPECT_EQ(renderer->modelAssetGuid, changed.modelAssetGuid);
-    EXPECT_EQ(renderer->materialAssetGuid, changed.materialAssetGuid);
-}
 } // namespace
 } // namespace GameEngine::Engine::Renderer

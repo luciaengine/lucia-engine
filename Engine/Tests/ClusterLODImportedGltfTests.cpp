@@ -1,6 +1,5 @@
 #include "Assets/ClusterLOD/MeshClusterLODAsset.h"
 
-#include "AssetCore/SharedFileRead.h"
 #include "Assets/MeshLODGenerator.h"
 #include "ClusterLODTestMesh.h"
 #include "GltfTestFiles.h"
@@ -143,7 +142,7 @@ class ClusterLODImportedGltfTest : public ::testing::Test
     TestUtils::ScopedTempDir m_Temporary{TestUtils::MakeUniqueTempDirectory("cluster_gltf")};
 };
 
-TEST_F(ClusterLODImportedGltfTest, StaticHierarchyCooksBothPlacementsIntoCoarseAndFineGeometry)
+TEST_F(ClusterLODImportedGltfTest, StaticHierarchyCooksBothPlacementsIntoTheCoarseMeshAndItsUnit)
 {
     ModelAsset source(GUID::Generate(), m_Temporary.Path()/"static.glb");
     ASSERT_TRUE(source.LoadFromData(ImportedTriangle(GltfMotion::Static)));
@@ -170,15 +169,12 @@ TEST_F(ClusterLODImportedGltfTest, StaticHierarchyCooksBothPlacementsIntoCoarseA
     ExpectPlacedTriangles(cooked.GetMesh(0));
     const auto manifest = cooked.GetClusterLODManifest();
     ASSERT_NE(manifest, nullptr);
-    ASSERT_EQ(manifest->Pages.size(), 1u);
-    const auto& page = manifest->Pages.front();
-    SharedFileReader store(ResolveMeshClusterLODStore(path, {}, *manifest));
-    Vector<uint8> bytes(static_cast<size_t>(page.Bytes));
-    ASSERT_TRUE(store.SeekTo(page.Offset));
-    ASSERT_EQ(store.Read(bytes.data(), bytes.size()), static_cast<int64>(bytes.size()));
-    Mesh fine;
-    ASSERT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, cooked.GetMesh(0), fine, error)) << error;
-    ExpectPlacedTriangles(fine);
+    // One triangle is one cluster: the DAG is one terminal group with one resident unit.
+    ASSERT_EQ(manifest->Groups.size(), 1u);
+    EXPECT_TRUE(manifest->Groups.front().Terminal);
+    ASSERT_EQ(manifest->Units.size(), 1u);
+    ASSERT_FALSE(manifest->Units.front().IsStreamed());
+    ExpectPlacedTriangles(ExtractMeshClusterLODResidentUnit(cooked.GetMesh(0), manifest->Units.front()));
 }
 
 TEST_F(ClusterLODImportedGltfTest, RigidAnimationIsRefusedWithoutReplacingThePublishedAsset)

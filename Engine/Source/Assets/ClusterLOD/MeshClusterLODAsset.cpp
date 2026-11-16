@@ -7,6 +7,7 @@
 #include "FileSystem/FileSystem.h"
 #include "FileSystem/ScopedFileLock.h"
 #include "Logger/Logger.h"
+#include "Mathematics/Geometry.h"
 #include "Mathematics/Vector3.h"
 #include "Types/FlatSet.h"
 #include "Types/Fnv1a.h"
@@ -30,7 +31,7 @@ namespace
 {
 
 constexpr uint64 kMagic = 0x315453554c434547ull;
-constexpr uint32 kVersion = 3;
+constexpr uint32 kVersion = 4;
 // The newest meshopt vertex codec version and its default compression level. The index codec
 // uses the library default, version 1, the newest.
 constexpr int kPageVertexVersion = 1;
@@ -38,8 +39,13 @@ constexpr int kPageVertexLevel = 2;
 constexpr uint64 kMaximumFileBytes = MeshClusterLODManifest::kMaximumFileBytes;
 constexpr uint64 kMaximumImageBytes = 128ull * 1024ull * 1024ull;
 constexpr uint32 kMaximumMaterialBytes = 1024u * 1024u;
+// Meshes and placements of one model.
 constexpr uint32 kMaximumGroups = 4096;
-// A fine page is one cluster group; a coarse mesh is bounded by the file size only.
+constexpr uint32 kMaximumDagGroups = 65536;
+constexpr uint32 kMaximumUnits = 262144;
+// The DAG halves its triangles per level; deeper data is malformed.
+constexpr uint32 kMaximumDepth = 64;
+// A fine page is one unit; a coarse mesh is bounded by the file size only.
 constexpr uint32 kMaximumPageVertices = 65535;
 constexpr uint32 kMaximumCoarseVertices = static_cast<uint32>(kMaximumFileBytes / sizeof(Vertex));
 constexpr uint32 kMaximumMaterials = 128;
@@ -269,21 +275,16 @@ bool ValidGeometry(const Mesh& mesh)
     return true;
 }
 
-bool ReadGeometry(Reader& reader, uint32 vertices, uint32 indices, uint32 maximumVertices, Mesh& mesh)
+bool ReadVertices(Reader& reader, uint32 vertices, Mesh& mesh)
 {
-    if (vertices == 0 || vertices > maximumVertices || indices == 0 || indices % 3 != 0 ||
-        static_cast<uint64>(vertices) * sizeof(Vertex) + static_cast<uint64>(indices) * sizeof(uint32) > reader.Remaining())
+    if (vertices == 0 || vertices > kMaximumCoarseVertices ||
+        static_cast<uint64>(vertices) * sizeof(Vertex) > reader.Remaining())
         return false;
     mesh.Vertices.resize(vertices);
-    mesh.Indices.resize(indices);
-    return reader.Bytes(mesh.Vertices.data(), vertices * sizeof(Vertex)) &&
-        reader.Bytes(mesh.Indices.data(), indices * sizeof(uint32)) && ValidGeometry(mesh);
-}
-
-bool WriteGeometry(Writer& writer, const Mesh& mesh)
-{
-    return writer.Bytes(mesh.Vertices.data(), mesh.Vertices.size() * sizeof(Vertex)) &&
-        writer.Bytes(mesh.Indices.data(), mesh.Indices.size() * sizeof(uint32));
+    if (!reader.Bytes(mesh.Vertices.data(), vertices * sizeof(Vertex)))
+        return false;
+    mesh.Indices.clear();
+    return ValidGeometry(mesh);
 }
 
 uint64 EncodedPageBound(uint32 vertices, uint32 indices)
@@ -292,9 +293,9 @@ uint64 EncodedPageBound(uint32 vertices, uint32 indices)
 }
 
 // Appends the encoded fine page and sets its Bytes and EncodedVertexBytes.
-bool WriteEncodedPage(Writer& writer, const Mesh& mesh, MeshClusterLODManifest::Page& page)
+bool WriteEncodedPage(Writer& writer, const Mesh& mesh, MeshClusterLODManifest::Unit& unit)
 {
-    Vector<uint8> encoded(EncodedPageBound(page.VertexCount, page.IndexCount));
+    Vector<uint8> encoded(EncodedPageBound(unit.VertexCount, unit.IndexCount));
     const size_t vertexBytes = meshopt_encodeVertexBufferLevel(encoded.data(), encoded.size(), mesh.Vertices.data(),
                                                                mesh.Vertices.size(), sizeof(Vertex), kPageVertexLevel,
                                                                kPageVertexVersion);
@@ -302,84 +303,239 @@ bool WriteEncodedPage(Writer& writer, const Mesh& mesh, MeshClusterLODManifest::
         encoded.data() + vertexBytes, encoded.size() - vertexBytes, mesh.Indices.data(), mesh.Indices.size());
     if (indexBytes == 0)
         return false;
-    page.EncodedVertexBytes = static_cast<uint32>(vertexBytes);
-    page.Bytes = vertexBytes + indexBytes;
-    return writer.Bytes(encoded.data(), static_cast<size_t>(page.Bytes));
+    unit.EncodedVertexBytes = static_cast<uint32>(vertexBytes);
+    unit.Bytes = vertexBytes + indexBytes;
+    return writer.Bytes(encoded.data(), static_cast<size_t>(unit.Bytes));
 }
 
-bool WritePage(Writer& writer, const MeshClusterLODManifest::Page& page)
+bool ValidBounds(const Mathematics::Vector3& low, const Mathematics::Vector3& high)
 {
-    return writer.Value(page.Offset) && writer.Value(page.Bytes) && writer.Value(page.ContentHash) &&
-        writer.Value(page.EncodedVertexBytes) && writer.Value(page.VertexCount) && writer.Value(page.IndexCount) &&
-        writer.Value(page.Error) &&
-        writer.Value(page.CoarseFirstIndex) && writer.Value(page.CoarseIndexCount) &&
-        writer.Value(page.MinBounds) && writer.Value(page.MaxBounds);
+    const std::array<float, 6> bounds{low.x, low.y, low.z, high.x, high.y, high.z};
+    return ValidFloats(bounds) && low.x <= high.x && low.y <= high.y && low.z <= high.z;
 }
 
-// The page's coarse range follows the previous page's range in the same mesh.
-bool ReadPage(Reader& reader, uint64 storeBytes, uint64 expectedOffset, uint32 expectedFirstIndex,
-              MeshClusterLODManifest::Page& page)
+bool Contains(const MeshClusterLODManifest::Unit& unit, const float (&position)[3])
 {
-    if (!reader.Value(page.Offset) || !reader.Value(page.Bytes) || !reader.Value(page.ContentHash) ||
-        !reader.Value(page.EncodedVertexBytes) || !reader.Value(page.VertexCount) || !reader.Value(page.IndexCount) ||
-        !reader.Value(page.Error) ||
-        !reader.Value(page.CoarseFirstIndex) || !reader.Value(page.CoarseIndexCount) ||
-        !reader.Value(page.MinBounds) || !reader.Value(page.MaxBounds))
-        return false;
-    const std::array<float, 6> bounds{page.MinBounds.x, page.MinBounds.y, page.MinBounds.z,
-                                      page.MaxBounds.x, page.MaxBounds.y, page.MaxBounds.z};
-    if (!ValidFloats(bounds) || bounds[0] > bounds[3] || bounds[1] > bounds[4] || bounds[2] > bounds[5] ||
-        page.CoarseFirstIndex != expectedFirstIndex || page.CoarseIndexCount == 0 || page.CoarseIndexCount % 3 != 0)
-        return false;
-    return page.Offset == expectedOffset && page.Offset <= storeBytes &&
-        page.Bytes <= storeBytes - page.Offset && page.VertexCount != 0 && page.VertexCount <= kMaximumPageVertices &&
-        page.IndexCount != 0 && page.IndexCount % 3 == 0 &&
-        static_cast<uint64>(page.VertexCount) * sizeof(Vertex) + static_cast<uint64>(page.IndexCount) * sizeof(uint32) <=
-            kMaximumFileBytes &&
-        page.EncodedVertexBytes != 0 && page.EncodedVertexBytes < page.Bytes &&
-        page.EncodedVertexBytes <= meshopt_encodeVertexBufferBound(page.VertexCount, sizeof(Vertex)) &&
-        page.Bytes <= EncodedPageBound(page.VertexCount, page.IndexCount) &&
-        std::isfinite(page.Error) && page.Error >= 0.0f;
+    return position[0] >= unit.MinBounds.x && position[0] <= unit.MaxBounds.x &&
+        position[1] >= unit.MinBounds.y && position[1] <= unit.MaxBounds.y &&
+        position[2] >= unit.MinBounds.z && position[2] <= unit.MaxBounds.z;
 }
 
-// The mesh-local bounds of a page cover its coarse and its fine vertices.
-void SetPageBounds(const MeshClusterLODManifest::Page& page, Mesh& mesh)
+void SetUnitBounds(const MeshClusterLODManifest::Unit& unit, Mesh& mesh)
 {
     for (size_t axis = 0; axis < 3; ++axis)
     {
-        mesh.MinBounds[axis] = page.MinBounds[axis];
-        mesh.MaxBounds[axis] = page.MaxBounds[axis];
+        mesh.MinBounds[axis] = unit.MinBounds[axis];
+        mesh.MaxBounds[axis] = unit.MaxBounds[axis];
     }
 }
 
-// Concatenates the coarse groups in order, so each group is one contiguous index range, then
-// welds equal vertices. Group borders are locked, so the welded mesh has no seams between groups.
-Mesh BuildCoarseMesh(const Mesh& source, const Vector<MeshClusterLODGroup>& groups)
+bool WriteGroup(Writer& writer, const MeshClusterLODDagGroup& group)
 {
-    Mesh coarse;
-    CopyMeshClusterLODPlacement(source, coarse);
-    std::fill_n(coarse.MinBounds, 3, std::numeric_limits<float>::max());
-    std::fill_n(coarse.MaxBounds, 3, std::numeric_limits<float>::lowest());
-    Vector<Vertex> vertices;
-    for (const MeshClusterLODGroup& group : groups)
+    return writer.Value(group.Center) && writer.Value(group.Radius) && writer.Value(group.Error) &&
+        writer.Value(group.Depth) && writer.Value(static_cast<uint32>(group.Terminal ? 1 : 0));
+}
+
+bool ReadGroup(Reader& reader, MeshClusterLODManifest::Group& group)
+{
+    uint32 terminal = 0;
+    if (!reader.Value(group.Center) || !reader.Value(group.Radius) || !reader.Value(group.Error) ||
+        !reader.Value(group.Depth) || !reader.Value(terminal) || terminal > 1)
+        return false;
+    group.Terminal = terminal != 0;
+    const std::array<float, 5> values{group.Center.x, group.Center.y, group.Center.z, group.Radius, group.Error};
+    return ValidFloats(values) && group.Radius >= 0.0f && group.Error >= 0.0f && group.Depth < kMaximumDepth;
+}
+
+// The unit record: group, producer (mesh-local), bounds, index count and kind, then the page
+// record of a streamed unit or the coarse indices of a resident unit.
+bool WriteUnitHeader(Writer& writer, uint32 group, uint32 producer, const MeshClusterLODManifest::Unit& unit, bool streamed)
+{
+    return writer.Value(group) && writer.Value(producer) && writer.Value(unit.MinBounds) && writer.Value(unit.MaxBounds) &&
+        writer.Value(unit.IndexCount) && writer.Value(static_cast<uint32>(streamed ? 1 : 0));
+}
+
+bool WritePage(Writer& writer, const MeshClusterLODManifest::Unit& unit)
+{
+    return writer.Value(unit.Offset) && writer.Value(unit.Bytes) && writer.Value(unit.ContentHash) &&
+        writer.Value(unit.EncodedVertexBytes) && writer.Value(unit.VertexCount);
+}
+
+// Pages follow each other in the fine store in unit order.
+bool ReadPage(Reader& reader, uint64 storeBytes, uint64 expectedOffset, MeshClusterLODManifest::Unit& unit)
+{
+    if (!reader.Value(unit.Offset) || !reader.Value(unit.Bytes) || !reader.Value(unit.ContentHash) ||
+        !reader.Value(unit.EncodedVertexBytes) || !reader.Value(unit.VertexCount))
+        return false;
+    return unit.Offset == expectedOffset && unit.Offset <= storeBytes && unit.Bytes != 0 &&
+        unit.Bytes <= storeBytes - unit.Offset && unit.VertexCount != 0 && unit.VertexCount <= kMaximumPageVertices &&
+        static_cast<uint64>(unit.VertexCount) * sizeof(Vertex) + static_cast<uint64>(unit.IndexCount) * sizeof(uint32) <=
+            kMaximumFileBytes &&
+        unit.EncodedVertexBytes != 0 && unit.EncodedVertexBytes < unit.Bytes &&
+        unit.EncodedVertexBytes <= meshopt_encodeVertexBufferBound(unit.VertexCount, sizeof(Vertex)) &&
+        unit.Bytes <= EncodedPageBound(unit.VertexCount, unit.IndexCount);
+}
+
+// Coarse indices of a resident unit: in range, positive area and inside the unit bounds.
+bool ReadResidentIndices(Reader& reader, const Mesh& coarse, const MeshClusterLODManifest::Unit& unit,
+                         Vector<uint32>& indices)
+{
+    if (static_cast<uint64>(unit.IndexCount) * sizeof(uint32) > reader.Remaining())
+        return false;
+    indices.resize(unit.IndexCount);
+    if (!reader.Bytes(indices.data(), indices.size() * sizeof(uint32)))
+        return false;
+    for (size_t offset = 0; offset < indices.size(); offset += 3)
     {
-        const auto base = static_cast<uint32>(vertices.size());
-        vertices.insert(vertices.end(), group.Coarse.Vertices.begin(), group.Coarse.Vertices.end());
-        for (const uint32 index : group.Coarse.Indices)
-            coarse.Indices.push_back(base + index);
-        for (size_t axis = 0; axis < 3; ++axis)
+        for (size_t corner = 0; corner < 3; ++corner)
+            if (indices[offset + corner] >= coarse.Vertices.size() ||
+                !Contains(unit, coarse.Vertices[indices[offset + corner]].Position))
+                return false;
+        const auto& first = coarse.Vertices[indices[offset]].Position;
+        const auto& second = coarse.Vertices[indices[offset + 1]].Position;
+        const auto& third = coarse.Vertices[indices[offset + 2]].Position;
+        const Mathematics::Vector3 edgeA{second[0] - first[0], second[1] - first[1], second[2] - first[2]};
+        const Mathematics::Vector3 edgeB{third[0] - first[0], third[1] - first[1], third[2] - first[2]};
+        if (Mathematics::Vector3::Cross(edgeA, edgeB).LengthSquared() <= 0.0f)
+            return false;
+    }
+    return true;
+}
+
+// A unit is resident when a uniform cut at or over the resident depth draws it.
+bool IsResident(uint32 groupDepth, bool groupTerminal, uint32 residentDepth)
+{
+    return groupTerminal || groupDepth >= residentDepth;
+}
+
+// The first DAG level whose uniform cut has at most `ratio` of the source triangles.
+uint32 ChooseResidentDepth(const MeshClusterLODDag& dag, size_t sourceTriangles, float ratio)
+{
+    uint32 maximumDepth = 0;
+    for (const MeshClusterLODDagGroup& group : dag.Groups)
+        maximumDepth = std::max(maximumDepth, group.Depth);
+    Vector<uint64> triangles(maximumDepth + 1, 0);
+    for (const MeshClusterLODDagUnit& unit : dag.Units)
+    {
+        const MeshClusterLODDagGroup& group = dag.Groups[unit.Group];
+        for (uint32 depth = group.Depth; depth <= (group.Terminal ? maximumDepth : group.Depth); ++depth)
+            triangles[depth] += unit.Indices.size() / 3;
+    }
+    const auto limit = static_cast<uint64>(static_cast<double>(sourceTriangles) * ratio);
+    for (uint32 depth = 1; depth <= maximumDepth; ++depth)
+        if (triangles[depth] <= limit)
+            return depth;
+    return maximumDepth;
+}
+
+// Builds LOD0 (the resident cut) and every coarser uniform cut of one mesh from its resident
+// units, records each unit's first level and range, and sets the level errors relative to the
+// largest bounds axis, the unit of Mesh::ExtraLODErrors.
+bool BuildLevels(MeshClusterLODManifest& manifest, const MeshClusterLODManifest::MeshRange& range,
+                 const Vector<Vector<uint32>>& residentIndices, Mesh& coarse)
+{
+    uint32 maximumDepth = 0;
+    for (uint32 group = range.FirstGroup; group < range.FirstGroup + range.GroupCount; ++group)
+        maximumDepth = std::max(maximumDepth, manifest.Groups[group].Depth);
+    if (range.ResidentDepth > maximumDepth)
+        return false;
+    const float extent = std::max({coarse.MaxBounds[0] - coarse.MinBounds[0], coarse.MaxBounds[1] - coarse.MinBounds[1],
+                                   coarse.MaxBounds[2] - coarse.MinBounds[2]});
+    Vector<bool> placed(range.UnitCount, false);
+    coarse.ExtraLODs.clear();
+    coarse.ExtraLODErrors.clear();
+    coarse.ExtraLODSloppy.clear();
+    for (uint32 depth = range.ResidentDepth; depth <= maximumDepth; ++depth)
+    {
+        Vector<uint32>& indices = depth == range.ResidentDepth ? coarse.Indices : coarse.ExtraLODs.emplace_back();
+        float error = 0.0f;
+        for (uint32 local = 0; local < range.UnitCount; ++local)
         {
-            coarse.MinBounds[axis] = std::min(coarse.MinBounds[axis], group.Coarse.MinBounds[axis]);
-            coarse.MaxBounds[axis] = std::max(coarse.MaxBounds[axis], group.Coarse.MaxBounds[axis]);
+            auto& unit = manifest.Units[range.FirstUnit + local];
+            const auto& group = manifest.Groups[unit.Group];
+            if (!IsMeshClusterLODUnitInLevel(group.Depth, group.Terminal, depth))
+                continue;
+            if (unit.IsStreamed() || indices.size() > std::numeric_limits<uint32>::max() - unit.IndexCount)
+                return false;
+            if (!placed[local])
+            {
+                placed[local] = true;
+                unit.Level = depth - range.ResidentDepth;
+                unit.FirstIndex = static_cast<uint32>(indices.size());
+            }
+            if (unit.Producer != kMeshClusterLODSourceGroup)
+                error = std::max(error, manifest.Groups[unit.Producer].Error);
+            indices.insert(indices.end(), residentIndices[local].begin(), residentIndices[local].end());
+        }
+        if (indices.empty())
+            return false;
+        if (depth != range.ResidentDepth)
+        {
+            coarse.ExtraLODErrors.push_back(extent > 0.0f ? error / extent : 0.0f);
+            coarse.ExtraLODSloppy.push_back(0);
         }
     }
-    Vector<uint32> remap(vertices.size());
-    const size_t unique = meshopt_generateVertexRemap(remap.data(), coarse.Indices.data(), coarse.Indices.size(),
-                                                      vertices.data(), vertices.size(), sizeof(Vertex));
-    coarse.Vertices.resize(unique);
-    meshopt_remapVertexBuffer(coarse.Vertices.data(), vertices.data(), vertices.size(), sizeof(Vertex), remap.data());
-    meshopt_remapIndexBuffer(coarse.Indices.data(), coarse.Indices.data(), coarse.Indices.size(), remap.data());
-    return coarse;
+    for (uint32 local = 0; local < range.UnitCount; ++local)
+        if (placed[local] == manifest.Units[range.FirstUnit + local].IsStreamed())
+            return false;
+    return true;
+}
+
+// Checks the DAG edges of one mesh and derives the unit and produced-unit ranges of its groups.
+// A unit's group is one level above its producer, never under a terminal producer, and its
+// error is at least the producer's, so a cut chosen top-down is crack-free and monotone.
+bool LinkGroups(MeshClusterLODManifest& manifest, const MeshClusterLODManifest::MeshRange& range)
+{
+    for (uint32 local = 0; local < range.UnitCount; ++local)
+    {
+        const auto& unit = manifest.Units[range.FirstUnit + local];
+        const auto& group = manifest.Groups[unit.Group];
+        if (local != 0)
+        {
+            const auto& previous = manifest.Units[range.FirstUnit + local - 1];
+            if (previous.Group > unit.Group || (previous.Group == unit.Group && previous.Producer >= unit.Producer))
+                return false;
+        }
+        if (unit.Producer == kMeshClusterLODSourceGroup)
+        {
+            if (group.Depth != 0)
+                return false;
+            continue;
+        }
+        const auto& producer = manifest.Groups[unit.Producer];
+        if (producer.Terminal || group.Depth != producer.Depth + 1 || (!group.Terminal && group.Error < producer.Error))
+            return false;
+    }
+    Vector<uint32> produced(range.GroupCount, 0);
+    for (uint32 local = 0; local < range.UnitCount; ++local)
+    {
+        const auto& unit = manifest.Units[range.FirstUnit + local];
+        auto& group = manifest.Groups[unit.Group];
+        if (group.UnitCount == 0)
+            group.FirstUnit = range.FirstUnit + local;
+        ++group.UnitCount;
+        if (unit.Producer != kMeshClusterLODSourceGroup)
+            ++produced[unit.Producer - range.FirstGroup];
+    }
+    auto first = static_cast<uint32>(manifest.ProducedUnits.size());
+    for (uint32 local = 0; local < range.GroupCount; ++local)
+    {
+        auto& group = manifest.Groups[range.FirstGroup + local];
+        if (group.UnitCount == 0 || group.Terminal != (produced[local] == 0))
+            return false;
+        group.FirstProduced = first;
+        first += produced[local];
+    }
+    manifest.ProducedUnits.resize(first);
+    for (uint32 local = 0; local < range.UnitCount; ++local)
+    {
+        const auto& unit = manifest.Units[range.FirstUnit + local];
+        if (unit.Producer == kMeshClusterLODSourceGroup)
+            continue;
+        auto& producer = manifest.Groups[unit.Producer];
+        manifest.ProducedUnits[producer.FirstProduced + producer.ProducedCount++] = range.FirstUnit + local;
+    }
+    return true;
 }
 
 bool Publish(const std::filesystem::path& path, std::span<const uint8> bytes)
@@ -516,14 +672,15 @@ bool DecodeMeshClusterLODAsset(std::span<const uint8> bytes, MeshClusterLODAsset
     uint64 magic = 0;
     uint32 version = 0;
     MeshClusterLODAssetData decoded;
+    auto& manifest = decoded.Manifest;
     if (!reader.Value(magic) || magic != kMagic || !reader.Value(version) || version != kVersion ||
-        !reader.Value(decoded.Manifest.Incarnation) ||
-        Hashing::Fnv1a64(bytes.data() + bytes.size() - reader.Remaining(), reader.Remaining()) != decoded.Manifest.Incarnation)
+        !reader.Value(manifest.Incarnation) ||
+        Hashing::Fnv1a64(bytes.data() + bytes.size() - reader.Remaining(), reader.Remaining()) != manifest.Incarnation)
         return false;
-    if (!reader.Value(decoded.Manifest.StoreHash) || !reader.Value(decoded.Manifest.StoreBytes) ||
-        decoded.Manifest.StoreBytes == 0 || decoded.Manifest.StoreBytes > kMaximumFileBytes)
+    if (!reader.Value(manifest.StoreHash) || !reader.Value(manifest.StoreBytes) ||
+        manifest.StoreBytes > kMaximumFileBytes)
     {
-        error = "Cluster fine store size is missing or exceeds its limit";
+        error = "Cluster fine store size exceeds its limit";
         return false;
     }
     if (!ReadMaterials(reader, decoded.Materials) || !ReadImages(reader, decoded.Images) ||
@@ -536,15 +693,17 @@ bool DecodeMeshClusterLODAsset(std::span<const uint8> bytes, MeshClusterLODAsset
     if (!reader.Value(meshes) || meshes == 0 || meshes > kMaximumGroups)
         return false;
     decoded.CoarseMeshes.resize(meshes);
+    manifest.Meshes.resize(meshes);
     uint64 offset = 0;
     uint32 placements = 0;
     FlatSet<String> names;
     names.Reserve(meshes);
+    Vector<Vector<uint32>> residentIndices;
     for (uint32 meshIndex = 0; meshIndex < meshes; ++meshIndex)
     {
         Mesh& mesh = decoded.CoarseMeshes[meshIndex];
+        auto& range = manifest.Meshes[meshIndex];
         uint32 vertices = 0;
-        uint32 indices = 0;
         if (!ReadPlacement(reader, mesh, placements) || !names.Insert(mesh.Name) ||
             (!decoded.Materials.empty() && mesh.MaterialIndex >= decoded.Materials.size()) ||
             (decoded.Materials.empty() && mesh.MaterialIndex != 0))
@@ -552,48 +711,71 @@ bool DecodeMeshClusterLODAsset(std::span<const uint8> bytes, MeshClusterLODAsset
             error = std::format("Cluster mesh {} has invalid placement, bounds, name, or material", meshIndex);
             return false;
         }
-        if (!reader.Value(vertices) || !reader.Value(indices) ||
-            !ReadGeometry(reader, vertices, indices, kMaximumCoarseVertices, mesh))
+        if (!reader.Value(range.ResidentDepth) || range.ResidentDepth >= kMaximumDepth || !reader.Value(vertices) ||
+            !ReadVertices(reader, vertices, mesh))
         {
-            error = std::format("Cluster mesh {} has invalid coarse geometry", meshIndex);
+            error = std::format("Cluster mesh {} has invalid coarse vertices", meshIndex);
             return false;
         }
         uint32 groups = 0;
-        if (!reader.Value(groups) || groups == 0 || groups > kMaximumGroups - decoded.Manifest.Pages.size())
+        if (!reader.Value(groups) || groups == 0 || groups > kMaximumDagGroups - manifest.Groups.size())
             return false;
-        uint32 firstIndex = 0;
+        range.FirstGroup = static_cast<uint32>(manifest.Groups.size());
+        range.GroupCount = groups;
         for (uint32 group = 0; group < groups; ++group)
         {
-            MeshClusterLODManifest::Page page;
-            if (!ReadPage(reader, decoded.Manifest.StoreBytes, offset, firstIndex, page) ||
-                page.CoarseIndexCount > indices - firstIndex)
+            MeshClusterLODManifest::Group decodedGroup;
+            if (!ReadGroup(reader, decodedGroup))
             {
-                error = std::format("Cluster mesh {} group {} has an invalid fine page or coarse range", meshIndex, group);
+                error = std::format("Cluster mesh {} group {} is invalid", meshIndex, group);
                 return false;
             }
-            page.Mesh = meshIndex;
-            for (uint32 index = page.CoarseFirstIndex; index < page.CoarseFirstIndex + page.CoarseIndexCount; ++index)
-            {
-                const auto& position = mesh.Vertices[mesh.Indices[index]].Position;
-                if (position[0] < page.MinBounds.x || position[0] > page.MaxBounds.x ||
-                    position[1] < page.MinBounds.y || position[1] > page.MaxBounds.y ||
-                    position[2] < page.MinBounds.z || position[2] > page.MaxBounds.z)
-                {
-                    error = std::format("Cluster mesh {} group {} has coarse vertices outside its bounds", meshIndex, group);
-                    return false;
-                }
-            }
-            firstIndex += page.CoarseIndexCount;
-            offset += page.Bytes;
-            decoded.Manifest.Pages.push_back(page);
+            decodedGroup.Mesh = meshIndex;
+            manifest.Groups.push_back(decodedGroup);
         }
-        if (firstIndex != indices)
+        uint32 units = 0;
+        if (!reader.Value(units) || units == 0 || units > kMaximumUnits - manifest.Units.size())
+            return false;
+        range.FirstUnit = static_cast<uint32>(manifest.Units.size());
+        range.UnitCount = units;
+        residentIndices.assign(units, {});
+        for (uint32 local = 0; local < units; ++local)
         {
-            error = std::format("Cluster mesh {} groups do not cover its coarse indices", meshIndex);
+            MeshClusterLODManifest::Unit unit;
+            uint32 group = 0;
+            uint32 producer = 0;
+            uint32 streamed = 0;
+            unit.Mesh = meshIndex;
+            const bool header = reader.Value(group) && reader.Value(producer) && reader.Value(unit.MinBounds) &&
+                reader.Value(unit.MaxBounds) && reader.Value(unit.IndexCount) && reader.Value(streamed) &&
+                group < groups && (producer == kMeshClusterLODSourceGroup || producer < groups) && streamed <= 1 &&
+                unit.IndexCount != 0 && unit.IndexCount % 3 == 0 && ValidBounds(unit.MinBounds, unit.MaxBounds);
+            if (!header)
+            {
+                error = std::format("Cluster mesh {} unit {} has an invalid record", meshIndex, local);
+                return false;
+            }
+            unit.Group = range.FirstGroup + group;
+            unit.Producer = producer == kMeshClusterLODSourceGroup ? producer : range.FirstGroup + producer;
+            const auto& owner = manifest.Groups[unit.Group];
+            const bool payload = streamed != 0
+                ? ReadPage(reader, manifest.StoreBytes, offset, unit)
+                : ReadResidentIndices(reader, mesh, unit, residentIndices[local]);
+            if (!payload || (streamed != 0) == IsResident(owner.Depth, owner.Terminal, range.ResidentDepth))
+            {
+                error = std::format("Cluster mesh {} unit {} has an invalid page or resident range", meshIndex, local);
+                return false;
+            }
+            offset += unit.Bytes;
+            manifest.Units.push_back(unit);
+        }
+        if (!LinkGroups(manifest, range) || !BuildLevels(manifest, range, residentIndices, mesh))
+        {
+            error = std::format("Cluster mesh {} has an invalid DAG or LOD chain", meshIndex);
             return false;
         }
     }
-    if (offset != decoded.Manifest.StoreBytes || reader.Remaining() != 0 || IsAssetDecodeCancelled())
+    if (offset != manifest.StoreBytes || reader.Remaining() != 0 || IsAssetDecodeCancelled())
         return false;
     FlatSet<GUID> dependencies;
     for (const ImportedMaterialData& material : decoded.Materials)
@@ -606,7 +788,7 @@ bool DecodeMeshClusterLODAsset(std::span<const uint8> bytes, MeshClusterLODAsset
     for (const EmbeddedImage& image : decoded.Images)
         if (!image.AssetGuid.IsNull())
             dependencies.Insert(image.AssetGuid);
-    decoded.Manifest.TextureDependencies.assign(dependencies.begin(), dependencies.end());
+    manifest.TextureDependencies.assign(dependencies.begin(), dependencies.end());
     output = std::move(decoded);
     error.clear();
     return true;
@@ -649,6 +831,57 @@ bool ModelAsset::ReloadFromData(std::span<const uint8> data)
     return true;
 }
 
+namespace
+{
+
+// The source vertices that resident units use, in first-use order, and the source-to-coarse map.
+Mesh BuildResidentVertices(const Mesh& source, const MeshClusterLODDag& dag, uint32 residentDepth, Vector<uint32>& remap)
+{
+    Mesh coarse;
+    CopyMeshClusterLODPlacement(source, coarse);
+    remap.assign(source.Vertices.size(), kMeshClusterLODUnusedVertex);
+    for (const MeshClusterLODDagUnit& unit : dag.Units)
+    {
+        const MeshClusterLODDagGroup& group = dag.Groups[unit.Group];
+        if (!IsResident(group.Depth, group.Terminal, residentDepth))
+            continue;
+        for (const uint32 index : unit.Indices)
+            if (remap[index] == kMeshClusterLODUnusedVertex)
+            {
+                remap[index] = static_cast<uint32>(coarse.Vertices.size());
+                coarse.Vertices.push_back(source.Vertices[index]);
+            }
+    }
+    // The coarse bounds cover the source, so they cover every streamed unit too.
+    Mathematics::AABB bounds = Mathematics::AABB::Empty();
+    for (const MeshClusterLODDagUnit& unit : dag.Units)
+        for (const uint32 index : unit.Indices)
+        {
+            const auto& position = source.Vertices[index].Position;
+            bounds.Expand({position[0], position[1], position[2]});
+        }
+    for (size_t axis = 0; axis < 3; ++axis)
+    {
+        coarse.MinBounds[axis] = bounds.min[axis];
+        coarse.MaxBounds[axis] = bounds.max[axis];
+    }
+    return coarse;
+}
+
+void SetBoundsOfIndices(const Mesh& source, std::span<const uint32> indices, MeshClusterLODManifest::Unit& unit)
+{
+    Mathematics::AABB bounds = Mathematics::AABB::Empty();
+    for (const uint32 index : indices)
+    {
+        const auto& position = source.Vertices[index].Position;
+        bounds.Expand({position[0], position[1], position[2]});
+    }
+    unit.MinBounds = bounds.min;
+    unit.MaxBounds = bounds.max;
+}
+
+} // namespace
+
 bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::path& output,
                             const MeshClusterLODConfig& config, String& error)
 {
@@ -668,13 +901,17 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
         return false;
     }
     Writer fine;
-    Writer groups;
+    Writer meshes;
     FlatSet<String> names;
     uint32 meshCount = 0;
-    uint32 count = 0;
     uint32 placements = 0;
+    uint64 groupCount = 0;
+    uint64 unitCount = 0;
     uint64 geometryBytes = 0;
     uint64 metadataBytes = 0;
+    Vector<uint32> remap;
+    Vector<uint32> pageRemap;
+    Vector<uint32> pageVertices;
     for (const Mesh& mesh : source.GetMeshes())
     {
         if (!ValidTransform(mesh.SourceNodeTransform) || !ValidTransform(mesh.SourceNodeLocalTransform) ||
@@ -686,17 +923,20 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
             error = "Cluster mesh has an invalid material index or non-affine placement";
             return false;
         }
-        Vector<MeshClusterLODGroup> generated;
-        if (!GenerateMeshClusterLODs(mesh, config, generated, error))
+        MeshClusterLODDag dag;
+        if (!GenerateMeshClusterLODDag(mesh, config, dag, error))
             return false;
-        if (generated.size() > config.MaximumGroups - count || placements >= config.MaximumGroups ||
-            mesh.ExtraPlacements.size() > config.MaximumGroups - placements - 1)
+        if (placements >= kMaximumGroups || mesh.ExtraPlacements.size() > kMaximumGroups - placements - 1 ||
+            dag.Groups.size() > kMaximumDagGroups - groupCount || dag.Units.size() > kMaximumUnits - unitCount)
         {
-            error = std::format("Cluster model exceeds {} placed groups", config.MaximumGroups);
+            error = "Cluster model exceeds its placement, group or unit limit";
             return false;
         }
         placements += static_cast<uint32>(mesh.ExtraPlacements.size()) + 1;
-        Mesh coarse = BuildCoarseMesh(mesh, generated);
+        groupCount += dag.Groups.size();
+        unitCount += dag.Units.size();
+        const uint32 residentDepth = ChooseResidentDepth(dag, mesh.Indices.size() / 3, config.ResidentRatio);
+        Mesh coarse = BuildResidentVertices(mesh, dag, residentDepth, remap);
         if (!names.Insert(coarse.Name))
             coarse.Name = std::format("{} {}", mesh.Name, meshCount);
         if (coarse.Name != mesh.Name && !names.Insert(coarse.Name))
@@ -704,61 +944,86 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
             error = "Cluster mesh names are not unique";
             return false;
         }
-        const uint64 meshMetadata = sizeof(Mesh) + coarse.Name.size() + generated.size() * sizeof(MeshClusterLODManifest::Page) +
-            coarse.ExtraPlacements.size() * sizeof(MeshPlacement);
+        const uint64 meshMetadata = sizeof(Mesh) + coarse.Name.size() +
+            dag.Groups.size() * sizeof(MeshClusterLODManifest::Group) +
+            dag.Units.size() * sizeof(MeshClusterLODManifest::Unit) + coarse.ExtraPlacements.size() * sizeof(MeshPlacement);
         if (meshMetadata > config.MaximumMetadataBytes - metadataBytes)
         {
             error = "Cluster model exceeds the group metadata limit";
             return false;
         }
         metadataBytes += meshMetadata;
-        const uint64 coarseBytes = coarse.Vertices.size() * sizeof(Vertex) + coarse.Indices.size() * sizeof(uint32);
-        if (coarseBytes > config.MaximumGeometryBytes - geometryBytes)
-        {
-            error = "Cluster model exceeds the total geometry payload limit";
-            return false;
-        }
-        geometryBytes += coarseBytes;
-        if (!WritePlacement(groups, coarse) || !groups.Value(static_cast<uint32>(coarse.Vertices.size())) ||
-            !groups.Value(static_cast<uint32>(coarse.Indices.size())) || !WriteGeometry(groups, coarse) ||
-            !groups.Value(static_cast<uint32>(generated.size())))
+        if (!WritePlacement(meshes, coarse) || !meshes.Value(residentDepth) ||
+            !meshes.Value(static_cast<uint32>(coarse.Vertices.size())) ||
+            !meshes.Bytes(coarse.Vertices.data(), coarse.Vertices.size() * sizeof(Vertex)) ||
+            !meshes.Value(static_cast<uint32>(dag.Groups.size())))
         {
             error = "Cluster groups exceed their serialized file limit";
             return false;
         }
-        uint32 firstIndex = 0;
-        for (const MeshClusterLODGroup& group : generated)
-        {
-            const uint64 fineBytes = group.Fine.Vertices.size() * sizeof(Vertex) + group.Fine.Indices.size() * sizeof(uint32);
-            if (fineBytes > config.MaximumGeometryBytes - geometryBytes)
-            {
-                error = "Cluster model exceeds the total geometry payload limit";
-                return false;
-            }
-            geometryBytes += fineBytes;
-            MeshClusterLODManifest::Page page;
-            page.Offset = fine.Data().size();
-            page.VertexCount = static_cast<uint32>(group.Fine.Vertices.size());
-            page.IndexCount = static_cast<uint32>(group.Fine.Indices.size());
-            page.Error = group.Error;
-            page.CoarseFirstIndex = firstIndex;
-            page.CoarseIndexCount = static_cast<uint32>(group.Coarse.Indices.size());
-            page.MinBounds = {group.Coarse.MinBounds[0], group.Coarse.MinBounds[1], group.Coarse.MinBounds[2]};
-            page.MaxBounds = {group.Coarse.MaxBounds[0], group.Coarse.MaxBounds[1], group.Coarse.MaxBounds[2]};
-            firstIndex += page.CoarseIndexCount;
-            if (!WriteEncodedPage(fine, group.Fine, page))
-            {
-                error = "Cluster fine store exceeds its serialized file limit";
-                return false;
-            }
-            const auto payload = fine.Data().subspan(static_cast<size_t>(page.Offset), static_cast<size_t>(page.Bytes));
-            page.ContentHash = Hashing::Fnv1a64(payload.data(), payload.size());
-            if (!WritePage(groups, page))
+        for (const MeshClusterLODDagGroup& group : dag.Groups)
+            if (!WriteGroup(meshes, group))
             {
                 error = "Cluster groups exceed their serialized file limit";
                 return false;
             }
-            ++count;
+        if (!meshes.Value(static_cast<uint32>(dag.Units.size())))
+        {
+            error = "Cluster units exceed their serialized file limit";
+            return false;
+        }
+        geometryBytes += coarse.Vertices.size() * sizeof(Vertex);
+        pageRemap.assign(mesh.Vertices.size(), kMeshClusterLODUnusedVertex);
+        for (const MeshClusterLODDagUnit& dagUnit : dag.Units)
+        {
+            const MeshClusterLODDagGroup& group = dag.Groups[dagUnit.Group];
+            const bool streamed = !IsResident(group.Depth, group.Terminal, residentDepth);
+            MeshClusterLODManifest::Unit unit;
+            unit.IndexCount = static_cast<uint32>(dagUnit.Indices.size());
+            SetBoundsOfIndices(mesh, dagUnit.Indices, unit);
+            Mesh page;
+            if (streamed)
+            {
+                page = CompactMeshClusterLODTriangles(mesh, dagUnit.Indices, pageRemap, pageVertices);
+                unit.VertexCount = static_cast<uint32>(page.Vertices.size());
+            }
+            const uint64 bytes = streamed ? page.Vertices.size() * sizeof(Vertex) + page.Indices.size() * sizeof(uint32)
+                                          : dagUnit.Indices.size() * sizeof(uint32);
+            if (bytes > config.MaximumGeometryBytes - std::min(geometryBytes, config.MaximumGeometryBytes) ||
+                unit.VertexCount > kMaximumPageVertices)
+            {
+                error = "Cluster model exceeds the total geometry payload limit";
+                return false;
+            }
+            geometryBytes += bytes;
+            if (!WriteUnitHeader(meshes, dagUnit.Group, dagUnit.Producer, unit, streamed))
+            {
+                error = "Cluster units exceed their serialized file limit";
+                return false;
+            }
+            if (!streamed)
+            {
+                for (const uint32 index : dagUnit.Indices)
+                    if (!meshes.Value(remap[index]))
+                    {
+                        error = "Cluster units exceed their serialized file limit";
+                        return false;
+                    }
+                continue;
+            }
+            unit.Offset = fine.Data().size();
+            if (!WriteEncodedPage(fine, page, unit))
+            {
+                error = "Cluster fine store exceeds its serialized file limit";
+                return false;
+            }
+            const auto payload = fine.Data().subspan(static_cast<size_t>(unit.Offset), static_cast<size_t>(unit.Bytes));
+            unit.ContentHash = Hashing::Fnv1a64(payload.data(), payload.size());
+            if (!WritePage(meshes, unit))
+            {
+                error = "Cluster units exceed their serialized file limit";
+                return false;
+            }
         }
         ++meshCount;
     }
@@ -766,7 +1031,7 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
     Writer body;
     if (!body.Value(storeHash) || !body.Value(static_cast<uint64>(fine.Data().size())) ||
         !body.Value(static_cast<uint32>(materialText.size())) || !body.Bytes(materialText.data(), materialText.size()) ||
-        !WriteImages(body, source.GetEmbeddedImages()) || !body.Value(meshCount) || !body.Bytes(groups.Data().data(), groups.Data().size()))
+        !WriteImages(body, source.GetEmbeddedImages()) || !body.Value(meshCount) || !body.Bytes(meshes.Data().data(), meshes.Data().size()))
     {
         error = "Cluster model exceeds its serialized file or image limit";
         return false;
@@ -827,27 +1092,27 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
     return true;
 }
 
-bool DecodeMeshClusterLODFinePage(std::span<const uint8> bytes, const MeshClusterLODManifest::Page& page,
+bool DecodeMeshClusterLODFinePage(std::span<const uint8> bytes, const MeshClusterLODManifest::Unit& unit,
                                  const Mesh& coarse, Mesh& output, String& error)
 {
     error.clear();
-    if (bytes.size() > kMaximumFileBytes || bytes.size() != page.Bytes || page.EncodedVertexBytes >= bytes.size() ||
-        Hashing::Fnv1a64(bytes.data(), bytes.size()) != page.ContentHash)
+    if (!unit.IsStreamed() || bytes.size() > kMaximumFileBytes || bytes.size() != unit.Bytes ||
+        unit.EncodedVertexBytes >= bytes.size() || Hashing::Fnv1a64(bytes.data(), bytes.size()) != unit.ContentHash)
     {
         error = "Cluster fine page is truncated or has the wrong checksum";
         return false;
     }
-    const auto vertexStream = bytes.first(page.EncodedVertexBytes);
-    const auto indexStream = bytes.subspan(page.EncodedVertexBytes);
+    const auto vertexStream = bytes.first(unit.EncodedVertexBytes);
+    const auto indexStream = bytes.subspan(unit.EncodedVertexBytes);
     Mesh decoded;
     CopyMeshClusterLODPlacement(coarse, decoded);
-    SetPageBounds(page, decoded);
-    decoded.Vertices.resize(page.VertexCount);
-    decoded.Indices.resize(page.IndexCount);
+    SetUnitBounds(unit, decoded);
+    decoded.Vertices.resize(unit.VertexCount);
+    decoded.Indices.resize(unit.IndexCount);
     // The decoders accept untrusted input; ValidGeometry refuses garbage output.
-    if (meshopt_decodeVertexBuffer(decoded.Vertices.data(), page.VertexCount, sizeof(Vertex), vertexStream.data(),
+    if (meshopt_decodeVertexBuffer(decoded.Vertices.data(), unit.VertexCount, sizeof(Vertex), vertexStream.data(),
                                    vertexStream.size()) != 0 ||
-        meshopt_decodeIndexBuffer(decoded.Indices.data(), page.IndexCount, sizeof(uint32), indexStream.data(),
+        meshopt_decodeIndexBuffer(decoded.Indices.data(), unit.IndexCount, sizeof(uint32), indexStream.data(),
                                   indexStream.size()) != 0 ||
         !ValidGeometry(decoded) || IsAssetDecodeCancelled())
     {
@@ -858,26 +1123,15 @@ bool DecodeMeshClusterLODFinePage(std::span<const uint8> bytes, const MeshCluste
     return true;
 }
 
-Mesh ExtractMeshClusterLODCoarseGroup(const Mesh& coarse, const MeshClusterLODManifest::Page& page)
+Mesh ExtractMeshClusterLODResidentUnit(const Mesh& coarse, const MeshClusterLODManifest::Unit& unit)
 {
+    const Vector<uint32>& level = unit.Level == 0 ? coarse.Indices : coarse.ExtraLODs[unit.Level - 1];
     Vector<uint32> remap(coarse.Vertices.size(), kMeshClusterLODUnusedVertex);
     Vector<uint32> sourceVertices;
-    Mesh group = CompactMeshClusterLODTriangles(
-        coarse, std::span<const uint32>(coarse.Indices.data() + page.CoarseFirstIndex, page.CoarseIndexCount), remap,
-        sourceVertices);
-    SetPageBounds(page, group);
-    return group;
-}
-
-float MeshClusterLODRelativeCoarseError(const MeshClusterLODManifest& manifest, uint32 mesh, const Mesh& coarse)
-{
-    float error = 0.0f;
-    for (const MeshClusterLODManifest::Page& page : manifest.Pages)
-        if (page.Mesh == mesh)
-            error = std::max(error, page.Error);
-    const float extent = std::max({coarse.MaxBounds[0] - coarse.MinBounds[0], coarse.MaxBounds[1] - coarse.MinBounds[1],
-                                   coarse.MaxBounds[2] - coarse.MinBounds[2]});
-    return extent > 0.0f ? error / extent : 0.0f;
+    Mesh result = CompactMeshClusterLODTriangles(
+        coarse, std::span<const uint32>(level.data() + unit.FirstIndex, unit.IndexCount), remap, sourceVertices);
+    SetUnitBounds(unit, result);
+    return result;
 }
 
 std::filesystem::path ResolveMeshClusterLODStore(const std::filesystem::path& modelPath,
