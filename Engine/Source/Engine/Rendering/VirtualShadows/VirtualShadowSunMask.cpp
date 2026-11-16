@@ -12,7 +12,7 @@
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
-#include <cstdio>
+#include <format>
 #include <string>
 
 namespace GameEngine::Engine::Renderer
@@ -135,8 +135,8 @@ RenderGraph::RGTexture VirtualShadowSunMask::Declare(RenderGraph::RGFrame& frame
     if (!m_Device->IsTextureFormatSupported(Rendering::TextureFormat::R32_UINT, kMaskUsage) || !Load())
         return {};
 
-    char name[64];
-    std::snprintf(name, sizeof(name), "VirtualShadowSunMask.View%u", request.ViewId);
+    char name[64]{};
+    std::format_to_n(name, sizeof(name) - 1, "VirtualShadowSunMask.View{}", request.ViewId);
     Rendering::TextureDesc desc{};
     desc.width = source.Width;
     desc.height = source.Height;
