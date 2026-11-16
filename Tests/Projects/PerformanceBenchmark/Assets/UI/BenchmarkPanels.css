@@ -1,0 +1,52 @@
+.root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    padding: 8px;
+}
+
+.panel {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+    gap: 1px;
+    padding: 6px;
+    background-color: rgba(28, 30, 36, 0.86);
+    border: 1px solid rgba(90, 96, 110, 0.9);
+    border-radius: 4px;
+}
+
+.panel-title {
+    color: rgba(220, 224, 232, 1);
+    font-size: 14px;
+}
+
+.row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    height: 15px;
+}
+
+.row-name {
+    color: rgba(190, 194, 202, 1);
+    font-size: 12px;
+    width: 110px;
+}
+
+.row-bar {
+    flex-grow: 1;
+    height: 8px;
+}
+
+.row-value {
+    color: rgba(150, 200, 255, 1);
+    font-size: 12px;
+    width: 48px;
+}

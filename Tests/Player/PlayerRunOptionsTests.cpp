@@ -1,4 +1,4 @@
-// The Player's run options: --headless, its fixed step, --quit-after and the audio
+// The Player's run options: --headless, its fixed step, --quit-after, the benchmark paths and the audio
 // output (--silent-audio over GE_AUDIO_OUTPUT). The refusals
 // matter most: a headless server that silently ignored a bad frame count or a flag it
 // cannot honor would run forever or produce nothing, with nobody watching a window.
@@ -87,4 +87,23 @@ TEST(PlayerRunOptions, SilentAudioComesFromTheFlagOrTheEnvironmentAndTheFlagWins
 TEST(PlayerRunOptions, AnUnrecognizedAudioOutputIsIgnoredAndTheDevicePlays)
 {
     EXPECT_EQ(OutputOf({}, "mute"), Audio::AudioOutput::Device);
+}
+
+TEST(PlayerRunOptions, ABenchmarkTakesItsPlanAndItsResultPath)
+{
+    const std::optional<PlayerRunOptions> options =
+        Parse({"--benchmark", "plan.json", "--benchmark-output", "result.json"});
+    ASSERT_TRUE(options);
+    EXPECT_EQ(options->BenchmarkPlanPath, "plan.json");
+    EXPECT_EQ(options->BenchmarkOutputPath, "result.json");
+    EXPECT_TRUE(Parse({})->BenchmarkPlanPath.empty());
+}
+
+TEST(PlayerRunOptions, ABenchmarkWithoutBothPathsOrWithAnotherRunLengthIsRefused)
+{
+    EXPECT_FALSE(Parse({"--benchmark", "plan.json"}));
+    EXPECT_FALSE(Parse({"--benchmark-output", "result.json"}));
+    EXPECT_FALSE(Parse({"--benchmark", "--benchmark-output", "result.json"}));
+    EXPECT_FALSE(Parse({"--headless", "--benchmark", "plan.json", "--benchmark-output", "result.json"}));
+    EXPECT_FALSE(Parse({"--quit-after", "60", "--benchmark", "plan.json", "--benchmark-output", "result.json"}));
 }

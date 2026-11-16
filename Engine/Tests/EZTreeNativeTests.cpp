@@ -15,6 +15,7 @@
 #include "EZTreeECS/EZTreeDefaultTextures.h"
 #include "EZTreeECS/EZTreePlugin.h"
 #include "EZTreeECS/EZTreeRuntimeMaterials.h"
+#include "EZTreeECS/EZTreeService.h"
 #include "EZTreeECS/Systems/RegisterEZTreeSystems.h"
 #include "PluginAPI/EnginePlugin.h"
 
@@ -270,6 +271,81 @@ TEST(EZTreeNativeTests, LeafAtlasUvTileIsApplied)
     EXPECT_FLOAT_EQ(maxU, 0.5f);
     EXPECT_FLOAT_EQ(minV, 0.5f);
     EXPECT_FLOAT_EQ(maxV, 1.0f);
+}
+
+// The variant registry without a renderer: generation, slots and references only.
+class EZTreeVariantRegistryTests : public ::testing::Test
+{
+protected:
+    void SetUp() override { EZTreeECS::EZTreeService::Get().Shutdown(); }
+    void TearDown() override { EZTreeECS::EZTreeService::Get().Shutdown(); }
+};
+
+TEST_F(EZTreeVariantRegistryTests, TreesWithEqualOptionsShareOneVariantUntilTheLastRelease)
+{
+    auto& service = EZTreeECS::EZTreeService::Get();
+    const EZTree::TreeOptions options = MakeSmallTree();
+    const uint64 hash = EZTree::HashOptions(options);
+
+    const EZTreeECS::TreeVariant first = service.AcquireVariant(hash, options);
+    const EZTreeECS::TreeVariant second = service.AcquireVariant(hash, options);
+    EXPECT_EQ(first.Slot, second.Slot);
+    EXPECT_EQ(first.MeshKey, second.MeshKey);
+    EXPECT_EQ(first.Materials.Leaves, second.Materials.Leaves);
+    EXPECT_EQ(service.FindVariant(hash).RefCount, 2u);
+
+    service.ReleaseVariant(hash);
+    EXPECT_EQ(service.FindVariant(hash).RefCount, 1u);
+    service.ReleaseVariant(hash);
+    EXPECT_EQ(service.FindVariant(hash).Hash, 0u);
+}
+
+TEST_F(EZTreeVariantRegistryTests, ANewVariantTakesTheFreedSlotAndItsMaterialGuids)
+{
+    auto& service = EZTreeECS::EZTreeService::Get();
+    EZTree::TreeOptions a = MakeSmallTree();
+    EZTree::TreeOptions b = MakeSmallTree();
+    b.seed = a.seed + 1u;
+    const uint64 hashA = EZTree::HashOptions(a);
+    const uint64 hashB = EZTree::HashOptions(b);
+    ASSERT_NE(hashA, hashB);
+
+    const EZTreeECS::TreeVariant variantA = service.AcquireVariant(hashA, a);
+    service.ReleaseVariant(hashA);
+    const EZTreeECS::TreeVariant variantB = service.AcquireVariant(hashB, b);
+    EXPECT_EQ(variantB.Slot, variantA.Slot);
+    EXPECT_EQ(variantB.Materials.Bark, variantA.Materials.Bark);
+    EXPECT_NE(variantB.MeshKey, variantA.MeshKey);
+
+    // A second live variant takes a new slot with its own materials.
+    const EZTreeECS::TreeVariant variantA2 = service.AcquireVariant(hashA, a);
+    EXPECT_NE(variantA2.Slot, variantB.Slot);
+    EXPECT_NE(variantA2.Materials.Bark, variantB.Materials.Bark);
+}
+
+TEST_F(EZTreeVariantRegistryTests, VariantCarriesTheGeneratedBoundsAndCounts)
+{
+    const EZTree::TreeOptions options = MakeSmallTree();
+    EZTree::Generator generator;
+    const EZTree::GeneratedTree tree = generator.Generate(options);
+
+    const EZTreeECS::TreeVariant variant =
+        EZTreeECS::EZTreeService::Get().AcquireVariant(EZTree::HashOptions(options), options);
+    EXPECT_EQ(variant.TriangleCount, tree.combined.Indices.size() / 3u);
+    EXPECT_EQ(variant.VertexCount, tree.combined.Vertices.size());
+    EXPECT_EQ(variant.BranchCount, tree.stats.generatedBranchCount);
+    EXPECT_FLOAT_EQ(variant.Bounds.halfExtents.y, tree.bounds.halfExtents.y);
+}
+
+TEST_F(EZTreeVariantRegistryTests, ReleasingAnUnheldVariantChangesNothing)
+{
+    auto& service = EZTreeECS::EZTreeService::Get();
+    const EZTree::TreeOptions options = MakeSmallTree();
+    const uint64 hash = EZTree::HashOptions(options);
+    service.ReleaseVariant(hash);
+    (void)service.AcquireVariant(hash, options);
+    service.ReleaseVariant(hash + 1u);
+    EXPECT_EQ(service.FindVariant(hash).RefCount, 1u);
 }
 
 TEST(EZTreeNativeTests, TrellisForceActivatesInsideRange)

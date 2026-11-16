@@ -16,9 +16,12 @@ struct MeshClusterLODManifest
     static constexpr uint64 kMaximumFileBytes = 256ull * 1024ull * 1024ull;
     struct Page
     {
+        // The page in the fine store: the meshopt-encoded vertex stream, then the meshopt-encoded
+        // index stream. Bytes and ContentHash cover both streams.
         uint64 Offset = 0;
         uint64 Bytes = 0;
         uint64 ContentHash = 0;
+        uint32 EncodedVertexBytes = 0;
         uint32 VertexCount = 0;
         uint32 IndexCount = 0;
         float Error = 0.0f;

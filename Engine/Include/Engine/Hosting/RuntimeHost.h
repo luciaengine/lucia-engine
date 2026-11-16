@@ -129,6 +129,9 @@ public:
     Platform::Window* GetWindow() const { return m_Window.get(); }
     /// Null before InitRendering, after Shutdown, and always when headless.
     Engine::Renderer::RenderDeviceContext* GetRenderDeviceContext() const { return m_RenderCtx.get(); }
+    /// The window's render-graph frame, for its per-pass GPU profiling. Null before the first
+    /// rendered frame, after Shutdown, and always when headless.
+    Rendering::RenderGraph::RGFrame* GetRenderGraphFrame() const { return m_RenderGraphStream.Frame.get(); }
 
 private:
     // The window's play surface, resolved per event: the HUD host, and the

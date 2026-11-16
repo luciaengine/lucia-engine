@@ -1,0 +1,104 @@
+---
+title: Performance benchmark
+description: The fixed benchmark scenes, how to run them in Release on the Player, and how to compare two results.
+---
+
+# Performance benchmark
+
+The benchmark is a fixed set of six scenes, one for each kind of game the engine serves. A runner starts the Player in Release, with vsync off, at a fixed resolution. For each camera pose it records the frame times and the GPU time of each render graph pass. Two results compare with a regression threshold that comes from repeat runs of one build.
+
+## The scenes
+
+The scenes are in `Tests/Projects/PerformanceBenchmark/Assets/Scenes/`. `Tools/Benchmarks/Scenes/generate_scenes.py` writes them, their materials, the UI of the 2D scene and `benchmark.json`, the manifest with each scene's camera poses. Do not edit the scenes by hand: change the generator, run it and commit its output.
+
+| Scene | Kind of game | Content | Feature check |
+|---|---|---|---|
+| `Forest` | Open world, role-playing | 720 wind-animated procedural trees from 12 seeds, a sun, virtual shadow maps | A shadow pass ran |
+| `OpenWorld` | Open world, flight | A 4 km generated terrain, an ocean, 1500 rocks under an HLOD volume, 12 km far plane | An ocean pass ran |
+| `Crowd` | Third-person, strategy | 400 skinned foxes that play 3 clips, each with bone LOD | |
+| `City` | Open world, strategy | 256 buildings from 32 unique procedural meshes, cooked to cluster LOD | |
+| `Interior` | First-person, cutscene close-up | A closed hall, 48 point lights (4 with shadows), a DDGI volume, 2 realtime reflection probes | A DDGI pass ran |
+| `Sprites2D` | 2D, UI-heavy | 5000 alpha-blended unlit quads under an orthographic camera, 3 UI panels of 60 rows | A UI pass ran |
+
+Each scene has 2 or 3 held camera poses. A pose is a position in meters, a yaw in degrees (0 looks along +Z, 90 along +X) and a pitch in degrees (positive looks up).
+
+Some content is made when a run starts, because it is too large for the repository or exists elsewhere:
+
+- The city's buildings: the runner writes 32 procedural glTF meshes (6k to 58k triangles each) and cooks them with `MeshClusterCook`.
+- The crowd's model: the runner copies `Fox.glb` from `Tests/EditorHarness/rg2-gate1-content/`.
+- The forest's render pipeline: the runner copies the staged `ForwardPlus.rendergraph` and sets `virtualShadows` on its ShadowMap node.
+
+Known limits of the set:
+
+- HLOD proxies come from a bake (the editor's **Bake HLOD** command or a packaged cook). A loose-asset Player run draws the open world's rocks without proxies.
+- The sprites are untextured quads. They measure blending, sorting and draw submission, not texture sampling.
+- The `Crowd` fox has fewer bones than the default bone LOD budget, so bone LOD selects a tier but evaluates the same bones.
+
+## What one run measures
+
+`Player --benchmark <plan> --benchmark-output <raw>` runs one scene. Once the startup scene is ready, it holds the active camera at each pose of the plan:
+
+1. It renders the warm-up frames (300).
+2. It records the timing frames (600) with GPU profiling off. Each frame gives the frame time and the CPU time.
+3. It turns GPU profiling on, waits 4 frames for the first resolved timings, and records the profiled frames (120).
+
+| Value | Definition |
+|---|---|
+| Frame time | The wall time between two consecutive frames |
+| CPU time | The frame time less the time the frame waited for the GPU and the swapchain (fence wait, acquire and present) |
+| GPU time | The sum of the distinct GPU measurements of the frame's render graph passes |
+| Pass time | The GPU time of one pass |
+
+The result keeps the median, the 99th percentile, the mean, the minimum and the maximum of each value. The timing frames give the frame and CPU times; the profiled frames give the GPU and pass times, so the profiling cost is not in the frame time.
+
+The runner refuses a scene, and marks it not valid, when the Player exits with an error, the swapchain is not the manifest's resolution, the swapchain presents with FIFO, a pose has no resolved GPU timings, or a pass that the scene must run is absent. A scene whose feature did not run cannot give a fast number.
+
+## Run the benchmark
+
+The reference machine is the Steam Machine (12 cores, RADV). Run nothing else on it during a run: the runner refuses to start above a 1-minute load average of 1.5.
+
+1. Build the Player and the cook tool in Release:
+
+```bash title="Configure and build in Release"
+cmake --preset linux-x64-local -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLS=ON
+cmake --build build/linux-x64-local --target Player MeshClusterCook
+```
+
+2. Run all scenes. The result goes to the `--out` file; the work copy of the project, the logs and the raw Player output go to `<out stem>-work/` beside it:
+
+```bash title="Run all six scenes"
+python3 Tools/Benchmarks/Scenes/benchmark.py run --player build/linux-x64-local/bin/Release/Apps/Player/Player --out results/main.json
+```
+
+3. Pass `--scenes Forest,City` to run some scenes. Pass `--build-sha <sha>` when the source is not a git checkout.
+
+The Player needs a display. In the Steam Machine's build container, give it the gamescope X server with `-v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=:0`.
+
+## Measure the noise
+
+A threshold that comes from the noise of the machine is better than a fixed percentage. Run one build 5 times, each a separate run of the runner, then:
+
+```bash title="Measure the noise of one build"
+python3 Tools/Benchmarks/Scenes/benchmark.py noise results/main-1.json results/main-2.json results/main-3.json results/main-4.json results/main-5.json --out results/noise.json
+```
+
+The threshold of each metric is 3 relative standard deviations of the 5 runs, and never less than 3%.
+
+## Compare two results
+
+```bash title="Compare a change with main"
+python3 Tools/Benchmarks/Scenes/benchmark.py compare results/main.json results/change.json --noise results/noise.json
+```
+
+The comparison prints the median and 99th-percentile frame time, the median CPU time and the median GPU time of each pose, and every pass that regressed. A metric regresses when it is slower by more than its threshold. A pass below 0.05 ms in both results never regresses. A scene that is valid in the base result and not valid in the other is reported. The exit status is 1 when there is a regression.
+
+Compare only results from the same GPU, driver and resolution; the comparison prints a warning when they differ.
+
+## The result file
+
+One JSON file per run:
+
+- `buildSha`, `configuration`, `date`, `label`.
+- `machine`: the GPU name, driver and driver version from `vulkaninfo`, the CPU, the core count and the operating system.
+- `resolution` and `run` (the frame counts).
+- `scenes.<name>`: the swapchain the Player made, the load average before and after, `valid` and `problems`, and for each pose the pose itself, `frameMs`, `cpuMs`, `waitMs`, `gpuMs` and `passes` (each pass's median GPU time).

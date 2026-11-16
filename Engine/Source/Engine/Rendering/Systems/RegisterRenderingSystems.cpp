@@ -26,12 +26,16 @@
 #include "Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Platform/Environment.h"
+#include "Types/ParseNumber.h"
+#include "Logger/Logger.h"
 #include "ECSModules/Rendering/Systems/ReflectionProbeSystem.h"
 #include "ECSModules/Rendering/Systems/PlanarReflectionSystem.h"
 
 #include "ECS/DisabledInHierarchySystem.h"
 #include "ECS/SceneViewHiddenInHierarchySystem.h"
 #include "Scripting/NativePostSimulationSystem.h"
+
+#include <cstdlib>
 
 namespace GameEngine { namespace Engine::Renderer {
 
@@ -132,6 +136,14 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     {
         auto* assets = EngineCore::GetInstance().TryGetAssetManager();
         auto& feature = renderServices->EnsureFeature<ClusterLODFeature>();
+        if (const char* budget = std::getenv("GE_CLUSTER_LOD_TRIANGLE_BUDGET"))
+        {
+            if (const auto triangles = ParseUnsigned(budget))
+                feature.SetTriangleBudget(*triangles);
+            else
+                Logger::Log::Warning("GE_CLUSTER_LOD_TRIANGLE_BUDGET is '{}'. Set it to a whole number of "
+                                     "triangles, or 0 for no cap.", budget);
+        }
         if (assets && feature.Initialize(*renderServices, *assets))
             schedule.Add<ClusterLODPrepareSystem>(kClusterPrepare, SystemPhase::Extraction, 6,
                 std::vector<SystemDependency>{kHierarchy, kMorph, kHlodSelect, kNativePostSimulation, kCamera}, &feature);

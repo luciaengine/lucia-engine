@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 3,
+  "materialName": "Sprite4",
+  "lightingModel": "Unlit",
+  "alphaMode": "Blend",
+  "doubleSided": true,
+  "surfaceShader": "Surfaces/unlit_solid.glsl",
+  "properties": {
+    "baseColor": [
+      0.8,
+      0.4,
+      1.0,
+      1.0
+    ],
+    "opacity": 0.7
+  },
+  "textures": {}
+}

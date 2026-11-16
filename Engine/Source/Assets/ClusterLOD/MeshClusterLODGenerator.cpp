@@ -25,6 +25,12 @@ constexpr uint32 kMaximumGroups = 4096;
 constexpr uint32 kMaximumGroupVertices = 65535;
 // Leave headroom for meshoptimizer's products of float coordinates and attributes.
 constexpr float kMaximumComponent = 100000000.0f;
+// A meshlet with large bounds splits when it grows past this factor of the expected size.
+constexpr float kMeshletSplitFactor = 2.0f;
+// A meshlet may stop at this fraction of MeshletTriangles to stay spatially compact.
+constexpr uint32 kMeshletMinimumTriangleDivisor = 3;
+// The sloppy fallback ignores topology, so its error counts double.
+constexpr float kSloppyErrorFactor = 2.0f;
 
 bool ValidComponents(std::span<const float> values)
 {
@@ -164,11 +170,16 @@ bool FindPositionLocks(const Mesh& mesh, const MeshClusterLODConfig& config,
                                  normalized.size(), sizeof(Mathematics::Vector3));
     locked.assign(mesh.Vertices.size(), 0);
     Vector<uint32> firstVertex(mesh.Vertices.size(), kMeshClusterLODUnusedVertex);
+    // A UV seam keeps its discontinuity. Other wedges (hard normals) may collapse across.
     for (uint32 index = 0; index < mesh.Vertices.size(); ++index)
     {
         const uint32 position = positions[index];
-        if (firstVertex[position] != kMeshClusterLODUnusedVertex)
-            locked[position] = meshopt_SimplifyVertex_Lock;
+        const uint32 previous = firstVertex[position];
+        const Vertex& vertex = mesh.Vertices[index];
+        if (previous != kMeshClusterLODUnusedVertex &&
+            !std::equal(std::begin(vertex.TexCoords), std::end(vertex.TexCoords),
+                        std::begin(mesh.Vertices[previous].TexCoords)))
+            locked[position] |= meshopt_SimplifyVertex_Protect;
         firstVertex[position] = index;
     }
     Vector<SourceEdge> edges;
@@ -202,8 +213,8 @@ bool FindPositionLocks(const Mesh& mesh, const MeshClusterLODConfig& config,
         }
         if (end - begin == 1)
         {
-            locked[static_cast<uint32>(edges[begin].Key >> 32)] = meshopt_SimplifyVertex_Lock;
-            locked[static_cast<uint32>(edges[begin].Key)] = meshopt_SimplifyVertex_Lock;
+            locked[static_cast<uint32>(edges[begin].Key >> 32)] |= meshopt_SimplifyVertex_Lock;
+            locked[static_cast<uint32>(edges[begin].Key)] |= meshopt_SimplifyVertex_Lock;
         }
         else
         {
@@ -245,16 +256,16 @@ bool FindPositionLocks(const Mesh& mesh, const MeshClusterLODConfig& config,
     return true;
 }
 
-bool PartitionTriangles(const Mesh& mesh, const MeshClusterLODConfig& config,
+bool PartitionTriangles(const Mesh& mesh, const MeshClusterLODConfig& config, const Vector<uint32>& positions,
                         Vector<Vector<uint32>>& indices, String& error)
 {
-    const size_t bound = meshopt_buildMeshletsBound(mesh.Indices.size(), config.MeshletVertices,
-                                                   config.MeshletTriangles);
-    // Include retained position locks, referenced vertices and growing group-index arrays.
+    const size_t minimumTriangles = std::max<size_t>(1, config.MeshletTriangles / kMeshletMinimumTriangleDivisor);
+    const size_t bound = meshopt_buildMeshletsBound(mesh.Indices.size(), config.MeshletVertices, minimumTriangles);
+    // Include retained position locks, meshlet vertices and triangles (at most one entry per
+    // index each), referenced vertices and growing group-index arrays.
     const uint64 scratchBytes = mesh.Vertices.size() * (sizeof(uint32) + sizeof(uint8)) +
-        static_cast<uint64>(bound) * (sizeof(meshopt_Meshlet) +
-            3ull * config.MeshletVertices * sizeof(uint32) + 3ull * config.MeshletTriangles +
-            2 * sizeof(uint32)) + 2ull * mesh.Indices.size() * sizeof(uint32) +
+        static_cast<uint64>(bound) * (sizeof(meshopt_Meshlet) + 2 * sizeof(uint32)) +
+        mesh.Indices.size() * (4ull * sizeof(uint32) + sizeof(uint8)) +
         static_cast<uint64>(config.MaximumGroups) * (sizeof(Vector<uint32>) + sizeof(size_t));
     if (scratchBytes > config.MaximumScratchBytes)
     {
@@ -262,13 +273,13 @@ bool PartitionTriangles(const Mesh& mesh, const MeshClusterLODConfig& config,
         return false;
     }
     Vector<meshopt_Meshlet> meshlets(bound);
-    Vector<uint32> vertices(bound * config.MeshletVertices);
-    Vector<uint8> triangles(bound * config.MeshletTriangles * 3);
-    const size_t count = meshopt_buildMeshlets(meshlets.data(), vertices.data(), triangles.data(),
-                                              mesh.Indices.data(), mesh.Indices.size(),
-                                              mesh.Vertices.front().Position, mesh.Vertices.size(),
-                                              sizeof(Vertex), config.MeshletVertices,
-                                              config.MeshletTriangles, 0.0f);
+    Vector<uint32> vertices(mesh.Indices.size());
+    Vector<uint8> triangles(mesh.Indices.size());
+    const size_t count = meshopt_buildMeshletsFlex(meshlets.data(), vertices.data(), triangles.data(),
+                                                  mesh.Indices.data(), mesh.Indices.size(),
+                                                  mesh.Vertices.front().Position, mesh.Vertices.size(),
+                                                  sizeof(Vertex), config.MeshletVertices, minimumTriangles,
+                                                  config.MeshletTriangles, 0.0f, kMeshletSplitFactor);
     if (count == 0 || IsAssetDecodeCancelled())
     {
         error = "Cluster partition was empty or cancelled";
@@ -281,11 +292,13 @@ bool PartitionTriangles(const Mesh& mesh, const MeshClusterLODConfig& config,
         referencedCount += meshlets[index].vertex_count;
     referenced.reserve(referencedCount);
     counts.reserve(count);
+    // The partition joins meshlets by shared positions, so a UV seam does not become a locked
+    // group border.
     for (size_t index = 0; index < count; ++index)
     {
         const meshopt_Meshlet& meshlet = meshlets[index];
-        referenced.insert(referenced.end(), vertices.begin() + meshlet.vertex_offset,
-                          vertices.begin() + meshlet.vertex_offset + meshlet.vertex_count);
+        for (uint32 corner = 0; corner < meshlet.vertex_count; ++corner)
+            referenced.push_back(positions[vertices[meshlet.vertex_offset + corner]]);
         counts.push_back(meshlet.vertex_count);
     }
     Vector<uint32> partition(count);
@@ -334,8 +347,10 @@ bool AdmitSimplification(const Mesh& source, const Vector<Vector<uint32>>& indic
     for (const Vector<uint32>& group : indices)
     {
         const uint64 vertices = std::min(group.size(), source.Vertices.size());
-        const uint64 temporaryBytes = vertices * (2 * sizeof(uint32) + sizeof(uint8) + 5 * sizeof(float)) +
-            group.size() * sizeof(uint32);
+        // Per vertex: remap, source index, position, lock, sloppy lock, attributes. Per index: the
+        // coarse and sloppy indices and the open-edge keys of the sloppy border check.
+        const uint64 temporaryBytes = vertices * (3 * sizeof(uint32) + 2 * sizeof(uint8) + 5 * sizeof(float)) +
+            group.size() * (2 * sizeof(uint32) + 2 * sizeof(uint64));
         if (retainedBytes + temporaryBytes > config.MaximumScratchBytes)
         {
             error = "Cluster simplification scratch exceeds the limit";
@@ -345,63 +360,157 @@ bool AdmitSimplification(const Mesh& source, const Vector<Vector<uint32>>& indic
     return true;
 }
 
+// True when every triangle has a positive area.
+bool AllTrianglesHaveArea(const Mesh& mesh, std::span<const uint32> indices)
+{
+    for (size_t offset = 0; offset < indices.size(); offset += 3)
+    {
+        const auto& first = mesh.Vertices[indices[offset]].Position;
+        const auto& second = mesh.Vertices[indices[offset + 1]].Position;
+        const auto& third = mesh.Vertices[indices[offset + 2]].Position;
+        const Mathematics::Vector3 edgeA{second[0] - first[0], second[1] - first[1], second[2] - first[2]};
+        const Mathematics::Vector3 edgeB{third[0] - first[0], third[1] - first[1], third[2] - first[2]};
+        if (Mathematics::Vector3::Cross(edgeA, edgeB).LengthSquared() <= 0.0f)
+            return false;
+    }
+    return true;
+}
+
+// Removes triangles with two corners at one position: wedges that a collapse joined. Such a
+// triangle has no area and no open edge, so the surface stays closed.
+void RemovePositionDegenerates(Vector<uint32>& indices, std::span<const uint32> positionOf)
+{
+    size_t kept = 0;
+    for (size_t offset = 0; offset < indices.size(); offset += 3)
+    {
+        const uint32 first = positionOf[indices[offset]];
+        const uint32 second = positionOf[indices[offset + 1]];
+        const uint32 third = positionOf[indices[offset + 2]];
+        if (first == second || second == third || third == first)
+            continue;
+        std::copy_n(indices.begin() + offset, 3, indices.begin() + kept);
+        kept += 3;
+    }
+    indices.resize(kept);
+}
+
+// The open edges of the triangles, as sorted position-pair keys.
+Vector<uint64> OpenEdges(std::span<const uint32> indices, std::span<const uint32> positionOf)
+{
+    Vector<uint64> edges;
+    edges.reserve(indices.size());
+    for (size_t offset = 0; offset < indices.size(); offset += 3)
+        for (size_t corner = 0; corner < 3; ++corner)
+            edges.push_back(EdgeKey(positionOf[indices[offset + corner]],
+                                    positionOf[indices[offset + (corner + 1) % 3]]));
+    std::sort(edges.begin(), edges.end());
+    Vector<uint64> open;
+    for (size_t begin = 0; begin < edges.size();)
+    {
+        size_t end = begin + 1;
+        while (end < edges.size() && edges[end] == edges[begin])
+            ++end;
+        if (end - begin == 1)
+            open.push_back(edges[begin]);
+        begin = end;
+    }
+    return open;
+}
+
+// Clusters vertices without topology limits. Accepts the result only when its error after the
+// factor is inside the absolute budget and the group keeps its open border, so the locked group
+// borders stay watertight. Returns 0 when it does not apply.
+size_t SimplifySloppy(const Mesh& fine, std::span<const uint8> locks, std::span<const uint32> positionOf,
+                      size_t target, float errorBudget, Vector<uint32>& output, float& error)
+{
+    const float groupScale =
+        meshopt_simplifyScale(fine.Vertices.front().Position, fine.Vertices.size(), sizeof(Vertex));
+    if (!(groupScale > 0.0f))
+        return 0;
+    Vector<uint8> fixed(locks.size());
+    for (size_t vertex = 0; vertex < locks.size(); ++vertex)
+        fixed[vertex] = (locks[vertex] & meshopt_SimplifyVertex_Lock) != 0 ? 1 : 0;
+    Vector<uint32> sloppy(fine.Indices.size());
+    float relativeError = 0.0f;
+    const size_t count = meshopt_simplifySloppy(sloppy.data(), fine.Indices.data(), fine.Indices.size(),
+                                                fine.Vertices.front().Position, fine.Vertices.size(), sizeof(Vertex),
+                                                fixed.data(), target, std::numeric_limits<float>::max(),
+                                                &relativeError);
+    sloppy.resize(count);
+    RemovePositionDegenerates(sloppy, positionOf);
+    if (sloppy.empty() || !AllTrianglesHaveArea(fine, sloppy) ||
+        OpenEdges(sloppy, positionOf) != OpenEdges(fine.Indices, positionOf))
+        return 0;
+    error = relativeError * kSloppyErrorFactor * groupScale;
+    if (!std::isfinite(error) || error > errorBudget)
+        return 0;
+    output = std::move(sloppy);
+    return output.size();
+}
+
 MeshClusterLODGroup SimplifyGroup(const Mesh& source, std::span<const uint32> indices,
                                  const Vector<uint32>& positions, const Vector<uint8>& positionLocks,
-                                 const MeshClusterLODConfig& config, Vector<uint32>& remap)
+                                 const MeshClusterLODConfig& config, float meshScale, Vector<uint32>& remap)
 {
     MeshClusterLODGroup result;
     Vector<uint32> sourceVertices;
     result.Fine = CompactMeshClusterLODTriangles(source, indices, remap, sourceVertices);
     Vector<uint8> locks;
+    Vector<uint32> positionOf;
     Vector<float> attributes;
     locks.reserve(sourceVertices.size());
+    positionOf.reserve(sourceVertices.size());
     attributes.reserve(sourceVertices.size() * 5);
     for (const uint32 index : sourceVertices)
     {
         locks.push_back(positionLocks[positions[index]]);
+        positionOf.push_back(positions[index]);
         const Vertex& vertex = source.Vertices[index];
         attributes.insert(attributes.end(), std::begin(vertex.Normal), std::end(vertex.Normal));
         attributes.insert(attributes.end(), std::begin(vertex.TexCoords), std::end(vertex.TexCoords));
     }
     constexpr float kWeights[] = {2.0f, 2.0f, 2.0f, 0.5f, 0.5f};
+    // The error budget and the result are in mesh units, so every group of the mesh shares one scale.
+    constexpr uint32 kOptions = meshopt_SimplifyErrorAbsolute | meshopt_SimplifyPermissive |
+                                meshopt_SimplifyErrorClamped;
+    const float errorBudget = config.RelativeError * meshScale;
     const size_t target = std::max<size_t>(3, (static_cast<size_t>(indices.size() * config.CoarseRatio) / 3) * 3);
     Vector<uint32> coarseIndices(indices.size());
-    const size_t count = meshopt_simplifyWithAttributes(
+    size_t count = meshopt_simplifyWithAttributes(
         coarseIndices.data(), result.Fine.Indices.data(), result.Fine.Indices.size(),
         result.Fine.Vertices.front().Position, result.Fine.Vertices.size(), sizeof(Vertex),
         attributes.data(), 5 * sizeof(float), kWeights, 5, locks.data(), target,
-        config.RelativeError, 0, &result.Error);
-    if (count == 0 || count >= result.Fine.Indices.size() || !std::isfinite(result.Error))
-    {
-        result.Coarse = result.Fine;
-        result.Error = 0.0f;
-        return result;
-    }
-    result.Error *= meshopt_simplifyScale(result.Fine.Vertices.front().Position,
-                                         result.Fine.Vertices.size(), sizeof(Vertex));
-    if (!std::isfinite(result.Error) || result.Error < 0.0f)
-    {
-        result.Coarse = result.Fine;
-        result.Error = 0.0f;
-        return result;
-    }
+        errorBudget, kOptions, &result.Error);
     coarseIndices.resize(count);
-    // Attribute-aware simplification can retain three distinct but collinear
-    // vertices. Preserve the whole fine group in that case: deleting only the
-    // triangle could break the locked shared boundary of a mixed cut.
-    for (size_t offset = 0; offset < coarseIndices.size(); offset += 3)
+    RemovePositionDegenerates(coarseIndices, positionOf);
+    count = coarseIndices.size();
+    // Attribute-aware simplification can retain three distinct but collinear vertices. Deleting
+    // only that triangle could break the locked shared border, so such a result is not used. A
+    // result must keep the open edges of the fine group: no seam and no border opens.
+    if (count == 0 || count >= result.Fine.Indices.size() || !std::isfinite(result.Error) ||
+        result.Error < 0.0f || !AllTrianglesHaveArea(result.Fine, coarseIndices) ||
+        OpenEdges(coarseIndices, positionOf) != OpenEdges(result.Fine.Indices, positionOf))
     {
-        const auto& first = result.Fine.Vertices[coarseIndices[offset]].Position;
-        const auto& second = result.Fine.Vertices[coarseIndices[offset + 1]].Position;
-        const auto& third = result.Fine.Vertices[coarseIndices[offset + 2]].Position;
-        const Mathematics::Vector3 edgeA{second[0] - first[0], second[1] - first[1], second[2] - first[2]};
-        const Mathematics::Vector3 edgeB{third[0] - first[0], third[1] - first[1], third[2] - first[2]};
-        if (Mathematics::Vector3::Cross(edgeA, edgeB).LengthSquared() <= 0.0f)
+        count = 0;
+        result.Error = 0.0f;
+    }
+    if (count == 0 || count > target)
+    {
+        Vector<uint32> sloppy;
+        float sloppyError = 0.0f;
+        const size_t sloppyCount =
+            SimplifySloppy(result.Fine, locks, positionOf, target, errorBudget, sloppy, sloppyError);
+        if (sloppyCount != 0 && (count == 0 || sloppyCount < count))
         {
-            result.Coarse = result.Fine;
-            result.Error = 0.0f;
-            return result;
+            coarseIndices = std::move(sloppy);
+            count = sloppyCount;
+            result.Error = sloppyError;
         }
+    }
+    if (count == 0)
+    {
+        result.Coarse = result.Fine;
+        return result;
     }
     Vector<uint32> coarseRemap(result.Fine.Vertices.size(), kMeshClusterLODUnusedVertex);
     result.Coarse = CompactMeshClusterLODTriangles(result.Fine, coarseIndices, coarseRemap, sourceVertices);
@@ -486,7 +595,7 @@ bool GenerateMeshClusterLODs(const Mesh& mesh, const MeshClusterLODConfig& confi
     if (!FindPositionLocks(mesh, config, positions, locked, error))
         return false;
     Vector<Vector<uint32>> indices;
-    if (!PartitionTriangles(mesh, config, indices, error))
+    if (!PartitionTriangles(mesh, config, positions, indices, error))
         return false;
     const uint64 metadataPerGroup = sizeof(MeshClusterLODGroup) +
         2ull * (mesh.Name.size() + mesh.ExtraPlacements.size() * sizeof(MeshPlacement));
@@ -505,10 +614,11 @@ bool GenerateMeshClusterLODs(const Mesh& mesh, const MeshClusterLODConfig& confi
         {
             const uint32 position = positions[index];
             if (firstGroup[position] != kMeshClusterLODUnusedVertex && firstGroup[position] != group)
-                locked[position] = meshopt_SimplifyVertex_Lock;
+                locked[position] |= meshopt_SimplifyVertex_Lock;
             firstGroup[position] = group;
         }
     }
+    const float meshScale = meshopt_simplifyScale(mesh.Vertices.front().Position, mesh.Vertices.size(), sizeof(Vertex));
     Vector<MeshClusterLODGroup> generated;
     generated.reserve(indices.size());
     Vector<uint32> remap(mesh.Vertices.size(), kMeshClusterLODUnusedVertex);
@@ -538,7 +648,7 @@ bool GenerateMeshClusterLODs(const Mesh& mesh, const MeshClusterLODConfig& confi
             error = "Cluster group exceeds the remaining geometry limit";
             return false;
         }
-        MeshClusterLODGroup result = SimplifyGroup(mesh, group, positions, locked, config, remap);
+        MeshClusterLODGroup result = SimplifyGroup(mesh, group, positions, locked, config, meshScale, remap);
         bytes += (result.Fine.Vertices.size() + result.Coarse.Vertices.size()) * sizeof(Vertex) +
                  (result.Fine.Indices.size() + result.Coarse.Indices.size()) * sizeof(uint32);
         if (result.Fine.Vertices.size() > kMaximumGroupVertices || bytes > config.MaximumGeometryBytes)
