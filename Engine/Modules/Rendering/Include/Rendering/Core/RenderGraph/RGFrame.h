@@ -412,11 +412,6 @@ class RGFrame
     // False means an expired requirement; adding a new one cannot revive the recording.
     bool RequireExecutionLifetime(std::weak_ptr<const void> lifetime);
 
-    // This recording may only execute with all logical queues routed to
-    // graphics. Checked again at execution, so a later map change cannot
-    // silently widen a graphics-only resource lifetime contract.
-    void RequireGraphicsQueue() { m_RequiresGraphicsQueue = true; }
-
     // Conservative reader evidence: runs BEFORE every native submission attempt,
     // including attempts whose backend returns failure after work was enqueued.
     // No callback means no attempt, not successful submission/completion.
@@ -1078,7 +1073,6 @@ class RGFrame
     bool m_TimelineCreated[kQueueCount] = {false, false, false};
     uint64_t m_LastSignaled[kQueueCount] = {0, 0, 0}; // per physical queue (WaitForPendingWork)
     uint8_t m_PhysicalQueueOf[3] = {0, 0, 0}; // kSingleQueueMap (the design default)
-    bool m_RequiresGraphicsQueue = false;
     FrameStats m_Stats;
     // Profiling state. m_ProfilingCurrent is record-thread-only; pending slots
     // are keyed by the DEVICE frame index (the query pool's latency ring);

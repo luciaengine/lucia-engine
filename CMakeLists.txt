@@ -186,7 +186,7 @@ list(GET _ge_version_parts 2 GE_ENGINE_VERSION_PATCH)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/Engine/Include/Core/EngineVersion.h.in"
                "${CMAKE_BINARY_DIR}/generated/Core/EngineVersion.h" @ONLY)
 
-# Our patched overlay ports (cmake/ports, and cmake/macos-ports on macOS, which
+# Our patched overlay ports (cmake/ports, and cmake/macos-ports or cmake/linux-ports, which
 # Dependencies.cmake passes to vcpkg) must be configure dependencies, or
 # patching one silently does nothing. vcpkg installs at configure time and
 # registers only vcpkg.json and vcpkg-configuration.json as configure
@@ -202,8 +202,8 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/Engine/Include/Core/EngineVersion.h.
 # verify_dependencies(), once every configure-time installer has run — is what
 # hard-fails a configure whose install root predates a port bump.
 set(GE_OVERLAY_PORT_GLOBS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/ports/*")
-if(GE_VCPKG_MACOS_OVERLAY_PORTS)
-    list(APPEND GE_OVERLAY_PORT_GLOBS "${GE_VCPKG_MACOS_OVERLAY_PORTS}/*")
+if(GE_VCPKG_PLATFORM_OVERLAY_PORTS)
+    list(APPEND GE_OVERLAY_PORT_GLOBS "${GE_VCPKG_PLATFORM_OVERLAY_PORTS}/*")
 endif()
 file(GLOB_RECURSE GE_OVERLAY_PORT_FILES CONFIGURE_DEPENDS ${GE_OVERLAY_PORT_GLOBS})
 if(GE_OVERLAY_PORT_FILES)

@@ -371,7 +371,7 @@ class VulkanDevice : public IDevice
     void DestroySemaphore(SemaphoreHandle) override;
     bool GetTimelineSemaphoreValue(SemaphoreHandle sem, uint64_t& outValue) const override;
     bool WaitTimelineSemaphoreValue(SemaphoreHandle sem, uint64_t value, uint64_t timeoutNs = ~0ull) override;
-    GpuSyncToken LastGraphicsSubmissionToken() const override;
+    GpuSyncToken LastSubmissionToken(QueueType queue) const override;
     bool IsPreviousFrameGraphicsComplete() const override;
 
     // Dynamic rendering support

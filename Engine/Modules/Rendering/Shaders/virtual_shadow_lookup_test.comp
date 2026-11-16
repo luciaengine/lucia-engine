@@ -41,6 +41,13 @@ float CompareKernel(uvec3 projection, uint mip, vec2 uv, float radius, float dep
         ? GE_VirtualShadowCompareKernelPage(page, uv, depth) : -1.0;
 }
 
+float CompareQuad(uvec3 projection, uint mip, vec2 uv, float radius, float depth)
+{
+    GE_VirtualShadowKernelQuad quad;
+    return GE_VirtualShadowResolveKernelQuad(projection, mip, uv, radius, quad)
+        ? GE_VirtualShadowCompareKernelQuad(quad, uv, depth) : -1.0;
+}
+
 void main()
 {
     uvec3 complete = uvec3(2u, 2u, 1u);
@@ -74,4 +81,10 @@ void main()
     Visibility[29] = CompareKernel(missing, 0u, vec2(0.75, 0.25), 0.0, 0.5);
     Visibility[30] = CompareKernel(missing, 1u, vec2(0.25), 0.0, 0.5);
     Visibility[31] = CompareKernel(complete, 0u, vec2(0.25, 0.5), 1.5 / 1024.0, 0.5);
+
+    Visibility[32] = CompareQuad(complete, 0u, vec2(127.75 / 256.0, 0.25), 0.0, 0.5);
+    Visibility[33] = CompareQuad(complete, 0u, vec2(160.75, 33.25) / 256.0, 0.0, 0.5);
+    Visibility[34] = CompareQuad(complete, 0u, vec2(127.75, 127.875) / 256.0, 0.0, 0.5);
+    Visibility[35] = CompareQuad(missing, 0u, vec2(127.75 / 256.0, 0.25), 0.0, 0.5);
+    Visibility[36] = CompareQuad(complete, 0u, vec2(0.001, 0.25), 1.5 / 1024.0, 0.5);
 }

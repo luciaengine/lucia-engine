@@ -51,6 +51,7 @@
 #include "DebugServer/ElementPointerTarget.h"
 #include "DebugServer/GpuToolingHandlers.h"
 #include "DebugServer/GroundQueryDebugHandlers.h"
+#include "DebugServer/ReflectionProbeDebugHandlers.h"
 #include "DebugServer/JobSystem/JobSystemDebugHandlers.h"
 #include "DebugServer/KeyTapSequence.h"
 #include "DebugServer/LogQueryReport.h"
@@ -3275,6 +3276,9 @@ void RegisterDebugHandlers(EditorDebugServer& server,
 
     // 4e. composed-ground queries (the ground oracle for placement checks)
     RegisterGroundQueryDebugHandlers(server);
+
+    // 4e1. reflection probe readiness, bakes and digests (the oracle for recapture checks)
+    RegisterReflectionProbeDebugHandlers(server);
 
     // 4e2. the sky's per-frame inputs (the readback for comparing two runs input by input)
     RegisterSkyDebugHandlers(server);

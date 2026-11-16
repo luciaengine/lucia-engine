@@ -7,9 +7,9 @@
 #include "Assets/ClusterLOD/MeshClusterLODAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Components/Rendering/DDGIVolume.h"
-#include "Components/Rendering/HLODVolume.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/LODGroup.h"
+#include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MorphTargetWeights.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
 #include "Components/Rendering/PlanarReflection.h"
@@ -18,7 +18,6 @@
 #include "Core/DebugMetrics.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
-#include "Engine/Rendering/HlodRuntime.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
@@ -26,11 +25,12 @@
 #include "Logger/Logger.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Rendering/Core/GPUScene.h"
-#include "Rendering/Core/RenderGraph/RGWindowFrame.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Types/Types.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <limits>
@@ -53,6 +53,9 @@ constexpr uint64 kPageWorkMultiplier = 8;
 constexpr uint64 kUnusedFrameGrace = 30;
 // A split registers the coarse part of every group of one mesh before its first frame.
 constexpr uint32 kMaximumCoarsePartsPerFrame = 512;
+// A frame can read fine pages on every queue. Graphics is first: its token is required.
+constexpr std::array<IDevice::QueueType, 3> kReaderQueues{
+    IDevice::QueueType::Graphics, IDevice::QueueType::Compute, IDevice::QueueType::Transfer};
 
 Mesh PageDescriptor(const Mesh& coarse)
 {
@@ -68,13 +71,11 @@ Mesh PageDescriptor(const Mesh& coarse)
     return descriptor;
 }
 
-bool HasUnsupportedConsumers(ECS::World& world, const RenderServices& services)
+bool HasUnsupportedConsumers(ECS::World& world)
 {
     return world.Query<ECS::Read<Components::DDGIVolume>, ECS::Read<Components::WorldTransform>>().Count() != 0 ||
-        world.Query<ECS::Read<Components::HLODVolume>>().Count() != 0 ||
         world.Query<ECS::Read<Components::ReflectionProbe>>().Count() != 0 ||
-        world.Query<ECS::Read<Components::PlanarReflection>>().Count() != 0 ||
-        services.GetHlodRuntime().HasClusters();
+        world.Query<ECS::Read<Components::PlanarReflection>>().Count() != 0;
 }
 
 bool SupportsFineInstance(RenderServices& services, ECS::World& world, ECS::EntityHandle entity,
@@ -283,7 +284,8 @@ struct ClusterLODFeature::State
         bool Pending = false;
         bool Failed = false;
         bool Retiring = false;
-        IDevice::GpuSyncToken RetirementToken;
+        // One token for each of kReaderQueues, taken when retirement first waits for readers.
+        std::array<IDevice::GpuSyncToken, kReaderQueues.size()> RetirementTokens{};
     };
 
     struct Lease
@@ -633,7 +635,22 @@ struct ClusterLODFeature::State
             (void)key;
             page->Wanted = false;
         }
-        Logger::Log::Warning("Cluster LOD fine pages disabled: this prototype requires one cluster world without GI, reflection or HLOD consumers");
+        Logger::Log::Warning("Cluster LOD fine pages disabled: this prototype requires one cluster world without GI or reflection consumers");
+    }
+
+    // Takes the reader queue tokens once, then reports whether every one has completed. The
+    // graphics token is required. An invalid compute or transfer token means no submit on that
+    // queue yet, so no reader there.
+    static bool ReadersComplete(Page& page, const IDevice& device)
+    {
+        auto& tokens = page.RetirementTokens;
+        if (!tokens[0].IsValid())
+            for (size_t queue = 0; queue < kReaderQueues.size(); ++queue)
+                tokens[queue] = device.LastSubmissionToken(kReaderQueues[queue]);
+        if (!tokens[0].IsValid() || device.QueryGpuSyncToken(tokens[0]) != IDevice::GpuSyncStatus::Complete)
+            return false;
+        return std::all_of(tokens.begin() + 1, tokens.end(), [&device](const IDevice::GpuSyncToken& token)
+            { return !token.IsValid() || device.QueryGpuSyncToken(token) == IDevice::GpuSyncStatus::Complete; });
     }
 
     void RetireUnused(uint64 epoch)
@@ -667,10 +684,7 @@ struct ClusterLODFeature::State
                 page.Retiring = true;
                 if (page.MayHaveGpuReaders.load(std::memory_order_acquire))
                 {
-                    if (!page.RetirementToken.IsValid())
-                        page.RetirementToken = device->LastGraphicsSubmissionToken();
-                    if (DeviceGeneration != device->GetDeviceRebuildGeneration() || !page.RetirementToken.IsValid() ||
-                        device->QueryGpuSyncToken(page.RetirementToken) != IDevice::GpuSyncStatus::Complete)
+                    if (DeviceGeneration != device->GetDeviceRebuildGeneration() || !ReadersComplete(page, *device))
                     {
                         ++it;
                         continue;
@@ -700,7 +714,11 @@ struct ClusterLODFeature::State
         const bool wasFine = found != Pages.end() && found->second->FineHandle.IsValid() &&
             renderer.meshGpuHandleId == found->second->FineHandle.id;
         const bool supported = SupportsFineInstance(services, world, entity, renderer);
-        const bool demand = supported && WantsFine(services, renderer, transform, directory, world.GetWorldId(), wasFine, bias);
+        // A member that HLOD replaced with its cluster proxy draws nothing, so it wants the coarse cover.
+        const auto* gpu = world.GetComponent<Components::MeshGPUData>(entity);
+        const bool hlodEvicted = gpu && gpu->hlodEvicted;
+        const bool demand = supported && !hlodEvicted &&
+            WantsFine(services, renderer, transform, directory, world.GetWorldId(), wasFine, bias);
         if (found == Pages.end())
         {
             if (!demand || PolicyBlocked || Pages.size() >= kMaximumPageRecords)
@@ -993,15 +1011,12 @@ bool ClusterLODFeature::Initialize(RenderServices& services, AssetManager& asset
     auto* device = services.GetDevice();
     // Fine geometry needs a coherent write into host-visible device memory (TryWriteCoherentBuffer).
     // Scene acceleration structures skip the fine domain, so ray tracing reads the coarse mesh.
-    // Retirement waits for the graphics timeline only, so a bound frame must run on one queue.
     const GraphicsAPI api = device ? device->GetAPI() : GraphicsAPI::Auto;
     if (!device || (api != GraphicsAPI::Vulkan && api != GraphicsAPI::Metal) ||
-        !device->GetCapabilities().supportsBufferDeviceAddress ||
-        RenderGraph::WindowFramesUseAsyncCompute(*device) || !services.Spine().TryRequireCurrentWorldEpoch())
+        !device->GetCapabilities().supportsBufferDeviceAddress || !services.Spine().TryRequireCurrentWorldEpoch())
     {
-        Logger::Log::Warning("Cluster LOD fine pages are off: they need Vulkan or Metal with buffer device addresses "
-                             "and one queue for each frame (set GE_ASYNC_COMPUTE=0 on a GPU with a separate compute "
-                             "queue), and they start only with the first world.");
+        Logger::Log::Warning("Cluster LOD fine pages are off: they need Vulkan or Metal with buffer device addresses, "
+                             "and they start only with the first world.");
         return false;
     }
     state.Services = &services;
@@ -1043,7 +1058,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
         }
     }
     state.RestorePendingWorlds();
-    if (HasUnsupportedConsumers(world, services))
+    if (HasUnsupportedConsumers(world))
         state.Block();
     if (state.WorldId != 0 && state.WorldId != world.GetWorldId())
     {
@@ -1125,7 +1140,6 @@ bool ClusterLODFeature::BindWorldGeometry(RenderGraph::RGFrame& frame, RenderSer
     }
     if (!state.CutOwner)
         return false;
-    frame.RequireGraphicsQueue();
     if (!frame.RequireExecutionLifetime(state.CutOwner))
         return false;
     const auto existing = state.Leases.find(&frame);
@@ -1170,7 +1184,7 @@ void ClusterLODFeature::OnDeviceRebuilt(Rendering::IDevice* device)
         (void)key;
         page->MayHaveGpuReaders.store(false, std::memory_order_release);
         page->RetryEpoch = 0;
-        page->RetirementToken = {};
+        page->RetirementTokens = {};
     }
 }
 } // namespace GameEngine::Engine::Renderer

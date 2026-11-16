@@ -1409,7 +1409,7 @@ ListView {
 	padding-bottom: 38px;
 }
 
-/* A top search row: the field (6px inset + 24px) and 6px below it. */
+/* A top search row: the field (8px inset + 22px) and 6px below it. */
 .panel-search-host.search-bars-at-top {
 	padding-top: 36px;
 	padding-bottom: 0;
@@ -1432,7 +1432,7 @@ ListView {
 /* Inspector's fixed header already has its own inset, so reserve less space
    beneath a top-anchored search and tighten that inset only in top mode. */
 .inspector-panel.search-bars-at-top {
-	padding-top: 28px;
+	padding-top: 26px;
 }
 
 .inspector-panel.search-bars-at-top > .inspector-top {
@@ -1455,18 +1455,18 @@ ListView {
 	margin-bottom: 1px;
 }
 
-/* Where a panel search sits: one height in every panel, 24px. Its look at rest is the search
-   control's (theme/widgets.css, .panel-search-bar). */
+/* Where a panel search sits: one height in every panel, 22px, 8px in from the panel edges.
+   Its look at rest is the search control's (theme/widgets.css, .search-field-with-filter). */
 .panel-search-bar {
 	position: absolute;
-	bottom: 6px;
+	bottom: 8px;
 	left: 8px;
 	right: 8px;
-	height: 24px;
+	height: 22px;
 }
 
 .panel-search-bar.search-bar-at-top {
-	top: 6px;
+	top: 8px;
 	bottom: unset;
 }
 
@@ -1497,6 +1497,18 @@ ListView {
 
 .panel-search-bar.active {
 	border: 1px solid var(--ui_color_accent_pressed);
+}
+
+/* With Filled Search Bars off (EditorSearchBars puts "hidden" on the bar), the bar stays in its
+   place as an empty strip with a dim icon, so the user still sees where to click. The control
+   sets "active" on focus and while a query is present; then the bar shows filled. */
+.panel-search-bar.hidden {
+	display: block;
+}
+
+.panel-search-bar.hidden:not(.active) {
+	background-color: transparent;
+	border-color: transparent;
 }
 
 .panel-search-bar.search-accent-focus:focus-within {

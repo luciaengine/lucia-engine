@@ -741,7 +741,7 @@ TEST_F(CBTHeightChain, FailedNormalInitializationKeepsTheOldLatticeAndItsContent
     ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(kNewSamples, kNewSamples)));
     auto& probe = static_cast<SourceCompletionProbeDevice&>(*m_Device);
     const uint64_t drains = m_Device->GetIdleDrainCount();
-    probe.RejectCompletionAfter = probe.LastGraphicsSubmissionToken().value;
+    probe.RejectCompletionAfter = probe.LastSubmissionToken(IDevice::QueueType::Graphics).value;
     const bool provisioned = instance.ProvisionNormalChain(kNewSamples, kNewSamples);
     EXPECT_EQ(probe.RejectCompletionAfter, std::numeric_limits<uint64_t>::max());
     probe.RejectCompletionAfter = std::numeric_limits<uint64_t>::max();

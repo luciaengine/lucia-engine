@@ -177,12 +177,14 @@ bool ObjectWithinCaptureReach(ECS::World& world, const ProbeSceneObject& object,
 // sphere, plus every directional light (unbounded reach, included even in a
 // scene without a SkyEnvironment). A move across the boundary changes
 // membership in both affected probes. Fills desc.MaterialKeys and
-// desc.SceneEditDigest.
+// desc.SceneEditDigest. featureContent is the world's feature content sum
+// (RenderServices::ComputeFeatureContentDigest): a terrain and an ocean reach
+// every probe, as a directional light does.
 void ComputeProbeSceneDigest(ECS::World& world, const RenderServices& services,
-                             const std::vector<ProbeSceneObject>& objects,
+                             const std::vector<ProbeSceneObject>& objects, uint64_t featureContent,
                              SceneReflectionProbeEnvironmentDesc& desc)
 {
-    uint64_t hash = Hashing::kFnv1a64OffsetBasis;
+    uint64_t hash = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, featureContent);
     const float farDistance = std::max(1.0f, desc.MaxDistance > 0.0f ? desc.MaxDistance : desc.InfluenceRadius);
     for (const ProbeSceneObject& object : objects)
     {
@@ -263,7 +265,7 @@ uint64_t ComputeProbeMaterialDigest(const RenderServices& services,
 }
 } // namespace
 
-bool ReflectionProbeSystem::SceneUnchangedSinceLastBuild(ECS::World& world)
+bool ReflectionProbeSystem::SceneUnchangedSinceLastBuild(ECS::World& world, uint64_t featureContent)
 {
     // Sample before probing, and write the sample back as every gate (ChangeGate contract).
     const uint64_t version = world.GetGlobalSystemVersion();
@@ -275,7 +277,8 @@ bool ReflectionProbeSystem::SceneUnchangedSinceLastBuild(ECS::World& world)
     return m_HasBuild && !anyChange && ECS::ChangeFilter::Enabled() &&
            m_BuiltWorldId == world.GetWorldId() &&
            m_BuiltStructuralVersion == world.GetStructuralChangeVersion() &&
-           m_BuiltMaterialDigest == ComputeProbeMaterialDigest(*m_RenderServices, m_Probes);
+           m_BuiltMaterialDigest == ComputeProbeMaterialDigest(*m_RenderServices, m_Probes) &&
+           m_BuiltFeatureContent == featureContent;
 }
 
 // Every valid probe in the world goes to the IBL feature, which keeps up to
@@ -298,7 +301,8 @@ void ReflectionProbeSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         m_Probes.clear();
         m_HasBuild = false;
     }
-    else if (!SceneUnchangedSinceLastBuild(world))
+    else if (const uint64_t featureContent = rs->ComputeFeatureContentDigest(world.GetWorldId());
+             !SceneUnchangedSinceLastBuild(world, featureContent))
     {
         std::vector<ProbeSceneObject> objects;
         world.Query<ECS::Read<Components::MeshRenderer>, ECS::Read<Components::WorldTransform>>()
@@ -315,12 +319,13 @@ void ReflectionProbeSystem::Update(ECS::World& world, float32 /*deltaTime*/)
             if (!volume.Valid)
                 return;
             SceneReflectionProbeEnvironmentDesc desc = BuildProbeDesc(world, e, probe, volume);
-            ComputeProbeSceneDigest(world, *rs, objects, desc);
+            ComputeProbeSceneDigest(world, *rs, objects, featureContent, desc);
             m_Probes.push_back(std::move(desc));
         });
         m_BuiltWorldId = world.GetWorldId();
         m_BuiltStructuralVersion = world.GetStructuralChangeVersion();
         m_BuiltMaterialDigest = ComputeProbeMaterialDigest(*rs, m_Probes);
+        m_BuiltFeatureContent = featureContent;
         m_HasBuild = true;
     }
 

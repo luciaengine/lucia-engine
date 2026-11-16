@@ -664,7 +664,7 @@ bool CBTResources::WaitForSourceReaders()
 
 bool CBTResources::WaitForGraphicsReaders()
 {
-    const auto submitted = m_Device->LastGraphicsSubmissionToken();
+    const auto submitted = m_Device->LastSubmissionToken(IDevice::QueueType::Graphics);
     if (submitted.IsValid())
         return m_Device->WaitGpuSyncToken(submitted);
     if (m_Device->GetAPI() == GraphicsAPI::Vulkan)

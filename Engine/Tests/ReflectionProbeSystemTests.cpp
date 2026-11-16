@@ -6,12 +6,14 @@
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECSModules/Rendering/Systems/ReflectionProbeSystem.h"
+#include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"
 #include "Scene/SceneSchemaRegistry.h"
 
 #include <gtest/gtest.h>
+#include <map>
 
 #include <string>
 #include <string_view>
@@ -27,6 +29,21 @@ float Coordinate(const Mathematics::WorldPosition& position, int axis)
 {
     return (position - Mathematics::WorldPosition{})[static_cast<std::size_t>(axis)];
 }
+// A render feature with one content digest per world, as the terrain and ocean features keep.
+class ProbeContentFeature final : public IRenderFeature
+{
+  public:
+    void SetContent(uint64_t worldId, uint64_t digest) { m_Content[worldId] = digest; }
+    uint64_t ContentDigest(uint64_t worldId) const override
+    {
+        const auto it = m_Content.find(worldId);
+        return it != m_Content.end() ? it->second : 0u;
+    }
+
+  private:
+    std::map<uint64_t, uint64_t> m_Content;
+};
+
 } // namespace
 
 TEST(ReflectionProbeSchema, InfluenceShapeRoundTripsThroughTheReflectedSchema)
@@ -645,4 +662,40 @@ TEST(ReflectionProbeSystem, RemovingAllProbesAndAddingOneRebuildsTheDescriptor)
     ASSERT_NE(replacement, nullptr);
     EXPECT_NE(replacement->SourceKey, firstKey);
     EXPECT_EQ(Coordinate(replacement->Position, 0), 20);
+}
+
+// A terrain or an ocean reaches every capture, as a directional light does: its content change
+// recaptures both "Once" probes. Content of another world and an unchanged value do not.
+TEST(ReflectionProbeSystem, FeatureContentChangesRefreshOnceCapturesInTheirWorldOnly)
+{
+    ECS::World world;
+    AddProbe(world, 0);
+    AddProbe(world, 20);
+    RenderServices rs;
+    auto& content = rs.EnsureFeature<ProbeContentFeature>();
+    ReflectionProbeSystem system(&rs);
+    system.Update(world, 0.016f);
+    auto* ibl = rs.GetFeature<ImageBasedLightingFeature>();
+    ASSERT_NE(ibl, nullptr);
+    auto digest = [&](uint32_t index) { return ibl->GetLocalProbeDesc(world.GetWorldId(), index)->SceneEditDigest; };
+    const auto west = digest(0), east = digest(1);
+
+    content.SetContent(world.GetWorldId() + 1u, 0x5eedu);
+    system.Update(world, 0.016f);
+    EXPECT_EQ(digest(0), west) << "Content of another world must not recapture this world's probes";
+    EXPECT_EQ(digest(1), east);
+
+    content.SetContent(world.GetWorldId(), 0x7e44a1du);
+    system.Update(world, 0.016f);
+    EXPECT_NE(digest(0), west) << "A terrain or ocean that appears must recapture every probe";
+    EXPECT_NE(digest(1), east);
+
+    const auto westWithContent = digest(0);
+    system.Update(world, 0.016f);
+    EXPECT_EQ(digest(0), westWithContent) << "Unchanged content must not keep static probes baking";
+
+    content.SetContent(world.GetWorldId(), 0u);
+    system.Update(world, 0.016f);
+    EXPECT_EQ(digest(0), west) << "Content that goes away returns the probe to its empty-scene digest";
+    EXPECT_EQ(digest(1), east);
 }

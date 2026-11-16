@@ -331,7 +331,7 @@ class MetalDevice : public IDevice
                      const std::vector<std::pair<SemaphoreHandle, uint64_t>>& signalSemaphores) override;
     GpuSyncToken SubmitTextureUploads(const TextureUploadRequest* requests, uint32_t count) override;
     bool IsPreviousFrameGraphicsComplete() const override;
-    GpuSyncToken LastGraphicsSubmissionToken() const override;
+    GpuSyncToken LastSubmissionToken(QueueType queue) const override;
 
     // Command lists & submission
     std::unique_ptr<CommandList> CreateCommandList(QueueType queue) override;

@@ -49,9 +49,7 @@ selection or establish a memory/performance improvement.
 
 Set `GE_CLUSTER_LOD=1` before starting the Editor or Player. Fine pages run on
 Vulkan and Metal devices with buffer device addresses; on any other device fine
-mode stays disabled. Fine pages need each frame on one queue. On a GPU with a
-separate compute queue family, also set `GE_ASYNC_COMPUTE=0`; without it, fine
-mode stays disabled and the log says why. Apple GPUs have one queue family.
+mode stays disabled. Fine pages work with async compute on.
 Ray tracing reads the coarse model: scene acceleration structures skip fine pages.
 Import the generated `.gecluster` model normally: one entity draws each coarse
 mesh. When a view wants a group's fine page, that instance splits: it gets one
@@ -64,8 +62,9 @@ the existing asset IO service; pending or failed reads keep the coarse range.
 The prototype supports one cluster world, static opaque standard-PBR materials,
 and ordinary raster views. It checks every active view and freezes selection
 before extraction. Non-cluster preview worlds can share the renderer. Enabling
-GI, reflection capture, HLOD or a second cluster world returns to coarse mode
-until restart. Destroying or clearing the cluster world also selects coarse mode
+GI, reflection capture or a second cluster world returns to coarse mode
+until restart. HLOD runs beside cluster LOD: a member that HLOD replaces with its
+cluster proxy keeps its coarse cover, and its fine page retires. Destroying or clearing the cluster world also selects coarse mode
 until restart. Skinning, morphing, custom vertex/surface programs, transmission,
 blend materials and sector-tagged instances use coarse geometry. CPU picking
 uses the coarse model. Re-cooking a different cluster incarnation requires a
