@@ -62,6 +62,7 @@ set(EDITOR_SOURCES
     Source/Editor/Settings/DirectionalShadowSettingsPage.cpp
     Source/Editor/Settings/ExperimentalRenderingSettingsPage.cpp
     Source/Editor/Settings/InterfaceSettingsPage.cpp
+    Source/Editor/Settings/SearchBarSettingsPage.cpp
     Source/Editor/Settings/StartupSettingsPage.cpp
     Source/Editor/Settings/AssetPreviewSettings.cpp
     Source/Editor/Settings/ToggleAppearanceSettings.cpp
