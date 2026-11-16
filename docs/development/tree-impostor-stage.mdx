@@ -68,13 +68,20 @@ The tree package owns this step.
 
 ### Step 2: impostor bake
 
-The asset system owns the bake, beside the mesh level of detail cache and the HLOD baker.
+The asset system owns the bake, beside the mesh level of detail cache and the HLOD baker. The renderer draws it.
 
 - The input is a mesh and its materials. The output is an impostor atlas of N x N frames, with base color and alpha, plus normal and depth.
-- Two layouts: hemi-octahedral (the upper hemisphere, the default for trees and foliage) and full octahedral (the full sphere).
-- The bake renders each frame through the render graph with an orthographic camera fitted to the bounds. The atlas is cached by the mesh content hash, the material hash, the layout and the resolution.
-- Generated trees bake one atlas per variant when the variant is first registered. This is why step 1 comes first. Without shared variants, every tree would need its own atlas.
-- The octahedral encode and decode functions go into `Mathematics` with unit tests (round trip, frame selection at the hemisphere edge).
+- Two layouts, in `Mathematics/Octahedral.h` with unit tests: hemi-octahedral around +Y (the default for trees and foliage) and full octahedral around +Z (the full sphere). The shaders use the same encodings (`GE_HemiOctEncode`, `GE_OctEncode` in `Includes/octahedral_normal.glsl`).
+- The bake draws each frame through the render graph with an orthographic camera fitted to the bounds. A pass keyword, `ImpostorBake`, gives the forward adapter a one-target shape like `MotionVectors`: it runs the material's own surface and alpha discard and writes base color, alpha, normal and depth, with no lighting. So every material bakes through its own shader, the custom leaf surface and authored bark materials included.
+- The bake draws the rest pose: it uses the static twin materials, which have no wind modifier.
+- The bake spreads its frames over several rendered frames. The mesh draws until the atlas is ready. A device rebuild bakes again.
+- The atlas is cached by the mesh content hash, the material hash, the layout and the resolution.
+
+**Atlas memory.** An atlas of 8 x 8 frames at 128 pixels in two RGBA8 textures is about 10 MB. A forest whose every tree has its own seed has one variant per tree, so a bake for every variant does not fit. The rules:
+
+- A variant bakes on demand, when one of its instances first reaches impostor distance.
+- A memory cap holds the atlases. Past the cap, the least recently drawn atlas goes, and its trees draw the mesh.
+- Shared variants come first for this reason too: a forest that reuses 8 to 16 tree variants needs 8 to 16 atlases.
 
 ### Step 3: runtime last stage
 
@@ -88,6 +95,6 @@ The GPU-driven draw path owns the selection.
 
 ### Verification
 
-- Unit tests: the octahedral math, bake determinism (the same input gives the same atlas hash), and scatter selection at the threshold.
-- Performance: the 32 x 32 forest at the far pose, real impostors against shared variants, 3 runs on a quiet machine. Acceptance: at least 30% less GPU time than shared variants.
+- Unit tests: the octahedral math, the frame cameras of the bake, the atlas cache key, and scatter selection at the threshold. A GPU bake does not give the same bytes on every backend, so a capture checks the atlas pixels instead of a hash test.
+- Performance: a 32 x 32 forest of 16 tree variants at the far pose, real impostors against shared variants, 3 runs on a quiet machine. One variant and 1024 variants are the two ends, measured for the record, not for the gate. Acceptance: at least 30% less GPU time than shared variants.
 - Look: a capture pair at the transition distance and at the far pose, at a game camera height and at a flight camera height.
