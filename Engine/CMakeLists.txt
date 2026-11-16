@@ -434,6 +434,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODFeature.cpp
+	Source/Engine/Rendering/Impostors/ImpostorFrameCamera.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODSplits.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeaturePasses.cpp
@@ -2267,6 +2268,10 @@ endif()
                 ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
             # Modules/Rendering: the shader source cache's read counter (Source/Materials/Shader/ShaderSourceCache.h).
             target_include_directories(EngineWorldDrawTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering")
+
+            # Impostor frame cameras and atlas bookkeeping (Engine/Rendering/Impostors).
+            ge_add_render_services_test(ImpostorTests
+                Tests/ImpostorFrameCameraTests.cpp)
 
             ge_add_render_services_test(ComputeDescriptorScratchTests
                 Tests/ComputeDescriptorScratchTests.cpp)
