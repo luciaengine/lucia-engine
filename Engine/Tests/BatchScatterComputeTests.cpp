@@ -1010,7 +1010,7 @@ TEST_P(BatchScatterComputeTest, NoSpatialPreviewStillFiltersLayers)
 
 // Virtual shadow pages cull after the frame's culling, each page into its own slice. A caster lands
 // in every page it overlaps and in no other page. The sun page is open toward the light, the spot
-// page is not, and a non-caster lands nowhere.
+// and point pages are not, and a non-caster lands nowhere.
 TEST_P(BatchScatterComputeTest, LatePageCullKeepsOnlyTheCastersThatOverlapEachPage)
 {
     using Engine::Renderer::CropVirtualShadowProjection;
@@ -1041,10 +1041,12 @@ TEST_P(BatchScatterComputeTest, LatePageCullKeepsOnlyTheCastersThatOverlapEachPa
 
     const Matrix4x4 sun = Mathematics::MakeOrthographicLH_ZO_ReverseZ(-4.0f, 4.0f, -4.0f, 4.0f, 1.0f, 100.0f);
     const Matrix4x4 spot = Matrix4x4::PerspectiveReverseZ(1.2f, 1.0f, .5f, 100.0f);
+    const Matrix4x4 pointFace = Matrix4x4::PerspectiveReverseZ(1.57079632679f, 1.0f, .5f, 100.0f);
     std::vector<CascadeCullingGroup> groups;
     std::vector<std::array<std::set<uint32_t>, 4>> expected;
     for (const auto& [light, family] : {std::pair{sun, VirtualShadowLight::Directional},
-                                        std::pair{spot, VirtualShadowLight::Spot}})
+                                        std::pair{spot, VirtualShadowLight::Spot},
+                                        std::pair{pointFace, VirtualShadowLight::Point}})
     {
         CascadeCullingGroup group{};
         group.viewId = 1;
@@ -1076,7 +1078,8 @@ TEST_P(BatchScatterComputeTest, LatePageCullKeepsOnlyTheCastersThatOverlapEachPa
     for (const auto& pages : expected)
         EXPECT_EQ(std::ranges::count_if(pages, [](const auto& page) { return page.contains(4u); }), 2);
     EXPECT_EQ(std::ranges::count_if(expected[0], [](const auto& page) { return page.contains(5u); }), 1);
-    EXPECT_EQ(std::ranges::count_if(expected[1], [](const auto& page) { return page.contains(5u); }), 0);
+    for (size_t local = 1; local < expected.size(); ++local)
+        EXPECT_EQ(std::ranges::count_if(expected[local], [](const auto& page) { return page.contains(5u); }), 0);
 
     constexpr uint32_t kSliceElements = 64;
     const auto words = LateCull(groups, kSliceElements);
