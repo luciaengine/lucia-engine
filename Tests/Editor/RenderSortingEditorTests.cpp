@@ -5,7 +5,9 @@
 #include "Components/Rendering/SkinnedMeshRenderer.h"
 #include "Components/Transform.h"
 #include "Components/Hierarchy.h"
+#include "Editor/Hierarchy/HierarchyLayerControls.h"
 #include "InspectorRegistry.h"
+#include "Panels/HierarchyCommandIds.h"
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
 #include "Engine/Rendering/SortingLayers.h"
@@ -17,6 +19,7 @@
 #include "UI/Controls/CollapsibleInfoCard.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/IntField.h"
+#include "UI/Controls/MaskField.h"
 #include "UI/UIElement.h"
 #include "UI/StyleProperties.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -112,6 +115,81 @@ TEST_F(RenderSortingEditorTests, SkinnedMeshAndSortingOnlyParentAreEligible)
     EXPECT_EQ(World.GetComponent<Sorting>(skinned)->Layer, 20);
     EXPECT_EQ(World.GetComponent<Sorting>(parent)->Layer, 20);
     EXPECT_TRUE(World.GetComponent<Sorting>(parent)->GroupChildren);
+}
+
+template <typename Picker>
+Picker* FindChildWithClass(UIElement& row, const char* className)
+{
+    for (const auto& child : row.GetChildren())
+        if (child->HasClass(className))
+            return dynamic_cast<Picker*>(child.get());
+    return nullptr;
+}
+
+// The Hierarchy row's sorting layer picker: a pooled row picks for the entity it shows now, by
+// stable layer id, in one undo step, and the column refreshes when the layers or a sorting edit change.
+TEST_F(RenderSortingEditorTests, PooledSortingPickerUsesTheCurrentEntityAndTheLayerId)
+{
+    auto layers = Rendering::SortingLayers::Defaults();
+    layers.Layers.push_back({1234, "Meadow Canopy", 99});
+    std::string error;
+    ASSERT_TRUE(Rendering::SortingLayers::SetCurrent(layers, error));
+    const auto first = Mesh();
+    const auto second = Mesh();
+    UIElement row;
+    HierarchyLayerControls controls;
+    ASSERT_TRUE(controls.HandleCommand(HierarchyCommandIds::kCmdShowSortingLayer));
+    controls.Present(World, first, row, 350.0f, [first]() { return std::vector{first}; }, &Undo, nullptr);
+    controls.Present(World, second, row, 350.0f, [second]() { return std::vector{second}; }, &Undo, nullptr);
+    auto* picker = FindChildWithClass<Dropdown>(row, "hierarchy-sorting-layer-dropdown");
+    ASSERT_NE(picker, nullptr);
+    EXPECT_TRUE(row.HasClass("has-sorting-layer"));
+    EXPECT_TRUE(row.HasClass("render-layer-narrow")) << "below 400 px the pickers take their short form";
+    EXPECT_FALSE(row.HasClass("has-render-layer"));
+
+    picker->SetSelectedIndex(static_cast<int>(layers.Layers.size()) - 1);
+    EXPECT_FALSE(World.HasComponent<Sorting>(first));
+    ASSERT_TRUE(World.HasComponent<Sorting>(second));
+    EXPECT_EQ(World.GetComponent<Sorting>(second)->Layer, 1234);
+    EXPECT_EQ(picker->GetSelectedValue(), "1234");
+    Undo.Undo();
+    EXPECT_FALSE(World.HasComponent<Sorting>(second)) << "the undo restores the absent component";
+
+    EXPECT_TRUE(controls.NeedsRefresh(World));
+    EXPECT_FALSE(controls.NeedsRefresh(World));
+    Sorting edited{};
+    edited.Layer = 10;
+    World.AddComponentImmediate(second, edited);
+    EXPECT_TRUE(controls.NeedsRefresh(World));
+    ASSERT_TRUE(Rendering::SortingLayers::SetCurrent(Rendering::SortingLayers::Defaults(), error));
+    EXPECT_TRUE(controls.NeedsRefresh(World));
+}
+
+// Both columns on a skinned mesh: the render layer picker shows the layers of its MeshRenderer (a skinned
+// model's entity carries one) beside the sorting picker, and a row that shows no entity hides both.
+TEST_F(RenderSortingEditorTests, BothLayerColumnsShareASkinnedRowAndAGhostRowHidesThem)
+{
+    const auto entity = Mesh();
+    World.AddComponentImmediate(entity, Components::SkinnedMeshRenderer{});
+    auto renderer = *World.GetComponent<Components::MeshRenderer>(entity);
+    renderer.RenderLayers.Bits = 0x8u;
+    World.AddComponentImmediate(entity, renderer);
+    UIElement row;
+    HierarchyLayerControls controls;
+    ASSERT_TRUE(controls.HandleCommand(HierarchyCommandIds::kCmdShowRenderLayer));
+    ASSERT_TRUE(controls.HandleCommand(HierarchyCommandIds::kCmdShowSortingLayer));
+    controls.Present(World, entity, row, 600.0f, [entity]() { return std::vector{entity}; }, &Undo, nullptr);
+    auto* renderPicker = FindChildWithClass<MaskField>(row, "hierarchy-render-layer-dropdown");
+    ASSERT_NE(renderPicker, nullptr);
+    EXPECT_EQ(renderPicker->GetValue(), 0x8u);
+    EXPECT_NE(FindChildWithClass<Dropdown>(row, "hierarchy-sorting-layer-dropdown"), nullptr);
+    EXPECT_TRUE(row.HasClass("has-render-layer"));
+    EXPECT_TRUE(row.HasClass("has-sorting-layer"));
+    EXPECT_FALSE(row.HasClass("render-layer-narrow"));
+
+    controls.Hide(row);
+    EXPECT_FALSE(row.HasClass("has-render-layer"));
+    EXPECT_FALSE(row.HasClass("has-sorting-layer"));
 }
 
 TEST_F(RenderSortingEditorTests, SavesCustomLayersWithoutChangingOtherProjectSettings)

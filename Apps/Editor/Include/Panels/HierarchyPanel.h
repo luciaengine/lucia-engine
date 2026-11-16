@@ -8,8 +8,8 @@
 #include "ECS/ChangeFilter.h"
 #include "ECS/ECS.h"
 #include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityRename.h"
+#include "Editor/Hierarchy/HierarchyLayerControls.h"
 #include "Editor/Hierarchy/HierarchyRowActivity.h"
-#include "Editor/Hierarchy/LayerControls/HierarchyLayerControls.h"
 #include "EditorChangeNotifications.h"
 #include "Scene/SceneDocumentManager.h"
 #include "Scene/SceneIO.h"
@@ -332,6 +332,8 @@ private:
     Editor::HierarchyRowActivity m_RowActivity;
     // The rows' Scene View eye.
     std::unique_ptr<Editor::HierarchyRowEye> m_RowEye;
+    // The rows' render layer and sorting layer pickers.
+    Editor::HierarchyLayerControls m_LayerControls;
     // The inline rename on a row, while one is open.
     Editor::HierarchyEntityRename m_EntityRename;
 
@@ -385,10 +387,10 @@ private:
 
     HierarchySortMode m_SortMode = HierarchySortMode::Custom;
     HierarchySortDirection m_SortDirection = HierarchySortDirection::Ascending;
-    // The optional Render Layer and Sorting Layer columns of the rows.
-    Editor::HierarchyLayerControls m_LayerControls;
 
     void ApplySortSettings();
+    // Rebinds the rows after the layer column changed what it shows.
+    void RefreshLayerColumn();
     void SetHorizontalBarPresent(bool present);
 
     std::function<void(TreeId, float, float)> m_ShowContextMenu;

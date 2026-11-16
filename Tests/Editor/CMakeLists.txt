@@ -31,6 +31,7 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/AssistantSessionHandlers.cpp
 	PickRootResolverTests.cpp
 	SceneViewToolStripTests.cpp
+	SceneViewToolOverlayChoiceTests.cpp
 	SceneViewGridPipelineTests.cpp
 	# The tool strip's badge count, laid out over the real editor stylesheets: inside its strip at
 	# every count it can show, in both floating orientations and in the toolbar.
@@ -2863,17 +2864,15 @@ add_test(NAME AtlasRegionThumbnailTests COMMAND $<TARGET_FILE:AtlasRegionThumbna
 
 add_executable(RenderSortingEditorTests
     RenderSortingEditorTests.cpp
-    # The Hierarchy's Render Layer and Sorting Layer columns.
-    HierarchyLayerControlsTests.cpp
-    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/LayerControls/HierarchyLayerControls.cpp
-    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/LayerControls/HierarchyLayerPicker.cpp
-    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
-    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/RenderLayers/RenderLayerField.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/CollapsibleInfoCard.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingDiagnostic.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingFields.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingEdit.cpp
+    # The Hierarchy's layer column: its sorting picker and the render layer picker beside it.
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyLayerControls.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/RenderLayers/RenderLayerField.cpp
 )
 target_include_directories(RenderSortingEditorTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Include

@@ -66,12 +66,7 @@ struct SortingFieldsState
         const bool layersChanged = LayerRevision != revision;
         if (layersChanged)
         {
-            auto layers = Rendering::SortingLayers::Current();
-            std::sort(layers.Layers.begin(), layers.Layers.end(),
-                [](const auto& left, const auto& right) { return left.Order < right.Order; });
-            Options.clear();
-            for (const auto& value : layers.Layers)
-                Options.push_back({std::to_string(value.Id), value.Name});
+            Options = SortingLayerOptions();
             LayerRevision = revision;
         }
         const std::string value = std::to_string(layer);
@@ -83,7 +78,7 @@ struct SortingFieldsState
         {
             auto options = Options;
             if (missing)
-                options.push_back({value, "Missing layer (" + value + ")"});
+                options.push_back(MissingSortingLayerOption(*missing));
             if (mixedLayer)
             {
                 selected = static_cast<int>(options.size());
@@ -105,6 +100,24 @@ struct SortingFieldsState
         }
     }
 };
+}
+
+std::vector<Dropdown::Option> SortingLayerOptions()
+{
+    auto layers = Rendering::SortingLayers::Current();
+    std::sort(layers.Layers.begin(), layers.Layers.end(),
+              [](const auto& left, const auto& right) { return left.Order < right.Order; });
+    std::vector<Dropdown::Option> options;
+    options.reserve(layers.Layers.size());
+    for (const auto& layer : layers.Layers)
+        options.push_back({std::to_string(layer.Id), layer.Name});
+    return options;
+}
+
+Dropdown::Option MissingSortingLayerOption(int32 layer)
+{
+    const std::string value = std::to_string(layer);
+    return {value, "Missing layer (" + value + ")"};
 }
 
 void AddRenderSortingFields(const InspectorContext& context)

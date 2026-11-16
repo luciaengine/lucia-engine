@@ -59,34 +59,26 @@ TEST(HierarchyRenderLayerEditTest, TheRowReadsTheProjectsNameAndFollowsARename)
     gr::SetRenderLayerNames({});
 }
 
-TEST(HierarchyRenderLayerEditTest, APickOnASelectionSetsTheLayerOfEveryEntityInOneStep)
+TEST(HierarchyRenderLayerEditTest, AClickOnASelectionChangesOneLayerPerEntity)
 {
     ECS::World world;
     Editor::EditorChangeNotifications notifications;
     Editor::UndoRedoService undo;
     const ECS::EntityHandle onDefault = MakeRenderer(world, 0b0001u);
     const ECS::EntityHandle onTwoLayers = MakeRenderer(world, 0b0110u);
-    const ECS::EntityHandle onLayerThree = MakeRenderer(world, 0b1000u);
-    const std::vector<ECS::EntityHandle> selection = {onDefault, onTwoLayers, onLayerThree};
+    const std::vector<ECS::EntityHandle> selection = {onDefault, onTwoLayers};
 
-    Editor::ApplyRenderLayerMask(world, selection, gr::RenderLayerMask::FromLayer(3), &undo, &notifications);
-    EXPECT_EQ(LayersOf(world, onDefault), 0b1000u);
-    EXPECT_EQ(LayersOf(world, onTwoLayers), 0b1000u);
-    EXPECT_EQ(LayersOf(world, onLayerThree), 0b1000u);
+    Editor::ApplyRenderLayerBits(world, selection, gr::RenderLayerMask::FromLayer(3).Bits, true, &undo, &notifications);
+    EXPECT_EQ(LayersOf(world, onDefault), 0b1001u);
+    EXPECT_EQ(LayersOf(world, onTwoLayers), 0b1110u) << "each entity keeps its other layers";
     EXPECT_EQ(undo.GetUndoCount(), 1u) << "the whole selection is one undo step";
 
+    Editor::ApplyRenderLayerBits(world, selection, gr::RenderLayerMask::FromLayer(1).Bits, false, &undo, &notifications);
+    EXPECT_EQ(LayersOf(world, onDefault), 0b1001u);
+    EXPECT_EQ(LayersOf(world, onTwoLayers), 0b1100u);
+
+    undo.Undo();
     undo.Undo();
     EXPECT_EQ(LayersOf(world, onDefault), 0b0001u);
     EXPECT_EQ(LayersOf(world, onTwoLayers), 0b0110u);
-    EXPECT_EQ(LayersOf(world, onLayerThree), 0b1000u);
-}
-
-TEST(HierarchyRenderLayerEditTest, APickThatChangesNothingRecordsNoStep)
-{
-    ECS::World world;
-    Editor::UndoRedoService undo;
-    const ECS::EntityHandle onLayerThree = MakeRenderer(world, 0b1000u);
-
-    Editor::ApplyRenderLayerMask(world, {onLayerThree}, gr::RenderLayerMask::FromLayer(3), &undo, nullptr);
-    EXPECT_EQ(undo.GetUndoCount(), 0u);
 }

@@ -772,9 +772,9 @@ HierarchyPanel::HierarchyPanel()
             // anyway, so take it here and give the row its own presentation.
             if (Editor::IsGhostTreeId(id))
             {
-                m_LayerControls.Hide(*row);
                 if (m_VcsController)
                     m_VcsController->DecorateGhostRow(id, *row);
+                m_LayerControls.Hide(*row);
                 return;
             }
             row->RemoveClass("hierarchy-ghost-row");
@@ -837,8 +837,10 @@ HierarchyPanel::HierarchyPanel()
             }
             if (!row->HasClass("hierarchy-row-wired"))
             {
-                // A pooled row's first bind wires its own handlers once. Each asks the tree which item the
-                // row shows now, so a recycled row never answers for its previous item.
+                // A pooled row's first bind wires the row's own handlers once. Each asks the
+                // tree which item the row shows now, so a recycled row never answers for its
+                // previous item.
+                row->AddClass("hierarchy-row-wired");
                 row->RegisterEventHandler(kEventMouseEnter, [this, row](UIEvent&)
                                           {
                     if (!m_OnHoverEntity || !m_Tree)
@@ -854,17 +856,17 @@ HierarchyPanel::HierarchyPanel()
                         m_OnHoverEntity({});
                 });
 
+
                 m_RowEye->AddTo(*row);
-                row->AddClass("hierarchy-row-wired");
             }
             // After the row's own children exist, so a first bind presents the eye too.
             m_RowActivity.Present(*m_World, handle, id, *row);
             m_RowEye->Present(*row, handle, m_Provider->IsExpandable(id));
 
-            if (titleEl)
-                m_LayerControls.Present(*m_World, handle, *row, *titleEl, GetLayoutWidth(),
-                                        [this, row]() { return ResolveRowActionTargets(EntityShownBy(*row)); },
-                                        m_Undo, m_ChangeNotifications);
+            // A pick inside the selection applies to the whole selection, as the enable toggle does.
+            m_LayerControls.Present(*m_World, handle, *row, GetLayoutWidth(),
+                                    [this, handle]() { return ResolveRowActionTargets(handle); }, m_Undo,
+                                    m_ChangeNotifications);
             if (titleEl && previewIconEl)
             {
                 titleEl->AddClass("tree-title-no-icon");
@@ -2426,6 +2428,11 @@ void HierarchyPanel::DuplicateSelectedEntities()
 
 bool HierarchyPanel::HandleCommand(std::uint32_t cmd)
 {
+    if (m_LayerControls.HandleCommand(cmd))
+    {
+        RefreshLayerColumn();
+        return true;
+    }
     if (IsLoadRecentSceneCommand(cmd))
     {
         const size_t index = static_cast<size_t>(cmd - kCmdLoadRecentSceneBase);
@@ -2892,11 +2899,6 @@ bool HierarchyPanel::HandleCommand(std::uint32_t cmd)
         scheduleSelectCreatedEntity(h);
     };
 
-    if (m_LayerControls.HandleCommand(cmd))
-    {
-        RePresentHeldRows();
-        return true;
-    }
     switch (cmd)
     {
     case kCmdCreateEmptyEntity:
@@ -3605,9 +3607,9 @@ void HierarchyPanel::Update()
     if (!m_World || !m_Provider || !m_Tree)
         return;
 
-    if (m_LayerControls.NeedsRefresh(*m_World))
-        RePresentHeldRows();
     m_RowActivity.Refresh(*m_World, *m_Tree, *m_Provider);
+    if (m_LayerControls.NeedsRefresh(*m_World))
+        RefreshLayerColumn();
 
     if (m_VcsController)
         m_VcsController->Update();
@@ -4130,6 +4132,13 @@ void HierarchyPanel::ApplySortSettings()
     m_Provider->SetSortMode(m_SortMode);
     m_Provider->SetSortDirection(m_SortDirection);
     Refresh();
+}
+
+void HierarchyPanel::RefreshLayerColumn()
+{
+    if (!m_Tree)
+        return;
+    m_Tree->RefreshFromProvider();
 }
 
 // has-* follows whether a bar is really on screen, so the size bar and a bottom search only
