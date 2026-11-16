@@ -34,6 +34,11 @@ project/package asset manifest first. The tool does not scan or rewrite identiti
 directory. Unsupported topology, animation, vertex streams, materials or resource
 limits produce a refusal.
 
+Fine pages are compressed without loss: each page holds its vertices and its
+indices in the meshoptimizer codecs, about 30 % of the raw size for a dense
+model. The streaming worker decodes and validates a page in about 0.1 ms. A page that
+does not decode is refused, and its coarse range keeps drawing.
+
 Keep the generated model and its sibling `.cluster` directory together when
 moving authoring data. Package cooking gathers the fine store under the packaged
 asset root and retains texture dependency edges. Missing fine pages still permit

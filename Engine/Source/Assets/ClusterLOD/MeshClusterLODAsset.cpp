@@ -30,7 +30,11 @@ namespace
 {
 
 constexpr uint64 kMagic = 0x315453554c434547ull;
-constexpr uint32 kVersion = 2;
+constexpr uint32 kVersion = 3;
+// The newest meshopt vertex codec version and its default compression level. The index codec
+// uses the library default, version 1, the newest.
+constexpr int kPageVertexVersion = 1;
+constexpr int kPageVertexLevel = 2;
 constexpr uint64 kMaximumFileBytes = MeshClusterLODManifest::kMaximumFileBytes;
 constexpr uint64 kMaximumImageBytes = 128ull * 1024ull * 1024ull;
 constexpr uint32 kMaximumMaterialBytes = 1024u * 1024u;
@@ -236,16 +240,10 @@ bool ReadPlacement(Reader& reader, Mesh& mesh, uint32& placements)
     return true;
 }
 
-bool ReadGeometry(Reader& reader, uint32 vertices, uint32 indices, uint32 maximumVertices, Mesh& mesh)
+// Finite vertices inside the mesh bounds, indices in range and positive-area triangles.
+bool ValidGeometry(const Mesh& mesh)
 {
-    if (vertices == 0 || vertices > maximumVertices || indices == 0 || indices % 3 != 0 ||
-        static_cast<uint64>(vertices) * sizeof(Vertex) + static_cast<uint64>(indices) * sizeof(uint32) > reader.Remaining())
-        return false;
-    mesh.Vertices.resize(vertices);
-    mesh.Indices.resize(indices);
-    if (!reader.Bytes(mesh.Vertices.data(), vertices * sizeof(Vertex)) ||
-        !reader.Bytes(mesh.Indices.data(), indices * sizeof(uint32)))
-        return false;
+    const auto vertices = static_cast<uint32>(mesh.Vertices.size());
     for (const Vertex& vertex : mesh.Vertices)
     {
         if (!ValidFloats(vertex.Position) || !ValidFloats(vertex.Normal) ||
@@ -271,16 +269,49 @@ bool ReadGeometry(Reader& reader, uint32 vertices, uint32 indices, uint32 maximu
     return true;
 }
 
+bool ReadGeometry(Reader& reader, uint32 vertices, uint32 indices, uint32 maximumVertices, Mesh& mesh)
+{
+    if (vertices == 0 || vertices > maximumVertices || indices == 0 || indices % 3 != 0 ||
+        static_cast<uint64>(vertices) * sizeof(Vertex) + static_cast<uint64>(indices) * sizeof(uint32) > reader.Remaining())
+        return false;
+    mesh.Vertices.resize(vertices);
+    mesh.Indices.resize(indices);
+    return reader.Bytes(mesh.Vertices.data(), vertices * sizeof(Vertex)) &&
+        reader.Bytes(mesh.Indices.data(), indices * sizeof(uint32)) && ValidGeometry(mesh);
+}
+
 bool WriteGeometry(Writer& writer, const Mesh& mesh)
 {
     return writer.Bytes(mesh.Vertices.data(), mesh.Vertices.size() * sizeof(Vertex)) &&
         writer.Bytes(mesh.Indices.data(), mesh.Indices.size() * sizeof(uint32));
 }
 
+uint64 EncodedPageBound(uint32 vertices, uint32 indices)
+{
+    return meshopt_encodeVertexBufferBound(vertices, sizeof(Vertex)) + meshopt_encodeIndexBufferBound(indices, vertices);
+}
+
+// Appends the encoded fine page and sets its Bytes and EncodedVertexBytes.
+bool WriteEncodedPage(Writer& writer, const Mesh& mesh, MeshClusterLODManifest::Page& page)
+{
+    Vector<uint8> encoded(EncodedPageBound(page.VertexCount, page.IndexCount));
+    const size_t vertexBytes = meshopt_encodeVertexBufferLevel(encoded.data(), encoded.size(), mesh.Vertices.data(),
+                                                               mesh.Vertices.size(), sizeof(Vertex), kPageVertexLevel,
+                                                               kPageVertexVersion);
+    const size_t indexBytes = vertexBytes == 0 ? 0 : meshopt_encodeIndexBuffer(
+        encoded.data() + vertexBytes, encoded.size() - vertexBytes, mesh.Indices.data(), mesh.Indices.size());
+    if (indexBytes == 0)
+        return false;
+    page.EncodedVertexBytes = static_cast<uint32>(vertexBytes);
+    page.Bytes = vertexBytes + indexBytes;
+    return writer.Bytes(encoded.data(), static_cast<size_t>(page.Bytes));
+}
+
 bool WritePage(Writer& writer, const MeshClusterLODManifest::Page& page)
 {
     return writer.Value(page.Offset) && writer.Value(page.Bytes) && writer.Value(page.ContentHash) &&
-        writer.Value(page.VertexCount) && writer.Value(page.IndexCount) && writer.Value(page.Error) &&
+        writer.Value(page.EncodedVertexBytes) && writer.Value(page.VertexCount) && writer.Value(page.IndexCount) &&
+        writer.Value(page.Error) &&
         writer.Value(page.CoarseFirstIndex) && writer.Value(page.CoarseIndexCount) &&
         writer.Value(page.MinBounds) && writer.Value(page.MaxBounds);
 }
@@ -290,7 +321,8 @@ bool ReadPage(Reader& reader, uint64 storeBytes, uint64 expectedOffset, uint32 e
               MeshClusterLODManifest::Page& page)
 {
     if (!reader.Value(page.Offset) || !reader.Value(page.Bytes) || !reader.Value(page.ContentHash) ||
-        !reader.Value(page.VertexCount) || !reader.Value(page.IndexCount) || !reader.Value(page.Error) ||
+        !reader.Value(page.EncodedVertexBytes) || !reader.Value(page.VertexCount) || !reader.Value(page.IndexCount) ||
+        !reader.Value(page.Error) ||
         !reader.Value(page.CoarseFirstIndex) || !reader.Value(page.CoarseIndexCount) ||
         !reader.Value(page.MinBounds) || !reader.Value(page.MaxBounds))
         return false;
@@ -302,8 +334,11 @@ bool ReadPage(Reader& reader, uint64 storeBytes, uint64 expectedOffset, uint32 e
     return page.Offset == expectedOffset && page.Offset <= storeBytes &&
         page.Bytes <= storeBytes - page.Offset && page.VertexCount != 0 && page.VertexCount <= kMaximumPageVertices &&
         page.IndexCount != 0 && page.IndexCount % 3 == 0 &&
-        page.Bytes == static_cast<uint64>(page.VertexCount) * sizeof(Vertex) +
-            static_cast<uint64>(page.IndexCount) * sizeof(uint32) &&
+        static_cast<uint64>(page.VertexCount) * sizeof(Vertex) + static_cast<uint64>(page.IndexCount) * sizeof(uint32) <=
+            kMaximumFileBytes &&
+        page.EncodedVertexBytes != 0 && page.EncodedVertexBytes < page.Bytes &&
+        page.EncodedVertexBytes <= meshopt_encodeVertexBufferBound(page.VertexCount, sizeof(Vertex)) &&
+        page.Bytes <= EncodedPageBound(page.VertexCount, page.IndexCount) &&
         std::isfinite(page.Error) && page.Error >= 0.0f;
 }
 
@@ -703,7 +738,6 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
             geometryBytes += fineBytes;
             MeshClusterLODManifest::Page page;
             page.Offset = fine.Data().size();
-            page.Bytes = fineBytes;
             page.VertexCount = static_cast<uint32>(group.Fine.Vertices.size());
             page.IndexCount = static_cast<uint32>(group.Fine.Indices.size());
             page.Error = group.Error;
@@ -712,7 +746,7 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
             page.MinBounds = {group.Coarse.MinBounds[0], group.Coarse.MinBounds[1], group.Coarse.MinBounds[2]};
             page.MaxBounds = {group.Coarse.MaxBounds[0], group.Coarse.MaxBounds[1], group.Coarse.MaxBounds[2]};
             firstIndex += page.CoarseIndexCount;
-            if (!WriteGeometry(fine, group.Fine))
+            if (!WriteEncodedPage(fine, group.Fine, page))
             {
                 error = "Cluster fine store exceeds its serialized file limit";
                 return false;
@@ -803,11 +837,19 @@ bool DecodeMeshClusterLODFinePage(std::span<const uint8> bytes, const MeshCluste
         error = "Cluster fine page is truncated or has the wrong checksum";
         return false;
     }
+    const auto vertexStream = bytes.first(page.EncodedVertexBytes);
+    const auto indexStream = bytes.subspan(page.EncodedVertexBytes);
     Mesh decoded;
     CopyMeshClusterLODPlacement(coarse, decoded);
     SetPageBounds(page, decoded);
-    Reader reader(bytes);
-    if (!ReadGeometry(reader, page.VertexCount, page.IndexCount, kMaximumPageVertices, decoded) || reader.Remaining() != 0 || IsAssetDecodeCancelled())
+    decoded.Vertices.resize(page.VertexCount);
+    decoded.Indices.resize(page.IndexCount);
+    // The decoders accept untrusted input; ValidGeometry refuses garbage output.
+    if (meshopt_decodeVertexBuffer(decoded.Vertices.data(), page.VertexCount, sizeof(Vertex), vertexStream.data(),
+                                   vertexStream.size()) != 0 ||
+        meshopt_decodeIndexBuffer(decoded.Indices.data(), page.IndexCount, sizeof(uint32), indexStream.data(),
+                                  indexStream.size()) != 0 ||
+        !ValidGeometry(decoded) || IsAssetDecodeCancelled())
     {
         error = "Cluster fine page has invalid geometry or was cancelled";
         return false;

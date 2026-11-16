@@ -557,6 +557,70 @@ TEST_F(MeshClusterLODAssetTest, FineRangesReconstructEveryOrientedSourceTriangle
     EXPECT_EQ(triangles, OrientedTriangles(m_Source.GetMesh(0)));
 }
 
+TEST_F(MeshClusterLODAssetTest, StoresEachFinePageLosslesslyInLessThanHalfItsRawSize)
+{
+    const auto path = m_Temporary.Path() / "generated.gecluster";
+    ASSERT_TRUE(Cook(path)) << m_Error;
+    ModelAsset model(GUID::Generate(), path);
+    ASSERT_TRUE(model.Load());
+    const auto manifest = model.GetClusterLODManifest();
+    ASSERT_NE(manifest, nullptr);
+    Vector<MeshClusterLODGroup> groups;
+    ASSERT_TRUE(GenerateMeshClusterLODs(m_Source.GetMesh(0), TestConfig(), groups, m_Error)) << m_Error;
+    ASSERT_EQ(groups.size(), manifest->Pages.size());
+    SharedFileReader store(ResolveMeshClusterLODStore(path, {}, *manifest));
+    uint64 storedBytes = 0;
+    uint64 rawBytes = 0;
+    for (size_t index = 0; index < groups.size(); ++index)
+    {
+        const auto& page = manifest->Pages[index];
+        const Mesh& expected = groups[index].Fine;
+        Vector<uint8> bytes(static_cast<size_t>(page.Bytes));
+        ASSERT_TRUE(store.SeekTo(page.Offset));
+        ASSERT_EQ(store.Read(bytes.data(), bytes.size()), static_cast<int64>(bytes.size()));
+        Mesh fine;
+        ASSERT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(0), fine, m_Error)) << m_Error;
+        ASSERT_EQ(fine.Vertices.size(), expected.Vertices.size());
+        EXPECT_EQ(std::memcmp(fine.Vertices.data(), expected.Vertices.data(), fine.Vertices.size() * sizeof(Vertex)), 0);
+        EXPECT_EQ(OrientedTriangles(fine), OrientedTriangles(expected));
+        storedBytes += page.Bytes;
+        rawBytes += expected.Vertices.size() * sizeof(Vertex) + expected.Indices.size() * sizeof(uint32);
+    }
+    EXPECT_EQ(storedBytes, manifest->StoreBytes);
+    EXPECT_LT(storedBytes * 2, rawBytes);
+}
+
+TEST_F(MeshClusterLODAssetTest, RefusesAFinePageWithACorruptStreamHeaderEvenWithAMatchingChecksum)
+{
+    const auto path = m_Temporary.Path() / "generated.gecluster";
+    ASSERT_TRUE(Cook(path)) << m_Error;
+    ModelAsset model(GUID::Generate(), path);
+    ASSERT_TRUE(model.Load());
+    const auto manifest = model.GetClusterLODManifest();
+    ASSERT_NE(manifest, nullptr);
+    auto page = manifest->Pages.front();
+    SharedFileReader store(ResolveMeshClusterLODStore(path, {}, *manifest));
+    Vector<uint8> bytes(static_cast<size_t>(page.Bytes));
+    ASSERT_TRUE(store.SeekTo(page.Offset));
+    ASSERT_EQ(store.Read(bytes.data(), bytes.size()), static_cast<int64>(bytes.size()));
+    // The first byte of each meshopt stream is its header.
+    for (const size_t header : {size_t{0}, static_cast<size_t>(page.EncodedVertexBytes)})
+    {
+        SCOPED_TRACE(std::format("stream header at byte {}", header));
+        const uint8 original = bytes[header];
+        bytes[header] = 0;
+        page.ContentHash = Hashing::Fnv1a64(bytes.data(), bytes.size());
+        Mesh output;
+        output.Name = "Previous valid mesh";
+        EXPECT_FALSE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(0), output, m_Error));
+        EXPECT_EQ(output.Name, "Previous valid mesh");
+        bytes[header] = original;
+    }
+    page.ContentHash = Hashing::Fnv1a64(bytes.data(), bytes.size());
+    Mesh output;
+    EXPECT_TRUE(DecodeMeshClusterLODFinePage(bytes, page, model.GetMesh(0), output, m_Error)) << m_Error;
+}
+
 TEST_F(MeshClusterLODAssetTest, RejectsTruncatedAndCorruptedAssetsTransactionally)
 {
     const auto path = m_Temporary.Path() / "generated.gecluster";
@@ -841,8 +905,9 @@ TEST_F(MeshClusterLODAssetTest, RejectsRehashedInvalidDirectoriesBeforePublishin
     ASSERT_TRUE(Testing::ReadTestFileBytes(path, valid));
     constexpr size_t kMaterialLengthOffset = 36;
     constexpr size_t kMaterialTextOffset = 40;
-    // A page record: offset, bytes, hash, vertex and index counts, error, coarse range, bounds.
-    constexpr size_t kPageBytes = 3 * sizeof(uint64) + 3 * sizeof(uint32) + 2 * sizeof(uint32) + 6 * sizeof(float);
+    // A page record: offset, bytes, hash, encoded vertex bytes, vertex and index counts, error,
+    // coarse range, bounds.
+    constexpr size_t kPageBytes = 3 * sizeof(uint64) + 4 * sizeof(uint32) + 2 * sizeof(uint32) + 6 * sizeof(float);
     uint32 materialBytes = 0;
     ASSERT_GT(valid.size(), kMaterialTextOffset);
     std::memcpy(&materialBytes, valid.data() + kMaterialLengthOffset, sizeof(materialBytes));
@@ -852,7 +917,7 @@ TEST_F(MeshClusterLODAssetTest, RejectsRehashedInvalidDirectoriesBeforePublishin
     ASSERT_EQ(decoded.CoarseMeshes.size(), 1u);
     // The one mesh's page table ends the file.
     const size_t firstPage = valid.size() - decoded.Manifest.Pages.size() * kPageBytes;
-    for (uint32 fault = 0; fault < 7; ++fault)
+    for (uint32 fault = 0; fault < 9; ++fault)
     {
         SCOPED_TRACE(fault);
         Vector<uint8> bytes = valid;
@@ -864,14 +929,16 @@ TEST_F(MeshClusterLODAssetTest, RejectsRehashedInvalidDirectoriesBeforePublishin
         case 1: std::memcpy(bytes.data() + kMaterialTextOffset + materialBytes, &maximumCount, sizeof(maximumCount)); break;
         case 2: std::memcpy(bytes.data() + meshCount, &maximumCount, sizeof(maximumCount)); break;
         case 3: std::memcpy(bytes.data() + firstPage - sizeof(uint32), &maximumCount, sizeof(maximumCount)); break;
-        case 4: std::memcpy(bytes.data() + firstPage + 24, &maximumCount, sizeof(maximumCount)); break;
+        case 4: std::memcpy(bytes.data() + firstPage + 28, &maximumCount, sizeof(maximumCount)); break;
         case 5:
         {
             const float invalid = std::numeric_limits<float>::quiet_NaN();
-            std::memcpy(bytes.data() + firstPage + 32, &invalid, sizeof(invalid));
+            std::memcpy(bytes.data() + firstPage + 36, &invalid, sizeof(invalid));
             break;
         }
-        case 6: std::memcpy(bytes.data() + firstPage + 40, &maximumCount, sizeof(maximumCount)); break;
+        case 6: std::memcpy(bytes.data() + firstPage + 44, &maximumCount, sizeof(maximumCount)); break;
+        case 7: std::memcpy(bytes.data() + firstPage + 24, &maximumCount, sizeof(maximumCount)); break;
+        case 8: std::memcpy(bytes.data() + firstPage + 32, &maximumCount, sizeof(maximumCount)); break;
         }
         constexpr size_t kHeaderBytes = 20;
         const uint64 checksum = Hashing::Fnv1a64(bytes.data() + kHeaderBytes, bytes.size() - kHeaderBytes);

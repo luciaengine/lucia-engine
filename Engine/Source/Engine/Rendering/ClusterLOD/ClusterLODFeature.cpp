@@ -414,12 +414,15 @@ struct ClusterLODFeature::State
             page.Failed = false;
         if (page.Pending || page.Decoded || page.Failed || PendingReads >= kMaximumPendingReads)
             return;
-        if (page.Directory.Bytes > kMaximumPageWorkBytes / kPageWorkMultiplier)
+        // The charge scales the decoded page size. The encoded page in the store is smaller.
+        const uint64 decodedBytes = static_cast<uint64>(page.Directory.VertexCount) * sizeof(Vertex) +
+                                    static_cast<uint64>(page.Directory.IndexCount) * sizeof(uint32);
+        if (decodedBytes > kMaximumPageWorkBytes / kPageWorkMultiplier)
         {
             page.Failed = true;
             return;
         }
-        const uint64 charge = page.Directory.Bytes * kPageWorkMultiplier;
+        const uint64 charge = decodedBytes * kPageWorkMultiplier;
         if (charge > kMaximumPageWorkBytes - ChargedBytes)
             return;
         page.Charge = charge;
