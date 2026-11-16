@@ -926,8 +926,10 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
         MeshClusterLODDag dag;
         if (!GenerateMeshClusterLODDag(mesh, config, dag, error))
             return false;
+        // config.MaximumGroups bounds the DAG groups of the whole model, as it does each mesh.
         if (placements >= kMaximumGroups || mesh.ExtraPlacements.size() > kMaximumGroups - placements - 1 ||
-            dag.Groups.size() > kMaximumDagGroups - groupCount || dag.Units.size() > kMaximumUnits - unitCount)
+            dag.Groups.size() > std::min<uint64>(kMaximumDagGroups, config.MaximumGroups) - groupCount ||
+            dag.Units.size() > kMaximumUnits - unitCount)
         {
             error = "Cluster model exceeds its placement, group or unit limit";
             return false;

@@ -161,6 +161,12 @@ uint32 ThirdCorner(uint32 low, uint32 high)
     return low - low % 3 + 3 - low % 3 - high % 3;
 }
 
+void LockEdge(Vector<uint8>& locks, uint64 key)
+{
+    locks[static_cast<uint32>(key >> 32)] |= meshopt_SimplifyVertex_Lock;
+    locks[static_cast<uint32>(key)] |= meshopt_SimplifyVertex_Lock;
+}
+
 // Maps each vertex to the first vertex at its position and marks the positions the simplifier
 // must keep: open source edges, UV seams (protected), and every non-manifold edge or vertex.
 void LockSourcePositions(const Mesh& mesh, Vector<uint32>& positions, Vector<uint8>& locks)
@@ -209,11 +215,6 @@ void LockSourcePositions(const Mesh& mesh, Vector<uint32>& positions, Vector<uin
         }
     }
     std::sort(edges.begin(), edges.end(), [](const SourceEdge& a, const SourceEdge& b) { return a.Key < b.Key; });
-    const auto lockEdge = [&locks](uint64 key)
-    {
-        locks[static_cast<uint32>(key >> 32)] |= meshopt_SimplifyVertex_Lock;
-        locks[static_cast<uint32>(key)] |= meshopt_SimplifyVertex_Lock;
-    };
     for (size_t begin = 0; begin < edges.size();)
     {
         size_t end = begin + 1;
@@ -222,7 +223,7 @@ void LockSourcePositions(const Mesh& mesh, Vector<uint32>& positions, Vector<uin
         if (end - begin != 2)
         {
             // An open edge, or an edge of more than two triangles.
-            lockEdge(edges[begin].Key);
+            LockEdge(locks, edges[begin].Key);
             begin = end;
             continue;
         }
@@ -235,7 +236,7 @@ void LockSourcePositions(const Mesh& mesh, Vector<uint32>& positions, Vector<uin
         if (firstThird == secondThird || firstForward == secondForward)
         {
             // A duplicate face or inconsistent winding.
-            lockEdge(first.Key);
+            LockEdge(locks, first.Key);
             locks[firstThird] |= meshopt_SimplifyVertex_Lock;
             locks[secondThird] |= meshopt_SimplifyVertex_Lock;
         }
