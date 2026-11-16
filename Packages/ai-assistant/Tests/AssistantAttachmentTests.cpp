@@ -103,7 +103,7 @@ TEST(AssistantAttachmentTests, AClaudeTurnGetsTheEditorsServerAndOnlyTheAssistan
     EXPECT_EQ(server["env"]["GE_ASSISTANT_TOKEN"], "fixture-token");
     EXPECT_EQ(server["env"]["GE_MCP_IPC_TIMEOUT_MS"], "660000");
     EXPECT_EQ(server["env"]["GE_PROJECT_ROOT"], kProject.string());
-    EXPECT_EQ(attachedNames.size(), AssistantTools::All().size() - 11u) << "every tool but the eleven denied ones";
+    EXPECT_EQ(attachedNames.size(), AssistantTools::All().size() - 12u) << "every tool but the twelve denied ones";
 }
 
 TEST(AssistantAttachmentTests, ACodexTurnIgnoresTheUsersConfigurationAndDefinesTheServerInline)
