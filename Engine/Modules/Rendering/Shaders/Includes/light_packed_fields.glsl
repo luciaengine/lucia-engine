@@ -25,6 +25,7 @@
 //   dirIntensity     xyz=directionWS        w=intensity
 //   colorAreaWidth   rgb=color              w=areaWidth
 //   areaParams       x=areaHeight y=areaRadius z=decay   w=spotCosInner
+//                    y of an emitter proxy in DDGI's buffer = the world bounding radius of the emitter
 //   spotParams       x=spotCosOuter | FOG: y=fogContribution z=fogDensityBoost
 //                                          w=fogOriginFade
 //   areaRight        xyz=area right axis    | FOG: w=fogAnisotropy

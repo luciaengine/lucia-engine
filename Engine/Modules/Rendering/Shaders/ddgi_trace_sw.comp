@@ -440,10 +440,28 @@ vec3 GE_DDGISwEvaluateDirectNEE(vec3 hitPosWS, vec3 hitNormalWS, vec3 albedo, ui
         }
 
         float shadowTMax = type == 0u ? GE_DDGI_T_MAX : (dist - traceBiasWS * 2.0);
-        GE_DDGISwHit shadowHit =
-            GE_DDGISwTrace(origin, toLight, GE_DDGI_RAY_EPS, shadowTMax, !GE_DDGIShadowRayNeedsNearestHit(lp));
-        if (shadowHit.Hit && GE_DDGIShadowHitHidesLight(lp, shadowHit.Instance))
-            continue;  // occluded
+        // The nearest-hit part of the ray starts here. A light that is not a proxy has no such part.
+        float nearestFrom = shadowTMax;
+        if (GE_DDGIShadowRayNeedsNearestHit(lp))
+            nearestFrom = GE_DDGIProxyShadowRaySplit(lp, dist, GE_DDGI_RAY_EPS, shadowTMax);
+        bool occluded = false;
+        if (nearestFrom > GE_DDGI_RAY_EPS)
+        {
+            GE_DDGISwHit firstHit = GE_DDGISwTrace(origin, toLight, GE_DDGI_RAY_EPS, nearestFrom, true);
+            if (firstHit.Hit)
+            {
+                occluded = GE_DDGIShadowHitHidesLight(lp, firstHit.Instance);
+                // The emitter mesh is outside its bounding sphere: the nearest hit of the full ray decides.
+                nearestFrom = GE_DDGI_RAY_EPS;
+            }
+        }
+        if (!occluded && nearestFrom < shadowTMax)
+        {
+            GE_DDGISwHit nearestHit = GE_DDGISwTrace(origin, toLight, nearestFrom, shadowTMax, false);
+            occluded = nearestHit.Hit && GE_DDGIShadowHitHidesLight(lp, nearestHit.Instance);
+        }
+        if (occluded)
+            continue;
 
         float atten = (type == 0u)
             ? 1.0

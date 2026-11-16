@@ -6,6 +6,7 @@ struct ShadowHitCase
 {
     GE_DDGILightPacked Light;
     ivec4 Hit;  // x = the instance that the shadow ray hit
+    vec4 Ray;   // x = distance to the light center, y = tMin, z = tMax of the shadow ray
 };
 layout(std430, set = 0, binding = 0) readonly buffer ShadowHitCases
 {
@@ -13,11 +14,14 @@ layout(std430, set = 0, binding = 0) readonly buffer ShadowHitCases
 };
 layout(std430, set = 0, binding = 1) writeonly buffer ShadowHitResults
 {
-    vec4 results[];  // x = 1 when the hit hides the light, y = 1 when the ray needs its nearest hit
+    // x = 1 when the hit hides the light, y = 1 when the ray needs its nearest hit,
+    // z = the distance where the first segment of a proxy shadow ray ends
+    vec4 results[];
 };
 void main()
 {
     ShadowHitCase c = cases[gl_GlobalInvocationID.x];
     results[gl_GlobalInvocationID.x] = vec4(GE_DDGIShadowHitHidesLight(c.Light, c.Hit.x) ? 1.0 : 0.0,
-                                            GE_DDGIShadowRayNeedsNearestHit(c.Light) ? 1.0 : 0.0, 0.0, 0.0);
+                                            GE_DDGIShadowRayNeedsNearestHit(c.Light) ? 1.0 : 0.0,
+                                            GE_DDGIProxyShadowRaySplit(c.Light, c.Ray.x, c.Ray.y, c.Ray.z), 0.0);
 }

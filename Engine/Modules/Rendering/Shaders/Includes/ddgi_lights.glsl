@@ -23,6 +23,14 @@ bool GE_DDGIShadowRayNeedsNearestHit(GE_DDGILightPacked lp)
     return lp.meta.x == GE_DDGI_LIGHT_TYPE_EMITTER_PROXY;
 }
 
+// The distance along the shadow ray of an emitter proxy where the ray enters the bounding sphere of the
+// emitter (areaParams.y = its radius), kept in [tMin, tMax]. The emitter mesh is inside that sphere. Thus
+// in [tMin, split] the first hit that the traversal finds is sufficient; only [split, tMax] needs the nearest hit.
+float GE_DDGIProxyShadowRaySplit(GE_DDGILightPacked lp, float distanceToCenter, float tMin, float tMax)
+{
+    return clamp(distanceToCenter - lp.areaParams.y, tMin, tMax);
+}
+
 // True when the hit of a shadow ray on instance `hitInstance` hides the light.
 // The mesh of an emitter does not hide its own proxy. Each other instance hides it.
 bool GE_DDGIShadowHitHidesLight(GE_DDGILightPacked lp, int hitInstance)

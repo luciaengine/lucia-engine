@@ -448,15 +448,35 @@ vec3 GE_DDGIEvaluateDirectNEE(accelerationStructureEXT tlas, vec3 hitPosWS, vec3
         }
 
         float shadowT = (type == 0u) ? GE_DDGI_T_MAX : (dist - traceBiasWS * 2.0);
-        uint shadowFlags = gl_RayFlagsOpaqueEXT;
-        if (!GE_DDGIShadowRayNeedsNearestHit(lp))
-            shadowFlags |= gl_RayFlagsTerminateOnFirstHitEXT;
-        rayQueryEXT shadowRq;
-        rayQueryInitializeEXT(shadowRq, tlas, shadowFlags, 0xFFu, origin, GE_DDGI_RAY_EPS, toLight, shadowT);
-        while (rayQueryProceedEXT(shadowRq)) { }
-        if (rayQueryGetIntersectionTypeEXT(shadowRq, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
-            GE_DDGIShadowHitHidesLight(lp, rayQueryGetIntersectionInstanceCustomIndexEXT(shadowRq, true)))
-            continue;  // occluded
+        // The nearest-hit part of the ray starts here. A light that is not a proxy has no such part.
+        float nearestFrom = shadowT;
+        if (GE_DDGIShadowRayNeedsNearestHit(lp))
+            nearestFrom = GE_DDGIProxyShadowRaySplit(lp, dist, GE_DDGI_RAY_EPS, shadowT);
+        bool occluded = false;
+        if (nearestFrom > GE_DDGI_RAY_EPS)
+        {
+            rayQueryEXT firstHitRq;
+            rayQueryInitializeEXT(firstHitRq, tlas, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xFFu,
+                                  origin, GE_DDGI_RAY_EPS, toLight, nearestFrom);
+            while (rayQueryProceedEXT(firstHitRq)) { }
+            if (rayQueryGetIntersectionTypeEXT(firstHitRq, true) != gl_RayQueryCommittedIntersectionNoneEXT)
+            {
+                occluded = GE_DDGIShadowHitHidesLight(
+                    lp, rayQueryGetIntersectionInstanceCustomIndexEXT(firstHitRq, true));
+                // The emitter mesh is outside its bounding sphere: the nearest hit of the full ray decides.
+                nearestFrom = GE_DDGI_RAY_EPS;
+            }
+        }
+        if (!occluded && nearestFrom < shadowT)
+        {
+            rayQueryEXT nearestRq;
+            rayQueryInitializeEXT(nearestRq, tlas, gl_RayFlagsOpaqueEXT, 0xFFu, origin, nearestFrom, toLight, shadowT);
+            while (rayQueryProceedEXT(nearestRq)) { }
+            occluded = rayQueryGetIntersectionTypeEXT(nearestRq, true) != gl_RayQueryCommittedIntersectionNoneEXT &&
+                       GE_DDGIShadowHitHidesLight(lp, rayQueryGetIntersectionInstanceCustomIndexEXT(nearestRq, true));
+        }
+        if (occluded)
+            continue;
 
         float atten = (type == 0u)
             ? 1.0

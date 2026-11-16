@@ -3407,6 +3407,9 @@ void DDGIProbeFeature::DeclareProbePasses(Rendering::RenderGraph::RGFrame& frame
         // The shadow ray goes to the center. A hit on this instance does not hide the proxy
         // (GE_DDGIShadowHitHidesLight in Includes/ddgi_lights.glsl).
         p.emitterInstance = static_cast<int32_t>(e.InstanceIndex);
+        // The world bounding radius of the emitter: only the part of the shadow ray inside this sphere
+        // needs its nearest hit (GE_DDGIProxyShadowRaySplit).
+        p.areaRadius = e.Radius;
         outLights[lightCount + ei] = p;
     }
 
