@@ -444,6 +444,123 @@ TEST_F(MeshGPURegistryTest, CreateMorphedMesh_AppliesDeltasAndBounds)
     EXPECT_NEAR(morphed.MaxBounds[1], 2.0f, 1e-5f);
 }
 
+TEST_F(MeshGPURegistryTest, ApplyMorphTargets_AppliesDeltas)
+{
+    Mesh mesh = MakeTriangleMesh();
+    MorphTarget target{};
+    target.Name = "raise_tip";
+    target.VertexIndices = {0u, 2u};
+    target.PositionDeltas = {
+        0.0f, 2.0f, 0.0f,
+        0.0f, 0.0f, 1.0f,
+    };
+    target.NormalDeltas = {
+        0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f,
+    };
+    mesh.MorphTargets.push_back(std::move(target));
+
+    const float weights[] = {0.5f};
+    Vector<Vertex> morphed;
+    ApplyMorphTargets(mesh, weights, 1, morphed);
+
+    ASSERT_EQ(morphed.size(), mesh.Vertices.size());
+    EXPECT_NEAR(morphed[0].Position[1], 2.0f, 1e-5f);
+    EXPECT_NEAR(morphed[0].Normal[1], 0.4472136f, 1e-5f);
+    EXPECT_NEAR(morphed[0].Normal[2], 0.8944272f, 1e-5f);
+    EXPECT_NEAR(morphed[2].Position[2], mesh.Vertices[2].Position[2] + 0.5f, 1e-5f);
+    for (int axis = 0; axis < 3; ++axis)
+        EXPECT_EQ(morphed[1].Position[axis], mesh.Vertices[1].Position[axis]);
+}
+
+// A rewrite keeps the handle and the index range, and never writes a vertex
+// range a frame in flight may still read: within one frame the spare ranges
+// run out, and the oldest comes back once the frames-in-flight window passes.
+TEST_F(MeshGPURegistryTest, RewriteSubmeshVertices_RotatesOnlyThroughRetiredRanges)
+{
+    Mesh mesh = MakeTriangleMesh();
+    const MeshGPUKey key{GUID::Generate(), 0};
+    const MeshGPUHandle handle = m_registry.RegisterSubmesh(key, mesh);
+    const MeshGPUEntry* entry = m_registry.Find(handle);
+    ASSERT_NE(entry, nullptr);
+    const uint32_t firstIndex = entry->firstIndex;
+
+    Vector<Vertex> moved = mesh.Vertices;
+    moved[0].Position[1] = 3.0f;
+
+    std::vector<uint32_t> drawnThisFrame{entry->vertexOffset};
+    size_t accepted = 0;
+    while (accepted < 16 && m_registry.RewriteSubmeshVertices(handle, mesh, moved))
+    {
+        ++accepted;
+        entry = m_registry.Find(handle);
+        ASSERT_NE(entry, nullptr);
+        EXPECT_EQ(std::count(drawnThisFrame.begin(), drawnThisFrame.end(), entry->vertexOffset), 0)
+            << "a vertex range drawn from this frame was rewritten";
+        drawnThisFrame.push_back(entry->vertexOffset);
+    }
+    EXPECT_GT(accepted, 0u);
+    EXPECT_LT(accepted, 16u) << "rewrites within one frame never ran out of ranges";
+    EXPECT_EQ(entry->firstIndex, firstIndex);
+    // Vertex 0 moved to y = 3, so the box spans y in [-1, 3].
+    EXPECT_NEAR(entry->bounds.halfExtents.y, 2.0f, 1e-5f);
+
+    m_registry.BeginFrame(IDevice::kMaxSupportedFramesInFlight - 1u);
+    EXPECT_FALSE(m_registry.RewriteSubmeshVertices(handle, mesh, moved))
+        << "a range retired less than a frames-in-flight window ago was rewritten";
+    m_registry.BeginFrame(IDevice::kMaxSupportedFramesInFlight);
+    EXPECT_TRUE(m_registry.RewriteSubmeshVertices(handle, mesh, moved))
+        << "a range retired a full frames-in-flight window ago must be writable";
+    EXPECT_EQ(m_registry.FindHandle(key), handle);
+
+    moved.push_back(moved[0]);
+    EXPECT_FALSE(m_registry.RewriteSubmeshVertices(handle, mesh, moved))
+        << "a rewrite must not change the vertex count";
+}
+
+// Every rewrite reads as new content, so registering the source mesh again
+// under the same key uploads it instead of a dedup hit on rewritten bytes.
+TEST_F(MeshGPURegistryTest, RewriteSubmeshVertices_ChangesTheContentHash)
+{
+    Mesh mesh = MakeTriangleMesh();
+    const MeshGPUKey key{GUID::Generate(), 0};
+    const MeshGPUHandle handle = m_registry.RegisterSubmesh(key, mesh);
+    ASSERT_NE(m_registry.Find(handle), nullptr);
+    const uint64_t sourceHash = m_registry.Find(handle)->contentHash;
+    Vector<Vertex> moved = mesh.Vertices;
+    moved[0].Position[1] = 3.0f;
+
+    ASSERT_TRUE(m_registry.RewriteSubmeshVertices(handle, mesh, moved));
+    const uint64_t firstHash = m_registry.Find(handle)->contentHash;
+    ASSERT_TRUE(m_registry.RewriteSubmeshVertices(handle, mesh, moved));
+    const uint64_t secondHash = m_registry.Find(handle)->contentHash;
+    EXPECT_NE(firstHash, sourceHash);
+    EXPECT_NE(secondHash, firstHash) << "two rewrites of the same bytes must still read as new content";
+    EXPECT_NE(secondHash, 0u);
+
+    ASSERT_EQ(m_registry.RegisterSubmesh(key, mesh), handle);
+    EXPECT_EQ(m_registry.Find(handle)->contentHash, sourceHash) << "the source mesh was not uploaded again";
+}
+
+// Unregistering a rewritten entry gives back its spare vertex ranges too, after
+// the same frames-in-flight window as the ranges it draws from.
+TEST_F(MeshGPURegistryTest, RewriteSubmeshVertices_UnregisterReleasesSpareRanges)
+{
+    Mesh mesh = MakeTriangleMesh();
+    const MeshGPUKey key{GUID::Generate(), 0};
+    const MeshGPUHandle handle = m_registry.RegisterSubmesh(key, mesh);
+    ASSERT_TRUE(handle.IsValid());
+    Vector<Vertex> moved = mesh.Vertices;
+    moved[0].Position[1] = 3.0f;
+    ASSERT_TRUE(m_registry.RewriteSubmeshVertices(handle, mesh, moved));
+    ASSERT_TRUE(m_registry.RewriteSubmeshVertices(handle, mesh, moved));
+
+    ASSERT_TRUE(m_registry.UnregisterSubmesh(key));
+    m_registry.BeginFrame(IDevice::kMaxSupportedFramesInFlight);
+    for (const MeshGPUPoolStats& pool : m_registry.GetPoolStats())
+        EXPECT_EQ(pool.Allocator.UsedUnits, 0u) << pool.Stream << " pool " << pool.PoolIndex << " kept a range";
+}
+
 // Multiple entities referencing the same model share the same GPU entry.
 // This simulates the ECS scenario where many entities have the same ModelAsset GUID.
 TEST_F(MeshGPURegistryTest, MultipleEntitiesSameModel_ShareGPUResources)
