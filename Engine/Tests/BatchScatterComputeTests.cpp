@@ -613,9 +613,11 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         sd.layout = layout;
         sd.transient = true;
         auto set = m_Device->CreateDescriptorSet(sd);
-        m_Device->UpdateStorageBufferBinding(set, 0,
-                                             m_Scene->GetInstanceBufferForFrame(m_Scene->GetFrameIndex()), 0, 5 * sizeof(GPUInstance));
-        m_Device->UpdateStorageBufferBinding(set, 1, draws.indirectionBuffer, 0, 5 * sizeof(uint32_t));
+        // Each range stays inside its buffer: the backends may refuse a range past the end.
+        m_Device->UpdateStorageBufferBinding(set, 0, m_Scene->GetInstanceBufferForFrame(m_Scene->GetFrameIndex()), 0,
+                                             m_Scene->GetInstanceCount() * sizeof(GPUInstance));
+        m_Device->UpdateStorageBufferBinding(set, 1, draws.indirectionBuffer, 0,
+                                             draws.indirection.size() * sizeof(uint32_t));
         BufferDesc ib{};
         ib.size = 3 * sizeof(uint32_t);
         ib.usage = static_cast<uint32_t>(BufferUsage::Index);
@@ -654,7 +656,10 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         cmd->SetViewport(0, 0, width, height);
         cmd->SetScissor(0, 0, width, height);
         cmd->SetIndexBuffer(indices, IndexType::Uint32);
-        cmd->DrawIndexedIndirectCount(draws.recordBuffer, draws.cursorBuffer, 5, 5 * sizeof(uint32_t));
+        // maxDrawCount covers the record buffer and no more.
+        const auto recordCapacity = static_cast<uint32_t>(draws.records.size() / kDrawRecordUints);
+        cmd->DrawIndexedIndirectCount(draws.recordBuffer, draws.cursorBuffer, recordCapacity,
+                                      kDrawRecordUints * sizeof(uint32_t));
         cmd->EndRenderPass();
         cmd->Barrier(ResourceBarrier::CreateTextureBarrier(target, state, ResourceState::CopySource));
         cmd->CopyTextureToBuffer(target, readback, width, height);
