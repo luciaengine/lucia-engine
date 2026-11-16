@@ -15,10 +15,9 @@ const std::string kEditName = "Change Render Layer";
 
 }  // namespace
 
-void ApplyRenderLayerBits(ECS::World& world,
+void ApplyRenderLayerMask(ECS::World& world,
                           const std::vector<ECS::EntityHandle>& entities,
-                          uint32 bits,
-                          bool on,
+                          Rendering::RenderLayerMask mask,
                           UndoRedoService* undo,
                           EditorChangeNotifications* notifications)
 {
@@ -41,7 +40,7 @@ void ApplyRenderLayerBits(ECS::World& world,
         if (!renderer)
             continue;
         const uint32 current = renderer->RenderLayers.Bits;
-        const uint32 updated = on ? (current | bits) : (current & ~bits);
+        const uint32 updated = mask.Bits;
         if (updated == current)
             continue;
         InspectorDrag::CommitComponentWithUndo<Components::MeshRenderer>(
