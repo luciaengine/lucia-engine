@@ -114,7 +114,7 @@ bool HLODSelectSystem::RefreshStaleness(ECS::World& world, Rendering::GPUScene& 
     if (cluster.ProxyActive) {
         // Fall back to members-only immediately: the proxy geometry is now wrong.
         ExitProxy(world, scene, cluster);
-        m_RenderServices->RequestHlodResidencyExtraction();
+        m_RenderServices->RequestResidencyExtraction();
     }
     return true;
 }
@@ -199,7 +199,7 @@ void HLODSelectSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
 
     // Any residency flip re-adds a set via the full lane (Op::Add).
     if (anyFlip)
-        m_RenderServices->RequestHlodResidencyExtraction();
+        m_RenderServices->RequestResidencyExtraction();
 }
 
 } // namespace Engine::Renderer
