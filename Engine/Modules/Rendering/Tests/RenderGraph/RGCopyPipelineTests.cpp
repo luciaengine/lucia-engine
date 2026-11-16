@@ -83,7 +83,8 @@ TEST_P(PreparedCopyTest, ColdPipelineIsReadyBeforeRecordingAndCopiesTheFirstFram
     auto device = DeviceFactory::CreateDevice(deviceDesc);
     if (!device || !device->Initialize(deviceDesc))
         GTEST_SKIP() << "requested headless backend unavailable: " << static_cast<int>(GetParam());
-    ASSERT_EQ(device->GetAPI(), GetParam());
+    if (device->GetAPI() != GetParam())
+        GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
 
     DescriptorSetLayoutDesc layout;
     PipelineDesc pipelineDesc;
@@ -218,7 +219,8 @@ TEST_P(PreparedCopyTest, FinalizeChainPreparesDescriptorsAndDrawsTheColdFirstFra
     auto device = DeviceFactory::CreateDevice(deviceDesc);
     if (!device || !device->Initialize(deviceDesc))
         GTEST_SKIP() << "requested headless backend unavailable";
-    ASSERT_EQ(device->GetAPI(), GetParam());
+    if (device->GetAPI() != GetParam())
+        GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
     constexpr uint32_t kExtent = 4;
     constexpr uint32_t kPixelBytes = 4;
     constexpr uint32_t kReadbackBytes = kExtent * kExtent * kPixelBytes;
@@ -311,7 +313,8 @@ TEST_P(PreparedCopyTest, OnlyLiveRequiredPipelinesBuildForTheirActualAttachments
     auto device = DeviceFactory::CreateDevice(deviceDesc);
     if (!device || !device->Initialize(deviceDesc))
         GTEST_SKIP() << "requested headless backend unavailable";
-    ASSERT_EQ(device->GetAPI(), GetParam());
+    if (device->GetAPI() != GetParam())
+        GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
     DescriptorSetLayoutDesc layout;
     PipelineDesc pipelineDesc;
     ASSERT_TRUE(LoadCopyPipelineDesc(device->PreferredShaderSource(), "RequiredCopy", "RequiredCopy.Set0",

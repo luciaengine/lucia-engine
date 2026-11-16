@@ -517,7 +517,7 @@ HeadlessViewStatus HeadlessViewFixture::Up()
     cd.viewProj = Mathematics::Matrix4x4::Identity();
     m_Services->Views().SetCameraData(m_Camera, ::GameEngine::Tests::TestCameraWithEye(cd), {0.1f, 1000.0f});
     m_View = m_Services->Views().AllocateView("HeadlessView", m_Camera);
-    m_Services->Views().SetViewRenderLayerMask(m_View, 1u);
+    m_Services->Views().SetViewRenderLayerMask(m_View, Rendering::RenderLayerMask::Default());
 
     // One instance so the GPU-driven prologue does not vacuously early-out —
     // the spine's culling and bucketer stages are part of "a real world view".
@@ -772,8 +772,7 @@ HeadlessViewStatus HeadlessViewFixture::Render(const HeadlessViewDesc& desc)
 
     Rendering::ViewClearConfig clear{};
     clear.clearColor = true;
-    for (int i = 0; i < 4; ++i)
-        clear.clearColorValue[i] = desc.ClearLinear[i];
+    clear.clearColorValue = ColorLinear(desc.ClearLinear[0], desc.ClearLinear[1], desc.ClearLinear[2], desc.ClearLinear[3]);
     clear.clearDepth = true;
     clear.clearDepthValue = 0.0f; // reverse-Z far
     m_Services->Views().SetViewClearConfig(m_View, clear);

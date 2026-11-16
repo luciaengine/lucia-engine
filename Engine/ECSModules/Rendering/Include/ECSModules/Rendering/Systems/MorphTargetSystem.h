@@ -41,6 +41,10 @@ private:
     struct RuntimeMeshRecord
     {
         GUID runtimeGuid;
+        // contentHash of the source entry the runtime mesh was registered from.
+        // A rewrite keeps the streams it does not morph, so a changed source
+        // registers the runtime mesh again.
+        uint64 sourceContentHash = 0;
     };
 
     RenderServices* m_RenderServices = nullptr;

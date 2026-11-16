@@ -115,6 +115,7 @@ add_executable(EditorThumbnailTests
 target_include_directories(EditorThumbnailTests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../Include
+        ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
 )
 
 target_link_libraries(EditorThumbnailTests
@@ -141,6 +142,7 @@ add_executable(EditorUniversalSearchTests
 target_include_directories(EditorUniversalSearchTests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../Include
+        ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
 )
 
 target_link_libraries(EditorUniversalSearchTests
@@ -167,6 +169,9 @@ add_executable(EditorThumbnailRoutingTests
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Inspectors/CubeLut/CubeLutStripRequest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Inspectors/CubeLut/CubeLutThumbnailHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/FolderBakeReport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/SpriteFramesThumbnailHandler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ThumbnailImageCache.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ThumbnailImageOps.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/TextureThumbnailHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailHandler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/Thumbnails/ModelThumbnail/ModelThumbnailBakeQueue.cpp
@@ -185,6 +190,7 @@ target_include_directories(EditorThumbnailRoutingTests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../Include
         ${CMAKE_CURRENT_SOURCE_DIR}/../Source
+        ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
 )
 
 target_link_libraries(EditorThumbnailRoutingTests
@@ -274,6 +280,7 @@ add_executable(AgentProviderTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantMode.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AssistantTools.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentSessionState.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFiles.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AiAssistantSettings.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Setup/AiAssistantSetupPage.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Setup/AiAssistantApiKeyRow.cpp

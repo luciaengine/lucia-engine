@@ -1334,6 +1334,7 @@ target_include_directories(TerrainAtlasTests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/Engine/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Source # TerrainFieldUploader.h, TerrainSkyline.h
   ${CMAKE_SOURCE_DIR}/Engine/Modules/PageStreaming/Include
   # Shared height/surface page parameters used by grass placement.
   ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Source

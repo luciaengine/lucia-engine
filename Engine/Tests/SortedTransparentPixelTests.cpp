@@ -54,7 +54,8 @@ class SortedTransparentPixel : public ::testing::TestWithParam<GraphicsAPI>
             m_Device.reset();
             GTEST_SKIP() << "Requested graphics device unavailable";
         }
-        ASSERT_EQ(m_Device->GetAPI(), GetParam());
+        if (m_Device->GetAPI() != GetParam())
+            GTEST_SKIP() << "GE_GFX_API selects a backend other than the one this test requests";
         ASSERT_TRUE(m_Services.Initialize(m_Device.get()));
         MaterialBuildContext context{};
         context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();

@@ -974,13 +974,15 @@ bool MeshGPURegistry::RewriteSubmeshVertices(MeshGPUHandle handle,
     entry->lodReferenceRadius = bounds.Radius();
     const auto& extent = bounds.halfExtents;
     entry->lodReferenceMaxExtent = 2.0f * std::max({extent.x, extent.y, extent.z});
-    // Chained from the previous hash, so every rewrite reads as new content: a
-    // later RegisterSubmesh of `source` uploads again instead of a dedup hit on
-    // the rewritten bytes.
-    entry->contentHash = Hashing::Fnv1a64(vertices.data(), vertices.size_bytes(), entry->contentHash);
+    ++m_ContentRevision;
+    // Chained from the previous hash and the new revision, so every rewrite
+    // reads as new content in constant time: a later RegisterSubmesh of
+    // `source` uploads again instead of a dedup hit. Zero means "retry".
+    entry->contentHash = Hashing::Fnv1a64Value(entry->contentHash, m_ContentRevision);
+    if (entry->contentHash == 0u)
+        entry->contentHash = 1u;
     if (m_GPUScene && entry->gpuMeshIndex != ~0u)
         m_GPUScene->UpdateMesh(entry->gpuMeshIndex, BuildGpuMeshRow(*entry, m_LodSelectionMode));
-    ++m_ContentRevision;
     return true;
 }
 

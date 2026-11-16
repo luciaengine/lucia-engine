@@ -2269,7 +2269,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(DescriptorBufferTests Tests/DescriptorBufferTests.cpp)
     set_target_properties(DescriptorBufferTests PROPERTIES FOLDER "Rendering/Tests")
     # Standalone consumers link Image objects for the shared image implementation.
-    target_link_libraries(DescriptorBufferTests PRIVATE Image)
+    target_link_libraries(DescriptorBufferTests PRIVATE Image AssetCore) # AssetCore: the shader source reads of MaterialBuildContext
     target_compile_definitions(DescriptorBufferTests PRIVATE GE_HAVE_STB)
     if(TARGET stb::stb)
         target_link_libraries(DescriptorBufferTests PRIVATE stb::stb)
@@ -2834,7 +2834,7 @@ if(GTest_FOUND)
             Tests/PipelineDescHashTests.cpp
             Tests/SpecializationConstantsTest.cpp)
         # Standalone consumers link Image objects for the shared image implementation.
-        target_link_libraries(PipelineDescHashTests PRIVATE Image)
+        target_link_libraries(PipelineDescHashTests PRIVATE Image AssetCore) # AssetCore: the shader source reads of MaterialBuildContext
         target_compile_definitions(PipelineDescHashTests PRIVATE GE_HAVE_STB)
         if(TARGET stb::stb)
             target_link_libraries(PipelineDescHashTests PRIVATE stb::stb)
@@ -3628,7 +3628,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
 
   add_executable(TextureViewTests Tests/TextureViewTests.cpp)
   # Standalone consumers link Image objects for the shared image implementation.
-  target_link_libraries(TextureViewTests PRIVATE Image)
+  target_link_libraries(TextureViewTests PRIVATE Image AssetCore) # AssetCore: the shader source reads of MaterialBuildContext
   target_compile_definitions(TextureViewTests PRIVATE GE_HAVE_STB)
   if(TARGET stb::stb)
     target_link_libraries(TextureViewTests PRIVATE stb::stb)

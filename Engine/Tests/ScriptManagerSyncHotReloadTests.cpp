@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include "Assets/FileWatchingService.h"
+#include "EngineLogCapture.h"
 #include "Assets/Packages/PackageCodeModules.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Jobs/CompileServerTestDoubles.h" // Tests/Jobs

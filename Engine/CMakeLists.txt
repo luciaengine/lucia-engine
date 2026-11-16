@@ -1667,6 +1667,7 @@ if(BUILD_TESTING AND (GTest_FOUND OR TARGET GTest::gtest))
 endif()
 if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(EngineHotReloadBridgeSmokeTests Tests/RenderingHotReloadBridgeSmokeTests.cpp)
+    target_include_directories(EngineHotReloadBridgeSmokeTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     target_link_libraries(EngineHotReloadBridgeSmokeTests PRIVATE Engine GTest::gtest GTest::gtest_main)
     if(TARGET GameEngine.Native)
         target_link_libraries(EngineHotReloadBridgeSmokeTests PRIVATE GameEngine.Native)
@@ -1819,6 +1820,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(ShaderPackageWgslTests
         Tests/ShaderPackageWgslTests.cpp
         )
+    target_include_directories(ShaderPackageWgslTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     target_link_libraries(ShaderPackageWgslTests PRIVATE Engine GTest::gtest GTest::gtest_main)
     set_target_properties(ShaderPackageWgslTests PROPERTIES
         CXX_STANDARD 20
@@ -1917,6 +1919,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     # test instantiates (World + MeshRenderer/WorldTransform/... e.Set paths); the
     # other HLOD suites are pure and need only Engine.
     target_link_libraries(EngineHlodBakeTests PRIVATE Engine GameEngine.Native GTest::gtest GTest::gtest_main)
+    target_include_directories(EngineHlodBakeTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     set_target_properties(EngineHlodBakeTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
@@ -2096,6 +2099,7 @@ endif()
                 target_compile_definitions(${target_name} PRIVATE
                     ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}"
                     GE_RENDERER_REPO_ROOT="${CMAKE_SOURCE_DIR}")
+                target_include_directories(${target_name} PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
                 set_target_properties(${target_name} PROPERTIES
                     CXX_STANDARD 20
                     CXX_STANDARD_REQUIRED ON
@@ -2610,6 +2614,7 @@ endif()
 			    # Input routing policy: needs Engine (WindowInputRouter) plus the UI
 			    # module's headless-device harness to build a real UIManager.
 			    add_executable(WindowInputRoutingTests Tests/WindowInputRoutingTests.cpp)
+			    target_include_directories(WindowInputRoutingTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 			    # GLFW directly as well: the focus-at-bind row runs GLFW's null
 			    # platform through the same glfw3 DLL Engine loads.
 			    find_package(glfw3 CONFIG REQUIRED)
@@ -3070,6 +3075,7 @@ endif()
 			        Tests/TransportExtentInvariantTests.cpp
 			        Tests/EngineTestShaderSetup.cpp
 			        )
+			    target_include_directories(HeadlessViewFixtureTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 			    target_link_libraries(HeadlessViewFixtureTests PRIVATE Engine RenderGraphTestSupport GTest::gtest GTest::gtest_main)
 			    target_compile_definitions(HeadlessViewFixtureTests PRIVATE
 			        ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
@@ -3231,6 +3237,7 @@ endif()
 		        GTest::gtest GTest::gtest_main)
         target_include_directories(TerrainRenderFeatureTests PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/Tests
+            ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
             ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainECS/Source
             ${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Source
             ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering
@@ -3255,7 +3262,6 @@ endif()
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileChunkInstancesTests.cpp
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapCollisionSystemTests.cpp
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapParallaxTests.cpp
-	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapPixelGridTests.cpp
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapRuntimeStoreTests.cpp
 	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileSetGpuTablesTests.cpp)
 	    target_link_libraries(TileMapECSTests PRIVATE Engine GTest::gtest GTest::gtest_main)
@@ -3884,6 +3890,7 @@ endif()
 	    add_executable(AsyncVideoRecorderTests
 	        Tests/AsyncVideoRecorderTests.cpp
 	    )
+	    target_include_directories(AsyncVideoRecorderTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 	    target_link_libraries(AsyncVideoRecorderTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 	    set_target_properties(AsyncVideoRecorderTests PROPERTIES
 	        CXX_STANDARD 20
@@ -3900,6 +3907,7 @@ endif()
 	        add_executable(VideoWriterFFmpegTests
 	            Tests/VideoWriterFFmpegTests.cpp
 	        )
+	        target_include_directories(VideoWriterFFmpegTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 	        target_link_libraries(VideoWriterFFmpegTests PRIVATE Engine GTest::gtest GTest::gtest_main ${GE_FFMPEG_LIBRARIES})
 	        target_include_directories(VideoWriterFFmpegTests PRIVATE ${GE_FFMPEG_INCLUDE_DIR})
 	        set_target_properties(VideoWriterFFmpegTests PROPERTIES
@@ -3969,7 +3977,7 @@ if(BUILD_TESTING)
 	# Header-only math, so it links no Engine target.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(SpriteQuadTests Tests/SpriteQuadTests.cpp)
-	    target_link_libraries(SpriteQuadTests PRIVATE ECSComponents Mathematics GTest::gtest GTest::gtest_main)
+	    target_link_libraries(SpriteQuadTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 	    set_target_properties(SpriteQuadTests PROPERTIES
 	        CXX_STANDARD 20
 	        CXX_STANDARD_REQUIRED ON

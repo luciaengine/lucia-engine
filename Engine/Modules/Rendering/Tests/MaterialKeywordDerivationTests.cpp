@@ -392,9 +392,9 @@ TEST(MaterialKeywordDerivation, TheVolumetricPassKeywordsReachTheSurfacesDrawnAf
     const MaterialKeyword pass = MaterialKeyword::ForwardPlus | MaterialKeyword::HeightFog |
                                  MaterialKeyword::VolumetricFog | MaterialKeyword::VolumetricClouds;
     const MaterialKeyword opaquePass = MaterialKeyword::ForwardPlus | MaterialKeyword::HeightFog;
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::AlphaBlend, pass), pass);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Transmission, pass), opaquePass | MaterialKeyword::VolumetricFog)
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::AlphaBlend, pass, GameEngine::Rendering::CurrentShaderCompileTarget()), pass);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Transmission, pass, GameEngine::Rendering::CurrentShaderCompileTarget()), opaquePass | MaterialKeyword::VolumetricFog)
         << "the clouds in front reach blended surfaces only";
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::None, pass), opaquePass);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::AlphaTest, pass), opaquePass);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::None, pass, GameEngine::Rendering::CurrentShaderCompileTarget()), opaquePass);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::AlphaTest, pass, GameEngine::Rendering::CurrentShaderCompileTarget()), opaquePass);
 }

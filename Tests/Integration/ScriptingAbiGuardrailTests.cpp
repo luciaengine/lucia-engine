@@ -7,6 +7,7 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <cstring>
 
 using namespace std::literals;
 
