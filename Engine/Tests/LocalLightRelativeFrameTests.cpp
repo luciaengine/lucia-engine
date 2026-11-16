@@ -148,9 +148,9 @@ std::vector<ProbeSample> ProbeSamples(const std::vector<WorldPosition>& points)
         point.ToSector(sector, local);
         ProbeSample sample{};
         sample.SectorLocal = Mathematics::Vector4{local, 0.0f};
-        sample.Sector[0] = sector.x;
-        sample.Sector[1] = sector.y;
-        sample.Sector[2] = sector.z;
+        sample.Sector[0] = sector.X;
+        sample.Sector[1] = sector.Y;
+        sample.Sector[2] = sector.Z;
         sample.Normal = Mathematics::Vector4{0.0f, 0.0f, -1.0f, 0.0f};
         samples.push_back(sample);
     }

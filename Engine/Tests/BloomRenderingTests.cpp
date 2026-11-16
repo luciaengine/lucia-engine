@@ -25,6 +25,8 @@
 #include <variant>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 using namespace GameEngine::Rendering;
 using GameEngine::Engine::Renderer::PostProcessSettings;
 

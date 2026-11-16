@@ -1,4 +1,3 @@
-#include "Core/ApplicationPaths.h"
 // The Mark-ups panel's view toggle, as the editor ships it: the chosen view's tab, a small
 // secondary button marked markups-tab-chosen, fills with the accent blue and not with the secondary variant's
 // own active color. Read from the staged sheets.
@@ -8,14 +7,14 @@
 #include "UI/ResolvedStyle.h"
 #include "UI/UIStyle.h"
 
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 
 #include <fstream>
 #include <gtest/gtest.h>
 #include <sstream>
 #include <string>
 
-using GameEngine::PathUtils;
+using GameEngine::ApplicationPaths;
 using GameEngine::UITesting::IsolatedUIFixture;
 
 namespace

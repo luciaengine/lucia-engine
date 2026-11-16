@@ -1722,6 +1722,7 @@ add_executable(EditorShortcutsTests
 	# The size slider's tooltip follows the real catalog's Resize Items binding.
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/ItemSizeSlider.cpp
 )
+target_include_directories(EditorShortcutsTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 target_include_directories(EditorShortcutsTests PRIVATE
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source

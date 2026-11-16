@@ -116,6 +116,7 @@ target_include_directories(AssetSystemTests PRIVATE
     # StagedTestPaths.h — exe-anchored fixture resolution, same as the Graph
     # module's test target uses.
     ${CMAKE_SOURCE_DIR}/Engine/Tests
+    ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Build # WebExportContent.h
 )
 
 # Output layout: bin/<Config>/Tests
