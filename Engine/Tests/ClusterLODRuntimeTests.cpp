@@ -1042,10 +1042,16 @@ TEST_F(ClusterLODRuntimeTest, AnHlodEvictedMemberKeepsTheCoarseCover)
     Prepare();
     Prepare();
     ASSERT_NO_FATAL_FAILURE(ExpectFine());
+
+    // An eviction during a split ends it: the proxy draws, the parts do not.
+    m_World.GetComponentForWrite<Components::MeshGPUData>(m_Entity)->hlodEvicted = true;
+    Prepare();
+    EXPECT_FALSE(Part().IsValid());
+    EXPECT_EQ(CurrentHandle(), m_Coarse);
 }
 
-// HLOD compares the authored mesh of each member to detect a reassignment. The switch
-// between the coarse and the fine entry changes the GPU handle, not the authored mesh.
+// HLOD compares the authored mesh of each member to detect a reassignment. The fine pages
+// draw on generated parts, so the member keeps its authored mesh.
 TEST_F(ClusterLODRuntimeTest, TheFineSwitchKeepsTheMembersHlodMeshSource)
 {
     const auto* renderer = m_World.GetComponent<Components::MeshRenderer>(m_Entity);
@@ -1056,7 +1062,6 @@ TEST_F(ClusterLODRuntimeTest, TheFineSwitchKeepsTheMembersHlodMeshSource)
     ASSERT_NO_FATAL_FAILURE(ExpectFine());
     renderer = m_World.GetComponent<Components::MeshRenderer>(m_Entity);
     ASSERT_NE(renderer, nullptr);
-    EXPECT_NE(renderer->meshGpuHandleId, m_Coarse.id);
     EXPECT_EQ(Hlod::MemberMeshSource::Of(*renderer), coarseSource);
 }
 

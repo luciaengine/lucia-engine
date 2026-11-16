@@ -279,6 +279,14 @@ struct PendingSplit
     GUID Model;
     uint32 Mesh;
 };
+
+// HLOD replaced the member with its cluster proxy: the member and its parts draw nothing.
+bool IsHlodEvicted(const ECS::World& world, ECS::EntityHandle entity)
+{
+    const auto* gpu = world.GetComponent<Components::MeshGPUData>(entity);
+    return gpu && gpu->hlodEvicted;
+}
+
 } // namespace
 
 struct ClusterLODFeature::State
@@ -790,9 +798,7 @@ struct ClusterLODFeature::State
         demand.WasFine = found != Pages.end() && found->second->FineHandle.IsValid() &&
             renderer.meshGpuHandleId == found->second->FineHandle.id;
         demand.Supported = SupportsFineInstance(*Services, world, part, renderer);
-        // A member that HLOD replaced with its cluster proxy draws nothing, so it wants the coarse cover.
-        const auto* gpu = world.GetComponent<Components::MeshGPUData>(part);
-        if (demand.Supported && !(gpu && gpu->hlodEvicted))
+        if (demand.Supported)
             demand.Priority = FineDemand(*Services, renderer, transform, directory, world.GetWorldId(),
                                          demand.WasFine, bias);
         return demand;
@@ -884,8 +890,8 @@ struct ClusterLODFeature::State
             WorldId = world.GetWorldId();
             WorldGeneration = world.GetEntityHandleEpoch();
         }
-        // The parts of a split instance count their own triangles.
-        if (Splits.Find(entity))
+        // The parts of a split instance count their own triangles. An evicted member draws nothing.
+        if (Splits.Find(entity) || IsHlodEvicted(world, entity))
             return;
         const auto& manifest = *model->GetClusterLODManifest();
         const uint32 mesh = ResolveSubmeshIndex(guid, *model, renderer);
@@ -966,7 +972,7 @@ struct ClusterLODFeature::State
             if (!owner || !transform || !model || !model->GetClusterLODManifest() || owner->modelAssetGuid.ToGuid() != instance.Model ||
                 ResolveSubmeshIndex(instance.Model, *model, *owner) != instance.Mesh || !scene ||
                 !SameRendererState(*owner, instance.Renderer) || !SupportsFineInstance(*Services, world, instance.Owner, *owner) ||
-                !ECS::Entity(&world, instance.Owner).IsEnabledInHierarchy())
+                !ECS::Entity(&world, instance.Owner).IsEnabledInHierarchy() || IsHlodEvicted(world, instance.Owner))
             {
                 ended.push_back(instance.Owner);
                 continue;
