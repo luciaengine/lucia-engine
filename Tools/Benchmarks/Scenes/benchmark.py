@@ -16,6 +16,7 @@ Standard library only: the target machine has Python and no other tools.
 import argparse
 import base64
 import datetime
+import hashlib
 import json
 import math
 import os
@@ -168,7 +169,8 @@ def prepare(work, manifest, scenes, player):
         if not cook:
             sys.exit("benchmark: the City scene needs MeshClusterCook beside the Player. Build the "
                      "MeshClusterCook target (configure with -DBUILD_TOOLS=ON).")
-        cache = work / "city-cache"
+        # The cache is per cook binary: a new cook can write a format the old files are not.
+        cache = work / f"city-cache-{hashlib.sha256(cook.read_bytes()).hexdigest()[:16]}"
         cache.mkdir(parents=True, exist_ok=True)
         target = project / "Assets" / "Models" / "City"
         target.mkdir(parents=True, exist_ok=True)
