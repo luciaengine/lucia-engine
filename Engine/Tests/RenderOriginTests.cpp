@@ -945,7 +945,7 @@ const Origin::SceneReflectionProbeEnvironmentSource* SelectBoxProbeAt(
     ECS::Entity probeEntity = harness.world->Create();
     probeEntity.Set(Components::Transform::FromTRS(center, Quaternion{}, Vector3{4.0f, 4.0f, 4.0f}));
     Components::ReflectionProbe probe{};
-    probe.BoxProjection = true;
+    probe.InfluenceShape = Components::ReflectionProbeInfluenceShape::Box;
     probe.BlendDistance = 0.0f;
     probe.OriginOffsetX = originOffset.x;
     probe.OriginOffsetY = originOffset.y;

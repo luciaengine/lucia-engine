@@ -119,7 +119,7 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     Services.Views().SetCameraData(cameraId, camera, cameraRanges);
     const auto viewId = Services.Views().AllocateView("SpriteWorldView", cameraId);
     Services.Views().SetViewWorldId(viewId, 12);
-    Services.Views().SetViewRenderLayerMask(viewId, 0xFFFFFFFFu);
+    Services.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::All());
     std::vector<SpriteDraw> draws(1);
     draws[0].Texture = registered.Value();
     draws[0].RenderLayers = 0xFFFFFFFFu;
