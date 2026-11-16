@@ -39,6 +39,9 @@ add_executable(EditorSdkRegistryTests
     # in here directly.
     LodSettingsPageTests.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/LodSettingsPage.cpp
+    # The project's automatic LOD import policy: default, store and apply.
+    AutoLodImportSettingsTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/AutoLodImportSettings.cpp
     # The Render Layers page: its rows, their refusals and a rename's writes. The page feeds the
     # editor's layer pickers, so their helper compiles in too.
     # A settings text row: its refusal, its placeholder and its commit.

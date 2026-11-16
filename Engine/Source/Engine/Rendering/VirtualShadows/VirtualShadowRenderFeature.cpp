@@ -393,7 +393,9 @@ VirtualShadowRenderFeature::RasterPlan VirtualShadowRenderFeature::DeclareFeedba
     }
     else if (state.CasterVersion != casters.Version)
     {
-        if (casters.Version != state.CasterVersion + 1 || casters.Scope != ShadowCasterChangeScope::Bounded)
+        if (casters.Version == state.CasterVersion + 1 && casters.Scope == ShadowCasterChangeScope::VertexDeformation)
+            state.Cache.MarkDeformed();
+        else if (casters.Version != state.CasterVersion + 1 || casters.Scope != ShadowCasterChangeScope::Bounded)
             state.Cache.InvalidateAll();
         else
             state.Cache.InvalidatePages([&layout, &casters](const VirtualShadowPage& page)

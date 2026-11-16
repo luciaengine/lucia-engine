@@ -61,8 +61,6 @@
 #include "Editor/Hierarchy/HierarchyRowActivity.h"
 #include "Editor/Hierarchy/HierarchyRowEye.h"
 #include "Editor/Hierarchy/HierarchyLightIconTint.h"
-#include "Editor/Hierarchy/HierarchyRenderLayerEdit.h"
-#include "Inspectors/RenderLayers/RenderLayerField.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h"
 #include "Editor/Hierarchy/SpritePreview/SpritePreview.h"
@@ -94,7 +92,6 @@
 #include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/Dropdown.h"
-#include "UI/Controls/MaskField.h"
 #include "UI/EditorIcons.h"
 #include "UI/EditorSearchBars.h"
 #include "UI/Interaction/Payload.h"
@@ -245,7 +242,6 @@ constexpr uint32_t kCmdSortAlphabetical = 0x4171;
 constexpr uint32_t kCmdSortType = 0x4172;
 constexpr uint32_t kCmdSortAscending = 0x4173;
 constexpr uint32_t kCmdSortDescending = 0x4174;
-constexpr uint32_t kCmdShowRenderLayer = 0x4175;
 constexpr uint32_t kCmdShowVcsSceneDiffDots = 0x4176;
 constexpr uint32_t kCmdShowSceneViewEye = 0x4178;
 constexpr uint32_t kCmdShowMeshLocation = 0x4180;
@@ -781,6 +777,7 @@ HierarchyPanel::HierarchyPanel()
             {
                 if (m_VcsController)
                     m_VcsController->DecorateGhostRow(id, *row);
+                m_LayerControls.Hide(*row);
                 return;
             }
             row->RemoveClass("hierarchy-ghost-row");
@@ -814,7 +811,6 @@ HierarchyPanel::HierarchyPanel()
             // reuse it across bindings just like the Assets tree does.
             UIElement* titleEl = nullptr;
             UIElement* previewIconEl = nullptr;
-            MaskField* renderLayerField = nullptr;
             for (const auto& child : row->GetChildren())
             {
                 if (child && child->HasClass("tree-title"))
@@ -823,8 +819,6 @@ HierarchyPanel::HierarchyPanel()
                 }
                 else if (child && child->HasClass("hierarchy-preview-icon"))
                     previewIconEl = child.get();
-                else if (child && child->HasClass("hierarchy-render-layer-dropdown"))
-                    renderLayerField = dynamic_cast<MaskField*>(child.get());
             }
             if (m_VcsController)
                 m_VcsController->DecorateRow(handle, *row);
@@ -844,11 +838,12 @@ HierarchyPanel::HierarchyPanel()
                 previewIconEl = previewIcon.get();
                 row->AddChild(std::move(previewIcon));
             }
-            if (!renderLayerField)
+            if (!row->HasClass("hierarchy-row-wired"))
             {
-                // A pooled row's first bind: the layer field is created once per row, so the
-                // row's own handlers are wired here too. Each asks the tree which item the
-                // row shows now, so a recycled row never answers for its previous item.
+                // A pooled row's first bind wires the row's own handlers once. Each asks the
+                // tree which item the row shows now, so a recycled row never answers for its
+                // previous item.
+                row->AddClass("hierarchy-row-wired");
                 row->RegisterEventHandler(kEventMouseEnter, [this, row](UIEvent&)
                                           {
                     if (!m_OnHoverEntity || !m_Tree)
@@ -864,29 +859,6 @@ HierarchyPanel::HierarchyPanel()
                         m_OnHoverEntity({});
                 });
 
-                auto layers = std::make_unique<MaskField>();
-                layers->AddClass("hierarchy-render-layer-dropdown");
-                Editor::FeedRenderLayerNames(*layers);
-                layers->SetNothingTooltip(Editor::kRenderLayersNothingTooltip);
-                renderLayerField = layers.get();
-                renderLayerField->SetOnBitsChanged([this, row](uint32 bits, bool on)
-                {
-                    if (!m_World || !m_Tree)
-                        return;
-                    const TreeId tid = m_Tree->BoundIdOf(row);
-                    if (tid == 0 || tid == kRootId)
-                        return;
-                    const ECS::EntityHandle entity = HierarchyDataProvider::Decode(tid);
-                    if (!entity.IsValid() || !m_World->IsValid(entity))
-                        return;
-
-                    // A row inside the selection applies the layer to the whole selection,
-                    // the same rule the enable-toggle icon follows; each entity keeps its
-                    // other layers.
-                    Editor::ApplyRenderLayerBits(*m_World, ResolveRowActionTargets(entity), bits, on,
-                                                 m_Undo, m_ChangeNotifications);
-                });
-                row->AddChild(std::move(layers));
 
                 m_RowEye->AddTo(*row);
             }
@@ -894,26 +866,10 @@ HierarchyPanel::HierarchyPanel()
             m_RowActivity.Present(*m_World, handle, id, *row);
             m_RowEye->Present(*row, handle, m_Provider->IsExpandable(id));
 
-            const auto* layerRenderer = m_World->GetComponent<Components::MeshRenderer>(handle);
-            const bool showRenderLayerDropdown = m_ShowRenderLayer && layerRenderer;
-            UI::Layout::SetElementHidden(*renderLayerField, !showRenderLayerDropdown);
-            // The dropdown is anchored to the row's right edge rather than flowed,
-            // so the title has to reserve its strip explicitly (theme/views.css).
-            if (showRenderLayerDropdown)
-                row->AddClass("has-render-layer");
-            else
-                row->RemoveClass("has-render-layer");
-            // A narrow panel gets a shorter control rather than none: the layer
-            // stays readable and the name keeps usable room.
-            constexpr float kNarrowRenderLayerPx = 400.0f;
-            const bool narrowRenderLayer =
-                showRenderLayerDropdown && GetLayoutWidth() < kNarrowRenderLayerPx;
-            if (narrowRenderLayer)
-                row->AddClass("render-layer-narrow");
-            else
-                row->RemoveClass("render-layer-narrow");
-            if (showRenderLayerDropdown)
-                renderLayerField->SetValueWithoutNotify(layerRenderer->RenderLayers.Bits);
+            // A pick inside the selection applies to the whole selection, as the enable toggle does.
+            m_LayerControls.Present(*m_World, handle, *row, GetLayoutWidth(),
+                                    [this, handle]() { return ResolveRowActionTargets(handle); }, m_Undo,
+                                    m_ChangeNotifications);
             if (titleEl && previewIconEl)
             {
                 titleEl->AddClass("tree-title-no-icon");
@@ -1471,11 +1427,7 @@ HierarchyPanel::HierarchyPanel()
             builder.AddItem("Sort By/Ascending",    kCmdSortAscending,    oneOf(isAsc),    60, EditorIcons::kArrowUp);
             builder.AddItem("Sort By/Descending",   kCmdSortDescending,   oneOf(isDesc),   61, EditorIcons::kArrowDown);
             builder.AddItem("Hierarchy Options", 0, MenuItemFlag_None, 70, EditorIcons::kSettings);
-            builder.AddItem("Hierarchy Options/Show Render Layer",
-                            kCmdShowRenderLayer,
-                            checkedIf(m_ShowRenderLayer),
-                            70,
-                            EditorIcons::kEye);
+            m_LayerControls.BuildMenu(builder);
             builder.AddItem("Hierarchy Options/Show Scene View Eye",
                             kCmdShowSceneViewEye,
                             checkedIf(m_RowEye && m_RowEye->IsShown()),
@@ -2484,6 +2436,11 @@ void HierarchyPanel::DuplicateSelectedEntities()
 
 bool HierarchyPanel::HandleCommand(std::uint32_t cmd)
 {
+    if (m_LayerControls.HandleCommand(cmd))
+    {
+        RefreshLayerColumn();
+        return true;
+    }
     if (IsLoadRecentSceneCommand(cmd))
     {
         const size_t index = static_cast<size_t>(cmd - kCmdLoadRecentSceneBase);
@@ -3176,10 +3133,6 @@ bool HierarchyPanel::HandleCommand(std::uint32_t cmd)
         if (m_VcsController)
             m_VcsController->ToggleIndicatorVisibility();
         return true;
-    case kCmdShowRenderLayer:
-        m_ShowRenderLayer = !m_ShowRenderLayer;
-        ApplyRenderLayerVisibility();
-        return true;
     case kCmdShowSceneViewEye:
         if (m_RowEye)
             m_RowEye->ToggleShown();
@@ -3668,6 +3621,8 @@ void HierarchyPanel::Update()
         return;
 
     m_RowActivity.Refresh(*m_World, *m_Tree, *m_Provider);
+    if (m_LayerControls.NeedsRefresh(*m_World))
+        RefreshLayerColumn();
 
     if (m_VcsController)
         m_VcsController->Update();
@@ -4192,7 +4147,7 @@ void HierarchyPanel::ApplySortSettings()
     Refresh();
 }
 
-void HierarchyPanel::ApplyRenderLayerVisibility()
+void HierarchyPanel::RefreshLayerColumn()
 {
     if (!m_Tree)
         return;

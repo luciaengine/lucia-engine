@@ -62,6 +62,7 @@ set(EDITOR_SOURCES
     Source/Editor/Settings/DirectionalShadowSettingsPage.cpp
     Source/Editor/Settings/ExperimentalRenderingSettingsPage.cpp
     Source/Editor/Settings/InterfaceSettingsPage.cpp
+    Source/Editor/Settings/SearchBarSettingsPage.cpp
     Source/Editor/Settings/StartupSettingsPage.cpp
     Source/Editor/Settings/AssetPreviewSettings.cpp
     Source/Editor/Settings/ToggleAppearanceSettings.cpp
@@ -79,6 +80,7 @@ set(EDITOR_SOURCES
     Source/Editor/Settings/PhysicsProjectSettings.cpp
     Source/Editor/Settings/ProjectUIScaleBinding.cpp
     Source/Editor/Settings/Render/RenderProjectSettings.cpp
+    Source/Editor/Settings/AutoLodImportSettings.cpp
     Source/Editor/Settings/SvgRasterSettings.cpp
     Source/Editor/Settings/UIScaleProjectSettingsWriter.cpp
 	Source/Editor/RenderGraphTickRegistry.cpp
@@ -89,6 +91,7 @@ set(EDITOR_SOURCES
 	Source/Editor/Hierarchy/HierarchyLightIconTint.cpp
 	Source/Editor/Hierarchy/HierarchyNavigationBar.cpp
 	Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
+	Source/Editor/Hierarchy/HierarchyLayerControls.cpp
 	Source/Editor/Hierarchy/HierarchyDataProvider.cpp
 	Source/Editor/Hierarchy/HierarchyReparentRules.cpp
 	Source/Startup/BuiltinAssetSync.cpp
@@ -501,6 +504,7 @@ set(EDITOR_SOURCES
 	Modules/CssInspector/CssInspector.cpp
 
 	Source/EditorPanelManager.cpp
+	Source/EditorPanelIds.cpp
 	Source/EditorDebugMetrics.cpp
 	Source/Assets/EditorAssetRegistrations.cpp
 	Source/Graph/NodeColorSettings.cpp
@@ -705,6 +709,7 @@ set(EDITOR_SOURCES
 	Source/DebugServer/AssistantSessionHandlers.cpp
 	Source/DebugServer/GpuToolingHandlers.cpp
 	Source/DebugServer/GroundQueryDebugHandlers.cpp
+	Source/DebugServer/ReflectionProbeDebugHandlers.cpp
 	Source/DebugServer/JobSystem/JobSystemDebugHandlers.cpp
 	Source/DebugServer/JobSystem/JobSystemReport.cpp
 	Source/DebugServer/MemoryDebugHandlers.cpp
@@ -761,6 +766,7 @@ set(EDITOR_HEADERS
 	Source/DebugServer/ElementPointerTarget.h
 	Source/DebugServer/GpuToolingHandlers.h
 	Source/DebugServer/GroundQueryDebugHandlers.h
+	Source/DebugServer/ReflectionProbeDebugHandlers.h
 	Source/DebugServer/JobSystem/JobSystemDebugHandlers.h
 	Source/DebugServer/JobSystem/JobSystemReport.h
 	Source/DebugServer/MemoryDebugHandlers.h

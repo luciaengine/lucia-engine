@@ -10,6 +10,7 @@
 #include "Components/Terrain/TerrainPlanetRelief.h" // Components::TerrainPlanetRelief (base relief)
 #include "Engine/Rendering/RenderServices.h"
 #include "Mathematics/Interpolation.h"
+#include "Types/Fnv1a.h"
 #include "Terrain/TerrainTypes.h" // TerrainNeedsTiling (a tiled terrain keeps its lattice cap)
 #include "TerrainECS/Planet/PlanetPageRequester.h"
 #include "TerrainECS/TerrainRenderFeature.h" // unified-height dirty rect (tiled streaming)
@@ -242,8 +243,28 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     feature.SetActive(active, classify, tuning.TargetPixelError, tuning.SeaLevel, domain,
                       static_cast<uint32>(tuning.DebugView));
 
+    Engine::Renderer::WorldContentDigestTable& content = feature.GetWorldContent();
+    if (!m_WorldContentTracking)
+        m_WorldContentTracking = content.Track(world.GetWorldId());
+    content.Set(world.GetWorldId(), ComputeTerrainContentDigest(active, tuning));
+
     if (active)
         LogProvisionSignal(tuning, classify.TargetDepth);
+}
+
+uint64 CBTUpdateSystem::ComputeTerrainContentDigest(bool active, const Components::Terrain& terrain)
+{
+    if (!active)
+        return 0u;
+    uint64 digest = Hashing::Fnv1a64("CBTTerrain");
+    digest = Hashing::Fnv1a64Value(digest, terrain.Domain);
+    digest = Hashing::Fnv1a64Value(digest, terrain.TerrainAssetGuid.ToGuid());
+    digest = Hashing::Fnv1a64Value(digest, terrain.TerrainAssetType);
+    digest = Hashing::Fnv1a64Value(digest, terrain.BaseSource);
+    digest = Hashing::Fnv1a64Value(digest, terrain.MaterialLibraryGuid.ToGuid());
+    digest = Hashing::Fnv1a64Value(digest, terrain.CastShadows);
+    digest = Hashing::Fnv1a64Value(digest, terrain.RenderLayers.Bits);
+    return digest;
 }
 
 void CBTUpdateSystem::LogProvisionSignal(const Components::Terrain& tuning, uint32 resolvedMaxDepth)

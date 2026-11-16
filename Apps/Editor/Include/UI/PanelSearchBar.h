@@ -24,9 +24,9 @@ struct PanelSearchBarBuilt {
 };
 
 // Builds the standard editor panel search bar: a `.panel-search-bar` field with the "Search"
-// placeholder, the search icon, the clear action and an optional filter dropdown. The field
-// reads as a field at rest (theme/widgets.css); focus and query styling come from
-// SearchFieldWithFilter.
+// placeholder, the search icon, the clear action and an optional filter dropdown. Its look is the
+// search control's (theme/widgets.css); focus and query styling come from SearchFieldWithFilter.
+// A bar registered with EditorSearchBars shows as an empty strip while Filled Search Bars is off.
 //
 // `fieldId` names the TextField for automation (debug-server input_text /
 // click_element target by element id) — unique per window, e.g.

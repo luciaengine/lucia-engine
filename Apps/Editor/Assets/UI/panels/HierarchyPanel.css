@@ -88,8 +88,8 @@
 }
 
 /* The title ends before the eye and the lock: the lock takes 8..24 px from the
-   row's right edge and the eye 27..43, so the title's strip is 46 px. The render
-   layer control sits left of both, so its reserved strips keep their widths here. */
+   row's right edge and the eye 27..43, so the title's strip is 46 px. The layer
+   controls sit left of both, so their reserved strips keep their widths here. */
 .hierarchy-panel .tree.tree-row-lock-enabled .tree-item .tree-title {
 	margin-right: 46px;
 }
@@ -99,10 +99,20 @@
 	margin-right: 27px;
 }
 
-.hierarchy-panel .tree .tree-item.has-render-layer .tree-title {
+.hierarchy-panel .tree .tree-item.has-render-layer .tree-title,
+.hierarchy-panel .tree .tree-item.has-sorting-layer .tree-title {
 	margin-right: 163px;
 }
 
-.hierarchy-panel .tree .tree-item.has-render-layer.render-layer-narrow .tree-title {
+.hierarchy-panel .tree .tree-item.has-render-layer.render-layer-narrow .tree-title,
+.hierarchy-panel .tree .tree-item.has-sorting-layer.render-layer-narrow .tree-title {
 	margin-right: 133px;
+}
+
+.hierarchy-panel .tree .tree-item.has-render-layer.has-sorting-layer .tree-title {
+	margin-right: 275px;
+}
+
+.hierarchy-panel .tree .tree-item.has-render-layer.has-sorting-layer.render-layer-narrow .tree-title {
+	margin-right: 219px;
 }

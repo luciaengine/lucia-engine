@@ -84,6 +84,9 @@ private:
     void RefreshButtonStates();
     void UpdateProjectionButtonState();
     void UpdateRotationGizmoButtonState();
+    /// Shows the tool mode buttons in the floating overlay (true) or in the docked
+    /// toolbar row (false), and marks the Tool Overlay toggle to match.
+    void ApplyToolOverlayVisible(bool visible);
     /// The button `held` names while it is alive; once it is destroyed (or before the
     /// first call), the first Button with `id` in this toolbar, which `held` then names.
     /// The state refreshes run every frame, so this keeps them off the id lookup.

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string_view>
+
 /**
  * Centralized panel and layout element IDs used when wiring EditorApplication.
  * Avoids fragile string literals scattered in EditorApplication.cpp.
@@ -82,6 +84,10 @@ inline constexpr const char* TopToolbarCenter4 = "TopToolbarCenter4";
 inline constexpr const char* TopToolbarLeft1 = "TopToolbarLeft1";
 inline constexpr const char* TopToolbarLeft2 = "TopToolbarLeft2";
 inline constexpr const char* TopToolbarLeft3 = "TopToolbarLeft3";
+
+/// The panel whose dock leaf a closed `panelId` joins when it opens:
+/// Settings and the editors join the Scene View, tools join the Hierarchy or the Inspector.
+const char* DefaultPanelLeafAnchor(std::string_view panelId);
 
 } // namespace EditorPanelIds
 } // namespace GameEngine

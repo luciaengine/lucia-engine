@@ -45,7 +45,6 @@
 #include "Assets/AssetManager.h"
 #include "Assets/AssetPipelineCommands.h"
 #include "Assets/AssetRegistry.h"
-#include "Assets/MeshLODGenerator.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/RenderPipelineAsset.h"
 #include "AssetCore/AssetEvents.h"
@@ -86,6 +85,7 @@
 #include "Editor/Settings/Render/RenderProjectSettings.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Editor/Settings/StartupSettingsPage.h"
+#include "Editor/Settings/AutoLodImportSettings.h"
 #include "Editor/Settings/SvgRasterSettings.h"
 #include "Editor/Settings/SceneViewSettings.h"
 #include "Editor/Settings/TooltipSettings.h"
@@ -5516,17 +5516,7 @@ void EditorApplication::ApplyProjectLodImportPolicy(const std::filesystem::path&
     if (projectRoot.empty())
         return;
 
-    // Push the project's auto-LOD import policy down to the engine import path
-    // (which has no editor dependency). Project-scoped so the whole team gets
-    // uniform import behavior; mirrors the physics-settings-on-open pattern.
-    Editor::SettingsStore projectSettings = Editor::OpenProjectSettings(projectRoot);
-    std::string err;
-    (void)projectSettings.Load(&err);
-    bool autoLODs = true; // default-on for static meshes when the project has no explicit key
-    projectSettings.TryGetBool("import.autoGenerateLODs", autoLODs);
-    GameEngine::LODImportSettings lod = GameEngine::GetLODImportSettings();
-    lod.AutoGenerateOnImport = autoLODs;
-    GameEngine::SetLODImportSettings(lod);
+    Editor::AutoLodImportSettings::ApplySaved(projectRoot);
 }
 
 void EditorApplication::WireNativeScriptingForProject(const std::filesystem::path& projectRoot)

@@ -31,6 +31,7 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/AssistantSessionHandlers.cpp
 	PickRootResolverTests.cpp
 	SceneViewToolStripTests.cpp
+	SceneViewToolOverlayChoiceTests.cpp
 	SceneViewGridPipelineTests.cpp
 	# The tool strip's badge count, laid out over the real editor stylesheets: inside its strip at
 	# every count it can show, in both floating orientations and in the toolbar.
@@ -467,6 +468,9 @@ set(EDITOR_TEST_SOURCES
 	# (JobSystemStatistics + nlohmann).
 	JobSystemReportTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/JobSystem/JobSystemReport.cpp
+	# get_reflection_probe_state's reply: the retained probes and the digests a recapture check reads.
+	ReflectionProbeDebugHandlersTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/ReflectionProbeDebugHandlers.cpp
 	# get_ai_trace's reply: the fields of a traced agent's decisions on a test world. Leaf TU
 	# (AiTrace + nlohmann).
 	AiTraceReportTests.cpp
@@ -505,6 +509,8 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/WindowCursorLock.cpp
 	# Where the keyboard focus goes at Play and Stop, over a UI and a dock model with no device.
 	PlayModeGameViewFocusTests.cpp
+	EditorPanelDefaultPlacementTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/EditorPanelIds.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/PlayModeGameViewFocus.cpp
 	# The colour picker dialog's own routing: a UI-only chain, plus the
 	# eyedropper's screen-wide pointer grab and the Escape that ends it. Leaf TU
@@ -1086,6 +1092,9 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyNavigationBar.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/ItemSizeSlider.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/EditorSearchBars.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/SearchBarSettingsPage.cpp
+	SearchBarSettingsTests.cpp
+	PanelSearchBarLookTests.cpp
 	# The terrain panel's material surface: the library's materials as a grid, the channel-role
 	# binding under it, and the picker semantics both terrain material surfaces share. Sits over
 	# the library asset, UndoRedoService and the library inspector's tint encoding — that TU is
@@ -2873,6 +2882,10 @@ add_executable(RenderSortingEditorTests
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingFields.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingEdit.cpp
+    # The Hierarchy's layer column: its sorting picker and the render layer picker beside it.
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyLayerControls.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyRenderLayerEdit.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/RenderLayers/RenderLayerField.cpp
 )
 target_include_directories(RenderSortingEditorTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Include
