@@ -300,8 +300,8 @@ GameEngine::Components::OceanSurface addable=1 doNotSerialize=0
   Roughness type=10 offset=284 size=4 category=0 flags=0 range=0..1 tooltip=Roughness of the water surface. Higher blurs its highlights and reflections.
   IorAir type=10 offset=288 size=4 category=0 flags=0 range=1..2 tooltip=Index of refraction of air. With the water's index of refraction, it sets the Fresnel reflection and the refraction.
   IorWater type=10 offset=292 size=4 category=0 flags=0 range=1..2 tooltip=Index of refraction for water, used for Fresnel and underwater bending.
-  PlanarReflections type=1 offset=296 size=1 category=0 flags=0 tooltip=Draws the objects a planar capture sees over the environment reflection. Where the capture drew nothing, the water shows the environment reflection.
-  PlanarReflectionStrength type=10 offset=300 size=4 category=0 flags=0 range=0..3 tooltip=How strongly the planar capture covers the reflected environment; above 1 it brightens the captured objects.
+  PlanarReflections type=1 offset=296 size=1 category=0 flags=0 tooltip=Uses a planar reflection capture when available, with sky as fallback.
+  PlanarReflectionStrength type=10 offset=300 size=4 category=0 flags=0 range=0..3 tooltip=Blends the planar reflection capture over the procedural reflected sky.
   PlanarReflectionScale type=10 offset=304 size=4 category=0 flags=0 tooltip=Resolution scale of the planar reflection capture relative to the main view.
   SkyBase type=17 offset=308 size=16 category=0 flags=0 tooltip=Color of the procedural reflected sky at the zenith.
   SkyTowardsSun type=17 offset=324 size=16 category=0 flags=0 tooltip=Reflected sky tint in the sun direction.
