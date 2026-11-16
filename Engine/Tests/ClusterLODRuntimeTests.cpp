@@ -5,6 +5,7 @@
 #include "Assets/MeshLODGenerator.h"
 #include "ClusterLODTestMesh.h"
 #include "Components/Rendering/DDGIVolume.h"
+#include "Components/Rendering/LODGroup.h"
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/HLODVolume.h"
@@ -19,6 +20,7 @@
 #include "Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.h"
 #include "Engine/Rendering/HlodRuntime.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MeshLODThresholds.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "JobSystem/WorkStealingThreadPool.h"
@@ -89,7 +91,7 @@ class ClusterLODRuntimeTest : public ::testing::Test
         source.SetMeshesForTest({std::move(sourceMesh)});
         const auto path = m_Temporary.Path() / "runtime.gecluster";
         MeshClusterLODConfig config;
-        config.MeshletsPerGroup = 4;
+        config.MeshletsPerGroup = MeshletsPerGroup();
         String error;
         ASSERT_TRUE(CookMeshClusterLODAsset(source, path, config, error)) << error;
         m_Model = std::make_shared<ModelAsset>(GUID::Generate(), path);
@@ -135,6 +137,7 @@ class ClusterLODRuntimeTest : public ::testing::Test
     }
 
     virtual size_t WorkerCount() const { return 0; }
+    virtual uint32 MeshletsPerGroup() const { return 4; }
     virtual std::unique_ptr<IDevice> CreateDevice() { return CreateVulkanDeviceFast(); }
     virtual void BeforeCoarseRegistration() {}
     virtual void AfterCoarseRegistration() {}
@@ -158,6 +161,27 @@ class ClusterLODRuntimeTest : public ::testing::Test
     {
         m_Services.BeginWorldDrawFrame();
         m_Feature->Prepare(m_World);
+    }
+
+    ViewId AddSseView(const Vector3& eye, const Vector3& center)
+    {
+        CameraData camera{};
+        const auto projection = Mathematics::MakePerspectiveLH_ZO_ReverseZ(
+            1.0471976f, 1.5f, 0.1f, 2'000'000.0f);
+        const auto view = Mathematics::MakeLookAtLH(eye, center, Vector3(0, 1, 0));
+        camera.proj = projection;
+        camera.view = view;
+        const auto viewProjection = projection * view;
+        camera.viewProj = viewProjection;
+        SetCameraEye(camera, Mathematics::WorldPosition::FromVector3(eye));
+        auto& views = m_Services.Views();
+        const auto cameraId = views.AllocateCamera("Cluster SSE union");
+        views.SetCameraData(cameraId, camera, CameraRanges{0.1f, 2'000'000.0f});
+        const auto id = views.AllocateView("Cluster SSE union", cameraId);
+        views.SetViewWorldId(id, m_World.GetWorldId());
+        views.SetViewRenderLayerMask(id, RenderLayerMask::FromLayer(0));
+        views.PerView(id).WorldViewportHeight = 1080;
+        return id;
     }
 
     // The part of m_Entity that draws the fixture's reduced page; invalid while the instance is not split.
@@ -666,27 +690,6 @@ class ClusterLODMultipleViewTest : public ClusterLODRuntimeTest,
                                    public ::testing::WithParamInterface<bool>
 {
   protected:
-    ViewId AddSseView(const Vector3& eye, const Vector3& center)
-    {
-        CameraData camera{};
-        const auto projection = Mathematics::MakePerspectiveLH_ZO_ReverseZ(
-            1.0471976f, 1.5f, 0.1f, 2'000'000.0f);
-        const auto view = Mathematics::MakeLookAtLH(eye, center, Vector3(0, 1, 0));
-        camera.proj = projection;
-        camera.view = view;
-        const auto viewProjection = projection * view;
-        camera.viewProj = viewProjection;
-        SetCameraEye(camera, Mathematics::WorldPosition::FromVector3(eye));
-        auto& views = m_Services.Views();
-        const auto cameraId = views.AllocateCamera("Cluster SSE union");
-        views.SetCameraData(cameraId, camera, CameraRanges{0.1f, 2'000'000.0f});
-        const auto id = views.AllocateView("Cluster SSE union", cameraId);
-        views.SetViewWorldId(id, m_World.GetWorldId());
-        views.SetViewRenderLayerMask(id, RenderLayerMask::FromLayer(0));
-        views.PerView(id).WorldViewportHeight = 1080;
-        return id;
-    }
-
     // A view whose eye is `origin + localEye`. The view matrix comes from the small local vectors,
     // and the exact eye goes in after it, so a far origin does not round the orientation.
     ViewId AddSseViewAt(const Mathematics::WorldPosition& origin, const Vector3& localEye, const Vector3& localCenter)
@@ -775,6 +778,140 @@ TEST_P(ClusterLODMultipleViewTest, NearDemandAtALargeTranslationMatchesTheOrigin
 }
 
 INSTANTIATE_TEST_SUITE_P(ViewRegistrationOrder, ClusterLODMultipleViewTest, ::testing::Bool());
+
+// Two instances of a model cooked to one refinable group, at the same place, seen by one view at a
+// pixel budget that both exceed. The LOD bias of the second instance sets the ratio of their
+// projected errors exactly. The triangle budget decides which instance refines.
+class ClusterLODTriangleBudgetTest : public ClusterLODRuntimeTest
+{
+  protected:
+    uint32 MeshletsPerGroup() const override { return 128; }
+
+    void SetUp() override
+    {
+        ClusterLODRuntimeTest::SetUp();
+        if (IsSkipped() || HasFatalFailure())
+            return;
+        const auto& pages = m_Model->GetClusterLODManifest()->Pages;
+        ASSERT_EQ(pages.size(), 1u) << "the fixture must cook to one group";
+        ASSERT_GT(pages[0].Error, 0.0f);
+        m_Other = m_World.Create().Set<Components::MeshRenderer>(*m_World.GetComponent<Components::MeshRenderer>(m_Entity))
+            .Set<Components::WorldTransform>({}).Set<Components::LODGroup>({}).GetHandle();
+        m_World.ProcessCommands();
+        ASSERT_TRUE(m_Services.Views().ReleaseView(m_View));
+        m_Services.SetLODForceLevel(~0u);
+        m_Services.GetMeshGPURegistry().SetLodSelectionMode(LodSelectionMode::Sse);
+        m_Services.SetLODErrorBudgetPx(kPixelBudget);
+        const auto& page = pages[0];
+        const Vector3 center = (page.MinBounds + page.MaxBounds) * 0.5f;
+        const float extent = (page.MaxBounds - page.MinBounds).Length();
+        AddSseView(center + Vector3(0.0f, 2.0f * extent, -2.0f * extent), center);
+    }
+
+    // Sets the LOD bias of the second instance so that its projected error is `ratio` times the first's.
+    void SetOtherErrorRatio(double ratio)
+    {
+        m_World.GetComponentForWrite<Components::LODGroup>(m_Other)->Bias = static_cast<float>(std::log2(ratio));
+    }
+
+    // Whether the part of `owner` draws the fine page.
+    bool IsFine(ECS::EntityHandle owner)
+    {
+        const ECS::EntityHandle part = PartOf(m_World, owner);
+        if (!part.IsValid())
+            return false;
+        const auto* entry = m_Services.GetMeshGPURegistry().Find(
+            MeshGPUHandle(m_World.GetComponent<Components::MeshRenderer>(part)->meshGpuHandleId));
+        return entry && entry->StorageDomain == MeshGPUStorageDomain::ClusterFine;
+    }
+
+    void PrepareFrames()
+    {
+        for (uint32 frame = 0; frame < 6; ++frame)
+            Prepare();
+    }
+
+    uint64 CoarseTriangles() const { return m_Model->GetClusterLODManifest()->Pages[0].CoarseIndexCount / 3; }
+    uint64 Refinement() const { return m_Model->GetClusterLODManifest()->Pages[0].IndexCount / 3 - CoarseTriangles(); }
+
+    static constexpr float kPixelBudget = 0.01f;
+    ECS::EntityHandle m_Other;
+};
+
+TEST_F(ClusterLODTriangleBudgetTest, RefinesTheLargestProjectedErrorFirstWithinTheBudget)
+{
+    SetOtherErrorRatio(0.5);
+    PrepareFrames();
+    ASSERT_TRUE(IsFine(m_Entity)) << "without a cap both instances refine";
+    ASSERT_TRUE(IsFine(m_Other));
+
+    m_Feature->SetTriangleBudget(2 * CoarseTriangles() + Refinement());
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity)) << "the larger error refines first";
+    EXPECT_FALSE(IsFine(m_Other)) << "the next instance does not fit";
+
+    m_Feature->SetTriangleBudget(2 * CoarseTriangles() + Refinement() - 1);
+    PrepareFrames();
+    EXPECT_FALSE(IsFine(m_Entity));
+    EXPECT_FALSE(IsFine(m_Other));
+
+    m_Feature->SetTriangleBudget(2 * (CoarseTriangles() + Refinement()));
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity));
+    EXPECT_TRUE(IsFine(m_Other));
+
+    m_Services.SetLODErrorBudgetPx(1'000'000.0f);
+    PrepareFrames();
+    EXPECT_FALSE(IsFine(m_Entity)) << "the pixel budget stays the floor";
+    EXPECT_FALSE(IsFine(m_Other));
+
+    m_Services.SetLODErrorBudgetPx(kPixelBudget);
+    m_Feature->SetTriangleBudget(1);
+    m_Services.SetLODForceLevel(0);
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity)) << "forced LOD 0 ignores the cap";
+    EXPECT_TRUE(IsFine(m_Other));
+}
+
+TEST_F(ClusterLODTriangleBudgetTest, TheBudgetCountsTheCoarseTrianglesOfUnsplitInstances)
+{
+    // A third instance whose bias keeps its error below the pixel budget never splits.
+    const ECS::EntityHandle unsplit = m_World.Create()
+        .Set<Components::MeshRenderer>(*m_World.GetComponent<Components::MeshRenderer>(m_Entity))
+        .Set<Components::WorldTransform>({}).Set<Components::LODGroup>({-40.0f}).GetHandle();
+    m_World.ProcessCommands();
+    SetOtherErrorRatio(0.5);
+    m_Feature->SetTriangleBudget(3 * CoarseTriangles() + Refinement() - 1);
+    PrepareFrames();
+    EXPECT_FALSE(PartOf(m_World, unsplit).IsValid());
+    EXPECT_FALSE(IsFine(m_Entity)) << "the unsplit instance's coarse triangles count against the cap";
+    EXPECT_FALSE(IsFine(m_Other));
+
+    m_Feature->SetTriangleBudget(3 * CoarseTriangles() + Refinement());
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity));
+    EXPECT_FALSE(IsFine(m_Other));
+}
+
+TEST_F(ClusterLODTriangleBudgetTest, AFineGroupKeepsItsPageUntilAnotherErrorLeavesTheHysteresisBand)
+{
+    m_Feature->SetTriangleBudget(2 * CoarseTriangles() + Refinement());
+    SetOtherErrorRatio(0.5);
+    PrepareFrames();
+    ASSERT_TRUE(IsFine(m_Entity));
+    ASSERT_FALSE(IsFine(m_Other));
+
+    const double band = kClusterRefineBudgetScale / kClusterKeepFineBudgetScale;
+    SetOtherErrorRatio(0.9 * band);
+    PrepareFrames();
+    EXPECT_TRUE(IsFine(m_Entity)) << "a larger error inside the band does not take the page";
+    EXPECT_FALSE(IsFine(m_Other));
+
+    SetOtherErrorRatio(1.1 * band);
+    PrepareFrames();
+    EXPECT_FALSE(IsFine(m_Entity));
+    EXPECT_TRUE(IsFine(m_Other)) << "an error past the band takes the page";
+}
 
 TEST_F(ClusterLODRuntimeTest, TheNextScheduledSystemSeesFineAndCoarseInTheSameCycle)
 {

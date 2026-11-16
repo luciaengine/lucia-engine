@@ -20,6 +20,7 @@
 #include "ECS/Entity.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MeshLODThresholds.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
@@ -105,12 +106,16 @@ double ScaleBound(const Components::WorldTransform& transform)
     return std::sqrt(squared);
 }
 
-bool WantsFine(const RenderServices& services, const Components::MeshRenderer& renderer,
-               const Components::WorldTransform& transform, const MeshClusterLODManifest::Page& page,
-               uint64 worldId, bool wasFine, float lodBias)
+// The largest projected error of one group over the views, divided by the switch threshold (the
+// keep band for a group that draws fine). Above 1 wants fine. Infinity: a view must draw fine
+// (forced LOD 0, selection off or an unusable projection).
+double FineDemand(const RenderServices& services, const Components::MeshRenderer& renderer,
+                  const Components::WorldTransform& transform, const MeshClusterLODManifest::Page& page,
+                  uint64 worldId, bool wasFine, float lodBias)
 {
+    constexpr double kMustDrawFine = std::numeric_limits<double>::infinity();
     if (page.IndexCount <= page.CoarseIndexCount)
-        return false;
+        return 0.0;
     const double minBounds[3]{page.MinBounds.x, page.MinBounds.y, page.MinBounds.z};
     const double maxBounds[3]{page.MaxBounds.x, page.MaxBounds.y, page.MaxBounds.z};
     double localCenter[3]{};
@@ -128,7 +133,8 @@ bool WantsFine(const RenderServices& services, const Components::MeshRenderer& r
     const double radius = std::hypot(localExtent[0], localExtent[1], localExtent[2]) * scale;
     if (!std::isfinite(scale) || !std::isfinite(radius) ||
         !std::isfinite(localOffset[0]) || !std::isfinite(localOffset[1]) || !std::isfinite(localOffset[2]))
-        return false;
+        return 0.0;
+    double demand = 0.0;
     for (const auto& view : services.Views().GetViews())
     {
         if (!view.ActiveRenderLayerMask().Intersects(renderer.RenderLayers) ||
@@ -136,7 +142,7 @@ bool WantsFine(const RenderServices& services, const Components::MeshRenderer& r
             continue;
         const uint32 forced = services.ResolveViewForceLOD(view.id);
         if (forced == 0 || (forced == ~0u && services.GetMeshGPURegistry().GetLodSelectionMode() == LodSelectionMode::Off))
-            return true;
+            return kMustDrawFine;
         if (forced != ~0u || page.Error <= 0.0f)
             continue;
         const auto camera = services.Views().ResolveCameraData(view.id);
@@ -144,23 +150,84 @@ bool WantsFine(const RenderServices& services, const Components::MeshRenderer& r
         if (height == 0)
             continue;
         const auto eye = CameraEye(camera);
-        const double distance = std::max(0.001, std::hypot(
+        const double centerDistance = std::hypot(
             (transform.Position.X - eye.X) + localOffset[0],
             (transform.Position.Y - eye.Y) + localOffset[1],
-            (transform.Position.Z - eye.Z) + localOffset[2]) - radius);
-        const double projection = std::abs(static_cast<double>(camera.proj[1][1])) * height * 0.5;
+            (transform.Position.Z - eye.Z) + localOffset[2]);
         const bool orthographic = std::abs(camera.proj[3][3]) > 0.5f;
-        const double errorPixels = page.Error * scale * projection * std::exp2(static_cast<double>(lodBias)) /
-                                   (orthographic ? 1.0 : distance);
+        const double errorPixels = ClusterGroupErrorPx(page.Error, scale, centerDistance, radius,
+                                                       camera.proj[1][1], height, lodBias, orthographic);
         const float budget = ResolveLodBudgetPx(services.GetLODErrorBudgetPx(),
                                                services.GetLODViewBudgetOverride(view.purpose));
-        const float threshold = budget * (wasFine ? 0.8f : 1.2f);
-        if (!std::isfinite(errorPixels) || !std::isfinite(budget) || projection <= 0.0 || budget <= 0.0f || errorPixels > threshold ||
+        const double threshold = budget * (wasFine ? kClusterKeepFineBudgetScale : kClusterRefineBudgetScale);
+        if (!std::isfinite(errorPixels) || !std::isfinite(budget) || camera.proj[1][1] == 0.0f || budget <= 0.0f ||
             services.GetMeshGPURegistry().GetLodSelectionMode() == LodSelectionMode::Off)
-            return true;
+            return kMustDrawFine;
+        demand = std::max(demand, errorPixels / threshold);
     }
-    return false;
+    return demand;
 }
+
+bool WantsFine(const RenderServices& services, const Components::MeshRenderer& renderer,
+               const Components::WorldTransform& transform, const MeshClusterLODManifest::Page& page,
+               uint64 worldId, bool wasFine, float lodBias)
+{
+    return FineDemand(services, renderer, transform, page, worldId, wasFine, lodBias) > 1.0;
+}
+
+// One part of a split instance in one preparation: what it wants and what the budget grants it.
+struct PartDemand
+{
+    ECS::EntityHandle Part;
+    Components::MeshRenderer Renderer;
+    std::shared_ptr<ModelAsset> Model;
+    GUID ModelGuid;
+    uint32 PageIndex = 0;
+    // FineDemand of the part, or 0 when its material, components or HLOD keep it coarse.
+    double Priority = 0.0;
+    uint64 CoarseTriangles = 0;
+    uint64 FineTriangles = 0;
+    bool Supported = false;
+    bool WasFine = false;
+    bool Granted = false;
+};
+
+// The count starts at the coarse triangles of the unsplit instances and of every part. Parts refine
+// in order of largest demand until the next one does not fit; a part that must draw fine always
+// refines. A budget of 0 grants every demand above 1.
+void GrantFineDemands(std::vector<PartDemand>& demands, uint64 triangleBudget, uint64 drawnTriangles,
+                      std::vector<uint32>& order)
+{
+    if (triangleBudget == 0)
+    {
+        for (auto& demand : demands)
+            demand.Granted = demand.Priority > 1.0;
+        return;
+    }
+    uint64 triangles = drawnTriangles;
+    order.clear();
+    for (uint32 index = 0; index < demands.size(); ++index)
+    {
+        demands[index].Granted = false;
+        triangles += demands[index].CoarseTriangles;
+        if (demands[index].Priority > 1.0)
+            order.push_back(index);
+    }
+    // Parts that must draw fine have infinite priority and sort first.
+    std::stable_sort(order.begin(), order.end(), [&demands](uint32 a, uint32 b)
+    { return demands[a].Priority > demands[b].Priority; });
+    for (const uint32 index : order)
+    {
+        auto& demand = demands[index];
+        const uint64 refinement = demand.FineTriangles - demand.CoarseTriangles;
+        const bool required = std::isinf(demand.Priority);
+        if (!required && triangles + refinement > triangleBudget)
+            break;
+        triangles += refinement;
+        demand.Granted = true;
+    }
+}
+
 // The pages of one coarse mesh: the manifest keeps them in mesh order.
 std::pair<uint32, uint32> PageRange(const MeshClusterLODManifest& manifest, uint32 mesh)
 {
@@ -348,6 +415,8 @@ struct ClusterLODFeature::State
     FastHashMap<RenderGraph::RGFrame*, std::weak_ptr<Lease>> Leases;
     std::vector<Binding> Bindings;
     ClusterLODSplits Splits;
+    std::vector<PartDemand> PartDemands;
+    std::vector<uint32> DemandOrder;
     std::vector<PendingWorldRestore> PendingWorldRestores;
     std::shared_ptr<DecodeAccounting> DecodedAccounting = std::make_shared<DecodeAccounting>();
     std::shared_ptr<const void> CutOwner;
@@ -357,6 +426,9 @@ struct ClusterLODFeature::State
     uint64 WorldGeneration = 0;
     uint64 DeviceGeneration = 0;
     uint64 ChargedBytes = 0;
+    uint64 TriangleBudget = 0;
+    // The coarse triangles of the unsplit cluster instances in this preparation.
+    uint64 UnsplitCoarseTriangles = 0;
     uint32 PendingReads = 0;
     bool Initialized = false;
     bool PolicyBlocked = false;
@@ -710,31 +782,53 @@ struct ClusterLODFeature::State
         }
     }
 
-    // Selects coarse or fine for one part of a split instance. `transform` is the owner's world
-    // transform: a part sits at its owner's origin. Returns whether a view wants the fine page.
-    bool Consider(ECS::World& world, ECS::EntityHandle entity, const Components::MeshRenderer& renderer,
-                  const Components::WorldTransform& transform, const GUID& guid, const ModelAsset& model,
-                  uint32 pageIndex, float bias, uint64 epoch, std::vector<Candidate>& candidates, uint32& coarseRepairs)
+    // Measures how much one part of a split instance wants its fine page. `transform` is the
+    // owner's world transform: a part sits at its owner's origin.
+    PartDemand MeasurePart(ECS::World& world, ECS::EntityHandle part, const Components::MeshRenderer& renderer,
+                           const Components::WorldTransform& transform, const GUID& guid,
+                           const std::shared_ptr<ModelAsset>& model, uint32 pageIndex, float bias) const
     {
-        auto& services = *Services;
-        auto& registry = services.GetMeshGPURegistry();
+        const auto& directory = model->GetClusterLODManifest()->Pages[pageIndex];
+        const auto found = Pages.find(CoarsePartKey(guid, *model, pageIndex));
+        PartDemand demand;
+        demand.Part = part;
+        demand.Renderer = renderer;
+        demand.Model = model;
+        demand.ModelGuid = guid;
+        demand.PageIndex = pageIndex;
+        demand.CoarseTriangles = directory.CoarseIndexCount / 3;
+        demand.FineTriangles = std::max<uint64>(directory.IndexCount / 3, demand.CoarseTriangles);
+        demand.WasFine = found != Pages.end() && found->second->FineHandle.IsValid() &&
+            renderer.meshGpuHandleId == found->second->FineHandle.id;
+        demand.Supported = SupportsFineInstance(*Services, world, part, renderer);
+        if (demand.Supported)
+            demand.Priority = FineDemand(*Services, renderer, transform, directory, world.GetWorldId(),
+                                         demand.WasFine, bias);
+        return demand;
+    }
+
+    // Selects coarse or fine for one part of a split instance with the demand the budget granted.
+    void Consider(const PartDemand& part, uint64 epoch, std::vector<Candidate>& candidates, uint32& coarseRepairs)
+    {
+        auto& registry = Services->GetMeshGPURegistry();
+        const ModelAsset& model = *part.Model;
+        const GUID& guid = part.ModelGuid;
+        const uint32 pageIndex = part.PageIndex;
         const auto manifest = model.GetClusterLODManifest();
         const auto& directory = manifest->Pages[pageIndex];
         const MeshGPUKey key = CoarsePartKey(guid, model, pageIndex);
         auto found = Pages.find(key);
-        const bool wasFine = found != Pages.end() && found->second->FineHandle.IsValid() &&
-            renderer.meshGpuHandleId == found->second->FineHandle.id;
-        const bool supported = SupportsFineInstance(services, world, entity, renderer);
-        const bool demand = supported &&
-            WantsFine(services, renderer, transform, directory, world.GetWorldId(), wasFine, bias);
+        const bool wasFine = part.WasFine;
+        const bool supported = part.Supported;
+        const bool demand = part.Granted;
         if (found == Pages.end())
         {
             if (!demand || PolicyBlocked || Pages.size() >= kMaximumPageRecords)
-                return demand;
+                return;
             const auto handle = registry.FindHandle(key);
             const auto* coarseEntry = registry.Find(handle);
             if (!coarseEntry || !registry.IsEntryDrawable(*coarseEntry))
-                return demand;
+                return;
             auto page = std::make_shared<State::Page>();
             page->Source = key;
             page->Incarnation = manifest->Incarnation;
@@ -748,7 +842,7 @@ struct ClusterLODFeature::State
         if (page->Incarnation != manifest->Incarnation)
         {
             Block();
-            return demand;
+            return;
         }
         page->CoarseHandle = registry.FindHandle(key);
         const auto* coarseEntry = registry.Find(page->CoarseHandle);
@@ -768,8 +862,7 @@ struct ClusterLODFeature::State
         page->Wanted |= fine;
         if (fine)
             page->LastWantedEpoch = epoch;
-        candidates.push_back({entity, renderer, std::move(page), fine, keepCover});
-        return demand;
+        candidates.push_back({part.Part, part.Renderer, std::move(page), fine, keepCover});
     }
 
     MeshGPUHandle RegisterCoarsePart(const GUID& guid, const ModelAsset& model, uint32 pageIndex)
@@ -800,11 +893,15 @@ struct ClusterLODFeature::State
             WorldId = world.GetWorldId();
             WorldGeneration = world.GetEntityHandleEpoch();
         }
-        if (PolicyBlocked || Splits.Find(entity) || IsHlodEvicted(world, entity))
+        // The parts of a split instance count their own triangles. An evicted member draws nothing.
+        if (Splits.Find(entity) || IsHlodEvicted(world, entity))
             return;
         const auto& manifest = *model->GetClusterLODManifest();
         const uint32 mesh = ResolveSubmeshIndex(guid, *model, renderer);
-        if (mesh >= model->GetMeshes().size() || !SupportsFineInstance(*Services, world, entity, renderer))
+        if (mesh >= model->GetMeshes().size())
+            return;
+        UnsplitCoarseTriangles += model->GetMeshes()[mesh].Indices.size() / 3;
+        if (PolicyBlocked || !SupportsFineInstance(*Services, world, entity, renderer))
             return;
         // An ended split restores the owner, so the owner's coarse mesh must draw before a split starts.
         auto& registry = Services->GetMeshGPURegistry();
@@ -860,14 +957,18 @@ struct ClusterLODFeature::State
         }
     }
 
-    // Selects every part of every split instance, then swaps owners for parts that can draw.
+    // Measures every part of every split instance, grants fine pages under the triangle budget,
+    // selects each part, then swaps owners for parts that can draw.
     void ConsiderSplits(ECS::World& world, uint64 epoch, std::vector<Candidate>& candidates, uint32& coarseRepairs)
     {
         auto* scene = Services->GetGPUScene();
+        auto& instances = Splits.Instances();
         std::vector<ECS::EntityHandle> ended;
-        bool flipped = false;
-        for (auto& instance : Splits.Instances())
+        std::vector<bool> activate(instances.size(), false);
+        PartDemands.clear();
+        for (size_t index = 0; index < instances.size(); ++index)
         {
+            auto& instance = instances[index];
             const auto* owner = world.GetComponent<Components::MeshRenderer>(instance.Owner);
             const auto* transform = world.GetComponent<Components::WorldTransform>(instance.Owner);
             const auto model = std::dynamic_pointer_cast<ModelAsset>(Assets->GetAsset(instance.Model));
@@ -888,12 +989,22 @@ struct ClusterLODFeature::State
                     ended.push_back(instance.Owner);
                     break;
                 }
-                if (Consider(world, instance.Parts[part], *renderer, *transform, instance.Model, *model,
-                             instance.FirstPage + part, bias, epoch, candidates, coarseRepairs))
+                PartDemand demand = MeasurePart(world, instance.Parts[part], *renderer, *transform, instance.Model,
+                                                model, instance.FirstPage + part, bias);
+                if (demand.Priority > 1.0)
                     instance.LastWantedEpoch = epoch;
+                PartDemands.push_back(std::move(demand));
             }
-            flipped |= Splits.TryActivate(world, *scene, instance);
+            activate[index] = true;
         }
+        GrantFineDemands(PartDemands, TriangleBudget, UnsplitCoarseTriangles, DemandOrder);
+        for (const PartDemand& part : PartDemands)
+            Consider(part, epoch, candidates, coarseRepairs);
+        PartDemands.clear();
+        bool flipped = false;
+        for (size_t index = 0; index < instances.size(); ++index)
+            if (activate[index])
+                flipped |= Splits.TryActivate(world, *scene, instances[index]);
         for (const ECS::EntityHandle owner : ended)
             Splits.End(world, scene, owner);
         if (flipped || !ended.empty())
@@ -1104,6 +1215,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
     std::vector<State::Candidate> candidates;
     uint32 coarseRepairs = 0;
     std::vector<PendingSplit> splits;
+    state.UnsplitCoarseTriangles = 0;
     world.Query<ECS::Read<Components::MeshRenderer>, ECS::Read<Components::WorldTransform>>()
         .Each([&state, &world, &splits](ECS::EntityHandle entity, const Components::MeshRenderer& renderer,
                                         const Components::WorldTransform& transform)
@@ -1174,6 +1286,11 @@ bool ClusterLODFeature::BindWorldGeometry(RenderGraph::RGFrame& frame, RenderSer
     state.Leases[&frame] = lease;
     frame.OnSubmissionAttempt([lease]() noexcept { lease->MarkReaders(); });
     return true;
+}
+
+void ClusterLODFeature::SetTriangleBudget(uint64 triangles)
+{
+    m_State->TriangleBudget = triangles;
 }
 
 void ClusterLODFeature::OnDeviceRebuilt(Rendering::IDevice* device)
