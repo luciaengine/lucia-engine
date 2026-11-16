@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 
 #include "Engine/Rendering/MeshLODThresholds.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowFeedback.h"
+#include "Mathematics/MatrixOps.h"
 #include "Mathematics/VectorOps.h"
 #include "Rendering/Common/MatrixUtils.h"
 #include "Rendering/Common/Utils.h"
@@ -24,10 +26,12 @@
 #include "TestDeviceHelper.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <map>
 #include <set>
+#include <span>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -770,6 +774,41 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         m_Device->WaitForIdle();
     }
 
+    // Culls `groups` after the frame's culling into one buffer this call creates, as virtual shadow
+    // pages do, and returns the buffer's words. Group g writes slice c at (4 * g + c) * sliceElements.
+    std::vector<uint32_t> LateCull(std::span<const CascadeCullingGroup> groups, uint32_t sliceElements)
+    {
+        namespace RG = GameEngine::Rendering::RenderGraph;
+        CullInto(MakeStorageBuffer(sizeof(uint32_t), "LatePageCull.Frame"), 0xFFFFFFFFu, true, false);
+        auto& frame = *m_CullFrame;
+        frame.BeginFrame(++m_CullFrameNumber);
+        m_Culling->BeginFrame(&frame, m_Scene.get());
+        m_Culling->EndFrame();
+        const uint32_t elements = static_cast<uint32_t>(groups.size()) * kMaxCullingViewsPerDispatch * sliceElements;
+        const size_t bytes = elements * sizeof(uint32_t);
+        BufferDesc descriptor{};
+        descriptor.size = bytes;
+        descriptor.usage = static_cast<uint32_t>(BufferUsage::Storage);
+        descriptor.memoryUsage = BufferMemoryUsage::DeviceLocal;
+        descriptor.debugName = "LatePageCull.Visibility";
+        const RG::RGBuffer visibility = frame.CreateBuffer(descriptor.debugName, descriptor);
+        for (size_t group = 0; group < groups.size(); ++group)
+        {
+            std::array<uint32_t, kMaxCullingViewsPerDispatch> offsets{};
+            for (uint32_t slice = 0; slice < groups[group].cascadeCount; ++slice)
+                offsets[slice] = static_cast<uint32_t>(group * kMaxCullingViewsPerDispatch + slice) * sliceElements;
+            EXPECT_TRUE(m_Culling->ScheduleCascadeGroupInto(frame, *m_Scene, groups[group], visibility,
+                static_cast<uint32_t>(bytes), std::span(offsets).first(groups[group].cascadeCount)));
+        }
+        const BufferHandle destination = MakeStorageBuffer(bytes, "LatePageCull.Readback");
+        frame.AddPass("LatePageCull.Copy", 0, [&](RG::RGPassBuilder& p)
+                      { p.Read(visibility, RG::RGBufferRead::CopySrc); p.PreventCulling(); },
+                      [=](RG::RGContext& ctx) { ctx.Cmd->CopyBuffer(ctx.GetBuffer(visibility), destination, bytes, 0, 0); });
+        frame.Execute();
+        m_Device->WaitForIdle();
+        return ReadBuffer<uint32_t>(destination, elements);
+    }
+
     // Bodies the other scatter packages also run (the ScatterPackageParity suites
     // at the end of this file). Each is one TEST_P body of this suite.
     void ExpectScattersInstancesIntoCorrectRegions();
@@ -982,6 +1021,94 @@ TEST_P(BatchScatterComputeTest, NoSpatialPreviewStillFiltersLayers)
     EXPECT_EQ(ReadBuffer<uint32_t>(visibility, 1)[0], 0u) << "explicitly hidden preview stays hidden";
     CullInto(visibility, 2u, false, false, true);
     EXPECT_EQ(ReadBuffer<uint32_t>(visibility, 1)[0], 0u);
+}
+
+// Virtual shadow pages cull after the frame's culling, each page into its own slice. A caster lands
+// in every page it overlaps and in no other page. The sun page is open toward the light, the spot
+// and point pages are not, and a non-caster lands nowhere.
+TEST_P(BatchScatterComputeTest, LatePageCullKeepsOnlyTheCastersThatOverlapEachPage)
+{
+    using Engine::Renderer::CropVirtualShadowProjection;
+    using Engine::Renderer::VirtualShadowLight;
+    using Engine::Renderer::VirtualShadowPageCasterPlanes;
+    const uint32_t mesh = AddMeshRow(3);
+    struct Caster
+    {
+        Vector3 Center;
+        uint32_t Flags = 1u;
+    };
+    // Light space looks along +Z. A 2x2 page grid splits each light at x = 0 and y = 0.
+    const Caster casters[] = {
+        {{-2.0f, 2.0f, 10.0f}}, {{2.0f, 2.0f, 10.0f}}, {{-2.0f, -2.0f, 10.0f}}, {{2.0f, -2.0f, 10.0f}},
+        {{0.0f, 2.0f, 10.0f}},                         // crosses the edge of the two upper pages
+        {{-2.0f, 2.0f, -50.0f}},                       // behind the light
+        {{-2.0f, 2.0f, 10.0f}, 0u},                    // a non-caster
+    };
+    for (const auto& caster : casters)
+    {
+        auto instance = MakeInstance(0u, mesh, caster.Flags);
+        instance.transform = instance.prevTransform = Matrix4x4::Identity();
+        instance.boundingCenter = caster.Center;
+        instance.boundingRadius = .05f;
+        m_Scene->AddInstance(instance);
+    }
+    m_Scene->FlushGPUBuffers();
+
+    const Matrix4x4 sun = Mathematics::MakeOrthographicLH_ZO_ReverseZ(-4.0f, 4.0f, -4.0f, 4.0f, 1.0f, 100.0f);
+    const Matrix4x4 spot = Matrix4x4::PerspectiveReverseZ(1.2f, 1.0f, .5f, 100.0f);
+    const Matrix4x4 pointFace = Matrix4x4::PerspectiveReverseZ(1.57079632679f, 1.0f, .5f, 100.0f);
+    std::vector<CascadeCullingGroup> groups;
+    std::vector<std::array<std::set<uint32_t>, 4>> expected;
+    for (const auto& [light, family] : {std::pair{sun, VirtualShadowLight::Directional},
+                                        std::pair{spot, VirtualShadowLight::Spot},
+                                        std::pair{pointFace, VirtualShadowLight::Point}})
+    {
+        CascadeCullingGroup group{};
+        group.viewId = 1;
+        group.cascadeCount = 4;
+        group.instanceCount = m_Scene->GetInstanceCount();
+        group.shadowCasterDispatch = true;
+        auto& pages = expected.emplace_back();
+        for (uint32_t page = 0; page < 4; ++page)
+        {
+            const auto cropped = CropVirtualShadowProjection(light, 2, page % 2, page / 2);
+            ASSERT_TRUE(cropped);
+            const auto planes = VirtualShadowPageCasterPlanes(*cropped, family);
+            std::copy(planes.begin(), planes.end(), group.frustumPlanes[page]);
+            // The page owns the light-space quadrant its crop maps inside clip space.
+            for (uint32_t index = 0; index < std::size(casters); ++index)
+            {
+                const auto& center = casters[index].Center;
+                const Vector4 clip = cropped->Transform(Vector4(center.x, center.y, center.z, 1.0f));
+                const float edge = clip.w * (1.0f + 1e-4f);
+                const bool behind = clip.w <= 0.0f;
+                if (casters[index].Flags != 0u && !behind && std::abs(clip.x) <= edge && std::abs(clip.y) <= edge)
+                    pages[page].insert(index);
+            }
+        }
+        groups.push_back(group);
+    }
+    // The table above must hold the cases it names before the GPU result means anything.
+    EXPECT_EQ(expected[0][0].size() + expected[0][1].size() + expected[0][2].size() + expected[0][3].size(), 7u);
+    for (const auto& pages : expected)
+        EXPECT_EQ(std::ranges::count_if(pages, [](const auto& page) { return page.contains(4u); }), 2);
+    EXPECT_EQ(std::ranges::count_if(expected[0], [](const auto& page) { return page.contains(5u); }), 1);
+    for (size_t local = 1; local < expected.size(); ++local)
+        EXPECT_EQ(std::ranges::count_if(expected[local], [](const auto& page) { return page.contains(5u); }), 0);
+
+    constexpr uint32_t kSliceElements = 64;
+    const auto words = LateCull(groups, kSliceElements);
+    for (size_t group = 0; group < groups.size(); ++group)
+        for (uint32_t page = 0; page < 4; ++page)
+        {
+            SCOPED_TRACE(::testing::Message() << "light=" << group << " page=" << page);
+            std::set<uint32_t> actual;
+            const size_t base = (group * kMaxCullingViewsPerDispatch + page) * kSliceElements;
+            for (uint32_t index = 0; index < std::size(casters); ++index)
+                if (words[base + index] != 0u)
+                    actual.insert(index);
+            EXPECT_EQ(actual, expected[group][page]);
+        }
 }
 
 TEST(BatchTableBuild, SortsByMaterialThenMeshWithExclusivePrefix)

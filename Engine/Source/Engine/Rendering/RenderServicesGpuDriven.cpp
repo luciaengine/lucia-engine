@@ -78,6 +78,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
+#include <span>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -117,6 +119,14 @@ static Rendering::GPUDrawStreamBuilder::ViewLODParams MakeViewLODParams(
     p.crossfadeDuration           = crossfadeDuration;
     p.lodHysteresisBand           = lodHysteresisBand;
     return p;
+}
+
+// Virtual shadow slices select LOD 0: a cached page must not depend on the camera that rendered it.
+static Rendering::GPUDrawStreamBuilder::ViewLODParams StableShadowSliceLod()
+{
+    Rendering::GPUDrawStreamBuilder::ViewLODParams lod{};
+    lod.forceLod = 0;
+    return lod;
 }
 
 RenderServices::ViewSseScales RenderServices::ComputeViewSseScales(
@@ -715,11 +725,12 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
             registerViewBatches(view.id, kSpotShadowCullingIndex);
         if (hasVisRangeForCascade(view.id, kVirtualShadowCasterCullingIndex))
         {
-            static_assert(kVirtualShadowCasterCullingIndex >= kProbeFaceCullingIndexBase + kProbeFaceCount);
+            static_assert(kVirtualShadowPageCullingIndexBase >= kProbeFaceCullingIndexBase + kProbeFaceCount);
             static_assert(kVirtualShadowCasterCullingIndex < kSpotShadowCullingIndex);
-            Rendering::GPUDrawStreamBuilder::ViewLODParams stableLod{};
-            stableLod.forceLod = 0;
+            const auto stableLod = StableShadowSliceLod();
             registerViewBatches(view.id, kVirtualShadowCasterCullingIndex, &stableLod);
+            // The view's rendered pages append their own slices later in the frame.
+            m_DrawStreamBuilder->ReserveAppendedSlices(kVirtualShadowPageRenderBudget);
         }
         // M1: one batch slice per (slot, face) that the cull scheduler produced a
         // visibility range for (same shared atlas assignment; ScheduleCulling ran
@@ -1004,6 +1015,98 @@ bool RenderServices::ScheduleWorldOcclusionRecoverScatterForView(
         groupMaps.OrderedToGroup,
         instanceCount, static_cast<uint32_t>(m_GpuScene->GetMeshes().size()));
     return ordering.IsValid();
+}
+
+Rendering::RenderGraph::RGBuffer RenderServices::ScheduleLateShadowSlices(
+    Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
+    const Mathematics::Vector3Int& originSector, std::span<const LateShadowSlice> slices)
+{
+    namespace RenderGraph = Rendering::RenderGraph;
+    if (slices.empty() || m_Profile.IsCompat() || !m_DrawStreamBuilder || !m_GpuScene ||
+        !m_GpuCullingPipeline || !m_FrameRG.For.IsFor(frame) || !Spine().BindWorldGeometry(frame))
+        return {};
+    const Rendering::ViewDesc* view = m_ViewRegistry.FindViewDesc(viewId);
+    if (!view || m_WorldDrawBuilder.GetBatchKeys(viewId).empty())
+        return {};
+    // The cull and the scatter read one instance count, so flush before either.
+    if (m_GpuScene->IsDirty())
+        m_GpuScene->FlushGPUBuffers();
+    const uint32_t instanceCount = m_GpuScene->GetInstanceCount();
+    const auto sceneRG = m_GpuScene->ImportFrameResources(frame);
+    if (instanceCount == 0u || !sceneRG.Instances.IsValid() || !sceneRG.Meshes.IsValid())
+        return {};
+
+    // One visibility slice per frustum, each aligned to bind as a storage range.
+    const size_t alignBytes = std::max<size_t>(m_Device->GetCapabilities().minStorageBufferOffsetAlignment,
+                                               sizeof(uint32_t));
+    const uint32_t alignElements = static_cast<uint32_t>(alignBytes / sizeof(uint32_t));
+    const uint32_t sliceElements = (instanceCount + alignElements - 1u) / alignElements * alignElements;
+    const uint64_t visibilityBytes = static_cast<uint64_t>(sliceElements) * slices.size() * sizeof(uint32_t);
+    if (visibilityBytes > std::numeric_limits<uint32_t>::max())
+        return {};
+    Rendering::BufferDesc descriptor{};
+    descriptor.size = visibilityBytes;
+    descriptor.stride = sizeof(uint32_t);
+    descriptor.usage = static_cast<uint32_t>(Rendering::BufferUsage::Storage);
+    descriptor.memoryUsage = Rendering::BufferMemoryUsage::DeviceLocal;
+    descriptor.debugName = "LateShadowSliceVisibility";
+    const RenderGraph::RGBuffer visibility = frame.CreateBuffer(descriptor.debugName, descriptor);
+    if (!visibility.IsValid())
+        return {};
+
+    for (size_t first = 0; first < slices.size(); first += Rendering::kMaxCullingViewsPerDispatch)
+    {
+        const size_t count = std::min<size_t>(slices.size() - first, Rendering::kMaxCullingViewsPerDispatch);
+        Rendering::CascadeCullingGroup group{};
+        group.viewId = viewId;
+        group.renderLayerMask = view->ActiveRenderLayerMask();
+        group.cascadeCount = static_cast<uint32_t>(count);
+        group.cascadeIndexBase = slices[first].CullingIndex;
+        group.shadowCasterDispatch = true;
+        group.dropEditorHidden = view->purpose == Rendering::ViewPurpose::EditorScene;
+        group.originSector = originSector;
+        group.instanceCount = instanceCount;
+        std::array<uint32_t, Rendering::kMaxCullingViewsPerDispatch> offsets{};
+        for (size_t slice = 0; slice < count; ++slice)
+        {
+            std::ranges::copy(slices[first + slice].Planes, group.frustumPlanes[slice]);
+            offsets[slice] = static_cast<uint32_t>((first + slice) * sliceElements);
+        }
+        if (!m_GpuCullingPipeline->ScheduleCascadeGroupInto(frame, *m_GpuScene, group, visibility,
+                static_cast<uint32_t>(visibilityBytes), std::span(offsets).first(count)))
+            return {};
+    }
+
+    const uint32_t viewWorldKey = WorldKeyForView(viewId);
+    for (size_t slice = 0; slice < slices.size(); ++slice)
+    {
+        Rendering::GPUDrawStreamBuilder::SliceRegistration registration{};
+        registration.viewId = static_cast<uint32_t>(viewId);
+        registration.cascadeIndex = slices[slice].CullingIndex;
+        registration.table = Rendering::GPUDrawStreamBuilder::SliceTable::Shadow;
+        registration.visibilityOffsetBytes = static_cast<uint32_t>(slice * sliceElements * sizeof(uint32_t));
+        registration.viewWorldKey = viewWorldKey;
+        registration.lod = StableShadowSliceLod();
+        m_DrawStreamBuilder->RegisterSlice(registration);
+    }
+
+    // The scatter's elision record holds the slice layout but not the planes. A late frustum
+    // changes every frame at the same layout, so this call always scatters.
+    RefreshScatterElisionContext();
+    Rendering::ElisionFrameContext elision = m_DrawStreamBuilder->GetElisionFrameContext();
+    elision.AllowElision = false;
+    m_DrawStreamBuilder->SetElisionFrameContext(elision);
+    char passSuffix[64];
+    std::snprintf(passSuffix, sizeof(passSuffix), "LateShadow.View%u", static_cast<uint32_t>(viewId));
+    const ScatterGroupMaps groupMaps = MeshPoolGroupMapsForScatter();
+    const RenderGraph::RGBuffer ordering = m_DrawStreamBuilder->ScheduleUnifiedScatter(
+        frame, passSuffix, static_cast<int32_t>(Rendering::PassPhase::kEarlySetup),
+        visibility, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes,
+        m_GpuScene->GetBatchRegistry(), m_MaterialSystem.MaterialDepthClassSpan(),
+        m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered, groupMaps.OrderedToGroup,
+        instanceCount, static_cast<uint32_t>(m_GpuScene->GetMeshes().size()));
+    RefreshScatterElisionContext();
+    return ordering;
 }
 
 void RenderServices::EnsureAnimComputePass()

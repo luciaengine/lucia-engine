@@ -874,7 +874,7 @@ void GPUScene::ScheduleCullingPassForRange(RenderGraph::RGFrame& frame, const GP
                             cullingData, margins, sliceStableKey);
 }
 
-void GPUScene::ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
+bool GPUScene::ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
                                                   RenderGraph::RGBuffer visibility, uint32_t visibilityTotalBytes,
                                                   const uint32_t* sliceOffsetsElements, uint32_t viewCount,
                                                   uint32_t firstInstance, uint32_t instanceCount,
@@ -882,7 +882,7 @@ void GPUScene::ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, c
                                                   const CullDeformationMargins& margins, uint64_t groupStableKey)
 {
     if (instanceCount == 0u || viewCount == 0u)
-        return;
+        return false;
     if (viewCount > kMaxViewsPerCullingDispatch)
         viewCount = kMaxViewsPerCullingDispatch;
 
@@ -895,7 +895,7 @@ void GPUScene::ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, c
         {
             CreateCullingPipeline();
             if (!m_CullingPipeline.IsValid())
-                return;
+                return false;
         }
         pso = m_CullingPipeline;
     }
@@ -903,14 +903,14 @@ void GPUScene::ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, c
     {
         pso = GetOrCreateCascadeCullingPipeline(viewCount);
         if (!pso.IsValid())
-            return;
+            return false;
     }
-    ScheduleCullingPassImpl(frame, sceneRG, visibility, visibilityTotalBytes, pso,
+    return ScheduleCullingPassImpl(frame, sceneRG, visibility, visibilityTotalBytes, pso,
                             sliceOffsetsElements, viewCount, firstInstance, instanceCount,
                             cullingData, margins, groupStableKey);
 }
 
-void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
+bool GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
                                        RenderGraph::RGBuffer visibility, uint32_t visibilityTotalBytes,
                                        PipelineHandle pipeline,
                                        const uint32_t* sliceOffsetsElements, uint32_t viewCount,
@@ -920,14 +920,14 @@ void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSce
 {
     if (!visibility.IsValid() || !pipeline.IsValid() || !margins.Valid() || instanceCount == 0u ||
         viewCount == 0u)
-        return;
+        return false;
 
     // Per-dispatch params written NOW, at declaration, into the frame's upload
     // ring (256-aligned ≥ minStorageBufferOffsetAlignment). The old arm's
     // 256-slot grid, slot indices, and exec-time UpdateBuffer all dissolve.
     auto cd = frame.AllocUpload<GPUCullingData>();
     if (!cd.Valid())
-        return;
+        return false;
     *cd.Ptr = cullingData;
     cd.Ptr->instanceCount = instanceCount;
     cd.Ptr->firstInstance = firstInstance;
@@ -973,6 +973,7 @@ void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSce
                                 { return PrepareSceneCullingPass(context, *data); });
                   },
                   [data](RenderGraph::RGContext& context) { RecordSceneCullingPass(context, *data); });
+    return true;
 }
 
 void GPUScene::CreateBuffers()

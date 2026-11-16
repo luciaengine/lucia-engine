@@ -1130,6 +1130,64 @@ TEST(RGGpuDriven, IntrospectScatterNeverCreatesThePipeline)
     builder->Shutdown();
 }
 
+// A later schedule call of a frame cannot grow the arena, so the frame's first call grows it for
+// the slices that the frame announced. Without the announcement the appended call trips the guard.
+TEST(RGGpuDriven, ReservedAppendedSlicesFitAfterTheFirstScatterOfTheFrame)
+{
+    RG_REQUIRE_DEVICE(dev);
+    GPUScene::SetCullingShaderLoader(&TestShaderLoader);
+    GPUDrawStreamBuilder::SetShaderLoader(&TestShaderLoader);
+    auto scene = GPUSceneFactory::CreateSmallScene(dev.get());
+    // One batch whose snapshot fills more than half of the initial arena per slice.
+    constexpr uint32_t kBatchInstances = 600000u;
+    BatchRegistry registry;
+    for (uint32_t instance = 0; instance < kBatchInstances; ++instance)
+        registry.OnInstanceAdded(/*materialIndex=*/0u, /*meshIndex=*/0u, /*mirrored=*/false);
+
+    for (const bool reserve : {true, false})
+    {
+        SCOPED_TRACE(::testing::Message() << "reserve=" << reserve);
+        auto builder = std::make_unique<GPUDrawStreamBuilder>(dev.get());
+        ASSERT_TRUE(builder->Initialize());
+        if (!builder->GetOrCreateScatterPipeline().IsValid())
+            GTEST_SKIP() << "draw_command_scatter.shaderpkg unavailable";
+        FramePools pools(dev.get());
+        RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(0);
+        BufferDesc descriptor;
+        descriptor.size = 4096;
+        descriptor.usage = static_cast<uint32_t>(BufferUsage::Storage);
+        const BufferHandle visibilityBuffer = dev->CreateBuffer(descriptor);
+        ASSERT_TRUE(visibilityBuffer.IsValid());
+        const RGBuffer visibility = frame.ImportExternalBuffer("Vis", visibilityBuffer);
+        const GPUScene::GPUSceneFrameRG sceneRG = scene->ImportFrameResources(frame);
+        const auto schedule = [&](const char* suffix, std::initializer_list<uint8_t> cascades)
+        {
+            for (const uint8_t cascade : cascades)
+            {
+                GPUDrawStreamBuilder::SliceRegistration slice{};
+                slice.viewId = 1u;
+                slice.cascadeIndex = cascade;
+                slice.disableVisibilityCheck = true;
+                builder->RegisterSlice(slice);
+            }
+            return builder->ScheduleUnifiedScatter(frame, suffix, 0, visibility, sceneRG.Instances, sceneRG.ScatterHot,
+                sceneRG.Meshes, registry, {}, {}, {}, {}, 8u, static_cast<uint32_t>(scene->GetMeshes().size()));
+        };
+
+        builder->BeginArenaFrame();
+        if (reserve)
+            builder->ReserveAppendedSlices(2u);
+        EXPECT_TRUE(schedule("First", {GPUDrawStreamBuilder::kCascadeIndexNone}).IsValid());
+        const RGBuffer appended = schedule("Appended", {0x10u, 0x11u});
+        EXPECT_EQ(appended.IsValid(), reserve);
+        EXPECT_EQ(builder->FindBatchDrawRange(1u, 0x11u, 0u, 0u, GPUDrawStreamBuilder::SlicePhase::A).IsValid(), reserve);
+        frame.Execute();
+        dev->WaitForIdle();
+        dev->DestroyBuffer(visibilityBuffer);
+    }
+}
+
 // E2 — ScheduleUnifiedScatter(RGFrame&): publishes the ordering proxy,
 // consumes the registered slices, publishes consumer ranges, and the pass's
 // first-touch barrier carries Transfer in its dst scope — the declared

@@ -600,6 +600,9 @@ class GPUDrawStreamBuilder
 
     void BeginArenaFrame();
     void RegisterSlice(const SliceRegistration& slice);
+    /// Announces shadow slices that a later schedule call of this app frame appends. The frame's
+    /// first call grows the arena for them, because a later call cannot grow it.
+    void ReserveAppendedSlices(uint32_t sliceCount) { m_ReservedAppendedSlices += sliceCount; }
     size_t GetPendingSliceCount() const { return m_FrameSlices.size(); }
 
     // `materialDepthClass` (indexed by materialIndex, MaterialDepthClass
@@ -963,6 +966,7 @@ class GPUDrawStreamBuilder
     // evaluated last frame recomputes (EvaluationGap): its retained regions
     // may have been rewritten by other calls while it was absent.
     void SetElisionFrameContext(const ElisionFrameContext& ctx) { m_ElisionCtx = ctx; }
+    const ElisionFrameContext& GetElisionFrameContext() const { return m_ElisionCtx; }
 
     /// Frame clock the LOD crossfade differences its per-instance start stamps
     /// against (the process-global animation timeline, in seconds). Frame state,
@@ -1254,6 +1258,7 @@ class GPUDrawStreamBuilder
     // host-visible Upload memory, so growth is low-risk.
     uint32_t     m_PendingTableRingBytes = 0;
     bool         m_ArenaSkipLogged       = false;
+    uint32_t     m_ReservedAppendedSlices = 0;
 
     std::vector<SliceRegistration> m_FrameSlices;
     // Keyed by MakeStreamKey(viewId, cascadeIndex, materialIndex, meshIndex, phase).
