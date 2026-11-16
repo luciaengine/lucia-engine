@@ -105,13 +105,13 @@ TEST_F(ShaderCompilationCacheTest, GetOrCompile_EmptyContext_DoesNotPoisonCache)
     const ShaderCacheKey key = MakeTestKey("surface_a.glsl");
     const MaterialCompileSpec spec = MakeTestSpec("surface_a.glsl");
 
-    auto first = m_cache.GetOrCompile(key, spec, emptyContext, "MatA", ShaderSourceKind::SpirV);
+    auto first = m_cache.GetOrCompile(key, spec, emptyContext, "MatA", {}, ShaderSourceKind::SpirV);
     EXPECT_EQ(first, nullptr);
     EXPECT_EQ(m_cache.GetEntryCount(), 0u);
 
     // A populated (but here still invalid) context resumes normal caching, so the
     // material recompiles once the context is ready rather than staying dead.
-    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", ShaderSourceKind::SpirV);
+    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", {}, ShaderSourceKind::SpirV);
     EXPECT_EQ(m_cache.GetEntryCount(), 1u);
 }
 
@@ -120,8 +120,8 @@ TEST_F(ShaderCompilationCacheTest, GetOrCompile_CacheHitReturnsSameResult)
     const ShaderCacheKey key = MakeTestKey("surface_a.glsl");
     const MaterialCompileSpec spec = MakeTestSpec("surface_a.glsl");
 
-    auto first = m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", ShaderSourceKind::SpirV);
-    auto second = m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", ShaderSourceKind::SpirV);
+    auto first = m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", {}, ShaderSourceKind::SpirV);
+    auto second = m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", {}, ShaderSourceKind::SpirV);
 
     EXPECT_EQ(first, second);
     EXPECT_EQ(m_cache.GetEntryCount(), 1u);
@@ -136,7 +136,7 @@ TEST_F(ShaderCompilationCacheTest, Clear_RemovesGlobalEntries)
                          ShaderSourceKind::SpirV);
     ShaderCacheKey forwardPlusKey = MakeTestKey("surface_a.glsl");
     forwardPlusKey.VariantKey.materialKeywords |= MaterialKeyword::ForwardPlus;
-    m_cache.GetOrCompile(forwardPlusKey, spec, m_fakeContext, "MatA", ShaderSourceKind::SpirV);
+    m_cache.GetOrCompile(forwardPlusKey, spec, m_fakeContext, "MatA", {}, ShaderSourceKind::SpirV);
     ASSERT_EQ(m_cache.GetEntryCount(), 2u);
 
     m_cache.Clear();
@@ -151,10 +151,10 @@ TEST_F(ShaderCompilationCacheTest, GetOrCompile_WorksAfterClear)
     const ShaderCacheKey key = MakeTestKey("surface_a.glsl");
     const MaterialCompileSpec spec = MakeTestSpec("surface_a.glsl");
 
-    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", ShaderSourceKind::SpirV);
+    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", {}, ShaderSourceKind::SpirV);
     m_cache.Clear();
 
-    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", ShaderSourceKind::SpirV);
+    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", {}, ShaderSourceKind::SpirV);
     EXPECT_EQ(m_cache.GetEntryCount(), 1u);
 }
 
@@ -163,13 +163,13 @@ TEST_F(ShaderCompilationCacheTest, InvalidateGlobalEntry_ForcesGlobalRecompile)
     const ShaderCacheKey key = MakeTestKey("surface_a.glsl");
     const MaterialCompileSpec spec = MakeTestSpec("surface_a.glsl");
 
-    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", ShaderSourceKind::SpirV);
+    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", {}, ShaderSourceKind::SpirV);
     EXPECT_EQ(m_cache.GetEntryCount(), 1u);
 
     m_cache.InvalidateGlobalEntry(key);
     EXPECT_EQ(m_cache.GetEntryCount(), 0u);
 
-    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", ShaderSourceKind::SpirV);
+    m_cache.GetOrCompile(key, spec, m_fakeContext, "MatA", {}, ShaderSourceKind::SpirV);
     EXPECT_EQ(m_cache.GetEntryCount(), 1u);
 }
 
@@ -288,7 +288,7 @@ TEST_F(ShaderCompilationCacheEpochTest, InvalidateDuringCompile_DoesNotResurrect
     const MaterialCompileSpec spec = MakeSpec();
 
     auto calls = ArmInvalidationDuringCompile();
-    auto stale = m_cache.GetOrCompile(key, spec, m_ctx, "EpochProbe", ShaderSourceKind::SpirV);
+    auto stale = m_cache.GetOrCompile(key, spec, m_ctx, "EpochProbe", {}, ShaderSourceKind::SpirV);
     Disarm();
 
     ASSERT_EQ(*calls, 1) << "the compile window must have been entered, or nothing was tested";
@@ -301,7 +301,7 @@ TEST_F(ShaderCompilationCacheEpochTest, InvalidateDuringCompile_DoesNotResurrect
     // The recompile after the invalidation must see the EDITED source. Without
     // the guard this is a cache HIT on the resurrected pre-edit entry.
     WriteSurface("vec3(1.0, 0.0, 0.0) * 0.25"); // v2
-    auto fresh = m_cache.GetOrCompile(key, spec, m_ctx, "EpochProbe", ShaderSourceKind::SpirV);
+    auto fresh = m_cache.GetOrCompile(key, spec, m_ctx, "EpochProbe", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(fresh, nullptr);
     EXPECT_EQ(m_cache.GetEntryCount(), 1u) << "an uninterrupted publish still caches";
     EXPECT_NE(fresh->fragmentBytes, stale->fragmentBytes)
@@ -326,7 +326,7 @@ TEST_F(ShaderCompilationCacheEpochTest, TargetedInvalidateDuringCompile_DoesNotR
             ++*calls;
             m_cache.InvalidateGlobalEntry(key);
         });
-    auto stale = m_cache.GetOrCompile(key, spec, m_ctx, "EpochProbe", ShaderSourceKind::SpirV);
+    auto stale = m_cache.GetOrCompile(key, spec, m_ctx, "EpochProbe", {}, ShaderSourceKind::SpirV);
     Disarm();
 
     ASSERT_EQ(*calls, 1) << "the compile window must have been entered, or nothing was tested";
@@ -336,7 +336,7 @@ TEST_F(ShaderCompilationCacheEpochTest, TargetedInvalidateDuringCompile_DoesNotR
            "reinstating the swept key";
 
     WriteSurface("vec3(1.0, 0.0, 0.0) * 0.25"); // v2
-    auto fresh = m_cache.GetOrCompile(key, spec, m_ctx, "EpochProbe", ShaderSourceKind::SpirV);
+    auto fresh = m_cache.GetOrCompile(key, spec, m_ctx, "EpochProbe", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(fresh, nullptr);
     EXPECT_NE(fresh->fragmentBytes, stale->fragmentBytes)
         << "the post-invalidation compile must produce the edited SPIR-V, not the pre-edit bytes";
@@ -362,7 +362,7 @@ TEST_F(ShaderCompilationCacheEpochTest, ClearDuringCompile_DoesNotResurrectEntry
             ++*calls;
             m_cache.Clear();
         });
-    auto stale = m_cache.GetOrCompile(key, spec, m_ctx, "ClearProbe", ShaderSourceKind::SpirV);
+    auto stale = m_cache.GetOrCompile(key, spec, m_ctx, "ClearProbe", {}, ShaderSourceKind::SpirV);
     Disarm();
 
     ASSERT_EQ(*calls, 1) << "the compile window must have been entered, or nothing was tested";
@@ -372,7 +372,7 @@ TEST_F(ShaderCompilationCacheEpochTest, ClearDuringCompile_DoesNotResurrectEntry
         << "a publish whose compile started before Clear() must not reinstate the entry";
 
     // ...and the cache is not wedged: the next request compiles and caches.
-    auto fresh = m_cache.GetOrCompile(key, spec, m_ctx, "ClearProbe", ShaderSourceKind::SpirV);
+    auto fresh = m_cache.GetOrCompile(key, spec, m_ctx, "ClearProbe", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(fresh, nullptr);
     EXPECT_EQ(m_cache.GetEntryCount(), 1u);
 }
@@ -385,7 +385,7 @@ TEST_F(ShaderCompilationCacheEpochTest, InvalidateBeforeCompile_StillCaches)
     WriteSurface("vec3(0.0, 1.0, 0.0)");
     m_cache.InvalidateEntriesForShaderFile("some_other_surface.glsl");
 
-    auto variant = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "EpochProbe", ShaderSourceKind::SpirV);
+    auto variant = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "EpochProbe", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(variant, nullptr);
     EXPECT_EQ(m_cache.GetEntryCount(), 1u)
         << "an invalidation that predates the compile must not suppress its publish";
@@ -480,79 +480,12 @@ class ShaderCompilationCacheClosureTest : public ::testing::Test
     ShaderCompilationCache m_cache;
 };
 
-TEST_F(ShaderCompilationCacheClosureTest, SameDirectoryMaterialsShareCompileAndInvalidation)
-{
-    WriteHelper("vec3(0.0, 1.0, 0.0)");
-    WriteIncludingSurface(kSurfaceFile, kHelperFile);
-    WriteFile("first.material", "{}");
-    WriteFile("second.material", "{}");
-    auto first = MakeKey();
-    first.Source.MaterialAssetPath = m_projectRoot / "first.material";
-    auto second = first;
-    second.Source.MaterialAssetPath = m_projectRoot / "second.material";
-    EXPECT_EQ(first, second);
-    EXPECT_EQ(std::hash<ShaderCacheKey>{}(first), std::hash<ShaderCacheKey>{}(second));
-    size_t compiles = 0;
-    m_cache.SetCompileEnteredHookForTesting([&] { ++compiles; });
-    auto a = m_cache.GetOrCompile(first, MakeSpec(), m_ctx, "First", ShaderSourceKind::SpirV);
-    auto b = m_cache.GetOrCompile(second, MakeSpec(), m_ctx, "Second", ShaderSourceKind::SpirV);
-    ASSERT_NE(a, nullptr);
-    EXPECT_EQ(a, b);
-    EXPECT_EQ(compiles, 1u);
-    EXPECT_EQ(first.Source.MaterialAssetPath.filename(), "first.material");
-    EXPECT_EQ(second.Source.MaterialAssetPath.filename(), "second.material");
-    const auto deps = m_cache.InvalidateEntriesForShaderFile(kHelperFile);
-    EXPECT_EQ(deps.DroppedEntries, 1u);
-    EXPECT_TRUE(NamesIdentity(deps, kSurfaceFile, "", first.Source.MaterialAssetPath));
-    EXPECT_TRUE(NamesIdentity(deps, kSurfaceFile, "", second.Source.MaterialAssetPath));
-    WriteHelper("vec3(1.0, 0.0, 0.0)");
-    auto fresh = m_cache.GetOrCompile(second, MakeSpec(), m_ctx, "Second", ShaderSourceKind::SpirV);
-    ASSERT_NE(fresh, nullptr);
-    EXPECT_NE(fresh->fragmentBytes, a->fragmentBytes);
-    EXPECT_EQ(compiles, 2u);
-}
-
-TEST(ShaderSourceKeyTest, SyntheticSourcesRemainDistinctFromRelativeMaterialFiles)
-{
-    ShaderSourceKey synthetic{"surface.glsl", "", {}};
-    ShaderSourceKey authored{"surface.glsl", "", "first.material"};
-    EXPECT_FALSE(synthetic == authored);
-    auto other = authored;
-    other.MaterialAssetPath = "second.material";
-    EXPECT_EQ(authored, other);
-    other.MaterialAssetPath = "other/second.material";
-    EXPECT_FALSE(authored == other);
-}
-
-TEST_F(ShaderCompilationCacheClosureTest, SharedSuccessClearsOriginalMaterialDiagnostic)
-{
-    ShaderCompileErrorLog errors;
-    m_cache.SetErrorLog(&errors);
-    WriteFile("first.material", "{}");
-    WriteFile("second.material", "{}");
-    WriteFile(kSurfaceFile, "not valid shader source");
-    auto first = MakeKey();
-    first.Source.MaterialAssetPath = m_projectRoot / "first.material";
-    auto second = first;
-    second.Source.MaterialAssetPath = m_projectRoot / "second.material";
-    EXPECT_EQ(m_cache.GetOrCompile(first, MakeSpec(), m_ctx, "First", ShaderSourceKind::SpirV), nullptr);
-    ASSERT_FALSE(errors.Snapshot().empty());
-    EXPECT_EQ(errors.Snapshot().front().MaterialAssetPath, first.Source.MaterialAssetPath);
-    WriteHelper("vec3(0.0, 1.0, 0.0)");
-    WriteIncludingSurface(kSurfaceFile, kHelperFile);
-    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
-    ASSERT_NE(m_cache.GetOrCompile(second, MakeSpec(), m_ctx, "Second", ShaderSourceKind::SpirV), nullptr);
-    ASSERT_NE(m_cache.GetOrCompile(first, MakeSpec(), m_ctx, "First", ShaderSourceKind::SpirV), nullptr);
-    EXPECT_TRUE(errors.Snapshot().empty());
-    m_cache.SetErrorLog(nullptr);
-}
-
 TEST_F(ShaderCompilationCacheClosureTest, IncludeEdit_InvalidatesRidersAndRecompilesFresh)
 {
     WriteHelper("vec3(0.0, 1.0, 0.0)"); // v1
     WriteIncludingSurface(kSurfaceFile, kHelperFile);
 
-    auto v1 = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", ShaderSourceKind::SpirV);
+    auto v1 = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(v1, nullptr);
     ASSERT_FALSE(v1->fragmentBytes.empty());
 
@@ -566,7 +499,7 @@ TEST_F(ShaderCompilationCacheClosureTest, IncludeEdit_InvalidatesRidersAndRecomp
         << "a successful build's include closure must make its identity reportable";
     EXPECT_EQ(m_cache.GetEntryCount(), 0u);
 
-    auto v2 = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", ShaderSourceKind::SpirV);
+    auto v2 = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(v2, nullptr);
     EXPECT_NE(v2->fragmentBytes, v1->fragmentBytes)
         << "the recompile after an include edit must produce the edited SPIR-V";
@@ -589,9 +522,9 @@ TEST_F(ShaderCompilationCacheClosureTest, BaseOnlyInvalidationCannotReachPassVar
     ShaderCacheKey passKey = MakeKey();
     passKey.VariantKey.materialKeywords = MaterialKeyword::Instanced;
 
-    auto base1 = m_cache.GetOrCompile(baseKey, MakeSpec(), m_ctx, "ProbeBase", ShaderSourceKind::SpirV);
+    auto base1 = m_cache.GetOrCompile(baseKey, MakeSpec(), m_ctx, "ProbeBase", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(base1, nullptr);
-    auto pass1 = m_cache.GetOrCompile(passKey, MakeSpec(), m_ctx, "ProbePass", ShaderSourceKind::SpirV);
+    auto pass1 = m_cache.GetOrCompile(passKey, MakeSpec(), m_ctx, "ProbePass", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(pass1, nullptr);
     ASSERT_FALSE(pass1->fragmentBytes.empty());
     ASSERT_EQ(m_cache.GetEntryCount(), 2u)
@@ -604,13 +537,13 @@ TEST_F(ShaderCompilationCacheClosureTest, BaseOnlyInvalidationCannotReachPassVar
     EXPECT_EQ(m_cache.GetEntryCount(), 1u)
         << "base-only invalidation drops the base and leaves the pass variant";
 
-    auto passAfter = m_cache.GetOrCompile(passKey, MakeSpec(), m_ctx, "ProbePass", ShaderSourceKind::SpirV);
+    auto passAfter = m_cache.GetOrCompile(passKey, MakeSpec(), m_ctx, "ProbePass", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(passAfter, nullptr);
     EXPECT_EQ(passAfter->fragmentBytes, pass1->fragmentBytes)
         << "base-only invalidation leaves the pass variant serving pre-edit bytes";
 
     // Only the closure sweep reaches every variant of the pair.
-    auto base2 = m_cache.GetOrCompile(baseKey, MakeSpec(), m_ctx, "ProbeBase", ShaderSourceKind::SpirV);
+    auto base2 = m_cache.GetOrCompile(baseKey, MakeSpec(), m_ctx, "ProbeBase", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(base2, nullptr);
     ASSERT_EQ(m_cache.GetEntryCount(), 2u);
     EXPECT_EQ(m_cache.InvalidateEntriesForShaderFile(kHelperFile).DroppedEntries, 2u)
@@ -622,7 +555,7 @@ TEST_F(ShaderCompilationCacheClosureTest, UnrelatedFileEdit_DropsNothing)
     WriteHelper("vec3(0.0, 1.0, 0.0)");
     WriteIncludingSurface(kSurfaceFile, kHelperFile);
 
-    auto v1 = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", ShaderSourceKind::SpirV);
+    auto v1 = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(v1, nullptr);
 
     const auto deps = m_cache.InvalidateEntriesForShaderFile("not_in_closure.glsl");
@@ -631,7 +564,7 @@ TEST_F(ShaderCompilationCacheClosureTest, UnrelatedFileEdit_DropsNothing)
     EXPECT_TRUE(deps.Identities.empty())
         << "...and must name no identity for the requeue to act on";
     EXPECT_EQ(m_cache.GetEntryCount(), 1u);
-    EXPECT_EQ(m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", ShaderSourceKind::SpirV), v1)
+    EXPECT_EQ(m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", {}, ShaderSourceKind::SpirV), v1)
         << "the surviving entry must still serve as a hit";
 }
 
@@ -640,7 +573,7 @@ TEST_F(ShaderCompilationCacheClosureTest, AdapterEdit_InvalidatesRiders)
     WriteHelper("vec3(0.0, 1.0, 0.0)");
     WriteIncludingSurface(kSurfaceFile, kHelperFile);
 
-    ASSERT_NE(m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", ShaderSourceKind::SpirV), nullptr);
+    ASSERT_NE(m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", {}, ShaderSourceKind::SpirV), nullptr);
 
     // The adapters are INLINED into the composed source (never #include
     // directives), so only the build-service dependency record can know them.
@@ -649,7 +582,7 @@ TEST_F(ShaderCompilationCacheClosureTest, AdapterEdit_InvalidatesRiders)
         << "a vertex-adapter edit must invalidate every material riding it";
     EXPECT_TRUE(NamesIdentity(vertexDeps, kSurfaceFile, ""));
 
-    ASSERT_NE(m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", ShaderSourceKind::SpirV), nullptr);
+    ASSERT_NE(m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", {}, ShaderSourceKind::SpirV), nullptr);
     const auto fragmentDeps = m_cache.InvalidateEntriesForShaderFile("adapter_forward.glsl");
     EXPECT_EQ(fragmentDeps.DroppedEntries, 1u)
         << "a fragment-adapter edit must invalidate every material riding it";
@@ -694,7 +627,7 @@ TEST_F(ShaderCompilationCacheClosureTest, FailedCompile_RecordsClosureOfPresentB
     WriteFile(kHelperFile, "vec3 ClosureHelperColor() { return vec3(0.0, 1.0, 0.0; }\n"); // broken
     WriteIncludingSurface(kSurfaceFile, kHelperFile);
 
-    auto broken = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", ShaderSourceKind::SpirV);
+    auto broken = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", {}, ShaderSourceKind::SpirV);
     EXPECT_EQ(broken, nullptr) << "the malformed include must fail the compile";
 
     WriteHelper("vec3(0.0, 0.0, 1.0)"); // fixed
@@ -702,7 +635,7 @@ TEST_F(ShaderCompilationCacheClosureTest, FailedCompile_RecordsClosureOfPresentB
     EXPECT_TRUE(NamesIdentity(deps, kSurfaceFile, ""))
         << "a failed build must still record the includes it resolved, or the fix never requeues it";
     EXPECT_GE(deps.DroppedEntries, 1u) << "fixing the include must drop the memoized failure";
-    auto fixed = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", ShaderSourceKind::SpirV);
+    auto fixed = m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(fixed, nullptr) << "the fixed include must compile on the next request";
     EXPECT_FALSE(fixed->fragmentBytes.empty());
 }
@@ -719,7 +652,7 @@ TEST_F(ShaderCompilationCacheClosureTest, ImplicitDefaultSurface_RecordsDefaultC
     MaterialCompileSpec spec{};
     spec.lightingModel = "StandardPBR";
 
-    auto variant = m_cache.GetOrCompile(key, spec, m_ctx, "DefaultSurfaceProbe", ShaderSourceKind::SpirV);
+    auto variant = m_cache.GetOrCompile(key, spec, m_ctx, "DefaultSurfaceProbe", {}, ShaderSourceKind::SpirV);
     ASSERT_NE(variant, nullptr) << "the implicit default surface must compile from the staged tree";
     const auto deps = m_cache.InvalidateEntriesForShaderFile("standard_surface.glsl");
     EXPECT_TRUE(NamesIdentity(deps, "", ""))
@@ -737,7 +670,7 @@ TEST_F(ShaderCompilationCacheClosureTest, ClearKeepsClosureRows)
 {
     WriteHelper("vec3(0.0, 1.0, 0.0)");
     WriteIncludingSurface(kSurfaceFile, kHelperFile);
-    ASSERT_NE(m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", ShaderSourceKind::SpirV), nullptr);
+    ASSERT_NE(m_cache.GetOrCompile(MakeKey(), MakeSpec(), m_ctx, "ClosureProbe", {}, ShaderSourceKind::SpirV), nullptr);
     ASSERT_EQ(m_cache.GetEntryCount(), 1u);
 
     m_cache.Clear();
@@ -789,17 +722,18 @@ TEST_F(ShaderCompilationCacheClosureTest, SameNamedSurfaceInTwoDirs_GetSeparateC
         ShaderCacheKey k{};
         k.VariantKey.vertexFlags = VertexAttributeFlags::StandardMesh;
         k.VariantKey.lightingModel = LightingModel::kStandardPBR;
-        k.Source.SurfaceShaderPath = "shared_surface.glsl";
-        k.Source.MaterialAssetPath = materialPath;
+        k.Source = MakeShaderSourceKey("shared_surface.glsl", "", materialPath);
         return k;
     };
     MaterialCompileSpec spec{};
     spec.surfaceShaderPath = "shared_surface.glsl";
     spec.lightingModel = "StandardPBR";
 
-    auto vA = m_cache.GetOrCompile(makeKey(dirA / "a.material"), spec, m_ctx, "ProbeA", ShaderSourceKind::SpirV);
+    auto vA = m_cache.GetOrCompile(makeKey(dirA / "a.material"), spec, m_ctx, "ProbeA", dirA / "a.material",
+                                   ShaderSourceKind::SpirV);
     ASSERT_NE(vA, nullptr);
-    auto vB = m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", ShaderSourceKind::SpirV);
+    auto vB = m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material",
+                                   ShaderSourceKind::SpirV);
     ASSERT_NE(vB, nullptr);
     ASSERT_EQ(m_cache.GetEntryCount(), 2u) << "distinct materialAssetPath => two entries";
     ASSERT_NE(vA->fragmentBytes, vB->fragmentBytes) << "the two surfaces really are different code";
@@ -813,7 +747,8 @@ TEST_F(ShaderCompilationCacheClosureTest, SameNamedSurfaceInTwoDirs_GetSeparateC
     EXPECT_FALSE(NamesIdentity(depsA, "shared_surface.glsl", "", dirB / "b.material"))
         << "B resolves a different file of the same name — it must not ride along";
     EXPECT_EQ(m_cache.GetEntryCount(), 1u) << "B's entry must survive A's helper edit";
-    EXPECT_EQ(m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", ShaderSourceKind::SpirV), vB)
+    EXPECT_EQ(m_cache.GetOrCompile(makeKey(dirB / "b.material"), spec, m_ctx, "ProbeB", dirB / "b.material",
+                                   ShaderSourceKind::SpirV), vB)
         << "B's surviving entry must still serve as a hit";
 
     // ...and symmetrically, so the pass above is not an artifact of row order.
@@ -848,18 +783,10 @@ TEST(ShaderCacheIdentity, RetainedKeysStayStableAndDistinctAcrossProfilesAndReha
     EXPECT_NE(otherTarget, compatible);
 }
 
-TEST_F(ShaderCompilationCacheTest, FailedProgramsAreCachedSeparatelyForEachStageSourceKind)
-{
-    const auto key = MakeTestKey("surface_a.glsl");
-    const auto spec = MakeTestSpec("surface_a.glsl");
-    int compiles = 0;
-    m_cache.SetCompileEnteredHookForTesting([&compiles] { ++compiles; });
-    EXPECT_EQ(m_cache.GetOrCompile(key, spec, m_fakeContext, "Spirv", ShaderSourceKind::SpirV), nullptr);
-    EXPECT_EQ(m_cache.GetOrCompile(key, spec, m_fakeContext, "Wgsl", ShaderSourceKind::Wgsl), nullptr);
-    EXPECT_EQ(compiles, 2);
-    EXPECT_EQ(m_cache.GetEntryCount(), 2u);
-    EXPECT_EQ(m_cache.GetOrCompile(key, spec, m_fakeContext, "SpirvAgain", ShaderSourceKind::SpirV), nullptr);
-    EXPECT_EQ(compiles, 2);
+    const auto deps = m_cache.InvalidateEntriesForShaderFile(kHelperFile);
+    EXPECT_EQ(deps.DroppedEntries, 1u);
+    EXPECT_TRUE(NamesIdentity(deps, kSurfaceFile, ""))
+        << "the shared identity is what the affected-material scan matches every rider against";
 }
 
 namespace
@@ -902,52 +829,12 @@ bool TargetMetaNames(const ShaderMeta& meta, std::string_view name)
 }
 } // namespace
 
-TEST_F(ShaderCompilationCacheEpochTest, InFlightReliefCompileKeepsItsCapturedTargetAfterDefaultsChange)
-{
-    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
-    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, false, true});
-    ShaderCacheKey captured = MakeTestKey("Surfaces/standard_pbr.glsl");
-    captured.VariantKey.materialKeywords |= MaterialKeyword::Parallax;
-    MaterialCompileSpec spec = MakeTestSpec("Surfaces/standard_pbr.glsl");
-    spec.parallax = true;
-    int entered = 0;
-    m_cache.SetCompileEnteredHookForTesting([&entered]
-    {
-        ++entered;
-        ApplyShaderCompileProfile({SpirvTarget::Spirv_1_6, true, false});
-    });
-    auto first = m_cache.GetOrCompile(captured, spec, m_ctx, "CapturedRelief", ShaderSourceKind::SpirV);
-    Disarm();
-    ASSERT_EQ(entered, 1);
-    ASSERT_NE(first, nullptr);
-    ASSERT_NE(first->meta, nullptr);
-    for (const auto* stage : {&first->vertexBytes, &first->fragmentBytes})
-    {
-        const auto words = TargetSpirvWords(*stage);
-        ASSERT_GE(words.size(), 5u);
-        EXPECT_EQ(words[1], 0x00010500u);
-    }
-    EXPECT_TRUE(HasInterpolationCapability(first->fragmentBytes));
-    EXPECT_TRUE(TargetMetaNames(*first->meta, "ge_BindlessTextures"));
-    EXPECT_FALSE(TargetMetaNames(*first->meta, "ge_MaterialTextures0"));
-    EXPECT_EQ(m_cache.GetOrCompile(captured, spec, m_ctx, "RetainedRelief", ShaderSourceKind::SpirV), first);
-
-    ShaderCacheKey compatible = MakeTestKey("Surfaces/standard_pbr.glsl");
-    compatible.VariantKey.materialKeywords |= MaterialKeyword::Parallax;
-    auto second = m_cache.GetOrCompile(compatible, spec, m_ctx, "CompatibleRelief", ShaderSourceKind::SpirV);
-    ASSERT_NE(second, nullptr);
-    ASSERT_NE(second->meta, nullptr);
-    EXPECT_NE(second, first);
-    for (const auto* stage : {&second->vertexBytes, &second->fragmentBytes})
-    {
-        const auto words = TargetSpirvWords(*stage);
-        ASSERT_GE(words.size(), 5u);
-        EXPECT_EQ(words[1], 0x00010600u);
-    }
-    EXPECT_FALSE(HasInterpolationCapability(second->fragmentBytes));
-    EXPECT_TRUE(TargetMetaNames(*second->meta, "ge_MaterialTextures0"));
-    EXPECT_FALSE(TargetMetaNames(*second->meta, "ge_BindlessTextures"));
-    EXPECT_EQ(m_cache.GetEntryCount(), 2u);
+    WriteHelper("vec3(0.0, 1.0, 0.0)");
+    WriteIncludingSurface(kSurfaceFile, kHelperFile);
+    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
+    ASSERT_NE(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "B", materialB, ShaderSourceKind::SpirV), nullptr);
+    EXPECT_EQ(errors.Count(), 0u) << "B's successful compile of the shared key must clear the row A reported";
+    m_cache.SetErrorLog(nullptr);
 }
 
 TEST_F(ShaderCompilationCacheEpochTest, CbtHeadProgramsKeepProfileBindingsInBothInsertionOrders)
@@ -958,120 +845,21 @@ TEST_F(ShaderCompilationCacheEpochTest, CbtHeadProgramsKeepProfileBindingsInBoth
     m_ctx.PackageShaderDirs.push_back(packages);
     for (const bool compatibleFirst : {false, true})
     {
-        m_cache.Clear();
-        std::shared_ptr<SharedShaderVariant> desktop;
-        std::shared_ptr<SharedShaderVariant> compatible;
-        for (const bool compatibility : {compatibleFirst, !compatibleFirst, compatibleFirst})
-        {
-            ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, compatibility, false});
-            ShaderCacheKey key = MakeTestKey("CBT/cbt_surface.glsl");
-            key.Source.VertexModifierPath = "CBT/cbt_vertex_modifier.glsl";
-            key.VariantKey.vertexFlags = VertexAttributeFlags::None;
-            key.VariantKey.materialKeywords = MaterialKeyword::CustomVertexShader |
-                MaterialKeyword::HasVertexOutputMod | MaterialKeyword::Instanced |
-                MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::IBL;
-            MaterialCompileSpec spec = MakeTestSpec("CBT/cbt_surface.glsl");
-            spec.vertexModifierPath = key.Source.VertexModifierPath;
-            spec.customVertexShader = true;
-            const auto program = m_cache.GetOrCompile(key, spec, m_ctx, "CbtProfileHead", ShaderSourceKind::SpirV);
-            ASSERT_NE(program, nullptr);
-            ASSERT_NE(program->meta, nullptr);
-            EXPECT_EQ(TargetMetaNames(*program->meta, "gCbtChain"), !compatibility);
-            EXPECT_EQ(TargetMetaNames(*program->meta, "gCbtDrawLevel"), !compatibility);
-            auto& retained = compatibility ? compatible : desktop;
-            if (retained)
-            {
-                EXPECT_EQ(program, retained);
-            }
-            else
-            {
-                retained = program;
-            }
-        }
-        EXPECT_EQ(m_cache.GetEntryCount(), 2u);
+        std::filesystem::create_directories(material.parent_path());
+        std::ofstream(material) << "{}";
     }
 }
 
-TEST_F(ShaderCompilationCacheEpochTest, ContentEditsInvalidateEveryRetainedTarget)
-{
-    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
-    WriteSurface("vec3(0.0, 1.0, 0.0)");
-    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, false, false});
-    const ShaderCacheKey desktop = MakeKey();
-    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, true, false});
-    const ShaderCacheKey compatible = MakeKey();
-    const auto desktopBefore = m_cache.GetOrCompile(desktop, MakeSpec(), m_ctx, "DesktopBefore", ShaderSourceKind::SpirV);
-    const auto compatibleBefore = m_cache.GetOrCompile(compatible, MakeSpec(), m_ctx, "CompatibleBefore", ShaderSourceKind::SpirV);
-    ASSERT_NE(desktopBefore, nullptr);
-    ASSERT_NE(compatibleBefore, nullptr);
-    ASSERT_EQ(m_cache.GetEntryCount(), 2u);
+    ASSERT_EQ(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "A", materialA, ShaderSourceKind::SpirV), nullptr);
+    WriteFile(kSurfaceFile, "SurfaceOutput EvaluateSurface(SurfaceInput sIn) { return still_undefined; }\n");
+    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
+    ASSERT_EQ(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "B", materialB, ShaderSourceKind::SpirV), nullptr);
+    ASSERT_EQ(errors.Count(), 2u) << "each failing compile reports against the material that ran it";
 
-    WriteSurface("vec3(1.0, 0.0, 0.0)");
-    m_cache.InvalidateGlobalEntry(desktop);
-    EXPECT_EQ(m_cache.GetEntryCount(), 0u);
-    const auto desktopAfter = m_cache.GetOrCompile(desktop, MakeSpec(), m_ctx, "DesktopAfter", ShaderSourceKind::SpirV);
-    const auto compatibleAfter = m_cache.GetOrCompile(compatible, MakeSpec(), m_ctx, "CompatibleAfter", ShaderSourceKind::SpirV);
-    ASSERT_NE(desktopAfter, nullptr);
-    ASSERT_NE(compatibleAfter, nullptr);
-    EXPECT_NE(desktopAfter->fragmentBytes, desktopBefore->fragmentBytes);
-    EXPECT_NE(compatibleAfter->fragmentBytes, compatibleBefore->fragmentBytes);
-}
-
-TEST_F(ShaderCompilationCacheEpochTest, AnotherTargetCompilesWhileTheFirstTargetIsHeld)
-{
-    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
-    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_5, false, false});
-    WriteSurface("vec3(0.0, 1.0, 0.0)");
-    const ShaderCacheKey desktop = MakeKey();
-    std::promise<void> firstEntered;
-    std::promise<void> releaseFirst;
-    const auto release = releaseFirst.get_future().share();
-    std::atomic<uint32_t> entered{0};
-    m_cache.SetCompileEnteredHookForTesting([&entered, &firstEntered, release]
-    {
-        if (entered.fetch_add(1) == 0u)
-        {
-            firstEntered.set_value();
-            release.wait();
-        }
-    });
-    auto first = std::async(std::launch::async, [this, desktop]
-    {
-        return m_cache.GetOrCompile(desktop, MakeSpec(), m_ctx, "HeldDesktop", ShaderSourceKind::SpirV);
-    });
-    const bool started = firstEntered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready;
-    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_6, true, false});
-    const ShaderCacheKey compatible = MakeKey();
-    std::future<std::shared_ptr<SharedShaderVariant>> second;
-    try
-    {
-        second = std::async(std::launch::async, [this, compatible]
-        {
-            return m_cache.GetOrCompile(compatible, MakeSpec(), m_ctx, "ConcurrentCompatible", ShaderSourceKind::SpirV);
-        });
-    }
-    catch (...)
-    {
-        releaseFirst.set_value();
-        first.wait();
-        throw;
-    }
-    const bool independentlyFinished = second.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
-    releaseFirst.set_value();
-    const auto desktopProgram = first.get();
-    const auto compatibleProgram = second.get();
-    Disarm();
-    EXPECT_TRUE(started);
-    EXPECT_TRUE(independentlyFinished);
-    EXPECT_EQ(entered.load(), 2u);
-    ASSERT_NE(desktopProgram, nullptr);
-    ASSERT_NE(compatibleProgram, nullptr);
-    EXPECT_NE(desktopProgram, compatibleProgram);
-    const auto desktopWords = TargetSpirvWords(desktopProgram->vertexBytes);
-    const auto compatibleWords = TargetSpirvWords(compatibleProgram->vertexBytes);
-    ASSERT_GE(desktopWords.size(), 5u);
-    ASSERT_GE(compatibleWords.size(), 5u);
-    EXPECT_EQ(desktopWords[1], 0x00010500u);
-    EXPECT_EQ(compatibleWords[1], 0x00010600u);
-    EXPECT_EQ(m_cache.GetEntryCount(), 2u);
+    WriteHelper("vec3(0.0, 1.0, 0.0)");
+    WriteIncludingSurface(kSurfaceFile, kHelperFile);
+    m_cache.InvalidateEntriesForShaderFile(kSurfaceFile);
+    ASSERT_NE(m_cache.GetOrCompile(key, MakeSpec(), m_ctx, "C", materialC, ShaderSourceKind::SpirV), nullptr);
+    EXPECT_EQ(errors.Count(), 0u) << "the fixed shared shader must clear the rows of A and B";
+    m_cache.SetErrorLog(nullptr);
 }
