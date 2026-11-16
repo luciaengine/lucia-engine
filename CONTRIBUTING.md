@@ -68,7 +68,7 @@ Code lives where its concept lives, as a named, reusable piece with one job: dra
 ## Platform and build
 
 - Never resolve a runtime path back into the repository; stage the file and load it from the executable directory.
-- Third-party changes are overlay ports under `cmake/ports/` (`cmake/macos-ports/` for a change macOS alone needs) with a bumped port-version and no prose inside the hashed port directory (see `cmake/ports/README.md`).
+- Third-party changes are overlay ports under `cmake/ports/` (`cmake/macos-ports/` or `cmake/linux-ports/` for a change one platform alone needs) with a bumped port-version and no prose inside the hashed port directory (see `cmake/ports/README.md`).
 - Web-only or compat paths are compiled out of the builds that do not need them; state the effect on the other platform.
 - No platform-specific exceptions for hardware nobody on the team tests. Fix the cause.
 

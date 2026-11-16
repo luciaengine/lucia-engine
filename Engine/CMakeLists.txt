@@ -2081,11 +2081,14 @@ endif()
             function(ge_add_render_services_test target_name)
                 cmake_parse_arguments(PARSE_ARGV 1 GE_RENDER_TEST "OPT_IN" "" "")
                 add_executable(${target_name} ${GE_RENDER_TEST_UNPARSED_ARGUMENTS} Tests/EngineTestShaderSetup.cpp)
+                # GameEngine.Native exists only when scripting builds it; the members need it then.
                 if(WIN32)
                     target_sources(${target_name} PRIVATE Tests/TestIsolationTripwireMain.cpp)
-                    target_link_libraries(${target_name} PRIVATE Engine GameEngine.Native GTest::gtest)
+                    target_link_libraries(${target_name} PRIVATE
+                        Engine $<TARGET_NAME_IF_EXISTS:GameEngine.Native> GTest::gtest)
                 else()
-                    target_link_libraries(${target_name} PRIVATE Engine GameEngine.Native GTest::gtest GTest::gtest_main)
+                    target_link_libraries(${target_name} PRIVATE
+                        Engine $<TARGET_NAME_IF_EXISTS:GameEngine.Native> GTest::gtest GTest::gtest_main)
                 endif()
                 target_compile_definitions(${target_name} PRIVATE
                     ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}"

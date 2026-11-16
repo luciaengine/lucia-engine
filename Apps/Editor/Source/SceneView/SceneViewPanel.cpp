@@ -3088,9 +3088,9 @@ void SceneViewPanel::PerformDrop(const UI::Interaction::DropRequest& request)
     const float viewW = viewport->GetLayoutWidth();
     const float viewH = viewport->GetLayoutHeight();
 
+    const auto dropRay = m_Controller->MakeGizmoRay(localX, localY, viewW, viewH);
     const Editor::SceneViewDropPoint dropPoint = Editor::ResolveSceneViewDropPoint(
-        m_Controller->MakeGizmoRay(localX, localY, viewW, viewH), *world,
-        GatherDropPreviewEntities(m_DropPreviewModel, m_DropPreviewBillboard));
+        dropRay, *world, GatherDropPreviewEntities(m_DropPreviewModel, m_DropPreviewBillboard));
     Mathematics::Vector3 worldPos = dropPoint.Position;
 
     auto& am = *m_Context->Assets;
@@ -3243,11 +3243,38 @@ void SceneViewPanel::PerformDrop(const UI::Interaction::DropRequest& request)
     }
 
     // Models, prefabs and lens flares are placed at the drop point: not on a stand-in for a mesh.
+    // A drop on a mesh still being prepared for picking waits for it along the same camera ray.
     if (dropPoint.OnPendingMesh)
     {
-        Editor::ShowSceneViewNotice(Editor::kDropOnPendingMeshNotice);
+        QueueDropOnPendingMesh(*world, payload->paths, dropRay);
         return;
     }
+    PlaceDroppedFiles(*world, payload->paths, worldPos);
+}
+
+void SceneViewPanel::QueueDropOnPendingMesh(ECS::World& world, std::vector<std::filesystem::path> paths,
+                                            const Mathematics::Ray3D& ray)
+{
+    ECS::World* worldPtr = &world;
+    std::string label = paths.empty() ? std::string() : paths.front().filename().string();
+    Editor::RunWhenReady(
+        [worldPtr, ray] { return !Editor::ResolveSceneViewDropPoint(ray, *worldPtr, {}).OnPendingMesh; }, this,
+        worldPtr,
+        [this, worldPtr, ray, paths = std::move(paths)]
+        { PlaceDroppedFiles(*worldPtr, paths, Editor::ResolveSceneViewDropPoint(ray, *worldPtr, {}).Position); },
+        std::move(label));
+}
+
+void SceneViewPanel::PlaceDroppedFiles(ECS::World& dropWorld, const std::vector<std::filesystem::path>& paths,
+                                       const Mathematics::Vector3& worldPos)
+{
+    UIElement* viewport = GetActiveViewportElement();
+    SceneViewport* pane = BoundViewportFor(m_Controller);
+    if (!m_Context || !m_Context->Assets || !pane)
+        return;
+    const SceneViewportBinding& binding = pane->GetBinding();
+    ECS::World* world = &dropWorld;
+    auto& am = *m_Context->Assets;
 
     std::vector<UI::Interaction::ItemId> selectionBeforeIds;
     UI::Interaction::ItemId selectionBeforeAnchor = 0;
@@ -3259,9 +3286,9 @@ void SceneViewPanel::PerformDrop(const UI::Interaction::DropRequest& request)
     }
 
     std::vector<ECS::EntityHandle> droppedRoots;
-    droppedRoots.reserve(payload->paths.size());
+    droppedRoots.reserve(paths.size());
 
-    for (const auto& absPath : payload->paths)
+    for (const auto& absPath : paths)
     {
         if (absPath.empty())
             continue;

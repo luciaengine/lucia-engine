@@ -129,6 +129,89 @@ float GE_VirtualShadowCompareKernelPage(GE_VirtualShadowKernelPage page, vec2 uv
 #endif
 }
 
+// A kernel that crosses a page edge reads at most the 2 x 2 pages from its lowest page. Each
+// page is resolved once; a tap then reads its own page, or four texels across an edge.
+struct GE_VirtualShadowKernelQuad
+{
+    uint Layers[4];
+    float Resolution;
+    vec2 TexelOrigin;
+};
+
+bool GE_VirtualShadowResolveKernelQuad(uvec3 projection, uint mip, vec2 centerUV, float radiusUV,
+                                       out GE_VirtualShadowKernelQuad quad)
+{
+    uint baseSide = projection.y;
+    if (baseSide == 0u || baseSide > 128u || (baseSide & (baseSide - 1u)) != 0u ||
+        mip > projection.z || mip > uint(findMSB(baseSide)) ||
+        any(isnan(centerUV)) || any(isinf(centerUV)) ||
+        isnan(radiusUV) || isinf(radiusUV) || radiusUV < 0.0 || radiusUV > 1.0)
+        return false;
+    uint firstPage = GE_VirtualShadowMipStart(projection.x, baseSide, mip);
+    if (firstPage < projection.x)
+        return false;
+    uint side = baseSide >> mip;
+    int resolution = int(side * kGE_VirtualShadowPageTexels);
+    ivec2 lo = ivec2(floor((centerUV - radiusUV) * float(resolution) - 0.5));
+    ivec2 hi = ivec2(floor((centerUV + radiusUV) * float(resolution) - 0.5)) + 1;
+    if (any(lessThan(lo, ivec2(0))) || any(greaterThanEqual(hi, ivec2(resolution))))
+        return false;
+    uvec2 lowPage = uvec2(lo) / kGE_VirtualShadowPageTexels;
+    uvec2 highPage = uvec2(hi) / kGE_VirtualShadowPageTexels;
+    if (any(greaterThan(highPage - lowPage, uvec2(1u))))
+        return false;
+    uint layerCount = uint(textureSize(ge_virtualShadowDepth, 0).z);
+    for (uint y = 0u; y < 2u; ++y)
+    {
+        for (uint x = 0u; x < 2u; ++x)
+        {
+            uint layer = kGE_VirtualShadowMissingPage;
+            if (lowPage.x + x <= highPage.x && lowPage.y + y <= highPage.y)
+            {
+                layer = GE_VirtualShadowResolveTile(firstPage, side, lowPage + uvec2(x, y), layerCount);
+                if (layer == kGE_VirtualShadowMissingPage)
+                    return false;
+            }
+            quad.Layers[y * 2u + x] = layer;
+        }
+    }
+    quad.Resolution = float(resolution);
+    quad.TexelOrigin = vec2(lowPage * kGE_VirtualShadowPageTexels);
+    return true;
+}
+
+float GE_VirtualShadowQuadTexel(GE_VirtualShadowKernelQuad quad, ivec2 relative, float reference)
+{
+    ivec2 page = relative / int(kGE_VirtualShadowPageTexels);
+    ivec2 withinPage = relative - page * int(kGE_VirtualShadowPageTexels);
+    float stored = texelFetch(ge_virtualShadowDepth, ivec3(withinPage, int(quad.Layers[page.y * 2 + page.x])), 0).r;
+    return reference >= stored ? 1.0 : 0.0;
+}
+
+// uv must lie inside the kernel that GE_VirtualShadowResolveKernelQuad resolved.
+float GE_VirtualShadowCompareKernelQuad(GE_VirtualShadowKernelQuad quad, vec2 uv, float reference)
+{
+    vec2 texel = uv * quad.Resolution - 0.5;
+    ivec2 relative = ivec2(floor(texel)) - ivec2(quad.TexelOrigin);
+    ivec2 page = relative / int(kGE_VirtualShadowPageTexels);
+    ivec2 farPage = (relative + 1) / int(kGE_VirtualShadowPageTexels);
+    if (all(equal(page, farPage)))
+    {
+        vec2 local = (texel - quad.TexelOrigin - vec2(page * int(kGE_VirtualShadowPageTexels)) + 0.5) /
+                     float(kGE_VirtualShadowPageTexels);
+#ifdef GE_VIRTUAL_SHADOW_HARDWARE_COMPARE
+        return textureGrad(ge_virtualShadowDepthCompare,
+                           vec4(local, float(quad.Layers[page.y * 2 + page.x]), reference), vec2(0.0), vec2(0.0));
+#endif
+    }
+    vec2 weight = fract(texel);
+    float c00 = GE_VirtualShadowQuadTexel(quad, relative, reference);
+    float c10 = GE_VirtualShadowQuadTexel(quad, relative + ivec2(1, 0), reference);
+    float c01 = GE_VirtualShadowQuadTexel(quad, relative + ivec2(0, 1), reference);
+    float c11 = GE_VirtualShadowQuadTexel(quad, relative + ivec2(1, 1), reference);
+    return mix(mix(c00, c10, weight.x), mix(c01, c11, weight.x), weight.y);
+}
+
 // projection = (first page, finest mip width in pages, last mip).
 // Resolve each contributing hardware-PCF sub-tap through the virtual page
 // table before interpolating the compare results. The caller can retry the
