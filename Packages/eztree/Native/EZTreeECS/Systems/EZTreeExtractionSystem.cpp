@@ -12,6 +12,7 @@
 #include "EZTreeECS/Components/EZTreeComponent.h"
 #include "EZTreeECS/EZTreeService.h"
 #include "EZTreeECS/EZTreeVariantMaterials.h"
+#include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/RenderOrigin.h"
@@ -197,6 +198,29 @@ std::array<uint32, 3> PartInstances(const Components::EZTree& tree)
     return {tree.RuntimeBranchInstanceIndex, tree.RuntimeLeafInstanceIndex, tree.RuntimeTrellisInstanceIndex};
 }
 
+// Impostor atlas of a tree variant: hemi-octahedral, 8 x 8 frames of 128 pixels.
+constexpr uint32 kImpostorFramesPerSide = 8u;
+constexpr uint32 kImpostorFrameSize = 128u;
+
+Engine::Renderer::ImpostorBakeRequest MakeImpostorBakeRequest(const TreeVariant& variant)
+{
+    Engine::Renderer::ImpostorBakeRequest request{};
+    // The options hash fixes the meshes and the materials alike.
+    request.Key.MeshHash = variant.Hash;
+    request.Key.MaterialHash = variant.Hash;
+    request.Key.Layout = Mathematics::OctahedralLayout::Hemisphere;
+    request.Key.FramesPerSide = kImpostorFramesPerSide;
+    request.Key.FrameSize = kImpostorFrameSize;
+    request.Bounds = variant.Bounds;
+    if (variant.Branches.IsValid())
+        request.Parts.push_back({variant.Branches, variant.Materials.BarkStatic});
+    if (variant.Leaves.IsValid())
+        request.Parts.push_back({variant.Leaves, variant.Materials.LeavesStatic});
+    if (variant.Trellis.IsValid())
+        request.Parts.push_back({variant.Trellis, variant.Materials.Trellis});
+    return request;
+}
+
 void WriteVariantToTree(const TreeVariant& variant, Components::EZTree& tree)
 {
     tree.RuntimeOptionsHash = variant.Hash;
@@ -272,6 +296,10 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         { ExtractTree(frame, entity, tree, !disabled && !inactive && !treeOff); });
 
     ReleaseUnseenTrees(frame.WorldId, *service);
+
+    auto& baker = m_RenderServices->EnsureFeature<Engine::Renderer::ImpostorBaker>();
+    for (const auto& [hash, variant] : frame.Variants)
+        baker.Request(MakeImpostorBakeRequest(variant), m_UpdateStamp);
 }
 
 void EZTreeExtractionSystem::ExtractTree(FrameContext& frame,

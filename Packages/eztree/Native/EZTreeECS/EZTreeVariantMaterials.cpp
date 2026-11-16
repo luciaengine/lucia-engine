@@ -297,17 +297,15 @@ bool HasValidMaterial(Engine::Renderer::RenderServices& renderServices, const GU
     return material && material->GetGraphicsPipelineId().IsValid();
 }
 
-// A wind material whose vertex modifier does not compile must not make the tree
-// vanish: the static twin draws the same surface without wind.
+// The static twin draws the same surface without wind: while the wind material cannot compile,
+// so the tree never vanishes, and always for the impostor bake, which bakes the rest pose.
 void RegisterWithStaticTwin(Engine::Renderer::RenderServices& renderServices,
                             const GUID& windGuid,
                             const GUID& staticGuid,
                             MaterialDocument doc)
 {
     PreloadMaterialDocumentTextures(renderServices, doc);
-    const Engine::Renderer::Material* material = renderServices.Materials().RegisterMaterialFromDocument(windGuid, doc);
-    if (material && material->GetGraphicsPipelineId().IsValid())
-        return;
+    renderServices.Materials().RegisterMaterialFromDocument(windGuid, doc);
     doc.vertexModifier.clear();
     renderServices.Materials().RegisterMaterialFromDocument(staticGuid, doc);
 }

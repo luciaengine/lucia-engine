@@ -27,7 +27,7 @@ namespace EZTreeECS
 struct TreeVariantMaterials
 {
     GUID Bark;
-    GUID BarkStatic; // Bark without wind, drawn while the wind material cannot compile.
+    GUID BarkStatic; // Bark without wind: drawn while the wind material cannot compile, and baked into the impostor.
     GUID Leaves;
     GUID LeavesStatic;
     GUID Trellis;
