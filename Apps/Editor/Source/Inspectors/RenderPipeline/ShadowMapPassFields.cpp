@@ -31,11 +31,20 @@ constexpr unsigned long long kCascadeBytesPerTexel = 4ull;
 constexpr double kSavedFloatScale = 10000.0;
 constexpr float kMinMaxShadowDistance = 0.1f;
 
-std::string CascadeResolutionLabel(uint32_t resolution)
+// The row tooltip, with the memory of one cascade at each supported size.
+std::string CascadeResolutionTooltip()
 {
-    const unsigned long long bytes =
-        static_cast<unsigned long long>(resolution) * resolution * kCascadeBytesPerTexel;
-    return std::to_string(resolution) + " (" + FormatMebibytes(bytes) + ")";
+    std::string text = "Size in texels of each directional shadow cascade. Higher values give sharper shadow "
+                       "edges. Memory of one cascade:";
+    for (uint32_t resolution = ShadowMapNode::kMinCascadeResolution;
+         resolution <= ShadowMapNode::kMaxCascadeResolution; resolution *= 2u)
+    {
+        const unsigned long long bytes =
+            static_cast<unsigned long long>(resolution) * resolution * kCascadeBytesPerTexel;
+        text += (resolution == ShadowMapNode::kMinCascadeResolution ? " " : ", ") + std::to_string(resolution) +
+                ": " + FormatMebibytes(bytes);
+    }
+    return text + ".";
 }
 
 std::vector<Dropdown::Option> MakeCascadeResolutionOptions(uint32_t current, int& selectedIndex)
@@ -44,7 +53,7 @@ std::vector<Dropdown::Option> MakeCascadeResolutionOptions(uint32_t current, int
     selectedIndex = -1;
     if (!ShadowMapNode::IsSupportedCascadeResolution(current))
     {
-        options.push_back({std::to_string(current), std::to_string(current) + " (not supported)"});
+        options.push_back({std::to_string(current), std::to_string(current) + " (invalid)"});
         selectedIndex = 0;
     }
     for (uint32_t resolution = ShadowMapNode::kMinCascadeResolution;
@@ -52,7 +61,7 @@ std::vector<Dropdown::Option> MakeCascadeResolutionOptions(uint32_t current, int
     {
         if (resolution == current)
             selectedIndex = static_cast<int>(options.size());
-        options.push_back({std::to_string(resolution), CascadeResolutionLabel(resolution)});
+        options.push_back({std::to_string(resolution), std::to_string(resolution)});
     }
     return options;
 }
@@ -94,10 +103,9 @@ void AddResolutionRow(UIElement& section, const nlohmann::json& pass, const std:
     int selectedIndex = 0;
     const std::vector<Dropdown::Option> options = MakeCascadeResolutionOptions(
         ReadUnsigned(pass, "resolution", ShadowMapNode::kDefaultCascadeResolution), selectedIndex);
-    Dropdown* dropdown = InspectorUI::AddDropdownRow(
-        &section, "Resolution", options, selectedIndex,
-        "Size in texels of each directional shadow cascade, with the memory of one cascade. Higher "
-        "values give sharper shadow edges. Memory and render cost increase with the square of the size.");
+    const std::string tooltip = CascadeResolutionTooltip();
+    Dropdown* dropdown =
+        InspectorUI::AddDropdownRow(&section, "Resolution", options, selectedIndex, tooltip.c_str());
     dropdown->SetId(idPrefix + "-resolution");
     dropdown->SetOnValueChanged([commit](const std::string& value)
                                 { commit("resolution", static_cast<uint32_t>(std::stoul(value)), "Shadow Resolution"); });

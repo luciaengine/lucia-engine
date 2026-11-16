@@ -228,7 +228,7 @@ TEST_F(RenderPipelineInspectorTest, ShadowMapPassEditsTheCascadeResolutionInTheP
     auto* resolution = dynamic_cast<Dropdown*>(root.FindById("rp-pass-0-resolution"_sid));
     ASSERT_NE(resolution, nullptr);
     EXPECT_EQ(resolution->GetSelectedValue(), "2048");
-    EXPECT_EQ(resolution->GetSelectedLabel(), "2048 (16 MiB)");
+    EXPECT_EQ(resolution->GetSelectedLabel(), "2048");
     EXPECT_NE(dynamic_cast<Dropdown*>(root.FindById("rp-pass-0-cascades"_sid)), nullptr);
     EXPECT_NE(dynamic_cast<FloatField*>(root.FindById("rp-pass-0-splitLambda"_sid)), nullptr);
     EXPECT_NE(dynamic_cast<Toggle*>(root.FindById("rp-pass-0-fitShadowDistanceToScene"_sid)), nullptr);
@@ -271,7 +271,7 @@ TEST_F(RenderPipelineInspectorTest, ShadowMapPassKeepsAnUnsupportedResolutionSel
     auto* resolution = dynamic_cast<Dropdown*>(root.FindById("rp-pass-0-resolution"_sid));
     ASSERT_NE(resolution, nullptr);
     EXPECT_EQ(resolution->GetSelectedValue(), "5000");
-    EXPECT_EQ(resolution->GetSelectedLabel(), "5000 (not supported)");
+    EXPECT_EQ(resolution->GetSelectedLabel(), "5000 (invalid)");
     EXPECT_EQ(root.FindById("rp-pass-0-maxShadowDistance"_sid), nullptr)
         << "the scene fit replaces the max shadow distance";
 }
