@@ -157,15 +157,15 @@ void IBLGenNode::Declare(RenderPipelineInstance& /*instance*/, const PipelineDec
 
     ScheduleBrdfLutBake(ctx.Frame, *device, feature);
 
+    Engine::Renderer::EnvironmentBakeContext bakeCtx{};
+    bakeCtx.Frame = &ctx.Frame;
+    bakeCtx.Device = device;
+    bakeCtx.Feature = &feature;
+    bakeCtx.DeltaTimeSeconds = ctx.DeltaTimeSeconds;
     if (auto* source = feature.GetEnvironmentSource())
-    {
-        Engine::Renderer::EnvironmentBakeContext bakeCtx{};
-        bakeCtx.Frame = &ctx.Frame;
-        bakeCtx.Device = device;
-        bakeCtx.Feature = &feature;
-        bakeCtx.DeltaTimeSeconds = ctx.DeltaTimeSeconds;
         source->ScheduleBake(bakeCtx);
-    }
+    // One local reflection probe, over all worlds, gets bake work in an application frame.
+    feature.ScheduleLocalProbeBakes(bakeCtx);
 }
 
 } // namespace GameEngine::Engine::Renderer::Pipeline::Nodes
