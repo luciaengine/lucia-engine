@@ -13,7 +13,6 @@ namespace GameEngine::Engine::Renderer
 {
 class RenderServices;
 struct ResolvedPassResources;
-struct ResolvedShadowSettings;
 struct VirtualShadowViewInputs;
 
 /// What a world pass hands to the sun mask contribution.
@@ -24,7 +23,6 @@ struct VirtualShadowSunMaskView
     /// The single-sample depth the prepass wrote (the resolved depth of a multisampled view).
     Rendering::RenderGraph::RGTexture Depth{};
     const Rendering::CameraData* Camera = nullptr;
-    const ResolvedShadowSettings* Settings = nullptr;
     ViewLetterbox Letterbox{};
     /// The view's prepass wrote the depth and this pass may declare the mask (not the recover pass).
     bool CanDeclare = false;
