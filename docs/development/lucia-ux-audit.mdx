@@ -1,0 +1,86 @@
+---
+title: Lucia editor UX audit after the OpenEngine import
+description: The Lucia editor looks and controls that the OpenEngine import removed and that no later change restored, for a decision per item.
+---
+
+The OpenEngine import (#83, snapshot `be9186a74`) replaced Lucia editor files. Pull requests #101 to #174 restored part of that work. This page lists what is still different. The owner decides per row. Only approved rows are restored.
+
+## Method
+
+- Lucia reference: commit `e18015eea`. Current reference: `main` at `c7bb7343d` (#174).
+- A Lucia line counts only when 3 tests agree. `git blame` at `e18015eea` gives a Lucia author. No version of the same file in OpenEngine history up to `be9186a74` has the line. No file on `main` has the line.
+- CSS was compared per rule (selector and declaration). A rule that any OpenEngine version of the file had is OpenEngine content, not Lucia content. Example: OpenEngine changed many headings from `font-weight: 600` to `500` in `a5911638b`. Lucia only kept the older value, so that is not a Lucia change.
+- Settings defaults, label strings, UXML structure and icons were compared by name.
+- Each row was checked by behavior, not by class name. A class that is absent on `main` is often a rename. For example, `.context-menu-shortcut` became `.dropdown-item-shortcut` with the same look.
+- Tier: **verified** means both sides were read. **Inferred** means the look or effect was deduced from the code, and no editor was started.
+
+## Lost look
+
+| # | Item | Lucia (`e18015eea`) | `main` now | What you see | Tier | Recommendation |
+|---|---|---|---|---|---|---|
+| 1 | Window title | `Apps/Editor/Source/EditorApplication.cpp:6247` builds "Lucia Engine - project - scene *" | `Apps/Editor/Source/Editor/Application/MainWindowTitle.cpp:9` builds "scene* - project" with no app name | The window title and the title bar caption do not name the engine. The Window menu, Mission Control and screen recordings show only the scene and project. | verified | Restore "Lucia Engine - " at the start of the OS window title. Keep the short caption in the title bar, because the macOS menu bar names the app (#174). |
+| 2 | Text smoothing gamma default | `Apps/Editor/Include/Editor/Settings/TextRenderingSettings.h:22` = 1.0 | `Apps/Editor/Source/Panels/SettingsPanel.cpp:1998` = 0.7 | With no saved preference, editor text edges have a different weight. The Lucia text renderer restored in #101 (quarter-pixel pens, Chrome parity) was tuned at 1.0. A saved `text.smoothingGamma` value overrides both defaults. | verified (value), inferred (look) | Restore 1.0. |
+| 3 | Inspector notice layout | `Apps/Editor/Assets/UI/controls/InspectorNotice/InspectorNotice.css:24` icon aligned to the top of the text; `:36` text basis 224 px | `align-items: baseline`; basis 240 px | In a notice of 2 or more lines, the icon sits at the first line in Lucia. On `main` it follows the text baseline. The text column is 16 px wider on `main`. | inferred | Restore the top alignment. Keep 240 px. |
+| 4 | Node graph accent | `Apps/Editor/Assets/UI/theme/node-graph.css:1450` ring and `:804` palette drag ghost border use `--ui_color_accent` | `.graph-node-ring` is fixed `#3A8FFF`; the drag ghost has no accent border | The focus ring of a graph node and the dragged palette node follow the accent color you pick in Settings. On `main` the ring is always blue. | verified | Restore. |
+| 5 | Day Cycle scrub graph height | `Apps/Editor/Assets/UI/panels/DayCycle.css:243` plot height 56 px | 28 px | The scrub curve at the top of the Day Cycle window is half as tall on `main`. | verified (value) | Restore 56 px. |
+| 6 | Log channel list details | `Apps/Editor/Assets/UI/panels/LogPanel/LogChannelPopover.css:30` "Show All" and "Hide All" keep 72 px and do not wrap; `:124` and `LogChannelPopover.cpp:36` dim the name of a hidden channel | No minimum width; no dimmed name | In the Log panel Channels list, a hidden channel looks the same as a shown one, except for its check box. The 2 buttons can shrink or wrap in a narrow panel. | verified (code), inferred (look) | Restore both. |
+| 7 | Popover tick labels | `Apps/Editor/Assets/UI/theme/widgets.css:170` 10 px | `--ui_font_size_small` (12 px) | The tick numbers under the Scene View camera popover sliders are 2 px larger on `main`. | verified (value) | Keep `main`, unless you prefer the smaller ticks. |
+
+## Lost controls and labels
+
+| # | Item | Lucia (`e18015eea`) | `main` now | What you see | Tier | Recommendation |
+|---|---|---|---|---|---|---|
+| 8 | UI SVG Raster Size | `Apps/Editor/Source/Panels/SettingsPanel.cpp:2780` and `Apps/Editor/Source/Editor/Settings/SvgRasterSizeField.cpp:64`: a row in Settings > Appearance | Only the project texture row "Default Raster Size" | You cannot set the raster size of the editor's own SVG icons. Lucia let you raise it for sharper icons on a large display, or lower it to save memory. | verified | Restore. First check that the engine still rasterizes editor SVGs at a size the editor can set. |
+| 9 | Terrain material cards | `Apps/Editor/Source/Terrain/TerrainRoleMaterials.cpp:350` (`AddMaterialGrid`), called from `TerrainInspector.cpp:617`; style in `inspector.css:1864` | Only the 4 role pickers (`TerrainInspector.cpp:511`) | The Terrain inspector showed the material library as a grid of cards: an albedo swatch, the name, a tint chip, and a "+" card that adds a material. A click on a card opened the library. `main` shows no grid. | verified | Restore. |
+| 10 | DDGI Volume field labels | `Apps/Editor/Source/Editor/Entities/DDGIVolumeComponentTraits.cpp:15` to `:38`: "Sky Light", "Local Reflections", "Show Probes", "Divisions", "Rays / Probe", "Debug View", and readable debug view names | Labels made from the field names | The DDGI Volume inspector shows names such as "Probes Long Axis" in place of "Divisions", and raw enum names in the debug view list. | verified (Lucia), inferred (`main` text) | Restore through the component traits registry. |
+| 11 | Day Cycle preset picker | `Apps/Editor/Source/DayCycle/DayCycleProfile/DayCycleProfileControls.cpp:149`: one dropdown "Load preset..." with an undo tooltip | One button per preset under "Presets (loads the preset's tracks)" | Lucia used 1 compact dropdown. `main` shows a row of buttons. OpenEngine took the Day Cycle window from Lucia (#39) and changed this. | verified | Owner choice. The dropdown takes less room; the buttons take one click less. |
+| 12 | Physics Material field tooltip | `Apps/Editor/Source/Inspectors/PhysicsColliderInspector.cpp:145` | The field from #111 has no tooltip | No tooltip on the collider's Physics Material field. The notice under it is the same. | verified | Restore. |
+
+## Lost features with no engine side on `main`
+
+These rows need engine work, not only editor work. Each one is a separate task.
+
+| # | Item | Lucia (`e18015eea`) | `main` now | What you see | Tier | Recommendation |
+|---|---|---|---|---|---|---|
+| 13 | Camera Auto Pixels Per Unit | `Apps/Editor/Source/Inspectors/CameraInspector.cpp:359`; engine field `PixelPerfectAutoPixelsPerUnit` | The field does not exist; the Scene View pixel-perfect helper was deleted in #94 | A 2D camera cannot take its pixels-per-unit from the scene's tile maps. The CRT effect tooltip (`CrtEffectInspector.cpp:112`) also refers to this. | verified | Restore together with Scene View pixel-perfect 2D, if 2D tile games matter now. |
+| 14 | Road verge | `Apps/Editor/Source/Inspectors/SplineRecipe/Paving/SplinePavingInspector.cpp:155` "Build Verge"; engine field `SplineExtrude::Verge` | The field does not exist | A road of the Channel kind cannot get a curb on both sides. | verified | Restore in the spline road area, as one engine and editor change. |
+
+## Same result in another form
+
+No action. These rows are listed so that they are not asked again.
+
+| Item | Where it is now |
+|---|---|
+| Context menu shortcut text, its hover and disabled colors | `.dropdown-item-shortcut` rules in `widgets.css` |
+| Hierarchy drop line (cyan, red when refused) and drop row colors | `TreeView.cpp` (same colors), `.drop-onto-valid` and `.drop-onto-invalid` |
+| Prefab rows in the Hierarchy: tint, member badge, missing file icon, override dot, added mark | `views.css` (`.hierarchy-prefab-*`) and `PrefabHierarchyRows.cpp`; OpenEngine took Lucia's prefab work (#45) and kept the look |
+| Prefab bar counts and the overrides list header | Same data with OpenEngine badge buttons |
+| Paving member modes "Include", "Cut out", "Ignore Road" and "Join at Grade" | `SplinePavingInspector.cpp` (`EntityMemberList`) |
+| Lens flare element color swatch in the element header | `LensFlareSourceInspector.cpp:516` |
+| Inspector component order (Lucia `SortKey` per component) | `SortKeyForComponent` in `InspectorPanel.cpp` |
+| Settings color rows with a hex field, accent color, icon tints, scrollbar color | Built inline in `SettingsPanel.cpp` with the same defaults |
+| Appearance toggles (gray sliders, value box height 26 px, compact headers, tab icons, popup shadow, row layout 0 / 4 / 37 %, checkmarks) | `SettingsPanel.cpp`, same defaults |
+| Grid, gizmo, input, script, scene auto-save and performance settings | Same labels and defaults on `main` |
+| Default dock place of a new panel (anchor panel, split ratio) | `EditorPanelRegistry.h:64` |
+| Hierarchy layer column | Render layer and sorting layer per row (#132, #135, #173) |
+| Panel search bars and their settings | #139 |
+| Bone LOD help text | Rewritten in #127 |
+| Editor and Player names, macOS app menu name | #174, #118 |
+| Icons | Every Lucia icon file is on `main` with the same content |
+
+## Not Lucia changes
+
+- Heading weights 600 against 500 in the inspector, settings, graphs and notices: OpenEngine changed them in `a5911638b`.
+- The Settings search bar at the bottom and the mark-up region member list: these were older OpenEngine forms that OpenEngine replaced.
+- `SearchDialog.css`: an OpenEngine file that OpenEngine deleted in `be9186a74`.
+
+## Not audited
+
+Be careful: this list is not complete for interaction.
+
+- Interaction behavior inside the large panel files was compared only by labels, defaults and style. These files are `HierarchyPanel.cpp`, `SceneViewPanel.cpp`, `InspectorPanel.cpp`, `AnimationWindowPanel.cpp` and `CurvesGraphView.cpp`. The Lucia-only lines that were read there are method extractions with no new behavior. Not every line was read.
+- UI module changes in `UIManager_Update.cpp`, `UIManager_Layout.cpp` and `UIManager_PrimitiveGen.cpp` were sampled. They are a split into named steps and a parallel primitive drain, with no visible change.
+- No editor was started. No row has a screenshot.
+- The Player and the tile map editor were not audited.
+
+The raw lists for this audit are in the shared session notes, folder `lucia-ux-audit`: `css-lost.txt`, `missing-strings.txt` and `lucia-only.json`.
