@@ -5,6 +5,7 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include <array>
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -44,13 +45,15 @@ protected:
             return NAN;
         }
         DescriptorSetLayoutDesc layout{};
-        for (uint32_t i = 0; i < 7; ++i)
+        // Binding 7 is the view's exposure history (exposure_history.glsl).
+        for (uint32_t i = 0; i < 8; ++i)
         {
             DescriptorBinding b{};
             b.binding = i;
             b.count = 1;
             b.shaderStages = kShaderStageCompute;
-            b.type = i < 2 ? DescriptorType::StorageImage : i < 6 ? DescriptorType::CombinedImageSampler : DescriptorType::UniformBuffer;
+            b.type = i < 2 ? DescriptorType::StorageImage : i < 6 ? DescriptorType::CombinedImageSampler
+                   : i == 6 ? DescriptorType::UniformBuffer : DescriptorType::StorageBuffer;
             layout.bindings.push_back(b);
         }
         ComputePipelineDesc pd{};
@@ -157,6 +160,18 @@ protected:
         if (mapped) std::memcpy(mapped, params.data(), bd.size);
         device->UnmapBuffer(ubo);
         device->UpdateBufferBinding(set, 6, ubo, 0, bd.size);
+        // A neutral exposure state: scale 1, valid, and pre-exposure 1 on this frame and the previous one.
+        const float exposureState[4] = {1.f, std::bit_cast<float>(1u), 1.f, 1.f};
+        BufferDesc exposureDesc{};
+        exposureDesc.size = sizeof(exposureState);
+        exposureDesc.usage = static_cast<uint32_t>(BufferUsage::Storage);
+        exposureDesc.memoryUsage = BufferMemoryUsage::Upload;
+        auto exposure = device->CreateBuffer(exposureDesc);
+        buffers.push_back(exposure);
+        if (auto* exposureMapped = device->MapBuffer(exposure))
+            std::memcpy(exposureMapped, exposureState, sizeof(exposureState));
+        device->UnmapBuffer(exposure);
+        device->UpdateStorageBufferBinding(set, 7, exposure, 0, exposureDesc.size);
         auto readback = device->CreateReadbackBuffer(outputSize * outputSize * 8);
         buffers.push_back(readback);
         cl->SetPipeline(pipeline);

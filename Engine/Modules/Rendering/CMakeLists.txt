@@ -3674,6 +3674,16 @@ set_target_properties(BarrierMemoryBatchTests PROPERTIES
   FOLDER "Rendering/Tests")
 add_test(NAME BarrierMemoryBatchTests COMMAND $<TARGET_FILE:BarrierMemoryBatchTests>)
 
+add_executable(TransferLayoutTrackingTests Tests/TransferLayoutTrackingTests.cpp)
+target_link_libraries(TransferLayoutTrackingTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
+rendering_test_shader_paths(TransferLayoutTrackingTests)
+target_include_directories(TransferLayoutTrackingTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+set_target_properties(TransferLayoutTrackingTests PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  FOLDER "Rendering/Tests")
+add_test(NAME TransferLayoutTrackingTests COMMAND $<TARGET_FILE:TransferLayoutTrackingTests>)
+
   add_executable(BarrierBatchBufferDedupeTests Tests/BarrierBatchBufferDedupeTests.cpp)
   target_link_libraries(BarrierBatchBufferDedupeTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
   rendering_test_shader_paths(BarrierBatchBufferDedupeTests)

@@ -182,51 +182,9 @@ void ApplyMorphAnimationChannels(ECS::World& world,
     if (!mesh.HasMorphTargets())
         return;
 
-    bool changed = false;
-    const uint32 count = std::min<uint32>(morph->weightCount, static_cast<uint32>(mesh.MorphTargets.size()));
     const auto data = clip.GetRuntimeData();
-    if (!data)
-        return;
-    for (const auto& channel : data->Tracks())
-    {
-        if (channel.Path != AnimPath::MorphWeight)
-            continue;
-        if (channel.BoneIndex != UINT32_MAX && mesh.SourceNodeIndex >= 0 &&
-            channel.BoneIndex != static_cast<uint32>(mesh.SourceNodeIndex))
-            continue;
-
-        for (uint32 targetIndex = 0; targetIndex < count; ++targetIndex)
-        {
-            const MorphTarget& target = mesh.MorphTargets[targetIndex];
-            if (channel.TargetNameId != 0)
-            {
-                const StringId targetId = target.Name.empty() ? 0u : HashStringId(target.Name);
-                if (targetId != channel.TargetNameId)
-                    continue;
-            }
-            else if (!channel.TargetName.empty() && channel.TargetName != target.Name)
-            {
-                continue;
-            }
-
-            Mathematics::Vector4 sampled;
-            if (!data->Sample(channel, time, sampled))
-                break;
-            const float value = sampled.x;
-            if (std::abs(morph->weights[targetIndex] - value) > 1e-6f)
-            {
-                morph->weights[targetIndex] = value;
-                changed = true;
-            }
-            break;
-        }
-    }
-
-    if (changed)
-    {
-        ++morph->version;
+    if (data && SampleMorphWeights(*data, time, mesh, *morph))
         world.AddComponentImmediate(entity, *morph);
-    }
 }
 
 // One line per skeleton that the GPU animation path cannot hold, naming its model.

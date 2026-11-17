@@ -779,7 +779,9 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
     std::vector<uint32_t> LateCull(std::span<const CascadeCullingGroup> groups, uint32_t sliceElements)
     {
         namespace RG = GameEngine::Rendering::RenderGraph;
-        CullInto(MakeStorageBuffer(sizeof(uint32_t), "LatePageCull.Frame"), 0xFFFFFFFFu, true, false);
+        // CullInto copies one word per instance into its destination.
+        CullInto(MakeStorageBuffer(m_Scene->GetInstanceCount() * sizeof(uint32_t), "LatePageCull.Frame"),
+                 0xFFFFFFFFu, true, false);
         auto& frame = *m_CullFrame;
         frame.BeginFrame(++m_CullFrameNumber);
         m_Culling->BeginFrame(&frame, m_Scene.get());
