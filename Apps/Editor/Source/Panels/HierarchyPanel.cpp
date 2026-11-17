@@ -746,16 +746,8 @@ HierarchyPanel::HierarchyPanel()
     // A slow second click on the selected entity renames it, as F2 does.
     m_Tree->SetOnItemRenameRequested([this](TreeId) { BeginRenameOfSelectedEntity(); });
 
-    m_RowEye = std::make_unique<Editor::HierarchyRowEye>(Editor::HierarchyRowEyeHost{
-        [this] { return m_World; },
-        [this](const UIElement& row) { return EntityShownBy(row); },
-        [this](ECS::EntityHandle clicked) { return ResolveRowActionTargets(clicked); },
-        [this](UIElement& row, ECS::EntityHandle entity)
-        {
-            if (m_World && m_Tree)
-                m_RowActivity.Present(*m_World, entity, m_Tree->BoundIdOf(&row), row);
-        }});
-    if (!m_RowEye->IsShown())
+    m_RowEye = std::make_unique<Editor::HierarchyRowEye>();
+    if (!Editor::IsHierarchyEyeShown())
         m_Tree->AddClass("hierarchy-eye-off");
     // Per-row styling: add/remove a class when the underlying entity is disabled.
     m_Tree->SetOnRowBound([this](TreeId id, UIElement* row)
@@ -864,7 +856,7 @@ HierarchyPanel::HierarchyPanel()
             }
             // After the row's own children exist, so a first bind presents the eye too.
             m_RowActivity.Present(*m_World, handle, id, *row);
-            m_RowEye->Present(*row, handle, m_Provider->IsExpandable(id));
+            m_RowEye->Present(*row, handle);
 
             // A pick inside the selection applies to the whole selection, as the enable toggle does.
             m_LayerControls.Present(*m_World, handle, *row, GetLayoutWidth(),
@@ -1167,21 +1159,7 @@ HierarchyPanel::HierarchyPanel()
 	        if (id == 0 || id == kRootId)
 	            return;
 
-	        ECS::EntityHandle handle = HierarchyDataProvider::Decode(id);
-	        if (!handle.IsValid() || !m_World->IsValid(handle))
-	            return;
-
-	        // A selected row applies the toggle to the complete selection: each selected
-	        // entity's own state, its descendants following through the hierarchy pass.
-	        const bool enabled = !ECS::Entity(m_World, handle).IsEnabled();
-	        Editor::CommitEntityEnabledToggle(*m_World, m_Undo, m_ChangeNotifications,
-	                                          ResolveRowActionTargets(handle), enabled);
-
-	        if (row)
-	            m_RowActivity.Present(*m_World, handle, id, *row);
-
-	        if (m_Tree)
-	            m_Tree->RefreshFromProvider(); });
+	        ToggleRowEntityEnabled(HierarchyDataProvider::Decode(id), row); });
 
     // Icon state check: returns true if entity is enabled, false if disabled
     m_Tree->SetOnIconStateCheck([this](TreeId id) -> bool
@@ -1428,9 +1406,9 @@ HierarchyPanel::HierarchyPanel()
             builder.AddItem("Sort By/Descending",   kCmdSortDescending,   oneOf(isDesc),   61, EditorIcons::kArrowDown);
             builder.AddItem("Hierarchy Options", 0, MenuItemFlag_None, 70, EditorIcons::kSettings);
             m_LayerControls.BuildMenu(builder);
-            builder.AddItem("Hierarchy Options/Show Scene View Eye",
+            builder.AddItem("Hierarchy Options/Show Eye",
                             kCmdShowSceneViewEye,
-                            checkedIf(m_RowEye && m_RowEye->IsShown()),
+                            checkedIf(Editor::IsHierarchyEyeShown()),
                             70,
                             EditorIcons::kEye);
             // One preference behind both panels, so the label says so rather
@@ -3134,9 +3112,7 @@ bool HierarchyPanel::HandleCommand(std::uint32_t cmd)
             m_VcsController->ToggleIndicatorVisibility();
         return true;
     case kCmdShowSceneViewEye:
-        if (m_RowEye)
-            m_RowEye->ToggleShown();
-        ApplySceneViewEyeVisibility();
+        Editor::SetHierarchyEyeShown(!Editor::IsHierarchyEyeShown());
         return true;
     case kCmdShowMeshLocation:
     {
@@ -3481,16 +3457,6 @@ void HierarchyPanel::RePresentHeldRows()
     m_Tree->RefreshFromProvider();
 }
 
-ECS::EntityHandle HierarchyPanel::EntityShownBy(const UIElement& row) const
-{
-    if (!m_Tree)
-        return {};
-    const TreeId tid = m_Tree->BoundIdOf(&row);
-    if (tid == 0 || tid == kRootId)
-        return {};
-    return HierarchyDataProvider::Decode(tid);
-}
-
 std::vector<ECS::EntityHandle> HierarchyPanel::ResolveRowActionTargets(
     ECS::EntityHandle clicked) const
 {
@@ -3621,6 +3587,8 @@ void HierarchyPanel::Update()
         return;
 
     m_RowActivity.Refresh(*m_World, *m_Tree, *m_Provider);
+    if (m_RowEye && m_RowEye->ConsumeShownChange())
+        ApplySceneViewEyeVisibility();
     if (m_LayerControls.NeedsRefresh(*m_World))
         RefreshLayerColumn();
 
@@ -4154,12 +4122,27 @@ void HierarchyPanel::RefreshLayerColumn()
     m_Tree->RefreshFromProvider();
 }
 
+// The entity icon and the eye share this toggle. A selected row applies it to the complete selection:
+// each selected entity's own state, its descendants following through the hierarchy pass.
+void HierarchyPanel::ToggleRowEntityEnabled(ECS::EntityHandle handle, UIElement* row)
+{
+    if (!m_World || !handle.IsValid() || !m_World->IsValid(handle))
+        return;
+    const bool enabled = !ECS::Entity(m_World, handle).IsEnabled();
+    Editor::CommitEntityEnabledToggle(*m_World, m_Undo, m_ChangeNotifications, ResolveRowActionTargets(handle),
+                                      enabled);
+    if (row && m_Tree)
+        m_RowActivity.Present(*m_World, handle, m_Tree->BoundIdOf(row), *row);
+    if (m_Tree)
+        m_Tree->RefreshFromProvider();
+}
+
 // The class gives the title the eye's strip back while rows show no eye.
 void HierarchyPanel::ApplySceneViewEyeVisibility()
 {
     if (!m_Tree)
         return;
-    if (m_RowEye && !m_RowEye->IsShown())
+    if (!Editor::IsHierarchyEyeShown())
         m_Tree->AddClass("hierarchy-eye-off");
     else
         m_Tree->RemoveClass("hierarchy-eye-off");
