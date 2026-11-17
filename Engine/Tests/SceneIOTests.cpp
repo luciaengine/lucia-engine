@@ -11485,8 +11485,12 @@ TEST(SceneIO, CommittedScenesLoadWithNoSkippedFieldAndNoUnknownComponent)
         {
             if (!entry.is_regular_file() || entry.path().extension() != ".scene")
                 continue;
-            ++scenes;
             const auto relative = entry.path().lexically_relative(repo).generic_string();
+            // The benchmark runner (Tools/Benchmarks/Scenes/benchmark.py) copies this project's models
+            // and package modules in before a run, so its scenes do not load from the source tree.
+            if (relative.starts_with("Tests/Projects/PerformanceBenchmark/"))
+                continue;
+            ++scenes;
             std::filesystem::path assetRoot = entry.path().parent_path();
             while (!IsAssetFolderName(assetRoot.filename()) && assetRoot != repo)
                 assetRoot = assetRoot.parent_path();

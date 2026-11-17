@@ -4,10 +4,13 @@
 #include "Animation/Compression/AnimationClipData.h"
 #include "Animation/BoneEvaluationPlan.h"
 #include "Animation/PoseToSkinMatrices.h"
+#include "Assets/ModelAsset.h"
+#include "Components/Rendering/MorphTargetWeights.h"
 #include "ECSModules/Rendering/ClipStore.h"
 #include "Logger/Logger.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cctype>
@@ -34,6 +37,55 @@ double WrapClipTime(double time, float32 lapStart, float32 lapEnd)
     if (time < lapEnd)
         return time;
     return lapStart + std::fmod(time - lapStart, lapDuration);
+}
+
+bool SampleMorphWeights(const Animation::AnimationClipData& clip, float time, const Mesh& mesh,
+                        Components::MorphTargetWeights& weights)
+{
+    const uint32 count = std::min({weights.weightCount, static_cast<uint32>(mesh.MorphTargets.size()),
+                                   Components::MorphTargetWeights::kMaxWeights});
+    std::array<StringId, Components::MorphTargetWeights::kMaxWeights> targetIds{};
+    for (uint32 targetIndex = 0; targetIndex < count; ++targetIndex)
+    {
+        const String& name = mesh.MorphTargets[targetIndex].Name;
+        targetIds[targetIndex] = name.empty() ? 0u : HashStringId(name);
+    }
+
+    bool changed = false;
+    for (const auto& track : clip.Tracks())
+    {
+        if (track.Path != AnimPath::MorphWeight)
+            continue;
+        if (track.BoneIndex != UINT32_MAX && mesh.SourceNodeIndex >= 0 &&
+            track.BoneIndex != static_cast<uint32>(mesh.SourceNodeIndex))
+            continue;
+
+        for (uint32 targetIndex = 0; targetIndex < count; ++targetIndex)
+        {
+            if (track.TargetNameId != 0)
+            {
+                if (targetIds[targetIndex] != track.TargetNameId)
+                    continue;
+            }
+            else if (!track.TargetName.empty() && track.TargetName != mesh.MorphTargets[targetIndex].Name)
+            {
+                continue;
+            }
+
+            Mathematics::Vector4 sampled;
+            if (!clip.Sample(track, time, sampled))
+                break;
+            if (std::abs(weights.weights[targetIndex] - sampled.x) > 1e-6f)
+            {
+                weights.weights[targetIndex] = sampled.x;
+                changed = true;
+            }
+            break;
+        }
+    }
+    if (changed)
+        ++weights.version;
+    return changed;
 }
 
 namespace

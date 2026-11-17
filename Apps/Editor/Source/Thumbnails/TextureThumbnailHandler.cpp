@@ -110,6 +110,8 @@ std::string TextureThumbnailHandler::GetOrRequestInlineImage(const std::filesyst
     // An empty answer from the cache is the source itself when it is no larger than the copy
     // would be, and no image otherwise.
     auto answer = [this, image, onReady = std::move(onReady)](const std::string& cached) {
+        if (!onReady)
+            return;
         if (!cached.empty())
             onReady(cached);
         else

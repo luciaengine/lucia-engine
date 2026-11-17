@@ -375,7 +375,8 @@ set(EDITOR_SOURCES
 	Source/Inspectors/ShaderInspector.cpp
 	Source/Inspectors/ScriptInspector.cpp
 	Source/Inspectors/NativeSourceInspector.cpp
-	Source/Inspectors/RenderPipelineInspector.cpp
+	Source/Inspectors/RenderPipeline/RenderPipelineInspector.cpp
+	Source/Inspectors/RenderPipeline/ShadowMapPassFields.cpp
 	Source/Sky/SkyEnvironment/SkyEnvironmentInspector.cpp
 	Source/Inspectors/DayOfYearText.cpp
 	Source/Sky/SkyDayCurveRow.cpp
@@ -854,7 +855,8 @@ set(EDITOR_HEADERS
 	Include/Inspectors/MaterialInspector.h
 	Include/Inspectors/ShaderInspector.h
 	Include/Inspectors/ScriptInspector.h
-	Include/Inspectors/RenderPipelineInspector.h
+	Include/Inspectors/RenderPipeline/RenderPipelineInspector.h
+	Include/Inspectors/RenderPipeline/ShadowMapPassFields.h
 	Include/Sky/SkyEnvironment/SkyEnvironmentInspector.h
 	Include/Inspectors/DayOfYearText.h
 	Include/Sky/SkyDayCurveRow.h
@@ -2079,12 +2081,12 @@ set_target_properties(Editor PROPERTIES
 if(APPLE)
 	set_target_properties(Editor PROPERTIES
 	    MACOSX_BUNDLE TRUE
-	    MACOSX_BUNDLE_BUNDLE_NAME "Open Engine Editor"
+	    MACOSX_BUNDLE_BUNDLE_NAME "Lucia Engine"
 	    MACOSX_BUNDLE_ICON_FILE AppIcon.icns
 	    MACOSX_BUNDLE_GUI_IDENTIFIER "com.gameengine.editor"
 	    MACOSX_BUNDLE_BUNDLE_VERSION "${GE_ENGINE_VERSION_NUMERIC}"
 	    MACOSX_BUNDLE_SHORT_VERSION_STRING "${GE_ENGINE_VERSION_NUMERIC}"
-	    MACOSX_BUNDLE_INFO_STRING "Open Engine Editor ${GE_ENGINE_VERSION}"
+	    MACOSX_BUNDLE_INFO_STRING "Lucia Engine ${GE_ENGINE_VERSION}"
 	    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/EditorInfo.plist.in"
 	)
 

@@ -452,11 +452,11 @@ set_target_properties(Player PROPERTIES
 if(APPLE)
     set_target_properties(Player PROPERTIES
         MACOSX_BUNDLE TRUE
-        MACOSX_BUNDLE_BUNDLE_NAME "Open Engine Player"
+        MACOSX_BUNDLE_BUNDLE_NAME "Lucia Player"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.gameengine.player"
         MACOSX_BUNDLE_BUNDLE_VERSION "${GE_ENGINE_VERSION_NUMERIC}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${GE_ENGINE_VERSION_NUMERIC}"
-        MACOSX_BUNDLE_INFO_STRING "Open Engine Player ${GE_ENGINE_VERSION}"
+        MACOSX_BUNDLE_INFO_STRING "Lucia Player ${GE_ENGINE_VERSION}"
         # Load bundled dylibs from Contents/Frameworks (staged by
         # ge_stage_runtime_dependencies). BUILD_WITH_INSTALL_RPATH keeps dev
         # builds run from the build tree consistent with the staged layout.

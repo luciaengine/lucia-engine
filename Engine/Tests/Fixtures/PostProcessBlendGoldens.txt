@@ -5,220 +5,220 @@
 # exposure <i> <bits>: Exposure blends through libm and is pinned to a ULP
 #   bound, not to these bits — see kExposureUlpBound.
 # field <i> <name> <bytes>: full member dump of two representative cases.
-case 0 9c39ab50c4751831
-case 1 9c39ab50c4751831
-case 2 9c39ab50c4751831
-case 3 9c39ab50c4751831
-case 4 9c39ab50c4751831
-case 5 f688b14d7d2a90b2
-case 6 f688b14d7d2a90b2
-case 7 a1bcaf7cd40b3715
-case 8 8d62fd98b2980fe0
-case 9 9f99c0f466686eb4
-case 10 af50b4437b9f8d2
-case 11 1812e15b291158f
-case 12 4a55ae256465c42
-case 13 b81ca24b4216f159
-case 14 5e306121545e6093
-case 15 624101fb9ad6daea
-case 16 e10eb85c033418f8
-case 17 b05f5dd25045ad1c
-case 18 989933cba9c98f6e
-case 19 b85397be24adea2e
-case 20 705117bd3b881e8e
-case 21 f051f938b9731f8f
-case 22 a518b13198326593
-case 23 13f0d7aa761ec2c6
-case 24 b2b99f82cb639045
-case 25 9a59271bf8322177
-case 26 56cc43a85a366282
-case 27 851dd66b74d2e8c6
-case 28 382d8464fd1b91d2
-case 29 311c1e138de43b83
-case 30 418a5deebf0175ae
-case 31 8fab92df7b68bd29
-case 32 b0c56fb7acef2fbc
-case 33 316042d9b135c4bf
-case 34 9e6f0bc96876a8bc
-case 35 8ae16049fb36ff71
-case 36 8ae16049fb36ff71
-case 37 8ae16049fb36ff71
-case 38 8ae16049fb36ff71
-case 39 8ae16049fb36ff71
-case 40 3a7ce1b4267eba8b
-case 41 3a7ce1b4267eba8b
-case 42 dbac88174f1a7f79
-case 43 9e4204505bed782
-case 44 1e919c1ae2c3c5a6
-case 45 803951685e75438a
-case 46 887eaf826847ce09
-case 47 9578d341f1bba518
-case 48 ed8516fbaa9927f7
-case 49 1231525874177edf
-case 50 8cff21c153f99a4
-case 51 f5d6bf16089cff26
-case 52 d092dcc9f9062700
-case 53 21402e3b4151a6e2
-case 54 47add59b59d21da0
-case 55 921ef618385ec352
-case 56 40ea8bfa1aca7180
-case 57 4d469d2ee3de110
-case 58 530f884180c89129
-case 59 dd48df572e3eb33
-case 60 4dd93ace8ae5e383
-case 61 1e4f55fac73283fa
-case 62 576e5a289b81b281
-case 63 49190a9583f2749b
-case 64 24092ea2419d15c3
-case 65 8a9b9ed24ae7bd51
-case 66 30cb585376102b92
-case 67 140c41eb3f2cface
-case 68 184088fae547c12b
-case 69 60270d1fbfdd71fa
-case 70 dd787b8daf923180
-case 71 dd787b8daf923180
-case 72 dd787b8daf923180
-case 73 dd787b8daf923180
-case 74 dd787b8daf923180
-case 75 592beeb8504996b
-case 76 592beeb8504996b
-case 77 a1ef60771b57a3e7
-case 78 cb34d356b3eedf97
-case 79 927128d19abbcb60
-case 80 c831f16fe9b1b31
-case 81 b85c27cd7bbc6684
-case 82 7c0303cb597ec559
-case 83 795041819bbf96ce
-case 84 a6d90fa171101d30
-case 85 9b818a562615abdf
-case 86 3f65f562664d9c4b
-case 87 417662f36f4aac8e
-case 88 ce20a5047a67cb6c
-case 89 fe8e1aabe963094d
-case 90 19282e9490d925be
-case 91 bb67c1f5fd958d67
-case 92 5a387d43aab9e2f
-case 93 a79b72de7484f306
-case 94 ff2573a3a6afbd7b
-case 95 3f4de919204b74a2
-case 96 16c1279a7deddfed
-case 97 792504736e2dd2a0
-case 98 1bbf5ebfb8daabc5
-case 99 523a16aa2f2dff00
-case 100 6b0c26ab048ad0c3
-case 101 7d2bf720b3ad1d2f
-case 102 2411b8799d99998b
-case 103 cb5e31092436f324
-case 104 a0ddf8e5e2e9ca7b
-case 105 10e11b3139ea6ac8
-case 106 10e11b3139ea6ac8
-case 107 10e11b3139ea6ac8
-case 108 10e11b3139ea6ac8
-case 109 10e11b3139ea6ac8
-case 110 634c1fd3347dadba
-case 111 634c1fd3347dadba
-case 112 bc4fdd49cd28e3ec
-case 113 1dff09c9affaa78
-case 114 5662c2716458691c
-case 115 794a5d72ef1024d
-case 116 a706bd975a837733
-case 117 7ca08d930c120719
-case 118 64464b3b7ef5599e
-case 119 b386bd55a42b22f7
-case 120 5dcdc2e93f93750
-case 121 d9dd95fef8b288f0
-case 122 89233aaa85953b43
-case 123 aa0e32c1e60d8bc8
-case 124 63fea81c0a24646
-case 125 42a465dfeb8e68be
-case 126 a99ead40a47073b8
-case 127 f64a28e0b25191c8
-case 128 764864615d4c0a6a
-case 129 6e990bdedaa7e808
-case 130 3e751cec64ea5fb4
-case 131 2b4863066d39cafe
-case 132 f8920c135c91751a
-case 133 28253b4afe10b18
-case 134 cca2e672989cb83d
-case 135 4172d1bbab845072
-case 136 7f21e17ce2a9bd3d
-case 137 bb935ed54dfa27af
-case 138 115f39f9cc213d2d
-case 139 5faef011d908380b
-case 140 9711157314949e62
-case 141 9711157314949e62
-case 142 9711157314949e62
-case 143 9711157314949e62
-case 144 9711157314949e62
-case 145 ce28ad01916ceb26
-case 146 ce28ad01916ceb26
-case 147 9d9aba9373c96b1c
-case 148 32a9ff0a86c28639
-case 149 c9c48a0eef838671
-case 150 f4a96fff9d8f827
-case 151 db0609a4f6afdd1f
-case 152 7f21e15322b91858
-case 153 e300d67035f13ce6
-case 154 4cb1c9b206f17e23
-case 155 8a70046716355a3f
-case 156 47a58dcd53678f0d
-case 157 7f1b6e57c9b527d6
-case 158 67b78024b520815b
-case 159 c42a972395e9e9bd
-case 160 e27c80ed4b9bea29
-case 161 5f696429dc8852e1
-case 162 3e92eb1e71e0ae02
-case 163 d995472b63fc2086
-case 164 a2d564eba265133f
-case 165 a052ee3cc22cade3
-case 166 a78cdfadff9867c3
-case 167 15638c09d9a48672
-case 168 b574a8c10af7044d
-case 169 9f299af3d06da2f7
-case 170 3798262646a8920d
-case 171 9a927fe16803aa7d
-case 172 87e436bdd82b4ab9
-case 173 8651d93b26f35721
-case 174 beae9e1df4d79a57
-case 175 f89810fd429c0576
-case 176 f89810fd429c0576
-case 177 f89810fd429c0576
-case 178 f89810fd429c0576
-case 179 f89810fd429c0576
-case 180 d019adeb11c65307
-case 181 d019adeb11c65307
-case 182 25bbdbfb01553aa4
-case 183 df0aca2bfbac87af
-case 184 bb073a56ec536bc7
-case 185 676e74b912c10d4e
-case 186 9d6a469453a78291
-case 187 b7c984d7fcc5707b
-case 188 fa9ef9bdf42c9671
-case 189 22ac45eb2545cce0
-case 190 b68973f310880eff
-case 191 cb55d2ef495fbc9
-case 192 11363ae91123c851
-case 193 f226aed525c6a0e7
-case 194 763a2316b04b655
-case 195 7608a30e96f041f9
-case 196 e43c8f52ea800eee
-case 197 5d7204a5794b3304
-case 198 831e5232996cd5f6
-case 199 c217f2a3290e2022
-case 200 56c41c00345b769b
-case 201 9c49469de32b1e2
-case 202 6ef122f76e0f8c6d
-case 203 243f095caaaa24ca
-case 204 1d90a247b4b3f3f6
-case 205 6012a3d6c31522d0
-case 206 31c68e5f5c7c9b2a
-case 207 488f16fbbbc732a8
-case 208 e64cc7de225d2bbd
-case 209 4948adf4b944ea1f
-case 210 785619496df8b845
-case 211 785619496df8b845
-case 212 785619496df8b845
-case 213 785619496df8b845
+case 0 5fc5c564a0e5344d
+case 1 5fc5c564a0e5344d
+case 2 5fc5c564a0e5344d
+case 3 5fc5c564a0e5344d
+case 4 5fc5c564a0e5344d
+case 5 1ce2359c3ddb0fda
+case 6 1ce2359c3ddb0fda
+case 7 9a5747e6f7195b0c
+case 8 3e1c893bc4270c65
+case 9 3875c5a78b794c01
+case 10 d0c2626cee250db
+case 11 11e7b63ee3657ce
+case 12 468c7b3012adafbf
+case 13 a46164e6335a40d8
+case 14 fdc6feecaf35ea67
+case 15 9a28336542bbc422
+case 16 29dfa0605a1e12d9
+case 17 fdf6329d76936bf4
+case 18 af403eccf81e4dca
+case 19 2e28380a63f295af
+case 20 a61a86348acb15b3
+case 21 9e953222a29b23bc
+case 22 d97b06d616fcc7f8
+case 23 ed8a94838d93e748
+case 24 9f1bd5a44300ae06
+case 25 8513c2ffbd7d5b44
+case 26 e212cf4d62622c5c
+case 27 5531ba2f9c594d70
+case 28 1520c4470a395333
+case 29 800315eba92b2a02
+case 30 5105d7dc07b91e96
+case 31 1c29a5d4a5527064
+case 32 b6c12a1c4bfe3235
+case 33 f9c0ab4ecbfb3513
+case 34 f1a4077ac05b68b0
+case 35 be5d68823f3aaee3
+case 36 be5d68823f3aaee3
+case 37 be5d68823f3aaee3
+case 38 be5d68823f3aaee3
+case 39 be5d68823f3aaee3
+case 40 c858a1942c762a1
+case 41 c858a1942c762a1
+case 42 ec619ac39d2b7448
+case 43 155a9e0af610615f
+case 44 1afd2df581fe7bf7
+case 45 d5dea9c4685366c3
+case 46 e8f74f36e3008504
+case 47 f9a465c48f02af5
+case 48 eef2358cc1a2bc7a
+case 49 b70393d9466407f0
+case 50 f31e8c1ce04fb78b
+case 51 4fd4e9693c3824c
+case 52 824ed7d4b8594d47
+case 53 693a101f63ab5925
+case 54 4cc2b15d90b5792a
+case 55 4a2bdf448b26fd38
+case 56 f854b7629a9d739c
+case 57 de77df0454865460
+case 58 8a0a4484e0738f10
+case 59 6d7f6e0560565937
+case 60 3ea9d426f0ad2d6b
+case 61 15c48a327565c56f
+case 62 fb6cc73e77902d74
+case 63 639d56a0868a590b
+case 64 6e3508edbab4df0b
+case 65 7ab370f91fb6740
+case 66 a70fe4b693400ace
+case 67 7ab88f9aadf40b32
+case 68 a9cfefaa9c3ab2ea
+case 69 930eceb3668905ff
+case 70 11e9cb3d98520319
+case 71 11e9cb3d98520319
+case 72 11e9cb3d98520319
+case 73 11e9cb3d98520319
+case 74 11e9cb3d98520319
+case 75 cb69b93f550cd5ba
+case 76 cb69b93f550cd5ba
+case 77 972da8c7fa82d126
+case 78 b56fdf6f42faa5a
+case 79 1cd3cc4c09301e61
+case 80 cd7ffa62a8eb7038
+case 81 c6a47c9ee2f51025
+case 82 80f96d2e58f5c6b8
+case 83 58c22370e65a2a93
+case 84 b4fa15348245a770
+case 85 ce83585c9a6f1a4f
+case 86 d2071f7794cb70cb
+case 87 b0fa236783bcc4de
+case 88 95c381e2703685cc
+case 89 d29feb75846562b9
+case 90 1d2a121ba244b74a
+case 91 332b19f46c48bf39
+case 92 87d883b719573711
+case 93 8d3b0c88263b8b18
+case 94 57d7e12b19564551
+case 95 6723651fdb0e27c0
+case 96 a92b7335403a419b
+case 97 840f5fed2448eaa2
+case 98 a5c9db57d8da0f48
+case 99 b7cf3fac464113f5
+case 100 1dbce338f3622ed2
+case 101 4b24ccf46843b8e2
+case 102 7050e10b9442daea
+case 103 d49b280dd9775d5
+case 104 92789209dee2895e
+case 105 5c305d77b356d09
+case 106 5c305d77b356d09
+case 107 5c305d77b356d09
+case 108 5c305d77b356d09
+case 109 5c305d77b356d09
+case 110 923d534ddbeb6f83
+case 111 923d534ddbeb6f83
+case 112 ff337264b79239ab
+case 113 a915d97bc02fe26b
+case 114 f528af036cc8457f
+case 115 6ea28f5e92c0a0e6
+case 116 9aaaaa2cbb86f224
+case 117 b0d165d9cc79adb6
+case 118 7d0778ea2b54417d
+case 119 eb8f3ad7dcb8477d
+case 120 e2a1a3cbd2d023ea
+case 121 c1e392e4a223e729
+case 122 f42b9cae6f2006f9
+case 123 b90b36bf98182b42
+case 124 785fcab5d985abdf
+case 125 b959d2feb1824397
+case 126 5394abdac4899b06
+case 127 82dba7e9cdf9272a
+case 128 e9f2404c6f7250fb
+case 129 30200cd030f92b66
+case 130 f58c6bcfed70347a
+case 131 c17b2cb9f47ccedf
+case 132 8a15236cefa5580f
+case 133 92dbe110f8e3794
+case 134 67649073943acac1
+case 135 4a516ffaa5b9abb1
+case 136 59d245cf697cbaf5
+case 137 7ef64fe0f5712d07
+case 138 ba6daccf48bc79c6
+case 139 90dc0de8412bfc
+case 140 87d96592604503f
+case 141 87d96592604503f
+case 142 87d96592604503f
+case 143 87d96592604503f
+case 144 87d96592604503f
+case 145 a7ccbdc73d9024cf
+case 146 a7ccbdc73d9024cf
+case 147 fefb5ae9feb5dba1
+case 148 7e8c6fb8e9f00818
+case 149 c3d7f91e3ea63888
+case 150 ce1f90e3de0bafea
+case 151 d9804cce1019cc62
+case 152 9707450c9f47a691
+case 153 3bf2ec7c4712bb93
+case 154 d20d680c92e8c9ec
+case 155 f6a0ce2f5743d76c
+case 156 b7698bb517ea7093
+case 157 ab2439ac59e29abd
+case 158 7e42c242ae9bd8d0
+case 159 c749ba956284765b
+case 160 f4e6d020cd859daf
+case 161 bd6b545300aedd9f
+case 162 ef0afa5b07cda71c
+case 163 c5ef57b28c97a7dd
+case 164 d7e12bfc843e5cb9
+case 165 d9577804dbc916a5
+case 166 e4067f20b6092aa8
+case 167 3eef0259957871a1
+case 168 a52c3e21b8e99d0a
+case 169 1df06154cb4178d4
+case 170 c798180be52df013
+case 171 5e8be482da864ade
+case 172 cbb68403fdcc5972
+case 173 353893ebec9b55df
+case 174 1af397baddfac059
+case 175 c9d2a563b1dfd111
+case 176 c9d2a563b1dfd111
+case 177 c9d2a563b1dfd111
+case 178 c9d2a563b1dfd111
+case 179 c9d2a563b1dfd111
+case 180 d566a987883f33e8
+case 181 d566a987883f33e8
+case 182 88771aa3328909e1
+case 183 18680970acc415da
+case 184 94957f845edcc7fa
+case 185 82322b40a0ea01a3
+case 186 4a422c72f976ab48
+case 187 198170ded9b252e2
+case 188 bf793921742e2e74
+case 189 f2df00b71f9cb948
+case 190 4c7fa422f9db79d3
+case 191 d4102ad5e0d3654a
+case 192 cc156c79396043c5
+case 193 e9a1bbf32f97012b
+case 194 a6703221476f52b2
+case 195 d1a2265ce427dc06
+case 196 e9e36e962f9f7e48
+case 197 8d75bbde43ccbf5a
+case 198 fabf5474c7282a97
+case 199 d5f8793d1b47684c
+case 200 a02198ad941eee3d
+case 201 59927bdd2af7223b
+case 202 54bc3248cd83f4a4
+case 203 e8ba3b207f81d673
+case 204 83fc897cb07b5f57
+case 205 9af2af8d9761e11a
+case 206 f93cc7734d8f4ff3
+case 207 83a9275483bffef5
+case 208 b44651419932cbf3
+case 209 859bf96361de225d
+case 210 c5d15408a0cbdb09
+case 211 c5d15408a0cbdb09
+case 212 c5d15408a0cbdb09
+case 213 c5d15408a0cbdb09
 fieldhash BloomThreshold e4f139217fb60b16
 fieldhash BloomKnee 5ec94624b44dc3b1
 fieldhash BloomAntiFlicker ffad2bfdf1763809
@@ -255,9 +255,9 @@ fieldhash HalationRadius 8a949e4745cabad5
 fieldhash HalationTintR e0687db08479c962
 fieldhash HalationTintG b4e443912aedac19
 fieldhash HalationTintB 46146350d2787fb2
-fieldhash TonemapMode 43508d2bdcf1c5ad
-fieldhash DitherMode 6c140dc26d457e00
-fieldhash IctcpChromaCompression c07022a35eab5d78
+fieldhash Look 43508d2bdcf1c5ad
+fieldhash NightTintStrength 16d24bb59b349d15
+fieldhash NightTintR 8e5caf4cb0919ea1
 fieldhash ChromaticAberrationIntensity 91b86fe6de4464d6
 fieldhash ChromaticAberrationStartOffset 63caa4988521af63
 fieldhash ChromaticAberrationSaturation 80fb7fe7f797f6f2
@@ -317,13 +317,12 @@ fieldhash ColorFilterG 700bf5311d088f42
 fieldhash ColorFilterB d5b4669467984bd9
 fieldhash ColorFilterIntensity 97902dd93c80eff1
 fieldhash ColorFilterBlendMode a5693d86d91ab73c
-fieldhash ColorFilterStackOrder bdca78f471281516
+fieldhash NightTintG f1e374dee9377187
 fieldhash CasStrength 121539558777a852
 fieldhash CasStackOrder 97575cd700592feb
 fieldhash LutIntensity bdca12c8649ac818
-fieldhash LutStackOrder acafd5d613a20939
-fieldhash LutInputEncoding 6c528d7b76c10d98
-fieldhash LutTextureFormat f8de4500d9317f47
+fieldhash LutStage acafd5d613a20939
+fieldhash NightTintB 10988e8d369f5662
 fieldhash LutAssetGuidWords f03c775d651c6403
 fieldhash VignetteIntensity 48411053fb7a85d
 fieldhash VignetteSmoothness 3313d45dada0391a
@@ -639,6 +638,10 @@ fieldhash ExposureCompensationEv 929cfbf32a891a87
 fieldhash ExposureClampMinEv d7d019223a933acb
 fieldhash ExposureClampMaxEv 8bd42fabe6d7cd5f
 fieldhash BloomOctaveBlend bfeca752d9fc4d33
+fieldhash AutoExposureMeter 6994a1b239429c7f
+fieldhash HeightFogColorMode bbdcdfe40ef415ac
+fieldhash ExposureClampMinWeight 716f7558066472fb
+fieldhash ExposureClampMaxWeight ef63e18f03ff5cb5
 exposure 0 00400442
 exposure 1 00400442
 exposure 2 00400442
@@ -889,9 +892,9 @@ field 0 HalationRadius 002079c2
 field 0 HalationTintR 00a01ac2
 field 0 HalationTintG 00c0a8c1
 field 0 HalationTintB 0000a540
-field 0 TonemapMode ffffffff
-field 0 DitherMode fcffffff
-field 0 IctcpChromaCompression 00802842
+field 0 Look ffffffff
+field 0 NightTintStrength 00802441
+field 0 NightTintR 00c025c2
 field 0 ChromaticAberrationIntensity 00607142
 field 0 ChromaticAberrationStartOffset 00803dc2
 field 0 ChromaticAberrationSaturation 00407cc2
@@ -951,13 +954,12 @@ field 0 ColorFilterG 00803ec1
 field 0 ColorFilterB 0000a840
 field 0 ColorFilterIntensity 000053c2
 field 0 ColorFilterBlendMode 00000000
-field 0 ColorFilterStackOrder 04000000
+field 0 NightTintG 00a06642
 field 0 CasStrength 00c01dc2
 field 0 CasStackOrder 02000000
 field 0 LutIntensity 0000a9c0
-field 0 LutStackOrder 01000000
-field 0 LutInputEncoding fcffffff
-field 0 LutTextureFormat 03000000
+field 0 LutStage 01000000
+field 0 NightTintB 00c07d42
 field 0 LutAssetGuidWords 00000000000000000000000000000000
 field 0 VignetteIntensity 00800642
 field 0 VignetteSmoothness 00409641
@@ -1273,6 +1275,10 @@ field 0 ExposureCompensationEv 00a003c2
 field 0 ExposureClampMinEv 000072c0
 field 0 ExposureClampMaxEv 00207ec2
 field 0 BloomOctaveBlend 0000803f
+field 0 AutoExposureMeter fcffffff
+field 0 HeightFogColorMode feffffff
+field 0 ExposureClampMinWeight 00c02d42
+field 0 ExposureClampMaxWeight 0000cfc0
 field 210 BloomThreshold 00105fc2
 field 210 BloomKnee 004049c2
 field 210 BloomAntiFlicker 00000000
@@ -1309,9 +1315,9 @@ field 210 HalationRadius 00a080c1
 field 210 HalationTintR 00103642
 field 210 HalationTintG 00a0ec41
 field 210 HalationTintB 0020cd41
-field 210 TonemapMode ffffffff
-field 210 DitherMode 00000000
-field 210 IctcpChromaCompression 001061c2
+field 210 Look ffffffff
+field 210 NightTintStrength 00006040
+field 210 NightTintR 00f06042
 field 210 ChromaticAberrationIntensity 00c01441
 field 210 ChromaticAberrationStartOffset 00003941
 field 210 ChromaticAberrationSaturation 0000c840
@@ -1371,13 +1377,12 @@ field 210 ColorFilterG 00b04942
 field 210 ColorFilterB 00307bc2
 field 210 ColorFilterIntensity 0000c940
 field 210 ColorFilterBlendMode 02000000
-field 210 ColorFilterStackOrder 01000000
+field 210 NightTintG 00003341
 field 210 CasStrength 000000bd
 field 210 CasStackOrder feffffff
 field 210 LutIntensity 00008a41
-field 210 LutStackOrder 02000000
-field 210 LutInputEncoding 03000000
-field 210 LutTextureFormat fcffffff
+field 210 LutStage 02000000
+field 210 NightTintB 00400e41
 field 210 LutAssetGuidWords 00000000000000000000000000000000
 field 210 VignetteIntensity 0080a1c0
 field 210 VignetteSmoothness 0000d9c1
@@ -1693,3 +1698,7 @@ field 210 ExposureCompensationEv 00808741
 field 210 ExposureClampMinEv 00901942
 field 210 ExposureClampMaxEv 009006c2
 field 210 BloomOctaveBlend 0000803f
+field 210 AutoExposureMeter ffffffff
+field 210 HeightFogColorMode fdffffff
+field 210 ExposureClampMinWeight 001061c2
+field 210 ExposureClampMaxWeight 00e0c141

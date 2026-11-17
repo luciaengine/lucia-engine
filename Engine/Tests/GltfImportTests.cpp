@@ -61,6 +61,7 @@ using Animation::AnimChannel;
 using Animation::AnimationClip;
 using Animation::AnimationClipSettings;
 using Animation::AnimationEvent;
+using Animation::AnimInterp;
 using Animation::AnimPath;
 using Animation::ClipTranslationMode;
 
@@ -1228,6 +1229,34 @@ void ExpectNoSettingsOrEvents(const AnimationClip& clip)
     EXPECT_TRUE(clip.GetEventTrack().GetEvents().empty());
 }
 
+// One MorphWeight channel per target, named as the model names its targets, keyed on the mesh's node.
+void ExpectTalkChannels(const AnimationClip& clip, const ModelAsset& model)
+{
+    ASSERT_EQ(model.GetMeshCount(), 1u);
+    const Mesh& mesh = model.GetMesh(0);
+    ASSERT_EQ(mesh.MorphTargets.size(), 2u);
+    ASSERT_EQ(clip.GetChannels().size(), 2u);
+    EXPECT_FLOAT_EQ(clip.GetDuration(), 2.0f);
+    for (size_t target = 0; target < 2u; ++target)
+    {
+        const AnimChannel& channel = clip.GetChannels()[target];
+        EXPECT_EQ(channel.path, AnimPath::MorphWeight);
+        EXPECT_EQ(channel.interp, AnimInterp::Linear);
+        EXPECT_EQ(channel.targetName, mesh.MorphTargets[target].Name);
+        EXPECT_EQ(channel.targetNameId, HashStringId(mesh.MorphTargets[target].Name));
+        EXPECT_EQ(static_cast<int32>(channel.boneIndex), mesh.SourceNodeIndex);
+        ASSERT_EQ(channel.keys.size(), 3u);
+        for (size_t key = 0; key < 3u; ++key)
+        {
+            EXPECT_FLOAT_EQ(channel.keys[key].time, static_cast<float>(key));
+            EXPECT_FLOAT_EQ(channel.keys[key].translation[0], TestFiles::kTalkWeights[key][target])
+                << "target " << target << ", key " << key;
+        }
+    }
+    EXPECT_EQ(clip.GetChannels()[0].targetName, "Smile");
+    EXPECT_EQ(clip.GetChannels()[1].targetName, "Blink");
+}
+
 } // namespace
 
 TEST(GltfImport, SparseIndexPastAccessorCountIsRefused)
@@ -2299,7 +2328,7 @@ TEST(GltfImport, GetExtrasRacesNoReloadSwap)
     EXPECT_EQ(torn.load(), 0);
 }
 
-TEST(GltfImport, WeightsChannelIsSkippedNotMappedToTranslation)
+TEST(GltfImport, WeightsChannelImportsBesideTheTranslation)
 {
     AnimationClip clip(GUID::Generate(), "blink.gltf");
     std::vector<std::string> lines;
@@ -2312,14 +2341,39 @@ TEST(GltfImport, WeightsChannelIsSkippedNotMappedToTranslation)
     }
     ASSERT_EQ(TestLog::CountLinesContaining(lines, "sink is live"), 1u);
     ASSERT_TRUE(loaded);
-    ASSERT_EQ(clip.GetChannels().size(), 1u);
-    const AnimChannel& channel = clip.GetChannels()[0];
-    EXPECT_EQ(channel.targetName, "Mover");
-    EXPECT_EQ(channel.path, AnimPath::Translation);
-    ASSERT_EQ(TestLog::CountLinesContaining(lines, "weights"), 1u);
-    const std::string skipped = TestLog::FirstLineContaining(lines, "weights");
-    EXPECT_NE(skipped.find("Body"), std::string::npos) << skipped;
-    EXPECT_NE(skipped.find("Blink"), std::string::npos) << skipped;
+    EXPECT_EQ(TestLog::CountLinesContaining(lines, "skipped"), 0u);
+    ASSERT_EQ(clip.GetChannels().size(), 2u);
+    // The file names no target, so the channel takes the name the model gives the target.
+    const AnimChannel& weight = clip.GetChannels()[0];
+    EXPECT_EQ(weight.path, AnimPath::MorphWeight);
+    EXPECT_EQ(weight.targetName, "morph_0");
+    EXPECT_EQ(weight.boneIndex, 0u);
+    ASSERT_EQ(weight.keys.size(), 2u);
+    EXPECT_FLOAT_EQ(weight.keys[0].translation[0], 0.0f);
+    EXPECT_FLOAT_EQ(weight.keys[1].translation[0], 1.0f);
+    const AnimChannel& translation = clip.GetChannels()[1];
+    EXPECT_EQ(translation.targetName, "Mover");
+    EXPECT_EQ(translation.path, AnimPath::Translation);
+}
+
+TEST(GltfImport, WeightsChannelImportsOneMorphWeightChannelPerTarget)
+{
+    const std::string glb = TestFiles::MorphWeightsGlb(false);
+    ModelAsset model(GUID::Generate(), "talk.glb");
+    ASSERT_TRUE(ModelAssetFbxTestAccess::LoadGltf(model, Bytes(glb), FbxLoaderOptions{}));
+    AnimationClip clip(GUID::Generate(), "talk.glb");
+    ASSERT_TRUE(clip.LoadFromData(Bytes(glb)));
+    ExpectTalkChannels(clip, model);
+}
+
+TEST(GltfImport, CubicSplineWeightsChannelImportsTheValuesBetweenTheTangents)
+{
+    const std::string glb = TestFiles::MorphWeightsGlb(true);
+    ModelAsset model(GUID::Generate(), "talk_cubic.glb");
+    ASSERT_TRUE(ModelAssetFbxTestAccess::LoadGltf(model, Bytes(glb), FbxLoaderOptions{}));
+    AnimationClip clip(GUID::Generate(), "talk_cubic.glb");
+    ASSERT_TRUE(clip.LoadFromData(Bytes(glb)));
+    ExpectTalkChannels(clip, model);
 }
 
 TEST(GltfImport, ChannelWithoutATargetNodeIsSkipped)

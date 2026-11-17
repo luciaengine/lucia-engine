@@ -6,7 +6,8 @@
 // ModelAsset via the resolver seam and locks: first-frame writes happen,
 // idle frames take no grants, the first weight edit registers the runtime
 // mesh and re-stamps, later edits rewrite it in place under the same handle,
-// and zero weights hand the entity back to its source mesh.
+// and zero weights hand the entity back to its source mesh. A glTF morph weight
+// animation plays through the same path from its imported clip and mesh.
 
 #include <gtest/gtest.h>
 
@@ -24,8 +25,12 @@
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/MorphTargetWeights.h"
 
+#include "Animation/Compression/AnimationClipData.h"
+#include "Assets/AnimationClip.h"
+#include "Assets/FbxLoaderOptions.h"
 #include "Assets/ModelAsset.h"
 #include "AssetCore/GUID.h"
+#include "Engine/Rendering/AnimationSampling.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 
@@ -37,7 +42,10 @@
 using namespace GameEngine;
 using GameEngine::Engine::Renderer::MorphTargetSystem;
 using GameEngine::Engine::Renderer::RenderServices;
+using GameEngine::Engine::Renderer::SampleMorphWeights;
 
+#include "GltfTestFiles.h"
+#include "ModelAssetFbxTestAccess.h"
 #include "TestDeviceHelper.h"
 
 namespace
@@ -393,6 +401,84 @@ TEST(MorphTargetDeepPathTests, ChangedSourceRegistersTheRuntimeMeshAgain)
     EXPECT_NE(weights->runtimeMeshGpuHandleId, 0u);
 
     token.Reset();
+    rs.Shutdown();
+    device->Shutdown();
+}
+
+// The "Talk" clip of a glTF file plays on its own mesh: SampleMorphWeights writes the imported
+// weights to the imported morph targets, and MorphTargetSystem moves the vertices by them.
+TEST(MorphTargetDeepPathTests, ImportedGltfWeightAnimationMovesTheMorphedVertices)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device.get()));
+    auto& registry = rs.GetMeshGPURegistry();
+
+    const std::string glb = TestFiles::MorphWeightsGlb(false);
+    const Vector<uint8> bytes(glb.begin(), glb.end());
+    const GUID modelGuid = GUID::Generate();
+    auto model = std::make_unique<ModelAsset>(modelGuid, std::filesystem::path("talk.glb"));
+    ASSERT_TRUE(ModelAssetFbxTestAccess::LoadGltf(*model, bytes, FbxLoaderOptions{}));
+    ASSERT_EQ(model->GetMeshCount(), 1u);
+    const Mesh& mesh = model->GetMesh(0);
+    AnimationClip clip(GUID::Generate(), std::filesystem::path("talk.glb"));
+    ASSERT_TRUE(clip.LoadFromData(bytes));
+    const auto clipData = clip.GetRuntimeData();
+    ASSERT_NE(clipData, nullptr);
+
+    MorphTargetSystem morphSystem(&rs);
+    morphSystem.SetModelResolverForTest(
+        [&model, modelGuid](const GUID& guid) { return guid == modelGuid ? model.get() : nullptr; });
+
+    ECS::World world(nullptr);
+    ECS::Entity e = world.Create();
+    Components::MeshRenderer mr{};
+    mr.modelAssetGuid.Set(modelGuid);
+    mr.meshId = 0;
+    e.Set(mr);
+    e.Set(Components::MorphTargetWeights{});
+    e.Set(Components::LocalBounds{});
+    world.ProcessCommands();
+
+    uint64_t frame = 0;
+    registry.BeginFrame(++frame);
+    morphSystem.Update(world, kDt);
+    const auto* weights = world.GetComponent<Components::MorphTargetWeights>(e.GetHandle());
+    ASSERT_NE(weights, nullptr);
+    ASSERT_EQ(weights->weightCount, 2u);
+
+    struct Pose
+    {
+        float Time;
+        float Smile;
+        float Blink;
+    };
+    // Linear between the keys { 0, 0 } at 0 s, { 1, 0.5 } at 1 s and { 0, 1 } at 2 s.
+    for (const Pose pose : {Pose{0.5f, 0.5f, 0.25f}, Pose{1.0f, 1.0f, 0.5f}, Pose{1.5f, 0.5f, 0.75f}})
+    {
+        registry.BeginFrame(++frame);
+        auto* written = world.GetComponentForWrite<Components::MorphTargetWeights>(e.GetHandle());
+        ASSERT_NE(written, nullptr);
+        ASSERT_TRUE(SampleMorphWeights(*clipData, pose.Time, mesh, *written)) << "t = " << pose.Time;
+        EXPECT_NEAR(written->weights[0], pose.Smile, 1e-5f) << "t = " << pose.Time;
+        EXPECT_NEAR(written->weights[1], pose.Blink, 1e-5f) << "t = " << pose.Time;
+        morphSystem.Update(world, kDt);
+
+        weights = world.GetComponent<Components::MorphTargetWeights>(e.GetHandle());
+        ASSERT_NE(weights, nullptr);
+        EXPECT_EQ(weights->appliedVersion, weights->version);
+        ASSERT_NE(weights->runtimeMeshGpuHandleId, 0u) << "t = " << pose.Time;
+        const Rendering::MeshGPUEntry* entry =
+            registry.Find(Rendering::MeshGPUHandle(weights->runtimeMeshGpuHandleId));
+        ASSERT_NE(entry, nullptr);
+        // Smile raises vertex 0 to y = 1 + 2 * Smile; Blink moves vertex 1 out to |x| = 1 + 2 * Blink.
+        EXPECT_NEAR(entry->bounds.halfExtents.y, 1.0f + pose.Smile, 1e-5f) << "t = " << pose.Time;
+        EXPECT_NEAR(entry->bounds.halfExtents.x, 1.0f + pose.Blink, 1e-5f) << "t = " << pose.Time;
+    }
+
     rs.Shutdown();
     device->Shutdown();
 }

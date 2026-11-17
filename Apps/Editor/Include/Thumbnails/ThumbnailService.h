@@ -137,6 +137,14 @@ class ThumbnailService : public IThumbnailProvider
                                    uint64_t expectedGeneration,
                                    bool* outResultCacheable = nullptr);
 
+    // Wraps a caller's ready callback so it runs on the UI thread, in BeginFrame. Handlers finish
+    // on any thread, and a callback marks a UIElement dirty, which UIManager allows only on the UI
+    // thread. Delivery is at most one frame after the work, cached or generated; GetOrRequest's
+    // return value still answers a cache hit at once. A callback that targets a UIElement guards
+    // it with UIElement::WeakRef.
+    std::function<void(const std::string& relPath)> DeliverOnUiThread(
+        std::function<void(const std::string& relPath)> onReady);
+
     // 64-bit digest of everything that decides the result, so the lookup on the
     // per-cell path costs no allocation. A collision would serve one asset's
     // thumbnail for another; at the 8192-entry bound the odds of any collision
@@ -154,6 +162,19 @@ class ThumbnailService : public IThumbnailProvider
 
     mutable std::mutex m_Mutex;
     mutable std::mutex m_ResultCacheMutex;
+    struct PendingReadyCallback
+    {
+        uint64_t Generation;
+        std::function<void(const std::string&)> Callback;
+        std::string Path;
+    };
+    struct PendingReadyState
+    {
+        std::mutex Mutex;
+        std::vector<PendingReadyCallback> Callbacks;
+    };
+    // Workers own only a weak queue reference, never the service itself.
+    std::shared_ptr<PendingReadyState> m_PendingReady = std::make_shared<PendingReadyState>();
     std::atomic<uint64_t> m_ProjectGeneration{0};
     AssetManager* m_AssetManager = nullptr; // not owned
     std::filesystem::path m_AssetsRoot;

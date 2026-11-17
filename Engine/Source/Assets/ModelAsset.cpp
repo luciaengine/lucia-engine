@@ -768,7 +768,7 @@ uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinne
             continue;
         }
         maxLods = std::max(maxLods, GenerateMeshLODsInto(mesh, config, &stats));
-        // A cluster model's LOD0 is already its coarse cover: its levels add the coarse error.
+        // A cluster model's LOD0 is its resident cut: its levels add the error of that cut.
         if (m_ClusterLODManifest)
         {
             const auto meshIndex = static_cast<uint32>(&mesh - m_Meshes.data());

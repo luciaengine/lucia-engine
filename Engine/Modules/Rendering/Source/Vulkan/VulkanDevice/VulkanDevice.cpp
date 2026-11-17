@@ -45,7 +45,10 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstdio>
+#include <format>
 #include <iterator>
+#include <string>
 
 // macOS bundle helpers (MoltenVK ICD discovery)
 #if defined(PLATFORM_MACOS)
@@ -415,6 +418,20 @@ static bool ValidationAssertEnabledFromEnv()
 extern "C" __declspec(dllimport) int __stdcall IsDebuggerPresent(void);
 #endif
 
+// Reports why the process stops. The flush is bounded: an unbounded flush hangs here whenever the
+// drain thread is blocked behind the sink mutex. A process with no log sink (a test executable)
+// keeps the reason only through stderr.
+static void ReportStopReason(const std::string& reason)
+{
+    Logger::Log::Critical("{}", reason);
+    Logger::Log::FlushForCrash(Logger::Log::kCrashFlushTimeout);
+    if (Logger::Log::GetSinkCount() == 0)
+    {
+        std::fprintf(stderr, "%s\n", reason.c_str());
+        std::fflush(stderr);
+    }
+}
+
 static void ValidationAssertBreak()
 {
 #if defined(_MSC_VER)
@@ -565,12 +582,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(
         // 3. Trap after the record and the log, so the stats and the first message survive the break.
         if (ValidationMessageTraps(messageSeverity, messageType, record.Suppressed) && ValidationAssertEnabledFromEnv())
         {
-            Logger::Log::Critical("[Vulkan] validation assert (GE_VK_VALIDATION_ASSERT): {}: {} objects:[{}] labels:[{}]",
-                                  hasId ? messageId : "(no VUID)", msg, objects, labels);
-            // Bounded: a break/abort without a flush loses the reason, but an
-            // unbounded flush would hang here instead of breaking whenever the
-            // drain thread is blocked behind the sink mutex.
-            Logger::Log::FlushForCrash(Logger::Log::kCrashFlushTimeout);
+            ReportStopReason(std::format("[Vulkan] validation assert (GE_VK_VALIDATION_ASSERT): {}: {} objects:[{}] labels:[{}]",
+                                         hasId ? messageId : "(no VUID)", msg, objects, labels));
             ValidationAssertBreak();
         }
     }
@@ -6301,11 +6314,11 @@ void VulkanDevice::DiagnoseFrameSlottedHostWrite(const VulkanBuffer& buffer) con
         return;
     if (m_CurrentFrameSlotFenced.load(std::memory_order_relaxed))
         return;
-    Logger::Log::Error(
+    ReportStopReason(std::format(
         "Host write to frame-slotted buffer '{}' outside an acquired frame: slot {} has not had "
-        "its fence waited, so a frame still in flight can be reading these bytes. The write "
-        "belongs between BeginFrame and Present.",
-        buffer.debugName, m_CurrentFrame.load(std::memory_order_relaxed));
+        "its fence waited, so a frame still in flight can be reading these bytes. Write it "
+        "between BeginFrame and Present, or after WaitForIdle.",
+        buffer.debugName, m_CurrentFrame.load(std::memory_order_relaxed)));
     assert(false && "host write to a frame-slotted buffer before its slot fence was waited");
 #else
     (void)buffer;
@@ -8768,6 +8781,8 @@ void VulkanDevice::WaitForIdle()
     {
         return;
     }
+    // Every queue is idle, so no frame still reads the current slot: host writes to it are legal.
+    m_CurrentFrameSlotFenced.store(true, std::memory_order_relaxed);
     ProcessPendingWindowTargetRetirements(true);
     FlushDeferredResourcesAndCompactLiveTracking();
 }

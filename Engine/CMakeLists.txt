@@ -434,6 +434,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.cpp
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowSunMask.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.cpp
+	Source/Engine/Rendering/ClusterLOD/ClusterLODCut.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODFeature.cpp
 	Source/Engine/Rendering/Impostors/ImpostorAtlasCache.cpp
 	Source/Engine/Rendering/Impostors/ImpostorBaker.cpp
@@ -2392,7 +2393,9 @@ endif()
             ge_add_render_services_test(ReflectionProbeTests
                 Tests/ReflectionProbeSystemTests.cpp
                 Tests/WorldContentDigestTableTests.cpp
-                Tests/OceanContentDigestTests.cpp)
+                Tests/OceanContentDigestTests.cpp
+                # What a capture face draws: the emission with no directional light, and the event after a skipped draw.
+                Tests/ProbeCaptureFaceDrawTests.cpp)
 
             # The render services themselves and the lighting they carry:
             # the feature registry, device recovery, views and cameras, project settings,

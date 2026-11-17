@@ -21,6 +21,25 @@
   /* Backdrop for anything framing a rendered image: graph node preview plates,
      texture drop slots, the shader graph's preview panel. */
   --ui_color_bg_plate: #2A2A2C;
+  /* Activity list stripe plates and log-level colors are theme-owned. */
+  --ui_color_list_stripe_primary: transparent;
+  --ui_color_list_stripe_secondary: var(--ui_color_bg_plate);
+  --ui_color_log_debug: #9cdcfe;
+  --ui_color_log_debug_fill: rgba(156, 220, 254, 0.1);
+  --ui_color_log_debug_edge: rgba(156, 220, 254, 0.7);
+  --ui_color_log_info: #d4d4d4;
+  --ui_color_log_info_fill: rgba(212, 212, 212, 0.1);
+  --ui_color_log_info_edge: rgba(245, 245, 245, 0.7);
+  --ui_color_log_warning: #dcdcaa;
+  --ui_color_log_warning_fill: rgba(220, 220, 170, 0.1);
+  --ui_color_log_warning_edge: rgba(255, 255, 194, 0.7);
+  --ui_color_log_error: #f48771;
+  --ui_color_log_error_fill: rgba(244, 135, 113, 0.1);
+  --ui_color_log_error_edge: rgba(244, 135, 113, 0.7);
+  /* The docking ghost: where a dragged panel lands. */
+  --ui_color_dock_ghost_border: #555555;
+  --ui_color_dock_ghost_body: #222222;
+  --ui_color_accent_glow: rgba(0, 111, 255, 0.5);
   /* The plate under a row of segmented buttons (Button.css: segmented-button). */
   --ui_color_segmented_plate: rgba(0, 0, 0, 0.28);
   /* MarkdownText in the editor (its rules are the UI module's default sheet): a code block sits
@@ -71,6 +90,8 @@
   --ui_color_text_muted: #E0E0E0;
   --ui_color_text_bright: #FFFFFF;
   --ui_color_text_dim: #b2b2b2;
+  /* The dim text color at half opacity: the outline of an information notice drawn over a view. */
+  --ui_color_text_dim_outline: rgba(178, 178, 178, 0.5);
   /* Component icon glyphs (inspector headers, pickers) at rest. */
   --ui_color_icon: rgba(200, 200, 200, 1.0);
   --ui_color_text_disabled: #666666;

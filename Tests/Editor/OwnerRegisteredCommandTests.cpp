@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "Automation/UiReplayCommandIds.h"
+#include "ECS/World.h"
 #include "Editor/Registries/EditorMenuRegistry.h"
 #include "PlayMode/PlayModeManager.h"
 #include "Scene/SceneEditorController.h"
@@ -83,6 +84,9 @@ TEST(OwnerRegisteredCommands, StopCancelsAPlayEntryWaitingForTheScriptBuild)
         snapshot.Building = true;
         return snapshot;
     });
+    // The gate holds an entry only after the world check passes.
+    ECS::World world;
+    playMode.SetWorld(&world);
     playMode.RegisterCommands();
     auto& registry = Editor::EditorMenuRegistry::Get();
     EXPECT_EQ(registry.InvokeCommand(UiReplayCommandIds::PlayEnter, nullptr),

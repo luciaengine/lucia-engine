@@ -2278,25 +2278,29 @@ void TreeView::OnEvent(UIEvent& e)
                 if (e.Y < rowY || e.Y >= rowY + rowH)
                     continue;
                 
+                // A row may mark several icons as hit targets: the drag applies over any of them.
+                bool hasExplicitIconTarget = false;
                 UIElement* explicitIconTarget = nullptr;
                 for (const auto& child : slot.row->GetChildren())
                 {
-                    if (child && child->HasClass("tree-icon-hit-target"))
+                    if (!child || !child->HasClass("tree-icon-hit-target"))
+                        continue;
+                    hasExplicitIconTarget = true;
+                    float iconX = 0.0f;
+                    float iconY = 0.0f;
+                    float iconW = 0.0f;
+                    float iconH = 0.0f;
+                    child->GetHitTestBounds(iconX, iconY, iconW, iconH);
+                    if (e.X >= iconX && e.X < iconX + iconW && e.Y >= iconY && e.Y < iconY + iconH)
                     {
                         explicitIconTarget = child.get();
                         break;
                     }
                 }
 
-                if (explicitIconTarget)
+                if (hasExplicitIconTarget)
                 {
-                    float iconX = 0.0f;
-                    float iconY = 0.0f;
-                    float iconW = 0.0f;
-                    float iconH = 0.0f;
-                    explicitIconTarget->GetHitTestBounds(iconX, iconY, iconW, iconH);
-                    if (e.X < iconX || e.X >= iconX + iconW ||
-                        e.Y < iconY || e.Y >= iconY + iconH)
+                    if (!explicitIconTarget)
                         continue;
                 }
                 else

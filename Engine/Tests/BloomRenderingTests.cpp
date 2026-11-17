@@ -210,12 +210,16 @@ protected:
         sd.transient = false;
         auto ds = m_Device->CreateDescriptorSet(sd);
         Require(ds.IsValid(), "descriptor allocation failed");
+        // An input the shipped pipeline binds black when it does not resolve may be left out.
+        const std::vector<std::string> boundBlack = InputsBoundBlack(shader);
         for (const auto& binding : p.Meta.Sets[0].Bindings)
         {
             if (binding.Type == ShaderMetaBindingType::kCombinedImageSampler)
             {
                 auto it = inputs.find(binding.Name);
-                Require(it != inputs.end() || binding.Name == "uScattering", "missing input " + binding.Name);
+                Require(it != inputs.end() ||
+                            std::find(boundBlack.begin(), boundBlack.end(), binding.Name) != boundBlack.end(),
+                        "missing input " + binding.Name);
                 auto handle = it == inputs.end() ? m_Depth.Handle : it->second.Handle;
                 m_Device->UpdateCombinedImageSamplerBinding(ds, binding.Binding, handle, m_Sampler);
             }

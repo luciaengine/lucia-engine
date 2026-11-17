@@ -107,7 +107,7 @@ TEST(TerrainInspectorSectionStyle, EverySectionIsBuiltByTheOneHelperThatStylesIt
     EXPECT_NE(addSection.find("InspectorUI::AddComponentSection"), std::string::npos)
         << "a terrain section is built by hand instead of the shared inspector helper";
 
-    const std::string helper = ReadEditorFile("Source/Inspectors/InspectorComponentSection.cpp");
+    const std::string helper = ReadEditorFile("Source/Inspectors/InspectorComponent/InspectorComponentSection.cpp");
     ASSERT_FALSE(helper.empty()) << "the shared section helper did not read; this test is vacuous";
 
     // A section wears the shared foldout treatment AND the component-section class that pulls its
@@ -138,7 +138,7 @@ TEST(TerrainInspectorSectionStyle, NoSectionHardcodesItsExpansionInsteadOfRememb
 
     // The remembered flag is read into the control and written back when the user folds it. It
     // lives with the helper, which is what makes it true for every inspector section at once.
-    const std::string helper = ReadEditorFile("Source/Inspectors/InspectorComponentSection.cpp");
+    const std::string helper = ReadEditorFile("Source/Inspectors/InspectorComponent/InspectorComponentSection.cpp");
     ASSERT_FALSE(helper.empty()) << "the shared section helper did not read; this test is vacuous";
     EXPECT_NE(helper.find("SetExpanded(expanded)"), std::string::npos)
         << "the shared helper no longer seeds the section from its remembered state";

@@ -4,17 +4,33 @@
 <UIElement class="log-panel">
   <UIElement class="log-toolbar">
     <UIElement class="log-filters">
-      <Button id="LogFilterError" class="small secondary log-filter log-filter-error active" text="Errors" />
-      <Button id="LogFilterWarning" class="small secondary log-filter log-filter-warning active" text="Warnings" />
-      <Button id="LogFilterInfo" class="small secondary log-filter log-filter-info active" text="Info" />
-      <Button id="LogFilterDebug" class="small secondary log-filter log-filter-debug active" text="Debug" />
-      <Button id="LogChannels" class="small secondary" text="Channels" />
+      <Button id="LogFilterError" class="small secondary log-filter log-filter-error active" text="Errors">
+        <UIElement class="log-toolbar-glyph log-row-glyph-error" />
+      </Button>
+      <Button id="LogFilterWarning" class="small secondary log-filter log-filter-warning active" text="Warnings">
+        <UIElement class="log-toolbar-glyph log-row-glyph-warning" />
+      </Button>
+      <Button id="LogFilterInfo" class="small secondary log-filter log-filter-info active" text="Info">
+        <UIElement class="log-toolbar-glyph log-row-glyph-info" />
+      </Button>
+      <Button id="LogFilterDebug" class="small secondary log-filter log-filter-debug active" text="Debug">
+        <UIElement class="log-toolbar-glyph log-row-glyph-debug" />
+      </Button>
+      <Button id="LogChannels" class="small secondary" text="Channels">
+        <UIElement class="log-toolbar-glyph log-toolbar-glyph-channels" />
+      </Button>
     </UIElement>
     <UIElement class="log-toolbar-end">
       <UIElement class="log-actions">
-        <Button id="LogClear" class="small secondary" text="Clear" />
-        <Button id="LogPause" class="small secondary" text="Pause" />
-        <Button id="LogCopyAll" class="small secondary" text="Copy All" />
+        <Button id="LogClear" class="small secondary" text="Clear">
+          <UIElement class="log-toolbar-glyph log-toolbar-glyph-clear" />
+        </Button>
+        <Button id="LogPause" class="small secondary" text="Pause">
+          <UIElement id="LogPauseGlyph" class="log-toolbar-glyph log-toolbar-glyph-pause" />
+        </Button>
+        <Button id="LogCopyAll" class="small secondary" text="Copy All">
+          <UIElement class="log-toolbar-glyph log-toolbar-glyph-copy" />
+        </Button>
       </UIElement>
       <UIElement id="LogSearchHost" class="log-search-host" />
     </UIElement>

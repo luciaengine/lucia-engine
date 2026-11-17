@@ -136,12 +136,13 @@ bool ModelAssetParser::CookForPackage(const AssetPackageCookContext& context, st
         error = "Cluster fine store is missing, truncated, or has the wrong checksum";
         return false;
     }
-    for (size_t group = 0; group < decoded.Manifest.Pages.size(); ++group)
+    for (const auto& unit : decoded.Manifest.Units)
     {
-        const auto& page = decoded.Manifest.Pages[group];
+        if (!unit.IsStreamed())
+            continue;
         Mesh fine;
-        if (!DecodeMeshClusterLODFinePage(std::span<const uint8>(fineBytes).subspan(static_cast<size_t>(page.Offset),
-            static_cast<size_t>(page.Bytes)), page, decoded.CoarseMeshes[page.Mesh], fine, error))
+        if (!DecodeMeshClusterLODFinePage(std::span<const uint8>(fineBytes).subspan(static_cast<size_t>(unit.Offset),
+            static_cast<size_t>(unit.Bytes)), unit, decoded.CoarseMeshes[unit.Mesh], fine, error))
             return false;
     }
     if (exists)

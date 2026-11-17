@@ -42,12 +42,12 @@ class MeshClusterCookCliTests(unittest.TestCase):
         for output in (first, second):
             result = self.run_tool("--input", self.source, "--output", output)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("cluster groups:", result.stdout)
+            self.assertIn("DAG groups:", result.stdout)
             self.assertTrue(output.is_file())
         self.assertEqual(first.read_bytes(), second.read_bytes())
         stores = list((self.root / ".cluster").glob("*.pages"))
         self.assertEqual(len(stores), 1)
-        self.assertGreater(stores[0].stat().st_size, 0)
+        self.assertTrue(stores[0].is_file())
         self.assertEqual(self.source.read_bytes(), original)
 
     def test_refuses_existing_output_without_touching_it(self):

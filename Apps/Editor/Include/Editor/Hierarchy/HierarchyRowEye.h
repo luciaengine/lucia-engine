@@ -2,13 +2,11 @@
 
 #include "ECS/ECS.h"
 
-#include <functional>
-#include <vector>
+#include <cstdint>
 
 namespace GameEngine
 {
 class UIElement;
-struct UIEvent;
 } // namespace GameEngine
 
 namespace GameEngine::ECS
@@ -19,43 +17,32 @@ class World;
 namespace GameEngine::Editor
 {
 
-/// What a Hierarchy row's eye asks of the panel that holds the row.
-struct HierarchyRowEyeHost
-{
-    /// The world the rows show, or null.
-    std::function<ECS::World*()> World;
-    /// The entity `row` shows now, or an invalid handle: the tree recycles rows.
-    std::function<ECS::EntityHandle(const UIElement& row)> RowEntity;
-    /// The entities one click on `clicked`'s eye sets: the selection when the row is in it.
-    std::function<std::vector<ECS::EntityHandle>(ECS::EntityHandle clicked)> ClickTargets;
-    /// Shows `row`'s new state after a click.
-    std::function<void(UIElement& row, ECS::EntityHandle entity)> RowChanged;
-};
-
-/// The Scene View eye on a Hierarchy row: the row's `hierarchy-eye` child and its click
-/// (SetHiddenInSceneView). HierarchyRowActivity shows the eye's state on it.
+/// The eye on a Hierarchy row: the row's `hierarchy-eye` child. It shows the entity's on/off state, as
+/// the entity icon does (HierarchyRowActivity), and it is a tree icon hit target like the entity icon,
+/// so the tree's icon press, multi-selection and drag switch the entity from either icon.
 class HierarchyRowEye
 {
   public:
-    explicit HierarchyRowEye(HierarchyRowEyeHost host);
+    HierarchyRowEye();
 
     /// Gives `row` its eye; once per pooled row.
     void AddTo(UIElement& row);
 
-    /// Shows the eye on `row`, bound to `entity`, only when the eye is on and has something to hide
-    /// there: the entity has a mesh, or it has children that may. A leaf with no mesh shows none.
-    void Present(UIElement& row, ECS::EntityHandle entity, bool hasChildren);
+    /// Shows the eye on `row` when the eye column is on and the row shows an entity.
+    void Present(UIElement& row, ECS::EntityHandle entity);
 
-    /// Whether rows show the eye. The editor preferences keep the choice; on by default.
-    bool IsShown() const { return m_Shown; }
-    /// Turns the eye on or off on every row at the next Present, and saves the choice.
-    void ToggleShown();
+    /// True once after the eye column was turned on or off, from the menu or from Settings.
+    bool ConsumeShownChange();
 
   private:
-    void OnMouseDown(UIElement& row, UIEvent& e);
-
-    HierarchyRowEyeHost m_Host;
-    bool m_Shown = true;
+    uint64_t m_ShownRevision = 0;
 };
+
+/// Whether Hierarchy rows show the eye column. The editor preferences keep the choice; on by default.
+bool IsHierarchyEyeShown();
+/// Turns the eye column on or off and saves the choice. The Hierarchy menu and Settings share it.
+void SetHierarchyEyeShown(bool shown);
+/// Adds the Hierarchy page, with the eye column toggle, to the editor settings.
+void RegisterHierarchySettingsCategory();
 
 } // namespace GameEngine::Editor

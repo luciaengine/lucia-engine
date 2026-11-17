@@ -59,30 +59,25 @@ int main(int argc, char** argv)
             throw std::runtime_error("Generated coarse model failed verification");
         const auto& manifest = *generated.GetClusterLODManifest();
         constexpr uint64 kIndicesPerTriangle = 3;
-        uint64 coarseIndexCount = 0;
-        uint64 fineIndexCount = 0;
-        uint64 fineVertexCount = 0;
-        float32 maximumCoarseError = 0.0f;
-        size_t reducedGroupCount = 0;
-        for (const MeshClusterLODManifest::Page& page : manifest.Pages)
+        uint64 streamedIndexCount = 0;
+        uint64 streamedUnitCount = 0;
+        for (const MeshClusterLODManifest::Unit& unit : manifest.Units)
         {
-            coarseIndexCount += page.CoarseIndexCount;
-            fineIndexCount += page.IndexCount;
-            fineVertexCount += page.VertexCount;
-            maximumCoarseError = std::max(maximumCoarseError, page.Error);
-            reducedGroupCount += page.CoarseIndexCount < page.IndexCount ? 1u : 0u;
+            streamedIndexCount += unit.IsStreamed() ? unit.IndexCount : 0;
+            streamedUnitCount += unit.IsStreamed() ? 1 : 0;
         }
-        std::cout << "Coarse meshes: " << generated.GetMeshCount() << ", cluster groups: " << manifest.Pages.size()
-                  << ", coarse bytes: " << fs::file_size(output)
-                  << ", fine bytes: " << manifest.StoreBytes << '\n';
-        std::cout << "Triangles (coarse/fine): " << coarseIndexCount / kIndicesPerTriangle
-                  << '/' << fineIndexCount / kIndicesPerTriangle
-                  << ", reduced coarse groups: " << reducedGroupCount << '\n';
-        std::cout << "Vertices (imported/coarse/fine): " << source.GetTotalVertexCount()
-                  << '/' << generated.GetTotalVertexCount() << '/' << fineVertexCount << '\n';
-        std::cout << "Estimated maximum coarse error (model units): " << maximumCoarseError << '\n';
-        if (reducedGroupCount == 0)
-            std::cout << "No coarse triangle reduction was achieved.\n";
+        std::cout << "Coarse meshes: " << generated.GetMeshCount() << ", DAG groups: " << manifest.Groups.size()
+                  << ", units: " << manifest.Units.size() << " (" << streamedUnitCount << " streamed)"
+                  << ", coarse bytes: " << fs::file_size(output) << ", fine bytes: " << manifest.StoreBytes << '\n';
+        for (uint32 meshIndex = 0; meshIndex < generated.GetMeshCount(); ++meshIndex)
+        {
+            const Mesh& mesh = generated.GetMesh(meshIndex);
+            std::cout << "Mesh " << meshIndex << " resident level " << manifest.Meshes[meshIndex].ResidentDepth
+                      << ", LOD0 triangles: " << mesh.Indices.size() / kIndicesPerTriangle << '\n';
+        }
+        std::cout << "Streamed triangles: " << streamedIndexCount / kIndicesPerTriangle << '\n';
+        std::cout << "Vertices (imported/coarse): " << source.GetTotalVertexCount() << '/'
+                  << generated.GetTotalVertexCount() << '\n';
         std::cout << "Fine store: "
                   << ResolveMeshClusterLODStore(output, {}, manifest).generic_string() << '\n';
         return 0;

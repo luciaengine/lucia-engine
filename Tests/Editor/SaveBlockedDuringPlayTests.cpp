@@ -308,7 +308,7 @@ TEST(SaveBlockedDuringPlayWiring, EditorApplicationSuppliesThePlayStateProbe)
 {
     // Without this the probe is never set, every IsSaveBlockedByPlayMode() is
     // false, and all of the arms above pass while the editor still overwrites.
-    const std::string src = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication.cpp");
+    const std::string src = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication" / "EditorApplication.cpp");
     ASSERT_FALSE(src.empty());
     EXPECT_NE(src.find("m_SceneEditor->SetPlayModeProbe("), std::string::npos)
         << "EditorApplication never wires the scene editor's play-state probe";
@@ -318,7 +318,7 @@ TEST(SaveBlockedDuringPlayWiring, BothWriteInhibitsReadOnePredicate)
 {
     // The manual-save probe and the autosave tick must not carry two textual copies of
     // "is play mode running" — that is how one gains a state the other does not.
-    const std::string src = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication.cpp");
+    const std::string src = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication" / "EditorApplication.cpp");
     ASSERT_FALSE(src.empty());
 
     const std::string probeBody =

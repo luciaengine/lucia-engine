@@ -2,12 +2,23 @@
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <sstream>
+#include <string>
 
 #include "InspectorRegistry.h"
-#include "Inspectors/RenderPipelineInspector.h"
+#include "Inspectors/RenderPipeline/RenderPipelineInspector.h"
 
 #include "Assets/RenderPipelineAsset.h"
+#include "Core/Engine.h"
+#include "Engine/Rendering/Pipeline/Nodes/ShadowMapNode.h"
+#include "UI/Controls/Dropdown.h"
+#include "UI/Controls/FloatField.h"
+#include "UI/Controls/Toggle.h"
 #include "UI/UIElement.h"
+#include "UI/UIManager.h"
+
+#include <nlohmann/json.hpp>
 
 #include "TestTempDir.h"
 
@@ -23,9 +34,72 @@ static void WriteTextFile(const std::filesystem::path& p, const std::string& tex
     ASSERT_TRUE(out.is_open()) << p.string();
     out << text;
 }
+
+static std::string ReadTextFile(const std::filesystem::path& p)
+{
+    std::ifstream in(p, std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    return text.str();
+}
+
+static std::string MakeShadowMapPipeline(const std::string& shadowPassFields)
+{
+    return R"JSON({ "schemaVersion": 2, "pipelineName": "ShadowPipe", "passes": [ { "id": "Shadows", "type": "ShadowMap")JSON" +
+           shadowPassFields + R"JSON( } ], "outputs": { "FinalColor": "View.Resolve" } })JSON";
+}
+
+// The inspector reads the engine's asset manager, so the suite starts the engine once.
+class RenderPipelineInspectorTest : public ::testing::Test
+{
+  protected:
+    static void SetUpTestSuite()
+    {
+        EngineCore& engine = EngineCore::GetInstance();
+        if (engine.IsInitialized())
+            return;
+        ApplicationConfig config{};
+        config.AssetDirectory = ".";
+        config.WorkspaceDirectory = ".";
+        config.EnableEditor = true;
+        ASSERT_TRUE(engine.Initialize(config));
+    }
+};
+
+// The inspector of one pipeline, mounted in a UI manager. An edit runs inside the dispatch guard and
+// the rebuild it posts runs after, as in the editor.
+struct MountedPipelineInspector
+{
+    explicit MountedPipelineInspector(RenderPipelineAsset& pipe)
+    {
+        auto root = std::make_unique<UIElement>("div");
+        Root = root.get();
+        Manager.SetRoot(std::move(root));
+        RegisterRenderPipelineInspector();
+        InspectorFn* fn = InspectorRegistry::Get().TryGetAssetInspector(AssetType::RenderPipeline);
+        EXPECT_NE(fn, nullptr);
+        InspectorContext ctx{};
+        ctx.Parent = Root;
+        ctx.Object = &pipe;
+        if (fn)
+            (*fn)(ctx);
+    }
+
+    template <typename Edit>
+    void EditAsUser(Edit&& edit)
+    {
+        UIElement::SetInEventDispatch(true);
+        edit();
+        UIElement::SetInEventDispatch(false);
+        Manager.DrainDeferredActionsOnce();
+    }
+
+    UIManager Manager{nullptr};
+    UIElement* Root = nullptr;
+};
 } // namespace
 
-TEST(RenderPipelineInspector, BuildsUiForComputeAndFullscreenPasses)
+TEST_F(RenderPipelineInspectorTest, BuildsUiForComputeAndFullscreenPasses)
 {
     RegisterRenderPipelineInspector();
     InspectorFn* fn = InspectorRegistry::Get().TryGetAssetInspector(AssetType::RenderPipeline);
@@ -137,3 +211,66 @@ TEST(RenderPipelineInspector, BuildsUiForComputeAndFullscreenPasses)
     EXPECT_NE(root.FindById("rp-res-ClusterDebug-extent-scale-y"_sid), nullptr);
 }
 
+
+// A ShadowMap pass shows its cascade rows. A resolution chosen in the dropdown is saved to the
+// pipeline file, and the saved pass is one the node accepts.
+TEST_F(RenderPipelineInspectorTest, ShadowMapPassEditsTheCascadeResolutionInThePipelineFile)
+{
+    const TestUtils::ScopedTempDir tmpDir{TestUtils::MakeUniqueTempDirectory("ge_editor_tests")};
+    const std::filesystem::path pipePath = tmpDir.Path() / "ShadowPipe.rendergraph";
+    WriteTextFile(pipePath, MakeShadowMapPipeline(R"(, "resolution": 2048)"));
+    RenderPipelineAsset pipe(GUID::Generate(), pipePath);
+    ASSERT_TRUE(pipe.Load());
+
+    MountedPipelineInspector inspector(pipe);
+    UIElement& root = *inspector.Root;
+
+    auto* resolution = dynamic_cast<Dropdown*>(root.FindById("rp-pass-0-resolution"_sid));
+    ASSERT_NE(resolution, nullptr);
+    EXPECT_EQ(resolution->GetSelectedValue(), "2048");
+    EXPECT_EQ(resolution->GetSelectedLabel(), "2048");
+    EXPECT_NE(dynamic_cast<FloatField*>(root.FindById("rp-pass-0-splitLambda"_sid)), nullptr);
+    EXPECT_NE(dynamic_cast<Toggle*>(root.FindById("rp-pass-0-fitShadowDistanceToScene"_sid)), nullptr);
+    EXPECT_NE(dynamic_cast<FloatField*>(root.FindById("rp-pass-0-maxShadowDistance"_sid)), nullptr);
+
+    inspector.EditAsUser([resolution] { resolution->SetSelectedValue("4096"); });
+
+    const nlohmann::json saved = nlohmann::json::parse(ReadTextFile(pipePath));
+    const nlohmann::json& pass = saved["passes"][0];
+    EXPECT_EQ(pass.value("resolution", 0u), 4096u);
+    Engine::Renderer::Pipeline::Nodes::ShadowMapNode node;
+    std::string error;
+    EXPECT_TRUE(node.Initialize("Shadows", pass.dump(), &error)) << error;
+
+    // The save rebuilds the inspector, so the row is found again.
+    auto* splitLambda = dynamic_cast<FloatField*>(root.FindById("rp-pass-0-splitLambda"_sid));
+    ASSERT_NE(splitLambda, nullptr);
+    inspector.EditAsUser([splitLambda]
+                         {
+                             splitLambda->SetValue(0.2f);
+                             splitLambda->NotifyValueChanged();
+                         });
+    const nlohmann::json resaved = nlohmann::json::parse(ReadTextFile(pipePath));
+    EXPECT_EQ(resaved["passes"][0].value("splitLambda", 0.0), 0.2) << "a float saves as typed, not as its float expansion";
+}
+
+// A resolution the node refuses stays selected and marked, so opening the inspector does not
+// change the file.
+TEST_F(RenderPipelineInspectorTest, ShadowMapPassKeepsAnUnsupportedResolutionSelectedAndMarked)
+{
+    const TestUtils::ScopedTempDir tmpDir{TestUtils::MakeUniqueTempDirectory("ge_editor_tests")};
+    const std::filesystem::path pipePath = tmpDir.Path() / "ShadowPipe.rendergraph";
+    WriteTextFile(pipePath, MakeShadowMapPipeline(R"(, "resolution": 5000, "fitShadowDistanceToScene": true)"));
+    RenderPipelineAsset pipe(GUID::Generate(), pipePath);
+    ASSERT_TRUE(pipe.Load());
+
+    MountedPipelineInspector inspector(pipe);
+    UIElement& root = *inspector.Root;
+
+    auto* resolution = dynamic_cast<Dropdown*>(root.FindById("rp-pass-0-resolution"_sid));
+    ASSERT_NE(resolution, nullptr);
+    EXPECT_EQ(resolution->GetSelectedValue(), "5000");
+    EXPECT_EQ(resolution->GetSelectedLabel(), "5000 (invalid)");
+    EXPECT_EQ(root.FindById("rp-pass-0-maxShadowDistance"_sid), nullptr)
+        << "the scene fit replaces the max shadow distance";
+}
