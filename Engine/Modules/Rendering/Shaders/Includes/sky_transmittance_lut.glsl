@@ -62,9 +62,11 @@ vec2 GE_SkyTransmittanceLutUvToRMu(vec2 uv, float bottom, float top, vec2 lutSiz
     float xR = GE_SkyLutTexCoordToUnit(uv.y, lutSize.y);
     float H = sqrt((top - bottom) * (top + bottom));
     float rho = H * xR;
-    float r = sqrt(rho * rho + bottom * bottom);
+    // Rounding at a boundary can move the decoded radius outside the shell.
+    float r = clamp(sqrt(rho * rho + bottom * bottom), bottom, top);
     float dMin = top - r;
-    float dMax = rho + H;
+    // Use the same tangent distance as the forward mapping of the rounded radius.
+    float dMax = sqrt(max((r - bottom) * (r + bottom), 0.0)) + H;
     float d = dMin + xMu * (dMax - dMin);
     // Law of cosines on the triangle (centre, point, exit): top^2 = r^2 + d^2 + 2 r d mu.
     float mu = (d <= 0.0) ? 1.0 : ((top - r) * (top + r) - d * d) / (2.0 * r * d);
