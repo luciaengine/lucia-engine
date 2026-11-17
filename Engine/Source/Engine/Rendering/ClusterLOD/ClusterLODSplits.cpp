@@ -74,8 +74,12 @@ void ClusterLODSplits::SetPart(ECS::World& world, Instance& instance, uint32 uni
     const ECS::EntityHandle existing = instance.Parts[unit];
     if (world.IsValid(existing))
     {
-        auto* renderer = world.GetComponentForWrite<Components::MeshRenderer>(existing);
-        if (renderer && renderer->meshGpuHandleId != geometry.id && IsEvicted(world, existing))
+        // A write grant marks the chunk's renderer column changed, and extraction then reads
+        // every part in it again: take it only for a real change.
+        const auto* current = world.GetComponent<Components::MeshRenderer>(existing);
+        if (!current || current->meshGpuHandleId == geometry.id || !IsEvicted(world, existing))
+            return;
+        if (auto* renderer = world.GetComponentForWrite<Components::MeshRenderer>(existing))
             renderer->meshGpuHandleId = geometry.id;
         return;
     }
