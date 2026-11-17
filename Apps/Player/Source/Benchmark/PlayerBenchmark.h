@@ -72,6 +72,7 @@ class PlayerBenchmark
         std::vector<double> CpuMs;
         std::vector<double> WaitMs;
         std::vector<ProfiledFrame> Profiled;
+        std::vector<float> MonitorPeaks;
     };
 
     void ApplyPose(ECS::World& world) const;

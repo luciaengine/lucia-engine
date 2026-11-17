@@ -88,7 +88,7 @@ def reduce_pose(raw_pose, required_passes):
             "pitchDeg": raw_pose["pitchDeg"], "frameMs": summarize(raw_pose["frameMs"]),
             "cpuMs": summarize(raw_pose["cpuMs"]), "waitMs": summarize(raw_pose["waitMs"]),
             "gpuMs": summarize([f["distinctGpuMs"] for f in profiled]), "passes": passes,
-            "missingPasses": missing}
+            "missingPasses": missing, "monitorPeaks": raw_pose.get("monitorPeaks", {})}
 
 
 # ---------------------------------------------------------------- content
@@ -306,6 +306,9 @@ def run_scene(name, settings, manifest, project, player, out_dir, timeout, check
     if settings.get("pipeline"):
         config["renderPipeline"] = f"RenderPipelines/Benchmark{name}.rendergraph"
     plan = {**manifest["run"], "poses": settings["poses"]}
+    required_monitors = settings.get("requiredActiveMonitors", [])
+    if required_monitors:
+        plan["activeMonitors"] = required_monitors
     config_path, plan_path = out_dir / f"{name}.game.config", out_dir / f"{name}.plan.json"
     raw_path, log_path = out_dir / f"{name}.raw.json", out_dir / f"{name}.log"
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -348,6 +351,10 @@ def run_scene(name, settings, manifest, project, player, out_dir, timeout, check
             if not pose["gpuMs"]:
                 problems.append(f"pose '{pose['name']}' has no resolved GPU timings")
             result["poses"].append(pose)
+        missing = [name for name in required_monitors
+                   if not any(pose["monitorPeaks"].get(name, 0) > 0 for pose in result["poses"])]
+        if missing:
+            problems.append(f"no profiled pose reported activity for {missing}")
     else:
         problems.append("the Player wrote no benchmark result")
     if check_load and result["loadAfter"] is not None and result["loadAfter"] > MAX_LOAD_AFTER_SCENE:

@@ -111,6 +111,24 @@ std::optional<PlayerBenchmarkPlan> ParsePlayerBenchmarkPlan(const nlohmann::json
         !ReadFrameCount(document, "profiledFrames", 1, plan.ProfiledFrames, error))
         return std::nullopt;
 
+    if (const auto monitors = document.find("activeMonitors"); monitors != document.end())
+    {
+        if (!monitors->is_array())
+        {
+            error = "'activeMonitors' must be an array of monitor names";
+            return std::nullopt;
+        }
+        for (const auto& monitor : *monitors)
+        {
+            if (!monitor.is_string() || monitor.get_ref<const std::string&>().empty())
+            {
+                error = "each 'activeMonitors' entry must be a non-empty monitor name";
+                return std::nullopt;
+            }
+            plan.ActiveMonitors.push_back(monitor.get<std::string>());
+        }
+    }
+
     const auto poses = document.find("poses");
     if (poses == document.end() || !poses->is_array() || poses->empty())
     {

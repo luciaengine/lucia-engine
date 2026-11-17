@@ -60,6 +60,18 @@ TEST(PlayerBenchmarkPlan, RefusesAPlanThatCannotMeasure)
     EXPECT_FALSE(Parse(R"({"timingFrames": "600", "poses": [{"position": [0, 0, 0]}]})"));
 }
 
+TEST(PlayerBenchmarkPlan, ReadsMonitorNamesAndRefusesInvalidEntries)
+{
+    const auto plan = Parse(R"({"poses": [{"position": [0, 0, 0]}],
+                                "activeMonitors": ["ClusterLOD.SplitInstances"]})");
+    ASSERT_TRUE(plan);
+    ASSERT_EQ(plan->ActiveMonitors.size(), 1u);
+    EXPECT_EQ(plan->ActiveMonitors.front(), "ClusterLOD.SplitInstances");
+    EXPECT_FALSE(Parse(R"({"poses": [{"position": [0, 0, 0]}], "activeMonitors": "ClusterLOD.SplitInstances"})"));
+    EXPECT_FALSE(Parse(R"({"poses": [{"position": [0, 0, 0]}], "activeMonitors": [""]})"));
+    EXPECT_FALSE(Parse(R"({"poses": [{"position": [0, 0, 0]}], "activeMonitors": [1]})"));
+}
+
 TEST(PlayerBenchmarkPlan, RefusesAPoseWithoutAFullPosition)
 {
     EXPECT_FALSE(Parse(R"({"poses": [{"name": "a"}]})"));

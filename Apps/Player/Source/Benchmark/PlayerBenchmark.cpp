@@ -2,6 +2,7 @@
 
 #include "Components/Transform.h"
 #include "Components/TransformDirtyFeed.h"
+#include "Core/DebugMetrics.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Engine/Rendering/Camera.h"
@@ -32,6 +33,8 @@ PlayerBenchmark::PlayerBenchmark(PlayerBenchmarkPlan plan, std::filesystem::path
     , m_OutputPath(std::move(outputPath))
     , m_Records(m_Plan.Poses.size())
 {
+    for (PoseRecord& record : m_Records)
+        record.MonitorPeaks.resize(m_Plan.ActiveMonitors.size());
 }
 
 bool PlayerBenchmark::Advance(ECS::World& world, Rendering::RenderGraph::RGFrame* frame,
@@ -136,6 +139,14 @@ void PlayerBenchmark::RecordTimingFrame(double frameMs, const Rendering::IDevice
 
 void PlayerBenchmark::RecordProfiledFrame(const Rendering::RenderGraph::RGFrame& frame)
 {
+    PoseRecord& record = m_Records[m_PoseIndex];
+    for (size_t index = 0; index < m_Plan.ActiveMonitors.size(); ++index)
+    {
+        float value = 0.0f;
+        if (Debug::DebugMetrics::Get().GetLatest(m_Plan.ActiveMonitors[index], value))
+            record.MonitorPeaks[index] = std::max(record.MonitorPeaks[index], value);
+    }
+
     const Rendering::RenderGraph::RGFrame::RGProfilingSnapshot snapshot = frame.LastFrameProfiling();
     if (snapshot.ResolveStats.ResolvedPasses == 0)
         return;
@@ -144,7 +155,7 @@ void PlayerBenchmark::RecordProfiledFrame(const Rendering::RenderGraph::RGFrame&
     profiled.Passes.reserve(snapshot.Passes.size());
     for (const auto& pass : snapshot.Passes)
         profiled.Passes.push_back({pass.Name, pass.GpuSpanMs, pass.SpanCounted});
-    m_Records[m_PoseIndex].Profiled.push_back(std::move(profiled));
+    record.Profiled.push_back(std::move(profiled));
 }
 
 void PlayerBenchmark::WriteResult()
@@ -154,6 +165,9 @@ void PlayerBenchmark::WriteResult()
     {
         const PlayerBenchmarkPose& pose = m_Plan.Poses[i];
         const PoseRecord& record = m_Records[i];
+        nlohmann::json monitorPeaks = nlohmann::json::object();
+        for (size_t index = 0; index < m_Plan.ActiveMonitors.size(); ++index)
+            monitorPeaks[m_Plan.ActiveMonitors[index]] = record.MonitorPeaks[index];
         nlohmann::json profiled = nlohmann::json::array();
         for (const ProfiledFrame& frame : record.Profiled)
         {
@@ -169,6 +183,7 @@ void PlayerBenchmark::WriteResult()
                          {"frameMs", record.FrameMs},
                          {"cpuMs", record.CpuMs},
                          {"waitMs", record.WaitMs},
+                         {"monitorPeaks", std::move(monitorPeaks)},
                          {"profiledFrames", std::move(profiled)}});
     }
     const nlohmann::json result = {{"warmupFrames", m_Plan.WarmupFrames},
