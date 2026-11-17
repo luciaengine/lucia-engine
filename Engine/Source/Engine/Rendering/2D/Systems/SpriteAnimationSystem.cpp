@@ -11,6 +11,7 @@
 #include "Components/Animation/AnimatedSprite2D.h"
 #include "Components/Transform.h"
 #include "Core/Engine.h"
+#include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/2D/SpriteQuad.h"
