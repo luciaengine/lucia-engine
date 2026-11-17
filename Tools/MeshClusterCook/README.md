@@ -109,10 +109,10 @@ that groups share.
 
 Fine storage owns at most 32 MiB of GPU buffer capacity, including unused and
 retiring ranges. At most eight reads remain in flight; each preparation admits at most eight fine pages.
-The 64 MiB page-work reservation charges decoded/read/upload arrays; it is not
+The 64 MiB page-work reservation charges decoded/read/upload arrays until the GPU entry draws; it is not
 a process-RSS limit. These bounds exclude the pinned coarse model, driver heaps
 allocator overhead and device-deferred native frees. Monitors expose `ClusterLOD.TrackedPages`, `ClusterLOD.ResidentPages`,
-`ClusterLOD.SplitInstances`, `ClusterLOD.PendingReads`, `ClusterLOD.ChargedPageWorkBytes` and
+`ClusterLOD.SplitInstances`, `ClusterLOD.PartChanges` (parts that started or stopped drawing in the last frame; a stable cut shows 0), `ClusterLOD.PendingReads`, `ClusterLOD.ChargedPageWorkBytes` and
 `ClusterLOD.FineOwnedBufferBytes`. `ClusterLOD.DecodedElementBytes` counts
 live decoded vertex/index elements through their final shared owner, excluding
 container capacity and metadata. These are residency diagnostics, not a claim

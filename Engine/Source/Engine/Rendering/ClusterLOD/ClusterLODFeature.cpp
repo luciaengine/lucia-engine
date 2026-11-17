@@ -356,6 +356,8 @@ struct ClusterLODFeature::State
     // The coarse triangles of the unsplit cluster instances in this preparation.
     uint64 UnsplitCoarseTriangles = 0;
     uint32 PendingReads = 0;
+    // The parts that started or stopped drawing in the last preparation: a stable cut changes none.
+    uint32 PartChanges = 0;
     bool Initialized = false;
     bool PolicyBlocked = false;
     // True while UpdateSplits iterates the splits: a split cannot end there.
@@ -825,7 +827,9 @@ struct ClusterLODFeature::State
                     found->second->Wanted = true;
                     found->second->LastWantedEpoch = epoch;
                 }
-            changed |= Splits.ShowPart(world, scene, instance, local, drawn, epoch);
+            const bool partChanged = Splits.ShowPart(world, scene, instance, local, drawn, epoch);
+            PartChanges += partChanged ? 1u : 0u;
+            changed |= partChanged;
         }
         instance.Decisions.assign(decisions.begin(), decisions.end());
         Splits.DestroyIdleParts(world, scene, instance, epoch, kUnusedFrameGrace);
@@ -983,6 +987,7 @@ struct ClusterLODFeature::State
         SelectClusterLODCuts(CutInstances, TriangleBudget, UnsplitCoarseTriangles);
         bool flipped = false;
         uint32 registrations = 0;
+        PartChanges = 0;
         for (size_t slot = 0; slot < active.size(); ++slot)
             flipped |= ApplyCut(world, *scene, instances[active[slot]], *models[active[slot]], CutInstances[slot].Groups,
                                 CutInstances[slot].Decisions, epoch, registrations);
@@ -1012,6 +1017,15 @@ struct ClusterLODFeature::State
             Services->RequestResidencyExtraction();
     }
 
+    // The GPU entry holds the page now: its decoded copy and work charge are free. A lost entry
+    // (a device rebuild) reads the page again.
+    void ReleaseDecoded(Page& page)
+    {
+        page.Decoded.reset();
+        ChargedBytes -= page.Charge;
+        page.Charge = 0;
+    }
+
     void AdmitPages(uint64 epoch)
     {
         auto& registry = Services->GetMeshGPURegistry();
@@ -1021,16 +1035,20 @@ struct ClusterLODFeature::State
             (void)key;
             if (!page->Wanted || page->Retiring)
                 continue;
-            Request(*page);
-            const auto* entry = registry.Find(page->FineHandle);
-            if (entry && registry.IsEntryDrawable(*entry))
+            if (const auto* entry = registry.Find(page->FineHandle); entry && registry.IsEntryDrawable(*entry))
+            {
+                ReleaseDecoded(*page);
                 continue;
+            }
+            Request(*page);
             if (!page->Decoded || admissions >= kMaximumAdmissionsPerFrame || epoch < page->RetryEpoch)
                 continue;
             ++admissions;
             page->RetryEpoch = epoch + kUnusedFrameGrace;
             // No retained CPU mesh: picking resolves the stable coarse ModelAsset.
             page->FineHandle = registry.RegisterSubmesh(page->Fine, *page->Decoded, false, MeshGPUStorageDomain::ClusterFine);
+            if (const auto* entry = registry.Find(page->FineHandle); entry && registry.IsEntryDrawable(*entry))
+                ReleaseDecoded(*page);
         }
     }
 
@@ -1048,6 +1066,7 @@ struct ClusterLODFeature::State
             static_cast<float>(DecodedAccounting->ElementBytes.load(std::memory_order_relaxed)));
         metrics.PushSample("ClusterLOD.TrackedPages", static_cast<float>(Pages.size()));
         metrics.PushSample("ClusterLOD.SplitInstances", static_cast<float>(Splits.Count()));
+        metrics.PushSample("ClusterLOD.PartChanges", static_cast<float>(PartChanges));
         metrics.PushSample("ClusterLOD.ResidentPages", static_cast<float>(resident));
         metrics.PushSample("ClusterLOD.PendingReads", static_cast<float>(PendingReads));
         metrics.PushSample("ClusterLOD.ChargedPageWorkBytes", static_cast<float>(ChargedBytes));
@@ -1083,6 +1102,7 @@ bool ClusterLODFeature::Initialize(RenderServices& services, AssetManager& asset
     metrics.RegisterMonitor("ClusterLOD.DecodedElementBytes", Debug::MonitorType::Memory, "bytes");
     metrics.RegisterMonitor("ClusterLOD.TrackedPages", Debug::MonitorType::Quantity, "pages");
     metrics.RegisterMonitor("ClusterLOD.SplitInstances", Debug::MonitorType::Quantity, "instances");
+    metrics.RegisterMonitor("ClusterLOD.PartChanges", Debug::MonitorType::Quantity, "parts");
     metrics.RegisterMonitor("ClusterLOD.ResidentPages", Debug::MonitorType::Quantity, "pages");
     metrics.RegisterMonitor("ClusterLOD.PendingReads", Debug::MonitorType::Quantity, "reads");
     metrics.RegisterMonitor("ClusterLOD.ChargedPageWorkBytes", Debug::MonitorType::Memory, "bytes");

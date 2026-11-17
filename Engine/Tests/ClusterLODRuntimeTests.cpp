@@ -1210,9 +1210,9 @@ TEST_F(ClusterLODRuntimeTest, AnAbandonedArenaReleasesDecodedOwnershipAndCannotR
     const auto fine = CurrentHandle();
     const uint32 oldRow = m_Services.GetMeshGPURegistry().Find(fine)->gpuMeshIndex;
 #if GE_ENABLE_METRICS
-    float decoded = 0.0f;
+    float decoded = -1.0f;
     ASSERT_TRUE(Debug::DebugMetrics::Get().GetLatest("ClusterLOD.DecodedElementBytes", decoded));
-    ASSERT_GT(decoded, 0.0f) << "the ownership witness needs a live decoded payload";
+    EXPECT_EQ(decoded, 0.0f) << "a page releases its decoded copy once its GPU entry draws";
 #endif
     ReaderFramePools pools(m_Device.get());
     RenderGraph::RGFrame abandoned(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
