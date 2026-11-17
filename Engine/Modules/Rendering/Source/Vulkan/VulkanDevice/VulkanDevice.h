@@ -914,6 +914,8 @@ class VulkanDevice : public IDevice
         VkDescriptorSetLayout layout = VK_NULL_HANDLE;
         uint32_t refCount = 0;
         bool descriptorBufferEligible = false; // mirrors DescriptorSetLayoutDesc flag
+        // vkGetDescriptorSetLayoutSizeEXT, read once at creation; 0 when the layout is not DB-eligible.
+        VkDeviceSize descriptorBufferSize = 0;
     };
     struct PipelineLayoutCacheEntry
     {
@@ -2302,15 +2304,14 @@ class VulkanDevice : public IDevice
     // copies a std::string; call this only on a path that is already failing.
     std::string DescriptorBufferSetDebugName(DescriptorSetHandle handle) const;
 
-    // Allocate enough storage for one descriptor set of the given layout from the
-    // descriptor-buffer pool. Returns an invalid allocation if DB is off. Asserts in
-    // debug if the layout has UPDATE_AFTER_BIND bindings — DB layouts must be
-    // created without that flag (vkGetDescriptorSetLayoutSizeEXT VUID).
+    // Allocate `layoutSize` bytes (the layout's cached vkGetDescriptorSetLayoutSizeEXT)
+    // for one descriptor set from the descriptor-buffer pool. Returns an invalid
+    // allocation if DB is off or the size is 0.
     // When persistent=true, the memory is allocated from the pool's persistent
     // region and is never rewound by BeginFrameReset; DestroyDescriptorSet returns
     // a persistent set's bytes for reuse once every queue is past it. Intended for
     // long-lived descriptor sets like the bindless texture array.
-    DescriptorBufferAllocation AllocateDescriptorSetBytes(VkDescriptorSetLayout layout, bool persistent = false);
+    DescriptorBufferAllocation AllocateDescriptorSetBytes(VkDeviceSize layoutSize, bool persistent = false);
 
     // Public accessor for the cached VkDescriptorSetLayout corresponding to a
     // DescriptorSetLayoutDesc. DB-eligible descs bucket separately (Phase 1c);
