@@ -556,19 +556,19 @@ TEST(DepthUnderDrawTracker, MarkConsumeIsKeyedAndOneShot)
     GameEngine::Engine::Renderer::DepthUnderDrawTracker tracker;
     EXPECT_FALSE(tracker.Consume(1, 2, 3));
 
-    tracker.Mark(1, 2, 3);
+    tracker.Mark(1, 2, 3, GameEngine::Engine::Renderer::DepthUnderDrawReason::MaterialPending);
     EXPECT_FALSE(tracker.Consume(1, 2, 0)) << "different slice must not consume";
     EXPECT_FALSE(tracker.Consume(1, 0, 3)) << "different pass family must not consume";
     EXPECT_FALSE(tracker.Consume(9, 2, 3)) << "different view must not consume";
     EXPECT_TRUE(tracker.Consume(1, 2, 3));
     EXPECT_FALSE(tracker.Consume(1, 2, 3)) << "consume is one-shot";
 
-    tracker.Mark(1, 2, 3);
-    tracker.Mark(1, 2, 3); // duplicate marks collapse
+    tracker.Mark(1, 2, 3, GameEngine::Engine::Renderer::DepthUnderDrawReason::MaterialPending);
+    tracker.Mark(1, 2, 3, GameEngine::Engine::Renderer::DepthUnderDrawReason::MaterialPending); // duplicate marks collapse
     EXPECT_TRUE(tracker.Consume(1, 2, 3));
     EXPECT_FALSE(tracker.Consume(1, 2, 3));
 
-    tracker.Mark(4, 5, 6);
+    tracker.Mark(4, 5, 6, GameEngine::Engine::Renderer::DepthUnderDrawReason::MaterialPending);
     tracker.Reset();
     EXPECT_FALSE(tracker.Consume(4, 5, 6));
 }
@@ -577,7 +577,7 @@ TEST(DepthUnderDrawTracker, PeekDoesNotConsume)
 {
     GameEngine::Engine::Renderer::DepthUnderDrawTracker tracker;
     EXPECT_FALSE(tracker.Peek(1, 2, 3));
-    tracker.Mark(1, 2, 3);
+    tracker.Mark(1, 2, 3, GameEngine::Engine::Renderer::DepthUnderDrawReason::MaterialPending);
     EXPECT_TRUE(tracker.Peek(1, 2, 3));
     EXPECT_TRUE(tracker.Peek(1, 2, 3)) << "peek must not erase";
     EXPECT_FALSE(tracker.Peek(1, 2, 0));
@@ -870,3 +870,22 @@ TEST(CascadeShadowAttribution, MoverInRetainedFootprintCannotBecomeAMotionDeferr
 }
 
 } // namespace
+
+TEST(DepthUnderDrawTracker, CountsCascadeReasonsPerViewUntilConsumed)
+{
+    using namespace GameEngine::Engine::Renderer;
+    DepthUnderDrawTracker tracker;
+    const auto cascade = static_cast<uint8_t>(DepthPassType::ShadowCascade);
+    const auto prepass = static_cast<uint8_t>(DepthPassType::Prepass);
+    tracker.Mark(1, cascade, 0, DepthUnderDrawReason::TexturesPending);
+    tracker.Mark(1, cascade, 1, DepthUnderDrawReason::TexturesPending);
+    tracker.Mark(1, cascade, 2, DepthUnderDrawReason::EmptySlice);
+    tracker.Mark(1, prepass, 0, DepthUnderDrawReason::MaterialPending);
+    tracker.Mark(2, cascade, 0, DepthUnderDrawReason::MeshPending);
+
+    const DepthUnderDrawReasonCounts view1 = tracker.ConsumeCascadeReasons(1);
+    EXPECT_EQ(FormatDepthUnderDrawReasons(view1), "empty-slice 1 textures 2") << "a prepass mark is not a cascade reason";
+    EXPECT_EQ(FormatDepthUnderDrawReasons(tracker.ConsumeCascadeReasons(1)), "none") << "consume resets the view";
+    EXPECT_EQ(FormatDepthUnderDrawReasons(tracker.ConsumeCascadeReasons(2)), "mesh 1");
+    EXPECT_TRUE(tracker.Consume(1, cascade, 2)) << "the reason does not change the mark";
+}

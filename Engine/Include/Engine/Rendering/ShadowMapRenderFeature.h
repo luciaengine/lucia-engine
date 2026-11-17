@@ -46,6 +46,7 @@ namespace GameEngine
 namespace Engine::Renderer
 {
 class RenderServices;
+class DepthUnderDrawTracker;
 struct ExtractedLight;
 struct FeatureDeclareContext;
 
@@ -1330,9 +1331,10 @@ class ShadowMapRenderFeature : public IRenderFeature
     // histogram names the churn source. Expected-motion windows (a sustained
     // orbit: ≥95% camera/fit/settle misses) stay Info. `casterContentVersion`
     // is the view's world shadow-caster content version as the cache keyed on
-    // it this frame; both lines print it beside the caster miss count.
+    // it this frame; both lines print it beside the caster miss count. Both lines also print the
+    // reasons of the window's cascade under-draw marks, which the call consumes from `underDraw`.
     void LogCascadeCacheStatsPeriodic(Rendering::ViewId viewId, bool enabled,
-                                      uint64_t casterContentVersion);
+                                      uint64_t casterContentVersion, DepthUnderDrawTracker& underDraw);
 
     // Views whose m_ShadowMapByView entry is a POOL-owned physical adopted
     // from the RenderGraph arm (AdoptPooledShadowMap). The feature must never
