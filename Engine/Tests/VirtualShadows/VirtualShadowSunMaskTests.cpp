@@ -296,11 +296,12 @@ void VirtualShadowSunMaskTest::CompareMaskWithLookup(float quality, float tanHal
         VirtualShadowLookupProjectionGPU Row{};
     } projections;
     projections.Header.DirectionalRows = {0, kMissing, kMissing, kMissing};
-    projections.Row.RelativeToLightClip[0] = 1.0f / kWindow;
-    projections.Row.RelativeToLightClip[9] = 1.0f / kWindow;
-    projections.Row.RelativeToLightClip[6] = 0.5f;
-    projections.Row.RelativeToLightClip[14] = 0.5f;
-    projections.Row.RelativeToLightClip[15] = 1.0f;
+    projections.Row.RelativeToLightClip = Math::Matrix4x4(glm::mat4(0.0f));
+    projections.Row.RelativeToLightClip.Data()[0] = 1.0f / kWindow;
+    projections.Row.RelativeToLightClip.Data()[9] = 1.0f / kWindow;
+    projections.Row.RelativeToLightClip.Data()[6] = 0.5f;
+    projections.Row.RelativeToLightClip.Data()[14] = 0.5f;
+    projections.Row.RelativeToLightClip.Data()[15] = 1.0f;
     projections.Row.FirstPage = 0;
     projections.Row.PagesPerAxis = 2;
     projections.Row.LastMip = 1;

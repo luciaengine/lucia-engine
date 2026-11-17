@@ -1,6 +1,7 @@
 #include "Thumbnails/SpriteFramesThumbnailHandler.h"
 #include "Thumbnails/ThumbnailImageCache.h"
 #include "Thumbnails/ThumbnailImageOps.h"
+#include "Mathematics/Vector4.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cstdlib>
@@ -22,7 +23,7 @@ TEST(AtlasRegionThumbnail, CropsSiblingRegionsAndCachesSeparately)
     JobSystem::WorkStealingThreadPool jobs(2);
     SpriteFramesThumbnailHandler handler(jobs, nullptr);
     handler.SetCacheRoot(root);
-    auto request=[&](std::array<float,4> uv) {
+    auto request=[&](Mathematics::Vector4 uv) {
         auto ready=std::make_shared<std::promise<std::string>>(); auto future=ready->get_future();
         auto path=handler.GetOrRequestAtlasRegion(source,uv,[ready](const std::string& p){ready->set_value(p);});
         if (path.empty()) {

@@ -6,6 +6,7 @@
 #include "Sprite2D/SpriteFrames.h"
 #include "AssetCore/GUID.h"
 #include "Logger/Logger.h"
+#include "Mathematics/Vector4.h"
 
 #include <algorithm>
 #include <cmath>
@@ -274,14 +275,14 @@ std::string SpriteFramesThumbnailHandler::GetOrRequestFrame(
 }
 
 std::string SpriteFramesThumbnailHandler::GetOrRequestAtlasRegion(
-    const std::filesystem::path& texturePath, const std::array<float, 4>& uv,
+    const std::filesystem::path& texturePath, const Mathematics::Vector4& uv,
     std::function<void(const std::string&)> onReady, const std::array<float, 2>& magentaKey)
 {
-    for (float v : uv) if (!std::isfinite(v)) return {};
+    for (float v : uv.v) if (!std::isfinite(v)) return {};
     std::size_t stamp = 5;
     for (float v : magentaKey) { if (!std::isfinite(v)) return {}; HashCombine(stamp, std::hash<float>{}(v)); }
     HashPathAndWriteTime(stamp, texturePath);
-    for (float v : uv) HashCombine(stamp, std::hash<float>{}(v));
+    for (float v : uv.v) HashCombine(stamp, std::hash<float>{}(v));
     const auto cachePath = m_CacheRoot / ("atlasthumb_" + std::to_string(stamp) + ".png");
     std::error_code ec;
     if (std::filesystem::exists(cachePath, ec)) return cachePath.generic_string();

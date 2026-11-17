@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include "Editor/Hierarchy/SpritePreview/SpritePreview.h"
+#include "Mathematics/Vector4.h"
 
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
@@ -69,7 +70,7 @@ public:
         return {};
     }
 
-    std::string GetOrRequestAtlasRegion(const std::filesystem::path& texturePath, const std::array<float, 4>& uv,
+    std::string GetOrRequestAtlasRegion(const std::filesystem::path& texturePath, const Mathematics::Vector4& uv,
                                         std::function<void(const std::string&)>) override
     {
         ++AtlasRegionRequests;
@@ -92,7 +93,7 @@ public:
     int AtlasRegionRequests = 0;
     int SpriteFrameRequests = 0;
     std::filesystem::path RequestedPath;
-    std::array<float, 4> RequestedUv{};
+    Mathematics::Vector4 RequestedUv;
     std::string RequestedAnimation;
     bool RequestedFlipX = false;
 };
@@ -132,7 +133,10 @@ TEST_F(HierarchySpritePreviewTest, ASpriteRowAsksForTheCropOfItsAtlasRegion)
     EXPECT_EQ(thumbnails.AtlasRegionRequests, 1);
     EXPECT_EQ(thumbnails.RequestedPath.filename(), "hero.png");
     // A flipped sprite swaps its u pair, so the crop faces the way the sprite draws.
-    EXPECT_EQ(thumbnails.RequestedUv, (std::array<float, 4>{0.5f, 0.5f, 0.25f, 0.75f}));
+    EXPECT_EQ(thumbnails.RequestedUv.x, 0.5f);
+    EXPECT_EQ(thumbnails.RequestedUv.y, 0.5f);
+    EXPECT_EQ(thumbnails.RequestedUv.z, 0.25f);
+    EXPECT_EQ(thumbnails.RequestedUv.w, 0.75f);
 }
 
 TEST_F(HierarchySpritePreviewTest, AnAnimatedSpriteRowAsksForTheFrameOfItsAnimation)

@@ -7,6 +7,11 @@
 
 namespace GameEngine {
 
+namespace Mathematics {
+struct Vector3;
+struct Vector4;
+} // namespace Mathematics
+
 namespace Rendering {
 struct CameraData;
 struct GraphicsPipelineDesc;
@@ -41,13 +46,13 @@ public:
     void RecordRG(const Rendering::RenderGraph::RGContext& ctx,
                    Rendering::PipelineHandle pipeline,
                    const Rendering::CameraData* cam,
-                   const float camPos[3],
+                   const Mathematics::Vector3& camPos,
                    bool is2DMode,
                    float camDistance,
                    float viewportH,
                    float gridOpacity,
                    uint32_t gridColor,
-                   const float cells2D[4]);
+                   const Mathematics::Vector4& cells2D);
 };
 
 } // namespace GameEngine

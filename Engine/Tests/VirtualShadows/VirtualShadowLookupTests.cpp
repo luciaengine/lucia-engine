@@ -144,8 +144,8 @@ TEST_F(VirtualShadowLookupTest, FiltersNonAdjacentLayersAndSignalsMissingPages)
     for (uint32_t row = 0; row < projections.Rows.size(); ++row)
     {
         auto& projection = projections.Rows[row];
-        projection.RelativeToLightClip[0] = row == 0 ? 1.0f : 0.25f;
-        projection.RelativeToLightClip[5] = projection.RelativeToLightClip[10] = projection.RelativeToLightClip[15] = 1.0f;
+        projection.RelativeToLightClip.Data()[0] = row == 0 ? 1.0f : 0.25f;
+        projection.RelativeToLightClip.Data()[5] = projection.RelativeToLightClip.Data()[10] = projection.RelativeToLightClip.Data()[15] = 1.0f;
         projection.FirstPage = row == 0 ? 7 : 0;
         projection.PagesPerAxis = row == 0 ? 2 : 1;
         projection.LastMip = row == 0 ? 1 : 0;

@@ -151,11 +151,17 @@ class FontAtlas
         float Left = 0;
         float Right = 0;
     };
+    /// A selected horizontal span in render pixels, from Left to Right.
+    struct SelectionSpan
+    {
+        float Left = 0;
+        float Right = 0;
+    };
     struct MeasureResult
     {
         TextMetrics metrics;
         std::vector<TextCluster> Clusters;
-        std::vector<std::pair<float, float>> SelectionRanges(size_t start, size_t end) const;
+        std::vector<SelectionSpan> SelectionRanges(size_t start, size_t end) const;
         size_t NextVisualCaret(size_t current, bool right) const;
         size_t CaretAtX(float x) const;
         std::vector<float> caretXByByte; // UTF-8 byte insertion points [0..size()], in render pixels
