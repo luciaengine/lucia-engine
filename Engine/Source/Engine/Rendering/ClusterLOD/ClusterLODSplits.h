@@ -44,9 +44,10 @@ class ClusterLODSplits
     /// Starts an inactive split of `owner` with the cut `decisions` and no parts.
     Instance& Begin(ECS::EntityHandle owner, const Components::MeshRenderer& renderer, const GUID& model, uint32 mesh,
                     std::vector<ClusterLODCutDecision> decisions, uint32 unitCount, uint64 epoch);
-    /// Creates the evicted part of `unit`, or points its existing part at `geometry`.
+    /// Creates the evicted part of `unit`, or points its existing part at `geometry`. Marks the
+    /// part as used in `epoch`, so DestroyIdleParts keeps it.
     void SetPart(ECS::World& world, Instance& instance, uint32 unit, Rendering::MeshGPUHandle geometry,
-                 const Mathematics::BoundingBox& bounds) const;
+                 const Mathematics::BoundingBox& bounds, uint64 epoch) const;
     /// True when the part of `unit` exists, has a resolved world transform and draws `geometry`.
     bool IsPartReady(const ECS::World& world, const Instance& instance, uint32 unit,
                      Rendering::MeshGPUHandle geometry) const;
@@ -55,9 +56,11 @@ class ClusterLODSplits
                   uint64 epoch) const;
     /// Swaps the owner for the parts of the first cut. Call it when every part is ready.
     void Activate(ECS::World& world, Rendering::GPUScene& scene, Instance& instance) const;
-    /// Destroys the evicted parts that have not drawn for `grace` frames.
+    /// Destroys the evicted parts that have not been used for `grace` frames.
     void DestroyIdleParts(ECS::World& world, Rendering::GPUScene& scene, Instance& instance, uint64 epoch,
                           uint64 grace) const;
+    /// Marks the part of `unit` as used in `epoch`, so DestroyIdleParts keeps it.
+    void KeepPart(Instance& instance, uint32 unit, uint64 epoch) const { instance.PartEpochs[unit] = epoch; }
     /// Restores the owner and destroys its parts.
     void End(ECS::World& world, Rendering::GPUScene* scene, ECS::EntityHandle owner);
     /// Forgets every instance and does not touch entities. Call it when the world changes generation.

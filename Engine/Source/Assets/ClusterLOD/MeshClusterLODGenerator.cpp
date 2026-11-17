@@ -185,15 +185,17 @@ void LockSourcePositions(const Mesh& mesh, Vector<uint32>& positions, Vector<uin
     }
     locks.assign(mesh.Vertices.size(), 0);
     Vector<uint32> firstVertex(mesh.Vertices.size(), kMeshClusterLODUnusedVertex);
-    // A UV seam keeps its discontinuity. Other wedges (hard normals) may collapse across.
+    // A UV seam and a tangent handedness seam keep their discontinuity. Other wedges (hard
+    // normals) may collapse across.
     for (uint32 index = 0; index < mesh.Vertices.size(); ++index)
     {
         const uint32 position = positions[index];
         const uint32 previous = firstVertex[position];
         const Vertex& vertex = mesh.Vertices[index];
         if (previous != kMeshClusterLODUnusedVertex &&
-            !std::equal(std::begin(vertex.TexCoords), std::end(vertex.TexCoords),
-                        std::begin(mesh.Vertices[previous].TexCoords)))
+            (!std::equal(std::begin(vertex.TexCoords), std::end(vertex.TexCoords),
+                         std::begin(mesh.Vertices[previous].TexCoords)) ||
+             vertex.Tangent[3] != mesh.Vertices[previous].Tangent[3]))
             locks[position] |= meshopt_SimplifyVertex_Protect;
         firstVertex[position] = index;
     }
@@ -481,11 +483,25 @@ void DagBuilder::LockGroupBorders(std::span<const uint32> offsets)
         m_VertexLocks[vertex] = m_PositionLocks[m_Positions[vertex]];
 }
 
-// The result has positive-area triangles and the border edges of the group: no seam and no
-// group border opens, and every non-manifold edge stays.
+// True when no triangle mixes tangent handedness: a normal map would shade it wrong.
+bool KeepsTangentHandedness(const Mesh& mesh, std::span<const uint32> indices)
+{
+    for (size_t offset = 0; offset < indices.size(); offset += 3)
+    {
+        const float handedness = mesh.Vertices[indices[offset]].Tangent[3];
+        if (mesh.Vertices[indices[offset + 1]].Tangent[3] != handedness ||
+            mesh.Vertices[indices[offset + 2]].Tangent[3] != handedness)
+            return false;
+    }
+    return true;
+}
+
+// The result has positive-area triangles that keep their tangent handedness, and the border
+// edges of the group: no seam and no group border opens, and every non-manifold edge stays.
 bool DagBuilder::IsValidReduction(std::span<const uint32> merged, std::span<const uint32> simplified) const
 {
     return !simplified.empty() && simplified.size() < merged.size() && AllTrianglesHaveArea(m_Mesh, simplified) &&
+        (!KeepsTangentHandedness(m_Mesh, merged) || KeepsTangentHandedness(m_Mesh, simplified)) &&
         BorderEdges(simplified, m_Positions) == BorderEdges(merged, m_Positions);
 }
 

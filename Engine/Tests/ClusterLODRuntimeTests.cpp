@@ -196,14 +196,21 @@ class ClusterLODRuntimeTest : public ::testing::Test
 
     ECS::EntityHandle PartOf(ECS::World& world, ECS::EntityHandle owner, uint32 unitIndex) const
     {
+        // A coarser unit keeps its locked border, so it can have the same bounds: the index
+        // count of the part's geometry tells them apart.
         const auto& unit = m_Model->GetClusterLODManifest()->Units[unitIndex];
         const auto bounds = Mathematics::BoundingBox::FromMinMax(unit.MinBounds, unit.MaxBounds);
+        const auto& registry = m_Services.GetMeshGPURegistry();
         ECS::EntityHandle found;
-        world.Query<ECS::Read<Components::Parent>, ECS::Read<Components::LocalBounds>>().Each(
-            [owner, &bounds, &found](ECS::EntityHandle entity, const Components::Parent& parent,
-                                     const Components::LocalBounds& local)
+        world.Query<ECS::Read<Components::Parent>, ECS::Read<Components::LocalBounds>,
+                    ECS::Read<Components::MeshRenderer>>().Each(
+            [owner, &bounds, &found, &registry, &unit](ECS::EntityHandle entity, const Components::Parent& parent,
+                                                       const Components::LocalBounds& local,
+                                                       const Components::MeshRenderer& renderer)
             {
-                if (parent.Entity == owner && local.Box.ToAABB() == bounds.ToAABB())
+                const auto* entry = registry.Find(MeshGPUHandle(renderer.meshGpuHandleId));
+                if (parent.Entity == owner && local.Box.ToAABB() == bounds.ToAABB() &&
+                    (!entry || entry->indexCount == unit.IndexCount))
                     found = entity;
             });
         return found;
@@ -673,9 +680,12 @@ TEST_F(ClusterLODAsyncTest, AQueuedDecodeKeepsCoarseFramesProgressingUntilTheWor
     ASSERT_EQ(m_Jobs->GetBackgroundQueuedForTests(), 0u);
     m_HeldWorkers = std::make_shared<GameEngine::Tests::HeldWorkers>(*m_Jobs);
     ASSERT_FALSE(HasFailure());
-    Prepare();
-    ASSERT_TRUE(GameEngine::Tests::WaitUntil([this] { return m_Jobs->GetBackgroundQueuedForTests() > 0; },
-                                            std::chrono::seconds(10)))
+    // The first frame activates the split; a later frame requests the pages.
+    ASSERT_TRUE(GameEngine::Tests::WaitUntil([this]
+    {
+        Prepare();
+        return m_Jobs->GetBackgroundQueuedForTests() > 0;
+    }, std::chrono::seconds(10)))
         << "the real IO reader must have submitted the fine decode behind the held worker";
     for (uint32 frame = 0; frame < 3; ++frame)
     {
@@ -1006,24 +1016,30 @@ TEST_F(ClusterLODRuntimeTest, AResidentUnitRegistersAgainAfterItsEntryIsRemoved)
 {
     ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     const auto& manifest = *m_Model->GetClusterLODManifest();
-    const auto resident = std::find_if(manifest.Units.begin(), manifest.Units.end(), [](const auto& unit)
-        { return !unit.IsStreamed() && unit.Level == 0; });
+    // A unit of a terminal group draws in the coarsest cut, which a view that wants nothing selects.
+    const auto resident = std::find_if(manifest.Units.begin(), manifest.Units.end(), [&manifest](const auto& unit)
+        { return !unit.IsStreamed() && manifest.Groups[unit.Group].Terminal; });
     ASSERT_NE(resident, manifest.Units.end());
     const auto unit = static_cast<uint32>(resident - manifest.Units.begin());
     const MeshGPUKey key{m_Model->GetGUID(), static_cast<uint32>(m_Model->GetMeshCount()) + unit};
     auto& registry = m_Services.GetMeshGPURegistry();
-    const auto previous = registry.FindHandle(key);
-    ASSERT_TRUE(previous.IsValid());
-    ASSERT_TRUE(registry.UnregisterSubmesh(key));
-    // Away from forced LOD 0 the instance coarsens through the resident cut, which needs the unit.
-    m_Services.SetLODForceLevel(1);
-    ASSERT_TRUE(GameEngine::Tests::WaitUntil([this, &registry, &key, unit]
+    const auto drawsUnit = [this, &registry, &key, unit]
     {
         Prepare();
         const auto part = PartOf(m_World, m_Entity, unit);
         return part.IsValid() && !IsEvicted(m_World, part) &&
             m_World.GetComponent<Components::MeshRenderer>(part)->meshGpuHandleId == registry.FindHandle(key).id;
-    }, std::chrono::seconds(20)));
+    };
+    // Away from forced LOD 0 the instance coarsens to its coarsest cut, which needs the unit.
+    m_Services.SetLODForceLevel(1);
+    ASSERT_TRUE(GameEngine::Tests::WaitUntil(drawsUnit, std::chrono::seconds(20)));
+    const auto previous = registry.FindHandle(key);
+    ASSERT_TRUE(previous.IsValid());
+    m_Services.SetLODForceLevel(0);
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+    ASSERT_TRUE(registry.UnregisterSubmesh(key));
+    m_Services.SetLODForceLevel(1);
+    ASSERT_TRUE(GameEngine::Tests::WaitUntil(drawsUnit, std::chrono::seconds(20)));
     const auto refreshed = registry.FindHandle(key);
     EXPECT_NE(refreshed, previous);
     const auto* entry = registry.Find(refreshed);
@@ -1221,6 +1237,8 @@ TEST_F(ClusterLODRuntimeTest, AnAbandonedArenaReleasesDecodedOwnershipAndCannotR
     m_Services.SetLODForceLevel(0);
     ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
     // Every fine page of the instance frees and reloads, so the old row can go to another part.
+    for (uint32 frame = 0; frame < 20; ++frame)
+        Prepare();
     bool reused = false;
     m_World.Query<ECS::Read<Components::Parent>, ECS::Read<Components::MeshRenderer>>().Each(
         [this, oldRow, &reused](ECS::EntityHandle, const Components::Parent& parent,

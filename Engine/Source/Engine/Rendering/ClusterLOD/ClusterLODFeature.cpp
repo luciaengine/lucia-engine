@@ -358,6 +358,8 @@ struct ClusterLODFeature::State
     uint32 PendingReads = 0;
     bool Initialized = false;
     bool PolicyBlocked = false;
+    // True while UpdateSplits iterates the splits: a split cannot end there.
+    bool InSplitPass = false;
 
     ~State()
     {
@@ -540,6 +542,40 @@ struct ClusterLODFeature::State
     // Unbinds every renderer of `world` that draws a fine page.
     void RestoreWorld(ECS::World& world) { RestoreBindings(world, CollectFineBindings(world)); }
 
+    // Unbinds the renderers of the owner world that draw a fine page but are not split parts:
+    // copies of a part keep its fine handle, and only a part's split keeps the page alive.
+    void UnbindStrayFineRenderers(ECS::World& world)
+    {
+        auto bindings = CollectFineBindings(world);
+        if (bindings.empty())
+            return;
+        FastHashMap<ECS::EntityHandle, bool, ECS::EntityHandleHash> parts;
+        for (const auto& instance : Splits.Instances())
+            for (const ECS::EntityHandle part : instance.Parts)
+                if (part.IsValid())
+                    parts.emplace(part, true);
+        std::erase_if(bindings, [&parts](const Binding& binding) { return parts.contains(binding.Entity); });
+        RestoreBindings(world, bindings);
+    }
+
+    // Ends every split of the owner world now and restores the owners.
+    void EndAllSplits()
+    {
+        auto* world = ECS::World::FindLiveWorld(WorldId);
+        if (!world)
+        {
+            Splits.Clear();
+            return;
+        }
+        std::vector<ECS::EntityHandle> owners;
+        for (const auto& instance : Splits.Instances())
+            owners.push_back(instance.Owner);
+        for (const ECS::EntityHandle owner : owners)
+            Splits.End(*world, Services->GetGPUScene(), owner);
+        if (!owners.empty())
+            Services->RequestResidencyExtraction();
+    }
+
     bool HasFineInstanceReferences() const
     {
         const auto* scene = Services->GetGPUScene();
@@ -563,8 +599,9 @@ struct ClusterLODFeature::State
             return;
         PolicyBlocked = true;
         CutOwner.reset();
-        // The next owner preparation ends every split (EndIdleSplits) and unbinds what is left
-        // (RestoreWorld): Block can run inside the split pass.
+        // Inside the split pass, EndIdleSplits ends every split in the same preparation.
+        if (!InSplitPass)
+            EndAllSplits();
         for (auto& [key, page] : Pages)
         {
             (void)key;
@@ -710,7 +747,7 @@ struct ClusterLODFeature::State
             return;
         const auto& record = manifest.Units[unit];
         Splits.SetPart(world, instance, unit - manifest.Meshes[instance.Mesh].FirstUnit, geometry,
-                       Mathematics::BoundingBox::FromMinMax(record.MinBounds, record.MaxBounds));
+                       Mathematics::BoundingBox::FromMinMax(record.MinBounds, record.MaxBounds), epoch);
     }
 
     bool IsUnitReady(const ECS::World& world, const ClusterLODSplits::Instance& instance, const ModelAsset& model,
@@ -777,7 +814,12 @@ struct ClusterLODFeature::State
         {
             const uint32 unit = range.FirstUnit + local;
             const bool drawn = IsClusterLODUnitDrawn(manifest, unit, decisions);
-            if (drawn && manifest.Units[unit].IsStreamed())
+            // A unit of a refined group draws, or draws as soon as the group that made it
+            // coarsens: its part and page stay, so a coarser cut is ready at once.
+            const bool kept = IsClusterLODRefined(decisions[manifest.Units[unit].Group - range.FirstGroup]);
+            if (kept)
+                Splits.KeepPart(instance, local, epoch);
+            if (kept && manifest.Units[unit].IsStreamed())
                 if (const auto found = Pages.find(UnitKey(instance.Model, model, unit)); found != Pages.end())
                 {
                     found->second->Wanted = true;
@@ -903,6 +945,7 @@ struct ClusterLODFeature::State
     // groups need, and swaps parts. Inactive splits prepare their first cut.
     void UpdateSplits(ECS::World& world, uint64 epoch)
     {
+        InSplitPass = true;
         auto* scene = Services->GetGPUScene();
         auto& instances = Splits.Instances();
         std::vector<ECS::EntityHandle> ended;
@@ -949,6 +992,7 @@ struct ClusterLODFeature::State
             if (!instance.Active && std::find(ended.begin(), ended.end(), instance.Owner) == ended.end())
                 flipped |= ActivateSplit(world, *scene, instance, *models[index], epoch, registrations);
         }
+        InSplitPass = false;
         for (const ECS::EntityHandle owner : ended)
             Splits.End(world, scene, owner);
         if (flipped || !ended.empty())
@@ -1116,6 +1160,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
     state.UpdateSplits(world, epoch);
     state.AdmitPages(epoch);
     state.EndIdleSplits(world, epoch);
+    state.UnbindStrayFineRenderers(world);
     if (state.PolicyBlocked)
         state.RestoreWorld(world);
     state.RetireUnused(epoch);

@@ -82,27 +82,21 @@ uint64 SelectClusterLODCuts(std::span<const ClusterLODCutInstance> instances, ui
         const auto& range = manifest.Meshes[instance.Mesh];
         const auto& state = instance.Groups[candidate.Group];
         const auto& group = manifest.Groups[range.FirstGroup + candidate.Group];
-        const bool forced = std::isinf(candidate.Priority);
-        if (!forced && state.Demand <= 1.0)
-        {
-            if (state.WasRefined)
-                instance.Decisions[candidate.Group] = ClusterLODCutDecision::Coarse;
-            continue;
-        }
         const uint64 added = UnitTriangles(manifest, group.FirstUnit, group.UnitCount, nullptr);
         const uint64 removed = UnitTriangles(manifest, group.FirstProduced, group.ProducedCount,
                                              manifest.ProducedUnits.data());
-        if (!forced && triangleBudget != 0 && triangles + added > triangleBudget + removed)
+        const bool fits = triangleBudget == 0 || triangles + added <= triangleBudget + removed;
+        const bool wantsRefined = std::isinf(state.Demand) || (state.Demand > 1.0 && fits);
+        const bool cannotCoarsen = state.WasRefined && !state.ProducedReady;
+        if (!wantsRefined && !cannotCoarsen)
             continue;
-        if (!state.WasRefined && !state.UnitsReady)
+        if (wantsRefined && !state.WasRefined && !state.UnitsReady)
         {
             instance.Decisions[candidate.Group] = ClusterLODCutDecision::RefineBlocked;
             continue;
         }
-        const bool coarsenBlocked = state.WasRefined && !state.ProducedReady && std::isfinite(state.Demand) &&
-            state.Demand <= 1.0;
         instance.Decisions[candidate.Group] =
-            coarsenBlocked ? ClusterLODCutDecision::CoarsenBlocked : ClusterLODCutDecision::Refined;
+            wantsRefined ? ClusterLODCutDecision::Refined : ClusterLODCutDecision::CoarsenBlocked;
         triangles = triangles + added - removed;
         for (uint32 unit = group.FirstUnit; unit < group.FirstUnit + group.UnitCount; ++unit)
         {

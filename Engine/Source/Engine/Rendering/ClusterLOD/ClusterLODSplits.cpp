@@ -68,8 +68,9 @@ ClusterLODSplits::Instance& ClusterLODSplits::Begin(ECS::EntityHandle owner, con
 }
 
 void ClusterLODSplits::SetPart(ECS::World& world, Instance& instance, uint32 unit, Rendering::MeshGPUHandle geometry,
-                               const Mathematics::BoundingBox& bounds) const
+                               const Mathematics::BoundingBox& bounds, uint64 epoch) const
 {
+    instance.PartEpochs[unit] = epoch;
     const ECS::EntityHandle existing = instance.Parts[unit];
     if (world.IsValid(existing))
     {
