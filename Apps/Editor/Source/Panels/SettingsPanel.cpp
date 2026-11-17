@@ -1995,7 +1995,7 @@ namespace
     constexpr float kTextContrastDefault = 1.0f;
     constexpr float kTextContrastMin = 0.0f;
     constexpr float kTextContrastMax = 1.0f;
-    constexpr float kTextSmoothingGammaDefault = 0.7f;
+    constexpr float kTextSmoothingGammaDefault = 1.0f;
     constexpr float kTextSmoothingGammaMin = 0.5f;
     constexpr float kTextSmoothingGammaMax = 2.0f;
 

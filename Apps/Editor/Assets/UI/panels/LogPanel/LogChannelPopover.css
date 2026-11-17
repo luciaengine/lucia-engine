@@ -31,6 +31,13 @@
 	color: var(--ui_color_text_bright);
 }
 
+/* Show All and Hide All keep one width and one line in a narrow panel. */
+.log-channels-bulk-action {
+	flex-shrink: 0;
+	min-width: 72px;
+	white-space: nowrap;
+}
+
 /* The height of the search field in the searchable context menus (theme/widgets.css, .context-menu-search). */
 .log-channels-search-host {
 	display: flex;
