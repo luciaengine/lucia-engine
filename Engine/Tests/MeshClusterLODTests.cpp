@@ -222,7 +222,6 @@ TEST(MeshClusterLOD, PartitionsEveryOrientedSourceTriangleExactlyOnceIntoLevelZe
     String error;
     ASSERT_TRUE(GenerateMeshClusterLODDag(source, TestConfig(), dag, error)) << error;
     ASSERT_GT(dag.Groups.size(), 1u);
-    EXPECT_GE(MaximumDepth(dag), 2u) << "the DAG must reduce over more than one level";
     for (const MeshClusterLODDagUnit& unit : dag.Units)
         EXPECT_EQ(unit.Producer == kMeshClusterLODSourceGroup, dag.Groups[unit.Group].Depth == 0);
     EXPECT_EQ(DagTriangles(source, dag, [](const MeshClusterLODDagUnit& unit)
@@ -240,6 +239,7 @@ TEST(MeshClusterLOD, EveryUniformLevelCoversTheSourceWithoutCracksAndFewerTriang
     MeshClusterLODDag dag;
     String error;
     ASSERT_TRUE(GenerateMeshClusterLODDag(source, TestConfig(), dag, error)) << error;
+    EXPECT_GE(MaximumDepth(dag), 2u) << "the DAG must reduce over more than one level";
     size_t previous = std::numeric_limits<size_t>::max();
     for (uint32 depth = 0; depth <= MaximumDepth(dag); ++depth)
     {
