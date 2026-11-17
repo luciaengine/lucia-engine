@@ -90,6 +90,8 @@
   --ui_color_text_muted: #E0E0E0;
   --ui_color_text_bright: #FFFFFF;
   --ui_color_text_dim: #b2b2b2;
+  /* The dim text color at half opacity: the outline of an information notice drawn over a view. */
+  --ui_color_text_dim_outline: rgba(178, 178, 178, 0.5);
   /* Component icon glyphs (inspector headers, pickers) at rest. */
   --ui_color_icon: rgba(200, 200, 200, 1.0);
   --ui_color_text_disabled: #666666;
