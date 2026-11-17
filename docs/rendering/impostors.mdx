@@ -9,13 +9,13 @@ An impostor is a flat card that shows a picture of an object, baked from the obj
 
 ## How trees switch to impostors
 
-Each tree measures how much of the screen it covers, from the viewpoint camera. When the tree's sphere is under about 128 pixels across at 1080 lines, it draws its impostor card instead of its bark and leaf meshes. At that size the card shows about one atlas pixel per screen pixel. A margin above that point stops the tree from switching back and forth. A tree switches only when its atlas is baked and its card material is ready. Until then it draws its mesh.
+Each tree measures how much of the screen it covers, from the camera. When the tree's sphere is under about 128 pixels across at 1080p, it draws its impostor card instead of its bark and leaf meshes. At that size the card shows about one atlas pixel per screen pixel. A margin above that point stops the tree from switching back and forth. A tree switches only when its atlas is baked and its card material is ready. Until then it draws its mesh.
 
 Trees with equal options share one tree variant, and a variant has one atlas. A forest that reuses a few variants therefore bakes a few atlases.
 
 ## The atlas
 
-The engine bakes the atlas of a variant on the GPU, a few views in each frame, when a tree of that variant first comes near the switch point. The atlas holds 8 x 8 views of the tree over the upper hemisphere, 128 pixels each, each view fitted to the tightest sphere around the tree's vertices. Each view stores the base color, the coverage, the normal and the depth.
+The engine bakes the atlas of a variant on the GPU, a few views in each frame, when a tree of that variant first comes near the switch point. The atlas holds 8 x 8 views of the tree over the upper hemisphere, 128 pixels each, each view fitted to the tightest sphere around the tree's vertices. Each view stores the base color, the opacity, the normal and the depth. A card blends the 3 views nearest to its viewing direction, and the outer views look from the horizon.
 
 - The bake draws the tree's own materials without wind, so the card shows the rest pose.
 - An atlas uses 12 MB of GPU memory. All atlases together stay under 256 MB. Past that, the atlas drawn least recently goes, and its trees draw their meshes.
@@ -25,6 +25,7 @@ The engine bakes the atlas of a variant on the GPU, a few views in each frame, w
 - The card turns to face the camera. In shadow passes the card faces the camera too, not the light, so the shadow of a far tree shows the camera's view of the tree.
 - A tree switches between mesh and card without a fade.
 - The card writes a flat depth, not the depth of the baked tree.
+- The card uses a fixed roughness of 0.9, so far trees have no leaf highlight.
 
 ## Debug switches
 
