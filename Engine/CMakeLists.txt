@@ -447,6 +447,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/SceneReflectionProbeEnvironmentSource.cpp
 	Source/Engine/Rendering/SceneProbeWorldEpochs.cpp
 	Source/Engine/Rendering/MirrorCaptureView.cpp
+	Source/Engine/Rendering/ProbeCaptureWorldPass.cpp
 	Source/Engine/Rendering/PlanarReflectionMath.cpp
 	Source/Engine/Rendering/PlanarReflectionFeature.cpp
 	Source/Engine/Rendering/Systems/PlanarReflectionSystem.cpp
@@ -2386,7 +2387,7 @@ endif()
                 Tests/ReflectionProbeSystemTests.cpp
                 Tests/WorldContentDigestTableTests.cpp
                 Tests/OceanContentDigestTests.cpp
-                # What a capture face draws: the emission with no directional light, and the event after a skipped draw.
+                # What a capture face draws: the emission, a directional light and a local light in reach, and the event after a skipped draw.
                 Tests/ProbeCaptureFaceDrawTests.cpp)
 
             # The render services themselves and the lighting they carry:
