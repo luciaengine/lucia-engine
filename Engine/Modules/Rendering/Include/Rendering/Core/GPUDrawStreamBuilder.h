@@ -600,9 +600,6 @@ class GPUDrawStreamBuilder
 
     void BeginArenaFrame();
     void RegisterSlice(const SliceRegistration& slice);
-    /// Announces shadow slices that a later schedule call of this app frame appends. The frame's
-    /// first call grows the arena for them, because a later call cannot grow it.
-    void ReserveAppendedSlices(uint32_t sliceCount) { m_ReservedAppendedSlices += sliceCount; }
     size_t GetPendingSliceCount() const { return m_FrameSlices.size(); }
 
     // `materialDepthClass` (indexed by materialIndex, MaterialDepthClass
@@ -683,6 +680,9 @@ class GPUDrawStreamBuilder
     {
         BufferHandle recordBuffer{};   // shared records (Indirect)
         BufferHandle countBuffer{};    // shared cursors (Indirect)
+        // BDA of the buffer that the vertex stage reads list[firstInstance + gl_InstanceIndex]
+        // from. 0 selects the shared indirection buffer (GetSharedIndirectionAddress).
+        uint64_t indirectionAddress = 0;
         // Parity-0 (non-mirrored) rows — the only ones on mirror-free scenes.
         BatchDrawSegment even{};
         BatchDrawSegment evenTail{};
@@ -787,6 +787,54 @@ class GPUDrawStreamBuilder
     BatchDrawRange FindBatchDrawRange(uint32_t viewId, uint8_t cascadeIndex,
                                       uint32_t materialIndex, uint32_t meshIndex,
                                       SlicePhase phase) const;
+
+    // ---- Late shadow lists: frustums that exist only after the frame's culling ----
+    // A virtual shadow page draws from per-row caster lists: 4 B per instance, one instanced LOD 0
+    // draw per shadow-table row and 2 counters per row (MakeLateShadowListLayout).
+
+    /// The most pages of one late call. The shader keeps the pages of an instance in a one-uint
+    /// mask: MUST match kMaxPages in draw_stream_late_shadow_lists.comp.
+    static constexpr uint32_t kMaxLateShadowPages = 32;
+
+    /// The pages of one view whose casters a frame-local culling pass wrote into `Visibility`.
+    struct LateShadowListRequest
+    {
+        uint32_t ViewId = 0;
+        /// 0 accepts every world.
+        uint32_t ViewWorldKey = 0;
+        /// One stream-key cascade byte per page. Page p reads visibility slice p.
+        std::span<const uint8_t> CullingIndices;
+        RenderGraph::RGBuffer Visibility;
+        /// Uints between the starts of two consecutive pages' visibility slices.
+        uint32_t VisibilityStride = 0;
+    };
+
+    /// Where one call's outputs live in the late list buffer, in uints.
+    struct LateShadowListLayout
+    {
+        uint32_t CountsBase = 0;    // per (page, row): list length
+        uint32_t RunCountsBase = 0; // per (page, run): draw count
+        uint32_t CommandsBase = 0;  // per (page, row): one draw command
+        uint32_t WordsBase = 0;     // per page: wordsPerPage instance words
+        uint64_t EndWord = 0;       // one past the call's last uint
+    };
+    /// The layout of a call that starts at uint `base`. `wordsPerPage` is the snapshot's live
+    /// instance count, the worst case of one page's list. Pure.
+    static LateShadowListLayout MakeLateShadowListLayout(uint32_t base, uint32_t pageCount, uint32_t rowCount,
+                                                         uint32_t runCount, uint32_t wordsPerPage);
+
+    /// Builds each page's caster lists and LOD 0 draws from its visibility slice, and publishes the
+    /// draws under (view, page culling index, phase A) on the shadow table. Snapshots `registry`
+    /// now: the caller flushes GPUScene first. Returns the ordering value that the pages' depth
+    /// passes read, or an invalid value when the lists were not scheduled this frame.
+    RenderGraph::RGBuffer ScheduleLateShadowLists(RenderGraph::RGFrame& frame,
+                                                  const LateShadowListRequest& request,
+                                                  RenderGraph::RGBuffer instances, RenderGraph::RGBuffer meshes,
+                                                  const BatchRegistry& registry,
+                                                  std::span<const uint8_t> materialDepthClass,
+                                                  std::span<const uint32_t> meshPoolOrdered,
+                                                  std::span<const uint32_t> orderedToGroup,
+                                                  uint32_t instanceCount, uint32_t meshTableCount);
 
     /// This frame's CURRENT rendered level and phase history for `viewId` — the
     /// buffer the scatter wrote, which a later graphics pass of the same frame
@@ -966,7 +1014,6 @@ class GPUDrawStreamBuilder
     // evaluated last frame recomputes (EvaluationGap): its retained regions
     // may have been rewritten by other calls while it was absent.
     void SetElisionFrameContext(const ElisionFrameContext& ctx) { m_ElisionCtx = ctx; }
-    const ElisionFrameContext& GetElisionFrameContext() const { return m_ElisionCtx; }
 
     /// Frame clock the LOD crossfade differences its per-instance start stamps
     /// against (the process-global animation timeline, in seconds). Frame state,
@@ -1012,22 +1059,70 @@ class GPUDrawStreamBuilder
 
   private:
     struct UnifiedScatterPass;
+    struct LateShadowListPass;
+
+    /// Consecutive table rows that draw as one consumer range: rows that share (classKey, pool
+    /// group, parity). Without draw consolidation every row is its own run.
+    struct TableRun
+    {
+        uint32_t startRow;
+        uint32_t capacity; // Σ member row capacities
+        uint32_t rowCount;
+    };
+    struct TableRunLayout
+    {
+        std::vector<TableRun> runs;
+        std::vector<std::array<uint32_t, 2>> rowRun; // per row: {runStart, runIndex}
+    };
+    static TableRunLayout BuildTableRuns(std::span<const BatchTableEntry> table,
+                                         std::span<const uint32_t> orderedToGroup);
+
+    /// Push constants for draw_stream_late_shadow_lists.comp (64 B).
+    struct LateShadowListPushConstants
+    {
+        uint32_t mode;
+        uint32_t instanceCount;
+        uint32_t pageCount;
+        uint32_t rowCount;
+        uint32_t runCount;
+        uint32_t visibilityStride;
+        uint32_t viewWorldKey;
+        uint32_t meshGroupMode;
+        uint32_t countsBase;
+        uint32_t runCountsBase;
+        uint32_t commandsBase;
+        uint32_t wordsBase;
+        uint32_t wordsPerPage;
+        uint32_t pad[3];
+    };
+    static DescriptorSetLayoutDesc MakeLateShadowListDescriptorSetLayout();
+    PipelineHandle GetOrCreateLateShadowListPipeline();
+    // Grows the late list buffer to hold `words` uints from this frame's cursor. An outgrown
+    // buffer is retired, so this frame's earlier calls keep drawing from it.
+    bool EnsureLateShadowListBuffer(uint64_t words);
 
     IDevice*       m_Device   = nullptr;
     PipelineHandle m_ScatterPipeline;
     // Mesh-coherent group compaction (draw consolidation). Lazy like the
     // scatter pipeline, guarded by the same init mutex.
     PipelineHandle GetOrCreateInstanceCompactPipeline();
-    PipelineHandle CreateCompactionPipeline(const char* package, const char* name);
+    // Creates a compute pipeline with one storage-buffer set. A failure logs once per flag.
+    PipelineHandle CreateStorageComputePipeline(const char* package, const char* name,
+                                                const DescriptorSetLayoutDesc& layout, uint32_t pushConstantBytes,
+                                                bool& failureLogged);
 
     PipelineHandle m_InstanceCompactPipeline;
     PipelineHandle m_GroupCompactPipeline;
+    PipelineHandle m_LateShadowListPipeline;
     bool           m_GroupCompactFailureLogged = false;
+    bool           m_LateShadowListFailureLogged = false;
     // The transient set descriptions of each scatter and group-compact dispatch.
     // They are built once, so a dispatch does not rebuild the layout on the heap.
     const DescriptorSetDesc m_ScatterSetDesc{MakeScatterDescriptorSetLayout(), "GPUDrawScatter_DS0", true};
     const DescriptorSetDesc m_GroupCompactSetDesc{MakeGroupCompactDescriptorSetLayout(),
                                                   "GPUDrawGroupCompact_DS0", true};
+    const DescriptorSetDesc m_LateShadowListSetDesc{MakeLateShadowListDescriptorSetLayout(),
+                                                    "GPUDrawLateShadowList_DS0", true};
     // Serializes GetOrCreateScatterPipeline's lazy init: on guard-refused frames
     // the spine doesn't pre-warm it, so record workers (A2.4-P0-R) can race the
     // one-time SPIR-V load + pipeline create + fallback-log member writes.
@@ -1093,6 +1188,11 @@ class GPUDrawStreamBuilder
     BufferHandle m_SharedRecords{};      // indexed indirect draw commands, Indirect
     BufferHandle m_SharedCursors{};      // uint[], Indirect (the count buffer)
     BufferHandle m_SharedIndirection{};  // uint[], BDA
+    // Late shadow lists: counts, draw commands and instance words of every late call of a frame.
+    BufferHandle m_LateShadowLists{};    // uint[], Indirect, BDA
+    uint64_t     m_LateShadowListAddress = 0;
+    uint64_t     m_LateShadowListWords = 0;      // capacity
+    uint64_t     m_LateShadowListCursor = 0;     // this frame's next free uint
     BufferHandle m_SharedStats{};        // ScatterSliceStats[], host-visible readback
     BufferHandle m_TableRing{};          // BatchTableEntry[], host-visible ring
     // Host-CACHED mirrors of the cursor arena + per-slice stats. The scatter
@@ -1258,7 +1358,6 @@ class GPUDrawStreamBuilder
     // host-visible Upload memory, so growth is low-risk.
     uint32_t     m_PendingTableRingBytes = 0;
     bool         m_ArenaSkipLogged       = false;
-    uint32_t     m_ReservedAppendedSlices = 0;
 
     std::vector<SliceRegistration> m_FrameSlices;
     // Keyed by MakeStreamKey(viewId, cascadeIndex, materialIndex, meshIndex, phase).
