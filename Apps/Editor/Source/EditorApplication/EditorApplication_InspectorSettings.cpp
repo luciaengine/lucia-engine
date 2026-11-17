@@ -6,6 +6,7 @@
 #include "Prefabs/PrefabHierarchyRows.h"
 #include "PlayMode/PlayModeManager.h"
 #include "Scene/SceneEditorController.h"
+#include "Editor/Hierarchy/HierarchyRowEye.h"
 #include "Editor/Settings/InterfaceSettingsPage.h"
 #include "Editor/Settings/SearchBarSettingsPage.h"
 #include "Editor/Settings/StartupSettingsPage.h"
@@ -474,6 +475,7 @@ void EditorApplication::InitializeAssetsGridAndSmartFolderSettings(SettingsPanel
     Editor::RegisterExperimentalRenderingSettingsCategory();
     // Interface (context-menu backend) likewise.
     Editor::RegisterInterfaceSettingsCategory();
+    Editor::RegisterHierarchySettingsCategory();
     // Search Bars: fill, placement and focus outline of the panel searches, on UI > Appearance.
     Editor::RegisterSearchBarSettingsCategory();
     // Startup: what the editor opens on start.

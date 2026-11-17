@@ -382,14 +382,13 @@ private:
     std::optional<PlayModeSelectionStash> m_PlayModeSelectionStash;
 
     std::vector<ECS::EntityHandle> ResolveRowActionTargets(ECS::EntityHandle clicked) const;
-    // The entity a bound row shows now, or an invalid handle.
-    ECS::EntityHandle EntityShownBy(const UIElement& row) const;
 
     HierarchySortMode m_SortMode = HierarchySortMode::Custom;
     HierarchySortDirection m_SortDirection = HierarchySortDirection::Ascending;
 
     void ApplySortSettings();
     void ApplySceneViewEyeVisibility();
+    void ToggleRowEntityEnabled(ECS::EntityHandle handle, UIElement* row);
     // Rebinds the rows after the layer column changed what it shows.
     void RefreshLayerColumn();
     void SetHorizontalBarPresent(bool present);
