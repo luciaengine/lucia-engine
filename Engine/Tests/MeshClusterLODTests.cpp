@@ -658,7 +658,9 @@ TEST_F(MeshClusterLODAssetTest, LoadsTheCoarseAssetWithoutTheSourceOrFineStore)
     EXPECT_EQ(coarseOnly.GetMesh(0).Name, m_Source.GetMesh(0).Name);
 }
 
-TEST_F(MeshClusterLODAssetTest, EveryUniformLevelOfTheCookedModelMatchesItsChain)
+// The cooked DAG stops at the resident level: every uniform cut under it covers the source, and
+// the cut at the resident level is LOD0.
+TEST_F(MeshClusterLODAssetTest, EveryUniformLevelOfTheCookedModelEndsAtLodZero)
 {
     const auto path = m_Temporary.Path() / "generated.gecluster";
     ASSERT_TRUE(Cook(path)) << m_Error;
@@ -668,11 +670,12 @@ TEST_F(MeshClusterLODAssetTest, EveryUniformLevelOfTheCookedModelMatchesItsChain
     Vector<Mesh> units;
     ASSERT_TRUE(LoadUnits(path, model, units, m_Error)) << m_Error;
     const auto& range = manifest.Meshes[0];
-    const Mesh& coarse = model.GetMesh(0);
-    uint32 maximumDepth = 0;
     for (const auto& group : manifest.Groups)
-        maximumDepth = std::max(maximumDepth, group.Depth);
-    for (uint32 depth = 0; depth <= maximumDepth; ++depth)
+    {
+        EXPECT_LE(group.Depth, range.ResidentDepth);
+        EXPECT_TRUE(group.Depth < range.ResidentDepth || group.Terminal);
+    }
+    for (uint32 depth = 0; depth <= range.ResidentDepth; ++depth)
     {
         SCOPED_TRACE(depth);
         Vector<Engine::Renderer::ClusterLODCutDecision> decisions(range.GroupCount);
@@ -683,16 +686,10 @@ TEST_F(MeshClusterLODAssetTest, EveryUniformLevelOfTheCookedModelMatchesItsChain
         const auto cut = CutTriangles(manifest, units, decisions);
         if (depth == 0)
             EXPECT_EQ(cut, OrientedTriangles(m_Source.GetMesh(0)));
-        if (depth < range.ResidentDepth)
-            continue;
-        Mesh level = coarse;
-        const uint32 lod = depth - range.ResidentDepth;
-        level.Indices = lod == 0 ? coarse.Indices : coarse.ExtraLODs[lod - 1];
-        EXPECT_EQ(cut, OrientedTriangles(level));
+        if (depth == range.ResidentDepth)
+            EXPECT_EQ(cut, OrientedTriangles(model.GetMesh(0)));
     }
-    ASSERT_EQ(coarse.ExtraLODErrors.size(), coarse.ExtraLODs.size());
-    for (size_t level = 1; level < coarse.ExtraLODErrors.size(); ++level)
-        EXPECT_GE(coarse.ExtraLODErrors[level], coarse.ExtraLODErrors[level - 1]);
+    EXPECT_TRUE(model.GetMesh(0).ExtraLODs.empty()) << "the far chain is generated at load, not cooked";
 }
 
 TEST_F(MeshClusterLODAssetTest, StoresEachFinePageLosslesslyInLessThanHalfItsRawSize)
@@ -1119,9 +1116,9 @@ TEST_F(MeshClusterLODAssetTest, RefusesNonopaqueNonfiniteAndUnresolvedTextureMat
     }
 }
 
-// A cluster model's chain is the coarser uniform cuts of its DAG. Mesh LOD generation keeps it,
-// and no LOD cache is written for it.
-TEST_F(MeshClusterLODAssetTest, LodGenerationKeepsTheCookedDagChain)
+// The far chain simplifies the whole coarse mesh. LOD0 stays the resident cut that streamed
+// units refine, and every generated level carries the error of that cut on top of its own.
+TEST_F(MeshClusterLODAssetTest, LodGenerationBuildsAFarChainOverTheUnchangedResidentCut)
 {
     Mesh wavy = Testing::MakeClusterLODGrid();
     wavy.MaterialIndex = 0;
@@ -1133,17 +1130,19 @@ TEST_F(MeshClusterLODAssetTest, LodGenerationKeepsTheCookedDagChain)
     ModelAsset model(GUID::Generate(), path);
     ASSERT_TRUE(model.Load());
     const auto original = model.GetClusterLODManifest();
-    const Mesh cooked = model.GetMesh(0);
-    ASSERT_GT(cooked.LODCount(), 1u);
-    ASSERT_GT(cooked.ExtraLODErrors.front(), 0.0f);
-    EXPECT_EQ(model.GenerateLODs({}, false), cooked.LODCount());
+    const Vector<uint32> coarseIndices = model.GetMesh(0).Indices;
+    const float coarseError = MeshClusterLODRelativeCoarseError(*original, 0, model.GetMesh(0));
+    ASSERT_GT(coarseError, 0.0f);
+    EXPECT_GT(model.GenerateLODs({}, false), 1u);
     EXPECT_EQ(model.GetClusterLODManifest(), original);
-    EXPECT_EQ(model.GetMesh(0).Indices, cooked.Indices);
-    EXPECT_EQ(model.GetMesh(0).ExtraLODs, cooked.ExtraLODs);
-    EXPECT_EQ(model.GetMesh(0).ExtraLODErrors, cooked.ExtraLODErrors);
+    const Mesh& mesh = model.GetMesh(0);
+    EXPECT_EQ(mesh.Indices, coarseIndices);
+    ASSERT_FALSE(mesh.ExtraLODErrors.empty());
+    for (size_t level = 0; level < mesh.ExtraLODErrors.size(); ++level)
+        if (mesh.ExtraLODSloppy.empty() || mesh.ExtraLODSloppy[level] == 0)
+            EXPECT_GE(mesh.ExtraLODErrors[level], coarseError);
     const auto cache = m_Temporary.Path() / "chain.gelod";
-    EXPECT_EQ(model.CookLODCache({}, false, cache), 0u);
-    EXPECT_FALSE(std::filesystem::exists(cache));
+    EXPECT_GT(model.CookLODCache({}, false, cache), 0u);
 }
 
 TEST_F(MeshClusterLODAssetTest, RefusesRecookingAnAlreadyClusteredSource)

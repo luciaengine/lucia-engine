@@ -428,57 +428,57 @@ uint32 ChooseResidentDepth(const MeshClusterLODDag& dag, size_t sourceTriangles,
     return maximumDepth;
 }
 
-// Builds LOD0 (the resident cut) and every coarser uniform cut of one mesh from its resident
-// units, records each unit's first level and range, and sets the level errors relative to the
-// largest bounds axis, the unit of Mesh::ExtraLODErrors.
-bool BuildLevels(MeshClusterLODManifest& manifest, const MeshClusterLODManifest::MeshRange& range,
-                 const Vector<Vector<uint32>>& residentIndices, Mesh& coarse)
+// Builds LOD0, the resident cut, of one mesh from its resident units and records each unit's
+// range. Every group is at or under the resident level.
+bool BuildResidentCut(MeshClusterLODManifest& manifest, const MeshClusterLODManifest::MeshRange& range,
+                      const Vector<Vector<uint32>>& residentIndices, Mesh& coarse)
 {
-    uint32 maximumDepth = 0;
-    for (uint32 group = range.FirstGroup; group < range.FirstGroup + range.GroupCount; ++group)
-        maximumDepth = std::max(maximumDepth, manifest.Groups[group].Depth);
-    if (range.ResidentDepth > maximumDepth)
-        return false;
-    const float extent = std::max({coarse.MaxBounds[0] - coarse.MinBounds[0], coarse.MaxBounds[1] - coarse.MinBounds[1],
-                                   coarse.MaxBounds[2] - coarse.MinBounds[2]});
-    Vector<bool> placed(range.UnitCount, false);
+    coarse.Indices.clear();
     coarse.ExtraLODs.clear();
     coarse.ExtraLODErrors.clear();
     coarse.ExtraLODSloppy.clear();
-    for (uint32 depth = range.ResidentDepth; depth <= maximumDepth; ++depth)
-    {
-        Vector<uint32>& indices = depth == range.ResidentDepth ? coarse.Indices : coarse.ExtraLODs.emplace_back();
-        float error = 0.0f;
-        for (uint32 local = 0; local < range.UnitCount; ++local)
-        {
-            auto& unit = manifest.Units[range.FirstUnit + local];
-            const auto& group = manifest.Groups[unit.Group];
-            if (!IsMeshClusterLODUnitInLevel(group.Depth, group.Terminal, depth))
-                continue;
-            if (unit.IsStreamed() || indices.size() > std::numeric_limits<uint32>::max() - unit.IndexCount)
-                return false;
-            if (!placed[local])
-            {
-                placed[local] = true;
-                unit.Level = depth - range.ResidentDepth;
-                unit.FirstIndex = static_cast<uint32>(indices.size());
-            }
-            if (unit.Producer != kMeshClusterLODSourceGroup)
-                error = std::max(error, manifest.Groups[unit.Producer].Error);
-            indices.insert(indices.end(), residentIndices[local].begin(), residentIndices[local].end());
-        }
-        if (indices.empty())
-            return false;
-        if (depth != range.ResidentDepth)
-        {
-            coarse.ExtraLODErrors.push_back(extent > 0.0f ? error / extent : 0.0f);
-            coarse.ExtraLODSloppy.push_back(0);
-        }
-    }
     for (uint32 local = 0; local < range.UnitCount; ++local)
-        if (placed[local] == manifest.Units[range.FirstUnit + local].IsStreamed())
+    {
+        auto& unit = manifest.Units[range.FirstUnit + local];
+        const auto& group = manifest.Groups[unit.Group];
+        if (group.Depth > range.ResidentDepth)
             return false;
-    return true;
+        if (unit.IsStreamed())
+            continue;
+        if (coarse.Indices.size() > std::numeric_limits<uint32>::max() - unit.IndexCount)
+            return false;
+        unit.FirstIndex = static_cast<uint32>(coarse.Indices.size());
+        coarse.Indices.insert(coarse.Indices.end(), residentIndices[local].begin(), residentIndices[local].end());
+    }
+    return !coarse.Indices.empty();
+}
+
+// Drops the groups over the resident level: the generated chain over LOD0 draws those distances.
+// The groups at the resident level become terminal, so LOD0 is the coarsest cut of a split.
+void TruncateAtResidentDepth(MeshClusterLODDag& dag, uint32 residentDepth)
+{
+    Vector<uint32> remap(dag.Groups.size(), kMeshClusterLODSourceGroup);
+    Vector<MeshClusterLODDagGroup> groups;
+    for (uint32 group = 0; group < dag.Groups.size(); ++group)
+    {
+        if (dag.Groups[group].Depth > residentDepth)
+            continue;
+        remap[group] = static_cast<uint32>(groups.size());
+        groups.push_back(dag.Groups[group]);
+        groups.back().Terminal = groups.back().Terminal || groups.back().Depth == residentDepth;
+    }
+    Vector<MeshClusterLODDagUnit> units;
+    for (MeshClusterLODDagUnit& unit : dag.Units)
+    {
+        if (remap[unit.Group] == kMeshClusterLODSourceGroup)
+            continue;
+        unit.Group = remap[unit.Group];
+        if (unit.Producer != kMeshClusterLODSourceGroup)
+            unit.Producer = remap[unit.Producer];
+        units.push_back(std::move(unit));
+    }
+    dag.Groups = std::move(groups);
+    dag.Units = std::move(units);
 }
 
 // Checks the DAG edges of one mesh and derives the unit and produced-unit ranges of its groups.
@@ -769,7 +769,7 @@ bool DecodeMeshClusterLODAsset(std::span<const uint8> bytes, MeshClusterLODAsset
             offset += unit.Bytes;
             manifest.Units.push_back(unit);
         }
-        if (!LinkGroups(manifest, range) || !BuildLevels(manifest, range, residentIndices, mesh))
+        if (!LinkGroups(manifest, range) || !BuildResidentCut(manifest, range, residentIndices, mesh))
         {
             error = std::format("Cluster mesh {} has an invalid DAG or LOD chain", meshIndex);
             return false;
@@ -938,6 +938,7 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
         groupCount += dag.Groups.size();
         unitCount += dag.Units.size();
         const uint32 residentDepth = ChooseResidentDepth(dag, mesh.Indices.size() / 3, config.ResidentRatio);
+        TruncateAtResidentDepth(dag, residentDepth);
         Mesh coarse = BuildResidentVertices(mesh, dag, residentDepth, remap);
         if (!names.Insert(coarse.Name))
             coarse.Name = std::format("{} {}", mesh.Name, meshCount);
@@ -1127,13 +1128,31 @@ bool DecodeMeshClusterLODFinePage(std::span<const uint8> bytes, const MeshCluste
 
 Mesh ExtractMeshClusterLODResidentUnit(const Mesh& coarse, const MeshClusterLODManifest::Unit& unit)
 {
-    const Vector<uint32>& level = unit.Level == 0 ? coarse.Indices : coarse.ExtraLODs[unit.Level - 1];
     Vector<uint32> remap(coarse.Vertices.size(), kMeshClusterLODUnusedVertex);
     Vector<uint32> sourceVertices;
     Mesh result = CompactMeshClusterLODTriangles(
-        coarse, std::span<const uint32>(level.data() + unit.FirstIndex, unit.IndexCount), remap, sourceVertices);
+        coarse, std::span<const uint32>(coarse.Indices.data() + unit.FirstIndex, unit.IndexCount), remap,
+        sourceVertices);
     SetUnitBounds(unit, result);
     return result;
+}
+
+float MeshClusterLODRelativeCoarseError(const MeshClusterLODManifest& manifest, uint32 mesh, const Mesh& coarse)
+{
+    float error = 0.0f;
+    if (mesh < manifest.Meshes.size())
+    {
+        const auto& range = manifest.Meshes[mesh];
+        for (uint32 unit = range.FirstUnit; unit < range.FirstUnit + range.UnitCount; ++unit)
+        {
+            const auto& record = manifest.Units[unit];
+            if (!record.IsStreamed() && record.Producer != kMeshClusterLODSourceGroup)
+                error = std::max(error, manifest.Groups[record.Producer].Error);
+        }
+    }
+    const float extent = std::max({coarse.MaxBounds[0] - coarse.MinBounds[0], coarse.MaxBounds[1] - coarse.MinBounds[1],
+                                   coarse.MaxBounds[2] - coarse.MinBounds[2]});
+    return extent > 0.0f ? error / extent : 0.0f;
 }
 
 std::filesystem::path ResolveMeshClusterLODStore(const std::filesystem::path& modelPath,

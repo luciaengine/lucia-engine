@@ -748,8 +748,7 @@ uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinne
         if (IsAssetDecodeCancelled())
             break;
         sourceTris += mesh.Indices.size() / 3;
-        // A cluster model's chain is the coarse cuts of its cluster DAG, decoded with the model.
-        if (mesh.HasAuthoredLODs() || m_ClusterLODManifest) {
+        if (mesh.HasAuthoredLODs()) {
             // Authored-wins (amendment #2a): an artist-supplied chain owns this
             // submesh. Skip generation and, unlike the skinned-skip below, leave
             // its parse-supplied ExtraLODs / ExtraLODVertices / ExtraLODCoverage
@@ -769,6 +768,15 @@ uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinne
             continue;
         }
         maxLods = std::max(maxLods, GenerateMeshLODsInto(mesh, config, &stats));
+        // A cluster model's LOD0 is its resident cut: its levels add the error of that cut.
+        if (m_ClusterLODManifest)
+        {
+            const auto meshIndex = static_cast<uint32>(&mesh - m_Meshes.data());
+            const float coarseError = MeshClusterLODRelativeCoarseError(*m_ClusterLODManifest, meshIndex, mesh);
+            for (size_t level = 0; level < mesh.ExtraLODErrors.size(); ++level)
+                if (level >= mesh.ExtraLODSloppy.size() || mesh.ExtraLODSloppy[level] == 0)
+                    mesh.ExtraLODErrors[level] += coarseError;
+        }
     }
     CalculateBoundingBox(); // also covers the Editor's direct regeneration path
     const double lodMs = std::chrono::duration<double, std::milli>(
@@ -784,9 +792,6 @@ uint32 ModelAsset::GenerateLODs(const MeshLODConfig& config, bool generateSkinne
 
 uint64 ModelAsset::CookLODCache(const MeshLODConfig& config, bool generateSkinned,
                                 const std::filesystem::path& outFile) {
-    // A cluster model ships its chain in the .gecluster file.
-    if (m_ClusterLODManifest)
-        return 0;
     GenerateLODs(config, generateSkinned);
 
     bool anyLods = false;
@@ -896,8 +901,7 @@ void ModelAsset::PostLoad()
     m_AuthoredSlotSourceHash = slots.SourceHash;
 
     const ResolvedLodSettings lod = ResolveLodSettings(assetMgr, GetPath());
-    // A cluster model decodes its chain with its DAG; no LOD cache applies to it.
-    if (lod.Generate && !m_ClusterLODManifest)
+    if (lod.Generate)
         LoadOrGenerateLODs(assetMgr, lod.Config, lod.GenerateSkinned);
     else
         CalculateBoundingBox(); // explicit slots also apply with generation disabled

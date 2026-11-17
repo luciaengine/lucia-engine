@@ -73,10 +73,7 @@ int main(int argc, char** argv)
         {
             const Mesh& mesh = generated.GetMesh(meshIndex);
             std::cout << "Mesh " << meshIndex << " resident level " << manifest.Meshes[meshIndex].ResidentDepth
-                      << ", triangles per LOD:";
-            for (uint32 level = 0; level < mesh.LODCount(); ++level)
-                std::cout << ' ' << (level == 0 ? mesh.Indices.size() : mesh.ExtraLODs[level - 1].size()) / kIndicesPerTriangle;
-            std::cout << '\n';
+                      << ", LOD0 triangles: " << mesh.Indices.size() / kIndicesPerTriangle << '\n';
         }
         std::cout << "Streamed triangles: " << streamedIndexCount / kIndicesPerTriangle << '\n';
         std::cout << "Vertices (imported/coarse): " << source.GetTotalVertexCount() << '/'

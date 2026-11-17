@@ -17,14 +17,16 @@ never decreases toward the root. A group that does not reduce stays as it is
 and draws at every coarser level.
 
 The coarse model has one mesh for each source mesh. Its LOD0 is the first DAG
-level with at most a quarter of the source triangles; its LOD chain is every
-coarser level of the DAG, with the level's largest error as its switch error.
-Far away, one instance is one draw of its chain. The finer levels are fine
-pages: one page for the clusters of one group that one finer group made.
+level with at most a quarter of the source triangles. The levels under it are
+fine pages: one page for the clusters of one group that one finer group made.
+The cook stops the DAG at LOD0. Farther away, the coarse mesh gets an ordinary
+generated LOD chain: a whole-mesh simplification needs fewer triangles than the
+coarser DAG levels, whose group borders stay locked. Each generated level adds
+the error of LOD0 to its own, so it switches at the same screen error as an
+ordinary model's chain.
 
-The report includes the DAG groups and units, the triangles of every LOD and
-the streamed triangles, so a successful cook can be checked for useful
-reduction.
+The report includes the DAG groups and units, the LOD0 triangles and the
+streamed triangles, so a successful cook can be checked for useful reduction.
 
 Static node placements are preserved, including multiple nodes that share a
 mesh. The output contains geometry and materials; animation, skinning and morph

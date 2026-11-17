@@ -9,8 +9,10 @@
 namespace GameEngine
 {
 
-/// The cluster DAG of every coarse mesh. A coarse mesh is the resident cut of its DAG (LOD0) and
-/// every coarser uniform cut (its ExtraLODs). Finer units stream as immutable fine pages.
+/// The cluster DAG of every coarse mesh under its resident level. A coarse mesh is the resident
+/// cut of its DAG (LOD0); its groups are terminal, so a split never draws coarser than LOD0. The
+/// far chain is the ordinary generated LOD chain over LOD0. Finer units stream as immutable fine
+/// pages.
 struct MeshClusterLODManifest
 {
     static constexpr uint64 kMaximumFileBytes = 256ull * 1024ull * 1024ull;
@@ -43,9 +45,7 @@ struct MeshClusterLODManifest
         // Mesh-local bounds of the unit's vertices.
         Mathematics::Vector3 MinBounds;
         Mathematics::Vector3 MaxBounds;
-        // A resident unit is the range [FirstIndex, FirstIndex + IndexCount) of LOD `Level` of its
-        // coarse mesh: the finest level that draws it.
-        uint32 Level = 0;
+        // A resident unit is the range [FirstIndex, FirstIndex + IndexCount) of LOD0 of its coarse mesh.
         uint32 FirstIndex = 0;
         // A streamed unit is one page in the fine store: the meshopt-encoded vertex stream, then
         // the meshopt-encoded index stream. Bytes and ContentHash cover both streams.
@@ -103,6 +103,10 @@ bool DecodeMeshClusterLODFinePage(std::span<const uint8> bytes, const MeshCluste
 /// A resident unit as a standalone mesh: its index range of `coarse`, compacted to the vertices
 /// it uses. Placement and material come from `coarse`.
 Mesh ExtractMeshClusterLODResidentUnit(const Mesh& coarse, const MeshClusterLODManifest::Unit& unit);
+
+/// The largest error of the units of LOD0 of one coarse mesh, relative to its largest bounds
+/// axis: the unit of Mesh::ExtraLODErrors. Zero for a mesh without streamed units.
+float MeshClusterLODRelativeCoarseError(const MeshClusterLODManifest& manifest, uint32 mesh, const Mesh& coarse);
 
 /// Editor stores are beside the model; packaged stores are under AssetRoot/.cluster.
 std::filesystem::path ResolveMeshClusterLODStore(const std::filesystem::path& modelPath,

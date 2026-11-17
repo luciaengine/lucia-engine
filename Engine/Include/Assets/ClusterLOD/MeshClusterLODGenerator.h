@@ -13,7 +13,7 @@ struct MeshClusterLODConfig
     uint32 MeshletVertices = 64;
     uint32 MeshletTriangles = 124;
     // The partition target; meshoptimizer makes groups of up to a third more clusters.
-    uint32 MeshletsPerGroup = 16;
+    uint32 MeshletsPerGroup = 32;
     // The DAG groups of one source mesh.
     uint32 MaximumGroups = 8192;
     uint64 MaximumGeometryBytes = 256ull * 1024ull * 1024ull;
