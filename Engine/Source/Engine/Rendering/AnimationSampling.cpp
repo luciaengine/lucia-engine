@@ -42,7 +42,8 @@ double WrapClipTime(double time, float32 lapStart, float32 lapEnd)
 bool SampleMorphWeights(const Animation::AnimationClipData& clip, float time, const Mesh& mesh,
                         Components::MorphTargetWeights& weights)
 {
-    const uint32 count = std::min<uint32>(weights.weightCount, static_cast<uint32>(mesh.MorphTargets.size()));
+    const uint32 count = std::min({weights.weightCount, static_cast<uint32>(mesh.MorphTargets.size()),
+                                   Components::MorphTargetWeights::kMaxWeights});
     std::array<StringId, Components::MorphTargetWeights::kMaxWeights> targetIds{};
     for (uint32 targetIndex = 0; targetIndex < count; ++targetIndex)
     {

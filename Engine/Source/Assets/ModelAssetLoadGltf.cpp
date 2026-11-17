@@ -1293,8 +1293,11 @@ std::string ChargeAnimationKeys(const cgltf_data& document, size_t animationInde
         const size_t clipChannels = channel.target_path == cgltf_animation_path_type_weights
                                         ? channel.target_node->mesh->primitives[0].targets_count
                                         : 1u;
-        const std::string problem = budget.Charge(*sampler->input, sampler->input->count * clipChannels,
-                                                  sizeof(Animation::AnimKeyframe));
+        const size_t keyCount = sampler->input->count;
+        const size_t clipKeys = clipChannels != 0u && keyCount > std::numeric_limits<size_t>::max() / clipChannels
+                                    ? std::numeric_limits<size_t>::max()
+                                    : keyCount * clipChannels;
+        const std::string problem = budget.Charge(*sampler->input, clipKeys, sizeof(Animation::AnimKeyframe));
         if (!problem.empty())
             return "channel " + std::to_string(channelIndex) + " of animation " + std::to_string(animationIndex) +
                    " ('" + (animation.name ? animation.name : "<unnamed>") + "') has a key time accessor " + problem;

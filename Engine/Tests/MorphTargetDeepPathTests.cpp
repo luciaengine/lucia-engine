@@ -431,7 +431,7 @@ TEST(MorphTargetDeepPathTests, ImportedGltfWeightAnimationMovesTheMorphedVertice
 
     MorphTargetSystem morphSystem(&rs);
     morphSystem.SetModelResolverForTest(
-        [&](const GUID& guid) { return guid == modelGuid ? model.get() : nullptr; });
+        [&model, modelGuid](const GUID& guid) { return guid == modelGuid ? model.get() : nullptr; });
 
     ECS::World world(nullptr);
     ECS::Entity e = world.Create();
