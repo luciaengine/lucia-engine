@@ -884,6 +884,29 @@ TEST(TlasPackerTest, InstanceWithNoMaterialPacksTheDeferToGeometrySentinel)
     EXPECT_FLOAT_EQ(-1.0f, packed.Buffer[packed.InstanceBase + 15u]);
 }
 
+// A hit must report which instance it hit. Records are in TLAS slot order, so
+// the id must go with its instance through the permutation.
+TEST(TlasPackerTest, InstanceRecordsCarryTheCallerInstanceIds)
+{
+    constexpr uint32 kFirstId = 40u;
+    std::vector<TlasInstance> instances;
+    for (uint32 instanceIndex = 0; instanceIndex < 9u; ++instanceIndex)
+    {
+        instances.push_back(MakeInstance(Vector3(static_cast<float32>(instanceIndex) * 4.0f, 0.0f, 0.0f),
+                                         Vector3(1.0f, 1.0f, 1.0f), 0u, 5u));
+        instances.back().InstanceId = kFirstId + instanceIndex * 3u;
+    }
+
+    const PackedTlas packed = TlasPacker::Pack({}, instances);
+    ASSERT_FALSE(packed.IsEmpty());
+    ASSERT_EQ(9u, packed.InstanceCount);
+    for (uint32 slot = 0; slot < packed.InstanceCount; ++slot)
+    {
+        const float32* record = &packed.Buffer[packed.InstanceBase + slot * kUberMaterialStrideFloats];
+        EXPECT_FLOAT_EQ(static_cast<float32>(instances[packed.InstanceOrder[slot]].InstanceId), record[17]);
+    }
+}
+
 TEST(TlasPackerTest, InstanceRecordInvertsTheWorldTransform)
 {
     const Vector3 translation(3.0f, -2.0f, 5.0f);

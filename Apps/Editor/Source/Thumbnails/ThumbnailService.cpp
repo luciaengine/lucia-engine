@@ -1,5 +1,7 @@
 #include "Thumbnails/ThumbnailService.h"
 
+#include "Mathematics/Vector4.h"
+
 #include "AssetCore/AssetTypes.h"
 #include "Types/PathUtils.h"
 #include "Assets/AssetManager.h"
@@ -385,7 +387,7 @@ SpriteFramesThumbnailHandler* ThumbnailService::FindSpriteFramesHandler() const
 }
 
 std::string ThumbnailService::GetOrRequestAtlasRegion(const std::filesystem::path& texturePath,
-                                                      const std::array<float, 4>& uv,
+                                                      const Mathematics::Vector4& uv,
                                                       std::function<void(const std::string& path)> onReady)
 {
     SpriteFramesThumbnailHandler* sprites = FindSpriteFramesHandler();

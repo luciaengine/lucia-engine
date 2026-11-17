@@ -263,6 +263,7 @@ struct DDGIVolume {
     // it, so the global sky slider and this per-volume trim compose the way
     // the raster path's ambient already composes them.
     // @ge-tooltip How much sky light the probes pick up on rays that hit nothing. 0 ignores the sky completely (indoor-only GI, miss rays are black), 1 is the environment's own brightness. Multiplies with the scene's global sky IBL intensity rather than replacing it. Applied live, no grid rebuild.
+    // @ge-label Sky Light
     // @ge-range 0 2
     float32 SkyIntensity = 1.0f;
 
@@ -394,6 +395,7 @@ struct DDGIVolume {
     // @ge-tooltip Adds specular reflections baked from the probes, giving metals and smooth surfaces local reflections without a screen-space pass. Costs two extra blend/upload dispatches and one high-resolution atlas per volume; reuses the rays the diffuse field already traces, so it adds no ray cost.
     bool EnableGlossy = false;
     // @ge-tooltip How strongly probe reflections displace the environment reflection. At 0 the environment cube is used unchanged; at 1 the probes take full authority wherever they actually saw geometry.
+    // @ge-label Local Reflections
     // @ge-range 0 1
     float32 ReflectionIntensity = 1.0f;
 

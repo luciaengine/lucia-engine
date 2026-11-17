@@ -15,16 +15,16 @@
 	margin: 4px 0;
 }
 
-/* The text and the buttons share a row, the buttons on the text's first line (their baselines
-   aligned). The buttons wrap onto a line of their own under the text only when the row cannot give the
-   text its basis beside them; a wrapped line keeps them at the row's end, the dismiss too when it wraps
-   alone. */
+/* The text and the buttons share a row. The tops of the buttons align with the top of the text's
+   first line. The buttons wrap onto a line of their own under the text only when the row cannot give
+   the text its basis beside them; a wrapped line keeps them at the row's end, the dismiss too when it
+   wraps alone. */
 .inspector-notice-plate {
 	display: flex;
 	flex-direction: row;
 	flex-wrap: wrap;
 	justify-content: flex-end;
-	align-items: baseline;
+	align-items: flex-start;
 	column-gap: 8px;
 	row-gap: 6px;
 	padding: 6px 8px;

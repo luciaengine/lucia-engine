@@ -717,6 +717,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     // the content fit. Correctness-class causes always render immediately and
     // never count against the cap. Requires the static shadow cache lane
     // (GE_SHADOW_STATIC_CACHE != 0) — its records define the retained content.
+    // A view whose sun reads virtual pages uses FallbackCascadeMotionBudget of these values.
     uint32_t GetMotionCap() const { return m_MotionCap; }
     void SetMotionCap(uint32_t cap) { m_MotionCap = cap; }
     uint32_t GetMotionMaxAge() const { return m_MotionMaxAge; }
@@ -1035,6 +1036,12 @@ class ShadowMapRenderFeature : public IRenderFeature
     // not its guaranteed outcome.
     ShadowFilterQuality ResolveEffectiveFilterQuality(RenderServices& rs,
                                                       Rendering::ViewId viewId) const;
+
+    // True when the view's sun takes its visibility from virtual shadow pages: the virtual
+    // shadow feature is on, the sun uses cascades (not ray tracing), and the effective filter is
+    // one that the page lookup resolves (Poisson or PCSS). The cascades are then the fallback for
+    // the receivers that no resident page covers.
+    bool SunReadsVirtualPages(RenderServices& rs, Rendering::ViewId viewId) const;
 
     // Legacy boolean accessor kept as a compat shim for existing callers
     // (LightInspector pre-migration, DebugServer's pcss_set/get IPC). Maps

@@ -45,7 +45,9 @@ namespace GameEngine::SceneBvh
 //            is already published as a sphere-proxy light, so the probe trace
 //            must not add it again on a ray hit (the hardware lane reads the
 //            same fact from GPUInstance.flags bit 6).
-//   [17..27] zero
+//   [17]     the caller's id of this instance (TlasInstance::InstanceId). A hit
+//            reports it, so a ray can tell which instance it hit.
+//   [18..27] zero
 //
 // The local ray direction is left UNNORMALIZED on purpose: the ray parameter t
 // is then identical in local and world space, so best-t comparisons stay valid
@@ -108,6 +110,9 @@ struct TlasInstance
     // Emissive already published as a DDGI sphere-proxy light; exclude it from
     // per-hit emissive so the energy is not counted twice.
     bool GIEmitter = false;
+
+    // The caller's id of this instance, below kMaxTlasInstances: the record holds it as f32.
+    uint32 InstanceId = 0;
 };
 
 struct PackedTlas

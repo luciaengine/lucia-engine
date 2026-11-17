@@ -132,23 +132,23 @@ TEST_F(VirtualShadowPageMarkTest, MarksSunPageEdgesSpotMipsAndBothPointFaces)
     for (uint32_t i = 0; i < kProjections; ++i)
     {
         auto& p = projections[i];
-        p.ViewClipToLightClip[0] = p.ViewClipToLightClip[5] = 1.0f;
-        p.ViewClipToLightClip[10] = p.ViewClipToLightClip[15] = 1.0f;
+        p.ViewClipToLightClip.Data()[0] = p.ViewClipToLightClip.Data()[5] = 1.0f;
+        p.ViewClipToLightClip.Data()[10] = p.ViewClipToLightClip.Data()[15] = 1.0f;
         p.FirstPage = kFirstPage + i * kPagesPerProjection;
         p.PagesPerAxis = 4;
         p.LastMip = 2;
     }
     projections[0].LastMip = 0;
-    projections[0].ViewClipToLightClip[13] = 0.5f;
-    projections[2].ViewClipToLightClip[12] = 1.0f;
-    projections[3].ViewClipToLightClip[12] = -1.0f;
+    projections[0].ViewClipToLightClip.Data()[13] = 0.5f;
+    projections[2].ViewClipToLightClip.Data()[12] = 1.0f;
+    projections[3].ViewClipToLightClip.Data()[12] = -1.0f;
     projections[2].FilterRadiusUV = projections[3].FilterRadiusUV = 1.5f / 1024.0f;
-    projections[4].ViewClipToLightClip[12] = 4.0f;
-    projections[5].ViewClipToLightClip[0] = 4.0f;
+    projections[4].ViewClipToLightClip.Data()[12] = 4.0f;
+    projections[5].ViewClipToLightClip.Data()[0] = 4.0f;
     // This light-space X depends on receiver depth. The receiver compute
     // witness supplies analytic helper-lane gradients for mip selection.
-    projections[6].ViewClipToLightClip[8] = 2.0f;
-    projections[6].ViewClipToLightClip[12] = -1.02f;
+    projections[6].ViewClipToLightClip.Data()[8] = 2.0f;
+    projections[6].ViewClipToLightClip.Data()[12] = -1.02f;
     projections[6].NormalBiasClipBounds[0] = 0.04472136f;
     projections[6].NormalBiasClipBounds[1] = projections[6].NormalBiasClipBounds[2] = 0.02f;
     const VirtualShadowMarkParamsGPU params{kWidth, kHeight, kProjections, kWords, kViewportX, kViewportY, {}, {0.0f, 0.0f, 0.0f, 1.0f}};
@@ -251,8 +251,7 @@ TEST_F(VirtualShadowPageMarkTest, MarksSunPageEdgesSpotMipsAndBothPointFaces)
         VirtualShadowLookupHeaderGPU Header{};
         VirtualShadowLookupProjectionGPU Projection{};
     } metadata;
-    std::memcpy(metadata.Projection.RelativeToLightClip, projections[6].ViewClipToLightClip,
-                sizeof(metadata.Projection.RelativeToLightClip));
+    metadata.Projection.RelativeToLightClip = projections[6].ViewClipToLightClip;
     metadata.Projection.FirstPage = projections[6].FirstPage;
     metadata.Projection.PagesPerAxis = 4;
     metadata.Projection.LastMip = 2;
@@ -347,8 +346,8 @@ TEST_F(VirtualShadowPageMarkTest, MarksSunPageEdgesSpotMipsAndBothPointFaces)
     for (uint32_t phase = 0; phase < phases.size(); ++phase)
         for (auto& projection : phases[phase])
             for (uint32_t axis = 0; axis < 4; ++axis)
-                projection.ViewClipToLightClip[12 + axis] +=
-                    (static_cast<float>(phase) * 0.5f / kWidth) * projection.ViewClipToLightClip[axis];
+                projection.ViewClipToLightClip.Data()[12 + axis] +=
+                    (static_cast<float>(phase) * 0.5f / kWidth) * projection.ViewClipToLightClip.Data()[axis];
     const auto runMarker = [&](uint32_t phase, bool clear, BufferHandle target)
     {
         depth[(kViewportY + 256) * kTextureExtent + kViewportX + 255] = phaseDepth[phase];

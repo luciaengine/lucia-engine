@@ -18,6 +18,11 @@
 // camera moves and rejects on disocclusion instead of smearing. The two
 // reflection lobes are NOT accumulated — a reflection moves with the camera and
 // a screen-space history would ghost it; they take the spatial blur only.
+//
+// Diffuse light is gathered for one surface normal. Its taps are kept to texels
+// whose surface faces the same way as the centre: at a crease between a wall and
+// a floor the depth has no step, and the depth test alone lets the light of one
+// surface into the other.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -80,28 +85,54 @@ float GE_BlurDepth(vec2 uv)
 #define GE_BlurDepth(uv) GE_BlurFetch(uViewDepth, uv).r
 #endif
 
-vec2 UvToNdc(vec2 uv)
+// The normal reconstruction reads the depth with the fetch of this kernel, never with a filtered sample.
+#define GE_DDGI_DEPTH_TAP(depthTexture, uv) GE_BlurDepth(uv)
+#include "Includes/ddgi_depth_normal.glsl"
+
+// A linear tap at kBlurRadiusTexels reads the texels at 1 and 2 texels from the centre. This is the outer one.
+// When it faces as the centre does, no crease lies between, so the inner one does too.
+const float kBlurOuterTexels = 2.0;
+// Cosine of the largest angle between 2 normals of one surface, about 25 degrees.
+const float kSameSurfaceCos = 0.9;
+
+// The geometric normal of the surface at the depth texel under `uv`. False where no surface is.
+bool SurfaceNormalAt(vec2 uv, out vec3 normalWS)
 {
-    return vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    ivec2 depthSize = textureSize(uViewDepth, 0);
+    ivec2 depthTexel = clamp(ivec2(floor(uv * vec2(depthSize))), ivec2(0), depthSize - ivec2(1));
+    vec2 depthUv = (vec2(depthTexel) + 0.5) / vec2(depthSize);
+    float rawDepth = GE_BlurDepth(depthUv);
+    normalWS = vec3(0.0);
+    if (rawDepth <= 0.0)
+        return false;
+    vec3 posWS = GE_DDGIWorldPositionAt(depthUv, rawDepth, ge_invProj, ge_invView);
+    normalWS = GE_DDGINormalFromDepth(uViewDepth, depthUv, rawDepth, posWS, ge_invView[3].xyz - posWS,
+                                      ge_invProj, ge_invView);
+    return true;
 }
 
-vec3 WorldPositionAt(vec2 uv, float rawDepth)
+// 1 when the surface at `uv` faces as the centre does, else 0.
+float SameSurfaceWeight(vec3 centreNormal, vec2 uv)
 {
-    vec4 p = ge_invProj * vec4(UvToNdc(uv), rawDepth, 1.0);
-    return (ge_invView * vec4(p.xyz / max(abs(p.w), 1e-7), 1.0)).xyz;
+    vec3 normalWS;
+    return SurfaceNormalAt(uv, normalWS) && dot(centreNormal, normalWS) >= kSameSurfaceCos ? 1.0 : 0.0;
 }
 
 void BlurTaps(sampler2D rough, sampler2D glossy, sampler2D irradiance, vec2 uv, vec2 texel,
               float centreDepth, bool lobes, out vec4 roughOut, out vec4 glossyOut,
               out vec4 irradianceOut)
 {
+    vec3 centreNormal;
+    bool centreSurface = SurfaceNormalAt(uv, centreNormal);
     vec4 rAcc = vec4(0.0);
     vec4 gAcc = vec4(0.0);
     vec4 iAcc = vec4(0.0);
     float wsum = 0.0;
+    float irradianceWsum = 0.0;
     for (int i = 0; i < 9; ++i)
     {
-        vec2 tapUV = uv + (vec2(float(i % 3) - 1.0, float(i / 3) - 1.0) * kBlurRadiusTexels) * texel;
+        vec2 offset = vec2(float(i % 3) - 1.0, float(i / 3) - 1.0);
+        vec2 tapUV = uv + offset * kBlurRadiusTexels * texel;
         float w = DepthWeight(centreDepth, GE_BlurDepth(tapUV));
         if (w <= 0.0)
             continue;
@@ -110,19 +141,15 @@ void BlurTaps(sampler2D rough, sampler2D glossy, sampler2D irradiance, vec2 uv, 
             rAcc += GE_BlurFetch(rough, tapUV) * w;
             gAcc += GE_BlurFetch(glossy, tapUV) * w;
         }
-        iAcc += GE_BlurFetch(irradiance, tapUV) * w;
         wsum += w;
+        float irradianceW = centreSurface && i != 4
+            ? w * SameSurfaceWeight(centreNormal, uv + offset * kBlurOuterTexels * texel) : w;
+        iAcc += GE_BlurFetch(irradiance, tapUV) * irradianceW;
+        irradianceWsum += irradianceW;
     }
-    if (wsum <= 0.0)
-    {
-        roughOut = lobes ? GE_BlurFetch(rough, uv) : vec4(0.0);
-        glossyOut = lobes ? GE_BlurFetch(glossy, uv) : vec4(0.0);
-        irradianceOut = GE_BlurFetch(irradiance, uv);
-        return;
-    }
-    roughOut = rAcc / wsum;
-    glossyOut = gAcc / wsum;
-    irradianceOut = iAcc / wsum;
+    roughOut = !lobes ? vec4(0.0) : wsum > 0.0 ? rAcc / wsum : GE_BlurFetch(rough, uv);
+    glossyOut = !lobes ? vec4(0.0) : wsum > 0.0 ? gAcc / wsum : GE_BlurFetch(glossy, uv);
+    irradianceOut = irradianceWsum > 0.0 ? iAcc / irradianceWsum : GE_BlurFetch(irradiance, uv);
 }
 
 void main()
@@ -166,7 +193,7 @@ void main()
     vec3 accumulated = current;
     if (temporalAlpha > 0.0 && centreDepth > 0.0)
     {
-        vec3 worldWS = WorldPositionAt(uv, centreDepth);
+        vec3 worldWS = GE_DDGIWorldPositionAt(uv, centreDepth, ge_invProj, ge_invView);
         vec4 prevClip = ge_prevViewProj * vec4(worldWS, 1.0);
         if (prevClip.w > 1.0e-6)
         {

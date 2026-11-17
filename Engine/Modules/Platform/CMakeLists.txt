@@ -357,6 +357,15 @@ if(BUILD_TESTING)
         ge_stage_runtime_dependencies(PlatformToolbarMacTests)
         add_test(NAME PlatformToolbarMacTests COMMAND PlatformToolbarMacTests)
         set_tests_properties(PlatformToolbarMacTests PROPERTIES RUN_SERIAL TRUE)
+
+        # Its own process: the test sets the process-wide focus policy before Window::Initialize.
+        add_executable(PlatformWindowFocusPolicyTests Tests/WindowFocusPolicyTests_mac.mm)
+        set_target_properties(PlatformWindowFocusPolicyTests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
+        target_link_libraries(PlatformWindowFocusPolicyTests PRIVATE Engine GTest::gtest GTest::gtest_main "-framework Cocoa")
+        ge_set_output_tests(PlatformWindowFocusPolicyTests)
+        ge_stage_runtime_dependencies(PlatformWindowFocusPolicyTests)
+        add_test(NAME PlatformWindowFocusPolicyTests COMMAND PlatformWindowFocusPolicyTests)
+        set_tests_properties(PlatformWindowFocusPolicyTests PROPERTIES RUN_SERIAL TRUE)
     endif()
 
     if (WIN32)

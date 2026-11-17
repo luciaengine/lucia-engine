@@ -1,14 +1,18 @@
 #include "SceneView/SceneViewGridRenderer.h"
 
+#include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
+#include "Mathematics/Vector3.h"
+#include "Mathematics/Vector4.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/ReverseZ.h"
+#include "Types/Color.h"
 
-#include <cstring>
+#include <cstddef>
 #include <vector>
 
 namespace GameEngine {
@@ -21,9 +25,9 @@ using namespace Rendering;
 
 struct GridPC
 {
-    float invVP[16];
-    float cameraPos[4];
-    float gridColor[4]; // rgb = non-axis line color, a unused
+    Mathematics::Matrix4x4 invVP;
+    Mathematics::Vector4 cameraPos;
+    ColorLinear gridColor; // rgb = non-axis line color, a unused
     float opacity;
     float fadeStart;
     float fadeEnd;
@@ -32,18 +36,20 @@ struct GridPC
 
 struct Grid2DPC
 {
-    float invVP[16];
-    float cameraPos[4]; // unused by 2D shader; kept for layout parity with GridPC
-    float gridColor[4]; // rgb = non-axis line color, a unused
+    Mathematics::Matrix4x4 invVP;
+    Mathematics::Vector4 cameraPos; // unused by 2D shader; kept for layout parity with GridPC
+    ColorLinear gridColor; // rgb = non-axis line color, a unused
     float opacity;
     float camDistance;
     float viewportH;
     float pad;
-    float cells[4]; // xy = cell origin, zw = cell size; z <= 0 = no authored cells
+    Mathematics::Vector4 cells; // xy = cell origin, zw = cell size; z <= 0 = no authored cells
 };
 
 static_assert(sizeof(GridPC) == 112);
+static_assert(offsetof(GridPC, cameraPos) == 64 && offsetof(GridPC, gridColor) == 80 && offsetof(GridPC, opacity) == 96);
 static_assert(sizeof(Grid2DPC) == 128);
+static_assert(offsetof(Grid2DPC, cameraPos) == 64 && offsetof(Grid2DPC, gridColor) == 80 && offsetof(Grid2DPC, cells) == 112);
 
 // ---------------------------------------------------------------------------
 // Shader loading (cached, loaded once per process)
@@ -127,25 +133,19 @@ GraphicsPipelineDesc SceneViewGridRenderer::PipelineDesc(bool is2DMode, const st
 
 // Shared per-frame inputs → push constants. Both PC structs differ only in the
 // last two scalars, so one filler covers the common prefix.
-static void FillGridPCCommon(float invVPOut[16], float cameraPosOut[4], float gridColorOut[4],
+static void FillGridPCCommon(Mathematics::Matrix4x4& invVPOut, Mathematics::Vector4& cameraPosOut, ColorLinear& gridColorOut,
                              float& opacityOut, const Rendering::CameraData& cam,
-                             const float camPos[3], float gridOpacity, uint32_t gridColor)
+                             const Mathematics::Vector3& camPos, float gridOpacity, uint32_t gridColor)
 {
-    Mathematics::Matrix4x4 invVP = Mathematics::Inverse(cam.viewProj);
-    std::memcpy(invVPOut, invVP.Data(), sizeof(float) * 16);
-
-    cameraPosOut[0] = camPos[0];
-    cameraPosOut[1] = camPos[1];
-    cameraPosOut[2] = camPos[2];
-    cameraPosOut[3] = 0.0f;
+    invVPOut = Mathematics::Inverse(cam.viewProj);
+    cameraPosOut = Mathematics::Vector4(camPos.x, camPos.y, camPos.z, 0.0f);
 
     // Unpack ARGB → linear floats. Alpha drives the grid's opacity multiplier
     // so the configured grid color controls visibility directly; the legacy
     // gridOpacity slider stays in the chain as a master multiplier on top.
-    gridColorOut[0] = static_cast<float>((gridColor >> 16) & 0xFFu) / 255.0f;
-    gridColorOut[1] = static_cast<float>((gridColor >>  8) & 0xFFu) / 255.0f;
-    gridColorOut[2] = static_cast<float>((gridColor      ) & 0xFFu) / 255.0f;
-    gridColorOut[3] = 1.0f;
+    gridColorOut = ColorLinear(static_cast<float>((gridColor >> 16) & 0xFFu) / 255.0f,
+                               static_cast<float>((gridColor >>  8) & 0xFFu) / 255.0f,
+                               static_cast<float>((gridColor      ) & 0xFFu) / 255.0f, 1.0f);
     const float gcA = static_cast<float>((gridColor >> 24) & 0xFFu) / 255.0f;
     opacityOut = gridOpacity * gcA;
 }
@@ -174,13 +174,13 @@ PipelineHandle SceneViewGridRenderer::PrepareRG(const RenderGraph::RGPrepareCont
 void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ctx,
                                       Rendering::PipelineHandle pipeline,
                                       const Rendering::CameraData* cam,
-                                      const float camPos[3],
+                                      const Mathematics::Vector3& camPos,
                                       bool is2DMode,
                                       float camDistance,
                                       float viewportH,
                                       float gridOpacity,
                                       uint32_t gridColor,
-                                      const float cells2D[4])
+                                      const Mathematics::Vector4& cells2D)
 {
     if (!cam)
         return;
@@ -207,8 +207,7 @@ void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ct
                          gridOpacity, gridColor);
         pc.camDistance = camDistance;
         pc.viewportH = viewportH;
-        for (int i = 0; i < 4; ++i)
-            pc.cells[i] = cells2D[i];
+        pc.cells = cells2D;
         cl->SetPushConstants(pc);
     }
 

@@ -70,18 +70,16 @@ std::optional<PlayerBenchmarkPose> ParsePose(const nlohmann::json& pose, size_t 
         error = "pose '" + result.Name + "' needs \"position\": [x, y, z] in meters";
         return std::nullopt;
     }
-    double xyz[3] = {};
-    for (size_t axis = 0; axis < 3; ++axis)
+    for (const auto& value : *position)
     {
-        const auto& value = (*position)[axis];
         if (!value.is_number() || !std::isfinite(value.get<double>()))
         {
             error = "pose '" + result.Name + "' position must hold 3 finite numbers";
             return std::nullopt;
         }
-        xyz[axis] = value.get<double>();
     }
-    result.Position = Mathematics::WorldPosition{xyz[0], xyz[1], xyz[2]};
+    result.Position = Mathematics::WorldPosition{(*position)[0].get<double>(), (*position)[1].get<double>(),
+                                                 (*position)[2].get<double>()};
     if (!ReadFiniteNumber(pose, "yawDeg", result.YawDeg, error) ||
         !ReadFiniteNumber(pose, "pitchDeg", result.PitchDeg, error))
         return std::nullopt;

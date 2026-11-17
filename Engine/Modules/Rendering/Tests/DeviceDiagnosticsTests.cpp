@@ -16,6 +16,7 @@
 #include <vector>
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
+#include "Rendering/Core/QueryPool.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
@@ -3326,4 +3327,33 @@ TEST(DeviceDiagnostics, ADepthStencilTextureOwnsADedicatedAllocation)
     EXPECT_EQ(info.dedicatedMemory, VK_TRUE) << "a depth-stencil image was placed in a shared memory block";
 
     dev->DestroyTexture(depth);
+}
+
+// A graph can record a profiled pass before the device's first BeginFrame (a test, or a bake at
+// startup). The query it writes must have had its reset after the pool was created.
+TEST(DeviceDiagnostics, ATimestampBeforeTheFirstFrameWritesAResetQuery)
+{
+    SetEnvHeadless();
+    ScopedEnvVar validation("GE_VK_VALIDATION", "1");
+    ScopedEnvVar validationAssert("GE_VK_VALIDATION_ASSERT", "0");
+    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
+    dd.enableDebugLayer = true;
+    auto dev = DeviceFactory::CreateDevice(dd);
+    ASSERT_TRUE(dev);
+    ASSERT_TRUE(dev->Initialize(dd));
+    ASSERT_TRUE(dev->GetValidationStats().Enabled);
+    IQueryPool* queries = dev->GetQueryPool();
+    if (!queries || !queries->IsValid())
+        GTEST_SKIP() << "no query pool on this device";
+    dev->ResetValidationStats();
+
+    auto cl = dev->CreateCommandList(IDevice::QueueType::Graphics);
+    cl->Begin();
+    queries->ResetQueries(cl.get()); // what the graph records first on a frame's first list
+    if (queries->WriteTimestamp(cl.get(), TimestampPoint::SpanBegin) == UINT32_MAX)
+        GTEST_SKIP() << "no timestamp queries on this queue";
+    cl->End();
+    dev->ExecuteCommandLists({cl.get()});
+    dev->WaitForIdle();
+    EXPECT_EQ(dev->GetValidationStats().ErrorCount, 0u) << "the timestamp wrote a query that was never reset";
 }

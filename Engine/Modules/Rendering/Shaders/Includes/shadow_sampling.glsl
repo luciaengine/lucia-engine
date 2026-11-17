@@ -889,9 +889,9 @@ layout(set = 0, binding = 48) uniform usampler2D ge_screenSpaceShadowMask;
 #if defined(GE_SCREEN_SPACE_SHADOWS_ENABLED) || (defined(GE_VIRTUAL_SHADOW_MAPS) && defined(GE_VIRTUAL_SHADOW_SUN_MASK))
 #include "prepass_receiver_mask.glsl"
 #define GE_READS_PREPASS_RECEIVER_MASK 1
-// fwidth(gl_FragCoord.z), set before fragment control flow diverges; WGSL rejects
+// (dFdx, dFdy) of gl_FragCoord.z, set before fragment control flow diverges; WGSL rejects
 // derivatives inside the per-light/receiver branches below.
-float ge_prepassReceiverDepthFootprint = 0.0;
+vec2 ge_prepassReceiverDepthGradient = vec2(0.0);
 #endif
 float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
 {
@@ -906,7 +906,8 @@ float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
         uint packed = texelFetch(ge_screenSpaceShadowMask, pixel, 0).r;
         float visibility = float(GE_PrepassReceiverValue(packed)) / 255.0;
         // Only the depth-prepass receiver owns this value.
-        if (GE_IsPrepassReceiver(packed, gl_FragCoord.z, ge_prepassReceiverDepthFootprint))
+        if (GE_IsPrepassReceiver(packed, gl_FragCoord.z,
+                                 GE_PrepassReceiverFootprint(ge_prepassReceiverDepthGradient)))
         {
             float fade = GE_ShadowDistanceFade(linearDepth, ge_shadowParams.w, ge_shadowFilterParams.y);
             ge_lastContactShadowResult = mix(visibility, 1.0, fade);
@@ -926,8 +927,11 @@ float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
 }
 
 #ifdef GE_VIRTUAL_SHADOW_MAPS
-#include "virtual_shadow_directional.glsl"
+#ifdef GE_VIRTUAL_SHADOW_SUN_MASK
 #include "virtual_shadow_sun_mask.glsl"
+#else
+#include "virtual_shadow_directional.glsl"
+#endif
 #endif
 
 float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDirWS, vec2 screenPos)
@@ -1046,15 +1050,14 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     bool virtualResolved = false;
 #ifdef GE_VIRTUAL_SHADOW_MAPS
     // A resident virtual page replaces the cascade and its blend. The cascade stays the fallback.
-    // The prepass receiver reads the visibility that the sun mask pass resolved for its pixel.
-    int sunMask = -1;
 #ifdef GE_VIRTUAL_SHADOW_SUN_MASK
-    sunMask = GE_ReadVirtualShadowSunMask(screenPos, gl_FragCoord.z, ge_prepassReceiverDepthFootprint, shadow);
-    virtualResolved = sunMask > 0;
+    // The sun mask pass resolved the pages per prepass receiver. A fragment that matches no mask
+    // texel takes the cascade, so the forward shader carries no page filter.
+    virtualResolved = GE_ReadVirtualShadowSunMask(screenPos, gl_FragCoord.z, ge_prepassReceiverDepthGradient, shadow);
+#else
+    virtualResolved = GE_TryVirtualShadowDirectional(posWS, normalWS, dot(normalWS, lightDirWS), screenPos,
+        (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER), shadow);
 #endif
-    if (sunMask < 0)
-        virtualResolved = GE_TryVirtualShadowDirectional(posWS, normalWS, dot(normalWS, lightDirWS), screenPos,
-            (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER), shadow);
 #endif
     if (!virtualResolved)
         shadow = GE_SampleCascade(biasedPos, cascadeIdx, screenPos, receiverDx, receiverDy);
