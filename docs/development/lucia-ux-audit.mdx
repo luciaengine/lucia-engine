@@ -5,6 +5,19 @@ description: The Lucia editor looks and controls that the OpenEngine import remo
 
 The OpenEngine import (#83, snapshot `be9186a74`) replaced Lucia editor files. Pull requests #101 to #174 restored part of that work. This page lists what is still different. The owner decides per row. Only approved rows are restored.
 
+## Decisions
+
+The owner said "do whats best" and, for row 7, "yes min 12 font size".
+
+| Row | Result |
+|---|---|
+| 1 to 6, 10, 11 | Restored. |
+| 7 | Kept as on `main`: no editor font is below 12 px. |
+| 8 | Not restored. `main` rasterizes each editor SVG at the size it is drawn at, and the engine has no setter for an editor raster size. A setting would have nothing to control. |
+| 9 | Correction: the cards are on `main`. The audit looked for the CSS classes, and `main` styles the cards from C++. The cards now take the same look from `inspector.css`. |
+| 12 | Already on `main` when the restore started. |
+| 13, 14 | Separate tasks. |
+
 ## Method
 
 - Lucia reference: commit `e18015eea`. Current reference: `main` at `c7bb7343d` (#174).
