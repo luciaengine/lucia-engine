@@ -139,11 +139,11 @@ struct GPUDrawStreamBuilder::LateShadowListPass
     RenderGraph::RGBuffer Visibility{};
     RenderGraph::RGBuffer Instances{};
     RenderGraph::RGBuffer Meshes{};
-    RGUploadRing::Alloc Table{};
+    RenderGraph::RGUploadRing::Alloc Table{};
     size_t TableBytes = 0;
-    RGUploadRing::Alloc RowRuns{};
+    RenderGraph::RGUploadRing::Alloc RowRuns{};
     size_t RowRunBytes = 0;
-    RGUploadRing::Alloc MeshGroups{};
+    RenderGraph::RGUploadRing::Alloc MeshGroups{};
     size_t MeshGroupBytes = 0;
     size_t VisibilityBytes = 0;
     size_t InstanceBytes = 0;
@@ -259,7 +259,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleLateShadowLists(
     auto* pass = frame.AllocatePassData<LateShadowListPass>();
     const auto upload = [&frame](const void* source, size_t bytes)
     {
-        const RGUploadRing::Alloc allocation = frame.AllocUpload(bytes);
+        const RenderGraph::RGUploadRing::Alloc allocation = frame.AllocUpload(bytes);
         if (allocation.Valid())
             std::memcpy(allocation.Ptr, source, bytes);
         return allocation;
