@@ -1,0 +1,32 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// The world pass read of the sun mask (GE_ReadVirtualShadowSunMask) for a set of fragments.
+#define GE_VIRTUAL_SHADOW_SUN_MASK 1
+#include "Includes/virtual_shadow_sun_mask.glsl"
+
+struct Fragment
+{
+    vec4 Screen;       // xy: gl_FragCoord.xy, z: gl_FragCoord.z
+    vec4 DepthGradient; // xy: (dFdx, dFdy) of gl_FragCoord.z
+};
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer Fragments { Fragment fragments[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Results { vec2 results[]; };
+layout(set = 0, binding = 2, std140) uniform SunMaskReadTestParams
+{
+    uvec4 uCount;
+};
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= uCount.x)
+        return;
+    Fragment fragment = fragments[index];
+    float visibility;
+    bool resolved = GE_ReadVirtualShadowSunMask(fragment.Screen.xy, fragment.Screen.z,
+                                                fragment.DepthGradient.xy, visibility);
+    results[index] = vec2(resolved ? 1.0 : 0.0, visibility);
+}
