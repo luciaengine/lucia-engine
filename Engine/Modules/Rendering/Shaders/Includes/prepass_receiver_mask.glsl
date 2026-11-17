@@ -15,6 +15,12 @@ uint GE_PrepassReceiverValue(uint packed)
     return packed & 255u;
 }
 
+// fwidth(gl_FragCoord.z) from its gradient (dFdx, dFdy).
+float GE_PrepassReceiverFootprint(vec2 depthGradient)
+{
+    return abs(depthGradient.x) + abs(depthGradient.y);
+}
+
 // True when the fragment is the receiver of the texel; other surfaces at the pixel are rejected.
 // footprint = fwidth(gl_FragCoord.z): half of it is allowed, because the resolved MSAA depth is a
 // sample in the pixel and the fragment depth is at its center.

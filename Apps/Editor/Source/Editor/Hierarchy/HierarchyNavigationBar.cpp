@@ -3,6 +3,7 @@
 #include "Editor/EditorTreeTitleIconVars.h"
 #include "UI/ControlLayoutLoader.h"
 #include "UI/Controls/ItemSizeSlider.h"
+#include "UI/EditorSearchBars.h"
 
 #include <cmath>
 #include <memory>
@@ -50,7 +51,15 @@ void HierarchyNavigationBar::AddSizeGlyph(const std::string& tooltip)
     if (!glyph)
         return;
     glyph->SetTooltip(tooltip);
+    m_SizeGlyph = glyph.get();
+    // The glyph is the row's leading icon: the Search Bars setting shows or hides it.
+    EditorSearchBars::RegisterRowIcon(m_SizeGlyph);
     AddChild(std::move(glyph));
+}
+
+HierarchyNavigationBar::~HierarchyNavigationBar()
+{
+    EditorSearchBars::UnregisterRowIcon(m_SizeGlyph);
 }
 
 void HierarchyNavigationBar::SetItemSize(float px)

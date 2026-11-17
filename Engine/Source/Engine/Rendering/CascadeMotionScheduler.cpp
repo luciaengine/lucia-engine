@@ -28,6 +28,15 @@ CascadeUpdateClass ClassifyCascadeDirtyCause(CascadeCacheDirtyCause cause)
     }
 }
 
+CascadeMotionBudget FallbackCascadeMotionBudget(CascadeMotionBudget configured)
+{
+    constexpr uint32_t kFallbackCap = 1;
+    constexpr uint32_t kFallbackMaxAge = 3;
+    if (configured.Cap == 0)
+        return configured;
+    return {std::min(configured.Cap, kFallbackCap), std::max(configured.MaxAge, kFallbackMaxAge)};
+}
+
 CascadeUpdateClass ClassifyCascadePair(CascadeCacheDirtyCause depthCause,
                                        const CascadeCacheDirtyCause* tintCause,
                                        bool contentFitsLockstep)

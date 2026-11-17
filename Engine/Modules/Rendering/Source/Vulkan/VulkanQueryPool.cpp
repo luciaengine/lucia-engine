@@ -53,6 +53,14 @@ namespace Rendering {
             return false;
         }
 
+        // Vulkan requires a reset after creation before a query is first written. BeginFrame
+        // resets only its own slice, and a graph can record before the first BeginFrame.
+        // Devices without host reset reset on the frame's first command list (ResetQueries).
+        if (m_Config.SupportsHostQueryReset) {
+            for (uint32_t frame = 0; frame < m_FramesInFlight; ++frame)
+                ResetTimestampPoolSlice(frame);
+        }
+
 
 
 

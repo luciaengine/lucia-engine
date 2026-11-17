@@ -7,6 +7,7 @@
 #include "Engine/Rendering/Pipeline/Nodes/ViewParamsUploadNode.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
@@ -248,6 +249,17 @@ class GtaoComputeTest : public ::testing::Test
             Run("gtao_prepare", depth->Width, depth->Height, {{"uDepth", depth}}, {{"uGuide", guide}, {"uDepthOut", linear}});
             inputs.emplace_back("uGuide", guide);
         }
+        // The pass reads the raw sweep beside the denoised AO. A test that authors only the denoised
+        // AO gets it as the sweep too: no spread between the two.
+        if (std::string(name) == "gtao_temporal" &&
+            std::none_of(inputs.begin(), inputs.end(), [](const auto& input)
+                         { return std::string(input.first) == "uSweep"; }))
+        {
+            auto it = std::find_if(inputs.begin(), inputs.end(), [](const auto& input)
+                                   { return std::string(input.first) == "uCurrent"; });
+            ASSERT_NE(it, inputs.end());
+            inputs.emplace_back("uSweep", it->second);
+        }
         auto* queries = CaptureTimings ? Device->GetQueryPool() : nullptr;
         if (queries)
             queries->BeginFrame(0);
@@ -365,30 +377,15 @@ class GtaoComputeTest : public ::testing::Test
         }
         return {guide, mips, raw, output, blur};
     }
-    // Read a texture the render graph owns (a pooled pipeline output) rather than
-    // one this fixture allocated.
-    std::vector<float> ReadPooled(TextureHandle texture, uint32_t w, uint32_t h)
+    // Decodes a render-graph readback of an RGBA16F texture.
+    static std::vector<float> DecodeHalfReadback(GameEngine::Rendering::RGReadbackTicket& ticket)
     {
-        const size_t count = size_t(w) * h * 4;
-        auto b = Device->CreateReadbackBuffer(count * 2);
-        Buffers.push_back(b);
-        auto cl = Device->CreateCommandList(IDevice::QueueType::Graphics);
-        cl->Begin();
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::ShaderResource,
-                                                          ResourceState::CopySource, 0, 1));
-        cl->CopyTextureSubresourceToBuffer(texture, 0, 0, b, w, h, 0, 0, 0, 0);
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::CopySource,
-                                                          ResourceState::ShaderResource, 0, 1));
-        Submit(cl.get());
-        std::vector<float> result(count);
-        const void* p = Device->MapBuffer(b);
-        EXPECT_NE(p, nullptr);
-        if (p)
-        {
-            for (size_t k = 0; k < count; ++k)
-                result[k] = glm::unpackHalf1x16(static_cast<const uint16_t*>(p)[k]);
-            Device->UnmapBuffer(b);
-        }
+        GameEngine::Rendering::ViewReadbackResult readback{};
+        EXPECT_TRUE(ticket.TryGet(readback));
+        const auto* halves = reinterpret_cast<const uint16_t*>(readback.pixels.data());
+        std::vector<float> result(readback.pixels.size() / sizeof(uint16_t));
+        for (size_t k = 0; k < result.size(); ++k)
+            result[k] = glm::unpackHalf1x16(halves[k]);
         return result;
     }
     void ExpectClear(const std::vector<float>& ao, float minimum = 0.99f)
@@ -927,7 +924,7 @@ TEST_F(GtaoComputeTest, TemporalReducesStaticSamplingVariance)
         uint32_t write = frame & 1u, read = write ^ 1u;
         auto evaluation = Spatial(depth, GetGtaoQualitySettings(GtaoQuality::Medium), 2.0f, frame & 7u);
         auto spatial = evaluation.Filtered;
-        Run("gtao_temporal", 32, 32, {{"uGuide", evaluation.Guide}, {"uDepth", depth}, {"uCurrent", spatial}, {"uHistory", history[read]}, {"uHistorySurface", surface[read]}},
+        Run("gtao_temporal", 32, 32, {{"uGuide", evaluation.Guide}, {"uSweep", evaluation.RawAO}, {"uDepth", depth}, {"uCurrent", spatial}, {"uHistory", history[read]}, {"uHistorySurface", surface[read]}},
             {{"uAOOut", history[write]}, {"uSurfaceOut", surface[write]}}, GetGtaoQualitySettings(GtaoQuality::Medium), 2.0f, 0, frame > 0 ? 1u : 0u);
         if (frame < 8)
             continue;
@@ -1151,17 +1148,23 @@ TEST_F(GtaoComputeTest, ProductionNodeAppliesHistoryAndDropsItOnTheFirstFrameAft
             const auto out = pipeline.GetOutputRG(view, "AO");
             ASSERT_TRUE(out.IsValid()) << "frame " << index;
             frame.MarkOutput(out);
-            const auto texture = frame.PhysicalTexture(out);
+            // The graph reads the output back, so the graph owns every layout change of its texture.
+            std::vector<float>* readTarget = index == 0                ? &first
+                                           : index == kNoisePeriod     ? &accumulated
+                                           : index == 2 * kNoisePeriod ? &afterCut
+                                                                       : nullptr;
+            std::shared_ptr<GameEngine::Rendering::RGReadbackTicket> ticket;
+            if (readTarget)
+            {
+                ticket = GameEngine::Rendering::RequestTextureReadbackRG(Device.get(), frame, out, "GtaoCut.AO");
+                ASSERT_NE(ticket, nullptr) << "frame " << index;
+            }
             frame.Execute();
+            GameEngine::Rendering::OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
             Device->WaitForIdle();
             depth->States[0] = ResourceState::ShaderResource;
-            ASSERT_TRUE(texture.IsValid()) << "frame " << index;
-            if (index == 0)
-                first = ReadPooled(texture, kSize, kSize);
-            else if (index == kNoisePeriod)
-                accumulated = ReadPooled(texture, kSize, kSize);
-            else if (index == 2 * kNoisePeriod)
-                afterCut = ReadPooled(texture, kSize, kSize);
+            if (readTarget)
+                *readTarget = DecodeHalfReadback(*ticket);
         }
         ASSERT_EQ(first.size(), accumulated.size());
         ASSERT_EQ(first.size(), afterCut.size());

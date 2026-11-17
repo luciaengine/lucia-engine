@@ -1,8 +1,8 @@
 #pragma once
 
 #include "ECS/ECS.h"
+#include "Mathematics/Vector4.h"
 
-#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -33,7 +33,7 @@ struct SpritePreviewRequest
     /// The texture (AtlasRegion) or the .spriteframes asset (SpriteFrame), as an absolute path.
     std::filesystem::path AssetPath;
     /// AtlasRegion: u0, v0, u1, v1 in texture space; a flipped sprite swaps the pair of its axis.
-    std::array<float, 4> Uv{0.0f, 0.0f, 1.0f, 1.0f};
+    Mathematics::Vector4 Uv{0.0f, 0.0f, 1.0f, 1.0f};
     /// SpriteFrame: the animation the entity plays, and its facing.
     std::string AnimationName;
     bool FlipX = false;

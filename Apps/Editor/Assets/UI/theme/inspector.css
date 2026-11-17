@@ -1978,6 +1978,87 @@ button.flare-element-header-menu,
 	background-color: #5A4A12;
 }
 
+/* Terrain inspector: the library's materials as cards under the layer bindings
+   (TerrainRoleMaterials). Stretched, so the grid takes the column's width and
+   its cards have a width to wrap against. */
+.terrain-role-material-grid {
+	flex-direction: row;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 4px;
+	margin-bottom: 6px;
+	align-self: stretch;
+}
+
+/* A material card, and the Add tile beside them. A card may grow to 1.5x its
+   base width to close out a row instead of leaving dead space; past that it
+   stops reading as a card. Overflow is clipped so a long name never paints
+   over the next card. */
+.terrain-role-material-card {
+	flex-direction: column;
+	flex-basis: 84px;
+	flex-grow: 1;
+	flex-shrink: 0;
+	min-width: 84px;
+	max-width: 126px;
+	padding: 6px;
+	border-radius: 6px;
+	border-width: 1px;
+	border-color: var(--ui_color_border_subtle);
+	overflow: hidden;
+	cursor: pointer;
+}
+
+/* The inspector label size. Two reserved lines, so every card keeps one height
+   whatever its name; the name wraps, breaks a word too long for the card, and
+   stays left-aligned so an overrun keeps its beginning. */
+.terrain-role-material-name {
+	font-size: 13px;
+	line-height: 17px;
+	margin-top: 5px;
+	height: 34px;
+	min-height: 34px;
+	max-height: 34px;
+	white-space: normal;
+	overflow-wrap: break-word;
+	text-align: left;
+	overflow: hidden;
+}
+
+/* The material's tint, wide and short so a row of cards reads as a palette.
+   Code sets only its background color. */
+.terrain-role-material-swatch {
+	flex-direction: row;
+	align-items: flex-start;
+	height: 52px;
+	min-height: 52px;
+	border-radius: 4px;
+	border-width: 1px;
+	border-color: #202020;
+}
+
+/* Tells a white tint from a picture that failed to load. It sits on any tint,
+   so it carries its own contrast: a near-opaque dark plate under light text. */
+.terrain-role-material-tint-chip {
+	font-size: 12px;
+	color: #E8E8E8;
+	background-color: rgba(20, 20, 20, 0.72);
+	border-radius: 3px;
+	margin-top: 4px;
+	margin-left: 4px;
+	padding-left: 4px;
+	padding-right: 4px;
+	white-space: nowrap;
+}
+
+.terrain-role-material-add-glyph {
+	height: 52px;
+	min-height: 52px;
+	font-size: 22px;
+	color: #9A9A9A;
+	text-align: center;
+}
+
 /* The row of segmented buttons (Button.css: segmented-button): the Model asset inspector's Model / LOD / Rig
    tabs, the Sky Environment's Star look. */
 .inspector-subtab-row {

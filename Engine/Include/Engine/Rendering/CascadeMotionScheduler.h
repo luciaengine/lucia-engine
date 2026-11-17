@@ -98,6 +98,18 @@ CascadeUpdateClass ClassifyCascadePair(CascadeCacheDirtyCause depthCause,
 bool IsCameraMotionPair(CascadeUpdateClass pairClass, CascadeCacheDirtyCause depthCause,
                         const CascadeCacheDirtyCause* tintCause);
 
+/// The round-robin budget of one view's frame (CascadeMotionScheduler::PlanFrame).
+struct CascadeMotionBudget
+{
+    uint32_t Cap = 0;    // motion-class renders per frame; 0 = no deferral
+    uint32_t MaxAge = 0; // frames a deferred cascade may hold its content
+};
+
+/// The budget of a view whose sun takes its visibility from virtual shadow pages. Its cascades
+/// are only the fallback, so at most 1 motion render per frame and up to 3 frames of drift.
+/// A disabled budget (cap 0) stays disabled.
+CascadeMotionBudget FallbackCascadeMotionBudget(CascadeMotionBudget configured);
+
 class CascadeMotionScheduler
 {
   public:

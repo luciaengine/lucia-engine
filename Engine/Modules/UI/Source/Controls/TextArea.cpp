@@ -1483,7 +1483,7 @@ void TextArea::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
             const size_t localEnd = line == lineB ? static_cast<size_t>(b) - visualLine.ByteStart : lineText.size();
             auto ranges = measured.SelectionRanges(localStart, localEnd);
             if (ranges.empty() && line != lineB)
-                ranges.emplace_back(0.0f, fontSize * 0.5f);
+                ranges.push_back({0.0f, fontSize * 0.5f});
             for (const auto& [left, right] : ranges)
             {
                 const float top = originY + static_cast<float>(line) * m.LineAdvance;

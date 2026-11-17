@@ -352,8 +352,10 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
     // what stops a silently-short layer from being frozen. GE_SHADOW_STATIC_CACHE=0
     // (the always-render kill switch) therefore also disables the motion cap.
     // This scheduling policy is independent of contact-shadow enablement.
-    const uint32_t cap = m_MotionCap;
-    if (cap == 0 || !IsStaticShadowCacheEnabled() || !ctx.ViewNeedsCascades || !IsInitialized())
+    CascadeMotionBudget budget{m_MotionCap, m_MotionMaxAge};
+    if (SunReadsVirtualPages(rs, viewId))
+        budget = FallbackCascadeMotionBudget(budget);
+    if (budget.Cap == 0 || !IsStaticShadowCacheEnabled() || !ctx.ViewNeedsCascades || !IsInitialized())
     {
         m_MotionPlanByView[viewId] = plan; // empty plan: nothing defers
         return;
@@ -440,7 +442,7 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
 
     plan.DeferMask = m_MotionScheduler
                          .PlanFrame(static_cast<uint32_t>(viewId), numCascades, classes, staleness,
-                                    cap, m_MotionMaxAge, source)
+                                    budget.Cap, budget.MaxAge, source)
                          .DeferMask;
     m_MotionPlanByView[viewId] = plan;
 }

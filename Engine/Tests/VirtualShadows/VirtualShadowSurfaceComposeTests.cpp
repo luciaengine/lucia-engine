@@ -111,6 +111,7 @@ TEST_F(VirtualShadowSurfaceCompose, StandardSurfaceReadsTheSunMaskOnlyWithTheKey
     }
     EXPECT_FALSE(FragmentNames(lookup, "GE_ReadVirtualShadowSunMask"));
     EXPECT_TRUE(FragmentNames(sunMask, "GE_ReadVirtualShadowSunMask"));
-    // A fragment that is not the prepass receiver keeps the lookup in the shader.
-    EXPECT_TRUE(FragmentNames(sunMask, "GE_TryVirtualShadowDirectional"));
+    // A fragment that matches no mask texel takes the cascade: the page filter is not in the shader.
+    EXPECT_TRUE(FragmentNames(lookup, "GE_TryVirtualShadowDirectional"));
+    EXPECT_FALSE(FragmentNames(sunMask, "GE_TryVirtualShadowDirectional"));
 }
