@@ -138,6 +138,18 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
     const RenderGraph::RGTexture normalDepth = frame.ImportExternalTexture(
         "Impostor.NormalDepth", textures.Atlas.NormalDepth, Rendering::ResourceState::ShaderResource,
         Rendering::TextureFormat::R16G16B16A16_FLOAT);
+    // The world pass binds its depth target as ge_sceneDepth at declaration, so the depth must
+    // come from the persistent pool, not a transient. Each atlas frame clears it.
+    Rendering::TextureDesc depthDesc{};
+    depthDesc.width = AtlasSide(job.Request.Key);
+    depthDesc.height = depthDesc.width;
+    depthDesc.format = static_cast<uint32_t>(services.GetDepthFormat());
+    depthDesc.usage = static_cast<uint32_t>(Rendering::TextureUsage::DepthStencil) |
+                      static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
+    depthDesc.debugName = "Impostor.Depth";
+    const RenderGraph::RGTexture depth = frame.ImportPersistentTexture("Impostor.Depth", depthDesc);
+    if (!depth.IsValid())
+        return;
 
     if (!job.Cleared)
     {
@@ -156,12 +168,12 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
     // Warm-up: draw frame 0 until no pipeline the bake needs is still building, then bake from 0.
     if (!PartsSettled(services, job))
     {
-        DeclareAtlasFrame(frame, services, job, color, normalDepth, 0u, slot);
+        DeclareAtlasFrame(frame, services, job, color, normalDepth, depth, 0u, slot);
     }
     else
     {
         for (uint32 drawn = 0; drawn < kFramesPerRenderedFrame && job.NextFrame < frameCount; ++drawn)
-            DeclareAtlasFrame(frame, services, job, color, normalDepth, job.NextFrame++, slot);
+            DeclareAtlasFrame(frame, services, job, color, normalDepth, depth, job.NextFrame++, slot);
     }
     frame.MarkOutput(color, RenderGraph::RGImageLayout::ShaderReadOnly);
     frame.MarkOutput(normalDepth, RenderGraph::RGImageLayout::ShaderReadOnly);
@@ -249,12 +261,11 @@ bool ImpostorBaker::PartsSettled(RenderServices& services, BakeJob& job)
 
 void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderServices& services, const BakeJob& job,
                                       RenderGraph::RGTexture color, RenderGraph::RGTexture normalDepth,
-                                      uint32 atlasFrame, FrameSlot& slot)
+                                      RenderGraph::RGTexture depth, uint32 atlasFrame, FrameSlot& slot)
 {
     const ImpostorAtlasKey& key = job.Request.Key;
     const uint32 column = atlasFrame % key.FramesPerSide;
     const uint32 row = atlasFrame / key.FramesPerSide;
-    const uint32 side = AtlasSide(key);
 
     ViewRegistry& views = services.Views();
     const Rendering::CameraData camera =
@@ -263,14 +274,7 @@ void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderService
     views.SetCameraData(m_Camera, camera, Rendering::CameraRanges{radius, 3.0f * radius});
     views.SetViewLetterbox(m_View, ViewLetterbox{true, column * key.FrameSize, row * key.FrameSize, key.FrameSize, key.FrameSize});
 
-    // A depth target per atlas frame, cleared to far: the frames share no depth.
-    Rendering::TextureDesc depthDesc{};
-    depthDesc.width = side;
-    depthDesc.height = side;
-    depthDesc.format = static_cast<uint32_t>(Rendering::TextureFormat::D32_FLOAT);
-    depthDesc.usage = static_cast<uint32_t>(Rendering::TextureUsage::DepthStencil);
-    depthDesc.debugName = "Impostor.Depth";
-    const RenderGraph::RGTexture depth = frame.CreateTexture("Impostor.Depth", depthDesc);
+    // Cleared to far for each atlas frame: the frames share no depth.
     frame.AddPass("Impostor.ClearDepth", Rendering::PassPhase::kEarlySetup,
                   [depth](RenderGraph::RGPassBuilder& p)
                   {

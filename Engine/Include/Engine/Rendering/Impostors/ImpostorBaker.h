@@ -99,7 +99,7 @@ private:
     bool PartsSettled(RenderServices& services, BakeJob& job);
     void DeclareAtlasFrame(Rendering::RenderGraph::RGFrame& frame, RenderServices& services, const BakeJob& job,
                            Rendering::RenderGraph::RGTexture color, Rendering::RenderGraph::RGTexture normalDepth,
-                           uint32 atlasFrame, FrameSlot& slot);
+                           Rendering::RenderGraph::RGTexture depth, uint32 atlasFrame, FrameSlot& slot);
 
     std::mutex m_Mutex;
     ImpostorAtlasCache m_Cache{kDefaultBudgetBytes};
