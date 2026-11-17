@@ -84,6 +84,7 @@ echo done >> $O/status
 INNER
 chmod +x "$OUT/inner.sh"
 podman run --rm --device /dev/dri -e LUCIA_JOBS="$JOBS" \
+  -e DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1 -e DOTNET_CLI_HOME=/tmp/dotnethome \
   -v "$SRC":/lucia/src -v "$VCPKG":/lucia/vcpkg \
   -v "$VCPKG_ARCHIVES":/root/.cache/vcpkg/archives \
   -v "$OUT":/lucia/out "$IMAGE" bash /lucia/out/inner.sh
