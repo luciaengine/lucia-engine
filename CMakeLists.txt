@@ -321,9 +321,9 @@ add_compile_definitions($<$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>,$<CONFIG:RelW
 set(GE_DEBUG_INSTRUMENTATION_VALUE "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>>,1,0>")
 add_compile_definitions(GE_DEBUG_INSTRUMENTATION=${GE_DEBUG_INSTRUMENTATION_VALUE})
 
-# Standard-library precondition checks where GE_DEBUG_INSTRUMENTATION is 1; Release has none. The switches are
-# per translation unit and keep the ABI. libc++ runs every check in Debug and aborts through LibcxxVerboseAbort.cpp;
-# DebugFast runs the fast checks and traps (SIGTRAP on arm64). MSVC and libstdc++ abort in both configurations.
+# Standard-library precondition checks apply in Debug and DebugFast and keep the ABI.
+# libc++ uses its debug checks in Debug and its fast checks in DebugFast.
+# MSVC and libstdc++ abort when a check fails in either configuration.
 set(_ge_std_hardening "$<BOOL:${GE_DEBUG_INSTRUMENTATION_VALUE}>")
 if(MSVC)
     add_compile_definitions(
