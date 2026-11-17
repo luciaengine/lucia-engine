@@ -17,6 +17,12 @@ namespace
 {
 constexpr uint32 kUnassignedSlot = 0xFFFFFFFFu;
 
+bool IsEvicted(const ECS::World& world, ECS::EntityHandle entity)
+{
+    const auto* gpu = world.GetComponent<Components::MeshGPUData>(entity);
+    return !gpu || gpu->clusterEvicted;
+}
+
 // Frees the GPU instance of `entity` and keeps extraction from adding it again.
 void Evict(ECS::World& world, Rendering::GPUScene& scene, ECS::EntityHandle entity)
 {
@@ -44,58 +50,109 @@ void Restore(ECS::World& world, ECS::EntityHandle entity)
 }
 } // namespace
 
-void ClusterLODSplits::Begin(ECS::World& world, ECS::EntityHandle owner, const Components::MeshRenderer& renderer,
-                             const GUID& model, uint32 mesh, uint32 firstPage, std::span<const Rendering::MeshGPUHandle> coarseParts,
-                             std::span<const Mathematics::BoundingBox> bounds, uint64 epoch)
+ClusterLODSplits::Instance& ClusterLODSplits::Begin(ECS::EntityHandle owner, const Components::MeshRenderer& renderer,
+                                                    const GUID& model, uint32 mesh,
+                                                    std::vector<ClusterLODCutDecision> decisions, uint32 unitCount,
+                                                    uint64 epoch)
 {
-    Instance instance{owner, renderer, model, mesh, firstPage, {}, epoch, false};
-    instance.Parts.reserve(coarseParts.size());
-    const auto* ownerBounds = world.GetComponent<Components::LocalBounds>(owner);
-    const auto* ownerTransform = world.GetComponent<Components::WorldTransform>(owner);
-    for (size_t index = 0; index < coarseParts.size(); ++index)
-    {
-        // A part draws only its registry entry: it has no model, so extraction never binds it from one.
-        Components::MeshRenderer partRenderer = renderer;
-        partRenderer.modelAssetGuid = {};
-        partRenderer.meshId = 0;
-        partRenderer.MeshNameId = 0;
-        partRenderer.meshGpuHandleId = coarseParts[index].id;
-        Components::LocalBounds partBounds{};
-        partBounds.Box = bounds[index];
-        partBounds.DynamicObject = ownerBounds ? ownerBounds->DynamicObject : true;
-        partBounds.CastShadows = ownerBounds ? ownerBounds->CastShadows : true;
-        ECS::Entity part = world.Create();
-        part.Set(Components::Transform{});
-        // A part sits at its owner's origin: it starts with the owner's world transform.
-        if (ownerTransform)
-            part.Set(*ownerTransform);
-        part.Set(partRenderer);
-        part.Set(partBounds);
-        part.Set(Components::MeshGPUData{.clusterEvicted = true});
-        part.Set(Components::GeneratedEntity{});
-        part.Set(Components::Parent{owner});
-        instance.Parts.push_back(part.GetHandle());
-    }
-    world.ProcessCommands();
-    m_Instances.push_back(std::move(instance));
+    Instance instance;
+    instance.Owner = owner;
+    instance.Renderer = renderer;
+    instance.Model = model;
+    instance.Mesh = mesh;
+    instance.Decisions = std::move(decisions);
+    instance.Parts.assign(unitCount, ECS::EntityHandle{});
+    instance.PartEpochs.assign(unitCount, epoch);
+    instance.LastWantedEpoch = epoch;
+    return m_Instances.emplace_back(std::move(instance));
 }
 
-bool ClusterLODSplits::TryActivate(ECS::World& world, Rendering::GPUScene& scene, Instance& instance) const
+void ClusterLODSplits::SetPart(ECS::World& world, Instance& instance, uint32 unit, Rendering::MeshGPUHandle geometry,
+                               const Mathematics::BoundingBox& bounds, uint64 epoch) const
 {
-    if (instance.Active)
+    instance.PartEpochs[unit] = epoch;
+    const ECS::EntityHandle existing = instance.Parts[unit];
+    if (world.IsValid(existing))
+    {
+        auto* renderer = world.GetComponentForWrite<Components::MeshRenderer>(existing);
+        if (renderer && renderer->meshGpuHandleId != geometry.id && IsEvicted(world, existing))
+            renderer->meshGpuHandleId = geometry.id;
+        return;
+    }
+    // A part draws only its registry entry: it has no model, so extraction never binds it from one.
+    Components::MeshRenderer partRenderer = instance.Renderer;
+    partRenderer.modelAssetGuid = {};
+    partRenderer.meshId = 0;
+    partRenderer.MeshNameId = 0;
+    partRenderer.meshGpuHandleId = geometry.id;
+    const auto* ownerBounds = world.GetComponent<Components::LocalBounds>(instance.Owner);
+    Components::LocalBounds partBounds{};
+    partBounds.Box = bounds;
+    partBounds.DynamicObject = ownerBounds ? ownerBounds->DynamicObject : true;
+    partBounds.CastShadows = ownerBounds ? ownerBounds->CastShadows : true;
+    ECS::Entity part = world.Create();
+    part.Set(Components::Transform{});
+    // A part sits at its owner's origin: it starts with the owner's world transform.
+    if (const auto* ownerTransform = world.GetComponent<Components::WorldTransform>(instance.Owner))
+        part.Set(*ownerTransform);
+    part.Set(partRenderer);
+    part.Set(partBounds);
+    part.Set(Components::MeshGPUData{.clusterEvicted = true});
+    part.Set(Components::GeneratedEntity{});
+    part.Set(Components::Parent{instance.Owner});
+    world.ProcessCommands();
+    instance.Parts[unit] = part.GetHandle();
+}
+
+bool ClusterLODSplits::IsPartReady(const ECS::World& world, const Instance& instance, uint32 unit,
+                                   Rendering::MeshGPUHandle geometry) const
+{
+    const ECS::EntityHandle part = instance.Parts[unit];
+    if (!world.IsValid(part))
         return false;
     // A part without a resolved world transform would draw at the origin for one frame.
-    for (const ECS::EntityHandle part : instance.Parts)
-    {
-        const auto* transform = world.GetComponent<Components::WorldTransform>(part);
-        if (!transform || transform->Version == 0u)
-            return false;
-    }
-    Evict(world, scene, instance.Owner);
-    for (const ECS::EntityHandle part : instance.Parts)
+    const auto* transform = world.GetComponent<Components::WorldTransform>(part);
+    const auto* renderer = world.GetComponent<Components::MeshRenderer>(part);
+    return transform && transform->Version != 0u && renderer && renderer->meshGpuHandleId == geometry.id;
+}
+
+bool ClusterLODSplits::ShowPart(ECS::World& world, Rendering::GPUScene& scene, Instance& instance, uint32 unit,
+                                bool drawn, uint64 epoch) const
+{
+    const ECS::EntityHandle part = instance.Parts[unit];
+    if (drawn)
+        instance.PartEpochs[unit] = epoch;
+    if (!world.IsValid(part) || IsEvicted(world, part) != drawn)
+        return false;
+    if (drawn)
         Restore(world, part);
-    instance.Active = true;
+    else
+        Evict(world, scene, part);
     return true;
+}
+
+void ClusterLODSplits::Activate(ECS::World& world, Rendering::GPUScene& scene, Instance& instance) const
+{
+    Evict(world, scene, instance.Owner);
+    instance.Active = true;
+}
+
+void ClusterLODSplits::DestroyIdleParts(ECS::World& world, Rendering::GPUScene& scene, Instance& instance, uint64 epoch,
+                                        uint64 grace) const
+{
+    bool destroyed = false;
+    for (uint32 unit = 0; unit < instance.Parts.size(); ++unit)
+    {
+        const ECS::EntityHandle part = instance.Parts[unit];
+        if (!world.IsValid(part) || !IsEvicted(world, part) || epoch - instance.PartEpochs[unit] < grace)
+            continue;
+        Evict(world, scene, part);
+        world.DestroyEntity(part);
+        instance.Parts[unit] = {};
+        destroyed = true;
+    }
+    if (destroyed)
+        world.ProcessCommands();
 }
 
 void ClusterLODSplits::End(ECS::World& world, Rendering::GPUScene* scene, ECS::EntityHandle owner)

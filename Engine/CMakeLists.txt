@@ -434,6 +434,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowWorldPass.cpp
 	Source/Engine/Rendering/VirtualShadows/VirtualShadowSunMask.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODPrepareSystem.cpp
+	Source/Engine/Rendering/ClusterLOD/ClusterLODCut.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODFeature.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODSplits.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeature.cpp

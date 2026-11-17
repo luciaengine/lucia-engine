@@ -7,20 +7,32 @@ Cook a supported static, opaque triangle model into a self-contained coarse
 MeshClusterCook --input Models/rock.glb --output Models/rock.gecluster
 ```
 
-The coarse model has one mesh for each source mesh. Each cluster group is a
-contiguous index range of its coarse mesh, and each group has one fine page that
-replaces that range. The coarse mesh gets an ordinary generated LOD chain for
-distance, so far away one instance is one draw of a few triangles. Each generated
-level adds the coarse error to its own, so it switches at the same screen error
-as an ordinary model's chain.
+The cook builds a cluster DAG for each source mesh, as meshoptimizer's
+`clusterlod.h` example does: it splits the mesh into clusters, groups
+neighboring clusters, locks the borders that groups share, simplifies each group
+to about half, splits the result into clusters again, and repeats until one
+cluster is left or no group reduces. A group's error is at least the error of
+every group under it, and its sphere encloses theirs, so the projected error
+never decreases toward the root. A group that does not reduce stays as it is
+and draws at every coarser level.
 
-The report includes vertex and triangle totals, the number of reduced coarse
-groups, and the estimated maximum coarse error in model units, so a successful
-cook can be checked for useful reduction.
+The coarse model has one mesh for each source mesh. Its LOD0 is the first DAG
+level with at most a quarter of the source triangles. The levels under it are
+fine pages: one page for the clusters of one group that one finer group made.
+The cook stops the DAG at LOD0. Farther away, the coarse mesh gets an ordinary
+generated LOD chain: a whole-mesh simplification needs fewer triangles than the
+coarser DAG levels, whose group borders stay locked. Each generated level adds
+the error of LOD0 to its own, so it switches at the same screen error as an
+ordinary model's chain.
+
+The report includes the DAG groups and units, the LOD0 triangles and the
+streamed triangles, so a successful cook can be checked for useful reduction.
 
 Static node placements are preserved, including multiple nodes that share a
 mesh. The output contains geometry and materials; animation, skinning and morph
-targets are refused.
+targets are refused. Non-manifold sources cook: an edge of more than two
+triangles, a duplicate face, inconsistent winding and a non-manifold vertex are
+locked, so every level keeps them.
 
 Embedded textures are copied into the coarse model. External textures require
 their published asset identities:
@@ -57,19 +69,23 @@ Vulkan and Metal devices with buffer device addresses; on any other device fine
 mode stays disabled. Fine pages work with async compute on.
 Ray tracing reads the coarse model: scene acceleration structures skip fine pages.
 Import the generated `.gecluster` model normally: one entity draws each coarse
-mesh. When a view wants a group's fine page, that instance splits: it gets one
-runtime-only child for each group, which draws the group's coarse range or its
-fine page, and the instance's own coarse mesh stops drawing. The split ends when
-no view wants a fine page for 30 frames. A change to the instance's renderer ends
-the split, and the next frame splits it again from the new state. Fine pages use
-the existing asset IO service; pending or failed reads keep the coarse range.
+mesh and its LOD chain. When a view wants a group under LOD0 to refine, that
+instance splits: runtime-only children draw the units of its cut, and the
+instance's own mesh stops drawing. The cut comes from the top of the DAG down: a
+unit draws when its group's projected error is over the pixel budget and the
+error of the group that made it is not. A group refines only when every unit it
+needs can draw, and coarsens only when the units it made can draw, so a pending
+or failed read keeps the coarser units. Each cut is crack-free. The split ends
+when no view wants a streamed unit for 30 frames. A change to the instance's
+renderer ends the split, and the next frame splits it again from the new state.
+Fine pages use the existing asset IO service.
 
 The prototype supports one cluster world, static opaque standard-PBR materials,
 and ordinary raster views. It checks every active view and freezes selection
 before extraction. Non-cluster preview worlds can share the renderer. Enabling
 GI, reflection capture or a second cluster world returns to coarse mode
 until restart. HLOD runs beside cluster LOD: a member that HLOD replaces with its
-cluster proxy keeps its coarse cover, and its fine page retires. Destroying or clearing the cluster world also selects coarse mode
+cluster proxy ends its split, and its fine pages retire. Destroying or clearing the cluster world also selects coarse mode
 until restart. Skinning, morphing, custom vertex/surface programs, transmission,
 blend materials and sector-tagged instances use coarse geometry. CPU picking
 uses the coarse model. Re-cooking a different cluster incarnation requires a
@@ -85,18 +101,18 @@ renderServices.EnsureFeature<GameEngine::Engine::Renderer::ClusterLODFeature>().
 
 Set `GE_CLUSTER_LOD_TRIANGLE_BUDGET=<triangles>` to set the same cap at startup without code.
 The cap is off by default (0). The pixel error budget stays the floor: a group refines only
-when its projected error is above that budget. Under the cap, groups refine in order of
-largest projected error first, until the next group does not fit. Every instance counts its
-coarse triangles first, so a cap below the coarse total refines nothing. Forced LOD 0 and LOD
-selection off ignore the cap. Any mix of coarse and fine groups is crack-free, because the
-cook locks every border that groups share.
+when its projected error is above that budget. Under the cap, the groups of every split
+instance refine from the root down in order of largest projected error, and a group that does
+not fit stays coarse. Unsplit instances count their LOD0 triangles first. Forced LOD 0 and LOD
+selection off ignore the cap. Every cut is crack-free, because the cook locks every border
+that groups share.
 
 Fine storage owns at most 32 MiB of GPU buffer capacity, including unused and
-retiring ranges. At most four reads remain in flight; each preparation admits at most two fine pages.
-The 64 MiB page-work reservation charges decoded/read/upload arrays; it is not
+retiring ranges. At most eight reads remain in flight; each preparation admits at most eight fine pages.
+The 64 MiB page-work reservation charges decoded/read/upload arrays until the GPU entry draws; it is not
 a process-RSS limit. These bounds exclude the pinned coarse model, driver heaps
 allocator overhead and device-deferred native frees. Monitors expose `ClusterLOD.TrackedPages`, `ClusterLOD.ResidentPages`,
-`ClusterLOD.SplitInstances`, `ClusterLOD.PendingReads`, `ClusterLOD.ChargedPageWorkBytes` and
+`ClusterLOD.SplitInstances`, `ClusterLOD.PartChanges` (parts that started or stopped drawing in the last frame; a stable cut shows 0), `ClusterLOD.PendingReads`, `ClusterLOD.ChargedPageWorkBytes` and
 `ClusterLOD.FineOwnedBufferBytes`. `ClusterLOD.DecodedElementBytes` counts
 live decoded vertex/index elements through their final shared owner, excluding
 container capacity and metadata. These are residency diagnostics, not a claim
