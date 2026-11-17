@@ -343,8 +343,15 @@ TEST_F(DDGIResolveBlurComputeTest, IrradianceDoesNotCrossACreaseWithNoDepthStep)
     }
     const std::vector<float> rgb = RunBlur(current, current, 0.0f, view);
     for (uint32_t texel = 0; texel < kTexels; ++texel)
-        EXPECT_FLOAT_EQ(rgb[texel * 3], texel / kSize < kSize / 2 ? kWallLight : kFloorLight)
-            << "row " << texel / kSize << " column " << texel % kSize;
+    {
+        const float expected = texel / kSize < kSize / 2 ? kWallLight : kFloorLight;
+        const float actual = rgb[texel * 3];
+        // Arithmetic in the blur can round a constant one binary16 step away in the RGBA16F store.
+        const int actualHalf = glm::packHalf1x16(actual);
+        const int expectedHalf = glm::packHalf1x16(expected);
+        EXPECT_LE(std::abs(actualHalf - expectedHalf), 1)
+            << "row " << texel / kSize << " column " << texel % kSize << ": " << actual << " vs " << expected;
+    }
 }
 
 // One plane at a grazing angle is one surface: its texels blur as on a flat view.
