@@ -54,7 +54,8 @@ public:
     // Appends to `strip` a button for every entry of `registry` (with the entry's menu when
     // it has one; an entry with a badge button gets a divider before its button and the badge
     // button with the count after it, so the two read as one group), after the buttons
-    // already there and in registration order. A second call
+    // already there. Regular tools stay before badge groups, preserving registration
+    // order within each group. A second call
     // on the same strip appends only the entries registered since; a call on another strip
     // (a layout reload) starts over.
     void Populate(UIElement& strip, ToolStripPlacement placement, const SceneViewToolStripRegistry& registry,
@@ -91,6 +92,7 @@ private:
     UIElement::WeakRef<UIElement> m_Strip;
     const SceneViewToolStripRegistry* m_Registry = nullptr;
     std::vector<Entry> m_Entries;
+    std::size_t m_ToolInsertionIndex = 0; // regular tools precede every badge-group divider
     std::string m_ActiveEntryId; // the last SetActiveEntry; empty for none
 };
 
