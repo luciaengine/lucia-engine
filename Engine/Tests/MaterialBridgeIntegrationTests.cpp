@@ -3289,7 +3289,7 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedCurrentFallbackSurvivesAborte
     for (uint32_t attempt = 0; attempt < 2; ++attempt)
     {
         frame.Execute();
-        EXPECT_EQ(frame.Stats().PreparationFailures, attempt + 1u);
+        EXPECT_EQ(frame.Stats().PreparationFailures, 1u) << "each Execute attempt counts its own failures";
         EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
         EXPECT_EQ(preparation.RecordCalls, 0u);
         ASSERT_TRUE(preparation.HasSelectedUnit);
@@ -3312,7 +3312,7 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedCurrentFallbackSurvivesAborte
     preparation.AllowRecord = true;
     frame.Execute();
     m_device->WaitForIdle();
-    EXPECT_EQ(frame.Stats().PreparationFailures, 2u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
     EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
     EXPECT_EQ(preparation.PrepareCalls, 3u);
     EXPECT_EQ(preparation.RecordCalls, 1u);
@@ -3399,7 +3399,7 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedPreviousFallbackKeepsItsMetad
     for (uint32_t attempt = 0; attempt < 2; ++attempt)
     {
         frame.Execute();
-        EXPECT_EQ(frame.Stats().PreparationFailures, attempt + 2u);
+        EXPECT_EQ(frame.Stats().PreparationFailures, 1u) << "each Execute attempt counts its own failures";
         EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
         EXPECT_EQ(preparation.RecordCalls, 0u);
         ASSERT_TRUE(preparation.HasSelectedUnit);
