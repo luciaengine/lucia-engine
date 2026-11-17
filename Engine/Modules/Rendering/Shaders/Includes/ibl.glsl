@@ -371,29 +371,12 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
     // sample instead; every pipeline that resolves depth gets probe diffuse.
     if (DDGIVolume.uParams2.w != 0)
     {
-        // Bilateral upsample: four point taps around the fragment, each kept
-        // only if the depth it was resolved at agrees with this fragment's.
-        // A plain bilinear tap of a reduced-resolution term drags irradiance
-        // across silhouettes. Falls back to the nearest tap when every
-        // neighbour disagrees (a one-pixel sliver), which is still this
-        // surface's own value at worst one resolve texel away.
-        const float kUpsampleDepthTolerance = 0.02;
-        vec2 resolveUV = gl_FragCoord.xy * ge_screenSize.zw;
-        vec2 resolveTexel = 1.0 / vec2(textureSize(ge_ddgiResolveIrradiance, 0));
-        vec3 acc = vec3(0.0);
-        float wsum = 0.0;
-        for (int tap = 0; tap < 4; ++tap)
-        {
-            vec2 o = vec2((tap & 1) != 0 ? 0.5 : -0.5, (tap & 2) != 0 ? 0.5 : -0.5);
-            vec4 s = textureLod(ge_ddgiResolveIrradiance, resolveUV + o * resolveTexel, 0.0);
-            float rel = abs(s.a - gl_FragCoord.z) / max(gl_FragCoord.z, 1.0e-6);
-            if (s.a <= 0.0 || rel > kUpsampleDepthTolerance)
-                continue;
-            acc += s.rgb;
-            wsum += 1.0;
-        }
-        irr = wsum > 0.0 ? acc / wsum
-                         : textureLod(ge_ddgiResolveIrradiance, resolveUV, 0.0).rgb;
+        // The resolve pass upsamples the irradiance to render extent with a depth and normal guide
+        // (ddgi_glossy_resolve_upsample.comp), so each fragment reads the centre of its own texel. A filtered
+        // read here mixes the 2 sides of a crease or a silhouette again.
+        vec2 irradianceSize = vec2(textureSize(ge_ddgiResolveIrradiance, 0));
+        vec2 irradianceUV = (floor(gl_FragCoord.xy * ge_screenSize.zw * irradianceSize) + 0.5) / irradianceSize;
+        irr = textureLod(ge_ddgiResolveIrradiance, irradianceUV, 0.0).rgb;
     }
 #endif
     // Add the authored irradiance floor (AmbientLight) to the DIFFUSE budget only — irr stays the

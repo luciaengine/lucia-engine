@@ -111,6 +111,10 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
     if (!LoadKernel("Shaders/ddgi_glossy_resolve_blur.shaderpkg", m_GlossyResolveBlur,
                     "DDGI.GlossyResolveBlur"))
         return false;
+    // The forward pass reads 1 texel of the upsampled target per pixel, so a reduced resolve needs this kernel.
+    if (!LoadKernel("Shaders/ddgi_glossy_resolve_upsample.shaderpkg", m_GlossyResolveUpsample,
+                    "DDGI.GlossyResolveUpsample"))
+        return false;
     if (!m_GlossyResolveDepthSampler.IsValid())
         m_GlossyResolveDepthSampler = m_Device->CreateSampler(
             Rendering::SamplerDesc::PointClamp("DDGI.GlossyResolve.DepthSampler"));
@@ -165,7 +169,12 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
     bool irradianceBlurBFresh = false;
     const RG::RGTexture irradianceBlurB =
         frame.ImportPersistentTexture(irrBlurBPool.c_str(), td, &irradianceBlurBFresh);
-    if (!irradiance.IsValid() || !irradianceBlur.IsValid() || !irradianceBlurB.IsValid())
+    // The normal each irradiance texel was gathered for: the guide of the upsample. Written in full every frame.
+    const std::string gatherNormalPool = "DDGIGlossyResolve.GatherNormal." + std::to_string(viewId);
+    td.debugName = gatherNormalPool.c_str();
+    const RG::RGTexture gatherNormal = frame.ImportPersistentTexture(gatherNormalPool.c_str(), td);
+    if (!irradiance.IsValid() || !irradianceBlur.IsValid() || !irradianceBlurB.IsValid() ||
+        !gatherNormal.IsValid())
         return false;
     const bool evenFrame = (frame.FrameIndex() & 1ull) == 0ull;
     const RG::RGTexture irrHistoryRead = evenFrame ? irradianceBlur : irradianceBlurB;
@@ -303,8 +312,9 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
                 p.Write(glossy, RG::RGTextureWrite::Storage);
             }
             p.Write(irradiance, RG::RGTextureWrite::Storage);
+            p.Write(gatherNormal, RG::RGTextureWrite::Storage);
         },
-        [viewDepth, rough, glossy, irradiance, normalRead, irrHistoryRead, viewParams,
+        [viewDepth, rough, glossy, irradiance, gatherNormal, normalRead, irrHistoryRead, viewParams,
          viewParamsOffset, viewParamsSize, volumeData,
          volumeDataFine, probeState, probeStateFine, irradianceAtlas, depthAtlas,
          irradianceAtlasFine, depthAtlasFine, roughAtlas, glossyAtlas, roughAtlasFine,
@@ -319,10 +329,11 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
             const auto roughTex = ctx.GetTexture(rough);
             const auto glossyTex = ctx.GetTexture(glossy);
             const auto irradianceTex = ctx.GetTexture(irradiance);
+            const auto gatherNormalTex = ctx.GetTexture(gatherNormal);
             const auto prevNormalTex = ctx.GetTexture(normalRead);
             const auto prevIrradianceTex = ctx.GetTexture(irrHistoryRead);
             if (!depthTex.IsValid() || !roughTex.IsValid() || !glossyTex.IsValid() ||
-                !irradianceTex.IsValid() || !prevNormalTex.IsValid() ||
+                !irradianceTex.IsValid() || !gatherNormalTex.IsValid() || !prevNormalTex.IsValid() ||
                 !prevIrradianceTex.IsValid())
                 return;
 
@@ -364,6 +375,8 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
                                                             glossyTex);
             Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *meta, "uResolveIrradiance",
                                                             irradianceTex);
+            Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *meta, "uResolveNormal",
+                                                            gatherNormalTex);
 
             Rendering::PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(pipelineId);
             if (!pipe.IsValid())
@@ -468,9 +481,93 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
 
     outRough = roughBlur;
     outGlossy = glossyBlur;
-    outIrradiance = irrHistoryWrite;
+    // At full resolve scale each pixel has its own texel, and the forward pass reads it directly.
+    outIrradiance = w == renderWidth && h == renderHeight
+        ? irrHistoryWrite
+        : DeclareGlossyResolveUpsample(frame, viewParams, viewParamsOffset, viewParamsSize, viewDepth,
+                                       irrHistoryWrite, gatherNormal, renderWidth, renderHeight, viewId,
+                                       passName);
     outShadingNormal = normalWrite;
-    return true;
+    return outIrradiance.IsValid();
+}
+
+Rendering::RenderGraph::RGTexture DDGIProbeFeature::DeclareGlossyResolveUpsample(
+    Rendering::RenderGraph::RGFrame& frame, Rendering::BufferHandle viewParams, uint64_t viewParamsOffset,
+    uint64_t viewParamsSize, Rendering::RenderGraph::RGTexture viewDepth,
+    Rendering::RenderGraph::RGTexture irradiance, Rendering::RenderGraph::RGTexture gatherNormal,
+    uint32_t renderWidth, uint32_t renderHeight, uint32_t viewId, const char* passName)
+{
+    // A pool import, not a transient: the world pass binds it at declaration, as the resolve targets.
+    Rendering::TextureDesc td{};
+    td.width = renderWidth;
+    td.height = renderHeight;
+    td.depth = 1;
+    td.mipLevels = 1;
+    td.arrayLayers = 1;
+    td.sampleCount = 1;
+    td.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
+    td.usage = static_cast<uint32_t>(Rendering::TextureUsage::UnorderedAccess |
+                                     Rendering::TextureUsage::ShaderResource);
+    const std::string upsamplePool = "DDGIGlossyResolve.IrradianceUpsample." + std::to_string(viewId);
+    td.debugName = upsamplePool.c_str();
+    const RG::RGTexture upsampled = frame.ImportPersistentTexture(upsamplePool.c_str(), td);
+    if (!upsampled.IsValid())
+        return {};
+
+    const Rendering::ComputePipelineId pipelineId = m_GlossyResolveUpsample.PipelineId;
+    const Rendering::DescriptorSetLayoutDesc set0Layout = m_GlossyResolveUpsample.Set0Layout;
+    const Rendering::ShaderMeta* meta = m_GlossyResolveUpsample.Meta.get();
+    // The kernel reads every texture with texel fetches; the point sampler only completes the descriptors.
+    const Rendering::SamplerHandle pointSampler = m_GlossyResolveDepthSampler;
+    const std::string upsamplePassName = std::string(passName) + "Upsample";
+    frame.AddComputePass(
+        upsamplePassName.c_str(), Rendering::PassPhase::kDefault,
+        [&](RG::RGPassBuilder& p)
+        {
+            p.UsePipeline(pipelineId);
+            p.Read(irradiance, RG::RGTextureRead::Sampled);
+            p.Read(gatherNormal, RG::RGTextureRead::Sampled);
+            p.Read(viewDepth, RG::RGTextureRead::Sampled);
+            p.Write(upsampled, RG::RGTextureWrite::Storage);
+        },
+        [irradiance, gatherNormal, viewDepth, upsampled, viewParams, viewParamsOffset, viewParamsSize,
+         pointSampler, pipelineId, set0Layout, meta, renderWidth, renderHeight](RG::RGContext& ctx)
+        {
+            auto* dev = ctx.GetDevice();
+            auto* cl = ctx.Cmd;
+            if (!dev || !cl || !meta)
+                return;
+            const auto irradianceTex = ctx.GetTexture(irradiance);
+            const auto gatherNormalTex = ctx.GetTexture(gatherNormal);
+            const auto depthTex = ctx.GetTexture(viewDepth);
+            const auto upsampledTex = ctx.GetTexture(upsampled);
+            if (!irradianceTex.IsValid() || !gatherNormalTex.IsValid() || !depthTex.IsValid() ||
+                !upsampledTex.IsValid())
+                return;
+
+            Rendering::DescriptorSetDesc dsDesc{};
+            dsDesc.layout = set0Layout;
+            dsDesc.transient = true;
+            dsDesc.debugName = "DDGI.GlossyResolveUpsample.Set0";
+            auto ds = dev->CreateDescriptorSet(dsDesc);
+            Rendering::NamedDescriptorWriter wd(dev, ds, *meta, 0);
+            wd.AddCombinedImageSampler("uIrradianceIn", irradianceTex, pointSampler);
+            wd.AddCombinedImageSampler("uGatherNormal", gatherNormalTex, pointSampler);
+            wd.AddCombinedImageSampler("uViewDepth", depthTex, pointSampler);
+            wd.AddUniformBuffer("ViewParams", viewParams, viewParamsOffset, viewParamsSize);
+            wd.Flush();
+            Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *meta, "uIrradianceOut", upsampledTex);
+
+            Rendering::PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(pipelineId);
+            if (!pipe.IsValid())
+                return;
+            cl->SetPipeline(pipe);
+            cl->BindDescriptorSet(0, ds, pipe);
+            cl->Dispatch((renderWidth + 7) / 8, (renderHeight + 7) / 8, 1);
+        });
+    // The kernel stores every texel of the target.
+    frame.MarkPersistentTextureInitialized(upsampled);
+    return upsampled;
 }
 
 void DDGIProbeFeature::MarkGlossyResolveNormalWritten(uint32_t viewId, uint64_t frameIndex)

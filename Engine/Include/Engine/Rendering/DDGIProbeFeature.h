@@ -374,7 +374,8 @@ class DDGIProbeFeature final : public IRenderFeature
         // EnableGlossy-gated (it also resolves diffuse irradiance, the only DDGI
         // diffuse path when the forward shader carries no inline gather), so this
         // read follows the pass rather than the specular toggle.
-        return m_GlossyResolve.PipelineId.IsValid() && m_GlossyResolveBlur.PipelineId.IsValid();
+        return m_GlossyResolve.PipelineId.IsValid() && m_GlossyResolveBlur.PipelineId.IsValid() &&
+               m_GlossyResolveUpsample.PipelineId.IsValid();
     }
 
     // Whether the resolve's rough/glossy targets carry reflection lobes this
@@ -424,6 +425,14 @@ class DDGIProbeFeature final : public IRenderFeature
   private:
     // Both cascade UBOs share the layout owned by this feature.
     static size_t GetVolumeDataSize();
+
+    // Declares the pass that upsamples the blurred resolve irradiance to render extent (DDGIGlossyResolve.cpp).
+    // Returns the upsampled target, or an invalid handle when the pool cannot provide it.
+    Rendering::RenderGraph::RGTexture DeclareGlossyResolveUpsample(
+        Rendering::RenderGraph::RGFrame& frame, Rendering::BufferHandle viewParams, uint64_t viewParamsOffset,
+        uint64_t viewParamsSize, Rendering::RenderGraph::RGTexture viewDepth,
+        Rendering::RenderGraph::RGTexture irradiance, Rendering::RenderGraph::RGTexture gatherNormal,
+        uint32_t renderWidth, uint32_t renderHeight, uint32_t viewId, const char* passName);
 
     struct KernelPipeline
     {
@@ -974,6 +983,8 @@ class DDGIProbeFeature final : public IRenderFeature
     // resolution before the forward pass magnifies them.
     KernelPipeline m_GlossyResolve;
     KernelPipeline m_GlossyResolveBlur;
+    // Upsamples the blurred irradiance to render extent with a depth and gather-normal guide.
+    KernelPipeline m_GlossyResolveUpsample;
     Rendering::SamplerHandle m_GlossyResolveDepthSampler{};
     // Last frame each view's world pass wrote the resolve's shading-normal
     // history (MarkGlossyResolveNormalWritten). The kernel trusts the

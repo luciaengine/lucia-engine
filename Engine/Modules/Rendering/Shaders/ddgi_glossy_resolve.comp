@@ -48,6 +48,9 @@ layout(set = 0, binding = 4) uniform sampler2D uPrevNormal;
 // read here — the raw reverse-Z depth that frame's resolve ran at, which is
 // the reprojection's "same surface" test.
 layout(set = 0, binding = 5) uniform sampler2D uPrevIrradiance;
+// The world normal that each irradiance texel was gathered for (xyz), 0 where no surface is. The upsample to render
+// extent (ddgi_glossy_resolve_upsample.comp) keeps a texel only for pixels that face the same way.
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D uResolveNormal;
 
 layout(push_constant) uniform ResolvePush
 {
@@ -130,12 +133,14 @@ void main()
             imageStore(uResolveGlossy, pixel, vec4(0.0));
         }
         imageStore(uResolveIrradiance, pixel, vec4(0.0));
+        imageStore(uResolveNormal, pixel, vec4(0.0));
         return;
     }
     vec3 posWS = GE_DDGIWorldPositionAt(uv, rawDepth, ge_invProj, ge_invView);
 
     vec3 toCamera = ge_cameraPosWS.xyz - posWS;
     vec3 N = GE_DDGINormalFromDepth(uViewDepth, uv, rawDepth, posWS, toCamera, ge_invProj, ge_invView);
+    const vec3 geometricN = N;
 
     // The shading normal wherever last frame's world pass wrote this surface;
     // a normal-mapped or back-facing (grazing, normal-map tilted past the
@@ -175,27 +180,30 @@ void main()
     }
     // GE_SampleDDGIIrradiance applies its own surface-normal bias, so it takes
     // the raw shading position, not the lifted one the reflection gather wants.
-    // Alpha carries this pixel's raw depth, not coverage: the forward consume
-    // magnifies this target and needs a guide to reject taps that landed on
-    // other geometry, or a silhouette drags its neighbour's irradiance across
-    // the edge (a dark halo under anything that floats).
+    // Alpha carries this pixel's raw depth, not coverage: the upsample to render
+    // extent needs a guide to reject taps that landed on other geometry, or a
+    // silhouette drags its neighbour's irradiance across the edge (a dark halo
+    // under anything that floats).
     // Diagnostics ride the irradiance target: the forward consume already
     // replaces its environment sample with whatever this holds, so a debug
     // value lands on screen with no extra plumbing and no forward-shader cost.
-    // Alpha stays the depth guide either way, so the bilateral upsample keeps
+    // Alpha stays the depth guide either way, so the guided upsample keeps
     // working and the overlay does not bleed across silhouettes.
+    // The diffuse light takes the shading normal only where the depth is one plane. At a crease or a silhouette the
+    // normal history holds an MSAA mix of the 2 surfaces, which faces neither of them.
+    const vec3 irradianceN = GE_DDGIDepthCreaseAt(uViewDepth, uv, rawDepth) ? geometricN : N;
     vec3 irradiance;
     switch (DDGIVolume.uParams3.x)
     {
-        case 1:  irradiance = vec3(GE_DDGIDebugCoverage(posWS, N)); break;
+        case 1:  irradiance = vec3(GE_DDGIDebugCoverage(posWS, irradianceN)); break;
         case 2:  irradiance = GE_DDGIDebugProbeState(posWS); break;
         case 3:  irradiance = GE_DDGIDebugCascadeWeight(posWS); break;
-        case 4:  irradiance = GE_DDGIDebugNearestIrradiance(posWS, N); break;
+        case 4:  irradiance = GE_DDGIDebugNearestIrradiance(posWS, irradianceN); break;
         case 5:  irradiance = GE_DDGIDebugProbeStateFine(posWS); break;
-        case 6:  irradiance = GE_DDGIDebugNearestIrradianceFine(posWS, N); break;
+        case 6:  irradiance = GE_DDGIDebugNearestIrradianceFine(posWS, irradianceN); break;
         case 7:  irradiance = GE_DDGIDebugFineProbeAddress(posWS, 0); break;
         case 8:  irradiance = GE_DDGIDebugFineProbeAddress(posWS, 1); break;
-        default: irradiance = GE_SampleDDGIIrradiance(posWS, N); break;
+        default: irradiance = GE_SampleDDGIIrradiance(posWS, irradianceN); break;
     }
     // Debug colours are display-referred [0,1]; the scene is not. Lift them by
     // the view's exposure so the overlay reads at about one display white
@@ -204,4 +212,5 @@ void main()
     if (DDGIVolume.uParams3.x != 0 && DDGIVolume.uParams3.x != 4 && DDGIVolume.uParams3.x != 6)
         irradiance *= debugInvExposure;
     imageStore(uResolveIrradiance, pixel, vec4(irradiance, rawDepth));
+    imageStore(uResolveNormal, pixel, vec4(irradianceN, 1.0));
 }
