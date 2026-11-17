@@ -408,24 +408,35 @@ bool IsResident(uint32 groupDepth, bool groupTerminal, uint32 residentDepth)
     return groupTerminal || groupDepth >= residentDepth;
 }
 
-// The first DAG level whose uniform cut has at most `ratio` of the source triangles.
-uint32 ChooseResidentDepth(const MeshClusterLODDag& dag, size_t sourceTriangles, float ratio)
+// The DAG level of LOD0: the first level whose uniform cut has at most `ratio` of the source
+// triangles, or a finer one when that level's error is over `maximumError` (mesh units). The
+// error of a level is the largest error of the groups that made its units.
+uint32 ChooseResidentDepth(const MeshClusterLODDag& dag, size_t sourceTriangles, float ratio, float maximumError)
 {
     uint32 maximumDepth = 0;
     for (const MeshClusterLODDagGroup& group : dag.Groups)
         maximumDepth = std::max(maximumDepth, group.Depth);
     Vector<uint64> triangles(maximumDepth + 1, 0);
+    Vector<float> errors(maximumDepth + 1, 0.0f);
     for (const MeshClusterLODDagUnit& unit : dag.Units)
     {
         const MeshClusterLODDagGroup& group = dag.Groups[unit.Group];
+        const float error = unit.Producer == kMeshClusterLODSourceGroup ? 0.0f : dag.Groups[unit.Producer].Error;
         for (uint32 depth = group.Depth; depth <= (group.Terminal ? maximumDepth : group.Depth); ++depth)
+        {
             triangles[depth] += unit.Indices.size() / 3;
+            errors[depth] = std::max(errors[depth], error);
+        }
     }
     const auto limit = static_cast<uint64>(static_cast<double>(sourceTriangles) * ratio);
-    for (uint32 depth = 1; depth <= maximumDepth; ++depth)
+    uint32 resident = 0;
+    for (uint32 depth = 1; depth <= maximumDepth && errors[depth] <= maximumError; ++depth)
+    {
+        resident = depth;
         if (triangles[depth] <= limit)
-            return depth;
-    return maximumDepth;
+            break;
+    }
+    return resident;
 }
 
 // Builds LOD0, the resident cut, of one mesh from its resident units and records each unit's
@@ -937,7 +948,9 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
         placements += static_cast<uint32>(mesh.ExtraPlacements.size()) + 1;
         groupCount += dag.Groups.size();
         unitCount += dag.Units.size();
-        const uint32 residentDepth = ChooseResidentDepth(dag, mesh.Indices.size() / 3, config.ResidentRatio);
+        const float extent = meshopt_simplifyScale(mesh.Vertices.front().Position, mesh.Vertices.size(), sizeof(Vertex));
+        const uint32 residentDepth = ChooseResidentDepth(dag, mesh.Indices.size() / 3, config.ResidentRatio,
+                                                         config.ResidentRelativeError * extent);
         TruncateAtResidentDepth(dag, residentDepth);
         Mesh coarse = BuildResidentVertices(mesh, dag, residentDepth, remap);
         if (!names.Insert(coarse.Name))

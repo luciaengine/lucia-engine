@@ -56,7 +56,9 @@ bool ValidateInput(const Mesh& mesh, const MeshClusterLODConfig& config, String&
         config.MaximumGeometryBytes > kMaximumGeometryBytes ||
         config.MaximumMetadataBytes == 0 || config.MaximumMetadataBytes > kMaximumMetadataBytes ||
         config.MaximumScratchBytes == 0 || config.MaximumScratchBytes > kMaximumScratchBytes ||
-        !std::isfinite(config.ResidentRatio) || config.ResidentRatio <= 0.0f || config.ResidentRatio >= 1.0f)
+        !std::isfinite(config.ResidentRatio) || config.ResidentRatio <= 0.0f || config.ResidentRatio >= 1.0f ||
+        !std::isfinite(config.ResidentRelativeError) || config.ResidentRelativeError < 0.0f ||
+        config.ResidentRelativeError > 1.0f)
     {
         error = "Invalid cluster LOD limits";
         return false;

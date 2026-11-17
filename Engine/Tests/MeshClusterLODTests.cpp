@@ -658,6 +658,35 @@ TEST_F(MeshClusterLODAssetTest, LoadsTheCoarseAssetWithoutTheSourceOrFineStore)
     EXPECT_EQ(coarseOnly.GetMesh(0).Name, m_Source.GetMesh(0).Name);
 }
 
+// LOD0 is never coarser than its error budget: a mesh whose levels simplify badly keeps a finer
+// LOD0, here its source, and needs no streamed unit.
+TEST_F(MeshClusterLODAssetTest, TheErrorBudgetKeepsAFinerResidentCut)
+{
+    Mesh curved = MakeCurvedGrid();
+    curved.MaterialIndex = 0;
+    m_Source.SetMeshesForTest({curved});
+    const auto streamedUnits = [](const MeshClusterLODManifest& manifest)
+    {
+        return std::count_if(manifest.Units.begin(), manifest.Units.end(), [](const auto& unit) { return unit.IsStreamed(); });
+    };
+    const auto bounded = m_Temporary.Path() / "bounded.gecluster";
+    ASSERT_TRUE(Cook(bounded)) << m_Error;
+    ModelAsset model(GUID::Generate(), bounded);
+    ASSERT_TRUE(model.Load());
+    EXPECT_GE(model.GetClusterLODManifest()->Meshes[0].ResidentDepth, 1u);
+    EXPECT_GT(streamedUnits(*model.GetClusterLODManifest()), 0);
+
+    auto config = TestConfig();
+    config.ResidentRelativeError = 0.0f;
+    const auto exact = m_Temporary.Path() / "exact.gecluster";
+    ASSERT_TRUE(CookMeshClusterLODAsset(m_Source, exact, config, m_Error)) << m_Error;
+    ModelAsset source(GUID::Generate(), exact);
+    ASSERT_TRUE(source.Load());
+    EXPECT_EQ(source.GetClusterLODManifest()->Meshes[0].ResidentDepth, 0u);
+    EXPECT_EQ(streamedUnits(*source.GetClusterLODManifest()), 0);
+    EXPECT_EQ(OrientedTriangles(source.GetMesh(0)), OrientedTriangles(curved));
+}
+
 // The cooked DAG stops at the resident level: every uniform cut under it covers the source, and
 // the cut at the resident level is LOD0.
 TEST_F(MeshClusterLODAssetTest, EveryUniformLevelOfTheCookedModelEndsAtLodZero)

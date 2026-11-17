@@ -17,7 +17,10 @@ never decreases toward the root. A group that does not reduce stays as it is
 and draws at every coarser level.
 
 The coarse model has one mesh for each source mesh. Its LOD0 is the first DAG
-level with at most a quarter of the source triangles. The levels under it are
+level with at most a quarter of the source triangles, unless that level's error
+is over 2 % of the mesh extent: then LOD0 is the coarsest level under that
+error. A mesh that simplifies badly (sharp, boxy shapes) keeps its source as
+LOD0 and draws as an ordinary model with a generated chain. The levels under it are
 fine pages: one page for the clusters of one group that one finer group made.
 The cook stops the DAG at LOD0. Farther away, the coarse mesh gets an ordinary
 generated LOD chain: a whole-mesh simplification needs fewer triangles than the
