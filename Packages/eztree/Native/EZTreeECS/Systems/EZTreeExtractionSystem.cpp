@@ -17,6 +17,7 @@
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Engine/Rendering/ViewRegistry.h"
+#include "Platform/Environment.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -341,8 +342,11 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     ++m_UpdateStamp;
     FrameContext frame{world, *service, world.GetWorldId(), WindVolumeSpeedBound(world), deviceRebuilt, {}, {}, {}, {}, {}};
     frame.ImpostorSwitch = Hlod::MakeSwitchConfig(kImpostorSwitchCoverage, kImpostorSwitchHysteresis);
-    if (const Rendering::CameraData* camera =
-            m_RenderServices->Views().FindCameraData(m_RenderServices->Views().GetViewpointCamera()))
+    // GE_IMPOSTORS=0 keeps every tree on its mesh: the reference for comparisons, as GE_HLOD=0 is.
+    static const bool impostorsEnabled = Platform::EnvironmentSwitchEnabled("GE_IMPOSTORS", true);
+    if (const Rendering::CameraData* camera = impostorsEnabled
+            ? m_RenderServices->Views().FindCameraData(m_RenderServices->Views().GetViewpointCamera())
+            : nullptr)
     {
         frame.View.CameraPos[0] = camera->cameraPos.x;
         frame.View.CameraPos[1] = camera->cameraPos.y;

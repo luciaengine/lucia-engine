@@ -25,3 +25,8 @@ The engine bakes the atlas of a variant on the GPU, a few views in each frame, w
 - The card turns to face the camera. In shadow passes the card faces the camera too, not the light, so the shadow of a far tree shows the camera's view of the tree.
 - A tree switches between mesh and card without a fade.
 - The card writes a flat depth, not the depth of the baked tree.
+
+## Debug switches
+
+- `GE_IMPOSTORS=0` keeps every tree on its mesh, for a comparison against the impostors.
+- `GE_IMPOSTOR_DEBUG_TINT=1` tints the impostor cards red, to show which trees draw cards.
