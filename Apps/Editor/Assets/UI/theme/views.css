@@ -1495,6 +1495,17 @@ ListView {
 	display: none;
 }
 
+/* The Classic look (EditorSearchBars puts "search-bar-classic" on the bar): the field fill and a
+   subtle border that lifts on hover. It comes before the active rule, so focus still wins. */
+.panel-search-bar.search-bar-classic {
+	background-color: var(--ui_color_bg_field);
+	border-color: var(--ui_color_border_subtle);
+}
+
+.panel-search-bar.search-bar-classic:hover:not(.active) {
+	border-color: var(--ui_color_dropdown_outline_hover);
+}
+
 .panel-search-bar.active {
 	border: 1px solid var(--ui_color_accent_pressed);
 }
@@ -1513,4 +1524,23 @@ ListView {
 
 .panel-search-bar.search-accent-focus:focus-within {
 	border-color: var(--ui_color_accent);
+}
+
+/* With Show Icon and Search Hint off, an empty search shows no "Search" hint. */
+.search-bar-no-hint .field-placeholder {
+	display: none;
+}
+
+/* The view buttons of the Assets bottom toolbar, one group at the left of the row. */
+.assets-toolbar-view-buttons {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 4px;
+}
+
+/* A search row's leading icon while Show Icon and Search Hint is off. After the group rule
+   above, so it wins over that rule's display. */
+.search-row-icon-hidden {
+	display: none;
 }
