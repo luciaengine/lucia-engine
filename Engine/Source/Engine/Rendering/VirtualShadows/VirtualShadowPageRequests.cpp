@@ -83,7 +83,7 @@ void AddProjection(ProjectionSet& set, const ProjectionInput& input, const Camer
 {
     VirtualShadowMarkProjectionGPU row{};
     const Matrix4x4 transform = input.RelativeToLight * inverseViewProjection;
-    std::memcpy(row.ViewClipToLightClip, transform.Data(), sizeof(row.ViewClipToLightClip));
+    row.ViewClipToLightClip = transform;
     row.FirstPage = set.PageCount;
     row.PagesPerAxis = input.PagesPerAxis;
     row.LastMip = input.LastMip;
@@ -134,7 +134,7 @@ VirtualShadowLookupProjectionGPU MakeLookupRow(const VirtualShadowMarkProjection
     const VirtualShadowFeedbackProjection& address, const CameraData& lightCamera)
 {
     VirtualShadowLookupProjectionGPU row{};
-    std::memcpy(row.RelativeToLightClip, lightCamera.viewProjRel.Data(), sizeof(row.RelativeToLightClip));
+    row.RelativeToLightClip = lightCamera.viewProjRel;
     row.FirstPage = mark.FirstPage;
     row.PagesPerAxis = mark.PagesPerAxis;
     row.LastMip = mark.LastMip;
@@ -394,7 +394,7 @@ void VirtualShadowPageRequests::DeclareForView(Pipeline::ViewDeclare& d, Virtual
             domain.Append(row.PagesPerAxis);
             domain.Append(row.LastMip);
             domain.Append(row.FilterRadiusUV);
-            domain.AppendBytes(row.NormalBiasClipBounds, sizeof(row.NormalBiasClipBounds));
+            domain.AppendBytes(row.NormalBiasClipBounds.v, sizeof(row.NormalBiasClipBounds.v));
         }
         for (ElisionInputBlob* blob : {&inputs, &domain})
         {

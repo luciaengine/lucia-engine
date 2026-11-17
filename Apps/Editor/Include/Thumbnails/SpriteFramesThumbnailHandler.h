@@ -17,6 +17,8 @@ namespace JobSystem { class WorkStealingThreadPool; }
 namespace GameEngine
 {
 
+namespace Mathematics { struct Vector4; }
+
 class AssetManager;
 
 /**
@@ -41,7 +43,7 @@ class SpriteFramesThumbnailHandler : public AssetThumbnailHandler
 {
 public:
     std::string GetOrRequestAtlasRegion(const std::filesystem::path& texturePath,
-        const std::array<float, 4>& uv, std::function<void(const std::string&)> onReady,
+        const Mathematics::Vector4& uv, std::function<void(const std::string&)> onReady,
         const std::array<float, 2>& magentaKey = {-1.0f, 0.0f});
     SpriteFramesThumbnailHandler(JobSystem::WorkStealingThreadPool& jobSystem, AssetManager* assetManager);
     ~SpriteFramesThumbnailHandler() override = default;

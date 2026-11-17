@@ -394,11 +394,11 @@ TEST(FontAtlasShapingTests, MixedDirectionSelectionUsesSeparateVisualRanges)
     const auto measured = atlas.MeasureText(text, 32);
     const auto ranges = measured.SelectionRanges(0, 6);
     ASSERT_EQ(ranges.size(), 2u);
-    EXPECT_LT(ranges[0].second, ranges[1].first);
+    EXPECT_LT(ranges[0].Right, ranges[1].Left);
     const auto all = measured.SelectionRanges(0, text.size());
     ASSERT_EQ(all.size(), 1u);
-    EXPECT_NEAR(all.front().first, 0.0f, 0.01f);
-    EXPECT_NEAR(all.front().second, measured.metrics.width, 0.01f);
+    EXPECT_NEAR(all.front().Left, 0.0f, 0.01f);
+    EXPECT_NEAR(all.front().Right, measured.metrics.width, 0.01f);
 }
 
 TEST(FontAtlasShapingTests, LanguageSwitchInvalidatesLayoutAndRejectsInvalidTag)

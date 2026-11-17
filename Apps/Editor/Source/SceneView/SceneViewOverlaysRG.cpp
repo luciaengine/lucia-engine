@@ -709,25 +709,22 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
             struct GridSnapshot
             {
                 bool Show = false;
-                float CamPos[3] = {0, 0, 0};
+                Vector3 CamPos;
                 bool Is2D = false;
                 float CamDistance = 0.0f;
                 float Opacity = 1.0f;
                 uint32_t Color = 0;
-                float Cells[4] = {0, 0, 0, 0};
+                Mathematics::Vector4 Cells;
             } grid;
             grid.Show = m_ShowGrid;
-            grid.CamPos[0] = static_cast<float>(m_CamPos[0]);
-            grid.CamPos[1] = static_cast<float>(m_CamPos[1]);
-            grid.CamPos[2] = static_cast<float>(m_CamPos[2]);
+            grid.CamPos = Vector3(static_cast<float>(m_CamPos[0]), static_cast<float>(m_CamPos[1]),
+                                  static_cast<float>(m_CamPos[2]));
             grid.Is2D = m_Is2DMode;
             grid.CamDistance = m_CamDistance;
             if (m_Grid2DCells.Valid)
             {
-                grid.Cells[0] = m_Grid2DCells.OriginX;
-                grid.Cells[1] = m_Grid2DCells.OriginY;
-                grid.Cells[2] = m_Grid2DCells.Width;
-                grid.Cells[3] = m_Grid2DCells.Height;
+                grid.Cells = Mathematics::Vector4(m_Grid2DCells.OriginX, m_Grid2DCells.OriginY, m_Grid2DCells.Width,
+                                                  m_Grid2DCells.Height);
             }
             grid.Opacity = m_Is2DMode ? svSettings.GetGridOpacity2D() : svSettings.GetGridOpacity3D();
             grid.Color = m_Is2DMode ? svSettings.GetGridColor2D() : svSettings.GetGridColor3D();

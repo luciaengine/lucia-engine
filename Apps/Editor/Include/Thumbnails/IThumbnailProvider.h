@@ -3,7 +3,6 @@
 #include "AssetCore/GUID.h"
 #include "Thumbnails/FolderBakeReport.h"
 
-#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -13,6 +12,8 @@
 #include <utility>
 
 namespace GameEngine {
+
+namespace Mathematics { struct Vector4; }
 
 enum class AssetType; // defined in AssetCore/AssetTypes.h
 class AssetThumbnailHandler;
@@ -65,7 +66,7 @@ public:
     // a 2D sprite. Returns the cached path when it exists; otherwise answers once through onReady, possibly on a
     // background thread, with the path or empty.
     virtual std::string GetOrRequestAtlasRegion(const std::filesystem::path& /*texturePath*/,
-                                                const std::array<float, 4>& /*uv*/,
+                                                const Mathematics::Vector4& /*uv*/,
                                                 std::function<void(const std::string& path)> onReady)
     {
         if (onReady)

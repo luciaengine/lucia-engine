@@ -3,6 +3,7 @@
 #include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"
 #include "Engine/Rendering/IEnvironmentSource.h" // complete type for the owned m_Source unique_ptr
 #include "Mathematics/Interpolation.h"
+#include "Mathematics/Vector4.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Common/Utils.h"
@@ -245,16 +246,16 @@ uint32_t PrefilterMipCountForSize(uint32_t size)
 // Shaders/Includes/ibl.glsl.
 struct LocalProbeGpu
 {
-    float positionIntensity[4]{};
-    float centerBlend[4]{};
-    float halfExtentsProjection[4]{};
-    float axisX[4]{};
-    float axisY[4]{};
-    float axisZ[4]{};
-    float params[4]{}; // max mip, lower hemisphere darkness
+    Mathematics::Vector4 positionIntensity;
+    Mathematics::Vector4 centerBlend;
+    Mathematics::Vector4 halfExtentsProjection;
+    Mathematics::Vector4 axisX;
+    Mathematics::Vector4 axisY;
+    Mathematics::Vector4 axisZ;
+    Mathematics::Vector4 params; // max mip, lower hemisphere darkness
     uint32_t control[4]{}; // priority, ready, influence shape, reserved
-    float projectionCenter[4]{};
-    float projectionHalfExtents[4]{};
+    Mathematics::Vector4 projectionCenter;
+    Mathematics::Vector4 projectionHalfExtents;
 };
 static_assert(sizeof(LocalProbeGpu) == 160);
 

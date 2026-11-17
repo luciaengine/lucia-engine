@@ -160,7 +160,7 @@ void ReflectionProbeGizmo::Render(GizmoRenderContext& context)
                   if (probe.InfluenceShape == Components::ReflectionProbeInfluenceShape::Box)
                   {
                       ProbeVolume projection = volume;
-                      const float scale[3] = {probe.ProjectionScaleX, probe.ProjectionScaleY, probe.ProjectionScaleZ};
+                      const Vector3 scale(probe.ProjectionScaleX, probe.ProjectionScaleY, probe.ProjectionScaleZ);
                       for (int i = 0; i < 3; ++i)
                       {
                           projection.Center[i] += volume.AxisX[i] * probe.ProjectionOffsetX +
