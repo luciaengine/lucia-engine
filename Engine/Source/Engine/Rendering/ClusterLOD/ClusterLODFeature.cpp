@@ -108,10 +108,60 @@ double ScaleBound(const Components::WorldTransform& transform)
     return std::sqrt(squared);
 }
 
+// The values of one view that every group's demand reads, collected once per preparation.
+struct DemandView
+{
+    RenderLayerMask Layers;
+    uint64 WorldId = 0;
+    // Forced LOD 0, or selection off: every group refines.
+    bool MustRefine = false;
+    // Automatic selection with a viewport: the projected error decides.
+    bool Measured = false;
+    // No usable projection or budget: a group with an error refines.
+    bool Unusable = false;
+    double EyeX = 0.0;
+    double EyeY = 0.0;
+    double EyeZ = 0.0;
+    double ProjectionScaleY = 0.0;
+    uint32 Height = 0;
+    bool Orthographic = false;
+    double Budget = 0.0;
+};
+
+void CollectDemandViews(const RenderServices& services, std::vector<DemandView>& views)
+{
+    views.clear();
+    const bool selectionOff = services.GetMeshGPURegistry().GetLodSelectionMode() == LodSelectionMode::Off;
+    for (const auto& view : services.Views().GetViews())
+    {
+        DemandView sample;
+        sample.Layers = view.ActiveRenderLayerMask();
+        sample.WorldId = view.worldId;
+        const uint32 forced = services.ResolveViewForceLOD(view.id);
+        sample.MustRefine = forced == 0 || (forced == ~0u && selectionOff);
+        sample.Height = services.Views().GetViewWorldViewportHeight(view.id);
+        sample.Measured = !sample.MustRefine && forced == ~0u && sample.Height != 0;
+        if (sample.Measured)
+        {
+            const auto camera = services.Views().ResolveCameraData(view.id);
+            const auto eye = CameraEye(camera);
+            sample.EyeX = eye.X;
+            sample.EyeY = eye.Y;
+            sample.EyeZ = eye.Z;
+            sample.ProjectionScaleY = camera.proj[1][1];
+            sample.Orthographic = std::abs(camera.proj[3][3]) > 0.5f;
+            sample.Budget = ResolveLodBudgetPx(services.GetLODErrorBudgetPx(),
+                                               services.GetLODViewBudgetOverride(view.purpose));
+            sample.Unusable = !std::isfinite(sample.Budget) || sample.Budget <= 0.0 || sample.ProjectionScaleY == 0.0;
+        }
+        views.push_back(sample);
+    }
+}
+
 // The largest projected error of one sphere over the views, divided by the switch threshold (the
 // keep band for a group that is refined). Above 1 wants refinement. Infinity: a view must draw
 // the finest units (forced LOD 0, selection off or an unusable projection).
-double Demand(const RenderServices& services, const Components::MeshRenderer& renderer,
+double Demand(std::span<const DemandView> views, const Components::MeshRenderer& renderer,
               const Components::WorldTransform& transform, const Vector3& center, float radius, float error,
               uint64 worldId, bool wasRefined, float lodBias)
 {
@@ -127,32 +177,24 @@ double Demand(const RenderServices& services, const Components::MeshRenderer& re
         !std::isfinite(offset[0]) || !std::isfinite(offset[1]) || !std::isfinite(offset[2]))
         return 0.0;
     double demand = 0.0;
-    for (const auto& view : services.Views().GetViews())
+    for (const DemandView& view : views)
     {
-        if (!view.ActiveRenderLayerMask().Intersects(renderer.RenderLayers) ||
-            (view.worldId != 0 && view.worldId != worldId))
+        if (!view.Layers.Intersects(renderer.RenderLayers) || (view.WorldId != 0 && view.WorldId != worldId))
             continue;
-        const uint32 forced = services.ResolveViewForceLOD(view.id);
-        if (forced == 0 || (forced == ~0u && services.GetMeshGPURegistry().GetLodSelectionMode() == LodSelectionMode::Off))
+        if (view.MustRefine)
             return kMustRefine;
-        if (forced != ~0u || error <= 0.0f)
+        if (!view.Measured || error <= 0.0f)
             continue;
-        const auto camera = services.Views().ResolveCameraData(view.id);
-        const uint32 height = services.Views().GetViewWorldViewportHeight(view.id);
-        if (height == 0)
-            continue;
-        const auto eye = CameraEye(camera);
-        const double centerDistance = std::hypot((transform.Position.X - eye.X) + offset[0],
-                                                 (transform.Position.Y - eye.Y) + offset[1],
-                                                 (transform.Position.Z - eye.Z) + offset[2]);
-        const bool orthographic = std::abs(camera.proj[3][3]) > 0.5f;
-        const double errorPixels = ClusterGroupErrorPx(error, scale, centerDistance, worldRadius, camera.proj[1][1],
-                                                       height, lodBias, orthographic);
-        const float budget = ResolveLodBudgetPx(services.GetLODErrorBudgetPx(),
-                                               services.GetLODViewBudgetOverride(view.purpose));
-        const double threshold = budget * (wasRefined ? kClusterKeepFineBudgetScale : kClusterRefineBudgetScale);
-        if (!std::isfinite(errorPixels) || !std::isfinite(budget) || camera.proj[1][1] == 0.0f || budget <= 0.0f)
+        if (view.Unusable)
             return kMustRefine;
+        const double centerDistance = std::hypot((transform.Position.X - view.EyeX) + offset[0],
+                                                 (transform.Position.Y - view.EyeY) + offset[1],
+                                                 (transform.Position.Z - view.EyeZ) + offset[2]);
+        const double errorPixels = ClusterGroupErrorPx(error, scale, centerDistance, worldRadius, view.ProjectionScaleY,
+                                                       view.Height, lodBias, view.Orthographic);
+        if (!std::isfinite(errorPixels))
+            return kMustRefine;
+        const double threshold = view.Budget * (wasRefined ? kClusterKeepFineBudgetScale : kClusterRefineBudgetScale);
         demand = std::max(demand, errorPixels / threshold);
     }
     return demand;
@@ -344,6 +386,18 @@ struct ClusterLODFeature::State
     std::vector<ClusterLODCutGroup> CutGroups;
     std::vector<ClusterLODCutDecision> CutDecisions;
     std::vector<ClusterLODCutInstance> CutInstances;
+    // The geometry of every unit of each model in this preparation (UnitGeometries).
+    FastHashMap<const ModelAsset*, std::vector<MeshGPUHandle>> FrameGeometries;
+    // The epoch of the next fine page admission after fine storage refused one.
+    uint64 AdmissionRetryEpoch = 0;
+    // Resident unit registrations a full pool refused, with the epoch of their next try.
+    FastHashMap<MeshGPUKey, uint64> RegistrationRetry;
+    // The views of this preparation, as Demand reads them.
+    std::vector<DemandView> DemandViews;
+    // Scratch of MeasureGroups: 1 per unit of the measured instance that can draw.
+    std::vector<uint8> UnitReady;
+    // The owner world's entity count at the last stray-renderer check.
+    size_t StrayCheckEntities = 0;
     std::shared_ptr<DecodeAccounting> DecodedAccounting = std::make_shared<DecodeAccounting>();
     std::shared_ptr<const void> CutOwner;
     uint64 PreparedEpoch = 0;
@@ -545,9 +599,13 @@ struct ClusterLODFeature::State
     void RestoreWorld(ECS::World& world) { RestoreBindings(world, CollectFineBindings(world)); }
 
     // Unbinds the renderers of the owner world that draw a fine page but are not split parts:
-    // copies of a part keep its fine handle, and only a part's split keeps the page alive.
-    void UnbindStrayFineRenderers(ECS::World& world)
+    // copies of a part keep its fine handle, and only a part's split keeps the page alive. A copy
+    // changes the entity count; other changes are found within one grace period.
+    void UnbindStrayFineRenderers(ECS::World& world, uint64 epoch)
     {
+        if (world.GetEntityCount() == StrayCheckEntities && epoch % kUnusedFrameGrace != 0)
+            return;
+        StrayCheckEntities = world.GetEntityCount();
         auto bindings = CollectFineBindings(world);
         if (bindings.empty())
             return;
@@ -702,12 +760,13 @@ struct ClusterLODFeature::State
     }
 
     // The drawable geometry of a unit, or an invalid handle. No side effects.
-    MeshGPUHandle FindUnitGeometry(const GUID& guid, const ModelAsset& model, uint32 unit) const
+    MeshGPUHandle FindUnitGeometry(const GUID& guid, const ModelAsset& model, const MeshClusterLODManifest& manifest,
+                                   uint32 unit) const
     {
         const auto& registry = Services->GetMeshGPURegistry();
         const MeshGPUKey key = UnitKey(guid, model, unit);
         MeshGPUHandle handle;
-        if (!model.GetClusterLODManifest()->Units[unit].IsStreamed())
+        if (!manifest.Units[unit].IsStreamed())
             handle = registry.FindHandle(key);
         else if (const auto found = Pages.find(key); found != Pages.end() && !found->second->Retiring)
             handle = found->second->FineHandle;
@@ -728,15 +787,24 @@ struct ClusterLODFeature::State
                 page->Wanted = true;
                 page->LastWantedEpoch = epoch;
             }
-            return FindUnitGeometry(guid, model, unit);
+            return FindUnitGeometry(guid, model, *model.GetClusterLODManifest(), unit);
         }
-        const MeshGPUHandle handle = FindUnitGeometry(guid, model, unit);
+        const MeshGPUHandle handle = FindUnitGeometry(guid, model, *model.GetClusterLODManifest(), unit);
         if (handle.IsValid() || registrations >= kMaximumUnitRegistrationsPerFrame)
+            return handle;
+        // A refused registration (a full pool) waits a grace period before it copies the unit again.
+        const MeshGPUKey key = UnitKey(guid, model, unit);
+        if (const auto retry = RegistrationRetry.find(key); retry != RegistrationRetry.end() && epoch < retry->second)
             return handle;
         ++registrations;
         Services->GetMeshGPURegistry().RegisterSubmesh(
-            UnitKey(guid, model, unit), ExtractMeshClusterLODResidentUnit(model.GetMeshes()[record.Mesh], record));
-        return FindUnitGeometry(guid, model, unit);
+            key, ExtractMeshClusterLODResidentUnit(model.GetMeshes()[record.Mesh], record));
+        const MeshGPUHandle registered = FindUnitGeometry(guid, model, *model.GetClusterLODManifest(), unit);
+        if (registered.IsValid())
+            RegistrationRetry.erase(key);
+        else
+            RegistrationRetry[key] = epoch + kUnusedFrameGrace;
+        return registered;
     }
 
     // Makes the part of one unit draw-ready: geometry first, then the part entity.
@@ -745,6 +813,7 @@ struct ClusterLODFeature::State
     {
         const auto& manifest = *model.GetClusterLODManifest();
         const MeshGPUHandle geometry = PrepareUnitGeometry(instance.Model, model, unit, epoch, registrations);
+        UnitGeometries(instance.Model, model)[unit] = geometry;
         if (!geometry.IsValid())
             return;
         const auto& record = manifest.Units[unit];
@@ -752,36 +821,56 @@ struct ClusterLODFeature::State
                        Mathematics::BoundingBox::FromMinMax(record.MinBounds, record.MaxBounds), epoch);
     }
 
-    bool IsUnitReady(const ECS::World& world, const ClusterLODSplits::Instance& instance, const ModelAsset& model,
-                     uint32 unit) const
+    // The drawable geometry of every unit of `model`, found once per preparation and shared by its
+    // instances. PrepareUnit refreshes an entry it registers.
+    std::vector<MeshGPUHandle>& UnitGeometries(const GUID& guid, const ModelAsset& model)
     {
-        const MeshGPUHandle geometry = FindUnitGeometry(instance.Model, model, unit);
-        const uint32 local = unit - model.GetClusterLODManifest()->Meshes[instance.Mesh].FirstUnit;
-        return geometry.IsValid() && Splits.IsPartReady(world, instance, local, geometry);
+        auto [found, inserted] = FrameGeometries.try_emplace(&model);
+        if (inserted)
+        {
+            const auto& manifest = *model.GetClusterLODManifest();
+            found->second.resize(manifest.Units.size());
+            for (uint32 unit = 0; unit < manifest.Units.size(); ++unit)
+                found->second[unit] = FindUnitGeometry(guid, model, manifest, unit);
+        }
+        return found->second;
+    }
+
+    // `firstUnit` is the first unit of the instance's mesh: `unit` minus it is the part index.
+    bool IsUnitReady(const ECS::World& world, ClusterLODSplits::Instance& instance,
+                     std::span<const MeshGPUHandle> geometries, uint32 unit, uint32 firstUnit)
+    {
+        const MeshGPUHandle geometry = geometries[unit];
+        return geometry.IsValid() && Splits.IsPartReady(world, instance, unit - firstUnit, geometry);
     }
 
     // The cut inputs of every group of one active split instance.
-    void MeasureGroups(ECS::World& world, const ClusterLODSplits::Instance& instance, const ModelAsset& model,
+    void MeasureGroups(ECS::World& world, ClusterLODSplits::Instance& instance, const ModelAsset& model,
                        const Components::MeshRenderer& renderer, const Components::WorldTransform& transform)
     {
         const auto& manifest = *model.GetClusterLODManifest();
         const auto& range = manifest.Meshes[instance.Mesh];
         const float bias = LodBias(world, instance.Owner);
+        // Every unit is a group's unit once and a producer's unit at most once: check it once.
+        UnitReady.resize(range.UnitCount);
+        const auto& geometries = UnitGeometries(instance.Model, model);
+        for (uint32 local = 0; local < range.UnitCount; ++local)
+            UnitReady[local] = IsUnitReady(world, instance, geometries, range.FirstUnit + local, range.FirstUnit) ? 1 : 0;
         for (uint32 local = 0; local < range.GroupCount; ++local)
         {
             const auto& group = manifest.Groups[range.FirstGroup + local];
             ClusterLODCutGroup state;
             state.WasRefined = IsClusterLODRefined(instance.Decisions[local]);
             if (!group.Terminal)
-                state.Demand = Demand(*Services, renderer, transform, group.Center, group.Radius, group.Error,
+                state.Demand = Demand(DemandViews, renderer, transform, group.Center, group.Radius, group.Error,
                                       world.GetWorldId(), state.WasRefined, bias);
             state.UnitsReady = true;
             for (uint32 unit = group.FirstUnit; unit < group.FirstUnit + group.UnitCount && state.UnitsReady; ++unit)
-                state.UnitsReady = IsUnitReady(world, instance, model, unit);
+                state.UnitsReady = UnitReady[unit - range.FirstUnit] != 0;
             state.ProducedReady = true;
             for (uint32 index = group.FirstProduced; index < group.FirstProduced + group.ProducedCount && state.ProducedReady;
                  ++index)
-                state.ProducedReady = IsUnitReady(world, instance, model, manifest.ProducedUnits[index]);
+                state.ProducedReady = UnitReady[manifest.ProducedUnits[index] - range.FirstUnit] != 0;
             CutGroups.push_back(state);
         }
     }
@@ -800,7 +889,7 @@ struct ClusterLODFeature::State
         for (uint32 local = 0; local < range.GroupCount; ++local)
         {
             const auto& group = manifest.Groups[range.FirstGroup + local];
-            if (!IsClusterLODRefined(decisions[local]) && groups[local].Demand > 1.0)
+            if (decisions[local] == ClusterLODCutDecision::RefineBlocked)
                 for (uint32 unit = group.FirstUnit; unit < group.FirstUnit + group.UnitCount; ++unit)
                     PrepareUnit(world, instance, model, unit, epoch, registrations);
             else if (decisions[local] == ClusterLODCutDecision::CoarsenBlocked)
@@ -832,7 +921,9 @@ struct ClusterLODFeature::State
             changed |= partChanged;
         }
         instance.Decisions.assign(decisions.begin(), decisions.end());
-        Splits.DestroyIdleParts(world, scene, instance, epoch, kUnusedFrameGrace);
+        // Idle parts wait a grace period anyway: a pass every grace period is enough.
+        if (epoch % kUnusedFrameGrace == 0)
+            Splits.DestroyIdleParts(world, scene, instance, epoch, kUnusedFrameGrace);
         return changed;
     }
 
@@ -851,7 +942,7 @@ struct ClusterLODFeature::State
             if (!IsClusterLODUnitDrawn(manifest, unit, instance.Decisions))
                 continue;
             PrepareUnit(world, instance, model, unit, epoch, registrations);
-            ready = ready && IsUnitReady(world, instance, model, unit);
+            ready = ready && IsUnitReady(world, instance, UnitGeometries(instance.Model, model), unit, range.FirstUnit);
         }
         if (!ready)
             return false;
@@ -905,14 +996,14 @@ struct ClusterLODFeature::State
         const float bias = LodBias(world, entity);
         const uint64 worldId = world.GetWorldId();
         const StreamedEntry whole = WholeMeshEntry(manifest, mesh, model->GetMeshes()[mesh]);
-        if (Demand(*Services, renderer, transform, whole.Center, whole.Radius, whole.Error, worldId, false, bias) <= 1.0)
+        if (Demand(DemandViews, renderer, transform, whole.Center, whole.Radius, whole.Error, worldId, false, bias) <= 1.0)
             return;
         for (uint32 group = range.FirstGroup; group < range.FirstGroup + range.GroupCount; ++group)
         {
             const auto& record = manifest.Groups[group];
             if (record.Terminal || record.Depth + 1 != range.ResidentDepth)
                 continue;
-            if (Demand(*Services, renderer, transform, record.Center, record.Radius, record.Error, worldId, false, bias) > 1.0)
+            if (Demand(DemandViews, renderer, transform, record.Center, record.Radius, record.Error, worldId, false, bias) > 1.0)
             {
                 splits.push_back({entity, renderer, guid, mesh});
                 return;
@@ -950,6 +1041,7 @@ struct ClusterLODFeature::State
     void UpdateSplits(ECS::World& world, uint64 epoch)
     {
         InSplitPass = true;
+        FrameGeometries.clear();
         auto* scene = Services->GetGPUScene();
         auto& instances = Splits.Instances();
         std::vector<ECS::EntityHandle> ended;
@@ -1041,7 +1133,8 @@ struct ClusterLODFeature::State
                 continue;
             }
             Request(*page);
-            if (!page->Decoded || admissions >= kMaximumAdmissionsPerFrame || epoch < page->RetryEpoch)
+            if (!page->Decoded || admissions >= kMaximumAdmissionsPerFrame || epoch < page->RetryEpoch ||
+                epoch < AdmissionRetryEpoch)
                 continue;
             ++admissions;
             page->RetryEpoch = epoch + kUnusedFrameGrace;
@@ -1049,6 +1142,10 @@ struct ClusterLODFeature::State
             page->FineHandle = registry.RegisterSubmesh(page->Fine, *page->Decoded, false, MeshGPUStorageDomain::ClusterFine);
             if (const auto* entry = registry.Find(page->FineHandle); entry && registry.IsEntryDrawable(*entry))
                 ReleaseDecoded(*page);
+            else
+                // Fine storage is full: no page fits until one retires, so admission waits a grace
+                // period instead of copying and hashing a page every frame.
+                AdmissionRetryEpoch = epoch + kUnusedFrameGrace;
         }
     }
 
@@ -1169,6 +1266,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
 
     std::vector<PendingSplit> splits;
     state.UnsplitCoarseTriangles = 0;
+    CollectDemandViews(services, state.DemandViews);
     world.Query<ECS::Read<Components::MeshRenderer>, ECS::Read<Components::WorldTransform>>()
         .Each([&state, &world, &splits](ECS::EntityHandle entity, const Components::MeshRenderer& renderer,
                                         const Components::WorldTransform& transform)
@@ -1180,7 +1278,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
     state.UpdateSplits(world, epoch);
     state.AdmitPages(epoch);
     state.EndIdleSplits(world, epoch);
-    state.UnbindStrayFineRenderers(world);
+    state.UnbindStrayFineRenderers(world, epoch);
     if (state.PolicyBlocked)
         state.RestoreWorld(world);
     state.RetireUnused(epoch);

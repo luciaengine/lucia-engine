@@ -175,6 +175,18 @@ uint64_t NextPoolCapacity(const std::vector<GameEngine::Rendering::MeshGPUStream
     return capacity;
 }
 
+// A fine pool must fit the fine storage cap. A doubled pool that does not fit takes what is left
+// of the cap instead, when that still holds the request, so the whole cap can be used.
+uint64_t FitFineCapacity(uint64_t capacity, uint64_t requestedBytes, uint64_t alignmentBytes, uint64_t ownedBytes,
+                         uint64_t maximumBytes)
+{
+    const uint64_t remaining = ownedBytes < maximumBytes ? maximumBytes - ownedBytes : 0;
+    const uint64_t requestedAligned = AlignUp(requestedBytes, alignmentBytes);
+    if (capacity > remaining && remaining >= requestedAligned)
+        return alignmentBytes == 0 ? remaining : remaining / alignmentBytes * alignmentBytes;
+    return capacity;
+}
+
 void ReclaimPools(std::vector<GameEngine::Rendering::MeshGPUStreamPool>& pools, uint64_t frameIndex)
 {
     for (auto& pool : pools)
@@ -1932,7 +1944,10 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
 
         if (domain == MeshGPUStorageDomain::ClusterFine)
             initialCapacity = std::min<uint64_t>(initialCapacity, 1ull << 20);
-        const uint64_t capacity = NextPoolCapacity(pools, initialCapacity, srcBytes, stride);
+        uint64_t capacity = NextPoolCapacity(pools, initialCapacity, srcBytes, stride);
+        if (domain == MeshGPUStorageDomain::ClusterFine)
+            capacity = FitFineCapacity(capacity, srcBytes, stride, GetStorageDomainCapacityBytes(domain),
+                                       kMaximumClusterFineCapacityBytes);
         if (!CreateBucketStreamPool(pools, capacity, stride, debugName, domain))
         {
             Logger::Log::Warning(
@@ -2261,10 +2276,13 @@ bool MeshGPURegistry::AllocateVertexGroup(std::span<VertexStreamRequest> streams
         // A fine pool needs host-coherent memory, so its first size is small.
         const uint64_t initialCapacity = domain == MeshGPUStorageDomain::ClusterFine
             ? std::min<uint64_t>(stream.initialCapacity, kClusterFineInitialPoolBytes) : stream.initialCapacity;
-        const uint64_t capacity = NextPoolCapacity(*stream.pools,
-                                                   initialCapacity,
-                                                   stream.bytes,
-                                                   stream.stride);
+        uint64_t capacity = NextPoolCapacity(*stream.pools,
+                                             initialCapacity,
+                                             stream.bytes,
+                                             stream.stride);
+        if (domain == MeshGPUStorageDomain::ClusterFine)
+            capacity = FitFineCapacity(capacity, stream.bytes, stream.stride, GetStorageDomainCapacityBytes(domain),
+                                       kMaximumClusterFineCapacityBytes);
         if (!CreateBucketStreamPool(*stream.pools, capacity, stream.stride, stream.debugName, domain))
         {
             Logger::Log::Warning(

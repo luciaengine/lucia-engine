@@ -21,8 +21,11 @@ struct MeshClusterLODConfig
     // Bounds requested element bytes of explicitly sized cooker arrays, not
     // allocator capacity/RSS, source/prior output, strings or meshoptimizer's allocator.
     uint64 MaximumScratchBytes = 512ull * 1024ull * 1024ull;
-    // The resident cut is the first DAG level with at most this fraction of the source triangles.
+    // The resident cut (LOD0) is the coarsest DAG level that has at most ResidentRatio of the
+    // source triangles and an error of at most ResidentRelativeError of the source mesh extent.
+    // A mesh whose levels simplify badly (sharp, boxy shapes) keeps a finer LOD0, or its source.
     float ResidentRatio = 0.25f;
+    float ResidentRelativeError = 0.02f;
 };
 
 /// The group value of a unit made from source triangles.

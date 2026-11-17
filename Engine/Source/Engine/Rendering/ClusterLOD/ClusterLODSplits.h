@@ -36,6 +36,10 @@ class ClusterLODSplits
         // Per unit of the mesh: the part, or a null handle, and the epoch it last drew.
         std::vector<ECS::EntityHandle> Parts;
         std::vector<uint64> PartEpochs;
+        // Per unit: the geometry handle the part was found ready with (0: not known), and 1 while
+        // the part draws. They keep the per-frame checks off the ECS for parts that do not change.
+        std::vector<uint64> ReadyGeometry;
+        std::vector<uint8> Shown;
         uint64 LastWantedEpoch = 0;
         // False until the parts of the first cut can draw; the owner draws until then.
         bool Active = false;
@@ -49,8 +53,7 @@ class ClusterLODSplits
     void SetPart(ECS::World& world, Instance& instance, uint32 unit, Rendering::MeshGPUHandle geometry,
                  const Mathematics::BoundingBox& bounds, uint64 epoch) const;
     /// True when the part of `unit` exists, has a resolved world transform and draws `geometry`.
-    bool IsPartReady(const ECS::World& world, const Instance& instance, uint32 unit,
-                     Rendering::MeshGPUHandle geometry) const;
+    bool IsPartReady(const ECS::World& world, Instance& instance, uint32 unit, Rendering::MeshGPUHandle geometry) const;
     /// Draws or evicts the part of `unit`. Returns true when the part changed.
     bool ShowPart(ECS::World& world, Rendering::GPUScene& scene, Instance& instance, uint32 unit, bool drawn,
                   uint64 epoch) const;
