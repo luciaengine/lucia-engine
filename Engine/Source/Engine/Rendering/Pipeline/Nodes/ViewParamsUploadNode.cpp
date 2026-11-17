@@ -34,6 +34,59 @@ float ViewParamsUploadNode::ComputeTaauMipBias(uint32_t renderWidth, uint32_t ou
     return std::max(bias, -2.0f);
 }
 
+void ViewParamsUploadNode::PackCameraFields(const Rendering::CameraData& camera, float cullingRange, uint32_t width,
+                                            uint32_t height, ViewParamsUBO& ubo)
+{
+    const Matrix4x4 invProjM = Mathematics::Inverse(camera.proj);
+
+    std::memcpy(ubo.ge_invProj, invProjM.Data(), sizeof(ubo.ge_invProj));
+    std::memcpy(ubo.ge_view, camera.view.Data(), sizeof(ubo.ge_view));
+    const ProjectionDepthTerms depthTerms = ProjectionDepthTerms::Of(camera.proj);
+    ubo.ge_depthTerms[0] = depthTerms.M22;
+    ubo.ge_depthTerms[1] = depthTerms.M32;
+    ubo.ge_depthTerms[2] = depthTerms.M23;
+    ubo.ge_depthTerms[3] = depthTerms.M33;
+    // Near is the linearized depth at raw 1; the range is the carried culling range.
+    const float zn = LinearizeReverseZDepthLH_ZO(1.0f, depthTerms);
+    const float logRatio = std::log(cullingRange / std::max(zn, 1e-4f));
+    ubo.ge_viewRanges[0] = zn;
+    ubo.ge_viewRanges[1] = cullingRange;
+    ubo.ge_viewRanges[2] = (logRatio > 1e-6f) ? (1.0f / logRatio) : 0.0f;
+
+    const Matrix4x4 invViewM = Mathematics::Inverse(camera.view);
+    const float* iv = invViewM.Data();
+    ubo.ge_cameraPosWS[0] = iv[12];
+    ubo.ge_cameraPosWS[1] = iv[13];
+    ubo.ge_cameraPosWS[2] = iv[14];
+    ubo.ge_cameraPosWS[3] = 0.0f;
+    // view->world, so consumers reconstruct a world position from a view-space
+    // point without a per-pixel matrix inverse (SSR reprojection).
+    std::memcpy(ubo.ge_invView, invViewM.Data(), sizeof(ubo.ge_invView));
+
+    // The relative frame takes the same arithmetic on the origin-relative view, so in sector
+    // (0,0,0), where viewRel is a copy of view, each field holds its absolute partner's bits.
+    const Matrix4x4 invViewRelM = Mathematics::Inverse(camera.viewRel);
+    std::memcpy(ubo.ge_viewRel, camera.viewRel.Data(), sizeof(ubo.ge_viewRel));
+    std::memcpy(ubo.ge_invViewRel, invViewRelM.Data(), sizeof(ubo.ge_invViewRel));
+    ubo.ge_cameraPosRel[0] = invViewRelM[3][0];
+    ubo.ge_cameraPosRel[1] = invViewRelM[3][1];
+    ubo.ge_cameraPosRel[2] = invViewRelM[3][2];
+    ubo.ge_cameraPosRel[3] = 0.0f;
+    for (int32 axis = 0; axis < 4; ++axis)
+        ubo.ge_renderOrigin[axis] = static_cast<float>(camera.renderOriginSector[axis]);
+
+    // THE view extent — the same numbers buffer-size expressions and
+    // dispatch sizing use.
+    const float sw = std::max(static_cast<float>(width), 1.0f);
+    const float sh = std::max(static_cast<float>(height), 1.0f);
+    ubo.ge_screenSize[0] = sw;
+    ubo.ge_screenSize[1] = sh;
+    ubo.ge_screenSize[2] = 1.0f / sw;
+    ubo.ge_screenSize[3] = 1.0f / sh;
+    std::memcpy(ubo.ge_viewProj, camera.viewProj.Data(), sizeof(ubo.ge_viewProj));
+    std::memcpy(ubo.ge_proj, camera.proj.Data(), sizeof(ubo.ge_proj)); // ge_proj == the projection ge_invProj inverts
+}
+
 bool ViewParamsUploadNode::Initialize(std::string nodeId, std::string nodeJson, std::string* outError)
 {
     m_Id = std::move(nodeId);
@@ -87,61 +140,10 @@ void ViewParamsUploadNode::DeclareForView(ViewDeclare& d)
         jittered = d.Services.Views().ResolveJitteredCameraData(
             d.View.id, d.Frame.FrameIndex(), d.RenderWidth, d.RenderHeight);
     }
-    const Rendering::CameraData* cam = &jittered;
-
-    GameEngine::Rendering::Matrix4x4 projM = cam->proj;
-    GameEngine::Rendering::Matrix4x4 invProjM = GameEngine::Mathematics::Inverse(projM);
-
     ViewParamsUBO ubo{};
-    std::memcpy(ubo.ge_invProj, invProjM.Data(), sizeof(ubo.ge_invProj));
-    std::memcpy(ubo.ge_view, cam->view.Data(), sizeof(ubo.ge_view));
-    const ProjectionDepthTerms depthTerms = ProjectionDepthTerms::Of(cam->proj);
-    ubo.ge_depthTerms[0] = depthTerms.M22;
-    ubo.ge_depthTerms[1] = depthTerms.M32;
-    ubo.ge_depthTerms[2] = depthTerms.M23;
-    ubo.ge_depthTerms[3] = depthTerms.M33;
-    // Near is the linearized depth at raw 1; the range is the carried culling range.
-    const float zn = LinearizeReverseZDepthLH_ZO(1.0f, depthTerms);
-    const float range = d.Services.Views().ResolveCameraRanges(d.View.id).CullingRange;
-    const float logRatio = std::log(range / std::max(zn, 1e-4f));
-    ubo.ge_viewRanges[0] = zn;
-    ubo.ge_viewRanges[1] = range;
-    ubo.ge_viewRanges[2] = (logRatio > 1e-6f) ? (1.0f / logRatio) : 0.0f;
+    PackCameraFields(jittered, d.Services.Views().ResolveCameraRanges(d.View.id).CullingRange, d.RenderWidth,
+                     d.RenderHeight, ubo);
     ubo.ge_viewRanges[3] = d.Services.GetShaderAnimationTimeSeconds();
-
-    GameEngine::Rendering::Matrix4x4 viewM = cam->view;
-    GameEngine::Rendering::Matrix4x4 invViewM = GameEngine::Mathematics::Inverse(viewM);
-    const float* iv = invViewM.Data();
-    ubo.ge_cameraPosWS[0] = iv[12];
-    ubo.ge_cameraPosWS[1] = iv[13];
-    ubo.ge_cameraPosWS[2] = iv[14];
-    ubo.ge_cameraPosWS[3] = 0.0f;
-    // view->world, so consumers reconstruct a world position from a view-space
-    // point without a per-pixel matrix inverse (SSR reprojection).
-    std::memcpy(ubo.ge_invView, invViewM.Data(), sizeof(ubo.ge_invView));
-
-    // The relative frame takes the same arithmetic on the origin-relative view, so in sector
-    // (0,0,0), where viewRel is a copy of view, each field holds its absolute partner's bits.
-    const GameEngine::Rendering::Matrix4x4 invViewRelM = GameEngine::Mathematics::Inverse(cam->viewRel);
-    std::memcpy(ubo.ge_viewRel, cam->viewRel.Data(), sizeof(ubo.ge_viewRel));
-    std::memcpy(ubo.ge_invViewRel, invViewRelM.Data(), sizeof(ubo.ge_invViewRel));
-    ubo.ge_cameraPosRel[0] = invViewRelM[3][0];
-    ubo.ge_cameraPosRel[1] = invViewRelM[3][1];
-    ubo.ge_cameraPosRel[2] = invViewRelM[3][2];
-    ubo.ge_cameraPosRel[3] = 0.0f;
-    for (int32 axis = 0; axis < 4; ++axis)
-        ubo.ge_renderOrigin[axis] = static_cast<float>(cam->renderOriginSector[axis]);
-
-    // THE view extent — the same numbers buffer-size expressions and
-    // dispatch sizing use.
-    const float sw = std::max(static_cast<float>(d.RenderWidth), 1.0f);
-    const float sh = std::max(static_cast<float>(d.RenderHeight), 1.0f);
-    ubo.ge_screenSize[0] = sw;
-    ubo.ge_screenSize[1] = sh;
-    ubo.ge_screenSize[2] = 1.0f / sw;
-    ubo.ge_screenSize[3] = 1.0f / sh;
-    std::memcpy(ubo.ge_viewProj, cam->viewProj.Data(), sizeof(ubo.ge_viewProj));
-    std::memcpy(ubo.ge_proj, cam->proj.Data(), sizeof(ubo.ge_proj)); // ge_proj == the projection ge_invProj inverts
 
     // TAAU texture-sharpness compensation: material sampling adds this bias per
     // sample (adapter_forward's GE_MaterialTexture texture() overload) so texture

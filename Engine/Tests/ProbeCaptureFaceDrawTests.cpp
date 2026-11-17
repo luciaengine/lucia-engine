@@ -1,12 +1,13 @@
-// What a reflection probe capture face draws: the lit forward variant with no light clusters
-// (RenderServices::AddWorldPassForView with the Instanced pass keyword and the view's own LightUBO), into
-// a target format that no other view uses. Part of ReflectionProbeTests.
+// What a reflection probe capture face draws: the Forward+ lit variant with one light cluster that holds
+// the local lights in reach of the face (AddProbeCaptureWorldPass), into a target format that no other
+// view uses. Part of ReflectionProbeTests.
 
 #include "AssetCore/GUID.h"
 #include "Assets/ModelAsset.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
+#include "Engine/Rendering/ProbeCaptureWorldPass.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
@@ -122,15 +123,28 @@ MaterialDocument EmissiveDocument()
     return doc;
 }
 
-ExtractedLight PointLightNearTheSurface()
+// A point light between the camera and the surface, at `z` meters on the Z axis.
+ExtractedLight PointLightAt(double z)
 {
     ExtractedLight light{};
     light.type = Components::LightType::Point;
-    light.positionWS = Mathematics::WorldPosition{0.0, 0.0, 0.2};
+    light.positionWS = Mathematics::WorldPosition{0.0, 0.0, z};
     light.range = 6.0f;
     light.intensity = 40.0f;
     light.SortId = 1;
     return light;
+}
+
+ExtractedLight PointLightNearTheSurface()
+{
+    return PointLightAt(0.2);
+}
+
+// A point light whose reach does not meet the face frustum: the world has a light list but the face
+// gets no local light.
+ExtractedLight PointLightOutOfReach()
+{
+    return PointLightAt(-20.0);
 }
 
 // A directional light that shines along `directionZ` (+1 or -1) of the Z axis.
@@ -279,7 +293,8 @@ SurfaceDraw DrawTheSurface(IDevice* device, const std::vector<ExtractedLight>& l
             RenderServices::WorldPassTargetsRG targets{};
             targets.Color = color;
             targets.Depth = depth;
-            if (!rs.AddWorldPassForView(frame, viewId, targets, MaterialKeyword::Instanced).Pass.IsValid())
+            if (!AddProbeCaptureWorldPass(rs, frame, viewId, targets, GPUDrawStreamBuilder::kCascadeIndexNone)
+                     .Pass.IsValid())
             {
                 ADD_FAILURE() << "the world pass was not declared";
                 break;
@@ -324,7 +339,7 @@ TEST(ProbeCaptureFaceDraw, AnEmissiveSurfaceKeepsItsEmissionInAWorldWithNoDirect
     const auto device = CreateVulkanDeviceFast();
     if (!device)
         GTEST_SKIP() << "No rendering device available";
-    const SurfaceDraw draw = DrawTheSurface(device.get(), {PointLightNearTheSurface()});
+    const SurfaceDraw draw = DrawTheSurface(device.get(), {PointLightOutOfReach()});
     ASSERT_TRUE(draw.Texel.has_value()) << "the surface did not draw in " << kMaxFrames << " frames";
     const ColorLinear texel = *draw.Texel;
     ASSERT_TRUE(IsFinite(texel)) << "the color is not a number: " << texel.r << ", " << texel.g << ", " << texel.b;
@@ -343,7 +358,7 @@ TEST(ProbeCaptureFaceDraw, ADirectionalLightAddsItsLightToTheEmission)
     float brightest = 0.0f;
     for (const float directionZ : {1.0f, -1.0f})
     {
-        const SurfaceDraw draw = DrawTheSurface(device.get(), {PointLightNearTheSurface(), SunAlongZ(directionZ)});
+        const SurfaceDraw draw = DrawTheSurface(device.get(), {PointLightOutOfReach(), SunAlongZ(directionZ)});
         ASSERT_TRUE(draw.Texel.has_value()) << "the surface did not draw in " << kMaxFrames << " frames";
         const ColorLinear texel = *draw.Texel;
         ASSERT_TRUE(IsFinite(texel)) << "the color is not a number: " << texel.r << ", " << texel.g << ", " << texel.b;
@@ -363,11 +378,26 @@ TEST(ProbeCaptureFaceDraw, TheInputDigestOfAProbeMovesWhenASkippedDrawCanDraw)
     const auto device = CreateVulkanDeviceFast();
     if (!device)
         GTEST_SKIP() << "No rendering device available";
-    const SurfaceDraw draw = DrawTheSurface(device.get(), {PointLightNearTheSurface()});
+    const SurfaceDraw draw = DrawTheSurface(device.get(), {PointLightOutOfReach()});
     ASSERT_TRUE(draw.Texel.has_value()) << "the surface did not draw in " << kMaxFrames << " frames";
     ASSERT_GE(draw.FramesSkippedAfterTheFirstEvent, 1)
         << "no draw waited on the pipeline for the target format: this test does not see the second skip";
     ASSERT_NE(draw.ProbeDigestAtTheLastSkippedFrame, 0u) << "the probe has no active content";
     EXPECT_NE(draw.ProbeDigestAtTheFrameThatDrew, draw.ProbeDigestAtTheLastSkippedFrame)
         << "the probe keeps the capture that misses the skipped draw";
+}
+
+// A point light between the camera and the surface lights the capture face: the face cluster holds it.
+TEST(ProbeCaptureFaceDraw, APointLightInReachAddsItsLightToTheEmission)
+{
+    const auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No rendering device available";
+    const SurfaceDraw draw = DrawTheSurface(device.get(), {PointLightNearTheSurface()});
+    ASSERT_TRUE(draw.Texel.has_value()) << "the surface did not draw in " << kMaxFrames << " frames";
+    const ColorLinear texel = *draw.Texel;
+    ASSERT_TRUE(IsFinite(texel)) << "the color is not a number: " << texel.r << ", " << texel.g << ", " << texel.b;
+    EXPECT_GT(texel.r - kEmission.r, 0.1f) << "the point light did not reach the surface";
+    EXPECT_GE(texel.g, kEmission.g - kChannelTolerance);
+    EXPECT_GE(texel.b, kEmission.b - kChannelTolerance);
 }

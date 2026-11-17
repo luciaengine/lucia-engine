@@ -173,9 +173,38 @@ bool ObjectWithinCaptureReach(ECS::World& world, const ProbeSceneObject& object,
     return true;
 }
 
+// True for a directional light, and for a point, spot or area light whose reach meets the capture's
+// far sphere around `position`.
+bool LightWithinCaptureReach(const Components::Light& light, const Components::WorldTransform& transform,
+                             const Mathematics::WorldPosition& position, float farDistance)
+{
+    if (light.Type == Components::LightType::Directional)
+        return true;
+    const float reach = farDistance + LocalLightReach(light.Type, light.AreaShape, light.Range, light.AreaWidth,
+                                                      light.AreaHeight, light.AreaRadius);
+    const Vector3 offset = transform.Position - position;
+    return offset.LengthSquared() <= reach * reach;
+}
+
+// The position and the shape of a point, spot or area light, which a directional light does not have.
+void HashLocalLightShape(const Components::Light& light, const Components::WorldTransform& transform, uint64_t& hash)
+{
+    hash = Hashing::Fnv1a64Value(hash, light.Type);
+    hash = Hashing::Fnv1a64Value(hash, transform.Position);
+    hash = Hashing::Fnv1a64Value(hash, light.Range);
+    hash = Hashing::Fnv1a64Value(hash, light.InnerAngle);
+    hash = Hashing::Fnv1a64Value(hash, light.OuterAngle);
+    hash = Hashing::Fnv1a64Value(hash, light.AreaShape);
+    hash = Hashing::Fnv1a64Value(hash, light.AreaWidth);
+    hash = Hashing::Fnv1a64Value(hash, light.AreaHeight);
+    hash = Hashing::Fnv1a64Value(hash, light.AreaRadius);
+    hash = Hashing::Fnv1a64Value(hash, light.Falloff);
+    hash = Hashing::Fnv1a64Value(hash, light.Decay);
+}
+
 // Membership, transforms and material versions inside the capture's far
-// sphere, plus every directional light (unbounded reach, included even in a
-// scene without a SkyEnvironment). A move across the boundary changes
+// sphere, every directional light (unbounded reach, included even in a
+// scene without a SkyEnvironment) and every local light whose reach meets it. A move across the boundary changes
 // membership in both affected probes. Fills desc.MaterialKeys and
 // desc.SceneEditDigest. featureContent is the world's feature content sum
 // (RenderServices::ComputeFeatureContentDigest): a terrain and an ocean reach
@@ -214,7 +243,7 @@ void ComputeProbeSceneDigest(ECS::World& world, const RenderServices& services,
         .Without<ECS::Disabled>()
         .Each([&](ECS::EntityHandle lightEntity, const Components::Light& light,
                   const Components::WorldTransform& transform) {
-            if (!light.CastsLight || light.Type != Components::LightType::Directional)
+            if (!light.CastsLight || !LightWithinCaptureReach(light, transform, desc.Position, farDistance))
                 return;
             hash = Hashing::Fnv1a64Value(hash, lightEntity.id);
             hash = Hashing::Fnv1a64Value(hash, transform.Basis);
@@ -223,6 +252,8 @@ void ComputeProbeSceneDigest(ECS::World& world, const RenderServices& services,
             hash = Hashing::Fnv1a64Value(hash, light.IntensityUnit);
             hash = Hashing::Fnv1a64Value(hash, light.UseColorTemperature);
             hash = Hashing::Fnv1a64Value(hash, light.ColorTemperature);
+            if (light.Type != Components::LightType::Directional)
+                HashLocalLightShape(light, transform, hash);
         });
     desc.SceneEditDigest = hash != 0 ? hash : 1;
 }

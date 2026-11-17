@@ -545,6 +545,39 @@ TEST(ReflectionProbeSystem, MaterialVersionsAndLightEditsRefreshStaticCaptures)
     EXPECT_NE(digest(1), east) << "Directional-light edits affect both capture ranges";
 }
 
+// A point light lights a capture inside its reach only. An edit of it rebakes the probes that it
+// reaches and no other probe; a light that reaches no probe rebakes none.
+TEST(ReflectionProbeSystem, PointLightEditsRefreshOnlyTheCapturesTheLightReaches)
+{
+    ECS::World world;
+    AddProbe(world, 0);
+    AddProbe(world, 20);
+    const auto lamp = world.CreateEntity();
+    Components::Light light{};
+    light.Type = Components::LightType::Point;
+    light.Range = 2.0f;
+    world.AddComponentImmediate(lamp, light);
+    world.AddComponentImmediate(lamp, MakeTransform(0, 1));
+    RenderServices rs;
+    ReflectionProbeSystem system(&rs);
+    system.Update(world, 0.016f);
+    auto* ibl = rs.GetFeature<ImageBasedLightingFeature>();
+    auto digest = [&](uint32_t index) { return ibl->GetLocalProbeDesc(world.GetWorldId(), index)->SceneEditDigest; };
+    auto west = digest(0), east = digest(1);
+    world.GetComponentForWrite<Components::Light>(lamp)->Intensity = 8.0f;
+    system.Update(world, 0.016f);
+    EXPECT_NE(digest(0), west) << "the lamp is inside the reach of the west capture";
+    EXPECT_EQ(digest(1), east) << "the lamp is outside the reach of the east capture";
+    world.GetComponentForWrite<Components::WorldTransform>(lamp)->Position.X = 10;
+    system.Update(world, 0.016f);
+    west = digest(0);
+    east = digest(1);
+    world.GetComponentForWrite<Components::Light>(lamp)->Intensity = 2.0f;
+    system.Update(world, 0.016f);
+    EXPECT_EQ(digest(0), west) << "a lamp that reaches no capture must not rebake it";
+    EXPECT_EQ(digest(1), east) << "a lamp that reaches no capture must not rebake it";
+}
+
 TEST(ReflectionProbeSystem, ExplicitRebakeRefreshesProbesWithoutChangingOtherWorlds)
 {
     ECS::World first, second;

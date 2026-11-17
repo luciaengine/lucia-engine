@@ -523,6 +523,24 @@ Passes::MsaaResolveViewBuffers PipelineMsaaResolveViewBuffers(const Pipeline::Re
 
 } // namespace
 
+bool RenderServices::BindViewFrameBuffer(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
+                                         StringId name, Rendering::BufferHandle buffer, uint64_t offset,
+                                         uint64_t bytes)
+{
+    auto& vfr = ViewFrameRGFor(frame, viewId);
+    const ViewFrameRG::UploadedBuffer range{buffer, offset, bytes};
+    for (uint32_t i = 0; i < vfr.BoundBufferCount; ++i)
+        if (vfr.BoundBuffers[i].Name == name)
+        {
+            vfr.BoundBuffers[i].Range = range;
+            return true;
+        }
+    if (vfr.BoundBufferCount == kMaxViewFrameBuffers)
+        return false;
+    vfr.BoundBuffers[vfr.BoundBufferCount++] = {name, range};
+    return true;
+}
+
 ResolvedPassResources RenderServices::BuildPassResourcesRG(
     Rendering::RenderGraph::RGFrame& frame,
     Rendering::ViewId viewId,
@@ -629,6 +647,14 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
         add(HashStringId("PointShadowData"), vfr->PointShadowData.Buffer,
             vfr->PointShadowData.Offset, vfr->PointShadowData.Bytes);
     }
+
+    // Buffers bound for a view that runs no render pipeline (BindViewFrameBuffer).
+    if (vfr)
+        for (uint32_t i = 0; i < vfr->BoundBufferCount; ++i)
+        {
+            const auto& bound = vfr->BoundBuffers[i];
+            add(bound.Name, bound.Range.Buffer, bound.Range.Offset, bound.Range.Bytes);
+        }
 
     // Pipeline buffer bindings from the frame blackboard (the RenderGraph replacement
     // for ForEachBufferRef). Same upsert position as the old block: after the
