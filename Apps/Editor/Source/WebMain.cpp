@@ -306,7 +306,7 @@ int main()
     std::printf("WEBEDITOR: storage ready\n");
 
     GameEngine::ApplicationConfig config;
-    config.Name = "Open Engine Editor";
+    config.Name = "Lucia Engine";
     config.EnableEditor = true;
     config.PersistScenesEagerly = true; // browser storage is the only place a scene survives
     config.AudioOutput = GameEngine::Audio::AudioOutput::Device;

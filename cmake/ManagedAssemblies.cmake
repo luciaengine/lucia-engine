@@ -76,6 +76,12 @@ endif()
 # other file the build reads (INPUTS), plus the stamps of any declared
 # upstream managed targets.
 #
+# The command also declares the project's main assembly (OUTPUT, relative to
+# the project directory) as an output. A sync that deletes bin/ then runs
+# `dotnet build` again; the stamp alone cannot see that deletion. MSBuild does
+# not rewrite an up-to-date assembly, so the command touches it after the
+# build: else an assembly older than its inputs runs the build every time.
+#
 # Effect: MSBuild visits each *Assembly project on every build, but the
 # custom command's DEPENDS check skips the dotnet invocation entirely if
 # no source file is newer than the stamp. A no-op visit costs ~150 ms of
@@ -93,12 +99,16 @@ file(MAKE_DIRECTORY "${_GE_MANAGED_STAMP_DIR}")
 
 function(ge_add_managed_assembly target_name)
   set(options ALL)
-  set(oneValueArgs CSPROJ COMMENT SOURCE_DIRECTORY)
+  set(oneValueArgs CSPROJ COMMENT OUTPUT SOURCE_DIRECTORY)
   set(multiValueArgs DEPENDS_ON INPUTS)
   cmake_parse_arguments(GE_AMA "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
   if(NOT GE_AMA_CSPROJ)
     message(FATAL_ERROR "ge_add_managed_assembly(${target_name}): CSPROJ argument is required")
+  endif()
+  if(NOT GE_AMA_OUTPUT)
+    message(FATAL_ERROR "ge_add_managed_assembly(${target_name}): OUTPUT argument is required "
+      "(the main assembly, relative to the project directory, for example bin/$<CONFIG>/net10.0/Name.dll)")
   endif()
 
   get_filename_component(_proj_dir "${GE_AMA_CSPROJ}" DIRECTORY)
@@ -138,12 +148,13 @@ function(ge_add_managed_assembly target_name)
   endforeach()
 
   set(_stamp "${_GE_MANAGED_STAMP_DIR}/${target_name}.$<CONFIG>.stamp")
+  set(_assembly "${_proj_dir}/${GE_AMA_OUTPUT}")
 
   # --unset=Platform: VS dev shells (vcvars64) export Platform=x64, and MSBuild
   # treats the env var as the build property — outputs would land in
   # bin/x64/<Config>/ instead of the bin/<Config>/ path every consumer expects.
   add_custom_command(
-    OUTPUT "${_stamp}"
+    OUTPUT "${_stamp}" "${_assembly}"
     COMMAND ${CMAKE_COMMAND} -E env --unset=TargetName --unset=TARGETNAME
             --unset=Platform --unset=PLATFORM
             "${DOTNET_EXECUTABLE}" build "${GE_AMA_CSPROJ}"
@@ -151,6 +162,7 @@ function(ge_add_managed_assembly target_name)
             -nologo
             -v:minimal
             /p:UseSharedCompilation=true
+    COMMAND ${CMAKE_COMMAND} -E touch_nocreate "${_assembly}"
     COMMAND ${CMAKE_COMMAND} -E touch "${_stamp}"
     DEPENDS ${_sources} ${GE_AMA_INPUTS} ${_dep_stamps}
     COMMENT "${GE_AMA_COMMENT}"
@@ -172,10 +184,12 @@ endfunction()
 # build in parallel.
 ge_add_managed_assembly(HotReloadAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/HotReload/GameEngine.HotReload.csproj
+  OUTPUT  bin/$<CONFIG>/net10.0/GameEngine.HotReload.dll
   COMMENT "Building core hot-reload assembly (GameEngine.HotReload.dll)")
 
 ge_add_managed_assembly(CoreBridgeAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/CoreBridge/GameEngine.CoreBridge.csproj
+  OUTPUT  bin/$<CONFIG>/net10.0/GameEngine.CoreBridge.dll
   COMMENT "Building CoreBridge assembly (GameEngine.CoreBridge.dll)")
 
 # Editor Scripting ABI: not part of ALL — Editor.Managed builds it transitively
@@ -183,11 +197,13 @@ ge_add_managed_assembly(CoreBridgeAssembly ALL
 if(BUILD_EDITOR)
   ge_add_managed_assembly(EditorScriptingAbiAssembly
     CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/Editor.Scripting.ABI/GameEngine.Editor.Scripting.ABI.csproj
+    OUTPUT  bin/$<CONFIG>/GameEngine.Editor.Scripting.ABI.dll
     COMMENT "Building Editor Scripting ABI assembly (GameEngine.Editor.Scripting.ABI.dll)")
 endif()
 
 ge_add_managed_assembly(EcsAbiAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/ECS.ABI/GameEngine.ECS.ABI.csproj
+  OUTPUT  bin/$<CONFIG>/GameEngine.ECS.ABI.dll
   COMMENT "Building ECS ABI assembly (GameEngine.ECS.ABI.dll)")
 
 configure_file(
@@ -195,15 +211,18 @@ configure_file(
   "${CMAKE_BINARY_DIR}/Managed/TileMap.ABI/GameEngine.TileMap.ABI.csproj" @ONLY)
 ge_add_managed_assembly(TileMapAbiAssembly ALL
   CSPROJ "${CMAKE_BINARY_DIR}/Managed/TileMap.ABI/GameEngine.TileMap.ABI.csproj"
+  OUTPUT  bin/$<CONFIG>/GameEngine.TileMap.ABI.dll
   SOURCE_DIRECTORY "${CMAKE_SOURCE_DIR}/Managed/TileMap.ABI"
   COMMENT "Building TileMap ABI assembly (GameEngine.TileMap.ABI.dll)")
 
 ge_add_managed_assembly(PlatformAbiAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/Platform.ABI/GameEngine.Platform.ABI.csproj
+  OUTPUT  bin/$<CONFIG>/GameEngine.Platform.ABI.dll
   COMMENT "Building Platform ABI assembly (GameEngine.Platform.ABI.dll)")
 
 ge_add_managed_assembly(EntitySystemGeneratorAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/SourceGenerators/EntitySystemGenerator/EntitySystemGenerator.csproj
+  OUTPUT  bin/$<CONFIG>/netstandard2.0/EntitySystemGenerator.dll
   COMMENT "Building EntitySystemGenerator (source generator for IEntitySystem)")
 
 # Dependent assemblies — chain mirrors the .csproj ProjectReference graph.
@@ -212,22 +231,26 @@ ge_add_managed_assembly(EntitySystemGeneratorAssembly ALL
 # project race on its obj/ output under parallel MSBuild (CS2012).
 ge_add_managed_assembly(ScriptingBindingsAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/Scripting.Bindings/GameEngine.Scripting.Bindings.csproj
+  OUTPUT  bin/$<CONFIG>/GameEngine.Scripting.Bindings.dll
   COMMENT "Building the generated script API bindings (GameEngine.Scripting.Bindings.dll)"
   DEPENDS_ON EcsAbiAssembly)
 
 ge_add_managed_assembly(ScriptingAbiAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/Scripting.ABI/GameEngine.Scripting.ABI.csproj
+  OUTPUT  bin/$<CONFIG>/GameEngine.Scripting.ABI.dll
   COMMENT "Building Scripting.ABI assembly (GameEngine.Scripting.ABI.dll)"
   DEPENDS_ON EcsAbiAssembly ScriptingBindingsAssembly)
 
 ge_add_managed_assembly(ScriptingRuntimeAssembly ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/Scripting.Runtime/GameEngine.Scripting.Runtime.csproj
+  OUTPUT  bin/$<CONFIG>/GameEngine.Scripting.Runtime.dll
   COMMENT "Building Scripting.Runtime assembly (GameEngine.Scripting.Runtime.dll)"
   DEPENDS_ON ScriptingAbiAssembly EcsAbiAssembly)
 
 if(BUILD_EDITOR)
   ge_add_managed_assembly(EditorManagedAssembly ALL
     CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/Editor.Managed/GameEngine.Editor.Managed.csproj
+    OUTPUT  bin/$<CONFIG>/GameEngine.Editor.Managed.dll
     COMMENT "Building Editor managed integration assembly (GameEngine.Editor.Managed.dll)"
     DEPENDS_ON ScriptingAbiAssembly EcsAbiAssembly ScriptingRuntimeAssembly)
 endif()
@@ -236,6 +259,7 @@ endif()
 # a bump must rebuild the host the client then expects.
 ge_add_managed_assembly(CompileServerHost ALL
   CSPROJ  ${CMAKE_SOURCE_DIR}/Managed/CompileServerHost/GameEngine.CompileServerHost.csproj
+  OUTPUT  bin/$<CONFIG>/net10.0/GameEngine.CompileServerHost.dll
   COMMENT "Building CompileServerHost (GameEngine.CompileServerHost.dll)"
   INPUTS  ${CMAKE_SOURCE_DIR}/Managed/CompileServerHost/CompileServerVersion.txt
   DEPENDS_ON EntitySystemGeneratorAssembly)
