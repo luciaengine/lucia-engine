@@ -6316,8 +6316,8 @@ void VulkanDevice::DiagnoseFrameSlottedHostWrite(const VulkanBuffer& buffer) con
         return;
     ReportStopReason(std::format(
         "Host write to frame-slotted buffer '{}' outside an acquired frame: slot {} has not had "
-        "its fence waited, so a frame still in flight can be reading these bytes. The write "
-        "belongs between BeginFrame and Present.",
+        "its fence waited, so a frame still in flight can be reading these bytes. Write it "
+        "between BeginFrame and Present, or after WaitForIdle.",
         buffer.debugName, m_CurrentFrame.load(std::memory_order_relaxed)));
     assert(false && "host write to a frame-slotted buffer before its slot fence was waited");
 #else
@@ -8781,6 +8781,8 @@ void VulkanDevice::WaitForIdle()
     {
         return;
     }
+    // Every queue is idle, so no frame still reads the current slot: host writes to it are legal.
+    m_CurrentFrameSlotFenced.store(true, std::memory_order_relaxed);
     ProcessPendingWindowTargetRetirements(true);
     FlushDeferredResourcesAndCompactLiveTracking();
 }

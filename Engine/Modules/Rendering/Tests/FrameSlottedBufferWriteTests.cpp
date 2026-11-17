@@ -1,7 +1,8 @@
 // A BufferCreateFlags::FrameSlotted buffer is one slot of a per-frame ring the
 // owner indexes with IDevice::GetFrameIndex(). Only BeginFrame waits the fence
 // that proves the frame which last used that slot has finished reading it, so a
-// host write is valid only inside an acquired frame. Developer builds diagnose a
+// host write is valid only inside an acquired frame or after WaitForIdle, which
+// proves the same for every slot. Developer builds diagnose a
 // write outside that window; both halves are pinned here, because a silence test
 // on its own passes just as well against a guard that never fires.
 
@@ -65,6 +66,27 @@ TEST(FrameSlottedBufferWrite, WriteInsideAnAcquiredFrameIsSilent)
 
     RotateOntoAnUnfencedSlot(*device);
     ASSERT_TRUE(device->BeginFrame()) << "the write below must happen inside an acquired frame";
+
+    const std::array<uint32_t, 4> payload{1u, 2u, 3u, 4u};
+    device->UpdateBuffer(probe, 0, sizeof(payload), payload.data());
+
+    device->DestroyBuffer(probe);
+    device->Shutdown();
+}
+
+// A test, a resize or a shutdown idles the device and then writes outside a frame. The idle
+// proves that no frame still reads the slot, so the guard stays silent.
+TEST(FrameSlottedBufferWrite, WriteAfterADeviceIdleIsSilent)
+{
+    auto device = CreateHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    const BufferHandle probe = CreateFrameSlottedProbe(*device);
+    ASSERT_TRUE(probe.IsValid());
+
+    RotateOntoAnUnfencedSlot(*device);
+    device->WaitForIdle();
 
     const std::array<uint32_t, 4> payload{1u, 2u, 3u, 4u};
     device->UpdateBuffer(probe, 0, sizeof(payload), payload.data());

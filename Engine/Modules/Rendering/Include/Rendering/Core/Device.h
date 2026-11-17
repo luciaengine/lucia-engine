@@ -593,10 +593,11 @@ enum class BufferCreateFlags : uint32_t
     DedicatedAllocation = 1 << 3,
     ShareAcrossQueues = 1 << 4,
     // One slot of a per-frame ring whose owner selects it with GetFrameIndex().
-    // Only BeginFrame waits the fence proving the frame that last used the slot
-    // has finished reading it, so a host write is valid only inside an acquired
-    // frame — between BeginFrame and the Present/FinalizeFrame that rotates on.
-    // Developer builds diagnose a write outside that window; nothing else tells
+    // BeginFrame waits the fence proving the frame that last used the slot has
+    // finished reading it, so a host write is valid inside an acquired frame —
+    // between BeginFrame and the Present/FinalizeFrame that rotates on — and after
+    // WaitForIdle, which proves the same for every slot.
+    // Developer builds diagnose a write outside those windows; nothing else tells
     // the backend a ring slot apart from an ordinary upload buffer. The diagnosis
     // also covers MapBuffer, so a read-back ring must not carry this flag.
     FrameSlotted = 1 << 5
