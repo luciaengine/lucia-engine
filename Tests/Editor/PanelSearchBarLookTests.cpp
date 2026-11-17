@@ -124,3 +124,62 @@ TEST(PanelSearchBarLook, TheSearchHintIsUpright)
     ASSERT_NE(hint, nullptr) << "the panel search has no hint";
     EXPECT_EQ(hint->GetResolvedStyle().Visual.FontStyle, GameEngine::FontStyle::Normal);
 }
+
+TEST(PanelSearchBarLook, ANoHintBarHidesTheSearchHint)
+{
+    SearchBarLook look;
+    if (!look.Build())
+    {
+        ASSERT_EQ(look.Fixture.Diagnostic, "no Vulkan device");
+        GTEST_SKIP() << look.Fixture.Diagnostic;
+    }
+    UIElement* hint = FindByClass(look.Bar, "field-placeholder");
+    ASSERT_NE(hint, nullptr) << "the panel search has no hint";
+    ASSERT_NE(hint->GetResolvedStyle().Layout.DisplayMode, GameEngine::DisplayMode::None)
+        << "the hint is hidden without the class; this test is vacuous";
+
+    look.Bar->AddClass("search-bar-no-hint");
+    look.Bar->MarkDirtySubtree(UIElement::StyleDirty | UIElement::VisualDirty);
+    look.Settle();
+    EXPECT_EQ(hint->GetResolvedStyle().Layout.DisplayMode, GameEngine::DisplayMode::None);
+}
+
+TEST(PanelSearchBarLook, TheClassicLookHasAnotherFillAndABorder)
+{
+    SearchBarLook look;
+    if (!look.Build())
+    {
+        ASSERT_EQ(look.Fixture.Diagnostic, "no Vulkan device");
+        GTEST_SKIP() << look.Fixture.Diagnostic;
+    }
+    const uint32_t luciaFill = look.Bar->GetResolvedStyle().Visual.BackgroundColor;
+    const uint32_t luciaBorder = look.Bar->GetResolvedStyle().Visual.BorderColor.Top;
+    EXPECT_EQ(Alpha(luciaBorder), 0u) << "the Lucia look draws a border at rest";
+
+    look.Bar->AddClass("search-bar-classic");
+    look.Settle();
+    EXPECT_NE(look.Bar->GetResolvedStyle().Visual.BackgroundColor, luciaFill);
+    EXPECT_NE(Alpha(look.Bar->GetResolvedStyle().Visual.BorderColor.Top), 0u)
+        << "the Classic look draws no border at rest";
+    EXPECT_NEAR(look.Bar->GetLayoutHeight(), kBarHeightPx, kTolerance) << "the Classic look moved the bar";
+}
+
+TEST(PanelSearchBarLook, AHiddenRowIconLeavesTheRow)
+{
+    SearchBarLook look;
+    if (!look.Build())
+    {
+        ASSERT_EQ(look.Fixture.Diagnostic, "no Vulkan device");
+        GTEST_SKIP() << look.Fixture.Diagnostic;
+    }
+    auto buttons = std::make_unique<UIElement>();
+    UIElement* group = buttons.get();
+    group->AddClass("assets-toolbar-view-buttons");
+    look.Panel->AddChild(std::move(buttons));
+    look.Settle();
+    ASSERT_EQ(group->GetResolvedStyle().Layout.DisplayMode, GameEngine::DisplayMode::Flex);
+
+    group->AddClass("search-row-icon-hidden");
+    look.Settle();
+    EXPECT_EQ(group->GetResolvedStyle().Layout.DisplayMode, GameEngine::DisplayMode::None);
+}

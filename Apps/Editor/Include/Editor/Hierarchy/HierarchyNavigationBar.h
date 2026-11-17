@@ -26,6 +26,7 @@ class HierarchyNavigationBar : public UIElement
 {
 public:
     HierarchyNavigationBar();
+    ~HierarchyNavigationBar() override;
 
     // The size the slider shows. Raises neither callback, and leaves the slider alone while it is
     // reporting a drag, so the drag keeps its thumb.
@@ -48,6 +49,7 @@ private:
     void ReportDrag(float px);
     void ApplyResizeGesture(float scrollY);
 
+    UIElement* m_SizeGlyph = nullptr;
     EditorUI::ItemSizeSlider* m_SizeSlider = nullptr;
     std::function<void(float)> m_OnItemSizeChanging;
     std::function<void(float)> m_OnItemSizeChanged;
