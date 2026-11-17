@@ -71,7 +71,7 @@
 
 .inspector-notice-plate-information {
 	background-color: var(--ui_color_bg_selected);
-	border-color: var(--ui_color_text_dim);
+	border-color: var(--ui_color_text_dim_outline);
 }
 
 .inspector-notice-text-information {
@@ -163,8 +163,10 @@
 }
 
 /* The opaque variant, for a notice drawn over a view's 3D content rather than a panel: a solid plate
-   that reads over any frame, edged in its kind's color (the plate rules above). */
+   that reads over any frame, edged in its kind's color (the plate rules above). The text and the
+   buttons are centered on the plate's height. */
 .inspector-notice-opaque .inspector-notice-plate {
 	background-color: var(--ui_color_bg_plate);
 	border-width: 1px;
+	align-items: center;
 }
