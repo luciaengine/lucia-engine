@@ -36,6 +36,56 @@ constexpr float kCurrent = 1.0f;
 constexpr float kHistory = 2.0f;
 constexpr float kDepth = 0.5f;  // reverse-Z; every texel is surface
 
+// The view of one blur run: the reverse-Z depth of each texel and the matrices that take a texel to its world point.
+struct BlurView
+{
+    std::vector<float> Depth;
+    ViewParamsUBO Params{};
+};
+
+// Every texel at one depth, identity matrices: each texel reprojects onto itself, so the history always matches.
+BlurView FlatView()
+{
+    BlurView view;
+    view.Depth.assign(kTexels, kDepth);
+    for (float* m : {view.Params.ge_invProj, view.Params.ge_invView, view.Params.ge_prevViewProj})
+        for (int i = 0; i < 4; ++i)
+            m[i * 5] = 1.0f;
+    return view;
+}
+
+// A narrow perspective view of 2 planes in view space (+Z forward, +Y up) that meet on the horizontal line through
+// the view centre at kCreaseDistance. Rows above the centre see a wall (z = d - y / kFloorSlope), rows below it see
+// a floor at a grazing angle (z = d + y * kFloorSlope). The planes are perpendicular and the depth has no step at
+// the line. `wallRows` false gives the floor plane on every row.
+constexpr float kCreaseDistance = 4.0f;
+constexpr float kFloorSlope = 4.0f;
+constexpr float kNearPlane = 0.1f;
+constexpr float kTanHalfFov = 0.0043634f;  // 0.25 degrees: the depth of adjacent texels differs by less than 1 %
+
+BlurView CreaseView(bool wallRows)
+{
+    BlurView view;
+    view.Depth.resize(kTexels);
+    for (uint32_t row = 0; row < kSize; ++row)
+    {
+        const float ndcY = 1.0f - (2.0f * static_cast<float>(row) + 1.0f) / static_cast<float>(kSize);
+        const bool wall = wallRows && ndcY > 0.0f;
+        const float slope = wall ? -1.0f / kFloorSlope : kFloorSlope;
+        const float viewZ = kCreaseDistance / (1.0f - slope * ndcY * kTanHalfFov);
+        for (uint32_t column = 0; column < kSize; ++column)
+            view.Depth[row * kSize + column] = kNearPlane / viewZ;
+    }
+    // Column-major inverse of a reverse-Z projection with depth = near / z: (ndc.xy, depth, 1) -> view point.
+    view.Params.ge_invProj[0] = kTanHalfFov;
+    view.Params.ge_invProj[5] = kTanHalfFov;
+    view.Params.ge_invProj[11] = 1.0f / kNearPlane;
+    view.Params.ge_invProj[14] = 1.0f;
+    for (int i = 0; i < 4; ++i)
+        view.Params.ge_invView[i * 5] = 1.0f;
+    return view;
+}
+
 class DDGIResolveBlurComputeTest : public ::testing::Test
 {
   protected:
@@ -140,13 +190,13 @@ class DDGIResolveBlurComputeTest : public ::testing::Test
     // history (0 never reads it) and returns the accumulated irradiance's rgb,
     // one float per channel.
     std::vector<float> RunBlur(const std::vector<float>& current, const std::vector<float>& history,
-                               float temporalAlpha = 0.5f)
+                               float temporalAlpha = 0.5f, const BlurView& view = FlatView())
     {
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         cl->Begin();
         const TextureHandle irradianceIn = MakeTexture(*cl, current, true);
         const TextureHandle historyIn = MakeTexture(*cl, history, true);
-        const TextureHandle depth = MakeTexture(*cl, std::vector<float>(kTexels, kDepth), false);
+        const TextureHandle depth = MakeTexture(*cl, view.Depth, false);
         const TextureHandle lobeIn = MakeTexture(*cl, Rgba(0.0f, 0.0f), true);
         const TextureHandle irradianceOut = MakeTexture(*cl, Rgba(0.0f, 0.0f), true);
         const TextureHandle lobeOut = MakeTexture(*cl, Rgba(0.0f, 0.0f), true);
@@ -154,12 +204,7 @@ class DDGIResolveBlurComputeTest : public ::testing::Test
             cl->Barrier(ResourceBarrier::CreateTextureBarrier(storage, ResourceState::ShaderResource,
                                                               ResourceState::UnorderedAccess));
 
-        // Identity matrices: every texel reprojects onto itself at its own depth,
-        // so the history always matches.
-        ViewParamsUBO params{};
-        for (float* m : {params.ge_invProj, params.ge_invView, params.ge_prevViewProj})
-            for (int i = 0; i < 4; ++i)
-                m[i * 5] = 1.0f;
+        const ViewParamsUBO& params = view.Params;
         const BufferHandle viewParams = MakeBuffer(sizeof(params), BufferUsage::Uniform, BufferMemoryUsage::Upload);
         std::memcpy(m_Device->MapBuffer(viewParams), &params, sizeof(params));
         m_Device->UnmapBuffer(viewParams);
@@ -278,4 +323,43 @@ TEST_F(DDGIResolveBlurComputeTest, AllNonFiniteTexelStoresZeroAndRecovers)
     const std::vector<float> next = RunBlur(Rgba(kCurrent, kDepth), nextHistory);
     ExpectAllFinite(next);
     EXPECT_FLOAT_EQ(next[kPoisoned * 3], 0.5f * kCurrent) << "the next finite frame must blend from the stored 0";
+}
+
+// Diffuse light is gathered for one surface normal. At a crease the depth has no step, so the depth test alone lets
+// the light of the wall into the floor texels next to it: a band of the wrong tint along the wall.
+TEST_F(DDGIResolveBlurComputeTest, IrradianceDoesNotCrossACreaseWithNoDepthStep)
+{
+    constexpr float kWallLight = 1.0f;
+    constexpr float kFloorLight = 3.0f;
+    const BlurView view = CreaseView(true);
+    std::vector<float> current = Rgba(kWallLight, 0.0f);
+    for (uint32_t texel = 0; texel < kTexels; ++texel)
+    {
+        current[texel * 4 + 3] = view.Depth[texel];
+        if (texel / kSize >= kSize / 2)
+            SetRgb(current, texel, kFloorLight);
+        // The case is a crease only if the depth test accepts each tap across the line.
+        ASSERT_LT(std::abs(view.Depth[texel] - view.Depth[kTexels / 2]), 0.02f * view.Depth[kTexels / 2]);
+    }
+    const std::vector<float> rgb = RunBlur(current, current, 0.0f, view);
+    for (uint32_t texel = 0; texel < kTexels; ++texel)
+        EXPECT_FLOAT_EQ(rgb[texel * 3], texel / kSize < kSize / 2 ? kWallLight : kFloorLight)
+            << "row " << texel / kSize << " column " << texel % kSize;
+}
+
+// One plane at a grazing angle is one surface: its texels blur as on a flat view.
+TEST_F(DDGIResolveBlurComputeTest, IrradianceOnOneSteepPlaneBlursLikeAFlatView)
+{
+    const BlurView steep = CreaseView(false);
+    std::vector<float> current = Rgba(kCurrent, 0.0f);
+    for (uint32_t texel = 0; texel < kTexels; ++texel)
+        current[texel * 4 + 3] = steep.Depth[texel];
+    SetRgb(current, kNeighbour, 3.0f * kCurrent);
+    std::vector<float> flat = Rgba(kCurrent, kDepth);
+    SetRgb(flat, kNeighbour, 3.0f * kCurrent);
+    const std::vector<float> steepBlur = RunBlur(current, current, 0.0f, steep);
+    const std::vector<float> flatBlur = RunBlur(flat, flat, 0.0f);
+    ASSERT_NE(flatBlur[kPoisoned * 3], kCurrent) << "the bright texel must reach its neighbour on the flat view";
+    for (uint32_t texel = 0; texel < kTexels; ++texel)
+        EXPECT_FLOAT_EQ(steepBlur[texel * 3], flatBlur[texel * 3]) << "texel " << texel;
 }
