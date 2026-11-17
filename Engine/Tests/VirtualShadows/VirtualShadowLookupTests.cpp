@@ -1,5 +1,7 @@
 #include "Engine/Rendering/VirtualShadows/VirtualShadowLookup.h"
 
+#include "Engine/Rendering/ShadowMapRenderFeature.h"
+
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
@@ -84,12 +86,14 @@ TEST_F(VirtualShadowLookupTest, FiltersNonAdjacentLayersAndSignalsMissingPages)
     ASSERT_NE(shader, package.stageBytes.end());
 
     constexpr std::array types{DescriptorType::CombinedImageSampler, DescriptorType::StorageBuffer,
-                               DescriptorType::StorageBuffer, DescriptorType::StorageBuffer, DescriptorType::CombinedImageSampler};
+                               DescriptorType::StorageBuffer, DescriptorType::StorageBuffer,
+                               DescriptorType::CombinedImageSampler, DescriptorType::UniformBuffer};
+    constexpr std::array bindings{0u, 1u, 2u, 60u, 61u, 8u};
     DescriptorSetLayoutDesc layout{};
     for (uint32_t i = 0; i < types.size(); ++i)
     {
         DescriptorBinding binding{};
-        binding.binding = i == 3 ? 60 : (i == 4 ? 61 : i);
+        binding.binding = bindings[i];
         binding.type = types[i];
         binding.count = 1;
         binding.shaderStages = kShaderStageCompute;
@@ -151,6 +155,16 @@ TEST_F(VirtualShadowLookupTest, FiltersNonAdjacentLayersAndSignalsMissingPages)
     const auto metadata = CreateBuffer(sizeof(projections), BufferUsage::Storage, BufferMemoryUsage::Upload);
     ASSERT_TRUE(metadata.IsValid());
     ASSERT_NO_FATAL_FAILURE(Upload(metadata, &projections, sizeof(projections)));
+    // Two levels, a depth bias of zero, the Poisson tap count and the reference level's metrics.
+    ShadowDataGPU shadowData{};
+    shadowData.shadowParams[2] = 2.0f;
+    shadowData.shadowParams[3] = 100.0f;
+    shadowData.shadowPcss[1] = 8.0f;
+    shadowData.shadowPcssCascades[0][0] = 0.01f;
+    shadowData.shadowPcssCascades[0][1] = 1.0f;
+    const auto shadowConstants = CreateBuffer(sizeof(shadowData), BufferUsage::Uniform, BufferMemoryUsage::Upload);
+    ASSERT_TRUE(shadowConstants.IsValid());
+    ASSERT_NO_FATAL_FAILURE(Upload(shadowConstants, &shadowData, sizeof(shadowData)));
     const auto pageTable = CreateBuffer(sizeof(table), BufferUsage::Storage, BufferMemoryUsage::Upload);
     const auto output = CreateBuffer(sizeof(expected), BufferUsage::Storage, BufferMemoryUsage::Readback);
     ASSERT_TRUE(pageTable.IsValid() && output.IsValid());
@@ -165,6 +179,7 @@ TEST_F(VirtualShadowLookupTest, FiltersNonAdjacentLayersAndSignalsMissingPages)
     m_Device->UpdateStorageBufferBinding(m_Set, 2, output, 0, sizeof(expected));
     m_Device->UpdateStorageBufferBinding(m_Set, 60, metadata, 0, sizeof(projections));
     m_Device->UpdateCombinedImageSamplerBinding(m_Set, 61, m_Depth, m_ComparisonSampler);
+    m_Device->UpdateBufferBinding(m_Set, 8, shadowConstants, 0, sizeof(shadowData));
 
     ShaderPackage depthPackage{};
     ASSERT_TRUE(LoadShaderPkg("Shaders/virtual_shadow_test_depth.shaderpkg", m_Device->PreferredShaderSource(), depthPackage, &error)) << error;
