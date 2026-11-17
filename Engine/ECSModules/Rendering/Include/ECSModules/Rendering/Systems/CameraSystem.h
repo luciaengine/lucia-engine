@@ -16,6 +16,9 @@ public:
     }
 
     const char* GetName() const override { return "CameraSystem"; }
+
+    // Resolving an automatic pixel density can load into the mutable tile map store.
+    bool RequiresExclusiveUpdate() const override { return true; }
     void Update(ECS::World& world, float32 deltaTime) override;
 
 private:

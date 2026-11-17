@@ -191,12 +191,15 @@ namespace GameEngine.Scripting
         public uint PixelPerfectReferenceHeight;
 
         [FieldOffset(804)]
-        public bool PixelPerfectPixelSnap;
+        public bool PixelPerfectAutoPixelsPerUnit;
 
         [FieldOffset(805)]
-        public bool PixelPerfectExpand;
+        public bool PixelPerfectPixelSnap;
 
         [FieldOffset(806)]
+        public bool PixelPerfectExpand;
+
+        [FieldOffset(807)]
         public bool WorldDrawingPaused;
     }
 }

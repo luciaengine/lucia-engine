@@ -1,6 +1,7 @@
 #include "Engine/Rendering/Camera.h"
 
 #include "Components/Transform.h"
+#include "Engine/Rendering/CameraAspectRatio.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/ViewRegistry.h"
 #include "ECS/ECSTemplates.h"
@@ -124,6 +125,10 @@ std::optional<Camera> FindActiveCamera(ECS::World& world)
 
     if (!found)
         return std::nullopt;
+
+    // The snapshot holds the density this frame renders at; the component holds the authored intent.
+    if (result.params.PixelPerfect && !result.params.Perspective)
+        result.params.PixelPerfectPixelsPerUnit = ResolvePixelPerfectPixelsPerUnit(world, result.params);
     return result;
 }
 

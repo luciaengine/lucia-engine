@@ -23,6 +23,8 @@
 #include "Mathematics/VectorOps.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "SceneView/SceneViewCameraRig.h"
+#include "SceneView/PixelPerfect2D/PixelPerfect2DGrid.h"
+#include "TileMapECS/TileMapPixelGrid.h"
 #include "SceneView/SceneViewPostProcessSwitches.h"
 #include "Rendering/Common/Math.h"
 #include "Rendering/Common/Utils.h"
@@ -2839,16 +2841,29 @@ void SceneViewController::ApplyPixelPerfectIfActive()
     if (effectiveH == 0)
         return;
 
-    // In 2D mode, m_CamDistance is the ortho visible height in world units.
-    // One world unit maps to one source texel, so pixelScale screen pixels cover
-    // one world unit: scale 1 is true 1:1 (one texel = one pixel), scale 2 is 2x,
-    // and so on.
-    int scale = Editor::SceneViewSettings::Get().GetPixelPerfectScale();
-    if (scale < 1) scale = 1;
-    if (scale > 64) scale = 64;
-    const float newHeight = static_cast<float>(effectiveH) / static_cast<float>(scale);
-    if (newHeight > 0.0f)
-        m_CamDistance = newHeight;
+    // In 2D mode, m_CamDistance is the orthographic visible height in world units.
+    const Editor::PixelPerfect2DGrid grid = Editor::ComputePixelPerfect2DGrid(
+        effectiveH, Editor::SceneViewSettings::Get().GetPixelPerfectScale(), ResolvePixelPerfectPixelsPerUnit());
+    m_PixelPerfectWorldUnitsPerTexel = grid.WorldUnitsPerTexel;
+    if (grid.OrthoHeight > 0.0f)
+        m_CamDistance = grid.OrthoHeight;
+}
+
+float SceneViewController::ResolvePixelPerfectPixelsPerUnit()
+{
+    const float scenePixelsPerUnit = TileMapECS::ResolveScenePixelsPerUnit(GetWorld());
+    return scenePixelsPerUnit > 0.0f ? scenePixelsPerUnit : Editor::kPixelPerfectDefaultPixelsPerUnit;
+}
+
+Editor::CameraRig::Vec3d SceneViewController::PublishedCameraPosition(float aspect) const
+{
+    Editor::CameraRig::Vec3d position{m_CamPos[0], m_CamPos[1], m_CamPos[2]};
+    if (!m_Is2DMode || !Editor::SceneViewSettings::Get().GetPixelPerfect2D())
+        return position;
+    const float halfHeight = m_CamDistance * 0.5f;
+    Editor::SnapOrthoWindowToTexelGrid(position.X, position.Y, halfHeight * aspect, halfHeight,
+                                       m_PixelPerfectWorldUnitsPerTexel);
+    return position;
 }
 
 void SceneViewController::RefreshPixelPerfect2D()
@@ -2868,15 +2883,8 @@ void SceneViewController::SetOrthoHeight2D(float requestedHeight)
         m_Is2DMode || m_Orthographic);
     if (settings.GetPixelPerfect2D() && effectiveH > 0)
     {
-        // Visible height = effectiveH / scale. Pick the largest power-of-2 scale
-        // (most zoomed in) that still fits the requested height.
-        const float ratio = static_cast<float>(effectiveH) / requestedHeight;
-        int snapped = 1;
-        while (snapped * 2 <= static_cast<int>(ratio) && snapped < 64)
-            snapped *= 2;
-        if (snapped < 1) snapped = 1;
-        if (snapped > 64) snapped = 64;
-        settings.SetPixelPerfectScale(snapped);
+        settings.SetPixelPerfectScale(
+            Editor::SnapPixelPerfectScaleToHeight(effectiveH, requestedHeight, ResolvePixelPerfectPixelsPerUnit()));
         ApplyPixelPerfectIfActive();
         return;
     }
@@ -2893,21 +2901,7 @@ bool SceneViewController::ZoomPixelPerfectAtCursor(int scaleDelta, float /*local
 
     auto& settings = Editor::SceneViewSettings::Get();
     const int oldScale = settings.GetPixelPerfectScale();
-    // Each scroll step doubles (zoom in) or halves (zoom out) the pixel scale,
-    // so the sequence is 1x → 2x → 4x → 8x → 16x → 32x → 64x.
-    int newScale = oldScale;
-    if (scaleDelta > 0)
-    {
-        for (int i = 0; i < scaleDelta; ++i)
-            newScale *= 2;
-    }
-    else if (scaleDelta < 0)
-    {
-        for (int i = 0; i < -scaleDelta; ++i)
-            newScale = (newScale > 1) ? (newScale / 2) : 1;
-    }
-    if (newScale < 1) newScale = 1;
-    if (newScale > 64) newScale = 64;
+    const int newScale = Editor::StepPixelPerfectScale(oldScale, scaleDelta);
     if (newScale == oldScale)
         return false;
 
@@ -3204,9 +3198,8 @@ void SceneViewController::UpdateCamera(float deltaSeconds, bool moveForward, boo
         // (eye+look)-eye in fp32, which quantizes the rotation basis to
         // ULP(|eye|)-sized angular steps at planetary coordinates (~0.22 deg at
         // |eye| 5e4) — the scene-view rotation jitter at planet scale.
-        const Matrix4x4 viewM = Editor::CameraRig::BuildViewMatrixLH(
-            Editor::CameraRig::Vec3d{m_CamPos[0], m_CamPos[1], m_CamPos[2]},
-            m_CamYawDeg, m_CamPitchDeg);
+        const Editor::CameraRig::Vec3d eye = PublishedCameraPosition(aspect);
+        const Matrix4x4 viewM = Editor::CameraRig::BuildViewMatrixLH(eye, m_CamYawDeg, m_CamPitchDeg);
 
         float nearClip = 0.1f;
         float farClip = 200.0f;
@@ -3234,8 +3227,7 @@ void SceneViewController::UpdateCamera(float deltaSeconds, bool moveForward, boo
         cam.proj = projM;
         cam.viewProj = viewProjM;
         cam.cameraPos.w = m_Is2DMode ? 1.0f : 0.0f;
-        GameEngine::Engine::Renderer::SetCameraEye(
-            cam, GameEngine::Mathematics::WorldPosition{m_CamPos[0], m_CamPos[1], m_CamPos[2]});
+        GameEngine::Engine::Renderer::SetCameraEye(cam, GameEngine::Mathematics::WorldPosition{eye.X, eye.Y, eye.Z});
         if (m_RenderServices)
         {
             m_RenderServices->Views().SetCameraData(m_CameraId, cam, {nearClip, farClip});
@@ -4048,9 +4040,8 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
 
         // Double-precision view build — identical math to UpdateCamera so both
         // arms produce the same matrices (see the rotation-jitter note there).
-        const Matrix4x4 viewM = Editor::CameraRig::BuildViewMatrixLH(
-            Editor::CameraRig::Vec3d{m_CamPos[0], m_CamPos[1], m_CamPos[2]},
-            m_CamYawDeg, m_CamPitchDeg);
+        const Editor::CameraRig::Vec3d eye = PublishedCameraPosition(aspect);
+        const Matrix4x4 viewM = Editor::CameraRig::BuildViewMatrixLH(eye, m_CamYawDeg, m_CamPitchDeg);
 
         float nearClip = 0.1f;
         float farClip = 200.0f;
@@ -4078,8 +4069,7 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
         cam.proj = projM;
         cam.viewProj = viewProjM;
         cam.cameraPos.w = m_Is2DMode ? 1.0f : 0.0f;
-        GameEngine::Engine::Renderer::SetCameraEye(
-            cam, GameEngine::Mathematics::WorldPosition{m_CamPos[0], m_CamPos[1], m_CamPos[2]});
+        GameEngine::Engine::Renderer::SetCameraEye(cam, GameEngine::Mathematics::WorldPosition{eye.X, eye.Y, eye.Z});
 
         m_FrameCameraData = cam;
         m_FrameCameraViewportW = w;

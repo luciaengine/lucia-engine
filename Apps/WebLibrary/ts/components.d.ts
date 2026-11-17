@@ -195,6 +195,7 @@ export interface Camera {
     pixelPerfectPixelsPerUnit: number;
     pixelPerfectReferenceWidth: number;
     pixelPerfectReferenceHeight: number;
+    pixelPerfectAutoPixelsPerUnit: boolean;
     pixelPerfectPixelSnap: boolean;
     pixelPerfectExpand: boolean;
 }

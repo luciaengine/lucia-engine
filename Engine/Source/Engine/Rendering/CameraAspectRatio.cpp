@@ -4,9 +4,11 @@
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Camera/CameraPixelGrid.h"
+#include "TileMapECS/TileMapPixelGrid.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 
@@ -261,6 +263,21 @@ PixelPerfectResult ComputePixelPerfect(const Components::Camera& camera,
     return result;
 }
 } // namespace
+
+uint32 ResolvePixelPerfectPixelsPerUnit(ECS::World& world, const Components::Camera& camera)
+{
+    const uint32 authored = std::max(1u, camera.PixelPerfectPixelsPerUnit);
+    if (!camera.PixelPerfectAutoPixelsPerUnit)
+        return authored;
+
+    const float resolved = TileMapECS::ResolveScenePixelsPerUnit(world);
+    if (!(resolved > 0.0f) || !std::isfinite(resolved) ||
+        static_cast<double>(resolved) > static_cast<double>(std::numeric_limits<uint32>::max()))
+        return authored;
+
+    // Round: a cell stored as 1.0000001 under a 16 px tile means 16, not 15.
+    return std::max(1u, static_cast<uint32>(std::llround(resolved)));
+}
 
 PixelPerfectViewState ComputePixelPerfectViewState(const Components::Camera& camera,
                                                    uint32_t viewportWidth,

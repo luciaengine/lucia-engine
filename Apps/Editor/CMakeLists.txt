@@ -352,6 +352,7 @@ set(EDITOR_SOURCES
 	Source/Inspectors/ValueCurveInspector.cpp
 	Source/Inspectors/AnimationPreviewManager.cpp
 	Source/Inspectors/CameraInspector.cpp
+	Source/Inspectors/CameraPixelsPerUnitRows.cpp
 	Source/Inspectors/ExposureCompensationCurveRow.cpp
 	Source/Inspectors/LightInspector.cpp
 	Source/Inspectors/LensFlareSourceInspector.cpp
@@ -644,6 +645,7 @@ set(EDITOR_SOURCES
 	Source/Terrain/TerrainBrushToolStripEntry.cpp
 	Source/Terrain/TerrainPresence.cpp
 	Source/SceneView/SceneViewProjection.cpp
+	Source/SceneView/PixelPerfect2D/PixelPerfect2DGrid.cpp
 	Source/SceneView/SceneViewAutoExposure.cpp
 	Source/SceneView/SceneViewPostProcessSwitches.cpp
 	Source/SceneView/EditorSceneViewDropWiring.cpp

@@ -1407,6 +1407,33 @@ add_test(NAME CurveFieldTests
 		-P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
 )
 
+# The Scene View's 2D pixel grid and the pixel-perfect camera's Pixels Per Unit rows over the real
+# undo service and tile map store.
+add_executable(PixelPerfect2DTests
+	PixelPerfect2DGridTests.cpp
+	CameraPixelsPerUnitRowsTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/PixelPerfect2D/PixelPerfect2DGrid.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/CameraPixelsPerUnitRows.cpp
+)
+target_include_directories(PixelPerfect2DTests PRIVATE
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source
+)
+target_link_libraries(PixelPerfect2DTests PRIVATE Engine EditorSDK GTest::gtest GTest::gtest_main)
+set_target_properties(PixelPerfect2DTests PROPERTIES
+	CXX_STANDARD 20
+	CXX_STANDARD_REQUIRED ON
+	VCPKG_APPLOCAL_DEPS OFF
+)
+ge_set_output_tests(PixelPerfect2DTests)
+ge_stage_runtime_dependencies(PixelPerfect2DTests)
+add_test(NAME PixelPerfect2DTests
+	COMMAND "${CMAKE_COMMAND}"
+		-DTEST_EXE=$<TARGET_FILE:PixelPerfect2DTests>
+		-DTEST_WORKING_DIR=$<TARGET_FILE_DIR:PixelPerfect2DTests>
+		-P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
+)
+
 # The light inspector's color reset over its real label events and undo service.
 add_executable(LightInspectorTests
 	LightInspectorTests.cpp

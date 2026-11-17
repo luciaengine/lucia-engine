@@ -7,6 +7,7 @@ add_library(TileMapECS OBJECT
     Include/TileMapECS/RegisterTileMap.h
     Include/TileMapECS/TileChunkInstances.h
     Include/TileMapECS/TileMapParallax.h
+    Include/TileMapECS/TileMapPixelGrid.h
     Include/TileMapECS/TileMapRenderFeature.h
     Include/TileMapECS/TileMapRuntimeStore.h
     Include/TileMapECS/TileSetGpuTables.h
@@ -16,6 +17,7 @@ add_library(TileMapECS OBJECT
     Source/RegisterTileMap.cpp
     Source/TileChunkInstances.cpp
     Source/TileMapComponents.cpp
+    Source/TileMapPixelGrid.cpp
     Source/TileMapRenderFeature.cpp
     Source/TileMapRuntimeStore.cpp
     Source/TileSetGpuTables.cpp
