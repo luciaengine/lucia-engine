@@ -108,10 +108,60 @@ double ScaleBound(const Components::WorldTransform& transform)
     return std::sqrt(squared);
 }
 
+// The values of one view that every group's demand reads, collected once per preparation.
+struct DemandView
+{
+    RenderLayerMask Layers;
+    uint64 WorldId = 0;
+    // Forced LOD 0, or selection off: every group refines.
+    bool MustRefine = false;
+    // Automatic selection with a viewport: the projected error decides.
+    bool Measured = false;
+    // No usable projection or budget: a group with an error refines.
+    bool Unusable = false;
+    double EyeX = 0.0;
+    double EyeY = 0.0;
+    double EyeZ = 0.0;
+    double ProjectionScaleY = 0.0;
+    uint32 Height = 0;
+    bool Orthographic = false;
+    double Budget = 0.0;
+};
+
+void CollectDemandViews(const RenderServices& services, std::vector<DemandView>& views)
+{
+    views.clear();
+    const bool selectionOff = services.GetMeshGPURegistry().GetLodSelectionMode() == LodSelectionMode::Off;
+    for (const auto& view : services.Views().GetViews())
+    {
+        DemandView sample;
+        sample.Layers = view.ActiveRenderLayerMask();
+        sample.WorldId = view.worldId;
+        const uint32 forced = services.ResolveViewForceLOD(view.id);
+        sample.MustRefine = forced == 0 || (forced == ~0u && selectionOff);
+        sample.Height = services.Views().GetViewWorldViewportHeight(view.id);
+        sample.Measured = !sample.MustRefine && forced == ~0u && sample.Height != 0;
+        if (sample.Measured)
+        {
+            const auto camera = services.Views().ResolveCameraData(view.id);
+            const auto eye = CameraEye(camera);
+            sample.EyeX = eye.X;
+            sample.EyeY = eye.Y;
+            sample.EyeZ = eye.Z;
+            sample.ProjectionScaleY = camera.proj[1][1];
+            sample.Orthographic = std::abs(camera.proj[3][3]) > 0.5f;
+            sample.Budget = ResolveLodBudgetPx(services.GetLODErrorBudgetPx(),
+                                               services.GetLODViewBudgetOverride(view.purpose));
+            sample.Unusable = !std::isfinite(sample.Budget) || sample.Budget <= 0.0 || sample.ProjectionScaleY == 0.0;
+        }
+        views.push_back(sample);
+    }
+}
+
 // The largest projected error of one sphere over the views, divided by the switch threshold (the
 // keep band for a group that is refined). Above 1 wants refinement. Infinity: a view must draw
 // the finest units (forced LOD 0, selection off or an unusable projection).
-double Demand(const RenderServices& services, const Components::MeshRenderer& renderer,
+double Demand(std::span<const DemandView> views, const Components::MeshRenderer& renderer,
               const Components::WorldTransform& transform, const Vector3& center, float radius, float error,
               uint64 worldId, bool wasRefined, float lodBias)
 {
@@ -127,32 +177,24 @@ double Demand(const RenderServices& services, const Components::MeshRenderer& re
         !std::isfinite(offset[0]) || !std::isfinite(offset[1]) || !std::isfinite(offset[2]))
         return 0.0;
     double demand = 0.0;
-    for (const auto& view : services.Views().GetViews())
+    for (const DemandView& view : views)
     {
-        if (!view.ActiveRenderLayerMask().Intersects(renderer.RenderLayers) ||
-            (view.worldId != 0 && view.worldId != worldId))
+        if (!view.Layers.Intersects(renderer.RenderLayers) || (view.WorldId != 0 && view.WorldId != worldId))
             continue;
-        const uint32 forced = services.ResolveViewForceLOD(view.id);
-        if (forced == 0 || (forced == ~0u && services.GetMeshGPURegistry().GetLodSelectionMode() == LodSelectionMode::Off))
+        if (view.MustRefine)
             return kMustRefine;
-        if (forced != ~0u || error <= 0.0f)
+        if (!view.Measured || error <= 0.0f)
             continue;
-        const auto camera = services.Views().ResolveCameraData(view.id);
-        const uint32 height = services.Views().GetViewWorldViewportHeight(view.id);
-        if (height == 0)
-            continue;
-        const auto eye = CameraEye(camera);
-        const double centerDistance = std::hypot((transform.Position.X - eye.X) + offset[0],
-                                                 (transform.Position.Y - eye.Y) + offset[1],
-                                                 (transform.Position.Z - eye.Z) + offset[2]);
-        const bool orthographic = std::abs(camera.proj[3][3]) > 0.5f;
-        const double errorPixels = ClusterGroupErrorPx(error, scale, centerDistance, worldRadius, camera.proj[1][1],
-                                                       height, lodBias, orthographic);
-        const float budget = ResolveLodBudgetPx(services.GetLODErrorBudgetPx(),
-                                               services.GetLODViewBudgetOverride(view.purpose));
-        const double threshold = budget * (wasRefined ? kClusterKeepFineBudgetScale : kClusterRefineBudgetScale);
-        if (!std::isfinite(errorPixels) || !std::isfinite(budget) || camera.proj[1][1] == 0.0f || budget <= 0.0f)
+        if (view.Unusable)
             return kMustRefine;
+        const double centerDistance = std::hypot((transform.Position.X - view.EyeX) + offset[0],
+                                                 (transform.Position.Y - view.EyeY) + offset[1],
+                                                 (transform.Position.Z - view.EyeZ) + offset[2]);
+        const double errorPixels = ClusterGroupErrorPx(error, scale, centerDistance, worldRadius, view.ProjectionScaleY,
+                                                       view.Height, lodBias, view.Orthographic);
+        if (!std::isfinite(errorPixels))
+            return kMustRefine;
+        const double threshold = view.Budget * (wasRefined ? kClusterKeepFineBudgetScale : kClusterRefineBudgetScale);
         demand = std::max(demand, errorPixels / threshold);
     }
     return demand;
@@ -348,6 +390,8 @@ struct ClusterLODFeature::State
     FastHashMap<const ModelAsset*, std::vector<MeshGPUHandle>> FrameGeometries;
     // Resident unit registrations a full pool refused, with the epoch of their next try.
     FastHashMap<MeshGPUKey, uint64> RegistrationRetry;
+    // The views of this preparation, as Demand reads them.
+    std::vector<DemandView> DemandViews;
     // Scratch of MeasureGroups: 1 per unit of the measured instance that can draw.
     std::vector<uint8> UnitReady;
     // The owner world's entity count at the last stray-renderer check.
@@ -814,7 +858,7 @@ struct ClusterLODFeature::State
             ClusterLODCutGroup state;
             state.WasRefined = IsClusterLODRefined(instance.Decisions[local]);
             if (!group.Terminal)
-                state.Demand = Demand(*Services, renderer, transform, group.Center, group.Radius, group.Error,
+                state.Demand = Demand(DemandViews, renderer, transform, group.Center, group.Radius, group.Error,
                                       world.GetWorldId(), state.WasRefined, bias);
             state.UnitsReady = true;
             for (uint32 unit = group.FirstUnit; unit < group.FirstUnit + group.UnitCount && state.UnitsReady; ++unit)
@@ -948,14 +992,14 @@ struct ClusterLODFeature::State
         const float bias = LodBias(world, entity);
         const uint64 worldId = world.GetWorldId();
         const StreamedEntry whole = WholeMeshEntry(manifest, mesh, model->GetMeshes()[mesh]);
-        if (Demand(*Services, renderer, transform, whole.Center, whole.Radius, whole.Error, worldId, false, bias) <= 1.0)
+        if (Demand(DemandViews, renderer, transform, whole.Center, whole.Radius, whole.Error, worldId, false, bias) <= 1.0)
             return;
         for (uint32 group = range.FirstGroup; group < range.FirstGroup + range.GroupCount; ++group)
         {
             const auto& record = manifest.Groups[group];
             if (record.Terminal || record.Depth + 1 != range.ResidentDepth)
                 continue;
-            if (Demand(*Services, renderer, transform, record.Center, record.Radius, record.Error, worldId, false, bias) > 1.0)
+            if (Demand(DemandViews, renderer, transform, record.Center, record.Radius, record.Error, worldId, false, bias) > 1.0)
             {
                 splits.push_back({entity, renderer, guid, mesh});
                 return;
@@ -1213,6 +1257,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
 
     std::vector<PendingSplit> splits;
     state.UnsplitCoarseTriangles = 0;
+    CollectDemandViews(services, state.DemandViews);
     world.Query<ECS::Read<Components::MeshRenderer>, ECS::Read<Components::WorldTransform>>()
         .Each([&state, &world, &splits](ECS::EntityHandle entity, const Components::MeshRenderer& renderer,
                                         const Components::WorldTransform& transform)
