@@ -80,12 +80,12 @@ inline Vector3 OctahedralDecode(OctahedralLayout layout, const Vector2& uv)
 }
 
 /// The view direction (from the object toward the camera) of frame (column, row) in a grid of
-/// `framesPerSide` x `framesPerSide` frames: the direction at the frame's center.
+/// `framesPerSide` x `framesPerSide` frames. The frames sit on the grid points from edge to edge,
+/// so the outer frames of the hemisphere look from the horizon itself.
 inline Vector3 OctahedralFrameDirection(OctahedralLayout layout, uint32_t column, uint32_t row, uint32_t framesPerSide)
 {
-    const float side = static_cast<float>(framesPerSide);
-    return OctahedralDecode(layout, Vector2((static_cast<float>(column) + 0.5f) / side,
-                                            (static_cast<float>(row) + 0.5f) / side));
+    const float steps = static_cast<float>(framesPerSide > 1u ? framesPerSide - 1u : 1u);
+    return OctahedralDecode(layout, Vector2(static_cast<float>(column) / steps, static_cast<float>(row) / steps));
 }
 
 } // namespace GameEngine::Mathematics

@@ -13,6 +13,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/TextureService.h"
 #include "Mathematics/Geometry.h"
+#include "Platform/Environment.h"
 #include "Rendering/Materials/MaterialDocument.h"
 
 #include <algorithm>
@@ -358,7 +359,8 @@ void RegisterImpostorMaterial(Engine::Renderer::RenderServices& renderServices,
     doc.properties["impostorBounds"] =
         std::vector<float>{center.x, center.y, center.z, radius};
     doc.properties["impostorAtlas"] = std::vector<float>{
-        static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f, 0.0f, 0.0f};
+        static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f,
+        Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f, 0.0f};
     doc.textures["albedoMap"] = std::string{};
     doc.textures["normalMap"] = std::string{};
     Engine::Renderer::Material* registered = renderServices.Materials().RegisterMaterialFromDocument(material, doc);

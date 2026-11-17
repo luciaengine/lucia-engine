@@ -88,6 +88,16 @@ TEST(OctahedralTests, HemisphereMapsTheHorizonToTheSquareEdge)
     ExpectDirection(Vector3(1.0f, 0.0f, 0.0f), HemiOctahedralDecode(HemiOctahedralEncode(Vector3(1.0f, -0.5f, 0.0f).Normalize())));
 }
 
+TEST(OctahedralTests, TheOuterHemisphereFramesLookFromTheHorizon)
+{
+    constexpr uint32_t kFramesPerSide = 8u;
+    for (uint32_t index = 0; index < kFramesPerSide; ++index)
+    {
+        EXPECT_NEAR(OctahedralFrameDirection(OctahedralLayout::Hemisphere, index, 0u, kFramesPerSide).y, 0.0f, kTolerance);
+        EXPECT_NEAR(OctahedralFrameDirection(OctahedralLayout::Hemisphere, 0u, index, kFramesPerSide).y, 0.0f, kTolerance);
+    }
+}
+
 TEST(OctahedralTests, HemisphereEncodesStraightDownAsAHorizonPointWithoutDividingByZero)
 {
     const Vector2 uv = HemiOctahedralEncode(Vector3(0.0f, -1.0f, 0.0f));
@@ -95,7 +105,7 @@ TEST(OctahedralTests, HemisphereEncodesStraightDownAsAHorizonPointWithoutDividin
     ExpectDirection(Vector3(1.0f, 0.0f, 0.0f), HemiOctahedralDecode(uv));
 }
 
-TEST(OctahedralTests, FrameDirectionIsTheDecodedFrameCenter)
+TEST(OctahedralTests, FrameDirectionIsTheDecodedGridPoint)
 {
     constexpr uint32_t kFramesPerSide = 8u;
     for (OctahedralLayout layout : {OctahedralLayout::Hemisphere, OctahedralLayout::Sphere})
@@ -106,9 +116,15 @@ TEST(OctahedralTests, FrameDirectionIsTheDecodedFrameCenter)
             {
                 const Vector3 direction = OctahedralFrameDirection(layout, column, row, kFramesPerSide);
                 EXPECT_NEAR(direction.Length(), 1.0f, kTolerance);
+                // The direction survives a round trip in both layouts. On the full sphere the corners
+                // and the folded edges have two codes each, so only the hemisphere maps back to the
+                // same grid point.
+                ExpectDirection(direction, OctahedralDecode(layout, OctahedralEncode(layout, direction)));
+                if (layout != OctahedralLayout::Hemisphere)
+                    continue;
                 const Vector2 uv = OctahedralEncode(layout, direction);
-                EXPECT_EQ(static_cast<uint32_t>(uv.x * kFramesPerSide), column);
-                EXPECT_EQ(static_cast<uint32_t>(uv.y * kFramesPerSide), row);
+                EXPECT_EQ(static_cast<uint32_t>(std::lround(uv.x * (kFramesPerSide - 1))), column);
+                EXPECT_EQ(static_cast<uint32_t>(std::lround(uv.y * (kFramesPerSide - 1))), row);
             }
         }
     }
