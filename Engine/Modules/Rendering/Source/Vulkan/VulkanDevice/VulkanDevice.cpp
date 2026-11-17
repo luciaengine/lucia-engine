@@ -14257,11 +14257,15 @@ DescriptorSetHandle VulkanDevice::CreateDescriptorSet(const DescriptorSetDesc& d
     // UAB layouts (e.g. the bindless texture array) are forced onto the pool
     // path even when the device is DB-enabled; the cache mirrors that decision.
     bool layoutDescriptorBufferEligible = false;
+    VkDeviceSize layoutDescriptorBufferSize = 0;
     {
         std::lock_guard<std::mutex> lock(m_LayoutCacheMutex);
         auto itEntry = m_SetLayoutCache.find(layoutKey);
         if (itEntry != m_SetLayoutCache.end())
+        {
             layoutDescriptorBufferEligible = itEntry->second.descriptorBufferEligible;
+            layoutDescriptorBufferSize = itEntry->second.descriptorBufferSize;
+        }
     }
 
     // Descriptor-buffer fast path: if the layout is DB-eligible and the runtime flag
@@ -14274,7 +14278,7 @@ DescriptorSetHandle VulkanDevice::CreateDescriptorSet(const DescriptorSetDesc& d
     if (layoutDescriptorBufferEligible && m_DescriptorBufferPool)
     {
         const bool persistent = !desc.transient;
-        DescriptorBufferAllocation alloc = AllocateDescriptorSetBytes(layout, persistent);
+        DescriptorBufferAllocation alloc = AllocateDescriptorSetBytes(layoutDescriptorBufferSize, persistent);
         if (!alloc.IsValid())
         {
             Logger::Log::Error("VulkanDevice: failed to allocate descriptor-buffer storage; falling back");
@@ -15953,6 +15957,8 @@ VkDescriptorSetLayout VulkanDevice::GetOrCreateDescriptorSetLayoutCached(const D
     entry.layout = layout;
     entry.refCount = 1;
     entry.descriptorBufferEligible = IsDescriptorBufferEnabled();
+    if (entry.descriptorBufferEligible && m_FpGetDescriptorSetLayoutSizeEXT)
+        m_FpGetDescriptorSetLayoutSizeEXT(m_Device, layout, &entry.descriptorBufferSize);
     m_SetLayoutCache[key] = entry;
     m_SetLayoutReverse[layout] = key;
     return layout;
@@ -16107,13 +16113,9 @@ VkDescriptorSetLayout VulkanDevice::GetOrCreateSetLayoutHandle(const DescriptorS
     return GetOrCreateDescriptorSetLayoutCached(desc, key);
 }
 
-DescriptorBufferAllocation VulkanDevice::AllocateDescriptorSetBytes(VkDescriptorSetLayout layout, bool persistent)
+DescriptorBufferAllocation VulkanDevice::AllocateDescriptorSetBytes(VkDeviceSize layoutSize, bool persistent)
 {
-    if (!m_DescriptorBufferPool || !m_FpGetDescriptorSetLayoutSizeEXT || layout == VK_NULL_HANDLE)
-        return {};
-    VkDeviceSize layoutSize = 0;
-    m_FpGetDescriptorSetLayoutSizeEXT(m_Device, layout, &layoutSize);
-    if (layoutSize == 0)
+    if (!m_DescriptorBufferPool || layoutSize == 0)
         return {};
     const VkDeviceSize align = m_DescriptorBufferPool->OffsetAlignment();
     return persistent
