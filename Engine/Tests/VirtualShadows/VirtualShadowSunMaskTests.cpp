@@ -197,6 +197,10 @@ class VirtualShadowSunMaskTest : public ::testing::Test
         return set;
     }
 
+    // Runs the mask pass and the in-shader lookup over the fixture with one filter. quality is the
+    // ShadowFilterQuality value in ShadowData; tanHalfAngle is the sun's, which sizes the PCSS penumbra.
+    void CompareMaskWithLookup(float quality, float tanHalfAngle);
+
     std::unique_ptr<IDevice> m_Device;
     std::vector<DescriptorSetHandle> m_Sets;
     std::vector<TextureHandle> m_Textures;
@@ -220,7 +224,7 @@ DescriptorSetLayoutDesc Layout(std::initializer_list<std::pair<uint32_t, Descrip
 }
 } // namespace
 
-TEST_F(VirtualShadowSunMaskTest, MaskVisibilityEqualsTheInShaderLookupPerReceiver)
+void VirtualShadowSunMaskTest::CompareMaskWithLookup(float quality, float tanHalfAngle)
 {
     m_Device = CreateVulkanDeviceFast();
     if (!m_Device)
@@ -304,11 +308,12 @@ TEST_F(VirtualShadowSunMaskTest, MaskVisibilityEqualsTheInShaderLookupPerReceive
     shadowData.shadowParams[1] = 1.0f;   // normal bias
     shadowData.shadowParams[2] = 1.0f;   // one level
     shadowData.shadowParams[3] = 100.0f; // max shadow distance
-    shadowData.shadowDebug[3] = 2.0f;    // the Poisson filter, the one the virtual lookup resolves
+    shadowData.shadowDebug[3] = quality;
     shadowData.shadowPcss[0] = 2.0f;     // softness
     shadowData.shadowPcss[1] = 16.0f;    // taps
     shadowData.shadowPcssCascades[0][0] = worldPerTexel;
     shadowData.shadowPcssCascades[0][1] = 2.0f;
+    shadowData.shadowPcssCascades[0][3] = tanHalfAngle;
 
     const uint32_t storage = static_cast<uint32_t>(BufferUsage::Storage);
     const uint32_t uniform = static_cast<uint32_t>(BufferUsage::Uniform);
@@ -453,4 +458,15 @@ TEST_F(VirtualShadowSunMaskTest, MaskVisibilityEqualsTheInShaderLookupPerReceive
     EXPECT_GT(shadowed, 0u);
     EXPECT_GT(penumbra, 0u);
     EXPECT_GT(noPage, 0u);
+}
+
+TEST_F(VirtualShadowSunMaskTest, PoissonMaskEqualsTheInShaderLookupPerReceiver)
+{
+    CompareMaskWithLookup(2.0f, 0.0f);
+}
+
+// A wide light (tan 0.3) gives a penumbra of several texels over the occluder edge.
+TEST_F(VirtualShadowSunMaskTest, PcssMaskEqualsTheInShaderLookupPerReceiver)
+{
+    CompareMaskWithLookup(3.0f, 0.3f);
 }
