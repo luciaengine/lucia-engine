@@ -121,12 +121,15 @@ void PrefabInstanceDescriptions::RecordOverridesBeforeEdit(EditorChangeNotificat
                                                            const EditorChangeNotifications::ComponentChangedEvent& change,
                                                            ECS::EntityHandle root)
 {
+    // The records join the action that owns the commit, else an open compound. A commit outside both keeps its
+    // records with no step.
     const bool ownsMutation = HistoryMutationScope::IsActiveFor(m_Undo);
     if (HistoryMutationScope::IsRestoringFor(m_Undo))
         return;
     const uint64 action = ownsMutation ? m_Undo->GetPendingActionId() : 0;
     if (ownsMutation && action == 0)
         return;
+    const bool inCompound = !ownsMutation && m_Undo && m_Undo->HasOpenCompound();
     if (m_Epoch != change.world->GetEntityHandleEpoch())
         return;
     const Entry* entry = m_Instances.Find(root.id);
@@ -147,6 +150,8 @@ void PrefabInstanceDescriptions::RecordOverridesBeforeEdit(EditorChangeNotificat
         *change.world, &notifications, added, std::span<const Scene::PrefabOverrideTarget>(), kKeepOverridesLabel);
     if (action != 0)
         m_Undo->AppendConsequence(action, std::move(command));
+    else if (inCompound)
+        m_Undo->CommitAlreadyApplied(std::move(command));
 }
 
 void PrefabInstanceDescriptions::OnWorldStructureChanged(

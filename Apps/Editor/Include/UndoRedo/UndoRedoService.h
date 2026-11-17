@@ -322,6 +322,7 @@ public:
             CommitPendingEdit();
         m_CompoundStack.push_back(std::make_unique<CompoundHistoryCommand>(std::move(name)));
     }
+    bool HasOpenCompound() const { return !m_CompoundStack.empty(); }
     void EndCompound()
     {
         CommitPendingEdit();

@@ -2396,7 +2396,8 @@ float IntensityOf(ECS::World& world, ECS::EntityHandle entity)
 }
 
 // Sets the probe's Intensity on `entity` through the Inspector's edit path: one interactive edit in `undo`, announced
-// as a commit on the tests' channel.
+// as a commit on the tests' channel. The history joins later edits of the same field into the pending action, so the
+// helper ends the action, as the next action in the editor does: each call is one undo step.
 void CommitIntensity(ECS::World& world, ECS::EntityHandle entity, Editor::UndoRedoService& undo, float intensity)
 {
     const ECS::ComponentTypeId probeType = ECS::GetComponentTypeId<Components::ReflectionProbe>();
@@ -2405,6 +2406,7 @@ void CommitIntensity(ECS::World& world, ECS::EntityHandle entity, Editor::UndoRe
         Editor::MultiEntityUndo::MakeComponentSnapshotTarget(&world, {entity}, probeType, &Notifications(), "Intensity"));
     world.GetComponentForWrite<Components::ReflectionProbe>(entity)->Intensity = intensity;
     edit.Commit();
+    ASSERT_TRUE(undo.CommitPendingEdit());
 }
 
 // Sets the probe's Intensity on `entity` as a custom inspector's toggle does: a commit that pushes no undo step.
@@ -2674,6 +2676,33 @@ TEST_F(PrefabPlaceTests, AnInteractiveEditThatChangesNoValueGivesNoRecordAndKeep
     EXPECT_FALSE(IsIntensityOverridden(world, lid)) << "the commit that changed nothing gave no record";
 }
 
+// Edits of one field join one pending action. An edit that sets the field back to the value the action started from
+// leaves no change, so it gives no record and no undo step.
+TEST_F(PrefabPlaceTests, EditsOfOneFieldInOneActionThatEndAtItsStartGiveNoRecordAndNoStep)
+{
+    Editor::UndoRedoService undo;
+    Editor::RegisterPrefabEditor(Notifications(), &undo, nullptr, {}, {});
+    const std::filesystem::path file = WriteAsset("Probe.prefab", kProbePrefab);
+    ECS::World world;
+    const ECS::EntityHandle root = PlaceAt(world, file, 0.0f, 0.0f, 0.0f);
+    ASSERT_TRUE(root.IsValid());
+    const ECS::EntityHandle lid = FindChild(world, root);
+    const ECS::ComponentTypeId probeType = ECS::GetComponentTypeId<Components::ReflectionProbe>();
+    for (const float intensity : {2.0f, 1.0f})
+    {
+        auto edit = undo.BeginInteractiveEdit(
+            "Set Intensity",
+            Editor::MultiEntityUndo::MakeComponentSnapshotTarget(&world, {lid}, probeType, &Notifications(), "Intensity"));
+        world.GetComponentForWrite<Components::ReflectionProbe>(lid)->Intensity = intensity;
+        edit.Commit();
+        ASSERT_EQ(IsIntensityOverridden(world, lid), intensity == 2.0f);
+    }
+    ASSERT_TRUE(undo.CommitPendingEdit());
+
+    EXPECT_FALSE(IsIntensityOverridden(world, lid)) << "the action changed nothing, so it gave no record";
+    EXPECT_EQ(undo.GetUndoCount(), 0u);
+}
+
 // An Apply first commits the open interactive edit. When that commit fails, the Apply writes nothing: a file write
 // with no undo step would leave the history unable to restore the prefab.
 TEST_F(PrefabPlaceTests, AnApplyWritesNothingWhenTheOpenEditCannotCommit)
@@ -2706,6 +2735,7 @@ TEST_F(PrefabPlaceTests, AnApplyWritesNothingWhenTheOpenEditCannotCommit)
 }
 
 // One Inspector commit of several entities pushes one step and announces each entity: each one gets its record.
+// Each loop pass ends its action, so the two commits are two steps.
 TEST_F(PrefabPlaceTests, AMultiEntityCommitGivesARecordToEachEntity)
 {
     Editor::UndoRedoService undo;
@@ -2729,6 +2759,7 @@ TEST_F(PrefabPlaceTests, AMultiEntityCommitGivesARecordToEachEntity)
         world.GetComponentForWrite<Components::ReflectionProbe>(firstLid)->Intensity = intensity;
         world.GetComponentForWrite<Components::ReflectionProbe>(secondLid)->Intensity = intensity;
         edit.Commit();
+        ASSERT_TRUE(undo.CommitPendingEdit());
     }
     EXPECT_TRUE(IsIntensityOverridden(world, firstLid));
     EXPECT_TRUE(IsIntensityOverridden(world, secondLid)) << "the second entity of the commit keeps its record";
