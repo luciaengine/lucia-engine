@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <span>
 
 namespace GameEngine
 {
@@ -72,6 +73,38 @@ bool IsCameraMotionPair(CascadeUpdateClass pairClass, CascadeCacheDirtyCause dep
     return IsCameraMotionCause(depthCause) || (tintCause && IsCameraMotionCause(*tintCause));
 }
 
+namespace
+{
+// The slots outside the budget under CasterDeformation, as a defer mask. A slot past the bound
+// renders. The others queue in deadline order (most stale first, then nearest) and render one
+// per following frame; a slot renders this frame only when the queue would otherwise break the
+// bound: the slot at queue position q defers q more frames, so it needs q <= maxAge - staleness.
+// After a lockstep start the slots fall into a staggered cycle with no frame that renders them all.
+uint32_t StaggerOutsideBudget(std::span<uint32_t> slots,
+                              const std::array<uint64_t, CascadeMotionScheduler::kMaxCascades>& staleness,
+                              uint32_t maxAge)
+{
+    std::sort(slots.begin(), slots.end(), [&](uint32_t a, uint32_t b)
+              { return staleness[a] != staleness[b] ? staleness[a] > staleness[b] : a < b; });
+    size_t head = 0;
+    while (head < slots.size() && staleness[slots[head]] > maxAge)
+        ++head;
+    for (;;)
+    {
+        bool feasible = true;
+        for (size_t q = 0; head + q < slots.size(); ++q)
+            feasible = feasible && staleness[slots[head + q]] + q <= maxAge;
+        if (feasible || head == slots.size())
+            break;
+        ++head;
+    }
+    uint32_t deferMask = 0;
+    for (size_t i = head; i < slots.size(); ++i)
+        deferMask |= 1u << slots[i];
+    return deferMask;
+}
+} // namespace
+
 CascadeMotionScheduler::FramePlan CascadeMotionScheduler::PlanFrame(
     uint32_t viewId, uint32_t numCascades,
     const std::array<CascadeUpdateClass, kMaxCascades>& classes,
@@ -102,7 +135,8 @@ CascadeMotionScheduler::FramePlan CascadeMotionScheduler::PlanFrame(
 
     // A slot past the staleness bound always renders, most stale first; the rest
     // take the budget nearest-first or defer. A forced slot takes budget under
-    // Camera and renders on top of it under CasterDeformation.
+    // Camera. Under CasterDeformation the slots outside the budget render in
+    // deadline order, one per frame where the bound allows (StaggerOutsideBudget).
     const auto forced = [&](uint32_t c) { return staleness[c] > maxAge; };
     std::sort(motionSlots, motionSlots + std::min(motionCount, kMaxCascades),
               [&](uint32_t a, uint32_t b)
@@ -118,6 +152,8 @@ CascadeMotionScheduler::FramePlan CascadeMotionScheduler::PlanFrame(
     const bool forcedTakesBudget = source == CascadeMotionSource::Camera;
     uint32_t budget = motionCap;
     uint32_t renders = 0;
+    uint32_t outside[kMaxCascades];
+    uint32_t outsideCount = 0;
     for (uint32_t i = 0; i < motionCount; ++i)
     {
         const uint32_t c = motionSlots[i];
@@ -130,6 +166,11 @@ CascadeMotionScheduler::FramePlan CascadeMotionScheduler::PlanFrame(
             ++renders;
             continue;
         }
+        if (!forcedTakesBudget)
+        {
+            outside[outsideCount++] = c;
+            continue;
+        }
         if (isForced)
         {
             ++renders;
@@ -138,6 +179,15 @@ CascadeMotionScheduler::FramePlan CascadeMotionScheduler::PlanFrame(
         plan.DeferMask |= 1u << c;
         ++stats.Deferred;
     }
+    const uint32_t deferMask = StaggerOutsideBudget({outside, outsideCount}, staleness, maxAge);
+    for (uint32_t i = 0; i < outsideCount; ++i)
+    {
+        if ((deferMask >> outside[i]) & 1u)
+            ++stats.Deferred;
+        else
+            ++renders;
+    }
+    plan.DeferMask |= deferMask;
     if (renders > motionCap)
         stats.ForcedBeyondCap += renders - motionCap;
     return plan;
