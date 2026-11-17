@@ -328,8 +328,7 @@ WorkStealingThreadPool::WorkStealingThreadPool(size_t numThreads, size_t blockin
     }
 
     // The wake state exists before any worker thread starts.
-    m_ParkSlotCount = numThreads;
-    m_ParkSlots = MakeUnique<GameEngine::FalseSharingPadded<ParkSlot>[]>(numThreads);
+    m_ParkSlots = Vector<GameEngine::FalseSharingPadded<ParkSlot>>(numThreads);
     m_IdleMaskWords = (numThreads + kIdleMaskBits - 1) / kIdleMaskBits;
     m_IdleMask = MakeUnique<GameEngine::FalseSharingPadded<std::atomic<uint64>>[]>(m_IdleMaskWords);
 
@@ -857,8 +856,8 @@ WorkStealingThreadPool::WakeCountsForTests WorkStealingThreadPool::GetWakeCounts
     counts.Consumed = m_WakeConsumedForTests.load(std::memory_order_relaxed);
     counts.Merged = m_WakeMergedForTests.load(std::memory_order_relaxed);
     counts.StaleConsumed = m_WakeStaleForTests.load(std::memory_order_relaxed);
-    for (size_t i = 0; i < m_ParkSlotCount; ++i) {
-        ParkSlot& slot = m_ParkSlots[i].Value;
+    for (const GameEngine::FalseSharingPadded<ParkSlot>& paddedSlot : m_ParkSlots) {
+        const ParkSlot& slot = paddedSlot.Value;
         std::lock_guard<std::mutex> lock(slot.Mutex);
         counts.FlagsSet += slot.Signaled ? 1 : 0;
     }
@@ -1073,8 +1072,8 @@ void WorkStealingThreadPool::Shutdown() {
     // Wake every parked worker to stop. The flag store comes before each slot
     // lock, and a worker reads the flag under its slot lock before it blocks
     // (§7 Hazard B): it sees the flag, or it is blocked when the notify lands.
-    for (size_t i = 0; i < m_ParkSlotCount; ++i) {
-        ParkSlot& slot = m_ParkSlots[i].Value;
+    for (GameEngine::FalseSharingPadded<ParkSlot>& paddedSlot : m_ParkSlots) {
+        ParkSlot& slot = paddedSlot.Value;
         {
             std::lock_guard<std::mutex> lock(slot.Mutex);
         }
@@ -1734,7 +1733,7 @@ bool WorkStealingThreadPool::WakeIdleWorker(size_t firstWorker) {
     }
     // Scan from the start bit to the end of its word, then the other words,
     // then the start word's bits below the start bit.
-    const size_t start = firstWorker % m_ParkSlotCount;
+    const size_t start = firstWorker % m_ParkSlots.size();
     const uint64 startBit = uint64{1} << (start % kIdleMaskBits);
     for (size_t step = 0; step <= m_IdleMaskWords; ++step) {
         const size_t wordIndex = (start / kIdleMaskBits + step) % m_IdleMaskWords;
