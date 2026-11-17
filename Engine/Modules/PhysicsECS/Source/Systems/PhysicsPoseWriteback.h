@@ -1,6 +1,9 @@
 #pragma once
 
+#include "PhysicsECS/Components/PhysicsWritebackRecord.h"
 #include "Types/Types.h"
+
+#include <optional>
 
 namespace GameEngine::ECS
 {
@@ -17,7 +20,6 @@ namespace GameEngine::Components
 {
 struct Transform;
 struct WorldTransform;
-struct PhysicsWritebackRecord;
 } // namespace GameEngine::Components
 
 namespace GameEngine::PhysicsECS
@@ -33,21 +35,21 @@ namespace GameEngine::PhysicsECS
 ///
 /// Otherwise the pose (blended from `interpolateFrom` by `alpha` when given) is composed, each
 /// component whose bytes differ is written (WorldTransform with its Version bump and dirty-feed entry),
-/// and the record is updated. A blend between two different poses moves with alpha, so it leaves the
-/// record invalid and the next frame composes again.
+/// and the updated record is returned for the caller to store. A blend between two different poses moves
+/// with alpha, so it leaves the record invalid and the next frame composes again.
 ///
 /// The Transform and the WorldTransform get the backend's double position exactly.
 ///
 /// @param interpolateFrom The backend pose before the last step to blend from, or null for no blend.
 /// @param alpha Blend weight of `current` in [0, 1]; read only with `interpolateFrom`.
-/// @return true when the pose was composed, false when the entity was skipped as unchanged.
-bool WritePhysicsPose(ECS::World& world,
+/// @return the updated record when the pose was composed, nullopt when the entity was skipped as unchanged.
+std::optional<Components::PhysicsWritebackRecord> WritePhysicsPose(ECS::World& world,
                       ECS::EntityHandle entity,
                       const Physics::Transform& current,
                       const Physics::Transform* interpolateFrom,
                       float32 alpha,
                       const Components::Transform& transform,
                       const Components::WorldTransform& worldTransform,
-                      Components::PhysicsWritebackRecord& record);
+                      const Components::PhysicsWritebackRecord& record);
 
 } // namespace GameEngine::PhysicsECS

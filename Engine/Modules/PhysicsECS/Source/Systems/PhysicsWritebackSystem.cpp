@@ -25,8 +25,12 @@ bool ComposeBodyPose(ECS::World& world, Physics::PhysicsWorld& pw, float32 alpha
     // Interpolate from the snapshot captured in PhysicsStepSystem.
     const Physics::Transform* interpolateFrom =
         (body.hasPrevPhysicsTransform && alpha < 1.0f) ? &body.prevPhysicsTransform : nullptr;
-    return WritePhysicsPose(world, e, pw.GetBodyTransform(body.body), interpolateFrom, alpha, t, wt,
-                            body.WritebackRecord);
+    const auto record = WritePhysicsPose(world, e, pw.GetBodyTransform(body.body), interpolateFrom, alpha, t, wt,
+                                         body.WritebackRecord);
+    if (!record)
+        return false;
+    body.WritebackRecord = *record;
+    return true;
 }
 } // namespace
 

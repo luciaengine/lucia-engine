@@ -56,17 +56,17 @@ Physics::Transform BlendPose(const Physics::Transform& from, const Physics::Tran
 }
 } // namespace
 
-bool WritePhysicsPose(ECS::World& world,
+std::optional<Components::PhysicsWritebackRecord> WritePhysicsPose(ECS::World& world,
                       ECS::EntityHandle entity,
                       const Physics::Transform& current,
                       const Physics::Transform* interpolateFrom,
                       float32 alpha,
                       const Components::Transform& transform,
                       const Components::WorldTransform& worldTransform,
-                      Components::PhysicsWritebackRecord& record)
+                      const Components::PhysicsWritebackRecord& record)
 {
     if (IsUnchanged(current, interpolateFrom, transform, worldTransform, record))
-        return false;
+        return std::nullopt;
 
     const Physics::Transform pose = interpolateFrom ? BlendPose(*interpolateFrom, current, alpha) : current;
 
@@ -95,11 +95,12 @@ bool WritePhysicsPose(ECS::World& world,
         Components::BumpWorldTransform(world, entity, written);
     }
 
-    record.Valid = interpolateFrom == nullptr || SamePose(*interpolateFrom, current);
-    record.AppliedPose = current;
-    record.WrittenPosition = composed.Position;
-    record.WrittenBasis = composed.Basis;
-    return true;
+    Components::PhysicsWritebackRecord updated = record;
+    updated.Valid = interpolateFrom == nullptr || SamePose(*interpolateFrom, current);
+    updated.AppliedPose = current;
+    updated.WrittenPosition = composed.Position;
+    updated.WrittenBasis = composed.Basis;
+    return updated;
 }
 
 } // namespace GameEngine::PhysicsECS

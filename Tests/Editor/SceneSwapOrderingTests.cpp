@@ -183,7 +183,7 @@ TEST(SceneSwapOrdering, TheSharedStepReleasesTheSplineGenerators)
            "survive the swap and the next sweep destroys entities of the incoming scene";
 }
 
-// The editor releases the shared recipe system before the scene is replaced.
+// The editor releases the shared recipe system, an editor service, before the scene is replaced.
 TEST(SceneSwapOrdering, EditorApplicationWiresTheSplineGeneratorRelease)
 {
     const std::string source = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication" / "EditorApplication.cpp");
@@ -191,7 +191,8 @@ TEST(SceneSwapOrdering, EditorApplicationWiresTheSplineGeneratorRelease)
     ASSERT_NE(wire, std::string::npos);
     const size_t callbackEnd = source.find("});", wire);
     ASSERT_NE(callbackEnd, std::string::npos);
-    EXPECT_NE(source.substr(wire, callbackEnd - wire).find("m_RecipeEditorHooks->ReleaseSceneScoped("),
+    // The release reaches every registered editor service; RecipeEditorHooks is one of them.
+    EXPECT_NE(source.substr(wire, callbackEnd - wire).find("m_EditorServices.ReleaseSceneScoped("),
               std::string::npos);
 
     const std::string hooks = ReadFile(EditorSourceRoot() / "Source" / "Placement" / "RecipeEditorHooks.cpp");
@@ -317,9 +318,15 @@ TEST(SceneSwapOrdering, DeserializeWorldPreservesHandlesAndBumpsTheResetGenerati
 
 namespace
 {
+// The spline recipe generators live in the SplineRecipes module, some in a folder of their own.
 std::string PlacementSource(const char* fileName)
 {
-    return ReadFile(EditorSourceRoot().parent_path().parent_path() / "Engine" / "Modules" / "SplineRecipes" / "Source" / fileName);
+    const std::filesystem::path root =
+        EditorSourceRoot().parent_path().parent_path() / "Engine" / "Modules" / "SplineRecipes" / "Source";
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root))
+        if (entry.is_regular_file() && entry.path().filename() == fileName)
+            return ReadFile(entry.path());
+    return {};
 }
 } // namespace
 

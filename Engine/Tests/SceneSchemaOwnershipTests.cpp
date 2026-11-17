@@ -101,15 +101,16 @@ TEST_F(SceneSchemaOwnership, NoReflectedComponentIsWrittenByBothAHandWrittenSche
             continue;
         }
         // Creation adds the type's required components too; a schema that reads one of those
-        // stays present once the type itself is removed, and does not write this type.
+        // stays present once the type itself is removed, and does not write this type. A type that
+        // refuses removal keeps the presence check alone.
         std::vector<const Scene::ISceneComponentSchema*> present;
         for (const Scene::ISceneComponentSchema* schema : handWritten)
             if (schema->IsPresent(world, entity))
                 present.push_back(schema);
-        ASSERT_TRUE(world.RemoveComponentByTypeIdImmediate(entity, typeId));
+        const bool removed = world.RemoveComponentByTypeIdImmediate(entity, typeId);
         for (const Scene::ISceneComponentSchema* schema : present)
         {
-            if (!schema->IsPresent(world, entity))
+            if (!removed || !schema->IsPresent(world, entity))
                 doubleWritten.push_back(std::string(ECS::ComponentFieldRegistry::GetCanonicalName(typeId)) +
                                         " is written by '" + std::string(schema->GetComponentName()) +
                                         "' and by reflection as '" +
