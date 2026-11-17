@@ -1,5 +1,5 @@
 #version 450
-// Runs the production DDGI normal reconstruction on a synthetic depth buffer.
+// Runs the production DDGI normal reconstruction and crease test on a synthetic depth buffer.
 #include "Includes/ddgi_depth_normal.glsl"
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0) uniform sampler2D uDepth;
@@ -22,6 +22,8 @@ void main()
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
     float depth = texelFetch(uDepth, pixel, 0).r;
     vec3 position = GE_DDGIWorldPositionAt(uv, depth, invProj, invView);
+    // w: 1 where GE_DDGIDepthCreaseAt finds a crease or a silhouette, else 0.
     normals[pixel.y * size.x + pixel.x] = vec4(GE_DDGINormalFromDepth(
-        uDepth, uv, depth, position, cameraPosition.xyz - position, invProj, invView), 1.0);
+        uDepth, uv, depth, position, cameraPosition.xyz - position, invProj, invView),
+        GE_DDGIDepthCreaseAt(uDepth, uv, depth) ? 1.0 : 0.0);
 }

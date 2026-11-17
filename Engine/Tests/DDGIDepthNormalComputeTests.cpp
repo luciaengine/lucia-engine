@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <utility>
 #include <vector>
 
 using namespace GameEngine::Rendering;
@@ -185,6 +186,31 @@ class DDGIDepthNormalComputeTest : public ::testing::Test
         EXPECT_GT(minInteriorAgreement, 0.9999f);
         EXPECT_GT(minBorderAgreement, 0.9999f)
             << "screen-edge normals must describe the same plane as the interior";
+        for (uint32_t i = 0; i < width * height; ++i)
+            ASSERT_EQ(normals[i * 4 + 3], 0.0f) << "texel " << i << " of one plane is marked as a crease";
+    }
+
+    // 2 planes that meet without a depth step on the line between rows height / 2 - 1 and height / 2. The rows
+    // above see slopeTop * y + z = 4, the rows below slopeBottom * y + z = 4 (the depth model of CheckPlane).
+    // Returns the crease flag of each row of column width / 2.
+    std::vector<float> CreaseRowFlags(uint32_t width, uint32_t height, float slopeTop, float slopeBottom)
+    {
+        Parameters params;
+        params.invProj[0] = params.invProj[5] = params.invProj[11] = params.invProj[14] = 1.0f;
+        params.invView[0] = params.invView[5] = params.invView[10] = params.invView[15] = 1.0f;
+        std::vector<float> depth(width * height);
+        for (uint32_t y = 0; y < height; ++y)
+        {
+            const float ndcY = 1.0f - 2.0f * (static_cast<float>(y) + 0.5f) / height;
+            const float slope = y < height / 2 ? slopeTop : slopeBottom;
+            for (uint32_t x = 0; x < width; ++x)
+                depth[y * width + x] = (slope * ndcY + 1.0f) / 4.0f;
+        }
+        const auto normals = Dispatch(width, height, depth, params);
+        std::vector<float> flags(height);
+        for (uint32_t y = 0; y < height; ++y)
+            flags[y] = normals[(y * width + width / 2) * 4 + 3];
+        return flags;
     }
 
     std::vector<float> result;
@@ -200,5 +226,20 @@ TEST_F(DDGIDepthNormalComputeTest, SlopedPlanesKeepTheirNormalsAtViewportBorders
 {
     CheckPlane(32, 24, 0.2f, 0.5f);
     CheckPlane(33, 25, -0.2f, -0.5f);
+}
+
+// A symmetric crease has equal depth steps on both sides, so a test of the step sizes alone does not find it.
+TEST_F(DDGIDepthNormalComputeTest, ACreaseIsMarkedOnlyOnTheTwoRowsNextToIt)
+{
+    constexpr uint32_t kWidth = 16;
+    constexpr uint32_t kHeight = 24;
+    // Both planes stay in the positive reverse-Z range through the last row.
+    for (const auto& [top, bottom] : {std::pair{0.5f, -0.5f}, std::pair{0.1f, 0.9f}})
+    {
+        SCOPED_TRACE(::testing::Message() << "slopes " << top << " above, " << bottom << " below");
+        const std::vector<float> flags = CreaseRowFlags(kWidth, kHeight, top, bottom);
+        for (uint32_t y = 0; y < kHeight; ++y)
+            EXPECT_EQ(flags[y], (y == kHeight / 2 - 1 || y == kHeight / 2) ? 1.0f : 0.0f) << "row " << y;
+    }
 }
 }  // namespace

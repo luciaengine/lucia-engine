@@ -1453,6 +1453,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(ddgi_glossy_upload ddgi_glossy_upload.comp)
     _ge_add_shaderpkg_compute(ddgi_glossy_resolve ddgi_glossy_resolve.comp)
     _ge_add_shaderpkg_compute(ddgi_glossy_resolve_blur ddgi_glossy_resolve_blur.comp)
+    _ge_add_shaderpkg_compute(ddgi_glossy_resolve_upsample ddgi_glossy_resolve_upsample.comp)
     _ge_add_shaderpkg_compute(ddgi_map_atlas_blit ddgi_map_atlas_blit.comp)
     _ge_add_shaderpkg_compute(ddgi_skin_positions ddgi_skin_positions.comp)
     _ge_add_shaderpkg_compute(ddgi_bvh_refit ddgi_bvh_refit.comp)

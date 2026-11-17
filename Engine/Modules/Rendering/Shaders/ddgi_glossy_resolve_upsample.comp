@@ -1,0 +1,103 @@
+#version 450
+
+// Upsamples the blurred DDGI diffuse irradiance (ddgi_glossy_resolve_blur.comp) from resolve extent to render extent,
+// so the forward pass reads 1 texel per pixel. Each pixel takes the 4 nearest resolve texels with their bilinear
+// weights, and keeps a texel only when its depth agrees and the normal it was gathered for faces about as the pixel
+// does. At a crease between a wall and a floor the depth has no step, so the depth test alone lets the light of one
+// surface into the other.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "Includes/view_params.glsl"  // ViewParams UBO, set 0 binding 7
+
+// Blurred irradiance at resolve extent: rgb, raw reverse-Z depth in a.
+layout(set = 0, binding = 0) uniform sampler2D uIrradianceIn;
+// The world normal each resolve texel was gathered for, 0 where no surface is.
+layout(set = 0, binding = 1) uniform sampler2D uGatherNormal;
+// 1-sample view depth at render extent, reverse-Z (near = 1, far/cleared = 0).
+layout(set = 0, binding = 2) uniform sampler2D uViewDepth;
+// Irradiance at render extent: rgb, raw reverse-Z depth in a.
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D uIrradianceOut;
+
+// All reads are texel fetches: a filtered read mixes the 2 sides of a crease before the test can reject one.
+float UpsampleDepth(vec2 uv)
+{
+    ivec2 size = textureSize(uViewDepth, 0);
+    return texelFetch(uViewDepth, clamp(ivec2(uv * vec2(size)), ivec2(0), size - ivec2(1)), 0).r;
+}
+#define GE_DDGI_DEPTH_TAP(depthTexture, uv) UpsampleDepth(uv)
+#include "Includes/ddgi_depth_normal.glsl"
+
+// Reverse-Z is non-linear, so the depth tolerance is relative to the pixel depth (as in the blur).
+const float kUpsampleDepthTolerance = 0.02;
+// A texel is kept when the cosine to the pixel normal is at most this much below the best of the 4 texels. A
+// normal-mapped gather normal keeps its texels; a texel of the other side of a crease does not.
+const float kNormalAgreementMargin = 0.1;
+// A texel at 0 bilinear weight still counts when it is the only one kept.
+const float kMinBilinearWeight = 1.0e-3;
+// The agreement of a texel that describes another surface.
+const float kRejected = -2.0;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(uIrradianceOut);
+    if (pixel.x >= outSize.x || pixel.y >= outSize.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(outSize);
+    float rawDepth = UpsampleDepth(uv);
+    if (rawDepth <= 0.0)
+    {
+        imageStore(uIrradianceOut, pixel, vec4(0.0));
+        return;
+    }
+    vec3 posWS = GE_DDGIWorldPositionAt(uv, rawDepth, ge_invProj, ge_invView);
+    vec3 pixelN = GE_DDGINormalFromDepth(uViewDepth, uv, rawDepth, posWS, ge_invView[3].xyz - posWS,
+                                         ge_invProj, ge_invView);
+
+    // The 4 resolve texels around the pixel centre, for any ratio of the 2 extents.
+    ivec2 inSize = textureSize(uIrradianceIn, 0);
+    vec2 footprint = uv * vec2(inSize) - 0.5;
+    ivec2 base = ivec2(floor(footprint));
+    vec2 frac = footprint - vec2(base);
+
+    vec4 taps[4];
+    float agreement[4];
+    float best = kRejected;
+    for (int k = 0; k < 4; ++k)
+    {
+        ivec2 texel = clamp(base + ivec2(k & 1, k >> 1), ivec2(0), inSize - ivec2(1));
+        taps[k] = texelFetch(uIrradianceIn, texel, 0);
+        vec3 gatherN = texelFetch(uGatherNormal, texel, 0).xyz;
+        bool sameDepth = taps[k].a > 0.0 &&
+            abs(taps[k].a - rawDepth) <= kUpsampleDepthTolerance * max(rawDepth, 1.0e-6);
+        agreement[k] = sameDepth && dot(gatherN, gatherN) > 0.25 ? dot(pixelN, normalize(gatherN)) : kRejected;
+        best = max(best, agreement[k]);
+    }
+
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    if (best > kRejected)
+    {
+        for (int k = 0; k < 4; ++k)
+        {
+            if (agreement[k] < best - kNormalAgreementMargin)
+                continue;
+            float wx = (k & 1) == 0 ? 1.0 - frac.x : frac.x;
+            float wy = (k >> 1) == 0 ? 1.0 - frac.y : frac.y;
+            float w = max(wx * wy, kMinBilinearWeight);
+            sum += taps[k].rgb * w;
+            wsum += w;
+        }
+    }
+    else
+    {
+        // No texel describes this surface (a sliver thinner than a resolve texel): take the nearest texel, which is
+        // at most one resolve texel away.
+        ivec2 nearest = clamp(base + ivec2(round(frac)), ivec2(0), inSize - ivec2(1));
+        sum = texelFetch(uIrradianceIn, nearest, 0).rgb;
+        wsum = 1.0;
+    }
+    imageStore(uIrradianceOut, pixel, vec4(sum / wsum, rawDepth));
+}
