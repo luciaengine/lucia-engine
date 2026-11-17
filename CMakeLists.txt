@@ -321,6 +321,23 @@ add_compile_definitions($<$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>,$<CONFIG:RelW
 set(GE_DEBUG_INSTRUMENTATION_VALUE "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>>,1,0>")
 add_compile_definitions(GE_DEBUG_INSTRUMENTATION=${GE_DEBUG_INSTRUMENTATION_VALUE})
 
+# Standard-library precondition checks where GE_DEBUG_INSTRUMENTATION is 1; Release has none. The switches are
+# per translation unit and keep the ABI. libc++ runs every check in Debug and aborts through LibcxxVerboseAbort.cpp;
+# DebugFast runs the fast checks and traps (SIGTRAP on arm64). MSVC and libstdc++ abort in both configurations.
+set(_ge_std_hardening "$<BOOL:${GE_DEBUG_INSTRUMENTATION_VALUE}>")
+if(MSVC)
+    add_compile_definitions(
+        $<${_ge_std_hardening}:_MSVC_STL_HARDENING=1>
+        $<${_ge_std_hardening}:_MSVC_STL_USE_ABORT_AS_DOOM_FUNCTION>
+    )
+else()
+    add_compile_definitions(
+        $<$<CONFIG:Debug>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG>
+        $<$<CONFIG:DebugFast>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>
+        $<${_ge_std_hardening}:_GLIBCXX_ASSERTIONS>
+    )
+endif()
+
 # Force MSVC to use UTF-8 encoding for both source and execution character sets 
 # to prevent character encoding warnings (C4819) on multilingual systems.
 # Under strict compilation configurations, this warning is promoted to an error and breaks the build.
