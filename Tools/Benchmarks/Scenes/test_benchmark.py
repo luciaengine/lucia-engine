@@ -58,8 +58,18 @@ class CompareTests(unittest.TestCase):
         self.assertIn("frameMs.median", [r["metric"] for r in regressions])
 
     def test_a_tiny_pass_is_never_flagged(self):
-        _, regressions, _ = benchmark.compare(result("a", 10.0, pass_ms=0.01), result("b", 10.0, pass_ms=0.03), None)
+        _, regressions, _ = benchmark.compare(result("a", 10.0, pass_ms=0.04), result("b", 10.0, pass_ms=0.28), None)
         self.assertEqual([r for r in regressions if r["metric"].startswith("pass:")], [])
+
+    def test_tile_passes_compare_as_one_sum(self):
+        base, head = result("a", 10.0), result("b", 10.0)
+        base["scenes"]["Forest"]["poses"][0]["passes"] = [{"name": "Depth.View2.Tile3", "medianMs": 2.0},
+                                                          {"name": "Depth.View2.Tile9", "medianMs": 2.0}]
+        head["scenes"]["Forest"]["poses"][0]["passes"] = [{"name": "Depth.View2.Tile4", "medianMs": 2.0},
+                                                          {"name": "Depth.View2.Tile9", "medianMs": 2.0}]
+        rows, regressions, _ = benchmark.compare(base, head, None)
+        self.assertEqual([r["metric"] for r in rows if r["metric"].startswith("pass:")], ["pass:Depth.View2.Tile*"])
+        self.assertEqual(regressions, [])
 
     def test_a_scene_that_became_invalid_is_reported(self):
         _, _, missing = benchmark.compare(result("a", 10.0), result("b", 10.0, valid=False), None)
