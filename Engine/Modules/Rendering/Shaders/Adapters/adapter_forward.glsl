@@ -944,36 +944,42 @@ void main()
         gl_FragCoord.xy, linearDepth);
   #else
     // Fallback: single directional light.
-    vec3 L = normalize(-Light.uLightDirWorld.xyz);
     g_BaseMultiscatter = GE_ComputeBaseMultiscatter(
         mix(GE_DielectricF0(so.specularWeight, so.specularColor, so.specularIor), so.baseColor, so.metallic),
         max(dot(so.normalWS, V), 0.0), so.roughness);
-    float shadowFactor = 1.0;
-    vec3 shadowTint = vec3(1.0); // glass transmittance between the light and this surface
+    // A world with no directional light has a zero direction, and normalize(0) is not a number.
+    // Shade the primary light only when it delivers light, as the Forward+ path does.
+    vec3 primaryLight = Light.uLightColorWorld.rgb * Light.uLightDirWorld.w;
+    if (max(primaryLight.r, max(primaryLight.g, primaryLight.b)) > 0.0)
+    {
+        vec3 L = normalize(-Light.uLightDirWorld.xyz);
+        float shadowFactor = 1.0;
+        vec3 shadowTint = vec3(1.0); // glass transmittance between the light and this surface
     #ifdef HAS_SHADOWS
-    // Use view-space Z (not Euclidean distance) so cascade splits match.
-    float viewZ = (Cam.uVRel * vec4(vPosRel, 1.0)).z;
-    shadowFactor = GE_SampleShadow(vPosRel, so.normalWS, viewZ, L, gl_FragCoord.xy);
-    shadowTint = ge_lastShadowTint;
+        // Use view-space Z (not Euclidean distance) so cascade splits match.
+        float viewZ = (Cam.uVRel * vec4(vPosRel, 1.0)).z;
+        shadowFactor = GE_SampleShadow(vPosRel, so.normalWS, viewZ, L, gl_FragCoord.xy);
+        shadowTint = ge_lastShadowTint;
     #endif
     #ifdef GE_PARALLAX_MARCH
-    // The surface's own relief shadows the primary light as its cascade shadow does.
-    shadowFactor *= so.primaryLightOcclusion;
+        // The surface's own relief shadows the primary light as its cascade shadow does.
+        shadowFactor *= so.primaryLightOcclusion;
     #endif
-    shadowFactor = GE_SurfaceDirectionalVisibility(shadowFactor, (Cam.uVRel * vec4(vPosRel, 1.0)).z, L);
-    // Subsurface transmission added outside shadowFactor/shadowTint so back-lit thin objects glow through.
-    finalColor = GE_EvaluateSurfaceLight(so, V, L)
-                 * Light.uLightColorWorld.rgb * Light.uLightDirWorld.w * shadowFactor * shadowTint
-                 + GE_SubsurfaceTransmission(so, V, L)
-                 * Light.uLightColorWorld.rgb * Light.uLightDirWorld.w;
+        shadowFactor = GE_SurfaceDirectionalVisibility(shadowFactor, (Cam.uVRel * vec4(vPosRel, 1.0)).z, L);
+        // Subsurface transmission added outside shadowFactor/shadowTint so back-lit thin objects glow through.
+        finalColor = GE_EvaluateSurfaceLight(so, V, L)
+                     * Light.uLightColorWorld.rgb * Light.uLightDirWorld.w * shadowFactor * shadowTint
+                     + GE_SubsurfaceTransmission(so, V, L)
+                     * Light.uLightColorWorld.rgb * Light.uLightDirWorld.w;
     #ifdef HAS_SHADOWS
-    // Glass caustics: focused-light dapple (see GE_GlassCaustic) — gated by presence + NdotL,
-    // tinted by the glass, x the shadow factor so there is no caustic in an opaque shadow, and
-    // returned through the receiver's own diffuse albedo.
-    finalColor += GE_GlassCaustic(vPosWS, so.normalWS, L, ge_lastGlassPresence,
-                                  shadowTint, so.baseColor * (1.0 - so.metallic),
-                                  Light.uLightColorWorld.rgb, Light.uLightDirWorld.w, shadowFactor);
+        // Glass caustics: focused-light dapple (see GE_GlassCaustic) — gated by presence + NdotL,
+        // tinted by the glass, x the shadow factor so there is no caustic in an opaque shadow, and
+        // returned through the receiver's own diffuse albedo.
+        finalColor += GE_GlassCaustic(vPosWS, so.normalWS, L, ge_lastGlassPresence,
+                                      shadowTint, so.baseColor * (1.0 - so.metallic),
+                                      Light.uLightColorWorld.rgb, Light.uLightDirWorld.w, shadowFactor);
     #endif
+    }
     // Secondary directionals: same BRDF, additive, UNSHADOWED (cascades belong to
     // the primary only). Colors arrive premultiplied (color * intensity).
     {
