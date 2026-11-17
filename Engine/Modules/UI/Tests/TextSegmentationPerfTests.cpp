@@ -7,12 +7,6 @@
 // square of the run: a 16 KB run cost seconds per segmentation pass in a Debug
 // build, on the thread that draws the editor.
 //
-// The budget below is wall clock, so it carries the usual caveat about the
-// machine it runs on, and it is the weaker of the two criteria. Measured, it
-// sits ~14x above the linear cost and ~78x below the quadratic one in Debug,
-// but only ~3.6x below the quadratic one in Release, where both costs fall and
-// the budget does not. The figures are on kPassBudgetMs.
-//
 // The scaling check is the machine-independent half, and the one whose margin
 // does not shrink on a faster machine: the same work per byte is done at both
 // sizes, so a linear implementation spends the same time on each and a
@@ -22,9 +16,10 @@
 
 #include "UI/TextSegmentation.h"
 
+#include "TestThreadCpuTime.h"
+
 #include <gtest/gtest.h>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <string>
@@ -44,15 +39,7 @@ constexpr size_t kLargeBytes = 16 * 1024;
 // are directly comparable.
 constexpr size_t kWorkBytes = 64 * 1024;
 
-// One pass over a 16 KB pathological string, on a Ryzen 9 9950X3D. Each figure
-// is the narrowest margin seen across both tests and every run:
-//
-//   Debug     4.4 ms linear,  4.7 s quadratic   -> 14x above,  78x below
-//   Release   0.31 ms linear, 219 ms quadratic  -> 194x above, 3.6x below
-//
-// Debug is the config the suite is normally built in. In Release the quadratic
-// side clears this budget by only 3.6x, and that margin shrinks on a faster
-// machine, which is why the scaling criterion below is the load-bearing one.
+// CPU time budget for one pass over a 16 KB string of combining marks.
 constexpr double kPassBudgetMs = 60.0;
 
 // A linear implementation holds this at ~1.0 for a 4x size step; a quadratic one
@@ -76,16 +63,16 @@ std::string MarkRun(std::string_view prefix, size_t bytes, std::string_view suff
 double PassMs(std::string_view text, size_t passes)
 {
     volatile size_t sink = 0;
-    const auto start = std::chrono::steady_clock::now();
-    for (size_t pass = 0; pass < passes; ++pass)
-    {
-        sink += TextSegmentation::DoubleClickSelectionAt(text, text.size()).Begin;
-        sink += TextSegmentation::NextBoundary(text, 0);
-        sink += TextSegmentation::PrevBoundary(text, text.size());
-    }
-    const auto end = std::chrono::steady_clock::now();
+    const double batchMs = GameEngine::UI::Tests::MeanThreadCpuMilliseconds([&sink, text, passes] {
+        for (size_t pass = 0; pass < passes; ++pass)
+        {
+            sink += TextSegmentation::DoubleClickSelectionAt(text, text.size()).Begin;
+            sink += TextSegmentation::NextBoundary(text, 0);
+            sink += TextSegmentation::PrevBoundary(text, text.size());
+        }
+    });
     (void)sink;
-    return std::chrono::duration<double, std::milli>(end - start).count() / static_cast<double>(passes);
+    return batchMs / static_cast<double>(passes);
 }
 
 } // namespace
