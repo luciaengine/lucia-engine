@@ -197,6 +197,7 @@ PackedTlas TlasPacker::Pack(std::span<const UberMaterial> materials,
                          ? -1.0f
                          : static_cast<float32>(instance.MaterialSlot);
         record[16] = instance.GIEmitter ? 1.0f : 0.0f;
+        record[17] = static_cast<float32>(instance.InstanceId);
     }
 
     for (uint32 i = 0; i < tlasNodeCount; ++i)

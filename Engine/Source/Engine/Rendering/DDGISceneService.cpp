@@ -287,8 +287,9 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
 
     const std::vector<Rendering::GPUInstance>& instances = m_GpuScene->GetInstances();
     m_PlanParticipants.reserve(instances.size());
-    for (const Rendering::GPUInstance& instance : instances)
+    for (uint32_t instanceIndex = 0; instanceIndex < instances.size(); ++instanceIndex)
     {
+        const Rendering::GPUInstance& instance = instances[instanceIndex];
         // Skinned instances participate: each gets its OWN plan slot below (a
         // shared slot cannot hold two different poses), whose pooled BVH range
         // the per-tick GPU refit re-poses (ddgi_bvh_refit.comp) — the software
@@ -369,7 +370,7 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
             continue;
         m_PlanParticipants.push_back(
             Participant{worldMatrix, instance.meshIndex, planSlot, materialSlot,
-                        (instance.flags & Rendering::kInstanceFlagGIEmitter) != 0u});
+                        (instance.flags & Rendering::kInstanceFlagGIEmitter) != 0u, instanceIndex});
     }
 
     // Values do not affect BVH topology. Keep table layout, map bindings and
@@ -400,11 +401,15 @@ DDGISceneService::PlanHashes DDGISceneService::SweepScene()
         HashValue(structureHash, participant.GIEmitter ? 1u : 0u);
     }
 
-    // Full: the structure plus the world transforms, which is what the packed
-    // instance records actually hold.
+    // Full: the structure plus the world transforms and the instance ids, which
+    // is what the packed instance records actually hold. A change of either
+    // repacks the records and keeps the BLAS pool.
     uint64_t transformHash = Hashing::kFnv1a64OffsetBasis;
     for (const Participant& participant : m_PlanParticipants)
+    {
         HashBytes(transformHash, participant.WorldFromLocal.Data(), sizeof(float) * 16);
+        HashValue(transformHash, participant.GpuInstanceIndex);
+    }
     uint64_t fullHash = structureHash;
     HashValue(fullHash, transformHash);
     for (const SceneBvh::UberMaterial& material : m_PlanMaterials)
@@ -582,6 +587,7 @@ std::vector<SceneBvh::TlasInstance> DDGISceneService::BuildTlasInstances(
         instance.BlasEnd        = range.NodeEnd;
         instance.MaterialSlot   = participant.MaterialSlot;
         instance.GIEmitter      = participant.GIEmitter;
+        instance.InstanceId     = participant.GpuInstanceIndex;
         tlasInstances.push_back(instance);
     }
     return tlasInstances;

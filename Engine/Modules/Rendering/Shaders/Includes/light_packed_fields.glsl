@@ -25,11 +25,14 @@
 //   dirIntensity     xyz=directionWS        w=intensity
 //   colorAreaWidth   rgb=color              w=areaWidth
 //   areaParams       x=areaHeight y=areaRadius z=decay   w=spotCosInner
+//                    y of an emitter proxy in DDGI's buffer = the world bounding radius of the emitter
 //   spotParams       x=spotCosOuter | FOG: y=fogContribution z=fogDensityBoost
 //                                          w=fogOriginFade
 //   areaRight        xyz=area right axis    | FOG: w=fogAnisotropy
 //   areaUp           xyz=area up axis       w=falloffMode
-//   shadowSlots(ivec4) x=point-shadow atlas slot (-1 = unshadowed) yzw=reserved
+//   shadowSlots(ivec4) x=point-shadow atlas slot (-1 = unshadowed) zw=reserved
+//                    y=reserved in the LightBuffer; in DDGI's buffer, the GPUInstance index
+//                      of an emitter proxy (-1 = not a proxy)
 //
 // FOG LANES (repurposed spares): fog reuses the four otherwise-unused scalar
 // slots left over once the light/area fields are packed —
@@ -48,4 +51,4 @@
     vec4 spotParams;     // x=spotCosOuter, y=fogContribution, z=fogDensityBoost, w=fogOriginFade
     vec4 areaRight;      // xyz=area right axis, w=fogAnisotropy
     vec4 areaUp;         // xyz=area up axis, w=falloffMode
-    ivec4 shadowSlots;   // x=point-shadow atlas slot (-1 = unshadowed), yzw=reserved
+    ivec4 shadowSlots;   // x=point-shadow atlas slot (-1 = unshadowed), y=DDGI emitter instance, zw=reserved
