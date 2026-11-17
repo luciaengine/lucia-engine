@@ -1504,7 +1504,7 @@ TEST(RenderPipelineCompiler, InputGatesWarnUnlessAnInputIsGatedOnASettingsGate)
 TEST(RenderPipelineCompiler, ForwardPlusCloudPassesMatchCookedShaderSource)
 {
     const auto path = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
-                      "Assets/RenderPipelines/ForwardPlus.rendergraph";
+                      "Engine/Assets/RenderPipelines/ForwardPlus.rendergraph";
     std::ifstream stream(path);
     ASSERT_TRUE(stream.is_open()) << path;
     const auto document = nlohmann::json::parse(stream);
