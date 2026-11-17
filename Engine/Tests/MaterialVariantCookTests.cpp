@@ -607,9 +607,11 @@ size_t CountEntryPointSampleSites(const std::vector<uint8_t>& module)
 }
 } // namespace
 
-// Unlit particles divide their colour and emission by the view's exposure: the program reads the
-// metered scale from the view's ExposureHistory and the static scale from ViewParams, at the offset
-// the C++ upload writes. Lit particles stay scene-linear and bind neither.
+// Unlit particles divide their colour and emission by the view's exposure: the vertex stage reads
+// the metered scale from the view's ExposureHistory and the static scale from ViewParams, at the
+// offset the C++ upload writes. Every particle's fragment stage reads the same block for the
+// pre-exposure P: the forward adapter stores its scene colour at P where it writes it, as every
+// shading variant does. Lit particles stay scene-linear, so their vertex stage resolves no exposure.
 TEST_F(MaterialVariantCook, UnlitParticlesReadTheViewsExposure)
 {
     TempTree dir("ge_variant_cook_particle_exposure");
@@ -630,7 +632,7 @@ TEST_F(MaterialVariantCook, UnlitParticlesReadTheViewsExposure)
     ASSERT_NE(history, nullptr) << "the unlit program must read the metered exposure";
     EXPECT_EQ(history->Binding, 47u);
     EXPECT_NE(history->StagesMask & kVertexStageBit, 0u) << "the vertex stage resolves the exposure for the draw";
-    EXPECT_EQ(history->StagesMask & kFragmentStageBit, 0u) << "no fragment reads the exposure";
+    EXPECT_NE(history->StagesMask & kFragmentStageBit, 0u) << "the fragment stores its colour at the pre-exposure";
     const DescriptorBindingMeta* viewParams = FindSetZeroBinding(unlitProgram.package->meta, "ViewParams");
     ASSERT_NE(viewParams, nullptr);
     ASSERT_TRUE(viewParams->Block.has_value());
@@ -647,8 +649,11 @@ TEST_F(MaterialVariantCook, UnlitParticlesReadTheViewsExposure)
                                      "lit particles", context, ShaderSourceKind::SpirV, kColorVariant,
                                      VertexAttributeFlags::StandardMesh);
     ASSERT_TRUE(litProgram.success) << (litProgram.errors.empty() ? std::string{} : litProgram.errors.front());
-    EXPECT_EQ(FindSetZeroBinding(litProgram.package->meta, "ExposureHistory"), nullptr)
-        << "lit particles are scene-linear: the scene's lights set their brightness";
+    const DescriptorBindingMeta* litHistory = FindSetZeroBinding(litProgram.package->meta, "ExposureHistory");
+    ASSERT_NE(litHistory, nullptr) << "the lit fragment stores its colour at the pre-exposure";
+    EXPECT_NE(litHistory->StagesMask & kFragmentStageBit, 0u) << "the lit fragment stores its colour at the pre-exposure";
+    EXPECT_EQ(litHistory->StagesMask & kVertexStageBit, 0u)
+        << "lit particles are scene-linear: the scene's lights set their brightness, not the exposure";
 }
 
 // A particle material without a texture draws the procedural shape on the default white albedo: its
