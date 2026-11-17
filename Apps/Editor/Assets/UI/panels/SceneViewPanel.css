@@ -69,11 +69,14 @@
 	display: none;
 }
 
-/* The Scene View's layer filter: wide enough for "All but <name>" before it cuts. */
+/* The Scene View's layer filter keeps one width whatever its label says, so the toolbar and the open
+   list do not move when the selection changes; a longer label ends in an ellipsis. */
 .sceneview-layers-field {
 	color: var(--ui_color_text_dim);
-	min-width: 120px;
-	max-width: 200px;
+	width: 160px;
+	min-width: 160px;
+	max-width: 160px;
+	flex-shrink: 0;
 }
 
 /* Draggable spacer used to insert a one-button-wide gap between toolbar

@@ -12,11 +12,19 @@
 
 namespace GameEngine::Animation
 {
+class AnimationClipData;
 class AnimationEventCollector;
 }
 
 namespace GameEngine
 {
+struct Mesh;
+
+namespace Components
+{
+struct MorphTargetWeights;
+}
+
 namespace Engine::Renderer
 {
 
@@ -43,6 +51,13 @@ void SampleAnimationPose(const SkeletonData& skeleton,
 /// before lapEnd stay unchanged; non-finite times or invalid laps return lapStart.
 /// The double input preserves the fraction when a finite step crosses many laps.
 double WrapClipTime(double time, float32 lapStart, float32 lapEnd);
+
+/// Writes the MorphWeight tracks of `clip` at `time` (seconds) into `weights`. A track drives the
+/// morph target of `mesh` whose name it carries; a track keyed on another node than the mesh's own
+/// drives none. Bumps the weights' version when a weight changes.
+/// @return True when a weight changed, so the caller writes the component back.
+bool SampleMorphWeights(const Animation::AnimationClipData& clip, float time, const Mesh& mesh,
+                        Components::MorphTargetWeights& weights);
 
 class ClipStore;
 

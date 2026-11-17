@@ -1320,7 +1320,8 @@ class VulkanDevice : public IDevice
     // index's retirement — the conservative direction.
     std::atomic<uint32_t> m_CurrentFrame{0};
     // True while the slot m_CurrentFrame names has had its fences waited: set by
-    // BeginFrame once all three queue waits pass, cleared by AdvanceFrameIndex.
+    // BeginFrame once all three queue waits pass and by a successful WaitForIdle,
+    // cleared by AdvanceFrameIndex.
     // Starts true because nothing has been submitted under slot 0 yet. Read from
     // whatever thread performs a host write, hence atomic.
     std::atomic<bool> m_CurrentFrameSlotFenced{true};

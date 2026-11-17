@@ -68,6 +68,8 @@ constexpr const char* kHiddenClass = "hidden";
 constexpr const char* kFilterOnClass = "active";
 constexpr const char* kFilterOffClass = "log-filter-off";
 constexpr const char* kFilterEmptyClass = "log-filter-empty";
+constexpr const char* kPauseGlyphClass = "log-toolbar-glyph-pause";
+constexpr const char* kResumeGlyphClass = "log-toolbar-glyph-resume";
 constexpr const char* kSideBySideClass = "log-split--side-by-side";
 constexpr const char* kSearchBarClass = "log-search-bar";
 
@@ -194,6 +196,7 @@ void LogPanel::BuildFromLayout()
     m_DetailTraceTitle = FindIn<UIElement>(*root, "LogDetailTraceTitle");
     m_DetailFrames = FindIn<UIElement>(*root, "LogDetailFrames");
     m_PauseButton = FindIn<Button>(*root, "LogPause");
+    m_PauseGlyph = FindIn<UIElement>(*root, "LogPauseGlyph");
     m_ChannelsButton = FindIn<Button>(*root, "LogChannels");
     auto* detailScroll = FindIn<ScrollView>(*root, "LogDetailScroll");
     UIElement* detailBody = FindIn<UIElement>(*root, "LogDetailBody");
@@ -338,6 +341,11 @@ void LogPanel::TogglePause()
     const bool paused = !m_LogView->IsPaused();
     m_LogView->SetPaused(paused);
     m_PauseButton->SetText(paused ? "Resume" : "Pause");
+    if (m_PauseGlyph)
+    {
+        m_PauseGlyph->RemoveClass(paused ? kPauseGlyphClass : kResumeGlyphClass);
+        m_PauseGlyph->AddClass(paused ? kResumeGlyphClass : kPauseGlyphClass);
+    }
 }
 
 void LogPanel::Update()

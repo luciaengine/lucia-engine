@@ -11,6 +11,7 @@
 #include "Editor/Hierarchy/HierarchyEnableState.h"
 #include "Editor/Hierarchy/HierarchyLightIconTint.h"
 #include "Editor/Hierarchy/HierarchyRowActivity.h"
+#include "Editor/Hierarchy/HierarchyRowEye.h"
 #include "Inspectors/InspectorEntityActivity.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/Toggle.h"
@@ -127,6 +128,16 @@ GameEngine::UIElement* IconOf(GameEngine::UIElement& row)
     return nullptr;
 }
 
+GameEngine::UIElement* EyeOf(GameEngine::UIElement& row)
+{
+    for (const auto& child : row.GetChildren())
+    {
+        if (child && child->HasClass("hierarchy-eye"))
+            return child.get();
+    }
+    return nullptr;
+}
+
 // A Parent with 60 children in a real tree laid out on a headless device, each bound row shown through
 // HierarchyRowActivity as the Hierarchy shows it, and every row the tree has ever bound recorded.
 struct RowsInATree
@@ -137,6 +148,7 @@ struct RowsInATree
     std::vector<EntityHandle> Entities;
     std::unique_ptr<EntityRowsProvider> Provider;
     GameEngine::Editor::HierarchyRowActivity RowActivity;
+    GameEngine::Editor::HierarchyRowEye RowEye;
     std::unordered_set<const GameEngine::UIElement*> EverBound;
     std::unordered_set<GameEngine::TreeId> EverBoundIds;
     std::unordered_map<const GameEngine::UIElement*, GameEngine::TreeId> LastBoundId;
@@ -160,6 +172,11 @@ struct RowsInATree
         Tree = tree.get();
         Tree->SetDataProvider(Provider.get());
         Tree->SetOnRowBound([this](GameEngine::TreeId id, GameEngine::UIElement* row) { OnRowBound(id, *row); });
+        // The Hierarchy's icon callbacks: a press switches the row's entity, a drag sets the state it chose.
+        Tree->SetOnIconClicked([this](GameEngine::TreeId id, GameEngine::UIElement*)
+                               { SetEnabled(id, !Entity(&World, Provider->EntityOf(id)).IsEnabled()); });
+        Tree->SetOnIconStateCheck([this](GameEngine::TreeId id) { return Entity(&World, Provider->EntityOf(id)).IsEnabled(); });
+        Tree->SetOnIconStateSet([this](GameEngine::TreeId id, bool enabled, GameEngine::UIElement*) { SetEnabled(id, enabled); });
         Tree->Style()
             .Set(GameEngine::Style::Width, GameEngine::StyleLength::Px(320.0f))
             .Set(GameEngine::Style::Height, GameEngine::StyleLength::Px(900.0f));
@@ -186,7 +203,35 @@ struct RowsInATree
             icon->AddClass("tree-icon-hit-target");
             row.AddChild(std::move(icon));
         }
+        // The row's eye, placed and sized as the Hierarchy's sheet places it: at the row's right end.
+        if (!EyeOf(row))
+        {
+            RowEye.AddTo(row);
+            EyeOf(row)->Style()
+                .Set(GameEngine::Style::Position, GameEngine::PositionType::Absolute)
+                .Set(GameEngine::Style::PositionRight, GameEngine::StyleLength::Px(27.0f))
+                .Set(GameEngine::Style::PositionTop, GameEngine::StyleLength::Px(0.0f))
+                .Set(GameEngine::Style::Width, GameEngine::StyleLength::Px(16.0f))
+                .Set(GameEngine::Style::Height, GameEngine::StyleLength::Px(16.0f));
+        }
         RowActivity.Present(World, Provider->EntityOf(id), id, row);
+        RowEye.Present(row, Provider->EntityOf(id));
+    }
+
+    void SetEnabled(GameEngine::TreeId id, bool enabled)
+    {
+        const EntityHandle targets[] = {Provider->EntityOf(id)};
+        CommitEntityEnabledToggle(World, nullptr, nullptr, targets, enabled);
+        Pass.Update(World, 0.0f);
+        Provider->MarkChangedBatch(std::vector<GameEngine::TreeId>{id});
+    }
+
+    // Moves the pointer to the middle of `element` on the last layout.
+    void PointAt(const GameEngine::UIElement& element)
+    {
+        Ui->OnMouseMove(element.GetLayoutX() + element.GetLayoutWidth() * 0.5f,
+                        element.GetLayoutY() + element.GetLayoutHeight() * 0.5f);
+        Ui->Update(1.0f / 60.0f, /*interactive=*/true);
     }
 
     void Tick(int frames)
@@ -511,4 +556,50 @@ TEST(HierarchyEnableStateTests, ALightEditInsideAnEventRetintsItsRowWithoutRebin
     const std::optional<uint32_t> tint = IconOf(*row)->Style().Get(GameEngine::Style::BackgroundTint);
     ASSERT_TRUE(tint.has_value()) << "the Light's row was not tinted";
     EXPECT_EQ(*tint, 0xFFC80000u);
+}
+
+// The eye is the entity icon's twin: a press on it switches the row's entity, and both icons show it.
+TEST(HierarchyEnableStateTests, APressOnAnEyeSwitchesTheEntityAndBothIconsShowIt)
+{
+    RowsInATree rows;
+    if (!rows.Build())
+        GTEST_SKIP() << "no Vulkan device";
+    const GameEngine::TreeId id = 4;
+    GameEngine::UIElement* row = rows.Tree->FindBoundRow(id);
+    ASSERT_NE(row, nullptr);
+    ASSERT_GT(EyeOf(*row)->GetLayoutWidth(), 0.0f) << "the eye has no box, so this test is vacuous";
+
+    rows.PointAt(*EyeOf(*row));
+    rows.Ui->OnMouseButton(0, true);
+    rows.Ui->OnMouseButton(0, false);
+    rows.Frame();
+    row = rows.Tree->FindBoundRow(id);
+    ASSERT_NE(row, nullptr);
+    EXPECT_FALSE(Entity(&rows.World, rows.Provider->EntityOf(id)).IsEnabled());
+    EXPECT_TRUE(EyeOf(*row)->HasClass("eye-closed"));
+    EXPECT_TRUE(IconOf(*row)->HasClass("hierarchy-preview-icon-off")) << "the entity icon follows the eye";
+}
+
+// A press on one eye and a drag over the next rows' eyes sets them all to the state the press chose.
+TEST(HierarchyEnableStateTests, ADragFromAnEyeOverTheNextEyesSetsThemAll)
+{
+    RowsInATree rows;
+    if (!rows.Build())
+        GTEST_SKIP() << "no Vulkan device";
+    const GameEngine::TreeId first = 4;
+    GameEngine::UIElement* start = rows.Tree->FindBoundRow(first);
+    ASSERT_NE(start, nullptr);
+    rows.PointAt(*EyeOf(*start));
+    rows.Ui->OnMouseButton(0, true);
+    for (GameEngine::TreeId id = first + 1; id <= first + 2; ++id)
+    {
+        GameEngine::UIElement* row = rows.Tree->FindBoundRow(id);
+        ASSERT_NE(row, nullptr);
+        rows.PointAt(*EyeOf(*row));
+    }
+    rows.Ui->OnMouseButton(0, false);
+    rows.Frame();
+    for (GameEngine::TreeId id = first; id <= first + 2; ++id)
+        EXPECT_FALSE(Entity(&rows.World, rows.Provider->EntityOf(id)).IsEnabled()) << "row " << id;
+    EXPECT_TRUE(Entity(&rows.World, rows.Provider->EntityOf(first + 3)).IsEnabled()) << "the drag stopped before it";
 }

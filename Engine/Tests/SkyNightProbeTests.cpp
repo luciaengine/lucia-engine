@@ -441,6 +441,10 @@ TEST_F(SkyNightProbeTest, TheNightSideShowsEarthshineFromTheEarthsPhase)
 // view ray's transmittance: a moon the planet hides leaves the sky as it is.
 TEST_F(SkyNightProbeTest, TheSkyUnderTheDiscIsTheSkyAroundIt)
 {
+    // The Vulkan bound on the error of sin and cos in [-pi, pi]: 2^-11 absolute. The tap's angle
+    // comes from sin and cos of the drawn radius (RADV lands 1.3e-5 off); a tap at another radius
+    // misses by far more than this.
+    constexpr double kVulkanSinCosAbsoluteError = 1.0 / 2048.0;
     ProbePC pc{};
     pc.modeCountRadiusIlluminance[0] = static_cast<float>(kRimMode);
     pc.modeCountRadiusIlluminance[1] = static_cast<float>(kRimTableSlots);
@@ -451,7 +455,7 @@ TEST_F(SkyNightProbeTest, TheSkyUnderTheDiscIsTheSkyAroundIt)
     Vec3 tangentSum{};
     for (uint32_t k = 0; k < 4u; ++k)
     {
-        EXPECT_NEAR(out[k][3], kDefaultMoonRadius, 1e-5) << "rim tap " << k << " sits on the drawn rim";
+        EXPECT_NEAR(out[k][3], kDefaultMoonRadius, kVulkanSinCosAbsoluteError) << "rim tap " << k << " sits on the drawn rim";
         const Vec3 rim = {out[k][0], out[k][1], out[k][2]};
         const double along = Dot(rim, kMoon);
         for (int c = 0; c < 3; ++c)
