@@ -11,6 +11,7 @@
 #include "Components/Animation/AnimatedSprite2D.h"
 #include "Components/Transform.h"
 #include "Core/Engine.h"
+#include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/2D/SpriteQuad.h"
@@ -37,15 +38,16 @@ void CopyTint(const ColorLinear& tint, float32* out)
     out[3] = tint.a;
 }
 
-std::size_t AdvancePlayback(const Sprite2D::SpriteFrameAnimation& animation,
-                            Components::AnimatedSprite2D& row, float32 deltaTime)
+// Advances the clock of `entity`'s sprite. The row is taken for write only when a field changes, so a
+// sprite whose clock stands still leaves its change tracking quiet.
+std::size_t AdvancePlayback(const Sprite2D::SpriteFrameAnimation& animation, ECS::World& world,
+                            ECS::EntityHandle entity, const Components::AnimatedSprite2D& sprite, float32 deltaTime)
 {
-    const auto& sprite = row;
     const auto step = Sprite2D::AdvanceSpritePlayback(animation, sprite.TimeSeconds, deltaTime, sprite.SpeedScale);
     const bool finished = (step.Events & static_cast<uint32>(Sprite2D::SpritePlaybackEvent::Finished)) != 0;
     if (step.TimeSeconds == sprite.TimeSeconds && step.Events == 0)
         return step.FrameIndex;
-    auto& updated = row;
+    auto& updated = *world.GetComponentForWrite<Components::AnimatedSprite2D>(entity);
     updated.TimeSeconds = step.TimeSeconds;
     updated.PendingPlaybackEvents = step.Events;
     if (step.Events != 0)
@@ -103,12 +105,11 @@ std::optional<SpriteAnimationSystem::TextureSize> SpriteAnimationSystem::Resolve
 }
 
 void SpriteAnimationSystem::AdvanceAndExtractSprite(ECS::World& world, AssetManager& assets,
-    ECS::EntityHandle entity, Components::AnimatedSprite2D& spriteRow,
+    ECS::EntityHandle entity, const Components::AnimatedSprite2D& sprite,
     const Components::WorldTransform& worldTransform, float32 deltaTime, std::optional<bool>& hasSortingGroups, std::size_t sortingScanBudget)
 {
-    const auto& sprite = spriteRow;
     if (sprite.PendingPlaybackEvents != 0)
-        spriteRow.PendingPlaybackEvents = 0;
+        world.GetComponentForWrite<Components::AnimatedSprite2D>(entity)->PendingPlaybackEvents = 0;
     if (sprite.SpriteFrames.IsNull() || sprite.AnimationName[0] == '\0')
         return;
 
@@ -123,7 +124,7 @@ void SpriteAnimationSystem::AdvanceAndExtractSprite(ECS::World& world, AssetMana
         return;
 
     const std::size_t frameIndex = sprite.Playing
-        ? AdvancePlayback(*animation, spriteRow, deltaTime)
+        ? AdvancePlayback(*animation, world, entity, sprite, deltaTime)
         : Sprite2D::SpriteFrameIndexAt(*animation, sprite.TimeSeconds);
     if (frameIndex == Sprite2D::kInvalidSpriteFrameIndex)
         return;
@@ -205,12 +206,12 @@ void SpriteAnimationSystem::Update(ECS::World& world, float32 deltaTime)
         world.Query<ECS::Read<Components::AnimatedSprite2D>>().Count() +
         world.Query<ECS::Read<Components::Sprite2D>>().Count();
 
-    world.Query<ECS::Write<Components::AnimatedSprite2D>, ECS::Read<Components::WorldTransform>>()
+    world.Query<ECS::Read<Components::AnimatedSprite2D>, ECS::Read<Components::WorldTransform>>()
         .Without<ECS::Disabled>()
         .Each([this, &world, &assets, deltaTime, &hasSortingGroups, sortingScanBudget](ECS::EntityHandle entity,
-            Components::AnimatedSprite2D& spriteRow, const Components::WorldTransform& transform)
+            const Components::AnimatedSprite2D& sprite, const Components::WorldTransform& transform)
         {
-            AdvanceAndExtractSprite(world, assets, entity, spriteRow, transform, deltaTime, hasSortingGroups, sortingScanBudget);
+            AdvanceAndExtractSprite(world, assets, entity, sprite, transform, deltaTime, hasSortingGroups, sortingScanBudget);
         });
 
     world.Query<ECS::Read<Components::Sprite2D>, ECS::Read<Components::WorldTransform>>()

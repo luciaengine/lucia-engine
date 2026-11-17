@@ -790,7 +790,7 @@ TEST(PostProcessVhs, UsesSkippableMitLicensedPixelCorrectLdrPass)
     const std::filesystem::path chromaBandsShader =
         root / "Engine/Modules/Rendering/Shaders/vhs_chroma_bands.frag";
     const std::filesystem::path graph =
-        root / "Assets/RenderPipelines/ForwardPlus.rendergraph";
+        root / "Engine/Assets/RenderPipelines/ForwardPlus.rendergraph";
 
     std::ifstream shaderStream(shader);
     ASSERT_TRUE(shaderStream.is_open()) << shader;

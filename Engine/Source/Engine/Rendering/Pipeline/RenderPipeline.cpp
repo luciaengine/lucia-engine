@@ -2111,6 +2111,9 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
                                      std::span<const Rendering::ViewDesc> views,
                                      float deltaTimeSeconds)
 {
+    m_DeclaredViews.assign(views.begin(), views.end());
+    views = m_DeclaredViews;
+
     if (m_BlueprintDirty)
         EnsureNodeInstances();
 

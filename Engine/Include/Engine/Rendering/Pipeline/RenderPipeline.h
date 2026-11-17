@@ -406,6 +406,10 @@ class RenderPipelineInstance
     // Late declares queued during the current Declare's node loop (cleared
     // with the blackboard at the top of every Declare).
     std::vector<DeferredDeclareFn> m_DeferredDeclares;
+    // The frame's views as Declare received them. A node can allocate a utility view while it
+    // declares, which grows the registry's vector; nodes keep pointers to these copies through the
+    // frame's execution, so they live until the next Declare.
+    std::vector<Rendering::ViewDesc> m_DeclaredViews;
     std::unordered_map<const void*, BeforePostProcessFn> m_BeforePostProcessCallbacks;
 
     // Framework-level pass name cache for BuildForView().

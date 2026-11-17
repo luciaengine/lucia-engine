@@ -183,15 +183,16 @@ TEST(SceneSwapOrdering, TheSharedStepReleasesTheSplineGenerators)
            "survive the swap and the next sweep destroys entities of the incoming scene";
 }
 
-// The editor releases the shared recipe system before the scene is replaced.
+// The editor releases the shared recipe system, an editor service, before the scene is replaced.
 TEST(SceneSwapOrdering, EditorApplicationWiresTheSplineGeneratorRelease)
 {
-    const std::string source = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication.cpp");
+    const std::string source = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication" / "EditorApplication.cpp");
     const size_t wire = source.find("SetSceneScopedGeneratorRelease(");
     ASSERT_NE(wire, std::string::npos);
     const size_t callbackEnd = source.find("});", wire);
     ASSERT_NE(callbackEnd, std::string::npos);
-    EXPECT_NE(source.substr(wire, callbackEnd - wire).find("m_RecipeEditorHooks->ReleaseSceneScoped("),
+    // The release reaches every registered editor service; RecipeEditorHooks is one of them.
+    EXPECT_NE(source.substr(wire, callbackEnd - wire).find("m_EditorServices.ReleaseSceneScoped("),
               std::string::npos);
 
     const std::string hooks = ReadFile(EditorSourceRoot() / "Source" / "Placement" / "RecipeEditorHooks.cpp");
@@ -317,9 +318,15 @@ TEST(SceneSwapOrdering, DeserializeWorldPreservesHandlesAndBumpsTheResetGenerati
 
 namespace
 {
+// The spline recipe generators live in the SplineRecipes module, some in a folder of their own.
 std::string PlacementSource(const char* fileName)
 {
-    return ReadFile(EditorSourceRoot() / "Source" / "Placement" / fileName);
+    const std::filesystem::path root =
+        EditorSourceRoot().parent_path().parent_path() / "Engine" / "Modules" / "SplineRecipes" / "Source";
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root))
+        if (entry.is_regular_file() && entry.path().filename() == fileName)
+            return ReadFile(entry.path());
+    return {};
 }
 } // namespace
 
@@ -347,7 +354,7 @@ TEST(SceneSwapOrdering, EveryGeneratorDropsItsCacheOnAWorldReset)
     for (const Generator& g : generators)
     {
         const std::string src = PlacementSource(g.File);
-        ASSERT_FALSE(src.empty()) << g.File << " not found under " << GE_EDITOR_SOURCE_DIR;
+        ASSERT_FALSE(src.empty()) << g.File << " not found under Engine/Modules/SplineRecipes/Source";
 
         const std::string body = FunctionBody(src, g.Qualifier, g.UpdateSignature);
         ASSERT_FALSE(body.empty()) << "Update definition not found in " << g.File;
@@ -397,7 +404,7 @@ TEST(SceneSwapOrdering, EveryGroundReadingGeneratorHoldsItsFirstBuildForProvisio
     for (const Generator& g : generators)
     {
         const std::string src = PlacementSource(g.File);
-        ASSERT_FALSE(src.empty()) << g.File << " not found under " << GE_EDITOR_SOURCE_DIR;
+        ASSERT_FALSE(src.empty()) << g.File << " not found under Engine/Modules/SplineRecipes/Source";
 
         const std::string body = FunctionBody(src, g.Qualifier, g.UpdateSignature);
         ASSERT_FALSE(body.empty()) << "Update definition not found in " << g.File;
@@ -441,7 +448,7 @@ using ScopedEntity = GameEngine::PolyhavenDownloadManager::ScopedEntity;
 
 std::string PolyhavenManagerSource()
 {
-    return ReadFile(EditorSourceRoot() / "Source" / "Assets" / "PolyhavenDownloadManager.cpp");
+    return ReadFile(EditorSourceRoot() / "Source" / "Assets" / "Polyhaven" / "PolyhavenDownloadManager.cpp");
 }
 
 // Body of the SECOND definition matching `signature`. AssignHDRIToSkyboxOnComplete
