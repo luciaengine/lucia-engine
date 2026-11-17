@@ -10,6 +10,7 @@ add_library(AIECS OBJECT
     Source/Assets/AiStateTreeData.cpp
     Source/AiGroup/AiGroupKnowledge.cpp
     Source/AiGroup/AiGroupStore.cpp
+    Source/AiGroup/AiWorldHooks.cpp
     Source/Events/AiEventQueue.cpp
     Source/AiRegistry.cpp
     Source/AiTaskContext.cpp

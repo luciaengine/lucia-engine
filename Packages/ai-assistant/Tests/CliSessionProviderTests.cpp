@@ -81,7 +81,7 @@ TEST(CliSessionProviderTests, ClaudeTurnArgumentsAreTheDesignCommandLine)
     const std::vector<std::string> expected = {
         "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--resume", "session-1",
         "--permission-prompts", "none", "--tools", "", "--strict-mcp-config", "--system-prompt-snapshot", "off",
-        "--model", "opus", "--append-system-prompt", "Be brief."};
+        "--model", "opus", "--effort", "high", "--append-system-prompt", "Be brief."};
     EXPECT_EQ(provider.TurnArguments(request), expected);
 }
 

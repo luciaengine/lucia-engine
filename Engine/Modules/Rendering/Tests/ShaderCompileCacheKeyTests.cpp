@@ -18,7 +18,9 @@
 #include <gtest/gtest.h>
 
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/HotReloadIntegration.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/ShaderGraph/SgGraphFileIO.h"
 #include "TestTempDir.h"
 
 #include <chrono>

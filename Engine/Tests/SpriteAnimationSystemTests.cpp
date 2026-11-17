@@ -6,6 +6,7 @@
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "ECS/ECS.h"
+#include "ECS/ECSTemplates.h"
 #include "Engine/Rendering/RenderServices.h"
 
 #include <chrono>

@@ -15,6 +15,7 @@
 #include "EditorChangeNotifications.h"
 #include "GameView/GameViewController.h"
 #include "Input/InputSystem.h"
+#include "Input/KeyCodes.h"
 #include "UI/Controls/Button.h"
 #include "UI/Internal/LayoutAccess.h"
 #include "UI/UIManager.h"
@@ -94,13 +95,25 @@ class GameViewControllerInputTests : public testing::Test
 
     void TearDown() override
     {
-        Controller.HandleGameUiPointer(false, 0, 0, false, 0);
+        Controller.HandleGameUiPointerMove(false, 0, 0, 0);
         GameUI::SetHost(nullptr);
         World->Clear();
     }
 
-    void Press() { Controller.HandleGameUiPointer(true, .3125f, .35f, true, 0); }
-    void Release() { Controller.HandleGameUiPointer(true, .3125f, .35f, false, 0); }
+    void Move(float x = .3125f, float y = .35f, int mods = 0)
+    {
+        Controller.HandleGameUiPointerMove(true, x, y, mods);
+    }
+    void Press(float x = .3125f, float y = .35f, int mods = 0)
+    {
+        Move(x, y, mods);
+        Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, true, mods);
+    }
+    void Release(float x = .3125f, float y = .35f, int mods = 0)
+    {
+        Move(x, y, mods);
+        Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, false, mods);
+    }
 };
 
 TEST_F(GameViewControllerInputTests, MapsAgainstLastUiExtentWithoutRendering)
@@ -111,8 +124,10 @@ TEST_F(GameViewControllerInputTests, MapsAgainstLastUiExtentWithoutRendering)
     // A different recorded UI extent uses different normalized coordinates for
     // the same gameplay button. Neither input sequence invokes a render path.
     GameViewControllerTestAccess::SetUiFrame(Controller, *World, 1600, 800);
-    Controller.HandleGameUiPointer(true, .15625f, .175f, true, 0);
-    Controller.HandleGameUiPointer(true, .15625f, .175f, false, 0);
+    Controller.HandleGameUiPointerMove(true, .15625f, .175f, 0);
+    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, true, 0);
+    Controller.HandleGameUiPointerMove(true, .15625f, .175f, 0);
+    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, false, 0);
     EXPECT_EQ(Clicks, 2);
     EXPECT_EQ(Presses, 2);
 }
@@ -131,8 +146,10 @@ TEST_F(GameViewControllerInputTests, CarriesReleaseModifiersIntoTheReceivingHost
 {
     int modifiers = -1;
     Target->SetOnClick([&](UIEvent& event) { modifiers = event.Mods; });
-    Controller.HandleGameUiPointer(true, .3125f, .35f, true, Input::kModControl);
-    Controller.HandleGameUiPointer(true, .3125f, .35f, false, Input::kModShift);
+    Controller.HandleGameUiPointerMove(true, .3125f, .35f, Input::kModControl);
+    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, true, Input::kModControl);
+    Controller.HandleGameUiPointerMove(true, .3125f, .35f, Input::kModShift);
+    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, false, Input::kModShift);
     EXPECT_EQ(modifiers, Input::kModShift);
     Press();
     Release();
@@ -193,7 +210,8 @@ TEST_F(GameViewControllerInputTests, ExplicitCancellationUsesReceivingHost)
 {
     Press();
     GameUI::SetHost(&OtherHost);
-    Controller.HandleGameUiPointer(false, 0, 0, false, 0);
+    Controller.HandleGameUiPointerMove(false, 0, 0, 0);
+    Controller.HandleGameUiPointerButton(Input::kMouseButton_Left, false, 0);
     EXPECT_EQ(Cancels, 1);
     EXPECT_FALSE(Target->HasClass("pressed"));
     Release();
@@ -204,7 +222,7 @@ TEST_F(GameViewControllerInputTests, PressBeforeValidExtentCannotArmOnLaterHeldM
     GameViewControllerTestAccess::SetUiFrame(Controller, *World, 0, 0);
     Press();
     GameViewControllerTestAccess::SetUiFrame(Controller, *World);
-    Controller.HandleGameUiPointer(true, .3125f, .35f, true, 0); // held movement, not another physical press
+    Controller.HandleGameUiPointerMove(true, .3125f, .35f, 0); // held movement, not another physical press
     Release();
     EXPECT_EQ(Presses, 0);
     EXPECT_EQ(Clicks, 0);

@@ -4,6 +4,7 @@
 // compile.
 
 #include "AssetCore/AssetIgnoreRules.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -13,6 +14,8 @@
 #include <system_error>
 
 using GameEngine::AssetIgnoreRules;
+using GameEngine::TestUtils::MakeUniqueTempDirectory;
+using GameEngine::TestUtils::ScopedTempDir;
 namespace fs = std::filesystem;
 
 TEST(AssetIgnoreRules, DefaultsSkipBuildTreesByDirectoryNameAndByNamePrefix)

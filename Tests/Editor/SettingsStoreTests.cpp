@@ -13,6 +13,10 @@
 #include <fstream>
 #include <string>
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 using GameEngine::Editor::SettingsStore;
 
@@ -168,6 +172,8 @@ TEST_F(SettingsStoreTests, RemoveDeletesOnlyThatKey)
 // on Windows, so POSIX only.)
 TEST_F(SettingsStoreTests, SaveRefusesWhenExistingFileUnreadable)
 {
+    if (geteuid() == 0)
+        GTEST_SKIP() << "root reads a file whatever its permission bits, so the file cannot be made unreadable";
     WriteFile(kFullPrefs);
 
     SettingsStore store(m_File);

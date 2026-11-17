@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "AssetCore/SharedFileRead.h"
 #include "Assets/AssetDecodeGate.h"
+#include "Assets/AssetDecodeInputFiles.h"
 #include "Assets/AssetIOService.h"
 #include "Assets/TextureCookWorkers.h"
 #include "JobSystem/TaskHandle.h"
@@ -15,6 +16,12 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 using namespace GameEngine;
 
@@ -69,11 +76,13 @@ class AssetIOServiceTest : public ::testing::Test
     }
 
     // A read request whose decode continuation stashes the bytes and whose
-    // failure path stores the error. Exactly one of the two futures resolves.
+    // failure path stores the first error and counts every call. Exactly one
+    // of the two futures resolves.
     struct CapturedRead
     {
         std::shared_ptr<std::promise<Vector<uint8>>> BytesPromise = std::make_shared<std::promise<Vector<uint8>>>();
         std::shared_ptr<std::promise<String>> FailurePromise = std::make_shared<std::promise<String>>();
+        std::shared_ptr<std::atomic<int>> FailureCount = std::make_shared<std::atomic<int>>(0);
         std::future<Vector<uint8>> Bytes = BytesPromise->get_future();
         std::future<String> Failure = FailurePromise->get_future();
     };
@@ -90,9 +99,10 @@ class AssetIOServiceTest : public ::testing::Test
             bytesPromise->set_value(Vector<uint8>(data.begin(), data.end()));
             return SharedPtr<Asset>{};
         };
-        request.OnFailure = [failurePromise = capture.FailurePromise](const String& error)
+        request.OnFailure = [failurePromise = capture.FailurePromise, failureCount = capture.FailureCount](const String& error)
         {
-            failurePromise->set_value(error);
+            if (failureCount->fetch_add(1) == 0)
+                failurePromise->set_value(error);
         };
         return request;
     }
@@ -111,6 +121,28 @@ class AssetIOServiceTest : public ::testing::Test
             queued = service->GetQueuedReadCount();
         }
         return queued;
+    }
+
+    // Poll until every decode-gate slot can be taken, then report how many could be. A reader
+    // gives its claimed slot back as it leaves the request, just after OnFailure, so the
+    // deadline only bounds a slot that is never given back.
+    size_t AwaitFreeDecodeSlots()
+    {
+        const std::shared_ptr<AssetDecodeGate> gate = service->GetDecodeGate();
+        if (!gate)
+            return 0;
+        const auto deadline = std::chrono::steady_clock::now() + kResultTimeout;
+        while (true)
+        {
+            size_t taken = 0;
+            while (taken < gate->MaxWorkers() && gate->TryAcquire(AssetDecodeGate::Work::Other))
+                ++taken;
+            for (size_t released = 0; released < taken; ++released)
+                gate->Release(AssetDecodeGate::Work::Other);
+            if (taken == gate->MaxWorkers() || std::chrono::steady_clock::now() > deadline)
+                return taken;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
     }
 
     std::filesystem::path testDir;
@@ -148,54 +180,6 @@ TEST_F(AssetIOServiceTest, ReadsOnlyTheRequestedByteRange)
     ASSERT_EQ(capture.Bytes.wait_for(kResultTimeout), std::future_status::ready);
     const Vector<uint8> data = capture.Bytes.get();
     EXPECT_EQ(std::string(data.begin(), data.end()), "PAGE-BYTES");
-}
-
-TEST_F(AssetIOServiceTest, RejectsAnOversizedOpenedFileDespiteStaleSmallMetadata)
-{
-    const std::string content = "larger than the permitted read buffer";
-    const auto path = testDir / "bounded.bin";
-    WriteFile(path, content);
-    CapturedRead capture;
-    auto request = MakeCapturedRequest(MakeMetadata(path, 1), capture);
-    request.MaximumBytes = content.size() - 1;
-    service->SubmitRead(std::move(request));
-    ASSERT_EQ(capture.Failure.wait_for(kResultTimeout), std::future_status::ready);
-    EXPECT_FALSE(capture.Failure.get().empty());
-    EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
-
-    CapturedRead exact;
-    auto exactRequest = MakeCapturedRequest(MakeMetadata(path, 1), exact);
-    exactRequest.MaximumBytes = content.size();
-    service->SubmitRead(std::move(exactRequest));
-    ASSERT_EQ(exact.Bytes.wait_for(kResultTimeout), std::future_status::ready);
-    EXPECT_EQ(exact.Bytes.get().size(), content.size());
-}
-
-TEST_F(AssetIOServiceTest, EnforcesTheRangeBufferLimitBeforeDecoding)
-{
-    const auto path = testDir / "bounded.pages";
-    WriteFile(path, "headerPAGE-BYTEStrailer");
-    CapturedRead capture;
-    auto request = MakeCapturedRequest(MakeMetadata(path, 22), capture);
-    request.RangeOffset = 6;
-    request.RangeBytes = 10;
-    request.MaximumBytes = 9;
-    service->SubmitRead(std::move(request));
-    ASSERT_EQ(capture.Failure.wait_for(kResultTimeout), std::future_status::ready);
-    EXPECT_NE(capture.Failure.get().find("limit"), String::npos);
-    EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
-}
-
-TEST_F(AssetIOServiceTest, BoundedSharedReadClearsTheOutputOnRefusal)
-{
-    const std::string content = "bounded";
-    const auto path = testDir / "shared.bin";
-    WriteFile(path, content);
-    Vector<uint8> bytes{99};
-    EXPECT_FALSE(ReadFileBytesShared(path, bytes, content.size() - 1));
-    EXPECT_TRUE(bytes.empty());
-    ASSERT_TRUE(ReadFileBytesShared(path, bytes, content.size()));
-    EXPECT_EQ(std::string(bytes.begin(), bytes.end()), content);
 }
 
 TEST_F(AssetIOServiceTest, RangePastTheEndOfTheFileFails)
@@ -1042,4 +1026,52 @@ TEST(AssetIOServiceDecodeGate, CookHelpersShareTheGateWithDecodes)
         pool.Shutdown();
     }
     std::filesystem::remove_all(testDir);
+}
+
+TEST_F(AssetIOServiceTest, RejectsAnOversizedOpenedFileDespiteStaleSmallMetadata)
+{
+    const std::string content = "larger than the permitted read buffer";
+    const auto path = testDir / "bounded.bin";
+    WriteFile(path, content);
+    CapturedRead capture;
+    auto request = MakeCapturedRequest(MakeMetadata(path, 1), capture);
+    request.MaximumBytes = content.size() - 1;
+    service->SubmitRead(std::move(request));
+    ASSERT_EQ(capture.Failure.wait_for(kResultTimeout), std::future_status::ready);
+    EXPECT_FALSE(capture.Failure.get().empty());
+    EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+
+    CapturedRead exact;
+    auto exactRequest = MakeCapturedRequest(MakeMetadata(path, 1), exact);
+    exactRequest.MaximumBytes = content.size();
+    service->SubmitRead(std::move(exactRequest));
+    ASSERT_EQ(exact.Bytes.wait_for(kResultTimeout), std::future_status::ready);
+    EXPECT_EQ(exact.Bytes.get().size(), content.size());
+}
+
+TEST_F(AssetIOServiceTest, EnforcesTheRangeBufferLimitBeforeDecoding)
+{
+    const auto path = testDir / "bounded.pages";
+    WriteFile(path, "headerPAGE-BYTEStrailer");
+    CapturedRead capture;
+    auto request = MakeCapturedRequest(MakeMetadata(path, 22), capture);
+    request.RangeOffset = 6;
+    request.RangeBytes = 10;
+    request.MaximumBytes = 9;
+    service->SubmitRead(std::move(request));
+    ASSERT_EQ(capture.Failure.wait_for(kResultTimeout), std::future_status::ready);
+    EXPECT_NE(capture.Failure.get().find("limit"), String::npos);
+    EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+}
+
+TEST_F(AssetIOServiceTest, BoundedSharedReadClearsTheOutputOnRefusal)
+{
+    const std::string content = "bounded";
+    const auto path = testDir / "shared.bin";
+    WriteFile(path, content);
+    ByteBuffer bytes(1);
+    EXPECT_FALSE(ReadFileBytesShared(path, bytes, content.size() - 1));
+    EXPECT_EQ(bytes.Size(), 0u);
+    ASSERT_TRUE(ReadFileBytesShared(path, bytes, content.size()));
+    EXPECT_EQ(std::string(bytes.begin(), bytes.end()), content);
 }

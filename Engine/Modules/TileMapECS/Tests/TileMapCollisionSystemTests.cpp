@@ -270,7 +270,7 @@ TEST_F(TileMapCollisionSystemTest, SphereComesToRestOnPaintedFloor)
     ball.layer = Physics::Layers::Dynamic;
     ball.mass = 1.0f;
     // Above the middle of the 4-cell floor; cells span y in [0, 1].
-    ball.position = Physics::Vector3(2.0f, 5.0f, 0.0f);
+    ball.position = Physics::WorldPosition{2.0, 5.0, 0.0};
     ball.startAwake = true;
     const Physics::BodyHandle ballBody = pw.CreateBody(ball);
     ASSERT_TRUE(ballBody.IsValid());
@@ -280,7 +280,7 @@ TEST_F(TileMapCollisionSystemTest, SphereComesToRestOnPaintedFloor)
 
     const Physics::Transform t = pw.GetBodyTransform(ballBody);
     // Resting on the floor's top face (y = 1) plus the radius.
-    EXPECT_NEAR(t.position.y, 1.5f, 0.05f);
+    EXPECT_NEAR(t.position.Y, 1.5f, 0.05f);
 }
 
 TEST_F(TileMapCollisionSystemTest, ASphereSettlesInsideAConcaveTilesNotch)
@@ -303,7 +303,7 @@ TEST_F(TileMapCollisionSystemTest, ASphereSettlesInsideAConcaveTilesNotch)
     ball.motionType = Physics::MotionType::Dynamic;
     ball.layer = Physics::Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Physics::Vector3(10.5f, 2.0f, 0.0f);
+    ball.position = Physics::WorldPosition{10.5, 2.0, 0.0};
     ball.startAwake = true;
     const Physics::BodyHandle ballBody = pw.CreateBody(ball);
     ASSERT_TRUE(ballBody.IsValid());
@@ -311,7 +311,7 @@ TEST_F(TileMapCollisionSystemTest, ASphereSettlesInsideAConcaveTilesNotch)
     for (int i = 0; i < 240; ++i)
         pw.Step(kDt, 1);
 
-    EXPECT_NEAR(pw.GetBodyTransform(ballBody).position.y, 0.45f, 0.05f);
+    EXPECT_NEAR(pw.GetBodyTransform(ballBody).position.Y, 0.45f, 0.05f);
 }
 
 TEST_F(TileMapCollisionSystemTest, ErasingTheFloorDropsTheRestingSphere)
@@ -332,14 +332,14 @@ TEST_F(TileMapCollisionSystemTest, ErasingTheFloorDropsTheRestingSphere)
     ball.mass = 1.0f;
     // Sleep stays allowed: the system's wake sweep over a rebuilt chunk is what
     // must drop a sleeper when the ground vanishes beneath it.
-    ball.position = Physics::Vector3(2.0f, 2.0f, 0.0f);
+    ball.position = Physics::WorldPosition{2.0, 2.0, 0.0};
     ball.startAwake = true;
     const Physics::BodyHandle ballBody = pw.CreateBody(ball);
     ASSERT_TRUE(ballBody.IsValid());
 
     for (int i = 0; i < 240; ++i)
         pw.Step(kDt, 1);
-    ASSERT_NEAR(pw.GetBodyTransform(ballBody).position.y, 1.5f, 0.05f);
+    ASSERT_NEAR(pw.GetBodyTransform(ballBody).position.Y, 1.5f, 0.05f);
 
     // Erase the whole floor row under the sphere, rebuild, keep stepping.
     for (int32 x = 0; x < 4; ++x)
@@ -349,7 +349,7 @@ TEST_F(TileMapCollisionSystemTest, ErasingTheFloorDropsTheRestingSphere)
     for (int i = 0; i < 240; ++i)
         pw.Step(kDt, 1);
 
-    EXPECT_LT(pw.GetBodyTransform(ballBody).position.y, -1.0f);
+    EXPECT_LT(pw.GetBodyTransform(ballBody).position.Y, -1.0f);
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +403,7 @@ TEST_F(TileMapCollisionSystemTest, ABodyFallsThroughOneWayTilesFromBelowAndLands
     ball.motionType = Physics::MotionType::Dynamic;
     ball.layer = Physics::Layers::Dynamic;
     ball.mass = 1.0f;
-    ball.position = Physics::Vector3(2.0f, 2.0f, 0.0f);
+    ball.position = Physics::WorldPosition{2.0, 2.0, 0.0};
     ball.linearVelocity = Physics::Vector3(0.0f, 12.0f, 0.0f);
     ball.startAwake = true;
     const Physics::BodyHandle ballBody = pw.CreateBody(ball);
@@ -412,12 +412,12 @@ TEST_F(TileMapCollisionSystemTest, ABodyFallsThroughOneWayTilesFromBelowAndLands
     // Rising: it must get above the platform rather than being stopped by it.
     for (int i = 0; i < 30; ++i)
         pw.Step(kDt, 1);
-    EXPECT_GT(pw.GetBodyTransform(ballBody).position.y, 5.5f);
+    EXPECT_GT(pw.GetBodyTransform(ballBody).position.Y, 5.5f);
 
     // Falling back: it must come to rest on top of the row (top at y = 5).
     for (int i = 0; i < 300; ++i)
         pw.Step(kDt, 1);
-    EXPECT_NEAR(pw.GetBodyTransform(ballBody).position.y, 5.5f, 0.1f);
+    EXPECT_NEAR(pw.GetBodyTransform(ballBody).position.Y, 5.5f, 0.1f);
 }
 
 TEST_F(TileMapCollisionSystemTest, TheSurfaceQueryReportsTheAuthoredModePerCell)

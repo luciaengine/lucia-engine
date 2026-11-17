@@ -1,6 +1,8 @@
 #include "Engine/Rendering/VirtualShadows/VirtualShadowFeedback.h"
 
 #include "Engine/Rendering/ShadowCasterChanges.h"
+#include "Mathematics/MatrixOps.h"
+#include "Rendering/Common/Frustum.h"
 
 #include <gtest/gtest.h>
 
@@ -122,6 +124,40 @@ TEST(VirtualShadowFeedbackTests, MovedCasterDirtiesDepartureAndArrivalPagesWitho
     EXPECT_TRUE(refresh[0].NeedsRender);
     EXPECT_TRUE(refresh[1].NeedsRender);
     EXPECT_FALSE(refresh[2].NeedsRender);
+}
+
+// A caster writes a page only inside the page's side planes. The sun raster clamps near depth, so
+// its page is open toward the light. A spot or point page ends at the light.
+TEST(VirtualShadowFeedbackTests, PageCasterPlanesBoundThePageAndOpenOnlyTheSunTowardTheLight)
+{
+    const auto sun = CropVirtualShadowProjection(
+        Mathematics::MakeOrthographicLH_ZO_ReverseZ(-4.0f, 4.0f, -4.0f, 4.0f, 1.0f, 100.0f), 2, 0, 0);
+    const auto spot = CropVirtualShadowProjection(Mathematics::Matrix4x4::PerspectiveReverseZ(1.2f, 1.0f, .5f, 100.0f), 2, 0, 0);
+    ASSERT_TRUE(sun && spot);
+    const auto sunPlanes = VirtualShadowPageCasterPlanes(*sun, VirtualShadowLight::Directional);
+    const auto spotPlanes = VirtualShadowPageCasterPlanes(*spot, VirtualShadowLight::Spot);
+    const auto inside = [](const auto& planes, Mathematics::Vector3 center)
+    { return Rendering::TestSphereFrustum(center, .05f, planes.data()); };
+
+    EXPECT_TRUE(inside(sunPlanes, {-2.0f, 2.0f, 10.0f}));
+    EXPECT_TRUE(inside(sunPlanes, {0.0f, 2.0f, 10.0f}));
+    EXPECT_FALSE(inside(sunPlanes, {2.0f, 2.0f, 10.0f}));
+    EXPECT_FALSE(inside(sunPlanes, {-2.0f, -2.0f, 10.0f}));
+    EXPECT_TRUE(inside(sunPlanes, {-2.0f, 2.0f, -50.0f}));
+
+    EXPECT_TRUE(inside(spotPlanes, {-2.0f, 2.0f, 10.0f}));
+    EXPECT_TRUE(inside(spotPlanes, {0.0f, 2.0f, 10.0f}));
+    EXPECT_FALSE(inside(spotPlanes, {2.0f, 2.0f, 10.0f}));
+    EXPECT_FALSE(inside(spotPlanes, {-2.0f, 2.0f, -10.0f}));
+
+    const auto face = CropVirtualShadowProjection(
+        Mathematics::Matrix4x4::PerspectiveReverseZ(1.57079632679f, 1.0f, .5f, 100.0f), 2, 0, 0);
+    ASSERT_TRUE(face);
+    const auto facePlanes = VirtualShadowPageCasterPlanes(*face, VirtualShadowLight::Point);
+    EXPECT_TRUE(inside(facePlanes, {-2.0f, 2.0f, 10.0f}));
+    EXPECT_TRUE(inside(facePlanes, {0.0f, 2.0f, 10.0f}));
+    EXPECT_FALSE(inside(facePlanes, {2.0f, -2.0f, 10.0f}));
+    EXPECT_FALSE(inside(facePlanes, {-2.0f, 2.0f, -10.0f}));
 }
 
 TEST(VirtualShadowFeedbackTests, DirectionalWindowRetainsOnlyOverlappingDelayedWorldPages)

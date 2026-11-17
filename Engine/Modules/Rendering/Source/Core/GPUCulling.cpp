@@ -917,6 +917,40 @@ GPUCullingPipeline::OcclusionStats GPUCullingPipeline::ReadOcclusionStats() cons
     return out;
 }
 
+namespace
+{
+// The kernel inputs of one cascade group. Shadow slices 1..3 take the tight margin.
+GPUCullingData MakeCascadeGroupCullingData(const CascadeCullingGroup& group)
+{
+    GPUCullingData data{};
+    data.viewProjMatrix = group.lightVP[0]; // RenderDoc legibility only
+    for (uint32_t slice = 0; slice < group.cascadeCount; ++slice)
+        for (int plane = 0; plane < 6; ++plane)
+            data.frustumPlanes[slice][plane] = group.frustumPlanes[slice][plane];
+    // The group's planes are relative to the origin of the parent view's sector.
+    data.originSector = group.originSector;
+    data.nearPlane = group.nearPlane;
+    data.cameraForward = group.cameraForward;
+    data.farPlane = group.farPlane;
+    data.firstInstance = group.firstInstance;
+    data.instanceCount = group.instanceCount;
+    data.renderLayerMask = group.renderLayerMask.Bits;
+    data.frameIndex = group.frameIndex;
+    data.deltaTime = group.deltaTime;
+    // Shadow groups drop non-casters; a color fan-out (probe faces) drops
+    // shadows-only instances, as the single-view dispatch does.
+    data.passFlags = group.shadowCasterDispatch ? kCullPassShadowDispatch : 0u;
+    if (group.dropEditorHidden)
+        data.passFlags |= kCullPassDropEditorHidden;
+    // Cascade 0 and every color fan-out slice keep the conservative margin: a false cull there
+    // pops. Distant cascades 1..3 take the tight margin, because their casters are small on screen.
+    for (uint32_t slice = 0; slice < kMaxViewsPerCullingDispatch; ++slice)
+        data.cullMargins[slice] = (slice == 0u || !group.shadowCasterDispatch) ? kCullMarginConservative
+                                                                              : kCullMarginTightCascade;
+    return data;
+}
+} // namespace
+
 void GPUCullingPipeline::BeginFrame(RenderGraph::RGFrame* frame, GPUScene* scene)
 {
     ++m_ElisionFrameStamp;
@@ -937,23 +971,51 @@ void GPUCullingPipeline::BeginFrame(RenderGraph::RGFrame* frame, GPUScene* scene
     m_FrameRuntimeVisRG = {};
 }
 
-const CullDeformationMargins& GPUCullingPipeline::FrameDeformationMargins(RenderGraph::RGFrame& frame)
+CullDeformationMargins GPUCullingPipeline::UploadDeformationMargins(RenderGraph::RGFrame& frame) const
 {
-    if (m_FrameDeformationMargins.Valid())
-        return m_FrameDeformationMargins;
     // At least one float, so an empty material set still binds a valid range
     // whose length() the kernels bound their read with.
     const size_t count = std::max<size_t>(m_MaterialDeformationMargins.size(), 1u);
     const uint64_t bytes = count * sizeof(float);
     const RenderGraph::RGUploadRing::Alloc upload = frame.AllocUpload(bytes);
     if (!upload.Ptr)
-        return m_FrameDeformationMargins;
+        return {};
     if (m_MaterialDeformationMargins.empty())
         *static_cast<float*>(upload.Ptr) = 0.0f;
     else
         std::memcpy(upload.Ptr, m_MaterialDeformationMargins.data(), bytes);
-    m_FrameDeformationMargins = {upload.Buffer, upload.Offset, bytes};
+    return {upload.Buffer, upload.Offset, bytes};
+}
+
+const CullDeformationMargins& GPUCullingPipeline::FrameDeformationMargins(RenderGraph::RGFrame& frame)
+{
+    if (!m_FrameDeformationMargins.Valid())
+        m_FrameDeformationMargins = UploadDeformationMargins(frame);
     return m_FrameDeformationMargins;
+}
+
+bool GPUCullingPipeline::ScheduleCascadeGroupInto(RenderGraph::RGFrame& frame, GPUScene& scene,
+                                                  const CascadeCullingGroup& group,
+                                                  RenderGraph::RGBuffer visibility,
+                                                  uint32_t visibilityTotalBytes,
+                                                  std::span<const uint32_t> sliceOffsetsElements)
+{
+    if (!m_Device || !visibility.IsValid() || group.cascadeCount == 0u ||
+        group.cascadeCount > kMaxCullingViewsPerDispatch || sliceOffsetsElements.size() != group.cascadeCount)
+        return false;
+    const GPUScene::GPUSceneFrameRG sceneRG = scene.ImportFrameResources(frame);
+    // The owner frame shares the upload that EndFrame bound. Another frame stream needs its own.
+    const CullDeformationMargins margins =
+        m_FrameRGOwner == &frame ? FrameDeformationMargins(frame) : UploadDeformationMargins(frame);
+    if (!sceneRG.Instances.IsValid() || !margins.Valid())
+        return false;
+    GPUCullingData cd = MakeCascadeGroupCullingData(group);
+    // A late frustum has no distant-cascade role: every slice keeps the conservative margin.
+    std::fill(std::begin(cd.cullMargins), std::end(cd.cullMargins), kCullMarginConservative);
+    const uint64_t key = (static_cast<uint64_t>(group.viewId) << 16) | group.cascadeIndexBase;
+    return scene.ScheduleCullingPassForCascadeGroup(frame, sceneRG, visibility, visibilityTotalBytes,
+                                                    sliceOffsetsElements.data(), group.cascadeCount,
+                                                    group.firstInstance, group.instanceCount, cd, margins, key);
 }
 
 void GPUCullingPipeline::BuildCullingElisionBlob(ElisionInputBlob& blob,
@@ -1347,33 +1409,7 @@ void GPUCullingPipeline::EndFrameRG()
         if (g.instanceCount == 0u || g.cascadeCount == 0u)
             continue;
 
-        GPUCullingData cd{};
-        cd.viewProjMatrix = g.lightVP[0]; // RenderDoc legibility only
-        for (uint32_t c = 0; c < g.cascadeCount; ++c)
-            for (int p = 0; p < 6; ++p)
-                cd.frustumPlanes[c][p] = g.frustumPlanes[c][p];
-        // The group's planes are relative to the origin of the parent view's sector.
-        cd.originSector = g.originSector;
-        cd.nearPlane = g.nearPlane;
-        cd.cameraForward = g.cameraForward;
-        cd.farPlane = g.farPlane;
-        cd.firstInstance = g.firstInstance;
-        cd.instanceCount = g.instanceCount;
-        cd.renderLayerMask = g.renderLayerMask.Bits;
-        cd.frameIndex = g.frameIndex;
-        cd.deltaTime = g.deltaTime;
-        // Shadow groups drop non-casters; a color fan-out (probe faces) drops
-        // shadows-only instances, matching the single-view dispatch above.
-        cd.passFlags = g.shadowCasterDispatch ? kCullPassShadowDispatch : 0u;
-        if (g.dropEditorHidden)
-            cd.passFlags |= kCullPassDropEditorHidden;
-        // Cascade 0 keeps the conservative margin (closest shadows, edge pops
-        // most visible); distant cascades 1..3 run tight — the 50% inflation
-        // was passing ~50% extra casters into every cascade slice (SCALE-11).
-        // Color fan-outs stay conservative on every slice — a false cull pops.
-        for (uint32_t m = 0; m < kMaxViewsPerCullingDispatch; ++m)
-            cd.cullMargins[m] = (m == 0u || !g.shadowCasterDispatch) ? kCullMarginConservative
-                                                                    : kCullMarginTightCascade;
+        const GPUCullingData cd = MakeCascadeGroupCullingData(g);
 
         // Pass-name key: the directional cascades keep the 0xFE tag; a based
         // fan-out names itself by its first slice so two groups of one view

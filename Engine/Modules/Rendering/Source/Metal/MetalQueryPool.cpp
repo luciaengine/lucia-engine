@@ -16,11 +16,30 @@ namespace
 {
 constexpr uint32_t kInvalidIndex = UINT32_MAX;
 
-// A slot the GPU wrote this cycle carries a tick past the slice's reopen; an
-// error value or an older cycle's leftover does not.
+// A slot the GPU wrote this cycle carries a tick past the slice's reopen. A slot it never wrote
+// reads 0 or CounterErrorValue; an older cycle's leftover reads below the open tick.
 bool IsFresh(uint64_t timestamp, uint64_t sliceOpenTick)
 {
-    return timestamp != MTL::CounterErrorValue && timestamp >= sliceOpenTick;
+    return timestamp != 0 && timestamp != MTL::CounterErrorValue && timestamp >= sliceOpenTick;
+}
+
+// A render encoder with no draws runs one stage only, and the GPU leaves the boundaries of the
+// other stage unwritten. A query on such a boundary reads the boundary of the stage that ran,
+// on the same side of the encoder. Returns `slot` when it is fresh or has no such partner.
+uint32_t WrittenBoundarySlot(const MetalQueryPool::EncoderSampleSlots& slots, uint32_t slot,
+                             const MTL::CounterResultTimestamp* samples, uint32_t sampleCount,
+                             uint64_t sliceOpenTick)
+{
+    if (!slots.SplitStages() || IsFresh(samples[slot].timestamp, sliceOpenTick))
+        return slot;
+    uint32_t partner = UINT32_MAX;
+    if (slot == slots.End)
+        partner = slots.FirstStageEnd;
+    else if (slot == slots.Start)
+        partner = slots.SecondStageBegin;
+    if (partner >= sampleCount || !IsFresh(samples[partner].timestamp, sliceOpenTick))
+        return slot;
+    return partner;
 }
 
 MTL::CounterSet* FindTimestampCounterSet(MTL::Device* device)
@@ -205,7 +224,10 @@ void MetalQueryPool::ResolveSlice(uint32_t frameIndex)
     slice.cachedSlots.assign(slice.queryCount, kInvalidIndex);
     for (uint32_t i = 0; i < slice.queryCount; ++i)
     {
-        const uint32_t sampleSlot = slice.querySample[i];
+        uint32_t sampleSlot = slice.querySample[i];
+        if (sampleSlot < slice.sampleCount && slice.sampleUnit[sampleSlot] < slice.unitSlots.size())
+            sampleSlot = WrittenBoundarySlot(slice.unitSlots[slice.sampleUnit[sampleSlot]], sampleSlot, samples,
+                                             slice.sampleCount, slice.openTick);
         if (sampleSlot < slice.sampleCount && IsFresh(samples[sampleSlot].timestamp, slice.openTick))
         {
             slice.cachedValues[i] = samples[sampleSlot].timestamp;

@@ -231,3 +231,41 @@ TEST(ClusterProjection, ViewZAtDepthZeroIsTheFarPlane)
     EXPECT_NEAR(ReadViewZ(PerspectiveProjection(), 0.0f), kFarZ, kFarZ * kViewZRelativeTolerance);
     EXPECT_EQ(ReadViewZ(InfiniteFarPerspectiveProjection(), 0.0f), std::numeric_limits<float>::infinity());
 }
+
+TEST(ClusterProjection, PerspectiveViewZHoldsBeyondOneMillionUnits)
+{
+    constexpr float kHugeFarZ = 1e9f;
+    const Matrix4x4 projection = GameEngine::Mathematics::MakePerspectiveLH_ZO_ReverseZ(
+        GameEngine::Mathematics::ToRadians(60.0f), kAspect, kNearZ, kHugeFarZ);
+    for (const float viewZ : {1e5f, 1e6f, 1e7f, 1e8f, kHugeFarZ})
+    {
+        const float depth = (kNearZ * kHugeFarZ / viewZ - kNearZ) / (kHugeFarZ - kNearZ);
+        EXPECT_NEAR(ReadViewZ(projection, depth), viewZ, viewZ * 2e-6f) << "view z " << viewZ;
+    }
+}
+
+TEST(ClusterProjection, DistantFarCornersDoNotMoveTheNearTileBoundary)
+{
+    constexpr float kTestZ = 0.2f;
+    constexpr float kLeft = -0.37f, kRight = 0.53f, kBottom = -0.21f, kTop = 0.29f;
+    constexpr float kEdgeOffset = 0.01f;
+    for (const float farZ : {1e4f, 1e5f, 1e6f, 1e7f, 1e8f, 1e9f})
+    {
+        SCOPED_TRACE(farZ);
+        const vec3 farTL{kLeft * farZ, kTop * farZ, farZ};
+        const vec3 farTR{kRight * farZ, kTop * farZ, farZ};
+        const vec3 farBL{kLeft * farZ, kBottom * farZ, farZ};
+        const vec3 farBR{kRight * farZ, kBottom * farZ, farZ};
+        const vec3 nearTL{kLeft * kNearZ, kTop * kNearZ, kNearZ};
+        const vec3 nearBR{kRight * kNearZ, kBottom * kNearZ, kNearZ};
+        const GE_ClusterTilePlanes planes = GE_ClusterTilePlanesFromCorners(farTL, farTR, farBL, farBR, nearTL, nearBR);
+        EXPECT_GT(GE_ClusterPlaneDistance(planes.Left, {(kLeft + kEdgeOffset) * kTestZ, 0.0f, kTestZ}), 0.0f);
+        EXPECT_LT(GE_ClusterPlaneDistance(planes.Left, {(kLeft - kEdgeOffset) * kTestZ, 0.0f, kTestZ}), 0.0f);
+        EXPECT_GT(GE_ClusterPlaneDistance(planes.Right, {(kRight - kEdgeOffset) * kTestZ, 0.0f, kTestZ}), 0.0f);
+        EXPECT_LT(GE_ClusterPlaneDistance(planes.Right, {(kRight + kEdgeOffset) * kTestZ, 0.0f, kTestZ}), 0.0f);
+        EXPECT_GT(GE_ClusterPlaneDistance(planes.Top, {0.0f, (kTop - kEdgeOffset) * kTestZ, kTestZ}), 0.0f);
+        EXPECT_LT(GE_ClusterPlaneDistance(planes.Top, {0.0f, (kTop + kEdgeOffset) * kTestZ, kTestZ}), 0.0f);
+        EXPECT_GT(GE_ClusterPlaneDistance(planes.Bottom, {0.0f, (kBottom + kEdgeOffset) * kTestZ, kTestZ}), 0.0f);
+        EXPECT_LT(GE_ClusterPlaneDistance(planes.Bottom, {0.0f, (kBottom - kEdgeOffset) * kTestZ, kTestZ}), 0.0f);
+    }
+}

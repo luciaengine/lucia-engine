@@ -129,6 +129,8 @@ class FinePoolRecoveryTest : public MeshPoolGroupPlanTest
             return;
         if (!HasCoherentDeviceLocalUploadMemory())
             GTEST_SKIP() << "fine domain requires reported coherent host-visible device-local upload memory";
+        if (m_Device->GetAPI() != GraphicsAPI::Vulkan)
+            GTEST_SKIP() << "the forced device loss (GE_VK_FORCE_DEVICE_LOST) exists only on Vulkan";
         m_Device->RegisterDeviceRebuiltCallback("FinePoolRecoveryTest", [this](IDevice* device)
         {
             m_Scene->ReprovisionAfterDeviceRebuild();

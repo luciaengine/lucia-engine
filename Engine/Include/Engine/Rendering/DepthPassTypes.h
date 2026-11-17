@@ -67,6 +67,9 @@ struct DepthOnlyPassParamsRG
     uint32_t CascadeIndex = 0;
     // Physical page within a virtual atlas; absent for conventional depth passes.
     std::optional<uint32_t> VirtualPageTile;
+    // The caster slice a virtual page draws from: its own page slice when it renders, the
+    // view's all-caster slice when it only proves a resident page.
+    uint8_t VirtualCasterSlice = 0;
     Rendering::RenderGraph::RGFrameStamp VirtualFrame;
     Rendering::RenderGraph::RGBuffer VirtualCasterOrdering;
     CascadeCasters Casters = CascadeCasters::All;

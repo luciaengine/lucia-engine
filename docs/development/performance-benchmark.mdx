@@ -13,12 +13,12 @@ The scenes are in `Tests/Projects/PerformanceBenchmark/Assets/Scenes/`. `Tools/B
 
 | Scene | Kind of game | Content | Feature check |
 |---|---|---|---|
-| `Forest` | Open world, role-playing | 720 wind-animated procedural trees from 12 seeds, a sun, virtual shadow maps | A shadow pass ran |
-| `OpenWorld` | Open world, flight | A 4 km generated terrain, an ocean, 1500 rocks under an HLOD volume, 12 km far plane | An ocean pass ran |
+| `Forest` | Open world, role-playing | 720 wind-animated procedural trees from 12 seeds, a sun, virtual shadow maps | A virtual shadow pass ran |
+| `OpenWorld` | Open world, flight | A 4 km generated terrain, an ocean, 1500 rocks under an HLOD volume, 12 km far plane | The ocean surface pass ran |
 | `Crowd` | Third-person, strategy | 400 skinned foxes that play 3 clips, each with bone LOD | |
 | `City` | Open world, strategy | 256 buildings from 32 unique procedural meshes, cooked to cluster LOD | |
 | `Interior` | First-person, cutscene close-up | A closed hall, 48 point lights (4 with shadows), a DDGI volume, 2 realtime reflection probes | A DDGI pass ran |
-| `Sprites2D` | 2D, UI-heavy | 5000 alpha-blended unlit quads under an orthographic camera, 3 UI panels of 60 rows | A UI pass ran |
+| `Sprites2D` | 2D, UI-heavy | 5000 alpha-blended unlit quads under an orthographic camera, 3 UI panels of 60 rows | The UI overlay and sorted transparent passes ran |
 
 Each scene has 2 or 3 held camera poses. A pose is a position in meters, a yaw in degrees (0 looks along +Z, 90 along +X) and a pitch in degrees (positive looks up).
 
@@ -51,11 +51,11 @@ Known limits of the set:
 
 The result keeps the median, the 99th percentile, the mean, the minimum and the maximum of each value. The timing frames give the frame and CPU times; the profiled frames give the GPU and pass times, so the profiling cost is not in the frame time.
 
-The runner refuses a scene, and marks it not valid, when the Player exits with an error, the swapchain is not the manifest's resolution, the swapchain presents with FIFO, a pose has no resolved GPU timings, or a pass that the scene must run is absent. A scene whose feature did not run cannot give a fast number.
+The runner refuses a scene, and marks it not valid, when the Player exits with an error, the swapchain is not the manifest's resolution, the swapchain presents with FIFO, a pose has no resolved GPU timings, a pass that the scene must run is absent, or the log says that scene content or a feature did not load (an unknown component type, a missing asset, cluster LOD pages off). A scene whose feature did not run cannot give a fast number.
 
 ## Run the benchmark
 
-The reference machine is the Steam Machine (12 cores, RADV). Run nothing else on it during a run: the runner refuses to start above a 1-minute load average of 1.5.
+The reference machine is the Steam Machine (12 cores, RADV). Run nothing else on it during a run: the runner refuses to start above a 1-minute load average of 1.5, and marks a scene not valid when the load average is above 6 at its end.
 
 1. Build the Player and the cook tool in Release:
 
@@ -72,7 +72,11 @@ python3 Tools/Benchmarks/Scenes/benchmark.py run --player build/linux-x64-local/
 
 3. Pass `--scenes Forest,City` to run some scenes. Pass `--build-sha <sha>` when the source is not a git checkout.
 
-The Player needs a display. In the Steam Machine's build container, give it the gamescope X server with `-v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=:0`.
+The Player needs a display whose size is the manifest's resolution. A session compositor can size the window to the screen, so the runner then marks every scene not valid. On the Steam Machine, start the build container inside a headless gamescope of the manifest's size, and give the container its X display:
+
+```bash title="Run the build container inside a headless 1920x1080 gamescope"
+gamescope --backend headless -w 1920 -h 1080 -W 1920 -H 1080 -- bash -c 'podman run --rm --device /dev/dri -v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=$DISPLAY <mounts> <image> <command>'
+```
 
 ## Measure the noise
 
@@ -90,7 +94,7 @@ The threshold of each metric is 3 relative standard deviations of the 5 runs, an
 python3 Tools/Benchmarks/Scenes/benchmark.py compare results/main.json results/change.json --noise results/noise.json
 ```
 
-The comparison prints the median and 99th-percentile frame time, the median CPU time and the median GPU time of each pose, and every pass that regressed. A metric regresses when it is slower by more than its threshold. A pass below 0.05 ms in both results never regresses. A scene that is valid in the base result and not valid in the other is reported. The exit status is 1 when there is a regression.
+The comparison prints the median and 99th-percentile frame time, the median CPU time and the median GPU time of each pose, and every pass that regressed. A metric regresses when it is slower by more than its threshold. A pass below 0.3 ms in both results never regresses: passes that small change between runs of one build by more than any useful threshold, and their time still counts in the GPU time. The per-tile virtual shadow passes of a view compare as one row, the sum of their times, because each run renders different tiles. A scene that is valid in the base result and not valid in the other is reported. The exit status is 1 when there is a regression.
 
 Compare only results from the same GPU, driver and resolution; the comparison prints a warning when they differ.
 

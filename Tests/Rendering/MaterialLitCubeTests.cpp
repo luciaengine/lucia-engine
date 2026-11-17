@@ -255,19 +255,20 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
     const Matrix4x4 V = Mathematics::MakeLookAtLH(eye, Vector3(0.0f, 0.0f, 0.0f), Vector3(0.0f, 1.0f, 0.0f)).ToVulkan();
     constexpr float kNear = 0.1f;
     constexpr float kFar = 10.0f;
-    const Matrix4x4 P = Mathematics::MakePerspectiveLH_ZO_ReverseZ(Math::ToRadians(60.0f), aspect, kNear, kFar).ToVulkan();
+    constexpr float kVerticalFieldOfViewDeg = 60.0f;
+    const Matrix4x4 P = Mathematics::MakePerspectiveLH_ZO_ReverseZ(Mathematics::ToRadians(kVerticalFieldOfViewDeg), aspect, kNear, kFar).ToVulkan();
     const Matrix4x4 VP = P * V;
 
     CameraData cam{};
-    std::memcpy(cam.view, V.Data(), sizeof(cam.view));
-    std::memcpy(cam.proj, P.Data(), sizeof(cam.proj));
-    std::memcpy(cam.viewProj, VP.Data(), sizeof(cam.viewProj));
-    cam.cameraPos[0] = eye.x;
-    cam.cameraPos[1] = eye.y;
-    cam.cameraPos[2] = eye.z;
+    cam.view = V;
+    cam.proj = P;
+    cam.viewProj = VP;
+    cam.cameraPos.x = eye.x;
+    cam.cameraPos.y = eye.y;
+    cam.cameraPos.z = eye.z;
     // Render origin inactive (sector 0): the rebased matrices equal the full-world ones.
-    std::memcpy(cam.viewRel, V.Data(), sizeof(cam.viewRel));
-    std::memcpy(cam.viewProjRel, VP.Data(), sizeof(cam.viewProjRel));
+    cam.viewRel = V;
+    cam.viewProjRel = VP;
     BufferHandle camBuf = CreateUploadBuffer(*dev, BufferUsage::Uniform, sizeof(CameraData), "MaterialLit.CameraUBO");
     ASSERT_TRUE(camBuf.IsValid());
     Upload(*dev, camBuf, &cam, sizeof(cam));

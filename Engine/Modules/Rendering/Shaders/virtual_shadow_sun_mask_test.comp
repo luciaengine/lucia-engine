@@ -1,0 +1,38 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// The in-shader sun lookup that the world pass runs without the sun mask, with the
+// same shadow constants and virtual pages as virtual_shadow_sun_mask.comp. Each
+// probe gives the position, the normal and the screen position of one receiver.
+#include "Includes/shadow_data.glsl"
+#include "Includes/shadow_pcss_taps.glsl"
+#include "Includes/shadow_filter.glsl"
+#include "Includes/virtual_shadow_directional.glsl"
+
+struct Probe
+{
+    vec4 Position;     // xyz: render-origin-relative position
+    vec4 Normal;       // xyz: unit receiver normal
+    vec4 Screen;       // xy: gl_FragCoord.xy of the receiver
+};
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer Probes { Probe probes[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Results { float visibility[]; };
+layout(set = 0, binding = 2, std140) uniform SunMaskTestParams
+{
+    vec4 uTowardLight;
+    uvec4 uCount;
+};
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= uCount.x)
+        return;
+    Probe probe = probes[index];
+    float value;
+    bool resolved = GE_TryVirtualShadowDirectional(probe.Position.xyz, probe.Normal.xyz,
+        dot(probe.Normal.xyz, uTowardLight.xyz), probe.Screen.xy, int(ge_shadowDebug.w + 0.5), value);
+    visibility[index] = resolved ? value : -1.0;
+}

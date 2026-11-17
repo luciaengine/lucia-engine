@@ -648,21 +648,21 @@ TEST(ThreadedBvhPoolTest, PooledRangesDoNotBleedIntoEachOther)
 
 TEST(DDGIEmissiveTest, AuthoredNitsAreFoldedByTheReferenceWhiteAnchor)
 {
-    const DDGIEmissive baked = ComputeDDGIEmissive(0.25f, 0.5f, 1.0f, 203.0f);
+    const DDGIEmissive baked = ComputeDDGIEmissive(ColorLinear(0.25f, 0.5f, 1.0f), 203.0f);
 
     // 203 nits IS the anchor, so it must come out as scene-linear 1.0 — the
     // whole point of the constant.
-    EXPECT_FLOAT_EQ(0.25f, baked.Color[0]);
-    EXPECT_FLOAT_EQ(0.5f, baked.Color[1]);
-    EXPECT_FLOAT_EQ(1.0f, baked.Color[2]);
+    EXPECT_FLOAT_EQ(0.25f, baked.Color.r);
+    EXPECT_FLOAT_EQ(0.5f, baked.Color.g);
+    EXPECT_FLOAT_EQ(1.0f, baked.Color.b);
 
     // Away from the anchor the colour scales by nits / referenceWhite.
     constexpr float32 kNits = 812.0f;  // 4x the anchor
-    const DDGIEmissive bright = ComputeDDGIEmissive(0.2f, 0.4f, 0.8f, kNits);
+    const DDGIEmissive bright = ComputeDDGIEmissive(ColorLinear(0.2f, 0.4f, 0.8f), kNits);
     const float32 expectedScale = kNits / Components::kReferenceWhiteNits;
-    EXPECT_FLOAT_EQ(0.2f * expectedScale, bright.Color[0]);
-    EXPECT_FLOAT_EQ(0.4f * expectedScale, bright.Color[1]);
-    EXPECT_FLOAT_EQ(0.8f * expectedScale, bright.Color[2]);
+    EXPECT_FLOAT_EQ(0.2f * expectedScale, bright.Color.r);
+    EXPECT_FLOAT_EQ(0.4f * expectedScale, bright.Color.g);
+    EXPECT_FLOAT_EQ(0.8f * expectedScale, bright.Color.b);
 }
 
 // The GLSL half of the contract cannot be linked against, so the shader source

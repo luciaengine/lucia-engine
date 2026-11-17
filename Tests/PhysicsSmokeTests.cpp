@@ -5270,7 +5270,12 @@ TEST(PhysicsWorldHooks, HooksNeverResolveASiblingComponent)
                "takes a shared lock on that same non-recursive mutex — resolving a sibling "
                "component here self-deadlocks the editor on every scene close. Every hook "
                "must be self-sufficient from its own component.";
-        EXPECT_EQ(src.find("world.Get"), std::string::npos) << path.filename().string();
+        // GetWorldId reads a member and takes no lock; every other world.Get* resolves state under it.
+        std::string withoutWorldId = src;
+        for (std::size_t at = withoutWorldId.find("world.GetWorldId()"); at != std::string::npos;
+             at = withoutWorldId.find("world.GetWorldId()", at))
+            withoutWorldId.erase(at, std::string_view("world.GetWorldId()").size());
+        EXPECT_EQ(withoutWorldId.find("world.Get"), std::string::npos) << path.filename().string();
     }
 }
 

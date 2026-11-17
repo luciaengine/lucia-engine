@@ -34,11 +34,11 @@ struct Pools
 CameraData PerspectiveCamera()
 {
     CameraData camera{};
-    for (int i = 0; i < 16; i += 5) camera.view[i] = 1;
+    camera.view = Mathematics::Matrix4x4::Identity();
     const auto projection = Mathematics::MakePerspectiveLH_ZO_ReverseZ(1.0471976f, 1.5f, 0.1f, 200.0f);
-    std::memcpy(camera.proj, projection.Data(), sizeof(camera.proj));
-    std::memcpy(camera.viewProj, camera.proj, sizeof(camera.proj));
-    std::memcpy(camera.viewProjRel, camera.viewProj, sizeof(camera.viewProj));
+    camera.proj = projection;
+    camera.viewProj = camera.proj;
+    camera.viewProjRel = camera.viewProj;
     return camera;
 }
 TextureDesc DepthDesc(uint32_t width, uint32_t height, uint32_t samples = 1)
@@ -92,7 +92,7 @@ TEST(ScreenSpaceShadowPasses, InvalidInputsDeclareNoPassOrTexture)
     EXPECT_FALSE(service.DeclareMaskPass(frame, 1, depth, camera, nullptr, 0.005f).IsValid());
     EXPECT_FALSE(service.DeclareMaskPass(frame, 1, depth, camera, light,
         std::numeric_limits<float>::quiet_NaN()).IsValid());
-    camera.proj[15] = 1; // orthographic
+    camera.proj[3][3] = 1; // orthographic
     EXPECT_FALSE(service.DeclareMaskPass(frame, 1, depth, camera, light, 0.005f).IsValid());
     camera = {};
     EXPECT_FALSE(service.DeclareMaskPass(frame, 1, depth, camera, light, 0.005f).IsValid());
@@ -205,7 +205,7 @@ TEST(ScreenSpaceShadowPasses, PackagedMatchingChangesTheProducedContactFootprint
         RG::RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Upload);
         ScreenSpaceShadowPasses service(device.get());
         const auto camera = PerspectiveCamera();
-        const float light[3] = {-4 / camera.proj[0], 0, -1};
+        const float light[3] = {-4 / camera.proj[0][0], 0, -1};
         std::array<RG::RGTexture, 2> masks;
         for (uint32_t index = 0; index < 4; ++index)
         {
@@ -215,9 +215,9 @@ TEST(ScreenSpaceShadowPasses, PackagedMatchingChangesTheProducedContactFootprint
             auto constants = frame.AllocUpload<ShadowDataGPU>();
             ASSERT_TRUE(constants.Valid());
             *constants.Ptr = {};
-            const float inverseW = (0.4f - camera.proj[10]) / camera.proj[14];
-            constants.Ptr->shadowVP[0][0] = w * camera.proj[0] * inverseW / (64 * 3);
-            constants.Ptr->shadowVP[0][5] = h * camera.proj[5] * inverseW / (64 * 3);
+            const float inverseW = (0.4f - camera.proj[2][2]) / camera.proj[3][2];
+            constants.Ptr->shadowVP[0][0] = w * camera.proj[0][0] * inverseW / (64 * 3);
+            constants.Ptr->shadowVP[0][5] = h * camera.proj[1][1] * inverseW / (64 * 3);
             constants.Ptr->shadowVP[0][10] = constants.Ptr->shadowVP[0][15] = 1;
             constants.Ptr->shadowSplits[0] = 100;
             constants.Ptr->shadowParams[2] = 1;

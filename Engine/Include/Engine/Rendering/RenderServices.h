@@ -68,6 +68,7 @@
 #include "JobSystem/TaskHandle.h"
 #include "Mathematics/Vector3.h"
 #include "Mathematics/Vector3Int.h"
+#include "Mathematics/Vector4.h"
 #include "Types/Types.h"
 #include <filesystem>
 
@@ -246,6 +247,11 @@ float DeliveredLuminance(const ExtractedLight& light);
 // none, it does not cast light, or it delivers nothing. The fog sun (height fog, clouds, volumetric
 // fog) comes from here and falls back to the sky when this is null.
 const ExtractedLight* SelectLitPrimaryDirectional(std::span<const ExtractedLight> sortedLights);
+
+// The unit direction toward the primary directional when that light casts shadows from a finite
+// direction; nullopt otherwise. The screen-space shadow masks shadow this light.
+std::optional<Mathematics::Vector3> TowardShadowCastingPrimaryDirectional(
+    std::span<const ExtractedLight> sortedLights);
 
 // Directional lighting capacity: the primary (shadowed) directional plus up to
 // kMaxSecondaryDirectionals unshadowed secondaries evaluated additively with
@@ -801,6 +807,21 @@ class RenderServices
     // view opted out of HZB) or the frame state is not ready.
     bool ScheduleWorldOcclusionRecoverScatterForView(Rendering::RenderGraph::RGFrame& frame,
                                                       Rendering::ViewId viewId);
+
+    /// A shadow frustum that exists only after the frame's culling, such as a virtual shadow page.
+    struct LateShadowSlice
+    {
+        /// The slice's draw ranges publish under (view, CullingIndex, phase A).
+        uint8_t CullingIndex = 0;
+        /// Planes in ExtractFrustumPlanes order, relative to the origin of the request's sector.
+        std::array<Mathematics::Vector4, 6> Planes{};
+    };
+    /// Culls the shadow casters of `viewId` against each slice and scatters every slice at LOD 0.
+    /// Returns the draw-stream ordering value that the slices' depth passes read, or an invalid
+    /// value when the slices were not culled and scattered this frame: the caller then draws none.
+    Rendering::RenderGraph::RGBuffer ScheduleLateShadowSlices(Rendering::RenderGraph::RGFrame& frame,
+        Rendering::ViewId viewId, const Mathematics::Vector3Int& originSector,
+        std::span<const LateShadowSlice> slices);
 
     // ── Slice-3 RenderGraph pass arms. ViewDesc.targets carries OLD-graph logical
     // ids; these arms take frame-local RGTexture VALUES instead — effective-

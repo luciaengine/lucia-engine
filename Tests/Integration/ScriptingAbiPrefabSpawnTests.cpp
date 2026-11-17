@@ -197,7 +197,7 @@ TEST_F(ScriptingAbiPrefabSpawnTest, SpawnReturnsARootWhoseTreeMatchesThePrefab)
     world.Query<ECS::Read<Components::Parent>>().Each(
         [&children, root](const Components::Parent& parent)
         {
-            if (parent.parent == root)
+            if (parent.Entity == root)
                 ++children;
         });
     EXPECT_EQ(children, 2u);
@@ -225,7 +225,7 @@ TEST_F(ScriptingAbiPrefabSpawnTest, SpawnWhileChangesAreDeferredCreatesAtOnceAnd
     EXPECT_EQ(world.GetComponent<Components::Transform>(first), firstTransform);
     const auto* parent = world.GetComponent<Components::Parent>(ECS::EntityHandle(secondId));
     ASSERT_NE(parent, nullptr);
-    EXPECT_EQ(parent->parent, first);
+    EXPECT_EQ(parent->Entity, first);
     world.SetDeferStructuralChanges(false);
 }
 

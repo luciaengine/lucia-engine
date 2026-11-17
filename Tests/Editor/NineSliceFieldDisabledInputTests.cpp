@@ -115,7 +115,7 @@ TEST(NineSliceFieldDisabledInput, ADisabledFieldTakesNoHoverAnywhereOnItsCanvas)
 {
     NineSliceField field;
     PlaceField(field);
-    field.SetDisabled(true);
+    field.SetEnabled(false);
     field.ClearDirty(UIElement::VisualDirty);
 
     EXPECT_FALSE(SweepForHover(field, 0.0f, kFieldHeightPx * kCanvasSweepEndFrac).has_value());
@@ -128,7 +128,7 @@ TEST(NineSliceFieldDisabledInput, ADisabledFieldRefusesThePressOnACutHandle)
 
     NineSliceField field;
     PlaceField(field);
-    field.SetDisabled(true);
+    field.SetEnabled(false);
     int changing = 0;
     int changed = 0;
     field.SetOnChanging([&changing](const NineSlice&) { ++changing; });
@@ -151,7 +151,7 @@ TEST(NineSliceFieldDisabledInput, AFieldInsideADisabledGroupRefusesTheHoverAndTh
     NineSliceField* field = fieldOwned.get();
     group.AddChild(std::move(fieldOwned));
     PlaceField(*field);
-    group.SetDisabled(true);
+    group.SetEnabled(false);
     field->ClearDirty(UIElement::VisualDirty);
 
     int changing = 0;
@@ -168,7 +168,7 @@ TEST(NineSliceFieldDisabledInput, ADisabledFieldStillHoversItsPreviewResizeGrip)
 {
     NineSliceField field;
     PlaceField(field);
-    field.SetDisabled(true);
+    field.SetEnabled(false);
     field.ClearDirty(UIElement::VisualDirty);
 
     EXPECT_TRUE(
