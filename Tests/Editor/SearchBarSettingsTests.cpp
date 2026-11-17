@@ -8,6 +8,7 @@
 #include "Editor/Settings/SearchBarSettingsPage.h"
 #include "UI/EditorSearchBars.h"
 #include "UI/PanelSearchBar.h"
+#include "UI/UIElement.h"
 
 #include <string>
 #include <variant>
@@ -23,7 +24,8 @@ using GameEngine::Editor::SettingsFieldDescriptor;
 namespace
 {
 
-SettingsFieldDescriptor::ToggleField SearchBarToggle(const std::string& label)
+template <typename Control>
+Control SearchBarRow(const std::string& label)
 {
     RegisterSearchBarSettingsCategory();
     SettingsCategoryDescriptor category;
@@ -32,13 +34,26 @@ SettingsFieldDescriptor::ToggleField SearchBarToggle(const std::string& label)
     {
         if (field.Label != label)
             continue;
-        const auto* toggle = std::get_if<SettingsFieldDescriptor::ToggleField>(&field.Control);
-        EXPECT_NE(toggle, nullptr) << label << " is not a toggle";
-        return toggle ? *toggle : SettingsFieldDescriptor::ToggleField{};
+        const auto* control = std::get_if<Control>(&field.Control);
+        EXPECT_NE(control, nullptr) << label << " has another control type";
+        return control ? *control : Control{};
     }
     ADD_FAILURE() << "the Search Bars page has no row " << label;
     return {};
 }
+
+SettingsFieldDescriptor::ToggleField SearchBarToggle(const std::string& label)
+{
+    return SearchBarRow<SettingsFieldDescriptor::ToggleField>(label);
+}
+
+// A leading row icon registered for the test, unregistered before it is destroyed.
+struct RegisteredRowIcon
+{
+    GameEngine::UIElement Icon;
+    RegisteredRowIcon() { EditorSearchBars::RegisterRowIcon(&Icon); }
+    ~RegisteredRowIcon() { EditorSearchBars::UnregisterRowIcon(&Icon); }
+};
 
 // A panel search bar registered for the test, unregistered before it is destroyed.
 struct RegisteredSearchBar
@@ -96,4 +111,54 @@ TEST(SearchBarSettings, TheTopRowMovesARegisteredPanelSearchBar)
     EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-at-top"));
 
     toggle.Set(initial);
+}
+
+TEST(SearchBarSettings, TheIconAndHintAreHiddenByDefault)
+{
+    const auto toggle = SearchBarToggle("Show Icon and Search Hint");
+    EXPECT_FALSE(toggle.DefaultValue);
+    EXPECT_FALSE(EditorSearchBars::GetShowIconAndHint()) << "with no saved choice, the icon and hint show";
+    const RegisteredSearchBar bar;
+    const RegisteredRowIcon icon;
+    EXPECT_TRUE(bar.Built.RootPtr->HasClass("search-bar-no-hint"));
+    EXPECT_TRUE(icon.Icon.HasClass("search-row-icon-hidden"));
+}
+
+TEST(SearchBarSettings, TheIconAndHintRowShowsAndHidesBoth)
+{
+    const auto toggle = SearchBarToggle("Show Icon and Search Hint");
+    ASSERT_TRUE(toggle.Set && toggle.Get);
+    const bool initial = toggle.Get();
+    const RegisteredSearchBar bar;
+    const RegisteredRowIcon icon;
+
+    toggle.Set(true);
+    EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-no-hint"));
+    EXPECT_FALSE(icon.Icon.HasClass("search-row-icon-hidden"));
+
+    toggle.Set(false);
+    EXPECT_TRUE(bar.Built.RootPtr->HasClass("search-bar-no-hint"));
+    EXPECT_TRUE(icon.Icon.HasClass("search-row-icon-hidden"));
+
+    toggle.Set(initial);
+}
+
+TEST(SearchBarSettings, TheStyleRowIsLuciaByDefaultAndSetsClassic)
+{
+    const auto style = SearchBarRow<SettingsFieldDescriptor::DropdownField>("Search Bar Style");
+    ASSERT_TRUE(style.Set && style.Get);
+    EXPECT_EQ(style.DefaultValue, "Lucia");
+    EXPECT_EQ(style.Get(), "Lucia") << "with no saved choice, the style is not Lucia";
+    const std::string initial = style.Get();
+    const RegisteredSearchBar bar;
+    EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-classic"));
+
+    style.Set("Classic");
+    EXPECT_EQ(EditorSearchBars::GetLook(), EditorSearchBars::Look::Classic);
+    EXPECT_TRUE(bar.Built.RootPtr->HasClass("search-bar-classic"));
+
+    style.Set("Lucia");
+    EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-classic"));
+
+    style.Set(initial);
 }

@@ -816,9 +816,10 @@ class RenderServices
         /// Planes in ExtractFrustumPlanes order, relative to the origin of the request's sector.
         std::array<Mathematics::Vector4, 6> Planes{};
     };
-    /// Culls the shadow casters of `viewId` against each slice and scatters every slice at LOD 0.
-    /// Returns the draw-stream ordering value that the slices' depth passes read, or an invalid
-    /// value when the slices were not culled and scattered this frame: the caller then draws none.
+    /// Culls the shadow casters of `viewId` against each slice and builds each slice's caster lists
+    /// and LOD 0 draws (GPUDrawStreamBuilder::ScheduleLateShadowLists). Returns the draw-stream
+    /// ordering value that the slices' depth passes read, or an invalid value when the slices were
+    /// not culled and listed this frame: the caller then draws none.
     Rendering::RenderGraph::RGBuffer ScheduleLateShadowSlices(Rendering::RenderGraph::RGFrame& frame,
         Rendering::ViewId viewId, const Mathematics::Vector3Int& originSector,
         std::span<const LateShadowSlice> slices);

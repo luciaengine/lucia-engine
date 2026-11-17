@@ -332,6 +332,35 @@ void GE_MacOS_FocusWindow(void* nsWindow)
     }
 }
 
+// Hides the application, so that macOS activates the application that was in front. The windows come back
+// without activation, unless the process started hidden.
+static void GE_MacOS_GiveActivationBack(BOOL startedHidden)
+{
+    [NSApp hide:nil];
+    if (startedHidden)
+        return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp unhideWithoutActivation];
+    });
+}
+
+// A different process can activate the application, for example an accessibility client.
+// From this call on, the application gives each activation back.
+void GE_MacOS_RefuseApplicationActivation()
+{
+    @autoreleasepool {
+        static id s_becameActiveObserver = nil;
+        if (s_becameActiveObserver)
+            return;
+        const BOOL startedHidden = [NSApp isHidden];
+        s_becameActiveObserver = [[[NSNotificationCenter defaultCenter]
+            addObserverForName:NSApplicationDidBecomeActiveNotification
+                        object:NSApp
+                         queue:nil
+                    usingBlock:^(NSNotification*) { GE_MacOS_GiveActivationBack(startedHidden); }] retain];
+    }
+}
+
 void* GE_MacOS_InstallTitleBarRightClickMonitor(void* nsWindowPtr,
                                                 void (*callback)(int, int, void*),
                                                 void* userData)

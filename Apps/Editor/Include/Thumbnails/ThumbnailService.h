@@ -62,7 +62,7 @@ class ThumbnailService : public IThumbnailProvider
     std::string GetOrRequestInlineImage(const std::filesystem::path& image,
                                         std::function<void(const std::string& path)> onReady) override;
 
-    std::string GetOrRequestAtlasRegion(const std::filesystem::path& texturePath, const std::array<float, 4>& uv,
+    std::string GetOrRequestAtlasRegion(const std::filesystem::path& texturePath, const Mathematics::Vector4& uv,
                                         std::function<void(const std::string& path)> onReady) override;
 
     std::string GetOrRequestSpriteFrame(const std::filesystem::path& spriteFramesPath,

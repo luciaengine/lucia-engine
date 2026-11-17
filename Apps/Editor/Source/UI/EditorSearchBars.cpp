@@ -60,6 +60,46 @@ void EditorSearchBars::SetAccentFocusOutline(bool enabled)
     }
 }
 
+EditorSearchBars::Look EditorSearchBars::GetLook()
+{
+    if (!s_Loaded)
+        LoadFromPreferences();
+    return s_ClassicLook ? Look::Classic : Look::Lucia;
+}
+
+void EditorSearchBars::SetLook(Look look)
+{
+    s_ClassicLook = look == Look::Classic;
+    s_Loaded = true;
+    SaveToPreferences();
+    PruneNulls();
+    for (const RegisteredBar& registered : s_Bars)
+        ApplyLook(registered.SearchBar);
+}
+
+bool EditorSearchBars::GetShowIconAndHint()
+{
+    if (!s_Loaded)
+        LoadFromPreferences();
+    return s_ShowIconAndHint;
+}
+
+void EditorSearchBars::SetShowIconAndHint(bool show)
+{
+    s_ShowIconAndHint = show;
+    s_Loaded = true;
+    SaveToPreferences();
+    PruneNulls();
+    for (const RegisteredBar& registered : s_Bars)
+    {
+        ApplyHint(registered.SearchBar);
+        // The hint rule matches a descendant of the bar, so the bar's subtree restyles.
+        registered.SearchBar->MarkDirtySubtree(UIElement::StyleDirty | UIElement::VisualDirty);
+    }
+    for (UIElement* icon : s_RowIcons)
+        ApplyRowIcon(icon);
+}
+
 void EditorSearchBars::SetAtTop(bool atTop)
 {
     s_AtTop = atTop;
@@ -107,6 +147,8 @@ void EditorSearchBars::RegisterHosted(UIElement* searchBar, UIElement* placement
     else
         searchBar->RemoveClass("hidden");
     ApplyPlacement(placementHost);
+    ApplyLook(searchBar);
+    ApplyHint(searchBar);
     RegisterFocusTarget(searchBar);
 
     auto it = std::find_if(s_Bars.begin(), s_Bars.end(),
@@ -144,6 +186,46 @@ void EditorSearchBars::ApplyFocusOutline(UIElement* searchBar)
         searchBar->AddClass("search-accent-focus");
     else
         searchBar->RemoveClass("search-accent-focus");
+}
+
+void EditorSearchBars::RegisterRowIcon(UIElement* icon)
+{
+    if (!icon)
+        return;
+    if (!s_Loaded)
+        LoadFromPreferences();
+    ApplyRowIcon(icon);
+    if (std::find(s_RowIcons.begin(), s_RowIcons.end(), icon) == s_RowIcons.end())
+        s_RowIcons.push_back(icon);
+}
+
+void EditorSearchBars::UnregisterRowIcon(UIElement* icon)
+{
+    s_RowIcons.erase(std::remove(s_RowIcons.begin(), s_RowIcons.end(), icon), s_RowIcons.end());
+}
+
+void EditorSearchBars::ApplyLook(UIElement* searchBar)
+{
+    if (s_ClassicLook)
+        searchBar->AddClass("search-bar-classic");
+    else
+        searchBar->RemoveClass("search-bar-classic");
+}
+
+void EditorSearchBars::ApplyHint(UIElement* searchBar)
+{
+    if (s_ShowIconAndHint)
+        searchBar->RemoveClass("search-bar-no-hint");
+    else
+        searchBar->AddClass("search-bar-no-hint");
+}
+
+void EditorSearchBars::ApplyRowIcon(UIElement* icon)
+{
+    if (s_ShowIconAndHint)
+        icon->RemoveClass("search-row-icon-hidden");
+    else
+        icon->AddClass("search-row-icon-hidden");
 }
 
 void EditorSearchBars::ApplyPlacement(UIElement* placementTarget)
@@ -197,6 +279,8 @@ void EditorSearchBars::LoadFromPreferences()
     prefs.TryGetBool("ui.searchBarsVisible", s_Visible);
     prefs.TryGetBool("ui.searchBarsAtTop", s_AtTop);
     prefs.TryGetBool("ui.searchBarsAccentFocusOutline", s_AccentFocusOutline);
+    prefs.TryGetBool("ui.searchBarsClassicLook", s_ClassicLook);
+    prefs.TryGetBool("ui.searchBarsShowIconAndHint", s_ShowIconAndHint);
     s_Loaded = true;
 }
 
@@ -209,6 +293,8 @@ void EditorSearchBars::SaveToPreferences()
     prefs.SetBool("ui.searchBarsVisible", s_Visible);
     prefs.SetBool("ui.searchBarsAtTop", s_AtTop);
     prefs.SetBool("ui.searchBarsAccentFocusOutline", s_AccentFocusOutline);
+    prefs.SetBool("ui.searchBarsClassicLook", s_ClassicLook);
+    prefs.SetBool("ui.searchBarsShowIconAndHint", s_ShowIconAndHint);
     prefs.Save(&err);
 }
 

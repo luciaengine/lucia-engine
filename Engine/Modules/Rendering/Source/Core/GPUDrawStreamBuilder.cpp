@@ -1,5 +1,6 @@
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
 
+#include "GPUDrawStreamInternal.h"
 #include "Logger/Logger.h"
 #include "Memory/ScratchScope.h"
 #include "Platform/Environment.h"
@@ -50,9 +51,6 @@ ResourceBarrier GPUDrawStreamBuilder::CreateStreamReadyBarrier()
 namespace
 {
 
-// Mirrors VkDrawIndexedIndirectCommand. 5 uint32s = 20 bytes per record.
-constexpr uint32_t kDrawCommandStride = 5 * sizeof(uint32_t);
-
 // Floor for the per-view per-instance history buffers (the dwell band's, and
 // the rendered level and phase pair), and the size of the never-read stand-in
 // bound where a slice carries neither. Keeps tiny scenes off a zero-sized
@@ -69,18 +67,6 @@ constexpr uint32_t kGroupCompactBindingCount = 5;
 uint64_t SliceStreamKey(const GPUDrawStreamBuilder::SliceRegistration& slice)
 {
     return GPUDrawStreamBuilder::MakeStreamKey(slice.viewId, slice.cascadeIndex, 0u, 0u, slice.phase);
-}
-
-// A storage-buffer write of `bytes` from `offset`. A size of 0 binds the rest of the buffer.
-DescriptorWrite StorageBufferWrite(uint32_t binding, BufferHandle buffer, size_t offset, size_t bytes)
-{
-    DescriptorWrite write{};
-    write.Binding = binding;
-    write.Type    = DescriptorType::StorageBuffer;
-    write.Buffer  = buffer;
-    write.Offset  = offset;
-    write.Range   = bytes;
-    return write;
 }
 
 // GE_LOD_HYSTERESIS: "0" forces every slice's dwell band to 0, restoring
@@ -128,13 +114,6 @@ const char* ScatterPkgPath(bool compact, bool stats)
 // std430 stride of the coalesced scatter-hot mirror (GPUInstanceScatterHot).
 // The scatter binds binding 1 at this stride in the compact variant.
 constexpr size_t kScatterHotStride = sizeof(GPUInstanceScatterHot);
-
-// Winding parity rides bit 24 of the BatchTableEntry meshIndex FIELD (real
-// mesh indices are 24-bit — BatchRegistry::MakeKey masks them). A parity-1
-// (mirrored) sibling row sorts above all parity-0 rows of the same material
-// (bit 24 is high); the scatter searches (searchMat, realMesh | this bit).
-// MUST match draw_command_scatter.comp's kMeshParityBit.
-constexpr uint32_t kMeshParityBit = 1u << 24;
 
 // The table builders merge per-(classKey, meshIndex-with-parity). MakeKey masks
 // the mesh field to 24 bits and so cannot carry the parity bit, so the merge
@@ -237,7 +216,7 @@ void GPUDrawStreamBuilder::Shutdown()
             m_Device->DestroyBuffer(m_SentinelBuffer);
         for (BufferHandle h : {m_SharedRecords, m_SharedCursors, m_SharedIndirection,
                                m_SharedStats, m_TableRing, m_SharedCursorReadback,
-                               m_SharedStatsReadback})
+                               m_SharedStatsReadback, m_LateShadowLists})
             if (h.IsValid())
                 m_Device->DestroyBuffer(h);
         if (m_HistoryStandIn.IsValid())
@@ -268,6 +247,8 @@ void GPUDrawStreamBuilder::ResetTrackingState()
     m_TableRing                = BufferHandle{};
     m_SharedCursorReadback     = BufferHandle{};
     m_SharedStatsReadback      = BufferHandle{};
+    m_LateShadowLists          = BufferHandle{};
+    m_LateShadowListAddress = m_LateShadowListWords = m_LateShadowListCursor = 0;
     // Dropping the history is always safe: the dwell band converges from an
     // empty buffer in one frame, so a device rebuild costs one stateless frame.
     m_PrevLod.clear();
@@ -320,7 +301,9 @@ void GPUDrawStreamBuilder::ResetTrackingState()
     m_ScatterPipeline              = PipelineHandle{};
     m_InstanceCompactPipeline      = PipelineHandle{};
     m_GroupCompactPipeline         = PipelineHandle{};
+    m_LateShadowListPipeline       = PipelineHandle{};
     m_GroupCompactFailureLogged    = false;
+    m_LateShadowListFailureLogged  = false;
     m_ScatterPipelineFailureLogged = false;
     m_ScatterHotMissingLogged      = false;
     m_SentinelFailureLogged        = false;
@@ -1100,43 +1083,44 @@ PipelineHandle GPUDrawStreamBuilder::GetOrCreateInstanceCompactPipeline()
         return {};
     std::lock_guard<std::mutex> lock(m_ScatterInitMutex);
     if (!m_InstanceCompactPipeline.IsValid())
-        m_InstanceCompactPipeline = CreateCompactionPipeline(
-            "Shaders/draw_stream_instance_compact.shaderpkg", "GPUDrawStreamInstanceCompact");
+        m_InstanceCompactPipeline = CreateStorageComputePipeline(
+            "Shaders/draw_stream_instance_compact.shaderpkg", "GPUDrawStreamInstanceCompact",
+            MakeGroupCompactDescriptorSetLayout(), sizeof(GroupCompactPushConstants), m_GroupCompactFailureLogged);
     return m_InstanceCompactPipeline;
 }
 
-PipelineHandle GPUDrawStreamBuilder::CreateCompactionPipeline(const char* package, const char* name)
+PipelineHandle GPUDrawStreamBuilder::CreateStorageComputePipeline(const char* package, const char* name,
+                                                                  const DescriptorSetLayoutDesc& layout,
+                                                                  uint32_t pushConstantBytes, bool& failureLogged)
 {
     std::string loadError;
     auto bytes = LoadComputeStageBytes(package, m_Device->PreferredShaderSource(), s_ShaderLoader, &loadError);
     if (bytes.empty())
     {
-        if (!m_GroupCompactFailureLogged)
+        if (!failureLogged)
             Logger::Log::Error("[GPUDrawStream] {} unavailable: {}", package, loadError);
-        m_GroupCompactFailureLogged = true;
+        failureLogged = true;
         return {};
     }
     try
     {
         ComputePipelineDesc description{};
         description.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
-        description.DescriptorSetLayouts.push_back(
-            m_Device->InternDescriptorSetLayout(MakeGroupCompactDescriptorSetLayout()));
-        static_assert(sizeof(GroupCompactPushConstants) == 32);
-        description.PushConstants.Size = sizeof(GroupCompactPushConstants);
+        description.DescriptorSetLayouts.push_back(m_Device->InternDescriptorSetLayout(layout));
+        description.PushConstants.Size = pushConstantBytes;
         description.PushConstants.StageMask = kShaderStageCompute;
         description.DebugName = name;
         auto pipeline = m_Device->GetOrCreateComputePipeline(m_Device->InternComputePipeline(description));
-        if (!pipeline.IsValid() && !m_GroupCompactFailureLogged)
+        if (!pipeline.IsValid() && !failureLogged)
             Logger::Log::Error("[GPUDrawStream] {} creation returned an invalid pipeline", name);
-        m_GroupCompactFailureLogged = !pipeline.IsValid();
+        failureLogged = !pipeline.IsValid();
         return pipeline;
     }
     catch (const std::exception& error)
     {
-        if (!m_GroupCompactFailureLogged)
+        if (!failureLogged)
             Logger::Log::Error("[GPUDrawStream] {} creation failed: {}", name, error.what());
-        m_GroupCompactFailureLogged = true;
+        failureLogged = true;
         return {};
     }
 }
@@ -1220,6 +1204,36 @@ std::vector<uint32_t> GPUDrawStreamBuilder::BuildSliceCursorOffsets(
     if (totalOut)
         *totalOut = end;
     return offsets;
+}
+
+GPUDrawStreamBuilder::TableRunLayout GPUDrawStreamBuilder::BuildTableRuns(
+    std::span<const BatchTableEntry> table, std::span<const uint32_t> orderedToGroup)
+{
+    TableRunLayout out;
+    if (orderedToGroup.empty() || table.empty())
+        return out;
+    const auto groupOfRow = [orderedToGroup](const BatchTableEntry& entry)
+    {
+        const uint32_t ordered = entry.meshIndex & ~kMeshParityBit;
+        return ordered < orderedToGroup.size() ? orderedToGroup[ordered] : kAbsentPoolGroup;
+    };
+    out.rowRun.resize(table.size());
+    uint32_t runStart = 0u;
+    for (uint32_t row = 0; row < static_cast<uint32_t>(table.size()); ++row)
+    {
+        const bool newRun = row == 0u || table[row].materialIndex != table[runStart].materialIndex
+                            || ((table[row].meshIndex ^ table[runStart].meshIndex) & kMeshParityBit) != 0u
+                            || groupOfRow(table[row]) != groupOfRow(table[runStart]);
+        if (newRun)
+        {
+            runStart = row;
+            out.runs.push_back({row, 0u, 0u});
+        }
+        out.runs.back().capacity += table[row].capacity;
+        ++out.runs.back().rowCount;
+        out.rowRun[row] = {runStart, static_cast<uint32_t>(out.runs.size() - 1u)};
+    }
+    return out;
 }
 
 void GPUDrawStreamBuilder::RetireBuffer(BufferHandle handle)
@@ -1498,7 +1512,7 @@ void GPUDrawStreamBuilder::BeginArenaFrame()
     m_ArenaCursorCursor    = 0;
     m_ArenaStatsCursor     = 0;
     m_ArenaSkipLogged      = false;
-    m_ReservedAppendedSlices = 0;
+    m_LateShadowListCursor = 0;
     m_TableRingFrameBytes  = 0;
     m_ClassMapUploaded     = false;
     m_ClassMapRingOffset   = 0;
@@ -2391,47 +2405,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     // one per-run count slot, and the per-row {runStart, runIndex} map drives
     // the GPU compact pass (uploaded to the ring beside the table — one
     // snapshot). Empty when consolidation is off.
-    struct TableRun
-    {
-        uint32_t startRow;
-        uint32_t capacity; // Σ member row capacities = the range's maxDrawCount
-    };
-    struct TableRunLayout
-    {
-        std::vector<TableRun>              runs;
-        std::vector<std::array<uint32_t, 2>> rowRun; // per row: {runStart, runIndex}
-    };
-    auto computeRuns = [&](std::span<const BatchTableEntry> table) -> TableRunLayout
-    {
-        TableRunLayout out;
-        if (!groupActive || table.empty())
-            return out;
-        auto groupOfRow = [&](const BatchTableEntry& e) -> uint32_t
-        {
-            const uint32_t ordered = e.meshIndex & ~kMeshParityBit;
-            return ordered < orderedToGroup.size() ? orderedToGroup[ordered] : kAbsentPoolGroup;
-        };
-        out.rowRun.resize(table.size());
-        uint32_t runStart = 0u;
-        for (uint32_t r = 0; r < static_cast<uint32_t>(table.size()); ++r)
-        {
-            const bool newRun =
-                r == 0u
-                || table[r].materialIndex != table[runStart].materialIndex
-                || ((table[r].meshIndex ^ table[runStart].meshIndex) & kMeshParityBit) != 0u
-                || groupOfRow(table[r]) != groupOfRow(table[runStart]);
-            if (newRun)
-            {
-                runStart = r;
-                out.runs.push_back({r, 0u});
-            }
-            out.runs.back().capacity += table[r].capacity;
-            out.rowRun[r] = {runStart, static_cast<uint32_t>(out.runs.size() - 1u)};
-        }
-        return out;
-    };
-    const TableRunLayout colorRuns  = computeRuns(colorTable);
-    const TableRunLayout shadowRuns = computeRuns(shadowTable);
+    const TableRunLayout colorRuns  = groupActive ? BuildTableRuns(colorTable, orderedToGroup) : TableRunLayout{};
+    const TableRunLayout shadowRuns = groupActive ? BuildTableRuns(shadowTable, orderedToGroup) : TableRunLayout{};
 
     const uint32_t snapshotRecords  = colorRecords;
     const uint32_t colorBatchCount  = static_cast<uint32_t>(colorTable.size());
@@ -2494,27 +2469,22 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     // Schedule-time arena guard (design §8-A2/M2): resize BEFORE any recording —
     // the GPU tripwire cannot prevent an out-of-bounds write. Each exhausted
     // dimension requests its own growth.
-    // The frame's first claim also sizes the shadow slices that later calls append. A tail-free
-    // shadow slice needs one cursor half block and blocksPerSlice record blocks.
-    const bool firstClaim = m_ArenaRecordCursor == 0u && m_ArenaCursorCursor == 0u;
-    const uint32_t reservedRecords = firstClaim ? m_ReservedAppendedSlices * blocksPerSlice * snapshotRecords : 0u;
-    const uint32_t reservedCursors = firstClaim ? m_ReservedAppendedSlices * cursorHalfStride : 0u;
-    auto arenaExhausted = [&](uint32_t extraRecords, uint32_t extraCursors)
+    auto arenaExhausted = [&]
     {
-        return m_ArenaRecordCursor + neededRecords + extraRecords > m_RecordCapacity
-               || m_ArenaCursorCursor + neededCursors + extraCursors > m_CursorCapacity
+        return m_ArenaRecordCursor + neededRecords > m_RecordCapacity
+               || m_ArenaCursorCursor + neededCursors > m_CursorCapacity
                || combinedTableBytes > m_TableRingBytes;
     };
-    if (arenaExhausted(reservedRecords, reservedCursors))
+    if (arenaExhausted())
     {
-        if (m_ArenaRecordCursor + neededRecords + reservedRecords > m_RecordCapacity)
+        if (m_ArenaRecordCursor + neededRecords > m_RecordCapacity)
         {
-            const uint32_t need = m_ArenaRecordCursor + neededRecords + reservedRecords;
+            const uint32_t need = m_ArenaRecordCursor + neededRecords;
             m_PendingRecordCapacity = std::max(m_PendingRecordCapacity, need + need / 2u);
         }
-        if (m_ArenaCursorCursor + neededCursors + reservedCursors > m_CursorCapacity)
+        if (m_ArenaCursorCursor + neededCursors > m_CursorCapacity)
         {
-            const uint32_t need = m_ArenaCursorCursor + neededCursors + reservedCursors;
+            const uint32_t need = m_ArenaCursorCursor + neededCursors;
             m_PendingCursorCapacity = std::max(m_PendingCursorCapacity, need + need / 2u);
         }
         if (combinedTableBytes > m_TableRingBytes)
@@ -2543,7 +2513,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         // A mid-frame trip cannot resize (earlier calls this frame hold the
         // current buffers in already-recorded passes), and an allocation failure
         // cannot either: both still skip, loudly, and self-heal next frame.
-        if (arenaExhausted(0u, 0u))
+        if (arenaExhausted())
         {
             if (!m_ArenaSkipLogged)
             {

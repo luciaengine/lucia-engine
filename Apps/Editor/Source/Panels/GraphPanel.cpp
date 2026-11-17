@@ -2980,8 +2980,7 @@ void GraphPanel::ShowPaletteNodeDragGhost(const std::string& typeId, float scree
             .Set(Style::Opacity, 0.82f)
             .Set(Style::ZIndex, 30)
             .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{4.f, 4.f, 4.f, 4.f})
-            .Set(Style::BorderWidth, Box4{1.f, 1.f, 1.f, 1.f})
-            .Set(Style::BorderColor, BorderColorsTRBL{0xFF3A8FFFu, 0xFF3A8FFFu, 0xFF3A8FFFu, 0xFF3A8FFFu});
+            .Set(Style::BorderWidth, Box4{1.f, 1.f, 1.f, 1.f});
 
         auto label = std::make_unique<Label>();
         label->AddClass("node-graph-palette-node-drag-ghost-label");

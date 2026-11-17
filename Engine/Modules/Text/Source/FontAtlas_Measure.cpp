@@ -288,20 +288,23 @@ size_t FontAtlas::MeasureResult::CaretAtX(float x) const
     });
 }
 
-std::vector<std::pair<float, float>> FontAtlas::MeasureResult::SelectionRanges(size_t start, size_t end) const
+std::vector<FontAtlas::SelectionSpan> FontAtlas::MeasureResult::SelectionRanges(size_t start, size_t end) const
 {
     if (start > end) std::swap(start, end);
-    std::vector<std::pair<float, float>> ranges;
+    std::vector<SelectionSpan> ranges;
     if (start == end) return ranges;
     for (const auto& cluster : Clusters)
         if (cluster.ByteStart < end && cluster.ByteEnd > start && cluster.Right > cluster.Left)
-            ranges.emplace_back(cluster.Left, cluster.Right);
-    std::sort(ranges.begin(), ranges.end());
+            ranges.push_back({cluster.Left, cluster.Right});
+    std::sort(ranges.begin(), ranges.end(), [](const SelectionSpan& a, const SelectionSpan& b)
+    {
+        return a.Left < b.Left || (a.Left == b.Left && a.Right < b.Right);
+    });
     size_t count = 0;
     for (const auto& range : ranges)
     {
-        if (count && range.first <= ranges[count - 1].second + 0.001f)
-            ranges[count - 1].second = std::max(ranges[count - 1].second, range.second);
+        if (count && range.Left <= ranges[count - 1].Right + 0.001f)
+            ranges[count - 1].Right = std::max(ranges[count - 1].Right, range.Right);
         else
             ranges[count++] = range;
     }
