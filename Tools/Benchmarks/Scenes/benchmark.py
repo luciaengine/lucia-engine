@@ -22,6 +22,7 @@ import math
 import os
 import platform
 import random
+import re
 import shutil
 import statistics
 import struct
@@ -41,8 +42,12 @@ RESULT_FORMAT = 1
 # A comparison flags a metric when it is slower by more than the noise threshold. Without a noise
 # file, or below it, this floor applies.
 DEFAULT_THRESHOLD_PCT = 3.0
-# A pass that takes less than this, in both runs, is never flagged: its relative change is noise.
-PASS_FLOOR_MS = 0.05
+# A pass that takes less than this, in both runs, is never flagged. Passes this small have bimodal times
+# between runs of one build (0.03 to 0.28 ms on the Steam Machine), so their relative change is noise.
+# Their time still counts in the GPU total.
+PASS_FLOOR_MS = 0.3
+# The per-tile passes of one view render different tiles in each run, so they compare as one summed row.
+TILE_PASS = re.compile(r"^(.*\.Tile)\d+$")
 # The noise threshold of a metric is this many relative standard deviations of the repeat runs.
 NOISE_SIGMAS = 3.0
 # A scene is not valid when the 1-minute load average is above this when it ends. The Player's own
@@ -408,7 +413,9 @@ def metrics(result):
             if pose["gpuMs"]:
                 values[key + ("gpuMs.median",)] = pose["gpuMs"]["median"]
             for p in pose["passes"]:
-                values[key + ("pass:" + p["name"],)] = p["medianMs"]
+                tile = TILE_PASS.match(p["name"])
+                metric = key + ("pass:" + (tile.group(1) + "*" if tile else p["name"]),)
+                values[metric] = values.get(metric, 0.0) + p["medianMs"]
     return values
 
 
