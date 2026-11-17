@@ -829,13 +829,13 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         return ReadBuffer<uint32_t>(destination, elements);
     }
 
-    // Culls the pages of `group` late, builds their caster lists with the production builder and
-    // returns the first `listWords` words of the list buffer. The ranges stay published until the
-    // next arena frame. (`probeMaterial`, `probeMesh`) names a row of the first page, which
-    // locates the list buffer.
+    // Culls the pages of `group` late, lists their casters and returns the first `listWords` words
+    // of the list buffer. (`probeMaterial`, `probeMesh`) names a range of the first page, which
+    // locates the buffer. Empty maps list without draw consolidation.
     std::vector<uint32_t> LateCullAndList(const CascadeCullingGroup& group, std::span<const uint8_t> cullingIndices,
                                           uint32_t sliceElements, uint32_t probeMaterial, uint32_t probeMesh,
-                                          uint64_t listWords)
+                                          uint64_t listWords, std::span<const uint32_t> meshPoolOrdered,
+                                          std::span<const uint32_t> orderedToGroup)
     {
         namespace RG = GameEngine::Rendering::RenderGraph;
         auto& frame = BeginLateCullFrame();
@@ -848,7 +848,7 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         request.Visibility = visibility;
         request.VisibilityStride = sliceElements;
         const RG::RGBuffer ordering = m_Builder->ScheduleLateShadowLists(frame, request, sceneRG.Instances,
-            sceneRG.Meshes, m_Scene->GetBatchRegistry(), {}, {}, {}, m_Scene->GetInstanceCount(),
+            sceneRG.Meshes, m_Scene->GetBatchRegistry(), {}, meshPoolOrdered, orderedToGroup, m_Scene->GetInstanceCount(),
             static_cast<uint32_t>(m_Scene->GetMeshes().size()));
         EXPECT_TRUE(ordering.IsValid());
         const auto probe = m_Builder->FindBatchDrawRange(group.viewId, cullingIndices[0], probeMaterial, probeMesh,
@@ -876,6 +876,7 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
     void ExpectLodBandHistoryIsIndexedPerInstanceNotPerSlot();
     void ExpectCrossfadeLevelChangeEmitsItsPairIntoTheTailNotTheHead();
     void ExpectDeformationMarginWidensTheCullSphereAndLeavesTheLevelAlone();
+    void ExpectLateShadowListsDrawEachPageRowFromItsOwnCasters(bool consolidated);
 
     std::unique_ptr<RenderGraph::RGResourcePool> m_CullPersistent;
     std::unique_ptr<RenderGraph::RGTransientPool> m_CullTransient;
@@ -1169,10 +1170,10 @@ TEST_P(BatchScatterComputeTest, LatePageCullKeepsOnlyTheCastersThatOverlapEachPa
         }
 }
 
-// Each late page draws its casters from its own list: one instanced LOD 0 draw per shadow row, whose
-// instance words are exactly the row's casters that overlap the page. A mirrored caster draws from
-// its parity-1 row, a caster on a page edge draws in both pages, and a non-caster draws nowhere.
-TEST_P(BatchScatterComputeTest, LateShadowListsDrawEachPageRowFromItsOwnCasters)
+// Each page draws, per shadow row, exactly the row's casters that overlap it. A mirrored caster draws
+// from its parity-1 row, an edge caster in both pages, a non-caster nowhere. Consolidated, the rows
+// of one pool group pack into one range per parity.
+void BatchScatterComputeTest::ExpectLateShadowListsDrawEachPageRowFromItsOwnCasters(bool consolidated)
 {
     using Engine::Renderer::CropVirtualShadowProjection;
     using Engine::Renderer::VirtualShadowLight;
@@ -1237,41 +1238,73 @@ TEST_P(BatchScatterComputeTest, LateShadowListsDrawEachPageRowFromItsOwnCasters)
     EXPECT_EQ(std::ranges::count_if(expected, [&](const auto& page) { return page.contains({meshes[0], true}); }), 1);
 
     constexpr uint32_t kSliceElements = 64;
-    const uint32_t rows = 3; // (0, mesh 0), (0, mesh 1), (0, mesh 0 mirrored)
+    // Rows: (0, mesh 0), (0, mesh 1), (0, mesh 0 mirrored). Consolidated, both meshes are in group 0,
+    // so the two parity-0 rows form one run.
+    const uint32_t rows = 3;
+    const uint32_t runs = consolidated ? 2u : 3u;
+    constexpr uint32_t kGroup = 0u;
+    std::vector<uint32_t> meshPoolOrdered;
+    std::vector<uint32_t> orderedToGroup;
+    if (consolidated)
+    {
+        meshPoolOrdered.assign(m_Scene->GetMeshes().size(), GPUDrawStreamBuilder::kAbsentPoolGroup);
+        meshPoolOrdered[meshes[0]] = 0u;
+        meshPoolOrdered[meshes[1]] = 1u;
+        orderedToGroup = {kGroup, kGroup};
+    }
     const uint64_t listWords = GPUDrawStreamBuilder::MakeLateShadowListLayout(
-        0u, 4u, rows, rows, m_Scene->GetInstanceCount()).EndWord;
-    const auto words = LateCullAndList(group, cullingIndices, kSliceElements, 0u, meshes[0], listWords);
+        0u, 4u, rows, runs, m_Scene->GetInstanceCount()).EndWord;
+    const auto words = LateCullAndList(group, cullingIndices, kSliceElements, 0u,
+                                       consolidated ? kGroup : meshes[0], listWords, meshPoolOrdered, orderedToGroup);
     ASSERT_EQ(words.size(), listWords);
+    const std::vector<uint32_t> rangeKeys = consolidated ? std::vector<uint32_t>{kGroup}
+                                                         : std::vector<uint32_t>{meshes[0], meshes[1]};
     for (uint32_t page = 0; page < 4; ++page)
-        for (const uint32_t mesh : meshes)
+    {
+        SCOPED_TRACE(::testing::Message() << "page=" << page);
+        std::map<std::pair<uint32_t, bool>, std::set<uint32_t>> drawn;
+        uint32_t segments = 0;
+        for (const uint32_t key : rangeKeys)
+        {
+            const auto range = m_Builder->FindBatchDrawRange(1u, cullingIndices[page], 0u, key,
+                                                             GPUDrawStreamBuilder::SlicePhase::A);
+            ASSERT_TRUE(range.IsValid());
+            EXPECT_NE(range.indirectionAddress, 0u);
+            EXPECT_EQ(range.recordBuffer.id, range.countBuffer.id);
             for (const bool mirrored : {false, true})
             {
-                SCOPED_TRACE(::testing::Message() << "page=" << page << " mesh=" << mesh << " mirrored=" << mirrored);
-                const auto range = m_Builder->FindBatchDrawRange(1u, cullingIndices[page], 0u, mesh,
-                                                                 GPUDrawStreamBuilder::SlicePhase::A);
                 const auto& segment = mirrored ? range.mirrored : range.even;
-                const auto want = expected[page].find({mesh, mirrored});
-                if (mesh == meshes[1] && mirrored)
-                {
-                    EXPECT_FALSE(segment.IsPresent()); // mesh 1 has no mirrored instance, so no row
+                if (!segment.IsPresent())
                     continue;
-                }
-                ASSERT_TRUE(range.IsValid());
-                EXPECT_NE(range.indirectionAddress, 0u);
-                EXPECT_EQ(range.recordBuffer.id, range.countBuffer.id);
-                ASSERT_TRUE(segment.IsPresent());
-                EXPECT_EQ(segment.maxDrawCount, 1u);
+                ++segments;
+                EXPECT_EQ(segment.maxDrawCount, consolidated && !mirrored ? 2u : 1u);
                 const uint32_t draws = words[segment.countByteOffset / sizeof(uint32_t)];
-                std::set<uint32_t> drawn;
+                EXPECT_LE(draws, segment.maxDrawCount);
                 for (uint32_t draw = 0; draw < draws; ++draw)
                 {
                     const uint32_t* command = &words[segment.cmdByteOffset / sizeof(uint32_t) + draw * 5u];
-                    EXPECT_EQ(command[0], mesh == meshes[0] ? 3u : 6u); // the LOD 0 index count
+                    // The LOD 0 index count names the mesh: 3 for mesh 0, 6 for mesh 1.
+                    EXPECT_TRUE(command[0] == 3u || command[0] == 6u) << command[0];
+                    const uint32_t mesh = command[0] == 3u ? meshes[0] : meshes[1];
                     for (uint32_t instance = 0; instance < command[1]; ++instance)
-                        drawn.insert(words[command[4] + instance]);
+                        drawn[{mesh, mirrored}].insert(words[command[4] + instance]);
                 }
-                EXPECT_EQ(drawn, want == expected[page].end() ? std::set<uint32_t>{} : want->second);
             }
+        }
+        // Mesh 1 has no mirrored instance, so it has no parity-1 row.
+        EXPECT_EQ(segments, consolidated ? 2u : 3u);
+        EXPECT_EQ(drawn, expected[page]);
+    }
+}
+
+TEST_P(BatchScatterComputeTest, LateShadowListsDrawEachPageRowFromItsOwnCasters)
+{
+    ExpectLateShadowListsDrawEachPageRowFromItsOwnCasters(false);
+}
+
+TEST_P(BatchScatterComputeTest, LateShadowListsPackAConsolidatedRunIntoOneRange)
+{
+    ExpectLateShadowListsDrawEachPageRowFromItsOwnCasters(true);
 }
 
 TEST(BatchTableBuild, SortsByMaterialThenMeshWithExclusivePrefix)

@@ -789,11 +789,8 @@ class GPUDrawStreamBuilder
                                       SlicePhase phase) const;
 
     // ---- Late shadow lists: frustums that exist only after the frame's culling ----
-    //
-    // A virtual shadow page culls the view's casters into its own visibility slice after the page
-    // plan exists. A unified scatter slice would cost every page a draw record per instance. A late
-    // list costs a page one 4 B instance word per instance (its list), one instanced LOD 0 draw per
-    // shadow-table row and two counters per row: see MakeLateShadowListLayout.
+    // A virtual shadow page draws from per-row caster lists: 4 B per instance, one instanced LOD 0
+    // draw per shadow-table row and 2 counters per row (MakeLateShadowListLayout).
 
     /// The most pages of one late call. The shader keeps the pages of an instance in a one-uint
     /// mask: MUST match kMaxPages in draw_stream_late_shadow_lists.comp.

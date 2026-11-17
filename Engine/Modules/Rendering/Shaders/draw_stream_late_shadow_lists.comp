@@ -1,21 +1,8 @@
 #version 450
 
-// Per-page caster lists for shadow frustums that exist only after the frame's culling (virtual
-// shadow pages). The frustum culling kernel wrote one visibility slice per page. This kernel turns
-// those slices into instanced indirect draws without one draw record per instance and page:
-//
-//  - Mode 0 (lists), one invocation per instance: resolve the instance's shadow-table row once,
-//    then append the instance index to the row's list of every page that sees it. The list of
-//    (page, row) starts at wordsBase + page * wordsPerPage + row.recordOffset, a CPU-known place.
-//  - Mode 1 (commands), one invocation per (row, page): write one instanced LOD 0 draw for a row
-//    with a non-empty list. The draw lands in the command block of the row's run, packed by an
-//    atomic run count that is the run's indirect draw count.
-//
-// A shadow row is one mesh at one winding parity, and every page draws LOD 0, so all instances of a
-// row share one index range. The vertex stage reads list[firstInstance + gl_InstanceIndex].
-//
-// All outputs live in one buffer of uints (binding 6). The CPU clears the counts and the command
-// blocks before mode 0. The lists need no clear: a draw reads only the first `count` words.
+// Per-page caster lists for virtual shadow pages, built from one visibility slice per page.
+// Mode 0, per instance: append the instance to the list of its shadow row in every page that sees it.
+// Mode 1, per (row, page): write one instanced LOD 0 draw for a non-empty list into its run's block.
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 

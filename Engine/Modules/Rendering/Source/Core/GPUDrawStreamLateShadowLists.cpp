@@ -34,6 +34,23 @@ constexpr uint32_t kCommandWords = kDrawCommandStride / sizeof(uint32_t);
 // The first late list buffer holds 4 pages of a 4k-instance view without growth.
 constexpr uint64_t kInitialLateShadowListWords = 1u << 14;
 
+// Claims `words` at `cursor` and returns the start, clamped to the 32-bit offsets the kernel reads.
+uint32_t ClaimWords(uint64_t& cursor, uint64_t words)
+{
+    const uint64_t start = cursor;
+    cursor += words;
+    return static_cast<uint32_t>(std::min<uint64_t>(start, std::numeric_limits<uint32_t>::max()));
+}
+
+// Copies `bytes` into the frame's upload ring. The result is invalid when the ring is full.
+RenderGraph::RGUploadRing::Alloc UploadBytes(RenderGraph::RGFrame& frame, const void* source, size_t bytes)
+{
+    const RenderGraph::RGUploadRing::Alloc allocation = frame.AllocUpload(bytes);
+    if (allocation.Valid())
+        std::memcpy(allocation.Ptr, source, bytes);
+    return allocation;
+}
+
 } // namespace
 
 GPUDrawStreamBuilder::LateShadowListLayout GPUDrawStreamBuilder::MakeLateShadowListLayout(
@@ -42,16 +59,10 @@ GPUDrawStreamBuilder::LateShadowListLayout GPUDrawStreamBuilder::MakeLateShadowL
     const uint64_t pages = pageCount;
     uint64_t cursor = base;
     LateShadowListLayout layout{};
-    const auto claim = [&cursor](uint64_t words)
-    {
-        const uint64_t start = cursor;
-        cursor += words;
-        return static_cast<uint32_t>(std::min<uint64_t>(start, std::numeric_limits<uint32_t>::max()));
-    };
-    layout.CountsBase = claim(pages * rowCount);
-    layout.RunCountsBase = claim(pages * runCount);
-    layout.CommandsBase = claim(pages * rowCount * kCommandWords);
-    layout.WordsBase = claim(pages * wordsPerPage);
+    layout.CountsBase = ClaimWords(cursor, pages * rowCount);
+    layout.RunCountsBase = ClaimWords(cursor, pages * runCount);
+    layout.CommandsBase = ClaimWords(cursor, pages * rowCount * kCommandWords);
+    layout.WordsBase = ClaimWords(cursor, pages * wordsPerPage);
     layout.EndWord = cursor;
     return layout;
 }
@@ -257,23 +268,16 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleLateShadowLists(
         return {};
 
     auto* pass = frame.AllocatePassData<LateShadowListPass>();
-    const auto upload = [&frame](const void* source, size_t bytes)
-    {
-        const RenderGraph::RGUploadRing::Alloc allocation = frame.AllocUpload(bytes);
-        if (allocation.Valid())
-            std::memcpy(allocation.Ptr, source, bytes);
-        return allocation;
-    };
     pass->TableBytes = table.size_bytes();
-    pass->Table = upload(table.data(), pass->TableBytes);
+    pass->Table = UploadBytes(frame, table.data(), pass->TableBytes);
     if (!pass->Table.Valid())
         return {};
     if (grouped)
     {
         pass->RowRunBytes = runs.rowRun.size() * sizeof(runs.rowRun[0]);
-        pass->RowRuns = upload(runs.rowRun.data(), pass->RowRunBytes);
+        pass->RowRuns = UploadBytes(frame, runs.rowRun.data(), pass->RowRunBytes);
         pass->MeshGroupBytes = meshPoolOrdered.size_bytes();
-        pass->MeshGroups = upload(meshPoolOrdered.data(), pass->MeshGroupBytes);
+        pass->MeshGroups = UploadBytes(frame, meshPoolOrdered.data(), pass->MeshGroupBytes);
         if (!pass->RowRuns.Valid() || !pass->MeshGroups.Valid())
             return {};
     }
