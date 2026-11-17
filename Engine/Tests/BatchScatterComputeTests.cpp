@@ -857,7 +857,7 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         const size_t bytes = static_cast<size_t>(listWords) * sizeof(uint32_t);
         const BufferHandle destination = MakeStorageBuffer(bytes, "LateShadowLists.Readback");
         frame.AddPass("LateShadowLists.Copy", 0, [&](RG::RGPassBuilder& p)
-                      { p.Read(ordering, RG::RGBufferRead::Indirect); p.PreventCulling(); },
+                      { p.Read(ordering, RG::RGBufferRead::CopySrc); p.PreventCulling(); },
                       [=](RG::RGContext& ctx) { ctx.Cmd->CopyBuffer(lists, destination, bytes, 0, 0); });
         frame.Execute();
         m_Device->WaitForIdle();
