@@ -146,13 +146,13 @@ export async function loadCore({ build, coreUrl, canvas, wasmBytes, track = untr
     const packResponses = parts && trackPackParts(parts, track);
     const [wasm] = track('wasm', [{ response: wasmResponse, decodedBytes: wasmBytes }]);
     const glue = new URL(`opengine-core.${build}.js`, base).href;
-    const { default: createOpenEngine } = await import(glue);
+    const { default: createLuciaEngine } = await import(glue);
     // The glue waits on instantiateWasm's callback alone: a failed compile rejects through here.
     let failInstantiation;
     const instantiationFailed = new Promise((_, reject) => { failInstantiation = reject; });
     let packUrl = null;
     const [module, joined] = await Promise.all([
-        Promise.race([instantiationFailed, createOpenEngine({
+        Promise.race([instantiationFailed, createLuciaEngine({
             canvas,
             // The engine pack and the threaded build's worker script sit beside the glue, wherever
             // the page itself is served from; a pack served as parts is the joined Blob, which

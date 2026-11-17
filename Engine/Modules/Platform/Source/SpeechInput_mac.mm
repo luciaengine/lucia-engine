@@ -219,7 +219,7 @@ struct SpeechInput::Impl : std::enable_shared_from_this<SpeechInput::Impl>
         }
         if (status != AVAuthorizationStatusNotDetermined)
         {
-            End("Allow microphone access for Open Engine Editor in System Settings > Privacy & Security");
+            End("Allow microphone access for Lucia Engine in System Settings > Privacy & Security");
             return;
         }
         std::weak_ptr<Impl> weak = shared_from_this();
@@ -259,7 +259,7 @@ struct SpeechInput::Impl : std::enable_shared_from_this<SpeechInput::Impl>
                 if (status == SFSpeechRecognizerAuthorizationStatusAuthorized)
                     self->AuthorizeMicrophone(token);
                 else
-                    self->End("Allow speech recognition for Open Engine Editor in System Settings > Privacy & Security");
+                    self->End("Allow speech recognition for Lucia Engine in System Settings > Privacy & Security");
             });
         }];
     }

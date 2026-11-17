@@ -2542,7 +2542,7 @@ void EmitEngineBinDirValidationTarget(std::ostringstream& xml, const char* requi
 {
     xml << "  <Target Name=\"ValidateEngineBinDir\" BeforeTargets=\"ResolveAssemblyReferences\">\n";
     xml << "    <Error Condition=\"!Exists('$(EngineBinDir)')\" Text=\"GameEngine: EngineBinDir "
-           "'$(EngineBinDir)' does not exist. The Open Engine Editor moved since this project was generated. "
+           "'$(EngineBinDir)' does not exist. The Lucia Engine editor moved since this project was generated. "
            "Re-open the project in the Editor to regenerate this file, or build with "
            "-p:EngineBinDir=&lt;Editor directory&gt;.\" />\n";
     xml << "    <Warning Condition=\"Exists('$(EngineBinDir)') And !Exists('$(EngineBinDir)" << requiredDllName
