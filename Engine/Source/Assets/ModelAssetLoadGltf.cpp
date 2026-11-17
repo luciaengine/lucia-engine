@@ -808,14 +808,6 @@ bool AccessorHasData(const cgltf_accessor* accessor)
     return accessor && (accessor->buffer_view || accessor->is_sparse);
 }
 
-// The name LoadGLTF gives morph target `targetIndex` of `mesh`: the file's extras.targetNames entry
-// (cgltf's target_names), or "morph_<index>" when the file names none.
-String MorphTargetName(const cgltf_mesh& mesh, size_t targetIndex)
-{
-    const bool named = mesh.target_names && targetIndex < mesh.target_names_count && mesh.target_names[targetIndex];
-    return named ? String(mesh.target_names[targetIndex]) : "morph_" + std::to_string(targetIndex);
-}
-
 // The attribute of `primitive` with data and the most elements: LoadGLTF sizes the primitive's vertices
 // by it, before it checks an attribute's name. Null when no attribute has data.
 const cgltf_attribute* WidestAttributeWithData(const cgltf_primitive& primitive)
@@ -1283,6 +1275,12 @@ GltfDocument OpenGltfDocument(std::span<const uint8> bytes, const std::filesyste
     return document;
 }
 
+String MorphTargetName(const cgltf_mesh& mesh, size_t targetIndex)
+{
+    const bool named = mesh.target_names && targetIndex < mesh.target_names_count && mesh.target_names[targetIndex];
+    return named ? String(mesh.target_names[targetIndex]) : "morph_" + std::to_string(targetIndex);
+}
+
 std::string ChargeAnimationKeys(const cgltf_data& document, size_t animationIndex, GltfAllocationBudget& budget)
 {
     const cgltf_animation& animation = document.animations[animationIndex];
@@ -1291,8 +1289,12 @@ std::string ChargeAnimationKeys(const cgltf_data& document, size_t animationInde
         const cgltf_animation_sampler* sampler = channel.sampler;
         if (!sampler || !sampler->input || !sampler->output || !channel.target_node)
             continue;
-        const std::string problem =
-            budget.Charge(*sampler->input, sampler->input->count, sizeof(Animation::AnimKeyframe));
+        // A weights channel becomes one clip channel per morph target (cgltf_validate gave its node a mesh).
+        const size_t clipChannels = channel.target_path == cgltf_animation_path_type_weights
+                                        ? channel.target_node->mesh->primitives[0].targets_count
+                                        : 1u;
+        const std::string problem = budget.Charge(*sampler->input, sampler->input->count * clipChannels,
+                                                  sizeof(Animation::AnimKeyframe));
         if (!problem.empty())
             return "channel " + std::to_string(channelIndex) + " of animation " + std::to_string(animationIndex) +
                    " ('" + (animation.name ? animation.name : "<unnamed>") + "') has a key time accessor " + problem;
