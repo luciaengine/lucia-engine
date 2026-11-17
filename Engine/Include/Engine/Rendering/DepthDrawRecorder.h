@@ -15,11 +15,14 @@
 #include "Rendering/Materials/MaterialAlphaMode.h"
 #include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Rendering/Materials/Shader/ShaderProfileDefines.h"
+#include "Types/FlatMap.h"
 
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <unordered_set>
 
 namespace GameEngine
@@ -58,13 +61,51 @@ class TextureService;
 // RGFrame::Execute returns), so Consume never races a Mark for the same frame;
 // the mutex covers the parallel-record workers within one exec. Marks are
 // exceptional-path only — the lock is cold.
+// Why a depth pass dropped draws. The cascade cache storm warning counts these per view.
+enum class DepthUnderDrawReason : uint8_t
+{
+    EmptySlice,           // the slice had no survivors last frame and skipped its walk
+    MissingGeometryGroup, // the mesh is not in the current geometry group plan
+    MaterialPending,      // the material is not published yet
+    MeshPending,          // the mesh upload is in flight
+    MeshNotDrawable,      // the mesh buffers are not resident
+    TexturesPending,      // a Mask or vertex-modified material waits for a texture bind
+    DepthVariantPending,  // the depth pipeline variant is not published yet
+    BindPending,          // the material bind is not published yet
+    ScatterPending,       // the scatter pipeline still compiles
+    DrawRangeInvalid,     // the draw stream has no range for the batch
+    AddressMissing,       // the indirection or instance buffer has no device address
+    Count,
+};
+
+const char* DepthUnderDrawReasonName(DepthUnderDrawReason reason);
+
+using DepthUnderDrawReasonCounts = std::array<uint64_t, static_cast<size_t>(DepthUnderDrawReason::Count)>;
+
+// "textures 880 empty-slice 8": the reasons with a count, in enum order; "none" without one.
+std::string FormatDepthUnderDrawReasons(const DepthUnderDrawReasonCounts& counts);
+
 class DepthUnderDrawTracker
 {
   public:
-    void Mark(uint32_t viewId, uint8_t passType, uint32_t sliceIndex)
+    void Mark(uint32_t viewId, uint8_t passType, uint32_t sliceIndex, DepthUnderDrawReason reason)
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         m_Marks.insert(Key(viewId, passType, sliceIndex));
+        if (passType == static_cast<uint8_t>(DepthPassType::ShadowCascade) && reason < DepthUnderDrawReason::Count)
+            ++m_CascadeReasons.GetOrInsert(viewId)[static_cast<size_t>(reason)];
+    }
+    // The reasons of the view's cascade marks since the previous call.
+    DepthUnderDrawReasonCounts ConsumeCascadeReasons(uint32_t viewId)
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        DepthUnderDrawReasonCounts counts{};
+        if (auto* found = m_CascadeReasons.Find(viewId))
+        {
+            counts = *found;
+            *found = {};
+        }
+        return counts;
     }
     bool Consume(uint32_t viewId, uint8_t passType, uint32_t sliceIndex)
     {
@@ -82,6 +123,7 @@ class DepthUnderDrawTracker
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         m_Marks.clear();
+        m_CascadeReasons.Clear();
     }
 
   private:
@@ -92,6 +134,7 @@ class DepthUnderDrawTracker
     }
     mutable std::mutex m_Mutex;
     std::unordered_set<uint64_t> m_Marks;
+    FlatMap<uint32_t, DepthUnderDrawReasonCounts> m_CascadeReasons;
 };
 
 // The complete dependency surface of the depth-draw executor, resolved as
