@@ -14,7 +14,6 @@ namespace
 {
 
 constexpr const char* kStyleAssetPath = "UI/controls/CollapsibleInfoCard/CollapsibleInfoCard.css";
-constexpr const char* kChevronBlankClass = "blank";
 
 // A laid-out text height above this means the copy wrapped, so the card is
 // worth folding. Comfortably above one line of the card's 13px text and below
@@ -115,12 +114,11 @@ void CollapsibleInfoCard::ApplyState()
     else
         AddClass("collapsed");
 
-    // A card that fits one row keeps the chevron's box with no glyph, so every card's copy
-    // starts at one x.
+    // A card that fits one row has no chevron, so its copy takes the full width.
     if (m_Foldable)
-        m_Chevron->RemoveClass(kChevronBlankClass);
+        m_Chevron->RemoveClass("hidden");
     else
-        m_Chevron->AddClass(kChevronBlankClass);
+        m_Chevron->AddClass("hidden");
 
     if (m_Expanded)
         m_Chevron->RemoveClass("collapsed");
@@ -145,7 +143,7 @@ void CollapsibleInfoCard::SetText(const std::string& text)
     m_PreviewText = MakePreview(text);
 
     // Only an expanded card can be measured, so only then does new copy open the
-    // fold decision again. The card keeps its chevron glyph until that measurement.
+    // fold decision again. The card keeps its chevron until that measurement.
     if (m_Expanded)
         m_FoldabilityDecided = false;
     ApplyState();

@@ -7,7 +7,7 @@
  */
 
 /* Foldable card: chevron and copy on one row, so a collapsed card is the card
-   clamped to one line. A card that fits one row shows no chevron glyph. */
+   clamped to one line. A card that fits one row has no chevron. */
 .editor-info-card-foldable {
 	display: flex;
 	flex-direction: row;
@@ -37,12 +37,6 @@
 .editor-info-card-chevron.collapsed {
 	background-image: url("editor:Icons/arrow-right.svg");
 	opacity: 0.55;
-}
-
-/* A card that fits one row keeps the chevron's box with no glyph, so the copy
-   of every card starts at one x. After `.collapsed`, so it wins the tie. */
-.editor-info-card-chevron.blank {
-	background-image: none;
 }
 
 .editor-info-card-line {
