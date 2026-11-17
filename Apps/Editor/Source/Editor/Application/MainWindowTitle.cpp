@@ -2,6 +2,11 @@
 
 namespace GameEngine::Editor
 {
+namespace
+{
+constexpr std::string_view kApplicationName = "Lucia Engine";
+}
+
 MainWindowTitle MainWindowTitle::Format(std::string_view scene, bool sceneDirty, std::string_view project,
                                         std::string_view session)
 {
@@ -13,11 +18,15 @@ MainWindowTitle MainWindowTitle::Format(std::string_view scene, bool sceneDirty,
         title.Caption += " - ";
     title.Caption += project;
 
-    title.WindowTitle = title.Caption;
+    title.WindowTitle = kApplicationName;
+    if (!title.Caption.empty())
+    {
+        title.WindowTitle += " - ";
+        title.WindowTitle += title.Caption;
+    }
     if (!session.empty())
     {
-        if (!title.WindowTitle.empty())
-            title.WindowTitle += "  ";
+        title.WindowTitle += "  ";
         title.WindowTitle += '[';
         title.WindowTitle += session;
         title.WindowTitle += ']';

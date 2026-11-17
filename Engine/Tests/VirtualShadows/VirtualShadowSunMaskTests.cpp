@@ -1,6 +1,7 @@
 // The sun mask pass gives each prepass receiver the visibility that GE_TryVirtualShadowDirectional
 // gives it in the world pass. Fixture: a sloped receiver, a rotated jittered camera, and a lit page,
-// an occluder page and a missing page.
+// an occluder page and a missing page. The world pass read (GE_ReadVirtualShadowSunMask) gives a
+// fragment the texel of its own pixel or of the neighbour on its depth plane.
 
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowLookup.h"
@@ -197,6 +198,15 @@ class VirtualShadowSunMaskTest : public ::testing::Test
         return set;
     }
 
+    // Runs the mask pass and the in-shader lookup over the fixture with one filter. quality is the
+    // ShadowFilterQuality value in ShadowData; tanHalfAngle is the sun's, which sizes the PCSS penumbra.
+    void CompareMaskWithLookup(float quality, float tanHalfAngle);
+
+    // Runs GE_ReadVirtualShadowSunMask over fragments against a mask uploaded from the CPU.
+    // Each result is (1 when resolved else 0, visibility).
+    std::vector<glm::vec2> ReadMask(const std::vector<uint32_t>& mask, uint32_t side,
+                                    const std::vector<glm::vec4>& fragments);
+
     std::unique_ptr<IDevice> m_Device;
     std::vector<DescriptorSetHandle> m_Sets;
     std::vector<TextureHandle> m_Textures;
@@ -220,7 +230,7 @@ DescriptorSetLayoutDesc Layout(std::initializer_list<std::pair<uint32_t, Descrip
 }
 } // namespace
 
-TEST_F(VirtualShadowSunMaskTest, MaskVisibilityEqualsTheInShaderLookupPerReceiver)
+void VirtualShadowSunMaskTest::CompareMaskWithLookup(float quality, float tanHalfAngle)
 {
     m_Device = CreateVulkanDeviceFast();
     if (!m_Device)
@@ -304,11 +314,12 @@ TEST_F(VirtualShadowSunMaskTest, MaskVisibilityEqualsTheInShaderLookupPerReceive
     shadowData.shadowParams[1] = 1.0f;   // normal bias
     shadowData.shadowParams[2] = 1.0f;   // one level
     shadowData.shadowParams[3] = 100.0f; // max shadow distance
-    shadowData.shadowDebug[3] = 2.0f;    // the Poisson filter, the one the virtual lookup resolves
+    shadowData.shadowDebug[3] = quality;
     shadowData.shadowPcss[0] = 2.0f;     // softness
     shadowData.shadowPcss[1] = 16.0f;    // taps
     shadowData.shadowPcssCascades[0][0] = worldPerTexel;
     shadowData.shadowPcssCascades[0][1] = 2.0f;
+    shadowData.shadowPcssCascades[0][3] = tanHalfAngle;
 
     const uint32_t storage = static_cast<uint32_t>(BufferUsage::Storage);
     const uint32_t uniform = static_cast<uint32_t>(BufferUsage::Uniform);
@@ -453,4 +464,156 @@ TEST_F(VirtualShadowSunMaskTest, MaskVisibilityEqualsTheInShaderLookupPerReceive
     EXPECT_GT(shadowed, 0u);
     EXPECT_GT(penumbra, 0u);
     EXPECT_GT(noPage, 0u);
+}
+
+TEST_F(VirtualShadowSunMaskTest, PoissonMaskEqualsTheInShaderLookupPerReceiver)
+{
+    CompareMaskWithLookup(2.0f, 0.0f);
+}
+
+// A wide light (tan 0.3) gives a penumbra of several texels over the occluder edge.
+TEST_F(VirtualShadowSunMaskTest, PcssMaskEqualsTheInShaderLookupPerReceiver)
+{
+    CompareMaskWithLookup(3.0f, 0.3f);
+}
+
+namespace
+{
+// Mirrors kGE_VirtualShadowSunMaskSteps and GE_PackPrepassReceiver.
+uint32_t PackReceiver(float depth, uint32_t value)
+{
+    uint32_t bits = 0;
+    std::memcpy(&bits, &depth, sizeof(bits));
+    return (bits & 0xffffff00u) | value;
+}
+} // namespace
+
+std::vector<glm::vec2> VirtualShadowSunMaskTest::ReadMask(const std::vector<uint32_t>& mask, uint32_t side,
+                                                          const std::vector<glm::vec4>& fragments)
+{
+    using Type = DescriptorType;
+    const DescriptorSetLayoutDesc layout = Layout({{0u, Type::StorageBuffer}, {1u, Type::StorageBuffer},
+                                                   {2u, Type::UniformBuffer}, {66u, Type::CombinedImageSampler}});
+    const auto pipeline = CreatePipeline("Shaders/virtual_shadow_sun_mask_read_test.shaderpkg", layout);
+    TextureDesc maskDesc{};
+    maskDesc.width = maskDesc.height = side;
+    maskDesc.depth = maskDesc.mipLevels = maskDesc.sampleCount = maskDesc.arrayLayers = 1;
+    maskDesc.format = static_cast<uint32_t>(TextureFormat::R32_UINT);
+    maskDesc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::TransferDst);
+    maskDesc.debugName = "VirtualShadowSunMaskTest.ReadMask";
+    const auto texture = CreateTexture(maskDesc);
+    const auto sampler = m_Device->CreateSampler(SamplerDesc::PointClamp("VirtualShadowSunMaskTest.Read"));
+    m_Samplers.push_back(sampler);
+    const uint32_t storage = static_cast<uint32_t>(BufferUsage::Storage);
+    const uint32_t count[4] = {static_cast<uint32_t>(fragments.size() / 2), 0, 0, 0};
+    const size_t fragmentBytes = fragments.size() * sizeof(glm::vec4);
+    const size_t resultBytes = count[0] * sizeof(glm::vec2);
+    const auto fragmentBuffer = CreateBuffer(fragmentBytes, storage, BufferMemoryUsage::Upload, fragments.data());
+    const auto resultBuffer = CreateBuffer(resultBytes, storage, BufferMemoryUsage::Readback);
+    const auto params = CreateBuffer(sizeof(count), static_cast<uint32_t>(BufferUsage::Uniform),
+                                     BufferMemoryUsage::Upload, count);
+    const auto upload = CreateBuffer(mask.size() * sizeof(uint32_t), static_cast<uint32_t>(BufferUsage::TransferSrc),
+                                     BufferMemoryUsage::Upload, mask.data());
+    const auto set = CreateSet(layout);
+    if (!pipeline.IsValid() || !texture.IsValid() || !sampler.IsValid() || !fragmentBuffer.IsValid() ||
+        !resultBuffer.IsValid() || !params.IsValid() || !upload.IsValid() || !set.IsValid())
+    {
+        ADD_FAILURE() << "a GPU resource of the read test is not valid";
+        return {};
+    }
+    m_Device->UpdateStorageBufferBinding(set, 0, fragmentBuffer, 0, fragmentBytes);
+    m_Device->UpdateStorageBufferBinding(set, 1, resultBuffer, 0, resultBytes);
+    m_Device->UpdateBufferBinding(set, 2, params, 0, sizeof(count));
+    m_Device->UpdateCombinedImageSamplerBinding(set, 66, texture, sampler);
+
+    auto commands = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
+    commands->Begin();
+    commands->CopyBufferToTextureSubresource(upload, texture, 0, 0, side, side);
+    commands->Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::CopyDest,
+                                                            ResourceState::ShaderResource));
+    commands->SetPipeline(pipeline);
+    commands->BindDescriptorSet(0, set, pipeline);
+    commands->Dispatch((count[0] + 63) / 64, 1, 1);
+    commands->End();
+    m_Device->ExecuteCommandLists({commands.get()});
+    m_Device->WaitForIdle();
+
+    std::vector<glm::vec2> results(count[0]);
+    std::memcpy(results.data(), m_Device->MapBuffer(resultBuffer), resultBytes);
+    m_Device->UnmapBuffer(resultBuffer);
+    return results;
+}
+
+// With MSAA the mask holds the receiver of sample 0. A fragment that owns only other samples of its
+// pixel takes the neighbour texel on its depth plane, and the cascade where no texel matches.
+TEST_F(VirtualShadowSunMaskTest, FragmentReadsTheNeighbourOnItsDepthPlane)
+{
+    m_Device = CreateVulkanDeviceFast();
+    if (!m_Device)
+        GTEST_SKIP() << "No graphics device available";
+    RecordProperty("graphics_api", static_cast<int>(m_Device->GetAPI()));
+
+    // Surface A: a plane with the depth gradient (0.01, 0.002) per pixel. Surface C: far behind it.
+    constexpr uint32_t kReadSide = 8;
+    const glm::vec2 gradient(0.01f, 0.002f);
+    auto planeDepth = [&gradient](uint32_t x, uint32_t y) { return 0.5f + gradient.x * x + gradient.y * y; };
+    auto planeValue = [](uint32_t x, uint32_t y) { return x + kReadSide * y + 1u; };
+    std::vector<uint32_t> mask(kReadSide * kReadSide);
+    for (uint32_t y = 0; y < kReadSide; ++y)
+        for (uint32_t x = 0; x < kReadSide; ++x)
+            mask[y * kReadSide + x] = PackReceiver(planeDepth(x, y), planeValue(x, y));
+    auto setTexel = [&mask](uint32_t x, uint32_t y, float depth, uint32_t value)
+    { mask[y * kReadSide + x] = PackReceiver(depth, value); };
+    constexpr float kFar = 0.05f;
+    // Pixel (3, 3): sample 0 is on surface B. Of its neighbours, only (2, 3) stays on A.
+    for (uint32_t y = 2; y <= 4; ++y)
+        for (uint32_t x = 2; x <= 4; ++x)
+            setTexel(x, y, kFar, 251);
+    setTexel(3, 3, 0.2f, 250);
+    setTexel(2, 3, planeDepth(2, 3), planeValue(2, 3));
+    // Pixel (5, 6): the only neighbour on A has no resident page.
+    for (uint32_t y = 5; y <= 7; ++y)
+        for (uint32_t x = 4; x <= 6; ++x)
+            setTexel(x, y, kFar, 252);
+    setTexel(6, 6, planeDepth(6, 6), kNoPage);
+    // Pixel (6, 1): two neighbours on A's plane within the tolerance; (7, 1) is exact.
+    for (uint32_t y = 0; y <= 2; ++y)
+        for (uint32_t x = 5; x <= 7; ++x)
+            setTexel(x, y, kFar, 253);
+    setTexel(7, 1, planeDepth(7, 1), planeValue(7, 1));
+    setTexel(5, 1, planeDepth(5, 1) + 0.004f, 249);
+
+    auto fragment = [](uint32_t x, uint32_t y, float depth, glm::vec2 depthGradient)
+    {
+        return std::array{glm::vec4(x + 0.5f, y + 0.5f, depth, 0.0f),
+                          glm::vec4(depthGradient.x, depthGradient.y, 0.0f, 0.0f)};
+    };
+    struct Case
+    {
+        const char* Name;
+        std::array<glm::vec4, 2> Fragment;
+        bool Resolved;
+        uint32_t Value;
+    };
+    const Case cases[] = {
+        {"receiver of its own pixel", fragment(1, 1, planeDepth(1, 1), gradient), true, planeValue(1, 1)},
+        {"surface B owns sample 0", fragment(3, 3, 0.2f, glm::vec2(0.0f)), true, 250},
+        {"surface A at an edge pixel", fragment(3, 3, planeDepth(3, 3), gradient), true, planeValue(2, 3)},
+        {"no depth gradient, no plane", fragment(3, 3, planeDepth(3, 3), glm::vec2(0.0f)), false, 0},
+        {"a surface no texel holds", fragment(3, 3, 0.9f, gradient), false, 0},
+        {"the matched neighbour has no page", fragment(5, 6, planeDepth(5, 6), gradient), false, 0},
+        {"the nearest of two matches", fragment(6, 1, planeDepth(6, 1), gradient), true, planeValue(7, 1)},
+    };
+    std::vector<glm::vec4> fragments;
+    for (const Case& test : cases)
+        fragments.insert(fragments.end(), test.Fragment.begin(), test.Fragment.end());
+    const std::vector<glm::vec2> results = ReadMask(mask, kReadSide, fragments);
+    ASSERT_EQ(results.size(), std::size(cases));
+    for (size_t index = 0; index < std::size(cases); ++index)
+    {
+        const Case& test = cases[index];
+        EXPECT_EQ(results[index].x > 0.5f, test.Resolved) << test.Name;
+        if (test.Resolved)
+            EXPECT_FLOAT_EQ(results[index].y, static_cast<float>(test.Value) / kSteps) << test.Name;
+    }
 }

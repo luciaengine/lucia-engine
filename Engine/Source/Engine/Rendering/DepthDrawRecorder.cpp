@@ -29,7 +29,9 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <span>
+#include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -173,6 +175,7 @@ struct PreparedDepthOnlyPass
     MaterialSystem* Materials = nullptr;
     DepthUnderDrawTracker* UnderDraw = nullptr;
     bool UnderDrew = false;
+    DepthUnderDrawReason UnderDrawReason = DepthUnderDrawReason::Count; // the first reason this frame
     bool Walked = false;
     size_t EntityBatchCount = 0;
     bool Consolidated = false;
@@ -240,6 +243,7 @@ class DepthPassPreparation
         m_Data.Materials = &m_Services.Materials;
         m_Data.UnderDraw = m_Services.UnderDraw;
         m_Data.UnderDrew = false;
+        m_Data.UnderDrawReason = DepthUnderDrawReason::Count;
         m_Data.Walked = false;
         m_Data.EntityBatchCount = 0;
         m_Data.Consolidated = false;
@@ -363,7 +367,7 @@ class DepthPassPreparation
                 LogMeshPassDiagnostic("depth", "walk-skip-empty-slice", m_Data.Params.ViewId,
                                       entityKeys.size(), depthCommands.size(),
                                       m_Services.Streams->GetRangeCount());
-                MarkUnderDraw();
+                MarkUnderDraw(DepthUnderDrawReason::EmptySlice);
                 return true;
             }
         }
@@ -408,7 +412,7 @@ class DepthPassPreparation
                              : m_Services.Materials.GetMaterialDepthClass(key.materialIndex));
                 if (!m_Services.MeshPoolGroups.empty() && lookup.meshKey == Rendering::MeshPoolGroupPlan::kAbsentGroup)
                 {
-                    MarkUnderDraw(m_Services.Meshes.Find(key.mesh)); // missing current geometry group
+                    MarkUnderDraw(DepthUnderDrawReason::MissingGeometryGroup, m_Services.Meshes.Find(key.mesh));
                     continue;
                 }
                 if (!ClaimStreamRange(lookup))
@@ -436,7 +440,7 @@ class DepthPassPreparation
                 const DrawStreamLookupKey lookup = Lookup(key, depthClass);
                 if (!m_Services.MeshPoolGroups.empty() && lookup.meshKey == Rendering::MeshPoolGroupPlan::kAbsentGroup)
                 {
-                    MarkUnderDraw(m_Services.Meshes.Find(key.mesh)); // missing current geometry group
+                    MarkUnderDraw(DepthUnderDrawReason::MissingGeometryGroup, m_Services.Meshes.Find(key.mesh));
                     continue;
                 }
                 if (depthClass == Rendering::MaterialDepthClass::MaterialDependent)
@@ -502,13 +506,16 @@ class DepthPassPreparation
         std::optional<uint32_t> ServedVersion;
     };
 
-    void MarkUnderDraw(const Rendering::MeshGPUEntry* mesh = nullptr)
+    void MarkUnderDraw(DepthUnderDrawReason reason, const Rendering::MeshGPUEntry* mesh = nullptr)
     {
         m_Data.AllProducer.Complete = false;
         if (!mesh || !Rendering::IsSkinned(mesh->vertexFlags))
             m_Data.RigidProducer.Complete = false;
-        if (m_TrackUnderDraw)
+        if (m_TrackUnderDraw && !m_Data.UnderDrew)
+        {
             m_Data.UnderDrew = true;
+            m_Data.UnderDrawReason = reason;
+        }
     }
 
     void Append(const DrawCommand& command, const PreparedDrawBindings& bindings,
@@ -550,7 +557,7 @@ class DepthPassPreparation
                 false, 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
-            MarkUnderDraw(entry); // async material publish gap — heals next frames
+            MarkUnderDraw(DepthUnderDrawReason::MaterialPending, entry);
             return;
         }
         if (!entry)
@@ -562,7 +569,7 @@ class DepthPassPreparation
                 false, 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
-            MarkUnderDraw(entry); // mesh upload in flight — heals next frames
+            MarkUnderDraw(DepthUnderDrawReason::MeshPending, entry);
             return;
         }
         Rendering::MeshGPUEntryBindings entryBindings{};
@@ -576,7 +583,7 @@ class DepthPassPreparation
                 false, 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
-            MarkUnderDraw(entry); // buffer not resident yet — heals next frames
+            MarkUnderDraw(DepthUnderDrawReason::MeshNotDrawable, entry);
             return;
         }
         const DepthPassMaterialFilter filter = FilterDepthPassMaterial(
@@ -618,7 +625,7 @@ class DepthPassPreparation
                                   Rendering::MaterialKeyword::HasVertexOutputMod);
         if ((material->GetAlphaMode() == MaterialAlphaMode::Mask || vertexModified) &&
             (!m_Services.Textures || !m_Services.Textures->IsMaterialTextureBindingComplete(material->GetGuid())))
-            MarkUnderDraw(entry);
+            MarkUnderDraw(DepthUnderDrawReason::TexturesPending, entry);
         const DepthSegmentPipelineChoice head = ChooseDepthHeadPipeline(
             m_PassKeywords, m_Data.Params.PassType,
             material->GetAlphaMode() == MaterialAlphaMode::Mask, vertexModified,
@@ -662,7 +669,7 @@ class DepthPassPreparation
                     "depth", "depth-pipeline-invalid", m_Data.Params.ViewId,
                     key.materialIndex, key.meshIndex, false, false, 0ull,
                     m_InstanceAddress, false, 0u);
-                MarkUnderDraw(entry); // async depth-variant publish gate — heals on publish
+                MarkUnderDraw(DepthUnderDrawReason::DepthVariantPending, entry);
                 return;
             }
 
@@ -680,7 +687,7 @@ class DepthPassPreparation
                     "depth", "material-bind-invalid", m_Data.Params.ViewId,
                     key.materialIndex, key.meshIndex, false, false, 0ull,
                     m_InstanceAddress, false, 0u);
-                MarkUnderDraw(entry); // bind-time publish gate — heals on publish
+                MarkUnderDraw(DepthUnderDrawReason::BindPending, entry);
                 return;
             }
 
@@ -704,7 +711,7 @@ class DepthPassPreparation
                 false, false, 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
-            MarkUnderDraw(entry); // scatter pipeline still compiling — heals next frames
+            MarkUnderDraw(DepthUnderDrawReason::ScatterPending, entry);
             return;
         }
         const Rendering::GPUDrawStreamBuilder::BatchDrawRange drawRange =
@@ -719,7 +726,7 @@ class DepthPassPreparation
                 true, drawRange.IsValid(), 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams->GetRangeCount());
-            MarkUnderDraw(entry);
+            MarkUnderDraw(DepthUnderDrawReason::DrawRangeInvalid, entry);
             return;
         }
         // The range's records name their instance words by firstInstance in the range's own
@@ -735,7 +742,7 @@ class DepthPassPreparation
                 true, true, slotIndirectionBda, m_InstanceAddress,
                 m_Services.Device->GetCapabilities().supportsBufferDeviceAddress,
                 m_Services.Streams->GetRangeCount());
-            MarkUnderDraw(entry);
+            MarkUnderDraw(DepthUnderDrawReason::AddressMissing, entry);
             return;
         }
 
@@ -814,7 +821,7 @@ class DepthPassPreparation
                 true, true, slotIndirectionBda, m_InstanceAddress,
                 m_Services.Device->GetCapabilities().supportsBufferDeviceAddress,
                 m_Services.Streams->GetRangeCount());
-            MarkUnderDraw(batch.Mesh); // async depth-variant publish gate — heals on publish
+            MarkUnderDraw(DepthUnderDrawReason::DepthVariantPending, batch.Mesh);
             return;
         }
         const auto preparedBindings = m_Services.Materials.Binder().PrepareMaterialForDraw(
@@ -827,7 +834,7 @@ class DepthPassPreparation
                 true, true, slotIndirectionBda, m_InstanceAddress,
                 m_Services.Device->GetCapabilities().supportsBufferDeviceAddress,
                 m_Services.Streams->GetRangeCount());
-            MarkUnderDraw(batch.Mesh); // bind-time publish gate — heals on publish
+            MarkUnderDraw(DepthUnderDrawReason::BindPending, batch.Mesh);
             return;
         }
         DrawCommand command{};
@@ -897,6 +904,41 @@ class DepthPassPreparation
 };
 } // namespace
 
+const char* DepthUnderDrawReasonName(DepthUnderDrawReason reason)
+{
+    switch (reason)
+    {
+    case DepthUnderDrawReason::EmptySlice: return "empty-slice";
+    case DepthUnderDrawReason::MissingGeometryGroup: return "geometry-group";
+    case DepthUnderDrawReason::MaterialPending: return "material";
+    case DepthUnderDrawReason::MeshPending: return "mesh";
+    case DepthUnderDrawReason::MeshNotDrawable: return "mesh-buffers";
+    case DepthUnderDrawReason::TexturesPending: return "textures";
+    case DepthUnderDrawReason::DepthVariantPending: return "depth-variant";
+    case DepthUnderDrawReason::BindPending: return "bind";
+    case DepthUnderDrawReason::ScatterPending: return "scatter";
+    case DepthUnderDrawReason::DrawRangeInvalid: return "draw-range";
+    case DepthUnderDrawReason::AddressMissing: return "address";
+    case DepthUnderDrawReason::Count: break;
+    }
+    return "unknown";
+}
+
+std::string FormatDepthUnderDrawReasons(const DepthUnderDrawReasonCounts& counts)
+{
+    std::string text;
+    for (size_t reason = 0; reason < counts.size(); ++reason)
+    {
+        if (counts[reason] == 0)
+            continue;
+        if (!text.empty())
+            text += ' ';
+        text += std::format("{} {}", DepthUnderDrawReasonName(static_cast<DepthUnderDrawReason>(reason)),
+                            counts[reason]);
+    }
+    return text.empty() ? std::string("none") : text;
+}
+
 bool PrepareDepthOnlyPass(RenderGraph::RGPrepareContext& context,
                           PreparedDepthOnlyPass& data, const DepthDrawServices& services)
 {
@@ -932,7 +974,7 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
 
     if (data.UnderDrew && data.UnderDraw && casters != CascadeCasters::Rigid)
         data.UnderDraw->Mark(static_cast<uint32_t>(params.ViewId),
-                             static_cast<uint8_t>(params.PassType), params.CascadeIndex);
+                             static_cast<uint8_t>(params.PassType), params.CascadeIndex, data.UnderDrawReason);
     if (!data.Walked)
         return;
     auto& binder = data.Materials->Binder();

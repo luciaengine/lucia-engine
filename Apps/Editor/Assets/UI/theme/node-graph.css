@@ -797,6 +797,7 @@
 
 .node-graph-palette-node-drag-ghost {
 	pointer-events: none;
+	border-color: var(--ui_color_accent);
 	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
 	gap: 2px;
 }
@@ -1436,7 +1437,7 @@
    specificity — so the :hover variants this used to spell out are unnecessary
    rather than merely collapsed. */
 .graph-node.ring-accent > .graph-node-ring {
-	border-color: #3A8FFF;
+	border-color: var(--ui_color_accent);
 }
 
 .graph-node.runtime-active {

@@ -54,7 +54,7 @@ VulkanPipelineCache::~VulkanPipelineCache()
 std::string VulkanPipelineCache::GetPlatformCacheDirectory()
 {
 #if defined(GE_PLATFORM_MOBILE)
-    char* preferences = SDL_GetPrefPath("OpenEngine", "Player");
+    char* preferences = SDL_GetPrefPath("LuciaEngine", "Player");
     if (preferences != nullptr)
     {
         const auto directory = std::filesystem::path(preferences) / "Cache/PipelineCache";

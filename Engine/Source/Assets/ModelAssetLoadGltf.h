@@ -19,6 +19,7 @@
 #include <unordered_map>
 
 struct cgltf_data;
+struct cgltf_mesh;
 
 namespace GameEngine {
 
@@ -85,11 +86,16 @@ void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view mode
 
 class GltfAllocationBudget;
 
+/// The name a glTF import gives morph target `targetIndex` of `mesh`: the file's extras.targetNames entry
+/// (cgltf's target_names), or "morph_<index>" when the file names none. The model's morph targets and the
+/// clip's morph weight channels take their names from it, so a clip channel finds its target by name.
+String MorphTargetName(const cgltf_mesh& mesh, size_t targetIndex);
+
 /**
  * @brief Charges `budget` with the keys the glTF clip path sizes for animation `animationIndex` of
  *        `document`: one Animation::AnimKeyframe per element of the input of each channel with a
- *        sampler, an input, an output and a target node (a channel the clip path skips for its path
- *        is charged too).
+ *        sampler, an input, an output and a target node, times the morph target count for a weights
+ *        channel (a channel the clip path skips for its path is charged too).
  *
  * @return Empty when every channel fits; otherwise the first channel that does not, described for a
  *         refusal: "channel 3 of animation 0 ('Walk') has a key time accessor " and the budget's reason.

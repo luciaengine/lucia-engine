@@ -41,7 +41,7 @@ bool RunMobileBuild(const BuildSettings& settings, BuildPipeline& pipeline,
     MobileExportInputs inputs;
     inputs.BuildTool = GetEditorGlobalPaths().installAssetsRoot / "Tools/Mobile/build_player.py";
     inputs.EngineRoot = ReadSetting(store, platform, "engineRoot", GE_MOBILE_ENGINE_SOURCE_ROOT);
-    inputs.BuildCache = StandardPaths::UserCacheRoot("OpenEngine") / "MobilePlayers";
+    inputs.BuildCache = StandardPaths::UserCacheRoot("LuciaEngine") / "MobilePlayers";
 #if defined(_WIN32)
     inputs.HostGlslc = GetEditorGlobalPaths().installAssetsRoot / "Tools/glslc.exe";
 #else

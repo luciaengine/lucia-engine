@@ -777,7 +777,10 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
     // Starts a culling frame after one ordinary cull, as a frame that renders virtual shadow pages.
     RenderGraph::RGFrame& BeginLateCullFrame()
     {
-        CullInto(MakeStorageBuffer(sizeof(uint32_t), "LatePageCull.Frame"), 0xFFFFFFFFu, true, false);
+        namespace RG = GameEngine::Rendering::RenderGraph;
+        // CullInto copies one word per instance into its destination.
+        CullInto(MakeStorageBuffer(m_Scene->GetInstanceCount() * sizeof(uint32_t), "LatePageCull.Frame"),
+                 0xFFFFFFFFu, true, false);
         auto& frame = *m_CullFrame;
         frame.BeginFrame(++m_CullFrameNumber);
         m_Culling->BeginFrame(&frame, m_Scene.get());

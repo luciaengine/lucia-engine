@@ -60,7 +60,7 @@ target_link_options(WebLibraryAbi INTERFACE
     "SHELL:-s ASYNCIFY_STACK_SIZE=1048576"
     "SHELL:-s MODULARIZE=1"
     "SHELL:-s EXPORT_ES6=1"
-    "SHELL:-s EXPORT_NAME=createOpenEngine")
+    "SHELL:-s EXPORT_NAME=createLuciaEngine")
 
 if(GE_WASM_SINGLE_THREAD)
     set(_ge_web_library_build st)

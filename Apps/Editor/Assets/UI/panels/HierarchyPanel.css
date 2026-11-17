@@ -40,9 +40,10 @@
 	opacity: var(--hierarchy-preview-icon-committed-opacity, 1.0);
 }
 
-/* The Scene View eye (HierarchyRowActivity), anchored left of the row lock the
-   same way the lock is anchored: an open eye peeks on a hovered or selected row
-   only; a closed one always shows, dimmer when an ancestor closed it. */
+/* The eye (HierarchyRowActivity) shows the entity's on/off state, as the entity
+   icon does, anchored left of the row lock: an open eye peeks on a hovered or
+   selected row only; a closed one always shows, dimmer when a switched-off
+   ancestor makes the entity inactive. */
 .hierarchy-panel .tree .tree-item .hierarchy-eye {
 	position: absolute;
 	right: 27px;

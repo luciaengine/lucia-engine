@@ -3,6 +3,7 @@
 #include "Editor/Settings/EditorSettingsRegistry.h"
 #include "UI/EditorSearchBars.h"
 
+#include <string>
 #include <utility>
 
 namespace GameEngine::Editor
@@ -30,6 +31,45 @@ void SetAccentFocusOutline(bool enabled)
         EditorSearchBars::SetAccentFocusOutline(enabled);
 }
 
+void SetShowIconAndHint(bool show)
+{
+    if (show != EditorSearchBars::GetShowIconAndHint())
+        EditorSearchBars::SetShowIconAndHint(show);
+}
+
+// The look names are the stored values of the dropdown.
+constexpr const char* kLuciaLook = "Lucia";
+constexpr const char* kClassicLook = "Classic";
+
+std::string GetLookName()
+{
+    return EditorSearchBars::GetLook() == EditorSearchBars::Look::Classic ? kClassicLook : kLuciaLook;
+}
+
+void SetLookName(const std::string& name)
+{
+    const EditorSearchBars::Look look =
+        name == kClassicLook ? EditorSearchBars::Look::Classic : EditorSearchBars::Look::Lucia;
+    if (look != EditorSearchBars::GetLook())
+        EditorSearchBars::SetLook(look);
+}
+
+SettingsFieldDescriptor MakeLookDropdown()
+{
+    SettingsFieldDescriptor field;
+    field.Label = "Search Bar Style";
+    field.Tooltip = "Lucia: a dark field with no border. Classic: the field fill with a subtle border "
+                    "that lights up on hover.";
+    field.SearchKeywords = "search bar style look classic lucia border fill";
+    SettingsFieldDescriptor::DropdownField dropdown;
+    dropdown.Options = {kLuciaLook, kClassicLook};
+    dropdown.DefaultValue = kLuciaLook;
+    dropdown.Get = &GetLookName;
+    dropdown.Set = &SetLookName;
+    field.Control = std::move(dropdown);
+    return field;
+}
+
 SettingsFieldDescriptor MakeToggle(const char* label, const char* tooltip, const char* keywords, bool defaultValue,
                                    bool (*get)(), void (*set)(bool))
 {
@@ -55,6 +95,13 @@ void RegisterSearchBarSettingsCategory()
     searchBars.Group = SettingsCategoryGroup::UIAppearance;
     searchBars.SearchKeywords = "search bar field filter hierarchy assets inspector bookmarks";
 
+    searchBars.Fields.push_back(MakeLookDropdown());
+    searchBars.Fields.push_back(MakeToggle(
+        "Show Icon and Search Hint",
+        "Shows the icon at the left of the Hierarchy and Assets search rows, and the Search hint "
+        "in an empty search field.",
+        "search bar hint placeholder icon view rows show hide", false, &EditorSearchBars::GetShowIconAndHint,
+        &SetShowIconAndHint));
     searchBars.Fields.push_back(MakeToggle(
         "Filled Search Bars",
         "Fills the search field of the Hierarchy, Assets, Inspector and Bookmarks panels. "

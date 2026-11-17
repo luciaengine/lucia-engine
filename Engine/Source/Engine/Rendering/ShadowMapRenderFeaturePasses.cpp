@@ -615,7 +615,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
                               !cacheIn.HasContributorDrawCommands && !rs.GetProfile().IsCompat();
     if (cascadeIndex == 0)
         LogCascadeCacheStatsPeriodic(viewId, IsStaticShadowCacheEnabled(),
-                                     rs.ShadowCasterContentVersion(cacheIn.WorldId));
+                                     rs.ShadowCasterContentVersion(cacheIn.WorldId), rs.DepthUnderDraw());
     // Exec→declare feedback: the last declared render for this slice reported a
     // silent under-draw (async publish gate / stale-survivor walk-skip /
     // missing GPU content). Consume the mark and dirty the record — restores
@@ -1500,7 +1500,8 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
 }
 
 void ShadowMapRenderFeature::LogCascadeCacheStatsPeriodic(Rendering::ViewId viewId, bool enabled,
-                                                          uint64_t casterContentVersion)
+                                                          uint64_t casterContentVersion,
+                                                          DepthUnderDrawTracker& underDraw)
 {
     constexpr uint32_t kLogPeriodFrames = 300;
     uint32_t& counter = m_CascadeCacheLogCounter[viewId];
@@ -1536,7 +1537,9 @@ void ShadowMapRenderFeature::LogCascadeCacheStatsPeriodic(Rendering::ViewId view
     const bool wasStormActive = m_CascadeShadowCache.ExchangeStormActive(viewId, stormWindow);
     const bool warnStorm = stormWindow && !wasStormActive;
 
-    const std::string causes = FormatCascadeCacheCauseHistogram(window, casterContentVersion);
+    const std::string causes =
+        FormatCascadeCacheCauseHistogram(window, casterContentVersion) + " | underdraw reasons: " +
+        FormatDepthUnderDrawReasons(underDraw.ConsumeCascadeReasons(static_cast<uint32_t>(viewId)));
     if (warnStorm)
     {
         Logger::Log::Warning(

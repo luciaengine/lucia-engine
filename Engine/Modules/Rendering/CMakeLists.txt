@@ -1551,6 +1551,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     if(BUILD_TESTING)
         _ge_add_shaderpkg_compute(virtual_shadow_lookup_test virtual_shadow_lookup_test.comp)
         _ge_add_shaderpkg_compute(virtual_shadow_sun_mask_test virtual_shadow_sun_mask_test.comp)
+        _ge_add_shaderpkg_compute(virtual_shadow_sun_mask_read_test virtual_shadow_sun_mask_read_test.comp)
         _ge_add_shaderpkg_compute(virtual_shadow_receiver_test virtual_shadow_receiver_test.comp)
         _ge_add_shaderpkg_graphics(virtual_shadow_test_depth virtual_shadow_test_depth.vert "")
     endif()
@@ -3674,6 +3675,16 @@ set_target_properties(BarrierMemoryBatchTests PROPERTIES
   CXX_STANDARD_REQUIRED ON
   FOLDER "Rendering/Tests")
 add_test(NAME BarrierMemoryBatchTests COMMAND $<TARGET_FILE:BarrierMemoryBatchTests>)
+
+add_executable(TransferLayoutTrackingTests Tests/TransferLayoutTrackingTests.cpp)
+target_link_libraries(TransferLayoutTrackingTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
+rendering_test_shader_paths(TransferLayoutTrackingTests)
+target_include_directories(TransferLayoutTrackingTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
+set_target_properties(TransferLayoutTrackingTests PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  FOLDER "Rendering/Tests")
+add_test(NAME TransferLayoutTrackingTests COMMAND $<TARGET_FILE:TransferLayoutTrackingTests>)
 
   add_executable(BarrierBatchBufferDedupeTests Tests/BarrierBatchBufferDedupeTests.cpp)
   target_link_libraries(BarrierBatchBufferDedupeTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)

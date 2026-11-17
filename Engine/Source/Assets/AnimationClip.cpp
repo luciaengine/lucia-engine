@@ -379,8 +379,8 @@ void DeserializeTangentTypes(const json& node, const char* key, AnimTangentType*
 }
 
 #if defined(GE_HAVE_CGLTF)
-// The engine channel a glTF target path animates; empty for a path the glTF
-// clip path does not import (weights, or one cgltf does not recognise).
+// The engine channel a glTF node transform path animates; empty for the weights path, which
+// AppendMorphWeightChannels imports, and for a path cgltf does not recognise.
 std::optional<AnimPath> EngineChannelPath(cgltf_animation_path_type path)
 {
     switch (path)
@@ -394,6 +394,68 @@ std::optional<AnimPath> EngineChannelPath(cgltf_animation_path_type path)
             break;
     }
     return std::nullopt;
+}
+
+// The interpolation a glTF sampler imports as. A cubic spline imports as linear: AnimKeyframe holds
+// no glTF tangent.
+AnimInterp ImportedInterpolation(const cgltf_animation_sampler& sampler)
+{
+    if (sampler.interpolation == cgltf_interpolation_type_step)
+        return AnimInterp::Step;
+    if (sampler.interpolation == cgltf_interpolation_type_cubic_spline)
+        Logger::Log::Warning("AnimationClip: CubicSpline interpolation not supported, falling back to Linear");
+    return AnimInterp::Linear;
+}
+
+// Appends one MorphWeight channel per morph target of the mesh that weights channel `source` drives.
+// A channel carries the node index and the target's name (MorphTargetName), the keys the model's
+// morph targets and the animation system match it by. A glTF key holds its weights side by side; a
+// cubic spline key holds in-tangents, values and out-tangents, and only the values import.
+// Returns the last key time in seconds. cgltf_validate gave the node a mesh and sized the output.
+float AppendMorphWeightChannels(const cgltf_data& document, const cgltf_animation_channel& source,
+                                std::vector<AnimChannel>& outChannels)
+{
+    const cgltf_animation_sampler& sampler = *source.sampler;
+    const cgltf_mesh& mesh = *source.target_node->mesh;
+    const size_t targetCount = mesh.primitives[0].targets_count;
+    const size_t keyCount = sampler.input->count;
+    const bool cubic = sampler.interpolation == cgltf_interpolation_type_cubic_spline;
+    const size_t keyStride = cubic ? 3u * targetCount : targetCount;
+    const size_t valueOffset = cubic ? targetCount : 0u;
+
+    // (time, source key index), sorted by time once for every target.
+    std::vector<std::pair<float, size_t>> keyOrder(keyCount);
+    for (size_t keyIndex = 0; keyIndex < keyCount; ++keyIndex)
+    {
+        float time = 0.0f;
+        cgltf_accessor_read_float(sampler.input, keyIndex, &time, 1);
+        keyOrder[keyIndex] = {time, keyIndex};
+    }
+    std::stable_sort(keyOrder.begin(), keyOrder.end(),
+                     [](const auto& left, const auto& right) { return left.first < right.first; });
+
+    const AnimInterp interp = ImportedInterpolation(sampler);
+    const uint32 nodeIndex = static_cast<uint32>(source.target_node - document.nodes);
+    for (size_t targetIndex = 0; targetIndex < targetCount; ++targetIndex)
+    {
+        AnimChannel channel{};
+        channel.boneIndex = nodeIndex;
+        channel.targetName = MorphTargetName(mesh, targetIndex);
+        channel.targetNameId = HashStringId(channel.targetName);
+        channel.path = AnimPath::MorphWeight;
+        channel.interp = interp;
+        channel.keys.resize(keyCount);
+        for (size_t order = 0; order < keyCount; ++order)
+        {
+            AnimKeyframe& keyframe = channel.keys[order];
+            InitializeDefaultKeyframe(keyframe);
+            keyframe.time = keyOrder[order].first;
+            const size_t element = keyOrder[order].second * keyStride + valueOffset + targetIndex;
+            cgltf_accessor_read_float(sampler.output, element, GetComponentArray(keyframe, AnimPath::MorphWeight), 1);
+        }
+        outChannels.push_back(std::move(channel));
+    }
+    return keyOrder.empty() ? 0.0f : keyOrder.back().first;
 }
 #endif // GE_HAVE_CGLTF
 
@@ -512,14 +574,19 @@ bool AnimationClip::LoadSourceData(std::span<const uint8> input)
                         continue;
                     }
 
+                    if (sourceChannel.target_path == cgltf_animation_path_type_weights)
+                    {
+                        m_Duration = std::max(m_Duration, AppendMorphWeightChannels(*gltf, sourceChannel, m_Channels));
+                        continue;
+                    }
+
                     const std::optional<AnimPath> path = EngineChannelPath(sourceChannel.target_path);
                     if (!path)
                     {
                         Logger::Log::Warning(
-                            "AnimationClip '{}': animation '{}' drives the {} path of node '{}', which the engine "
-                            "does not animate; that channel is skipped.",
+                            "AnimationClip '{}': animation '{}' drives an unrecognised path of node '{}', which the "
+                            "engine does not animate; that channel is skipped.",
                             GetName(), animation.name ? animation.name : "<unnamed>",
-                            sourceChannel.target_path == cgltf_animation_path_type_weights ? "weights" : "unrecognised",
                             sourceChannel.target_node->name ? sourceChannel.target_node->name : "<unnamed>");
                         continue;
                     }
@@ -533,19 +600,7 @@ bool AnimationClip::LoadSourceData(std::span<const uint8> input)
                     channel.targetName = sourceChannel.target_node->name ? sourceChannel.target_node->name : "";
                     channel.targetNameId = channel.targetName.empty() ? 0u : HashStringId(channel.targetName);
                     channel.path = *path;
-                    // Interpolation mode (LINEAR, STEP supported; CUBICSPLINE not yet implemented)
-                    if (sampler->interpolation == cgltf_interpolation_type_step)
-                        channel.interp = AnimInterp::Step;
-                    else if (sampler->interpolation == cgltf_interpolation_type_cubic_spline)
-                    {
-                        // CubicSpline requires in/out tangent data per keyframe that AnimKeyframe
-                        // does not store. Fall back to Linear so the runtime doesn't silently
-                        // produce incorrect results.
-                        Logger::Log::Warning("AnimationClip: CubicSpline interpolation not supported, falling back to Linear");
-                        channel.interp = AnimInterp::Linear;
-                    }
-                    else
-                        channel.interp = AnimInterp::Linear;
+                    channel.interp = ImportedInterpolation(*sampler);
                     channel.keys.resize(keyCount);
 
                     float maxTime = 0.0f;

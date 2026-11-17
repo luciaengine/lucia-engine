@@ -18,6 +18,7 @@
 #include "Editor/Shortcuts/EditorShortcuts.h"
 #include "Panels/SettingsPanel.h"
 #include "UI/Controls/SplitView.h"
+#include "UI/EditorSearchBars.h"
 #include "UI/Controls/Splitter.h"
 #include "UI/Controls/WeightedPane.h"
 #include "UI/Controls/TreeView.h"
@@ -467,6 +468,11 @@ AssetsPanel::AssetsPanel()
         m_ExtraViewToolbarRight = bottomToolbarRight.get();
         bottomToolbarRight->AddClass("assets-view-toggle-toolbar-right");
 
+        // The view buttons are the row's leading icon: the Search Bars setting hides them as one.
+        auto viewButtons = std::make_unique<UIElement>();
+        m_ExtraViewButtons = viewButtons.get();
+        m_ExtraViewButtons->AddClass("assets-toolbar-view-buttons");
+
         auto extraGridButton = std::make_unique<Button>();
         m_ExtraGridViewButton = extraGridButton.get();
         m_ExtraGridViewButton->AddClass("small");
@@ -480,7 +486,7 @@ AssetsPanel::AssetsPanel()
         m_ExtraGridViewButton->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
             SwitchToGridView();
         });
-        bottomToolbarRight->AddChild(std::move(extraGridButton));
+        viewButtons->AddChild(std::move(extraGridButton));
 
         auto extraListButton = std::make_unique<Button>();
         m_ExtraListViewButton = extraListButton.get();
@@ -495,7 +501,7 @@ AssetsPanel::AssetsPanel()
         m_ExtraListViewButton->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
             SwitchToListView();
         });
-        bottomToolbarRight->AddChild(std::move(extraListButton));
+        viewButtons->AddChild(std::move(extraListButton));
 
         auto extraSingleToggleButton = std::make_unique<Button>();
         m_ExtraSingleViewToggleButton = extraSingleToggleButton.get();
@@ -509,7 +515,9 @@ AssetsPanel::AssetsPanel()
             else
                 SwitchToGridView();
         });
-        bottomToolbarRight->AddChild(std::move(extraSingleToggleButton));
+        viewButtons->AddChild(std::move(extraSingleToggleButton));
+        EditorSearchBars::RegisterRowIcon(m_ExtraViewButtons);
+        bottomToolbarRight->AddChild(std::move(viewButtons));
 
         auto zoomSlider = std::make_unique<EditorUI::ItemSizeSlider>();
         m_ToolbarGridZoomSlider = zoomSlider.get();
@@ -1741,6 +1749,7 @@ AssetsPanel::~AssetsPanel()
         SettingsPanel::UnregisterSearchBar(m_SearchBar);
     if (m_ToolbarSearchBar)
         SettingsPanel::UnregisterSearchBar(m_ToolbarSearchBar);
+    EditorSearchBars::UnregisterRowIcon(m_ExtraViewButtons);
 }
 
 } // namespace GameEngine

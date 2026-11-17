@@ -21,6 +21,19 @@ public:
     static bool GetAccentFocusOutline();
     static void SetAccentFocusOutline(bool enabled);
 
+    // The look of a registered search bar: the editor's own, or a field fill with a subtle border.
+    enum class Look
+    {
+        Lucia,
+        Classic,
+    };
+    static Look GetLook();
+    static void SetLook(Look look);
+
+    // The icon at the left of a search row and the "Search" hint of an empty field. Off by default.
+    static bool GetShowIconAndHint();
+    static void SetShowIconAndHint(bool show);
+
     static void Register(UIElement* searchBar);
     // A search bar that sits inside a host row, where the host is what the top/bottom
     // setting moves: visibility and focus styling follow the search bar, the placement
@@ -29,6 +42,9 @@ public:
     static void Unregister(UIElement* searchBar);
     static void RegisterFocusTarget(UIElement* searchBar);
     static void UnregisterFocusTarget(UIElement* searchBar);
+    // An icon at the left of a search row. It is hidden while ShowIconAndHint is off.
+    static void RegisterRowIcon(UIElement* icon);
+    static void UnregisterRowIcon(UIElement* icon);
     
     // Load visibility setting from preferences
     static void LoadFromPreferences();
@@ -42,15 +58,21 @@ private:
 
     static void ApplyPlacement(UIElement* placementTarget);
     static void ApplyFocusOutline(UIElement* searchBar);
+    static void ApplyLook(UIElement* searchBar);
+    static void ApplyHint(UIElement* searchBar);
+    static void ApplyRowIcon(UIElement* icon);
     static void PruneNulls();
     static void SaveToPreferences();
 
     static inline bool s_Visible = false;
     static inline bool s_AtTop = false;
     static inline bool s_AccentFocusOutline = true;
+    static inline bool s_ClassicLook = false;
+    static inline bool s_ShowIconAndHint = false;
     static inline bool s_Loaded = false;
     static inline std::vector<RegisteredBar> s_Bars;
     static inline std::vector<UIElement*> s_FocusTargets;
+    static inline std::vector<UIElement*> s_RowIcons;
 };
 
 } // namespace GameEngine

@@ -96,6 +96,7 @@ private:
     UIElement* m_DetailFrames = nullptr;
     UIElement* m_SearchBar = nullptr;
     Button* m_PauseButton = nullptr;
+    UIElement* m_PauseGlyph = nullptr;
     Button* m_ChannelsButton = nullptr;
     std::array<Button*, LogModel::kSeverityCount> m_FilterToggles{};
 

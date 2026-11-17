@@ -1,0 +1,66 @@
+---
+title: Linux test runner
+description: How to run the Linux final check, a full DebugFast build and every test suite, on a Linux machine with podman.
+---
+
+# Linux test runner
+
+`Tools/LinuxTestRunner/run-tests.sh` is the Linux final check. It fetches a ref from GitHub and builds the whole tree in DebugFast with the tests on. Then it runs every test suite with Vulkan validation on and writes a summary. The build and the suites run in a podman container. The machine needs no other checkout and no other machine.
+
+## Set up a machine
+
+The machine needs podman, git, rsync, flock and a GPU that `/dev/dri` exposes to the container.
+
+:::steps
+
+1. Build the image from `Tools/LinuxTestRunner/Containerfile`. The image holds the compilers, the .NET SDK, Mesa Vulkan drivers and the Vulkan validation layers.
+
+   ```bash title="Build the container image"
+   podman build -t lucia-linux-dev -f Tools/LinuxTestRunner/Containerfile Tools/LinuxTestRunner
+   ```
+
+2. Clone vcpkg at the commit `cmake/VcpkgPin.cmake` pins, into the folder `LUCIA_VCPKG_DIR` names.
+3. Make the folder for the vcpkg binary cache, which `LUCIA_VCPKG_ARCHIVES` names. A later run restores the ports from it.
+4. Copy `run-tests.sh` to the machine, outside the source tree that the script syncs.
+
+:::
+
+## Run the check
+
+```bash title="Run the check for main in the background"
+nohup ./run-tests.sh main > ~/lucia-ci/last.out 2>&1 &
+```
+
+The argument is a branch name or a commit. The default is `main`. A run takes these steps:
+
+1. It fetches the ref into a bare mirror in `LUCIA_CI_DIR`.
+2. It syncs the ref into `LUCIA_SRC_DIR` with `rsync -c --delete`. Only the changed files are written, so the build is incremental.
+3. It configures with the `linux-x64-local` preset. If the dependency set changed, it deletes the build tree and configures again.
+4. It builds with `ninja -k 0`, so one failed file does not stop the others.
+5. It runs each test program under `bin/DebugFast/Tests/` with a 40-minute limit and writes its gtest XML.
+
+The result is in `LUCIA_CI_DIR/results/<time>-<sha>/`, and `results/latest` points to the last run. `summary.txt` lists the configure and build exit codes, the first 40 build errors, one line for each suite, and the suites that wrote no result file because of a crash or a timeout.
+
+## Settings
+
+The script reads its settings from the environment. The defaults are the layout of the first test machine.
+
+| Variable | Default | Use |
+|---|---|---|
+| `LUCIA_CI_DIR` | `$HOME/lucia-ci` | The mirror, the lock and the results |
+| `LUCIA_SRC_DIR` | `$HOME/lucia-rtf/src` | The source tree the container builds in |
+| `LUCIA_VCPKG_DIR` | `$HOME/lucia/vcpkg` | The vcpkg checkout |
+| `LUCIA_VCPKG_ARCHIVES` | `$HOME/lucia/vcpkg-archives` | The vcpkg binary cache |
+| `LUCIA_IMAGE` | `localhost/lucia-linux-dev:latest` | The container image |
+| `LUCIA_REPO_URL` | The Lucia repository on GitHub | The repository to fetch from |
+| `LUCIA_JOBS` | `6` | Parallel compiles |
+
+:::caution[Memory]
+A DebugFast compile of the larger engine files needs about 2 GB. 6 jobs fit a machine with 15 GB of memory. More jobs end in out-of-memory kills of the Editor compiles. Set `LUCIA_JOBS` from the memory of the machine, not from its CPU count.
+:::
+
+## Guards
+
+- A lock file in `LUCIA_CI_DIR` stops a second run of the script.
+- The script stops when a running container already mounts `LUCIA_SRC_DIR`, for example a build that another script started. 2 builds in one tree overwrite each other's files.
+- The sync deletes the `bin/` and `obj/` folders of the managed projects, because they are not in the repository. Each managed build step declares its assembly as an output, so the next build makes the assemblies again.

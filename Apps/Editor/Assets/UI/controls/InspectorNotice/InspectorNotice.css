@@ -15,16 +15,16 @@
 	margin: 4px 0;
 }
 
-/* The text and the buttons share a row, the buttons on the text's first line (their baselines
-   aligned). The buttons wrap onto a line of their own under the text only when the row cannot give the
-   text its basis beside them; a wrapped line keeps them at the row's end, the dismiss too when it wraps
-   alone. */
+/* The text and the buttons share a row. The tops of the buttons align with the top of the text's
+   first line. The buttons wrap onto a line of their own under the text only when the row cannot give
+   the text its basis beside them; a wrapped line keeps them at the row's end, the dismiss too when it
+   wraps alone. */
 .inspector-notice-plate {
 	display: flex;
 	flex-direction: row;
 	flex-wrap: wrap;
 	justify-content: flex-end;
-	align-items: baseline;
+	align-items: flex-start;
 	column-gap: 8px;
 	row-gap: 6px;
 	padding: 6px 8px;
@@ -71,7 +71,7 @@
 
 .inspector-notice-plate-information {
 	background-color: var(--ui_color_bg_selected);
-	border-color: var(--ui_color_text_dim);
+	border-color: var(--ui_color_text_dim_outline);
 }
 
 .inspector-notice-text-information {
@@ -163,8 +163,10 @@
 }
 
 /* The opaque variant, for a notice drawn over a view's 3D content rather than a panel: a solid plate
-   that reads over any frame, edged in its kind's color (the plate rules above). */
+   that reads over any frame, edged in its kind's color (the plate rules above). The text and the
+   buttons are centered on the plate's height. */
 .inspector-notice-opaque .inspector-notice-plate {
 	background-color: var(--ui_color_bg_plate);
 	border-width: 1px;
+	align-items: center;
 }
