@@ -1,0 +1,152 @@
+#version 450
+
+// Per-page caster lists for shadow frustums that exist only after the frame's culling (virtual
+// shadow pages). The frustum culling kernel wrote one visibility slice per page. This kernel turns
+// those slices into instanced indirect draws without one draw record per instance and page:
+//
+//  - Mode 0 (lists), one invocation per instance: resolve the instance's shadow-table row once,
+//    then append the instance index to the row's list of every page that sees it. The list of
+//    (page, row) starts at wordsBase + page * wordsPerPage + row.recordOffset, a CPU-known place.
+//  - Mode 1 (commands), one invocation per (row, page): write one instanced LOD 0 draw for a row
+//    with a non-empty list. The draw lands in the command block of the row's run, packed by an
+//    atomic run count that is the run's indirect draw count.
+//
+// A shadow row is one mesh at one winding parity, and every page draws LOD 0, so all instances of a
+// row share one index range. The vertex stage reads list[firstInstance + gl_InstanceIndex].
+//
+// All outputs live in one buffer of uints (binding 6). The CPU clears the counts and the command
+// blocks before mode 0. The lists need no clear: a draw reads only the first `count` words.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "Includes/gpu_mesh.glsl"
+#include "Includes/draw_stream_batch_table.glsl"
+
+struct GPUInstance {
+#include "Includes/gpu_instance_fields.glsl"
+};
+
+layout(set = 0, binding = 0, std430) restrict readonly buffer VisibilityBuffer {
+    uint visibility[];
+};
+layout(set = 0, binding = 1, std430) restrict readonly buffer InstanceBuffer {
+    GPUInstance instances[];
+};
+layout(set = 0, binding = 2, std430) restrict readonly buffer MeshBuffer {
+    GPUMesh meshes[];
+};
+layout(set = 0, binding = 3, std430) restrict readonly buffer BatchTableBuffer {
+    BatchTableEntry batchTable[];
+};
+// Per row: {first row of its run, run index}. Read only when meshGroupMode != 0.
+layout(set = 0, binding = 4, std430) restrict readonly buffer RowRunBuffer {
+    uvec2 rowRun[];
+};
+// Per real mesh index: the ordered mesh-axis rank of draw consolidation. Read only when
+// meshGroupMode != 0.
+layout(set = 0, binding = 5, std430) restrict readonly buffer MeshPoolGroupBuffer {
+    uint meshPoolGroup[];
+};
+layout(set = 0, binding = 6, std430) restrict coherent buffer ListBuffer {
+    uint lists[];
+};
+
+#include "Includes/draw_stream_batch_find.glsl"
+
+// MUST match GPUDrawStreamBuilder::LateShadowListPushConstants.
+layout(push_constant) uniform PushConstants {
+    uint mode;
+    uint instanceCount;
+    uint pageCount;
+    uint rowCount;
+    uint runCount;
+    uint visibilityStride;  // uints between two pages' visibility slices
+    uint viewWorldKey;      // 0 = every world
+    uint meshGroupMode;
+    uint countsBase;        // per (page, row): list length
+    uint runCountsBase;     // per (page, run): packed draw count
+    uint commandsBase;      // per (page, row): one 5-uint draw command
+    uint wordsBase;         // per page: wordsPerPage instance words
+    uint wordsPerPage;
+    uint pad0;
+    uint pad1;
+    uint pad2;
+} pc;
+
+const uint kCommandWords = 5u;
+const uint kMaxPages = 32u;
+
+uint FindShadowRow(uint instanceIndex) {
+    uint meshIndex = instances[instanceIndex].meshIndex;
+    if (meshIndex >= meshes.length() || meshes[meshIndex].indexCount == 0u)
+        return kBatchNotFound;
+    uint flags = instances[instanceIndex].flags;
+    uint searchMesh = meshIndex;
+    if (pc.meshGroupMode != 0u)
+        searchMesh = (meshIndex < meshPoolGroup.length()) ? meshPoolGroup[meshIndex] : kAbsentPoolGroup;
+    return ge_FindBatch(ge_ShadowSearchMaterial(flags, instances[instanceIndex].materialIndex),
+                        searchMesh | ge_ShadowParityBit(flags), pc.rowCount);
+}
+
+void AppendToPageLists(uint instanceIndex) {
+    uint pages = 0u;
+    for (uint page = 0u; page < min(pc.pageCount, kMaxPages); ++page)
+        if (visibility[page * pc.visibilityStride + instanceIndex] != 0u)
+            pages |= 1u << page;
+    if (pages == 0u)
+        return;
+    // The world filter keeps rows of other worlds out of regions sized for this view's snapshot.
+    if (pc.viewWorldKey != 0u && ((instances[instanceIndex].flags >> 16u) & 0xFFFFu) != pc.viewWorldKey)
+        return;
+    uint row = FindShadowRow(instanceIndex);
+    if (row == kBatchNotFound)
+        return;
+    BatchTableEntry entry = batchTable[row];
+    while (pages != 0u) {
+        uint page = uint(findLSB(pages));
+        pages &= pages - 1u;
+        uint slot = atomicAdd(lists[pc.countsBase + page * pc.rowCount + row], 1u);
+        if (slot < entry.capacity)
+            lists[pc.wordsBase + page * pc.wordsPerPage + entry.recordOffset + slot] = instanceIndex;
+    }
+}
+
+void WriteRowCommand(uint row, uint page) {
+    BatchTableEntry entry = batchTable[row];
+    uint count = min(lists[pc.countsBase + page * pc.rowCount + row], entry.capacity);
+    if (count == 0u)
+        return;
+    uint firstWord = pc.wordsBase + page * pc.wordsPerPage + entry.recordOffset;
+    uint meshIndex = instances[lists[firstWord]].meshIndex;
+    // An empty LOD 0 range falls back to the mesh's base range, as the scatter does.
+    uint indexCount = meshes[meshIndex].lodIndexCount[0];
+    uint firstIndex = meshes[meshIndex].lodIndexOffset[0];
+    uint vertexOffset = meshes[meshIndex].vertexOffset + meshes[meshIndex].lodVertexOffset[0];
+    if (indexCount == 0u) {
+        indexCount = meshes[meshIndex].indexCount;
+        firstIndex = meshes[meshIndex].indexOffset;
+        vertexOffset = meshes[meshIndex].vertexOffset;
+    }
+
+    uvec2 run = (pc.meshGroupMode != 0u) ? rowRun[row] : uvec2(row, row);
+    uint slot = atomicAdd(lists[pc.runCountsBase + page * pc.runCount + run.y], 1u);
+    uint command = pc.commandsBase + (page * pc.rowCount + run.x + slot) * kCommandWords;
+    lists[command + 0u] = indexCount;
+    lists[command + 1u] = count;
+    lists[command + 2u] = firstIndex;
+    lists[command + 3u] = vertexOffset;
+    lists[command + 4u] = firstWord;
+}
+
+void main() {
+    if (pc.mode == 0u) {
+        uint instanceIndex = gl_GlobalInvocationID.x;
+        if (instanceIndex < pc.instanceCount)
+            AppendToPageLists(instanceIndex);
+        return;
+    }
+    uint row = gl_GlobalInvocationID.x;
+    uint page = gl_GlobalInvocationID.y;
+    if (row < pc.rowCount && page < pc.pageCount)
+        WriteRowCommand(row, page);
+}

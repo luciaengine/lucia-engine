@@ -722,10 +722,11 @@ class DepthPassPreparation
             MarkUnderDraw(entry);
             return;
         }
-        // Shared indirection buffer: arena-global firstInstance → one BDA for
-        // every batch, slice, and cascade.
-        const uint64_t slotIndirectionBda =
-            m_Services.Streams->GetSharedIndirectionAddress();
+        // The range's records name their instance words by firstInstance in the range's own
+        // list buffer, or in the shared indirection buffer when the range names none.
+        const uint64_t slotIndirectionBda = drawRange.indirectionAddress != 0
+            ? drawRange.indirectionAddress
+            : m_Services.Streams->GetSharedIndirectionAddress();
         if (slotIndirectionBda == 0 || m_InstanceAddress == 0)
         {
             LogMeshDrawSkipDiagnostic(

@@ -727,10 +727,9 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
         {
             static_assert(kVirtualShadowPageCullingIndexBase >= kProbeFaceCullingIndexBase + kProbeFaceCount);
             static_assert(kVirtualShadowCasterCullingIndex < kSpotShadowCullingIndex);
+            static_assert(kVirtualShadowPageRenderBudget <= Rendering::GPUDrawStreamBuilder::kMaxLateShadowPages);
             const auto stableLod = StableShadowSliceLod();
             registerViewBatches(view.id, kVirtualShadowCasterCullingIndex, &stableLod);
-            // The view's rendered pages append their own slices later in the frame.
-            m_DrawStreamBuilder->ReserveAppendedSlices(kVirtualShadowPageRenderBudget);
         }
         // M1: one batch slice per (slot, face) that the cull scheduler produced a
         // visibility range for (same shared atlas assignment; ScheduleCulling ran
@@ -1022,13 +1021,14 @@ Rendering::RenderGraph::RGBuffer RenderServices::ScheduleLateShadowSlices(
     const Mathematics::Vector3Int& originSector, std::span<const LateShadowSlice> slices)
 {
     namespace RenderGraph = Rendering::RenderGraph;
-    if (slices.empty() || m_Profile.IsCompat() || !m_DrawStreamBuilder || !m_GpuScene ||
-        !m_GpuCullingPipeline || !m_FrameRG.For.IsFor(frame) || !Spine().BindWorldGeometry(frame))
+    if (slices.empty() || slices.size() > Rendering::GPUDrawStreamBuilder::kMaxLateShadowPages ||
+        m_Profile.IsCompat() || !m_DrawStreamBuilder || !m_GpuScene || !m_GpuCullingPipeline ||
+        !m_FrameRG.For.IsFor(frame) || !Spine().BindWorldGeometry(frame))
         return {};
     const Rendering::ViewDesc* view = m_ViewRegistry.FindViewDesc(viewId);
     if (!view || m_WorldDrawBuilder.GetBatchKeys(viewId).empty())
         return {};
-    // The cull and the scatter read one instance count, so flush before either.
+    // The cull and the lists read one instance count, so flush before either.
     if (m_GpuScene->IsDirty())
         m_GpuScene->FlushGPUBuffers();
     const uint32_t instanceCount = m_GpuScene->GetInstanceCount();
@@ -1077,36 +1077,19 @@ Rendering::RenderGraph::RGBuffer RenderServices::ScheduleLateShadowSlices(
             return {};
     }
 
-    const uint32_t viewWorldKey = WorldKeyForView(viewId);
+    std::array<uint8_t, Rendering::GPUDrawStreamBuilder::kMaxLateShadowPages> cullingIndices{};
     for (size_t slice = 0; slice < slices.size(); ++slice)
-    {
-        Rendering::GPUDrawStreamBuilder::SliceRegistration registration{};
-        registration.viewId = static_cast<uint32_t>(viewId);
-        registration.cascadeIndex = slices[slice].CullingIndex;
-        registration.table = Rendering::GPUDrawStreamBuilder::SliceTable::Shadow;
-        registration.visibilityOffsetBytes = static_cast<uint32_t>(slice * sliceElements * sizeof(uint32_t));
-        registration.viewWorldKey = viewWorldKey;
-        registration.lod = StableShadowSliceLod();
-        m_DrawStreamBuilder->RegisterSlice(registration);
-    }
-
-    // The scatter's elision record holds the slice layout but not the planes. A late frustum
-    // changes every frame at the same layout, so this call always scatters.
-    RefreshScatterElisionContext();
-    Rendering::ElisionFrameContext elision = m_DrawStreamBuilder->GetElisionFrameContext();
-    elision.AllowElision = false;
-    m_DrawStreamBuilder->SetElisionFrameContext(elision);
-    char passSuffix[64];
-    std::snprintf(passSuffix, sizeof(passSuffix), "LateShadow.View%u", static_cast<uint32_t>(viewId));
+        cullingIndices[slice] = slices[slice].CullingIndex;
+    Rendering::GPUDrawStreamBuilder::LateShadowListRequest request{};
+    request.ViewId = static_cast<uint32_t>(viewId);
+    request.ViewWorldKey = WorldKeyForView(viewId);
+    request.CullingIndices = std::span(cullingIndices).first(slices.size());
+    request.Visibility = visibility;
+    request.VisibilityStride = sliceElements;
     const ScatterGroupMaps groupMaps = MeshPoolGroupMapsForScatter();
-    const RenderGraph::RGBuffer ordering = m_DrawStreamBuilder->ScheduleUnifiedScatter(
-        frame, passSuffix, static_cast<int32_t>(Rendering::PassPhase::kEarlySetup),
-        visibility, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes,
-        m_GpuScene->GetBatchRegistry(), m_MaterialSystem.MaterialDepthClassSpan(),
-        m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered, groupMaps.OrderedToGroup,
-        instanceCount, static_cast<uint32_t>(m_GpuScene->GetMeshes().size()));
-    RefreshScatterElisionContext();
-    return ordering;
+    return m_DrawStreamBuilder->ScheduleLateShadowLists(frame, request, sceneRG.Instances, sceneRG.Meshes,
+        m_GpuScene->GetBatchRegistry(), m_MaterialSystem.MaterialDepthClassSpan(), groupMaps.MeshOrdered,
+        groupMaps.OrderedToGroup, instanceCount, static_cast<uint32_t>(m_GpuScene->GetMeshes().size()));
 }
 
 void RenderServices::EnsureAnimComputePass()

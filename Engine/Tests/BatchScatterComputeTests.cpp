@@ -774,16 +774,22 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         m_Device->WaitForIdle();
     }
 
-    // Culls `groups` after the frame's culling into one buffer this call creates, as virtual shadow
-    // pages do, and returns the buffer's words. Group g writes slice c at (4 * g + c) * sliceElements.
-    std::vector<uint32_t> LateCull(std::span<const CascadeCullingGroup> groups, uint32_t sliceElements)
+    // Starts a culling frame after one ordinary cull, as a frame that renders virtual shadow pages.
+    RenderGraph::RGFrame& BeginLateCullFrame()
     {
-        namespace RG = GameEngine::Rendering::RenderGraph;
         CullInto(MakeStorageBuffer(sizeof(uint32_t), "LatePageCull.Frame"), 0xFFFFFFFFu, true, false);
         auto& frame = *m_CullFrame;
         frame.BeginFrame(++m_CullFrameNumber);
         m_Culling->BeginFrame(&frame, m_Scene.get());
         m_Culling->EndFrame();
+        return frame;
+    }
+
+    // Culls `groups` into one buffer of `frame`, as virtual shadow pages do after the frame's
+    // culling. Group g writes slice c at (4 * g + c) * sliceElements.
+    RenderGraph::RGBuffer ScheduleLateCull(RenderGraph::RGFrame& frame, std::span<const CascadeCullingGroup> groups,
+                                           uint32_t sliceElements)
+    {
         const uint32_t elements = static_cast<uint32_t>(groups.size()) * kMaxCullingViewsPerDispatch * sliceElements;
         const size_t bytes = elements * sizeof(uint32_t);
         BufferDesc descriptor{};
@@ -791,7 +797,7 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         descriptor.usage = static_cast<uint32_t>(BufferUsage::Storage);
         descriptor.memoryUsage = BufferMemoryUsage::DeviceLocal;
         descriptor.debugName = "LatePageCull.Visibility";
-        const RG::RGBuffer visibility = frame.CreateBuffer(descriptor.debugName, descriptor);
+        const RenderGraph::RGBuffer visibility = frame.CreateBuffer(descriptor.debugName, descriptor);
         for (size_t group = 0; group < groups.size(); ++group)
         {
             std::array<uint32_t, kMaxCullingViewsPerDispatch> offsets{};
@@ -800,6 +806,17 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
             EXPECT_TRUE(m_Culling->ScheduleCascadeGroupInto(frame, *m_Scene, groups[group], visibility,
                 static_cast<uint32_t>(bytes), std::span(offsets).first(groups[group].cascadeCount)));
         }
+        return visibility;
+    }
+
+    // Culls `groups` late and returns the visibility words.
+    std::vector<uint32_t> LateCull(std::span<const CascadeCullingGroup> groups, uint32_t sliceElements)
+    {
+        namespace RG = GameEngine::Rendering::RenderGraph;
+        auto& frame = BeginLateCullFrame();
+        const RG::RGBuffer visibility = ScheduleLateCull(frame, groups, sliceElements);
+        const uint32_t elements = static_cast<uint32_t>(groups.size()) * kMaxCullingViewsPerDispatch * sliceElements;
+        const size_t bytes = elements * sizeof(uint32_t);
         const BufferHandle destination = MakeStorageBuffer(bytes, "LatePageCull.Readback");
         frame.AddPass("LatePageCull.Copy", 0, [&](RG::RGPassBuilder& p)
                       { p.Read(visibility, RG::RGBufferRead::CopySrc); p.PreventCulling(); },
@@ -807,6 +824,44 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         frame.Execute();
         m_Device->WaitForIdle();
         return ReadBuffer<uint32_t>(destination, elements);
+    }
+
+    // Culls the pages of `group` late, builds their caster lists with the production builder and
+    // returns the first `listWords` words of the list buffer. The ranges stay published until the
+    // next arena frame. (`probeMaterial`, `probeMesh`) names a row of the first page, which
+    // locates the list buffer.
+    std::vector<uint32_t> LateCullAndList(const CascadeCullingGroup& group, std::span<const uint8_t> cullingIndices,
+                                          uint32_t sliceElements, uint32_t probeMaterial, uint32_t probeMesh,
+                                          uint64_t listWords)
+    {
+        namespace RG = GameEngine::Rendering::RenderGraph;
+        auto& frame = BeginLateCullFrame();
+        m_Builder->BeginArenaFrame();
+        const RG::RGBuffer visibility = ScheduleLateCull(frame, std::span(&group, 1), sliceElements);
+        const GPUScene::GPUSceneFrameRG sceneRG = m_Scene->ImportFrameResources(frame);
+        GPUDrawStreamBuilder::LateShadowListRequest request{};
+        request.ViewId = group.viewId;
+        request.CullingIndices = cullingIndices;
+        request.Visibility = visibility;
+        request.VisibilityStride = sliceElements;
+        const RG::RGBuffer ordering = m_Builder->ScheduleLateShadowLists(frame, request, sceneRG.Instances,
+            sceneRG.Meshes, m_Scene->GetBatchRegistry(), {}, {}, {}, m_Scene->GetInstanceCount(),
+            static_cast<uint32_t>(m_Scene->GetMeshes().size()));
+        EXPECT_TRUE(ordering.IsValid());
+        const auto probe = m_Builder->FindBatchDrawRange(group.viewId, cullingIndices[0], probeMaterial, probeMesh,
+                                                         GPUDrawStreamBuilder::SlicePhase::A);
+        EXPECT_TRUE(probe.IsValid());
+        if (!ordering.IsValid() || !probe.IsValid())
+            return {};
+        const BufferHandle lists = probe.recordBuffer;
+        const size_t bytes = static_cast<size_t>(listWords) * sizeof(uint32_t);
+        const BufferHandle destination = MakeStorageBuffer(bytes, "LateShadowLists.Readback");
+        frame.AddPass("LateShadowLists.Copy", 0, [&](RG::RGPassBuilder& p)
+                      { p.Read(ordering, RG::RGBufferRead::Indirect); p.PreventCulling(); },
+                      [=](RG::RGContext& ctx) { ctx.Cmd->CopyBuffer(lists, destination, bytes, 0, 0); });
+        frame.Execute();
+        m_Device->WaitForIdle();
+        return ReadBuffer<uint32_t>(destination, bytes / sizeof(uint32_t));
     }
 
     // Bodies the other scatter packages also run (the ScatterPackageParity suites
@@ -1109,6 +1164,111 @@ TEST_P(BatchScatterComputeTest, LatePageCullKeepsOnlyTheCastersThatOverlapEachPa
                     actual.insert(index);
             EXPECT_EQ(actual, expected[group][page]);
         }
+}
+
+// Each late page draws its casters from its own list: one instanced LOD 0 draw per shadow row, whose
+// instance words are exactly the row's casters that overlap the page. A mirrored caster draws from
+// its parity-1 row, a caster on a page edge draws in both pages, and a non-caster draws nowhere.
+TEST_P(BatchScatterComputeTest, LateShadowListsDrawEachPageRowFromItsOwnCasters)
+{
+    using Engine::Renderer::CropVirtualShadowProjection;
+    using Engine::Renderer::VirtualShadowLight;
+    using Engine::Renderer::VirtualShadowPageCasterPlanes;
+    constexpr uint32_t kCast = 1u;
+    constexpr uint32_t kMaterialDependent = 4u; // keeps (material, mesh) rows without a depth-class map
+    constexpr uint32_t kMirrored = 16u;
+    const uint32_t meshes[] = {AddMeshRow(3), AddMeshRow(6)};
+    struct Caster
+    {
+        Vector3 Center;
+        uint32_t Mesh = 0;
+        uint32_t Flags = kCast | kMaterialDependent;
+    };
+    // Light space looks along +Z. A 2x2 page grid splits the light at x = 0 and y = 0.
+    const Caster casters[] = {
+        {{-2.0f, 2.0f, 10.0f}, 0}, {{2.0f, 2.0f, 10.0f}, 0}, {{-2.0f, -2.0f, 10.0f}, 0},
+        {{2.0f, -2.0f, 10.0f}, 1},
+        {{0.0f, 2.0f, 10.0f}, 1},                                   // on the edge of the two upper pages
+        {{-2.0f, 2.0f, 10.0f}, 0, kCast | kMaterialDependent | kMirrored},
+        {{2.0f, 2.0f, 10.0f}, 0, kMaterialDependent},              // a non-caster
+    };
+    for (const auto& caster : casters)
+    {
+        auto instance = MakeInstance(0u, meshes[caster.Mesh], caster.Flags);
+        instance.transform = instance.prevTransform = Matrix4x4::Identity();
+        instance.boundingCenter = caster.Center;
+        instance.boundingRadius = .05f;
+        m_Scene->AddInstance(instance);
+    }
+    m_Scene->FlushGPUBuffers();
+
+    constexpr uint8_t kFirstPage = 0xE3u;
+    const std::array<uint8_t, 4> cullingIndices{kFirstPage, kFirstPage + 1u, kFirstPage + 2u, kFirstPage + 3u};
+    const Matrix4x4 sun = Mathematics::MakeOrthographicLH_ZO_ReverseZ(-4.0f, 4.0f, -4.0f, 4.0f, 1.0f, 100.0f);
+    CascadeCullingGroup group{};
+    group.viewId = 1;
+    group.cascadeCount = 4;
+    group.cascadeIndexBase = kFirstPage;
+    group.instanceCount = m_Scene->GetInstanceCount();
+    group.shadowCasterDispatch = true;
+    // expected[page][(mesh, mirrored)] = the casters the page draws from that row.
+    std::array<std::map<std::pair<uint32_t, bool>, std::set<uint32_t>>, 4> expected;
+    for (uint32_t page = 0; page < 4; ++page)
+    {
+        const auto cropped = CropVirtualShadowProjection(sun, 2, page % 2, page / 2);
+        ASSERT_TRUE(cropped);
+        const auto planes = VirtualShadowPageCasterPlanes(*cropped, VirtualShadowLight::Directional);
+        std::copy(planes.begin(), planes.end(), group.frustumPlanes[page]);
+        for (uint32_t index = 0; index < std::size(casters); ++index)
+        {
+            const Vector4 clip = cropped->Transform(Vector4(casters[index].Center.x, casters[index].Center.y,
+                                                            casters[index].Center.z, 1.0f));
+            const float edge = clip.w * (1.0f + 1e-4f);
+            if ((casters[index].Flags & kCast) != 0u && std::abs(clip.x) <= edge && std::abs(clip.y) <= edge)
+                expected[page][{meshes[casters[index].Mesh], (casters[index].Flags & kMirrored) != 0u}].insert(index);
+        }
+    }
+    // The table above must hold the cases it names before the GPU result means anything.
+    EXPECT_EQ(std::ranges::count_if(expected, [&](const auto& page) { return page.contains({meshes[1], false}) &&
+                                                     page.at({meshes[1], false}).contains(4u); }), 2);
+    EXPECT_EQ(std::ranges::count_if(expected, [&](const auto& page) { return page.contains({meshes[0], true}); }), 1);
+
+    constexpr uint32_t kSliceElements = 64;
+    const uint32_t rows = 3; // (0, mesh 0), (0, mesh 1), (0, mesh 0 mirrored)
+    const uint64_t listWords = GPUDrawStreamBuilder::MakeLateShadowListLayout(
+        0u, 4u, rows, rows, m_Scene->GetInstanceCount()).EndWord;
+    const auto words = LateCullAndList(group, cullingIndices, kSliceElements, 0u, meshes[0], listWords);
+    ASSERT_EQ(words.size(), listWords);
+    for (uint32_t page = 0; page < 4; ++page)
+        for (const uint32_t mesh : meshes)
+            for (const bool mirrored : {false, true})
+            {
+                SCOPED_TRACE(::testing::Message() << "page=" << page << " mesh=" << mesh << " mirrored=" << mirrored);
+                const auto range = m_Builder->FindBatchDrawRange(1u, cullingIndices[page], 0u, mesh,
+                                                                 GPUDrawStreamBuilder::SlicePhase::A);
+                const auto& segment = mirrored ? range.mirrored : range.even;
+                const auto want = expected[page].find({mesh, mirrored});
+                if (mesh == meshes[1] && mirrored)
+                {
+                    EXPECT_FALSE(segment.IsPresent()); // mesh 1 has no mirrored instance, so no row
+                    continue;
+                }
+                ASSERT_TRUE(range.IsValid());
+                EXPECT_NE(range.indirectionAddress, 0u);
+                EXPECT_EQ(range.recordBuffer.id, range.countBuffer.id);
+                ASSERT_TRUE(segment.IsPresent());
+                EXPECT_EQ(segment.maxDrawCount, 1u);
+                const uint32_t draws = words[segment.countByteOffset / sizeof(uint32_t)];
+                std::set<uint32_t> drawn;
+                for (uint32_t draw = 0; draw < draws; ++draw)
+                {
+                    const uint32_t* command = &words[segment.cmdByteOffset / sizeof(uint32_t) + draw * 5u];
+                    EXPECT_EQ(command[0], mesh == meshes[0] ? 3u : 6u); // the LOD 0 index count
+                    for (uint32_t instance = 0; instance < command[1]; ++instance)
+                        drawn.insert(words[command[4] + instance]);
+                }
+                EXPECT_EQ(drawn, want == expected[page].end() ? std::set<uint32_t>{} : want->second);
+            }
 }
 
 TEST(BatchTableBuild, SortsByMaterialThenMeshWithExclusivePrefix)
