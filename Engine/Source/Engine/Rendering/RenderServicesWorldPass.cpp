@@ -85,6 +85,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -997,6 +998,8 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             addTexture(HashStringId("ge_irradianceCube"), ibl->GetIrradianceCube(), ibl->GetCubeSampler());
             addTexture(HashStringId("ge_prefilterCube"), ibl->GetPrefilterCube(), ibl->GetCubeSampler());
             addTexture(HashStringId("ge_brdfLUT"), ibl->GetBrdfLut(), ibl->GetLutSampler());
+            static_assert(std::extent_v<decltype(ViewFrameRG::IblLocalIrradiance)> ==
+                          ImageBasedLightingFeature::kMaxLocalProbes);
             // A slot with no capture binds the sky cubes; its Env record has ready = 0.
             for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
             {
