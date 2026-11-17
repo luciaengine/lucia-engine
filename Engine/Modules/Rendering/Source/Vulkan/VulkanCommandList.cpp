@@ -2243,6 +2243,10 @@ void VulkanCommandList::BeginRenderPass(const RenderPassDesc& desc)
                 srcState = ResourceState::ShaderResource;
             else if (tracked == VK_IMAGE_LAYOUT_GENERAL)
                 srcState = ResourceState::UnorderedAccess;
+            else if (tracked == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+                srcState = ResourceState::CopyDest;
+            else if (tracked == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+                srcState = ResourceState::CopySource;
             Barrier(ResourceBarrier::CreateTextureBarrier(
                 th, srcState, ResourceState::RenderTarget,
                 baseMip, 1u, baseLayer, 1u));
@@ -3330,6 +3334,13 @@ void VulkanCommandList::Barrier(const ResourceBarrier& barrier)
     BarrierBatch({barrier});
 }
 
+void VulkanCommandList::RecordTransferLayout(TextureHandle texture, uint32_t mip, uint32_t layer, VkImageLayout layout)
+{
+    m_SubresourceLayouts[MakeSubKey(texture, mip, layer)] = layout;
+    if (VulkanTexture* tex = GetVulkanTexture(texture); tex && tex->mipLevels <= 1u && tex->arrayLayers <= 1u)
+        tex->trackedLayout = layout;
+}
+
 void VulkanCommandList::RecordStateAfterBarriers(const std::vector<ResourceBarrier>& barriers)
 {
     for (const ResourceBarrier& barrier : barriers)
@@ -4157,7 +4168,7 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
         0, nullptr,
         0, nullptr,
         1, &toSrc);
-    m_SubresourceLayouts[MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer)] = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    RecordTransferLayout(srcTexture, mip, rangeCopy.baseArrayLayer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     // Optional diagnostic: clear depth to 0.5 right before readback to validate copy path
     if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_DEBUG_CLEAR_DEPTH_BEFORE_READBACK", false) &&
         aspectSingle == VK_IMAGE_ASPECT_DEPTH_BIT)
@@ -4181,7 +4192,7 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
             0, nullptr,
             0, nullptr,
             1, &toDst);
-        m_SubresourceLayouts[MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer)] = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        RecordTransferLayout(srcTexture, mip, rangeCopy.baseArrayLayer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
         if (TextureUsagePolicy::IsAuditEnabled())
         {
@@ -4219,7 +4230,7 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
             0, nullptr,
             0, nullptr,
             1, &backToSrc);
-        m_SubresourceLayouts[MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer)] = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        RecordTransferLayout(srcTexture, mip, rangeCopy.baseArrayLayer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     }
 
     // Track resource usage (coarse)
@@ -4459,7 +4470,7 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
             0, nullptr,
             0, nullptr,
             1, &restore);
-        m_SubresourceLayouts[MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer)] = oldLayout;
+        RecordTransferLayout(srcTexture, mip, rangeCopy.baseArrayLayer, oldLayout);
     }
 
     // Make transfer writes visible to host reads when the queue is idle
@@ -4537,7 +4548,7 @@ void VulkanCommandList::ClearColorImageSubresource(TextureHandle texture, uint32
         0, nullptr,
         1, &toClear);
     // Track layout after transition
-    m_SubresourceLayouts[MakeSubKey(texture, mip, layer)] = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    RecordTransferLayout(texture, mip, layer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     VkClearColorValue color{};
     color.float32[0] = rgba[0];
@@ -4744,7 +4755,7 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
         0, nullptr,
         0, nullptr,
         1, &toDst);
-    m_SubresourceLayouts[MakeSubKey(dstTexture, mip, range.baseArrayLayer)] = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    RecordTransferLayout(dstTexture, mip, range.baseArrayLayer, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     // Issue copy. bufferRowLength/bufferImageHeight are in texels (Vulkan spec).
     // 0 means "tightly packed" — let the driver compute from imageExtent.
