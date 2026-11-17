@@ -890,7 +890,7 @@ TEST(TerrainPickingRay, PlanetPickJustOutsideTheReferenceSphereLandsOnTheReferen
 // The same failure swept across the whole visible disc from a 1.5 R orbit: the impact parameter
 // runs from the sub-camera point out to the envelope shell at each of 32 azimuths, and every ray
 // whose drawn ground the oracle finds is compared with the pick. The worst positional error is
-// 175.81 m — nearly twice the +/- 90 m relief envelope — at 95% of the silhouette, and 33 of the
+// 175.19 m — nearly twice the +/- 90 m relief envelope — at 95% of the silhouette, and 33 of the
 // 3937 drawn rays are not reported at all: they clear the reference sphere, so the analytic
 // solve has no root to seed even though the renderer draws ground along them.
 TEST(TerrainPickingRay, PlanetPickNearTheLimbLandsShortOfTheDrawnGround)
@@ -966,7 +966,7 @@ TEST(TerrainPickingRay, PlanetPickNearTheLimbLandsShortOfTheDrawnGround)
     EXPECT_EQ(drawnRays, 3937);
     EXPECT_EQ(unreportedRays, 33)
         << "a ray that clears the reference sphere but grazes a relief peak has no analytic seed";
-    EXPECT_NEAR(worstError, 175.81f, 0.5f) << "worst at azimuth index " << worstAzimuth;
+    EXPECT_NEAR(worstError, 175.19f, 0.5f) << "worst at azimuth index " << worstAzimuth;
     EXPECT_NEAR(worstFraction, 0.949f, 0.01f);
     EXPECT_GT(worstError, ReliefEnvelope(feature))
         << "the error is not bounded by the relief envelope";

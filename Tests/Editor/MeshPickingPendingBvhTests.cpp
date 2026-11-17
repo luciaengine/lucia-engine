@@ -264,7 +264,8 @@ TEST_F(MeshPickingPendingBvhTests, ADropMeshStillPendingIsMarkedSoAssignmentRefu
     EXPECT_FALSE(published.Pending);
 }
 
-// A renderer with no CPU mesh data has always answered with its bounds; that answer is final.
+// A renderer with no CPU mesh data answers with its bounds when the caller asks for them, as every Scene View
+// click does; that answer is final.
 TEST_F(MeshPickingPendingBvhTests, ABoundsHitForAMeshWithoutCpuDataIsNotPending)
 {
     const GameEngine::ECS::EntityHandle runtime = m_World.CreateEntity();
@@ -275,6 +276,7 @@ TEST_F(MeshPickingPendingBvhTests, ABoundsHitForAMeshWithoutCpuDataIsNotPending)
     m_World.AddComponentImmediate(runtime, Components::LocalBounds{});
     PickOptions options;
     options.RestrictToEntity = runtime;
+    options.IncludeBoundsFallback = true;
 
     const auto pick = RaycastScene(DownAt(0.1f, 0.1f), m_World, options);
     ASSERT_TRUE(pick.Hit);
