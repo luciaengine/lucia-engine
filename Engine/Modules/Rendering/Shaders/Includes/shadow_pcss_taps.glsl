@@ -36,15 +36,9 @@ const int kPcssMaxTaps = 64;
 // magnification turns fine grain into texel-sized blocks — the exact artifact
 // this basis is meant to avoid. (The local families in clustered_lighting.glsl
 // do floor theirs; that is a known divergence, not a pattern to copy.)
-//
-// The temporal term feeds TAA accumulation; without TAA it would just turn the
-// penumbra into per-pixel shimmer, so it stays gated on GE_TAA_ENABLED.
 vec2 GE_PoissonRotation(vec2 screenPos, vec2 shadowUV, vec2 texSize)
 {
     vec2 key = (ge_shadowFilterParams.x > 0.5) ? (shadowUV * texSize) : screenPos;
-#ifdef GE_TAA_ENABLED
-    key += ge_shadowDebug.z * 5.083;
-#endif
     float angle = fract(52.9829189 * fract(dot(key, vec2(0.06711056, 0.00583715)))) * 6.2831853;
     return vec2(cos(angle), sin(angle));
 }
