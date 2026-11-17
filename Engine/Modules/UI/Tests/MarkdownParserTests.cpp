@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "../Source/Parsers/Markdown/MarkdownParser.h"
+#include "TestThreadCpuTime.h"
 
 #include <algorithm>
 #include <chrono>
@@ -230,6 +231,15 @@ double ParseMilliseconds(const std::string& text, MarkdownDocument& out)
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 
+double MeanParseCpuMilliseconds(const std::string& text)
+{
+    MarkdownDocument document;
+    const double elapsed = GameEngine::UI::Tests::MeanThreadCpuMilliseconds(
+        [&text, &document] { document = MarkdownParser::Parse(text); });
+    EXPECT_FALSE(document.Blocks.empty());
+    return elapsed;
+}
+
 size_t TableCells(const MarkdownDocument& document)
 {
     size_t cells = 0;
@@ -256,11 +266,8 @@ TEST(MarkdownParserTests, LinkTextNestedTenThousandDeepIsParsedFlat)
     EXPECT_EQ(PlainText(inlines), std::string(kDepth - 1, '[') + "x" + Repeat("](https://a.example)", kDepth - 1));
 }
 
-// Hostile replies (the review of #3950 measured each at 5 to 18 s, or a stack overflow) parse
-// in linear time: each input at its full size costs under 8 times the same input at a quarter
-// of it (linear is about 4, quadratic about 16), and under a second. Wall-clock time on a
-// shared machine moves several-fold from run to run, so the full-size times are printed, not
-// held to a figure; the ratio of two runs taken back to back is what holds.
+// Full inputs cost about four times their quarter-size inputs when parsing is linear.
+// Measure CPU time on the parser thread so the scheduler cannot inflate the ratio.
 TEST(MarkdownParserTests, HostileInputsParseInLinearTime)
 {
     constexpr double kMaxScaling = 8.0;
@@ -292,17 +299,9 @@ TEST(MarkdownParserTests, HostileInputsParseInLinearTime)
     };
     for (const auto& [name, texts] : inputs)
     {
-        const auto fastest = [](const std::string& text) {
-            MarkdownDocument document;
-            double ms = ParseMilliseconds(text, document);
-            for (int run = 1; run < 3; ++run)
-                ms = std::min(ms, ParseMilliseconds(text, document));
-            EXPECT_FALSE(document.Blocks.empty());
-            return ms;
-        };
-        const double quarter = fastest(texts.first);
-        const double full = fastest(texts.second);
-        std::printf("[markdown] %s (%zu bytes): %.1f ms; a quarter of it: %.1f ms (fastest of 3)\n", name,
+        const double quarter = MeanParseCpuMilliseconds(texts.first);
+        const double full = MeanParseCpuMilliseconds(texts.second);
+        std::printf("[markdown] %s (%zu bytes): %.1f CPU ms; a quarter of it: %.1f CPU ms\n", name,
                     texts.second.size(), full, quarter);
         EXPECT_LT(full, kMaxScaling * std::max(quarter, kNoiseFloorMs)) << name;
         EXPECT_LT(full, kMaxFullSizeMs) << name;
