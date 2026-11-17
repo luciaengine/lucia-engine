@@ -17,11 +17,13 @@
 #include <iterator>
 
 using GameEngine::Engine::Renderer::CascadeCacheDirtyCause;
+using GameEngine::Engine::Renderer::CascadeMotionBudget;
 using GameEngine::Engine::Renderer::CascadeMotionScheduler;
 using GameEngine::Engine::Renderer::CascadeMotionSource;
 using GameEngine::Engine::Renderer::CascadeUpdateClass;
 using GameEngine::Engine::Renderer::ClassifyCascadeDirtyCause;
 using GameEngine::Engine::Renderer::ClassifyCascadePair;
+using GameEngine::Engine::Renderer::FallbackCascadeMotionBudget;
 
 namespace
 {
@@ -54,14 +56,14 @@ struct SchedulerDriver
     }
 
     uint32_t Plan(const Classes& classes, uint32_t cap, uint32_t maxAge,
-                  uint32_t numCascades = kN)
+                  uint32_t numCascades = kN, CascadeMotionSource source = CascadeMotionSource::Camera)
     {
         ++Frame;
         Staleness s{};
         for (uint32_t c = 0; c < kN; ++c)
             s[c] = Frame - ContentStamp[c];
         const uint32_t mask =
-            Scheduler.PlanFrame(kView, numCascades, classes, s, cap, maxAge, CascadeMotionSource::Camera).DeferMask;
+            Scheduler.PlanFrame(kView, numCascades, classes, s, cap, maxAge, source).DeferMask;
         for (uint32_t c = 0; c < numCascades; ++c)
         {
             // Rendered or cache-skipped (Cached == byte-identical content)
@@ -133,6 +135,36 @@ TEST(CascadeMotionScheduler, SteadyStateCycleCap2MaxAge2)
                                  0b1100u, 0b1100u, 0b0011u};
     for (size_t i = 0; i < std::size(expected); ++i)
         EXPECT_EQ(drv.Plan(AllMotion(), /*cap=*/2, /*maxAge=*/2), expected[i]) << "frame " << i;
+}
+
+// When the sun reads virtual pages, the cascades are the fallback. Under vegetation sway the
+// fallback budget keeps cascade 0 fresh and refreshes the others every fourth frame: 1.75 renders
+// per frame, where the default budget (cap 2, maxAge 2) gives 120/120/40/40 in 120 frames.
+TEST(CascadeMotionScheduler, FallbackBudgetRefreshesFarCascadesEveryFourthFrame)
+{
+    const CascadeMotionBudget budget = FallbackCascadeMotionBudget({2, 2});
+    EXPECT_EQ(budget.Cap, 1u);
+    EXPECT_EQ(budget.MaxAge, 3u);
+    SchedulerDriver drv;
+    std::array<uint32_t, kN> renders{};
+    for (int frame = 0; frame < 120; ++frame)
+    {
+        const uint32_t mask = drv.Plan(AllMotion(), budget.Cap, budget.MaxAge, kN,
+                                       CascadeMotionSource::CasterDeformation);
+        for (uint32_t c = 0; c < kN; ++c)
+        {
+            if ((mask & (1u << c)) == 0)
+                ++renders[c];
+            else
+                EXPECT_LE(drv.Frame - drv.ContentStamp[c], budget.MaxAge) << "cascade " << c;
+        }
+    }
+    EXPECT_EQ(renders, (std::array<uint32_t, kN>{120u, 30u, 30u, 30u}));
+}
+
+TEST(CascadeMotionScheduler, FallbackBudgetKeepsDeferralOff)
+{
+    EXPECT_EQ(FallbackCascadeMotionBudget({0, 2}).Cap, 0u);
 }
 
 TEST(CascadeMotionScheduler, StalenessBoundHolds)

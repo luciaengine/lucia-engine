@@ -3,7 +3,6 @@
 #include "Engine/Rendering/PassBindingContext.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Engine/Rendering/ResolvedShadowSettings.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowRenderFeature.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowSunMask.h"
@@ -50,17 +49,6 @@ void DeclareSunMask(RenderServices& services, RenderGraph::RGFrame& frame, const
     inputs.SunMaskViewProjection = view.Camera->viewProjRel;
 }
 
-// The sun takes its virtual page visibility from the mask only where the in-shader lookup resolves
-// pages: a cascade (not ray-traced) sun whose effective filter is Poisson or PCSS
-// (GE_TryVirtualShadowDirectional). The other filters keep the cascades.
-bool SunReadsVirtualPages(RenderServices& services, uint32_t viewId, const ResolvedShadowSettings& settings)
-{
-    const auto* shadows = services.GetFeature<ShadowMapRenderFeature>();
-    if (settings.Mode != Components::DirectionalShadowMode::Cascades || !shadows)
-        return false;
-    const ShadowFilterQuality quality = shadows->ResolveEffectiveFilterQuality(services, viewId);
-    return quality == ShadowFilterQuality::PoissonPCF || quality == ShadowFilterQuality::PCSS;
-}
 } // namespace
 
 MaterialKeyword ContributeVirtualShadows(const VirtualShadowViewInputs& inputs, MaterialKeyword keywords)
@@ -76,8 +64,9 @@ MaterialKeyword ContributeVirtualShadowSunMask(RenderServices& services, RenderG
                                                VirtualShadowViewInputs& inputs, MaterialKeyword keywords)
 {
     // Transmissive surfaces write no prepass depth: they keep the lookup in the shader.
+    const auto* shadows = services.GetFeature<ShadowMapRenderFeature>();
     if (!Rendering::HasKeyword(keywords, MaterialKeyword::VirtualShadowMaps) || view.TransmissiveOnly ||
-        !view.Settings || !SunReadsVirtualPages(services, view.ViewId, *view.Settings))
+        !shadows || !shadows->SunReadsVirtualPages(services, view.ViewId))
         return keywords;
     if (!view.Depth.IsValid() || !view.Camera)
         return keywords;

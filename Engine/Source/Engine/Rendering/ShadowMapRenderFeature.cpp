@@ -2,6 +2,8 @@
 #include "Engine/Rendering/CameraUtils.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/ResolvedShadowSettings.h"
+#include "Engine/Rendering/VirtualShadows/VirtualShadowRenderFeature.h"
 
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
@@ -1472,6 +1474,17 @@ ShadowFilterQuality ShadowMapRenderFeature::ResolveEffectiveFilterQuality(
         quality = ShadowFilterQuality::PoissonPCF;
 
     return quality;
+}
+
+bool ShadowMapRenderFeature::SunReadsVirtualPages(RenderServices& rs, Rendering::ViewId viewId) const
+{
+    const auto* virtualShadows = rs.GetFeature<VirtualShadowRenderFeature>();
+    const auto* view = rs.Views().FindViewDesc(viewId);
+    if (!virtualShadows || !virtualShadows->IsEnabled() || !view ||
+        rs.GetWorldShadowSettings(view->worldId).Mode != Components::DirectionalShadowMode::Cascades)
+        return false;
+    const ShadowFilterQuality quality = ResolveEffectiveFilterQuality(rs, viewId);
+    return quality == ShadowFilterQuality::PoissonPCF || quality == ShadowFilterQuality::PCSS;
 }
 
 void ShadowMapRenderFeature::BuildShadowDataGPU(const CascadeFrameData& cascadeFrame,

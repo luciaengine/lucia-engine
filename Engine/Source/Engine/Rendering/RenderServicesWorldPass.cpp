@@ -1981,8 +1981,8 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     const VirtualShadowSunMaskView sunMaskView{
         static_cast<uint32_t>(viewId), view->worldId,
         targets.DepthResolved.IsValid() ? targets.DepthResolved : targets.Depth,
-        cam.Valid() ? cam.Ptr : nullptr, &worldShadowSettings, letterbox,
-        !isRecover && vfr.DepthPrepassDepth.IsValid(), scope == WorldPassDrawScope::TransmissiveOnly};
+        cam.Valid() ? cam.Ptr : nullptr, letterbox, !isRecover && vfr.DepthPrepassDepth.IsValid(),
+        scope == WorldPassDrawScope::TransmissiveOnly};
     passKeywords = ContributeVirtualShadowSunMask(*this, frame, sunMaskView, vfr.VirtualShadows, passKeywords);
 
     // MaterialKeyword::LodCrossfade is deliberately NOT set here. It is a
