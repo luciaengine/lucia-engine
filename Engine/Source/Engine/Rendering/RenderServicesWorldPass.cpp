@@ -986,13 +986,25 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             // be a SEPARATE buffer, not a re-upload — the last upload would win
             // for all passes. The cubes still bind to satisfy the descriptor
             // layout; iblIntensity 0 zeroes their contribution.
+            // A probe capture view takes world 0: it binds the sky only, so a capture cannot read
+            // a local probe, its own or a different one.
+            const auto* iblView = m_ViewRegistry.FindViewDesc(viewId);
+            const uint64_t probeWorld = iblView && !ibl->IsLocalProbeCaptureView(viewId) ? iblView->worldId : 0;
             const BufferHandle envData = m_WorldPassExcludeEnvironment
                                              ? m_FallbackBuffers[HashStringId("Env")]
-                                             : ibl->UploadEnvData(m_Device);
+                                             : ibl->UploadEnvData(m_Device, probeWorld);
 
             addTexture(HashStringId("ge_irradianceCube"), ibl->GetIrradianceCube(), ibl->GetCubeSampler());
             addTexture(HashStringId("ge_prefilterCube"), ibl->GetPrefilterCube(), ibl->GetCubeSampler());
             addTexture(HashStringId("ge_brdfLUT"), ibl->GetBrdfLut(), ibl->GetLutSampler());
+            // A slot with no capture binds the sky cubes; its Env record has ready = 0.
+            for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
+            {
+                addTexture(HashStringId(ImageBasedLightingFeature::kLocalIrradianceNames[i]),
+                           ibl->GetLocalIrradiance(probeWorld, i), ibl->GetCubeSampler());
+                addTexture(HashStringId(ImageBasedLightingFeature::kLocalPrefilterNames[i]),
+                           ibl->GetLocalPrefilter(probeWorld, i), ibl->GetCubeSampler());
+            }
             // Bindings and graph dependencies share this path for entity draws
             // and custom contributors, including views containing only contributors.
             auto& vfr = ViewFrameRGFor(frame, viewId);
@@ -1009,6 +1021,20 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 vfr.IblBrdfLut = frame.ImportExternalTexture(
                     "IBL_BrdfLut", ibl->GetBrdfLut(), Rendering::ResourceState::ShaderResource,
                     Rendering::TextureFormat{}, 1, 1);
+                for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
+                {
+                    const auto* capture = ibl->GetLocalProbeCapture(probeWorld, i);
+                    if (!capture || !capture->IsInitialized())
+                        continue;
+                    vfr.IblLocalIrradiance[i] = frame.ImportExternalTexture(
+                        ImageBasedLightingFeature::kLocalIrradianceNames[i], capture->GetIrradianceCube(),
+                        Rendering::ResourceState::ShaderResource, Rendering::TextureFormat::R16G16B16A16_FLOAT,
+                        1, ImageBasedLightingFeature::kNumCaptureFaces);
+                    vfr.IblLocalPrefilter[i] = frame.ImportExternalTexture(
+                        ImageBasedLightingFeature::kLocalPrefilterNames[i], capture->GetPrefilterCube(),
+                        Rendering::ResourceState::ShaderResource, Rendering::TextureFormat::R16G16B16A16_FLOAT,
+                        capture->GetPrefilterMipCount(), ImageBasedLightingFeature::kNumCaptureFaces);
+                }
             }
             // Compat-profile spellings: ibl.glsl's compat arm declares the trio
             // as separate images over one standalone sampler (WebGPU's
@@ -2126,6 +2152,13 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 p.Read(vfr.IblIrradiance, RenderGraph::RGTextureRead::Sampled);
             if (vfr.IblPrefilter.IsValid())
                 p.Read(vfr.IblPrefilter, RenderGraph::RGTextureRead::Sampled);
+            for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
+            {
+                if (vfr.IblLocalIrradiance[i].IsValid())
+                    p.Read(vfr.IblLocalIrradiance[i], RenderGraph::RGTextureRead::Sampled);
+                if (vfr.IblLocalPrefilter[i].IsValid())
+                    p.Read(vfr.IblLocalPrefilter[i], RenderGraph::RGTextureRead::Sampled);
+            }
             if (vfr.IblBrdfLut.IsValid())
                 p.Read(vfr.IblBrdfLut, RenderGraph::RGTextureRead::Sampled);
             // ge_gtao samples the AO node's storage-written output: this read is
@@ -2483,6 +2516,13 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 p.Read(vfr.IblIrradiance, RenderGraph::RGTextureRead::Sampled);
             if (vfr.IblPrefilter.IsValid())
                 p.Read(vfr.IblPrefilter, RenderGraph::RGTextureRead::Sampled);
+            for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
+            {
+                if (vfr.IblLocalIrradiance[i].IsValid())
+                    p.Read(vfr.IblLocalIrradiance[i], RenderGraph::RGTextureRead::Sampled);
+                if (vfr.IblLocalPrefilter[i].IsValid())
+                    p.Read(vfr.IblLocalPrefilter[i], RenderGraph::RGTextureRead::Sampled);
+            }
             if (vfr.IblBrdfLut.IsValid())
                 p.Read(vfr.IblBrdfLut, RenderGraph::RGTextureRead::Sampled);
             // ge_gtao: same compute->fragment edge + General->ShaderReadOnly

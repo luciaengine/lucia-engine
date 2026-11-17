@@ -40,6 +40,7 @@
 #include "Engine/Rendering/Pipeline/Nodes/DepthResolveNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/FullscreenShaderNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/HZBBuildNode.h"
+#include "Engine/Rendering/Pipeline/Nodes/IBLGenNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/FidelityFXDofNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ScreenSpaceReflectionsNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ViewParamsUploadNode.h"
@@ -17941,6 +17942,55 @@ TEST(RenderPipelineDeclareTests, AReflectionProbeBakeLeavesTheLightingCubesInThe
             }
         }
         EXPECT_EQ(bakeFrames, 1u) << "a Once probe bakes in exactly one frame; zero makes the check void";
+    }
+    rs.Shutdown();
+}
+
+// The IBLGen node is the only per-frame caller of the local probe bake. A local probe that
+// ReflectionProbeSystem registers must reach a published cube through that node alone.
+TEST(RenderPipelineDeclareTests, TheIblGenNodeBakesARegisteredLocalReflectionProbe)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device));
+    {
+        auto& feature = rs.EnsureFeature<ImageBasedLightingFeature>();
+        Engine::Renderer::SceneReflectionProbeEnvironmentDesc probe{};
+        probe.WorldId = 1;
+        probe.SourceKey = 1;
+        probe.CaptureResolution = ImageBasedLightingFeature::kMinEnvCaptureSize;
+        probe.UpdateMode = Engine::Renderer::SceneReflectionProbeUpdateMode::Once;
+
+        RenderPipelineNodeRegistry registry;
+        RenderPipelineInstance instance(rs, registry);
+        Nodes::IBLGenNode node;
+        std::string error;
+        ASSERT_TRUE(node.Initialize("ibl", "{}", &error)) << error;
+
+        FramePools pools(device);
+        RenderGraph::RGFrame frame(device, &pools.Persistent, &pools.Transient, &pools.Ring);
+        constexpr float kDeltaSeconds = 1.0f / 60.0f;
+        uint64_t completedBakes = 0;
+        for (uint64_t index = 0; index < 64 && completedBakes == 0; ++index)
+        {
+            frame.BeginFrame(index);
+            // ReflectionProbeSystem registers the world every frame, before the culling hook.
+            feature.UpdateLocalProbes(rs, probe.WorldId, std::span(&probe, 1));
+            rs.BeginWorldDrawFrame();
+            rs.ScheduleViewCullingDispatches(frame, kDeltaSeconds);
+            const PipelineDeclareContext ctx{rs, frame, {}, kDeltaSeconds};
+            node.Declare(instance, ctx);
+            frame.Execute();
+            device->WaitForIdle();
+            const auto* capture = feature.GetLocalProbeCapture(probe.WorldId, 0);
+            ASSERT_NE(capture, nullptr);
+            completedBakes = static_cast<const Engine::Renderer::SceneReflectionProbeEnvironmentSource*>(
+                                 capture->GetEnvironmentSource())->GetDiagnostics().CompletedBakes;
+        }
+        EXPECT_EQ(completedBakes, 1u) << "the IBLGen node never scheduled the local probe bake";
+        EXPECT_NE(feature.GetLocalProbeCapture(probe.WorldId, 0)->GetLastBakedDigest(), 0u);
     }
     rs.Shutdown();
 }

@@ -2289,6 +2289,9 @@ class RenderServices
         // edge (and ordering the bake before this view's world pass).
         Rendering::RenderGraph::RGTexture IblIrradiance{};
         Rendering::RenderGraph::RGTexture IblPrefilter{};
+        // The cubes of the world's local reflection probes: ImageBasedLightingFeature::kMaxLocalProbes slots.
+        Rendering::RenderGraph::RGTexture IblLocalIrradiance[2]{};
+        Rendering::RenderGraph::RGTexture IblLocalPrefilter[2]{};
         Rendering::RenderGraph::RGTexture IblBrdfLut{};
         // RT shadow-mask (DirectionalShadowMode::RayTraced): the per-view ray-query mask
         // declared by the phase-A world arm, bound as ge_rtShadowMask on
