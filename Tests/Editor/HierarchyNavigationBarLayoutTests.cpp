@@ -13,6 +13,7 @@
 #include "UI/Controls/Scrollbar.h"
 #include "UI/EditorSearchBars.h"
 #include "UI/Parsers/CSSParser.h"
+#include "UI/ResolvedStyle.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
 #include "UI/UIStyle.h"
@@ -203,6 +204,19 @@ TEST(HierarchyNavigationBarLayout, TheSearchFillsTheRowBesideTheSlider)
         << "the search left the row: it is placed like a panel-anchored search, not beside the slider";
     EXPECT_GT(parts.Search->GetLayoutWidth(), kMinSearchWidthPx) << "the search does not fill the row";
     EXPECT_NEAR(Bottom(*parts.Panel) - Bottom(*parts.Row), kRowInsetPx, kLayoutTolerancePx);
+}
+
+// The panel reserves one strip for its one row: the tree ends where the row's strip starts, so the
+// tree's horizontal scrollbar, which takes the strip while it shows, sits under the row.
+TEST(HierarchyNavigationBarLayout, ThePanelReservesOneRowStrip)
+{
+    NavigationBarFixture fixture;
+    if (!fixture.Build())
+        GTEST_SKIP() << fixture.Diagnostic;
+    const float rowHeight = fixture.Parts.Row->GetLayoutHeight();
+    ASSERT_GT(rowHeight, 0.0f) << "the row did not lay out; this test is vacuous";
+    EXPECT_NEAR(fixture.Parts.Panel->GetResolvedStyle().Layout.Padding.Bottom, kRowInsetPx + rowHeight + kRowInsetPx,
+                kLayoutTolerancePx);
 }
 
 TEST(HierarchyNavigationBarLayout, TheRowRidesAboveTheHorizontalScrollbar)

@@ -10,6 +10,7 @@
 #include "UI/PanelSearchBar.h"
 #include "UI/UIElement.h"
 
+#include <functional>
 #include <string>
 #include <variant>
 
@@ -161,4 +162,26 @@ TEST(SearchBarSettings, TheStyleRowIsLuciaByDefaultAndSetsClassic)
     EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-classic"));
 
     style.Set(initial);
+}
+
+TEST(SearchBarSettings, TheFilledRowShowsForTheLuciaLookOnly)
+{
+    RegisterSearchBarSettingsCategory();
+    SettingsCategoryDescriptor category;
+    ASSERT_TRUE(EditorSettingsRegistry::Get().TryGet("searchBars", category));
+    std::function<bool()> filledVisible;
+    for (const SettingsFieldDescriptor& field : category.Fields)
+    {
+        if (field.Label == "Filled Search Bars")
+            filledVisible = field.IsVisible;
+    }
+    ASSERT_TRUE(filledVisible) << "the Filled Search Bars row shows for every look";
+    const EditorSearchBars::Look initial = EditorSearchBars::GetLook();
+
+    EditorSearchBars::SetLook(EditorSearchBars::Look::Lucia);
+    EXPECT_TRUE(filledVisible());
+    EditorSearchBars::SetLook(EditorSearchBars::Look::Classic);
+    EXPECT_FALSE(filledVisible());
+
+    EditorSearchBars::SetLook(initial);
 }

@@ -183,3 +183,19 @@ TEST(PanelSearchBarLook, AHiddenRowIconLeavesTheRow)
     look.Settle();
     EXPECT_EQ(group->GetResolvedStyle().Layout.DisplayMode, GameEngine::DisplayMode::None);
 }
+
+// The Classic look is always a filled field, so it reads the same whatever Filled Search Bars says.
+TEST(PanelSearchBarLook, AHiddenClassicBarStaysFilled)
+{
+    SearchBarLook look;
+    if (!look.Build())
+    {
+        ASSERT_EQ(look.Fixture.Diagnostic, "no Vulkan device");
+        GTEST_SKIP() << look.Fixture.Diagnostic;
+    }
+    look.Bar->AddClass("search-bar-classic");
+    look.Bar->AddClass("hidden");
+    look.Settle();
+    EXPECT_NE(Alpha(look.Bar->GetResolvedStyle().Visual.BackgroundColor), 0u);
+    EXPECT_NE(Alpha(look.Bar->GetResolvedStyle().Visual.BorderColor.Top), 0u);
+}
