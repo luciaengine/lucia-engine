@@ -50,15 +50,16 @@ void DeclareSunMask(RenderServices& services, RenderGraph::RGFrame& frame, const
     inputs.SunMaskViewProjection = view.Camera->viewProjRel;
 }
 
-// The sun takes its virtual page visibility from the mask only where the in-shader lookup runs:
-// a cascade (not ray-traced) sun whose effective filter is Poisson, the one
-// GE_TryVirtualShadowDirectional resolves. A PCSS request demotes to Poisson without bindless
-// raw depth or on a device that prefers stable filtering.
+// The sun takes its virtual page visibility from the mask only where the in-shader lookup resolves
+// pages: a cascade (not ray-traced) sun whose effective filter is Poisson or PCSS
+// (GE_TryVirtualShadowDirectional). The other filters keep the cascades.
 bool SunReadsVirtualPages(RenderServices& services, uint32_t viewId, const ResolvedShadowSettings& settings)
 {
     const auto* shadows = services.GetFeature<ShadowMapRenderFeature>();
-    return settings.Mode == Components::DirectionalShadowMode::Cascades && shadows &&
-           shadows->ResolveEffectiveFilterQuality(services, viewId) == ShadowFilterQuality::PoissonPCF;
+    if (settings.Mode != Components::DirectionalShadowMode::Cascades || !shadows)
+        return false;
+    const ShadowFilterQuality quality = shadows->ResolveEffectiveFilterQuality(services, viewId);
+    return quality == ShadowFilterQuality::PoissonPCF || quality == ShadowFilterQuality::PCSS;
 }
 } // namespace
 

@@ -180,12 +180,23 @@ bool GE_VirtualShadowResolveKernelQuad(uvec3 projection, uint mip, vec2 centerUV
     return true;
 }
 
-float GE_VirtualShadowQuadTexel(GE_VirtualShadowKernelQuad quad, ivec2 relative, float reference)
+// relative is the texel position from the quad's texel origin.
+float GE_VirtualShadowQuadTexelDepth(GE_VirtualShadowKernelQuad quad, ivec2 relative)
 {
     ivec2 page = relative / int(kGE_VirtualShadowPageTexels);
     ivec2 withinPage = relative - page * int(kGE_VirtualShadowPageTexels);
-    float stored = texelFetch(ge_virtualShadowDepth, ivec3(withinPage, int(quad.Layers[page.y * 2 + page.x])), 0).r;
-    return reference >= stored ? 1.0 : 0.0;
+    return texelFetch(ge_virtualShadowDepth, ivec3(withinPage, int(quad.Layers[page.y * 2 + page.x])), 0).r;
+}
+
+float GE_VirtualShadowQuadTexel(GE_VirtualShadowKernelQuad quad, ivec2 relative, float reference)
+{
+    return reference >= GE_VirtualShadowQuadTexelDepth(quad, relative) ? 1.0 : 0.0;
+}
+
+// The raw depth of the texel under uv. uv must lie inside the resolved kernel.
+float GE_VirtualShadowQuadDepth(GE_VirtualShadowKernelQuad quad, vec2 uv)
+{
+    return GE_VirtualShadowQuadTexelDepth(quad, ivec2(floor(uv * quad.Resolution)) - ivec2(quad.TexelOrigin));
 }
 
 // uv must lie inside the kernel that GE_VirtualShadowResolveKernelQuad resolved.
