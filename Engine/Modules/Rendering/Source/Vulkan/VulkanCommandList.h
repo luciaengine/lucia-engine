@@ -280,6 +280,10 @@ namespace Rendering {
         static inline uint64_t MakeSubKey(Handle h, uint32_t mip, uint32_t layer) {
             return (static_cast<uint64_t>(h.id) << 32) | (static_cast<uint64_t>(mip & 0xFF) << 8) | static_cast<uint64_t>(layer & 0xFF);
         }
+        // Records the layout a transfer operation leaves on one subresource: in the journal, and in
+        // the texture's flat tracker when that subresource is the whole image (the BarrierBatch rule).
+        // A later list resolves the old layout of a non-graph barrier from the flat tracker.
+        void RecordTransferLayout(TextureHandle texture, uint32_t mip, uint32_t layer, VkImageLayout layout);
 
         // Scratch barrier buffers for batched barriers (reused per call)
         std::vector<VkMemoryBarrier> m_ScratchMemBarriers;
