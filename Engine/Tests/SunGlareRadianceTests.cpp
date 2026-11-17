@@ -358,6 +358,8 @@ class SunGlareRadianceTest : public ::testing::Test
 
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         cl->Begin();
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::Undefined,
+                                                          ResourceState::DepthWrite));
         cl->BeginRenderPass(rp);
         cl->EndRenderPass();
         cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::DepthWrite,
@@ -955,12 +957,12 @@ TEST(SunGlareSourceContract, TheMultisampledProbeAveragesOverSamplesRatherThanPi
         << "the two probe variants no longer share their tap geometry";
 }
 
-TEST(SunGlareSourceContract, ShadowBlockPrefixMatchesTheShadowSamplingHeader)
+TEST(SunGlareSourceContract, ShadowBlockPrefixMatchesTheShadowDataHeader)
 {
     const std::string vert =
         LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/sun_glare_casters.comp");
     const std::string header =
-        LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/Includes/shadow_sampling.glsl");
+        LoadRepoFileWithoutComments("Engine/Modules/Rendering/Shaders/Includes/shadow_data.glsl");
     ASSERT_FALSE(vert.empty());
     ASSERT_FALSE(header.empty());
 
@@ -974,7 +976,7 @@ TEST(SunGlareSourceContract, ShadowBlockPrefixMatchesTheShadowSamplingHeader)
         EXPECT_NE(vert.find(field), std::string::npos)
             << "the glare's shadow block no longer declares " << field;
         EXPECT_NE(header.find(field), std::string::npos)
-            << "shadow_sampling.glsl no longer declares " << field
+            << "shadow_data.glsl no longer declares " << field
             << " — the glare's prefix has drifted from the block it mirrors";
     }
     // Order matters as much as membership.
