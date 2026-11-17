@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iterator>
 #include <memory>
@@ -173,10 +174,12 @@ class OceanShallowClarityShaderTest : public ::testing::Test
 } // namespace
 
 // The surface passes underBelow as 0 (above water) or 1 (seen from below).
-// Above water the default upload must render exactly as the window's literals
-// did: same bits at every path, not merely close. Seen from below there is no
-// window, so the scale is exactly 1; it is not compared with the literal form
-// there, whose nested mix a driver may contract to one ULP below 1.
+// Above water the default upload renders as the window's literals did: at most
+// one ULP apart at every path. SPIR-V lets a driver fuse a multiply and an add
+// differently for a literal operand than for a uniform one (RADV gives one ULP
+// at path 6); a wrong default is thousands of ULPs off. Seen from below there
+// is no window, so the scale is exactly 1; it is not compared with the literal
+// form there, whose nested mix a driver may contract to one ULP below 1.
 TEST_F(OceanShallowClarityShaderTest, DefaultWindowMatchesTheFormerConstantsAboveWaterAndIsOneFromBelow)
 {
     OceanParamsGPU params{};
@@ -190,7 +193,8 @@ TEST_F(OceanShallowClarityShaderTest, DefaultWindowMatchesTheFormerConstantsAbov
         uint32_t scaleBits = 0, legacyBits = 0;
         std::memcpy(&scaleBits, &above.Scale[i], sizeof(float));
         std::memcpy(&legacyBits, &above.Legacy[i], sizeof(float));
-        EXPECT_EQ(scaleBits, legacyBits) << above.Scale[i] << " vs " << above.Legacy[i];
+        const int64_t ulpDistance = static_cast<int64_t>(scaleBits) - static_cast<int64_t>(legacyBits);
+        EXPECT_LE(std::abs(ulpDistance), 1) << above.Scale[i] << " vs " << above.Legacy[i];
         EXPECT_EQ(below.Scale[i], 1.0f);
     }
 }
