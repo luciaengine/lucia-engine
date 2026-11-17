@@ -44,19 +44,25 @@ uint64 SelectClusterLODCuts(std::span<const ClusterLODCutInstance> instances, ui
 {
     uint64 triangles = baseTriangles;
     std::priority_queue<Candidate> candidates;
-    // Per instance and group: the produced units whose group is not refined yet.
-    std::vector<std::vector<uint32>> pending(instances.size());
+    // Per instance and group, one flat array: the produced units whose group is not refined yet.
+    std::vector<uint32> firstGroup(instances.size());
+    size_t groupCount = 0;
+    for (uint32 index = 0; index < instances.size(); ++index)
+    {
+        firstGroup[index] = static_cast<uint32>(groupCount);
+        groupCount += instances[index].Manifest->Meshes[instances[index].Mesh].GroupCount;
+    }
+    std::vector<uint32> pending(groupCount);
     for (uint32 index = 0; index < instances.size(); ++index)
     {
         const auto& instance = instances[index];
         const auto& manifest = *instance.Manifest;
         const auto& range = manifest.Meshes[instance.Mesh];
-        pending[index].resize(range.GroupCount);
         for (uint32 local = 0; local < range.GroupCount; ++local)
         {
             const auto& group = manifest.Groups[range.FirstGroup + local];
             instance.Decisions[local] = group.Terminal ? ClusterLODCutDecision::Refined : ClusterLODCutDecision::Coarse;
-            pending[index][local] = group.ProducedCount;
+            pending[firstGroup[index] + local] = group.ProducedCount;
             if (group.Terminal)
                 triangles += UnitTriangles(manifest, group.FirstUnit, group.UnitCount, nullptr);
         }
@@ -67,10 +73,10 @@ uint64 SelectClusterLODCuts(std::span<const ClusterLODCutInstance> instances, ui
                 continue;
             for (uint32 unit = group.FirstUnit; unit < group.FirstUnit + group.UnitCount; ++unit)
                 if (const uint32 producer = manifest.Units[unit].Producer; producer != kMeshClusterLODSourceGroup)
-                    --pending[index][producer - range.FirstGroup];
+                    --pending[firstGroup[index] + producer - range.FirstGroup];
         }
         for (uint32 local = 0; local < range.GroupCount; ++local)
-            if (!manifest.Groups[range.FirstGroup + local].Terminal && pending[index][local] == 0)
+            if (!manifest.Groups[range.FirstGroup + local].Terminal && pending[firstGroup[index] + local] == 0)
                 candidates.push({Priority(instance.Groups[local]), index, local});
     }
     while (!candidates.empty())
@@ -104,7 +110,7 @@ uint64 SelectClusterLODCuts(std::span<const ClusterLODCutInstance> instances, ui
             if (producer == kMeshClusterLODSourceGroup)
                 continue;
             const uint32 local = producer - range.FirstGroup;
-            if (--pending[candidate.Instance][local] == 0)
+            if (--pending[firstGroup[candidate.Instance] + local] == 0)
                 candidates.push({Priority(instance.Groups[local]), candidate.Instance, local});
         }
     }

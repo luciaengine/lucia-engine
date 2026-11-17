@@ -388,6 +388,8 @@ struct ClusterLODFeature::State
     std::vector<ClusterLODCutInstance> CutInstances;
     // The geometry of every unit of each model in this preparation (UnitGeometries).
     FastHashMap<const ModelAsset*, std::vector<MeshGPUHandle>> FrameGeometries;
+    // The epoch of the next fine page admission after fine storage refused one.
+    uint64 AdmissionRetryEpoch = 0;
     // Resident unit registrations a full pool refused, with the epoch of their next try.
     FastHashMap<MeshGPUKey, uint64> RegistrationRetry;
     // The views of this preparation, as Demand reads them.
@@ -758,12 +760,13 @@ struct ClusterLODFeature::State
     }
 
     // The drawable geometry of a unit, or an invalid handle. No side effects.
-    MeshGPUHandle FindUnitGeometry(const GUID& guid, const ModelAsset& model, uint32 unit) const
+    MeshGPUHandle FindUnitGeometry(const GUID& guid, const ModelAsset& model, const MeshClusterLODManifest& manifest,
+                                   uint32 unit) const
     {
         const auto& registry = Services->GetMeshGPURegistry();
         const MeshGPUKey key = UnitKey(guid, model, unit);
         MeshGPUHandle handle;
-        if (!model.GetClusterLODManifest()->Units[unit].IsStreamed())
+        if (!manifest.Units[unit].IsStreamed())
             handle = registry.FindHandle(key);
         else if (const auto found = Pages.find(key); found != Pages.end() && !found->second->Retiring)
             handle = found->second->FineHandle;
@@ -784,9 +787,9 @@ struct ClusterLODFeature::State
                 page->Wanted = true;
                 page->LastWantedEpoch = epoch;
             }
-            return FindUnitGeometry(guid, model, unit);
+            return FindUnitGeometry(guid, model, *model.GetClusterLODManifest(), unit);
         }
-        const MeshGPUHandle handle = FindUnitGeometry(guid, model, unit);
+        const MeshGPUHandle handle = FindUnitGeometry(guid, model, *model.GetClusterLODManifest(), unit);
         if (handle.IsValid() || registrations >= kMaximumUnitRegistrationsPerFrame)
             return handle;
         // A refused registration (a full pool) waits a grace period before it copies the unit again.
@@ -796,7 +799,7 @@ struct ClusterLODFeature::State
         ++registrations;
         Services->GetMeshGPURegistry().RegisterSubmesh(
             key, ExtractMeshClusterLODResidentUnit(model.GetMeshes()[record.Mesh], record));
-        const MeshGPUHandle registered = FindUnitGeometry(guid, model, unit);
+        const MeshGPUHandle registered = FindUnitGeometry(guid, model, *model.GetClusterLODManifest(), unit);
         if (registered.IsValid())
             RegistrationRetry.erase(key);
         else
@@ -828,17 +831,17 @@ struct ClusterLODFeature::State
             const auto& manifest = *model.GetClusterLODManifest();
             found->second.resize(manifest.Units.size());
             for (uint32 unit = 0; unit < manifest.Units.size(); ++unit)
-                found->second[unit] = FindUnitGeometry(guid, model, unit);
+                found->second[unit] = FindUnitGeometry(guid, model, manifest, unit);
         }
         return found->second;
     }
 
-    bool IsUnitReady(const ECS::World& world, ClusterLODSplits::Instance& instance, const ModelAsset& model,
-                     uint32 unit)
+    // `firstUnit` is the first unit of the instance's mesh: `unit` minus it is the part index.
+    bool IsUnitReady(const ECS::World& world, ClusterLODSplits::Instance& instance,
+                     std::span<const MeshGPUHandle> geometries, uint32 unit, uint32 firstUnit)
     {
-        const MeshGPUHandle geometry = UnitGeometries(instance.Model, model)[unit];
-        const uint32 local = unit - model.GetClusterLODManifest()->Meshes[instance.Mesh].FirstUnit;
-        return geometry.IsValid() && Splits.IsPartReady(world, instance, local, geometry);
+        const MeshGPUHandle geometry = geometries[unit];
+        return geometry.IsValid() && Splits.IsPartReady(world, instance, unit - firstUnit, geometry);
     }
 
     // The cut inputs of every group of one active split instance.
@@ -850,8 +853,9 @@ struct ClusterLODFeature::State
         const float bias = LodBias(world, instance.Owner);
         // Every unit is a group's unit once and a producer's unit at most once: check it once.
         UnitReady.resize(range.UnitCount);
+        const auto& geometries = UnitGeometries(instance.Model, model);
         for (uint32 local = 0; local < range.UnitCount; ++local)
-            UnitReady[local] = IsUnitReady(world, instance, model, range.FirstUnit + local) ? 1 : 0;
+            UnitReady[local] = IsUnitReady(world, instance, geometries, range.FirstUnit + local, range.FirstUnit) ? 1 : 0;
         for (uint32 local = 0; local < range.GroupCount; ++local)
         {
             const auto& group = manifest.Groups[range.FirstGroup + local];
@@ -938,7 +942,7 @@ struct ClusterLODFeature::State
             if (!IsClusterLODUnitDrawn(manifest, unit, instance.Decisions))
                 continue;
             PrepareUnit(world, instance, model, unit, epoch, registrations);
-            ready = ready && IsUnitReady(world, instance, model, unit);
+            ready = ready && IsUnitReady(world, instance, UnitGeometries(instance.Model, model), unit, range.FirstUnit);
         }
         if (!ready)
             return false;
@@ -1129,7 +1133,8 @@ struct ClusterLODFeature::State
                 continue;
             }
             Request(*page);
-            if (!page->Decoded || admissions >= kMaximumAdmissionsPerFrame || epoch < page->RetryEpoch)
+            if (!page->Decoded || admissions >= kMaximumAdmissionsPerFrame || epoch < page->RetryEpoch ||
+                epoch < AdmissionRetryEpoch)
                 continue;
             ++admissions;
             page->RetryEpoch = epoch + kUnusedFrameGrace;
@@ -1137,6 +1142,10 @@ struct ClusterLODFeature::State
             page->FineHandle = registry.RegisterSubmesh(page->Fine, *page->Decoded, false, MeshGPUStorageDomain::ClusterFine);
             if (const auto* entry = registry.Find(page->FineHandle); entry && registry.IsEntryDrawable(*entry))
                 ReleaseDecoded(*page);
+            else
+                // Fine storage is full: no page fits until one retires, so admission waits a grace
+                // period instead of copying and hashing a page every frame.
+                AdmissionRetryEpoch = epoch + kUnusedFrameGrace;
         }
     }
 
