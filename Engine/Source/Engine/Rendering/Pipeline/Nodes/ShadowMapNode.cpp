@@ -19,6 +19,7 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <bit>
+#include <string>
 #include <string_view>
 
 #include <nlohmann/json.hpp>
@@ -31,16 +32,6 @@ using namespace ::GameEngine::Rendering;
 
 namespace
 {
-constexpr uint32_t kMinCascadeResolution = 256u;
-constexpr uint32_t kMaxCascadeResolution = 8192u;
-
-// The "resolution" key is the one owner of the directional cascade size.
-bool IsSupportedCascadeResolution(uint32_t resolution)
-{
-    return std::has_single_bit(resolution) && resolution >= kMinCascadeResolution &&
-           resolution <= kMaxCascadeResolution;
-}
-
 bool IsPreviewOrThumbnailViewName(const char* debugName)
 {
     if (!debugName)
@@ -51,6 +42,13 @@ bool IsPreviewOrThumbnailViewName(const char* debugName)
            name.find("Preview") != std::string_view::npos;
 }
 } // namespace
+
+// The "resolution" key is the one owner of the directional cascade size.
+bool ShadowMapNode::IsSupportedCascadeResolution(uint32_t resolution)
+{
+    return std::has_single_bit(resolution) && resolution >= kMinCascadeResolution &&
+           resolution <= kMaxCascadeResolution;
+}
 
 ShadowMapNode::~ShadowMapNode()
 {
@@ -307,8 +305,11 @@ bool ShadowMapNode::Initialize(std::string nodeId, std::string nodeJson, std::st
             if (!resolution.is_number_unsigned() || !IsSupportedCascadeResolution(resolution.get<uint32_t>()))
             {
                 if (outError)
-                    *outError = "ShadowMapNode: resolution must be a power of two from 256 to 8192, for "
-                                "example 2048. It sets the size of each directional cascade.";
+                    *outError = "ShadowMapNode: resolution must be a power of two from " +
+                                std::to_string(kMinCascadeResolution) + " to " +
+                                std::to_string(kMaxCascadeResolution) + ", for example " +
+                                std::to_string(kDefaultCascadeResolution) +
+                                ". It sets the size of each directional cascade.";
                 return false;
             }
             m_Resolution = resolution.get<uint32_t>();

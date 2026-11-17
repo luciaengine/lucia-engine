@@ -1,4 +1,4 @@
-#include "Inspectors/RenderPipelineInspector.h"
+#include "Inspectors/RenderPipeline/RenderPipelineInspector.h"
 #include "AssetCore/SharedFileRead.h"
 
 #include "InspectorRegistry.h"
@@ -37,6 +37,7 @@
 #include "UI/StyleProperties.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
+#include "Inspectors/RenderPipeline/ShadowMapPassFields.h"
 #include "Panels/SettingsPanel.h"
 #include "EditorContextMenu/UIContextMenu.h"
 #include "Platform/ContextMenu.h"
@@ -2281,6 +2282,22 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                         }
                     }
                 }
+            }
+        }
+
+        // ShadowMap specific
+        {
+            const std::string typeLower = ToLowerAscii(doc["passes"][i].value("type", ""));
+            if (typeLower == "shadowmap" || typeLower == "cascadedshadowmap")
+            {
+                BuildShadowMapPassFields(*passUI, doc["passes"][i], "rp-pass-" + std::to_string(i),
+                    [root, pipe, doc, undo, i](const std::string& key, nlohmann::json value,
+                                               const std::string& undoLabel) mutable
+                    {
+                        if (i < doc["passes"].size() && doc["passes"][i].is_object())
+                            doc["passes"][i][key] = std::move(value);
+                        SaveReloadRebuildUndoable(root, pipe, doc, undo, undoLabel);
+                    });
             }
         }
 

@@ -173,6 +173,17 @@ The `resolution` field of the `ShadowMap` node sets the size in texels of each d
 
 Memory and render cost increase with the square of the resolution: 4096 uses 4 times and 8192 uses 16 times the memory of 2048. If the value is not a power of two from 256 to 8192, the `ShadowMap` node does not start, the view has no shadows, and the log names the field and the range.
 
+To edit these fields in the editor, select the `.rendergraph` asset and expand the `ShadowMap` pass in the Inspector.
+
+| Row | Field | Use |
+|---|---|---|
+| Resolution | `resolution` | A dropdown of the supported sizes. The row tooltip gives the memory of one cascade at each size. An unsupported value in the file stays selected and shows "(invalid)". |
+| Split | `splitLambda` | How the cascades divide the shadow distance, from 0 (equal depth) to 1 (more resolution near the camera). |
+| Fit To Scene | `fitShadowDistanceToScene` | Fits the shadow distance to the meshes of the scene. When it is on, the Distance row is hidden. |
+| Distance | `maxShadowDistance` | The distance in meters at which directional shadows end. |
+
+Each change saves the pipeline file and is one undo step.
+
 ### Virtual shadow pages
 
 The `ShadowMap` node can keep shadow depth in pages of 128 x 128 texels and render only the pages that the view shows. The sun, the spot lights and the point lights of the view then get sharper shadows near the camera. A pixel uses the usual shadow map where no page is ready, so the image stays complete while pages render. The option is off by default.

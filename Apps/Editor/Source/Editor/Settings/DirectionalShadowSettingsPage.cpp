@@ -18,8 +18,8 @@ SettingsCategoryDescriptor CreateDirectionalShadowSettingsSection(
     section.Title = "Directional Shadows";
     section.Group = SettingsCategoryGroup::ProjectSettings;
     section.Description =
-        "Applies to all directional cascades. The resolution field of the ShadowMap node in "
-        "the render pipeline sets the cascade resolution.";
+        "Applies to all directional cascades. To change the cascade resolution, select the "
+        "render pipeline asset and edit Resolution in its ShadowMap pass.";
     section.SearchKeywords = "shadow resolution cascade size shadowmap pipeline";
 
     SettingsFieldDescriptor projection;
