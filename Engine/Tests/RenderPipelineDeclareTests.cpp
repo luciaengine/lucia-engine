@@ -17995,6 +17995,60 @@ TEST(RenderPipelineDeclareTests, TheIblGenNodeBakesARegisteredLocalReflectionPro
     rs.Shutdown();
 }
 
+// A world pass with image-based lighting reads the cubes of its world's local reflection probes, so the
+// graph orders their bake before the draw and the forward shader samples them.
+TEST(RenderPipelineDeclareTests, AWorldPassReadsTheCubesOfItsWorldsLocalReflectionProbe)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device));
+    {
+        auto& feature = rs.EnsureFeature<ImageBasedLightingFeature>();
+        ASSERT_TRUE(feature.Initialize(device));
+        Engine::Renderer::SceneReflectionProbeEnvironmentDesc probe{};
+        probe.WorldId = 3;
+        probe.SourceKey = 1;
+        feature.UpdateLocalProbes(rs, probe.WorldId, std::span(&probe, 1));
+        auto* capture = const_cast<ImageBasedLightingFeature*>(feature.GetLocalProbeCapture(probe.WorldId, 0));
+        ASSERT_NE(capture, nullptr);
+        ASSERT_TRUE(capture->Initialize(device));
+
+        const CameraId camId = rs.Views().AllocateCamera("LocalProbeReadCam");
+        const ViewId viewId = rs.Views().AllocateView("LocalProbeReadView", camId);
+        rs.Views().SetViewRenderLayerMask(viewId, Rendering::RenderLayerMask::Default());
+        rs.Views().SetViewWorldId(viewId, probe.WorldId);
+        Rendering::ViewClearConfig clear{};
+        clear.clearColor = true;
+        clear.clearDepth = true;
+        clear.clearDepthValue = ReverseZ::kClearFar;
+        rs.Views().SetViewTargets(viewId, 0, 0, 0, clear);
+
+        FramePools pools(device);
+        RenderGraph::RGFrame frame(device, &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(0);
+        RenderServices::WorldPassTargetsRG targets;
+        targets.Color = frame.ImportPersistentTexture("LocalProbeRead.Color", ColorTargetDesc());
+        targets.Depth = frame.ImportPersistentTexture("LocalProbeRead.Depth", DepthTargetDesc());
+        rs.BeginWorldDrawFrame();
+        rs.BuildWorldBatchKeys();
+        const auto world = rs.AddWorldPassForView(frame, viewId, targets, MaterialKeyword::IBL);
+        ASSERT_TRUE(world.Pass.IsValid());
+
+        // Imports dedup by physical, so these return the resources the world pass declared.
+        const RenderGraph::RGResourceId irradiance =
+            frame.ImportExternalTexture("Test.LocalIrradiance", capture->GetIrradianceCube(),
+                                        ResourceState::ShaderResource).Id;
+        const RenderGraph::RGResourceId prefilter =
+            frame.ImportExternalTexture("Test.LocalPrefilter", capture->GetPrefilterCube(),
+                                        ResourceState::ShaderResource).Id;
+        EXPECT_TRUE(frame.Graph().HasReadAccess(world.Pass.Id, irradiance)) << "local irradiance cube";
+        EXPECT_TRUE(frame.Graph().HasReadAccess(world.Pass.Id, prefilter)) << "local prefilter cube";
+    }
+    rs.Shutdown();
+}
+
 // capture_resource reads a texture another owner imported this frame: the sky-view LUT or an IBL
 // cube, imported at its resting sampled layout and claimed there again next frame. The readback of
 // that import must end the frame with the image back in the claimed layout, or the next frame's first
