@@ -229,7 +229,7 @@ TEST_F(RenderProjectSettingsTest, ApplyingProjectSettingsKeepsThePipelineCascade
 
     RenderServices rs;
     auto& feature = rs.EnsureFeature<ShadowMapRenderFeature>();
-    feature.SetResolution(4096u);
+    feature.SetCascadeMaps(feature.GetConfig().NumCascades, 4096u);
 
     ed::ApplyProjectRenderSettings(rs, project);
 

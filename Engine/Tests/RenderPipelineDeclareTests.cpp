@@ -3732,6 +3732,9 @@ struct SceneFitFrame
     float CachedDistance = 0.0f;
     float PublishedDistance = 0.0f;
     float PublishedFade = 0.0f;
+    uint32_t ConfiguredCascades = 0;
+    uint32_t PublishedCascades = 0;
+    uint32_t ShadowMapLayers = 0;
 };
 
 // A one-view ShadowMap pipeline over a scene of one instance, the sphere at
@@ -3763,6 +3766,35 @@ class SceneFitRig
         m_Services.GetGPUScene()->AddInstance(instance);
 
         m_Registry.Register("ShadowMap", [] { return std::make_unique<Nodes::ShadowMapNode>(); }, true);
+        m_Instance = std::make_unique<RenderPipelineInstance>(m_Services, m_Registry);
+        SetPassJson(passJson);
+    }
+
+    ~SceneFitRig()
+    {
+        m_DepthEmitter.Reset();
+        if (m_Ready)
+            m_Services.Shutdown();
+    }
+    SceneFitRig(const SceneFitRig&) = delete;
+    SceneFitRig& operator=(const SceneFitRig&) = delete;
+
+    bool Ready() const { return m_Ready; }
+
+    // Gives every cascade a caster, so the view declares its cascade passes and imports the shadow map.
+    void EmitShadowCasters()
+    {
+        m_DepthEmitter = m_Services.RegisterDepthEmit(
+            [](DepthEmitContext& ctx, DepthPassType type)
+            {
+                if (type == DepthPassType::ShadowCascade)
+                    ctx.Services->EmitDepthCommand(ctx.ViewId, type, DrawCommand{});
+            });
+    }
+
+    // Replaces the pipeline with one ShadowMap pass of `passJson`, as a pipeline edit or a hot reload does.
+    void SetPassJson(const char* passJson)
+    {
         RenderPipelineBlueprint blueprint;
         blueprint.pipelineName = "SceneFit";
         RenderPipelineBlueprint::Pass pass;
@@ -3772,19 +3804,8 @@ class SceneFitRig
         pass.perView = true;
         pass.passJson = passJson;
         blueprint.passes.push_back(pass);
-        m_Instance = std::make_unique<RenderPipelineInstance>(m_Services, m_Registry);
         m_Instance->SetBlueprint(blueprint);
     }
-
-    ~SceneFitRig()
-    {
-        if (m_Ready)
-            m_Services.Shutdown();
-    }
-    SceneFitRig(const SceneFitRig&) = delete;
-    SceneFitRig& operator=(const SceneFitRig&) = delete;
-
-    bool Ready() const { return m_Ready; }
 
     // The camera at (0, 0, z), looking along +Z, or along -Z when `turned`.
     void SetCamera(float z, bool turned)
@@ -3827,12 +3848,18 @@ class SceneFitRig
                                                      m_Services.Views().GetViews().end());
         m_Instance->Declare(frame, targets, views);
         frame.MarkOutput(color);
+        const RenderGraph::RGTexture shadowMap = m_Services.GetShadowMapArrayRG(frame, m_ViewId);
+        if (shadowMap.IsValid())
+            result.ShadowMapLayers = m_Device.GetTextureArrayLayers(frame.PhysicalTexture(shadowMap));
         frame.Execute();
         m_Device.WaitForIdle();
 
         if (const auto* feature = m_Services.GetFeature<ShadowMapRenderFeature>())
+        {
+            result.ConfiguredCascades = feature->GetConfig().NumCascades;
             if (const CascadeFrameData* cached = feature->GetCachedFrameData(m_ViewId))
                 result.CachedDistance = cached->MaxShadowDistance;
+        }
         const auto* resources = m_Instance->FrameResourcesFor(&frame);
         if (resources == nullptr)
             return result;
@@ -3847,6 +3874,7 @@ class SceneFitRig
         m_Device.UnmapBuffer(binding->second.Buffer);
         result.PublishedDistance = data.shadowParams[3];
         result.PublishedFade = data.shadowFilterParams[1];
+        result.PublishedCascades = static_cast<uint32_t>(data.shadowParams[2]);
         return result;
     }
 
@@ -3856,6 +3884,7 @@ class SceneFitRig
     RenderPipelineNodeRegistry m_Registry;
     std::unique_ptr<RenderPipelineInstance> m_Instance;
     FramePools m_Pools;
+    ScopedSubscription m_DepthEmitter;
     CameraId m_CameraId{};
     ViewId m_ViewId{};
     uint64_t m_FrameIndex = 0;
@@ -3917,6 +3946,41 @@ TEST(RenderPipelineDeclareTests, ShadowMapSceneFitFollowsTheSceneAndTheOptOutKee
         // The opt-out keeps the authored distance for either scene.
         EXPECT_EQ(DeclareSceneFitFrame(*device, kAuthored, 5.0f, 1.0f).PublishedDistance, 200.0f);
         EXPECT_EQ(DeclareSceneFitFrame(*device, kAuthored, 300.0f, 250.0f).PublishedDistance, 200.0f);
+    }
+}
+
+// A pipeline edit or a hot reload that changes the ShadowMap "cascades" key changes the cascades the
+// next frame renders and publishes, both fewer and more, without a restart of the shadow feature.
+TEST(RenderPipelineDeclareTests, ShadowMapCascadeCountFollowsAPipelineEdit)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        constexpr const char* kFourCascades =
+            R"({"id":"CSM","type":"ShadowMap","buffer":"ShadowData","cascades":4,"resolution":256})";
+        constexpr const char* kTwoCascades =
+            R"({"id":"CSM","type":"ShadowMap","buffer":"ShadowData","cascades":2,"resolution":256})";
+        SceneFitRig rig(*device, kFourCascades, 5.0f, 1.0f);
+        ASSERT_TRUE(rig.Ready());
+        rig.EmitShadowCasters();
+
+        const SceneFitFrame four = rig.DeclareFrame();
+        EXPECT_EQ(four.ConfiguredCascades, 4u);
+        EXPECT_EQ(four.PublishedCascades, 4u);
+        EXPECT_EQ(four.ShadowMapLayers, 4u);
+
+        rig.SetPassJson(kTwoCascades);
+        const SceneFitFrame two = rig.DeclareFrame();
+        EXPECT_EQ(two.ConfiguredCascades, 2u);
+        EXPECT_EQ(two.PublishedCascades, 2u);
+        EXPECT_EQ(two.ShadowMapLayers, 2u);
+
+        rig.SetPassJson(kFourCascades);
+        const SceneFitFrame fourAgain = rig.DeclareFrame();
+        EXPECT_EQ(fourAgain.ConfiguredCascades, 4u);
+        EXPECT_EQ(fourAgain.PublishedCascades, 4u);
+        EXPECT_EQ(fourAgain.ShadowMapLayers, 4u);
     }
 }
 

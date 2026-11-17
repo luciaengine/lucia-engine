@@ -331,16 +331,23 @@ bool ShadowMapRenderFeature::Initialize(Rendering::IDevice* device, const Cascad
     return m_Initialized;
 }
 
-void ShadowMapRenderFeature::SetResolution(uint32_t resolution)
+void ShadowMapRenderFeature::SetCascadeMaps(uint32_t numCascades, uint32_t resolution)
 {
+    numCascades = std::clamp(numCascades, 1u, kMaxShadowCascades);
     resolution = std::max(1u, resolution);
-    if (m_Config.Resolution == resolution)
+    if (m_Config.NumCascades == numCascades && m_Config.Resolution == resolution)
         return;
 
+    // The stub's layer count follows the cascade count. Its getter creates it again.
+    if (m_Config.NumCascades != numCascades && m_MsmMomentsStub.IsValid())
+    {
+        m_Device->DestroyTexture(m_MsmMomentsStub);
+        m_MsmMomentsStub = {};
+    }
+    m_Config.NumCascades = numCascades;
     m_Config.Resolution = resolution;
-    // Frozen fits carry the resolution used for their texel snap. The reuse
-    // gate would reject them individually, but clearing both fit histories
-    // makes the resolution transition atomic for all views and cascades.
+    // Frozen fits carry the cascade index and the resolution of their texel snap.
+    // Clearing both fit histories makes the change atomic for all views and cascades.
     m_FrozenFits.clear();
     m_PrevSnappedHalfExtent.clear();
 }

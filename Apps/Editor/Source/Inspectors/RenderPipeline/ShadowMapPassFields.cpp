@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -64,6 +65,25 @@ std::vector<Dropdown::Option> MakeCascadeResolutionOptions(uint32_t current, int
     return options;
 }
 
+std::vector<Dropdown::Option> MakeCascadeCountOptions(std::optional<uint64_t> current, int& selectedIndex)
+{
+    std::vector<Dropdown::Option> options;
+    selectedIndex = -1;
+    if (!current || !ShadowMapNode::IsSupportedCascadeCount(*current))
+    {
+        const std::string value = current ? std::to_string(*current) : std::string{};
+        options.push_back({value, current ? value + " (invalid)" : "(invalid)"});
+        selectedIndex = 0;
+    }
+    for (uint32_t count = 1u; count <= ShadowMapNode::kMaxCascadeCount; ++count)
+    {
+        if (count == current)
+            selectedIndex = static_cast<int>(options.size());
+        options.push_back({std::to_string(count), std::to_string(count)});
+    }
+    return options;
+}
+
 double SavedFloat(float value)
 {
     return std::round(static_cast<double>(value) * kSavedFloatScale) / kSavedFloatScale;
@@ -85,6 +105,36 @@ bool ReadBool(const nlohmann::json& pass, const char* key, bool fallback)
 {
     const auto it = pass.find(key);
     return it != pass.end() && it->is_boolean() ? it->get<bool>() : fallback;
+}
+
+void AddCascadeCountRow(UIElement& section, const nlohmann::json& pass, const std::string& idPrefix,
+                        const PipelinePassFieldCommit& commit)
+{
+    int selectedIndex = 0;
+    const auto configured = pass.find("cascades");
+    std::optional<uint64_t> current = ShadowMapNode::kDefaultCascadeCount;
+    if (configured != pass.end())
+    {
+        if (configured->is_number_unsigned())
+            current = configured->get<uint64_t>();
+        else
+            current.reset();
+    }
+    const std::vector<Dropdown::Option> options = MakeCascadeCountOptions(current, selectedIndex);
+    Dropdown* dropdown = InspectorUI::AddDropdownRow(
+        &section, "Cascades", options, selectedIndex,
+        "Number of directional shadow cascades. More cascades keep shadows sharp farther from the camera. "
+        "Each cascade adds one depth pass and one layer of Resolution. The Cascade Count of the light can "
+        "lower this number.");
+    dropdown->SetId(idPrefix + "-cascades");
+    dropdown->SetOnValueChanged([commit](const std::string& value)
+                                {
+                                    if (value.empty())
+                                        return;
+                                    const uint64_t count = std::stoull(value);
+                                    if (ShadowMapNode::IsSupportedCascadeCount(count))
+                                        commit("cascades", static_cast<uint32_t>(count), "Shadow Cascades");
+                                });
 }
 
 void AddResolutionRow(UIElement& section, const nlohmann::json& pass, const std::string& idPrefix,
@@ -140,6 +190,7 @@ void AddDistanceRows(UIElement& section, const nlohmann::json& pass, const std::
 void BuildShadowMapPassFields(UIElement& passSection, const nlohmann::json& pass, const std::string& idPrefix,
                               PipelinePassFieldCommit commit)
 {
+    AddCascadeCountRow(passSection, pass, idPrefix, commit);
     AddResolutionRow(passSection, pass, idPrefix, commit);
     AddSplitLambdaRow(passSection, pass, idPrefix, commit);
     AddDistanceRows(passSection, pass, idPrefix, commit);
