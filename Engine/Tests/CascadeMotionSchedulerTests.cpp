@@ -162,6 +162,42 @@ TEST(CascadeMotionScheduler, FallbackBudgetRefreshesFarCascadesEveryFourthFrame)
     EXPECT_EQ(renders, (std::array<uint32_t, kN>{120u, 30u, 30u, 30u}));
 }
 
+// Under vegetation sway the slots outside the budget render one per frame in deadline order, so
+// no frame renders every cascade. The render count per cascade and the staleness bound stay.
+TEST(CascadeMotionScheduler, DeformationStaggersTheSlotsOutsideTheBudget)
+{
+    struct Case
+    {
+        CascadeMotionBudget Budget;
+        std::array<uint32_t, kN> Renders;
+        uint32_t MaxPerFrame;
+    };
+    const Case cases[] = {
+        {{2, 2}, {120u, 120u, 40u, 40u}, 3u},
+        {FallbackCascadeMotionBudget({2, 2}), {120u, 30u, 30u, 30u}, 2u},
+    };
+    for (const Case& test : cases)
+    {
+        SchedulerDriver drv;
+        std::array<uint32_t, kN> renders{};
+        for (int frame = 0; frame < 120; ++frame)
+        {
+            const uint32_t mask = drv.Plan(AllMotion(), test.Budget.Cap, test.Budget.MaxAge, kN,
+                                           CascadeMotionSource::CasterDeformation);
+            for (uint32_t c = 0; c < kN; ++c)
+            {
+                if ((mask & (1u << c)) == 0)
+                    ++renders[c];
+                else
+                    EXPECT_LE(drv.Frame - drv.ContentStamp[c], test.Budget.MaxAge) << "cascade " << c;
+            }
+            EXPECT_LE(kN - std::popcount(mask), test.MaxPerFrame)
+                << "cap " << test.Budget.Cap << " frame " << frame;
+        }
+        EXPECT_EQ(renders, test.Renders) << "cap " << test.Budget.Cap;
+    }
+}
+
 TEST(CascadeMotionScheduler, FallbackBudgetKeepsDeferralOff)
 {
     EXPECT_EQ(FallbackCascadeMotionBudget({0, 2}).Cap, 0u);

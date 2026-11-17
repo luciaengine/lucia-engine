@@ -1,7 +1,13 @@
 #ifndef GE_DDGI_DEPTH_NORMAL_GLSL
 #define GE_DDGI_DEPTH_NORMAL_GLSL
 
-// Shared by the resolve and its GPU regression fixture.
+// Shared by the resolve, the resolve blur and their GPU regression fixtures.
+
+// The raw depth at `uv`. A kernel defines it before this include when it must not sample the depth texture.
+#ifndef GE_DDGI_DEPTH_TAP
+#define GE_DDGI_DEPTH_TAP(depthTexture, uv) textureLod(depthTexture, uv, 0.0).r
+#endif
+
 vec2 GE_DDGIUvToNdc(vec2 uv)
 {
     return vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
@@ -31,10 +37,10 @@ vec3 GE_DDGINormalFromDepth(sampler2D depthTexture, vec2 uv, float rawDepth,
     // closer in depth to the centre so the tangent does not smear across
     // objects. Raw reverse-Z depth is monotonic in view depth, so the
     // |raw - centre| comparison picks the same neighbour linear depth would.
-    float dR = textureLod(depthTexture, uv + vec2(dtexel.x, 0.0), 0.0).r;
-    float dL = textureLod(depthTexture, uv - vec2(dtexel.x, 0.0), 0.0).r;
-    float dD = textureLod(depthTexture, uv + vec2(0.0, dtexel.y), 0.0).r;
-    float dU = textureLod(depthTexture, uv - vec2(0.0, dtexel.y), 0.0).r;
+    float dR = GE_DDGI_DEPTH_TAP(depthTexture, uv + vec2(dtexel.x, 0.0));
+    float dL = GE_DDGI_DEPTH_TAP(depthTexture, uv - vec2(dtexel.x, 0.0));
+    float dD = GE_DDGI_DEPTH_TAP(depthTexture, uv + vec2(0.0, dtexel.y));
+    float dU = GE_DDGI_DEPTH_TAP(depthTexture, uv - vec2(0.0, dtexel.y));
     validR = validR && dR > 1e-7;
     validL = validL && dL > 1e-7;
     validD = validD && dD > 1e-7;

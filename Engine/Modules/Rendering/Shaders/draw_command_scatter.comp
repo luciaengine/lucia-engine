@@ -58,39 +58,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 #include "Includes/lod_crossfade.glsl"
 #include "Includes/instance_sector.glsl"
 
-const uint kMaxMeshLODs = 4u;
-const uint kBatchNotFound = 0xFFFFFFFFu;
-
-// 128-byte std430 layout; field order MUST match GPUScene.h::GPUMesh.
-struct GPUMesh {
-    vec3  boundingCenter;
-    float boundingRadius;
-    float lodCoverageScale;
-    uint  clusterCount;
-    uint  vertexOffset;
-    uint  vertexCount;
-    uint  indexOffset;
-    uint  indexCount;
-    uint  lodCount;
-    uint  bucketKey;
-    uint  indexType;
-    uint  vertexFlags;
-    uint  lodIndexOffset[kMaxMeshLODs];
-    uint  lodIndexCount[kMaxMeshLODs];
-    float lodThreshold[kMaxMeshLODs];
-    // Per-LOD vertex offset RELATIVE to vertexOffset (authored LODs; 0 for
-    // generated levels). Draw emits vertexOffset + lodVertexOffset[lod].
-    uint  lodVertexOffset[kMaxMeshLODs];
-    // LOD selection flags: bits 0..3 = lodThreshold[k] is SSE-normalized
-    // (scale it by sseThresholdToCoverage to get its coverage-space switch
-    // point); bit 4 = tight class (skinned chain) takes the tighter per-view
-    // factor. MUST match GPUScene.h kGPUMeshLodSseSlotMask /
-    // kGPUMeshLodTightClassBit.
-    uint  lodFlags;
-    // Per-mesh ceiling on sseThresholdToCoverage (MeshLODThresholds.h::
-    // LodSseScaleCeil). 0 = no ceiling.
-    float lodSseScaleCeil;
-};
+#include "Includes/gpu_mesh.glsl"
 
 const uint kLodTightClassBit = 16u; // GPUMesh.lodFlags bit 4
 // MUST match MeshLODThresholds.h.
@@ -125,14 +93,7 @@ struct GPUInstance {
 };
 #endif
 
-// Mirrors GPUDrawStreamBuilder::BatchTableEntry (16 B std430). Sorted by
-// (materialIndex, meshIndex) — the binary search below depends on it.
-struct BatchTableEntry {
-    uint materialIndex;
-    uint meshIndex;
-    uint recordOffset;   // slice-relative exclusive prefix of capacities
-    uint capacity;       // snapshot live-instance count (the per-batch draw bound)
-};
+#include "Includes/draw_stream_batch_table.glsl"
 
 struct VkDrawIndexedIndirectCommand {
     uint indexCount;
@@ -397,49 +358,7 @@ const uint kClassModeOff    = 0u;
 const uint kClassModeShadow = 1u;
 const uint kClassModeColor  = 2u;
 
-// GPUInstance.flags depth-class bits + the two shadow-table class sentinels.
-// MUST match Rendering::GPUInstanceDepthClass.h / GPUDrawStreamBuilder.
-const uint kDepthMaterialDependentBit = 4u;        // flags bit 2
-const uint kDepthDoubleSidedBit       = 8u;        // flags bit 3
-const uint kMirroredBit               = 16u;       // flags bit 4 (negative-det world transform)
-const uint kSharedDepthSSSentinel     = 0xFFFFFFu; // single-sided class group
-const uint kSharedDepthDSSentinel     = 0xFFFFFEu; // double-sided class group
-
-// Parity flag lives in bit 24 of the batch-table meshIndex FIELD (real mesh
-// indices are 24-bit). A mirrored instance searches (searchMat, mesh | this)
-// so it lands in the parity-1 sibling row the CPU table build emitted; the
-// mesh-table read below always uses the REAL meshIndex. MUST match
-// GPUDrawStreamBuilder's kMeshParityBit.
-const uint kMeshParityBit             = 0x1000000u; // 1u << 24
-
-// Pseudo mesh-axis value for rows absent from the ordered map (draw
-// consolidation). MUST match MeshPoolGroupPlan::kAbsentGroup. Absent rows CAN
-// survive the mesh-row checks below (a live mesh-table row with no plan
-// entry) and then scatter into the table's merged pseudo row; that row is
-// never drawn -- consumers filter the sentinel before their range lookup.
-// A genuine map/table snapshot divergence still lands in tableMiss.
-const uint kAbsentPoolGroup           = 0xFFFFFFu;
-
-uint ge_FindBatch(uint materialIndex, uint meshIndex) {
-    uint lo = 0u;
-    uint hi = pc.batchCount;
-    while (lo < hi) {
-        uint mid = (lo + hi) / 2u;
-        uint bMat = batchTable[mid].materialIndex;
-        uint bMesh = batchTable[mid].meshIndex;
-        if (bMat < materialIndex || (bMat == materialIndex && bMesh < meshIndex)) {
-            lo = mid + 1u;
-        } else {
-            hi = mid;
-        }
-    }
-    if (lo < pc.batchCount
-        && batchTable[lo].materialIndex == materialIndex
-        && batchTable[lo].meshIndex == meshIndex) {
-        return lo;
-    }
-    return kBatchNotFound;
-}
+#include "Includes/draw_stream_batch_find.glsl"
 
 // The stateless scan: the finest level whose EFFECTIVE switch threshold this
 // coverage clears. The threshold array is indexed in place rather than copied
@@ -707,10 +626,7 @@ void main() {
     uint materialIndex = instances[instanceIndex].materialIndex;
     uint searchMat = materialIndex;
     if (pc.classMode == kClassModeShadow) {
-        searchMat = ((instFlags & kDepthMaterialDependentBit) != 0u)
-            ? materialIndex
-            : (((instFlags & kDepthDoubleSidedBit) != 0u) ? kSharedDepthDSSentinel
-                                                          : kSharedDepthSSSentinel);
+        searchMat = ge_ShadowSearchMaterial(instFlags, materialIndex);
     } else if (pc.classMode == kClassModeColor && materialIndex < materialColorClass.length()) {
         searchMat = materialColorClass[materialIndex];
     }
@@ -724,10 +640,8 @@ void main() {
     // Color/prepass split every parity (the gl_FrontFacing shading nuance
     // applies to double-sided too), so no gate there. The mesh-table read above
     // used the REAL meshIndex; only this batch search sees the parity bit.
-    uint parityBit = ((instFlags & kMirroredBit) != 0u) ? kMeshParityBit : 0u;
-    if (pc.classMode == kClassModeShadow && (instFlags & kDepthDoubleSidedBit) != 0u) {
-        parityBit = 0u;
-    }
+    uint parityBit = (pc.classMode == kClassModeShadow) ? ge_ShadowParityBit(instFlags)
+                     : (((instFlags & kMirroredBit) != 0u) ? kMeshParityBit : 0u);
     // Draw consolidation: the tables key their mesh axis on the per-mesh
     // ORDERED rank, so route the search through the per-call map. The record
     // fields below still read the REAL meshIndex -- records stay
@@ -740,7 +654,7 @@ void main() {
     }
     searchMesh |= parityBit;
 
-    uint batchId = ge_FindBatch(searchMat, searchMesh);
+    uint batchId = ge_FindBatch(searchMat, searchMesh, pc.batchCount);
     if (batchId == kBatchNotFound) {
         atomicAdd(stats.sliceStats[pc.statsBase].tableMisses, 1u);
         return;

@@ -1018,9 +1018,11 @@ TEST_F(ShaderCompilationCacheEpochTest, CbtHeadProgramsKeepProfileBindingsInBoth
             ShaderCacheKey key = MakeTestKey("CBT/cbt_surface.glsl");
             key.Source.VertexModifierPath = "CBT/cbt_vertex_modifier.glsl";
             key.VariantKey.vertexFlags = VertexAttributeFlags::None;
+            // The keywords CBTTerrainMaterial registers; cbt_surface.glsl refuses centroid inputs.
             key.VariantKey.materialKeywords = MaterialKeyword::CustomVertexShader |
                 MaterialKeyword::HasVertexOutputMod | MaterialKeyword::Instanced |
-                MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::IBL;
+                MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::IBL |
+                MaterialKeyword::SurfaceInputsAtPixelCenter;
             MaterialCompileSpec spec = MakeTestSpec("CBT/cbt_surface.glsl");
             spec.vertexModifierPath = key.Source.VertexModifierPath;
             spec.customVertexShader = true;

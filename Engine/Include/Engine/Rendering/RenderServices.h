@@ -816,9 +816,10 @@ class RenderServices
         /// Planes in ExtractFrustumPlanes order, relative to the origin of the request's sector.
         std::array<Mathematics::Vector4, 6> Planes{};
     };
-    /// Culls the shadow casters of `viewId` against each slice and scatters every slice at LOD 0.
-    /// Returns the draw-stream ordering value that the slices' depth passes read, or an invalid
-    /// value when the slices were not culled and scattered this frame: the caller then draws none.
+    /// Culls the shadow casters of `viewId` against each slice and builds each slice's caster lists
+    /// and LOD 0 draws (GPUDrawStreamBuilder::ScheduleLateShadowLists). Returns the draw-stream
+    /// ordering value that the slices' depth passes read, or an invalid value when the slices were
+    /// not culled and listed this frame: the caller then draws none.
     Rendering::RenderGraph::RGBuffer ScheduleLateShadowSlices(Rendering::RenderGraph::RGFrame& frame,
         Rendering::ViewId viewId, const Mathematics::Vector3Int& originSector,
         std::span<const LateShadowSlice> slices);
@@ -2289,6 +2290,9 @@ class RenderServices
         // edge (and ordering the bake before this view's world pass).
         Rendering::RenderGraph::RGTexture IblIrradiance{};
         Rendering::RenderGraph::RGTexture IblPrefilter{};
+        // The cubes of the world's local reflection probes: ImageBasedLightingFeature::kMaxLocalProbes slots.
+        Rendering::RenderGraph::RGTexture IblLocalIrradiance[2]{};
+        Rendering::RenderGraph::RGTexture IblLocalPrefilter[2]{};
         Rendering::RenderGraph::RGTexture IblBrdfLut{};
         // RT shadow-mask (DirectionalShadowMode::RayTraced): the per-view ray-query mask
         // declared by the phase-A world arm, bound as ge_rtShadowMask on

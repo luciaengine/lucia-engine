@@ -1130,62 +1130,82 @@ TEST(RGGpuDriven, IntrospectScatterNeverCreatesThePipeline)
     builder->Shutdown();
 }
 
-// A later schedule call of a frame cannot grow the arena, so the frame's first call grows it for
-// the slices that the frame announced. Without the announcement the appended call trips the guard.
-TEST(RGGpuDriven, ReservedAppendedSlicesFitAfterTheFirstScatterOfTheFrame)
+// Each view's late shadow lists claim their own region of the late list buffer. A later call of a
+// frame that outgrows the buffer moves to a larger one, and the earlier call's ranges keep the
+// buffer they were published into.
+TEST(RGGpuDriven, LateShadowListsGrowMidFrameAndKeepTheEarlierCallsBuffer)
 {
     RG_REQUIRE_DEVICE(dev);
+    if (!dev->GetCapabilities().supportsBufferDeviceAddress)
+        GTEST_SKIP() << "late shadow lists need buffer device addresses";
     GPUScene::SetCullingShaderLoader(&TestShaderLoader);
     GPUDrawStreamBuilder::SetShaderLoader(&TestShaderLoader);
+    if (const char* missing = FirstUnloadablePkg({"Shaders/draw_stream_late_shadow_lists.shaderpkg"}))
+        GTEST_SKIP() << missing << " unavailable";
     auto scene = GPUSceneFactory::CreateSmallScene(dev.get());
-    // One batch whose snapshot fills more than half of the initial arena per slice.
-    constexpr uint32_t kBatchInstances = 600000u;
+    // One shadow row whose snapshot sizes every page's list at 2000 words.
+    constexpr uint32_t kRowInstances = 2000u;
     BatchRegistry registry;
-    for (uint32_t instance = 0; instance < kBatchInstances; ++instance)
+    for (uint32_t instance = 0; instance < kRowInstances; ++instance)
         registry.OnInstanceAdded(/*materialIndex=*/0u, /*meshIndex=*/0u, /*mirrored=*/false);
 
-    for (const bool reserve : {true, false})
+    auto builder = std::make_unique<GPUDrawStreamBuilder>(dev.get());
+    ASSERT_TRUE(builder->Initialize());
+    FramePools pools(dev.get());
+    RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    BufferDesc descriptor;
+    descriptor.size = 4096;
+    descriptor.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    const BufferHandle visibilityBuffer = dev->CreateBuffer(descriptor);
+    ASSERT_TRUE(visibilityBuffer.IsValid());
+    const RGBuffer visibility = frame.ImportExternalBuffer("Vis", visibilityBuffer);
+    const GPUScene::GPUSceneFrameRG sceneRG = scene->ImportFrameResources(frame);
+    constexpr std::array<uint8_t, 8> kPages{0xE3u, 0xE4u, 0xE5u, 0xE6u, 0xE7u, 0xE8u, 0xE9u, 0xEAu};
+    const auto schedule = [&](uint32_t viewId, uint32_t pageCount)
     {
-        SCOPED_TRACE(::testing::Message() << "reserve=" << reserve);
-        auto builder = std::make_unique<GPUDrawStreamBuilder>(dev.get());
-        ASSERT_TRUE(builder->Initialize());
-        if (!builder->GetOrCreateScatterPipeline().IsValid())
-            GTEST_SKIP() << "draw_command_scatter.shaderpkg unavailable";
-        FramePools pools(dev.get());
-        RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
-        frame.BeginFrame(0);
-        BufferDesc descriptor;
-        descriptor.size = 4096;
-        descriptor.usage = static_cast<uint32_t>(BufferUsage::Storage);
-        const BufferHandle visibilityBuffer = dev->CreateBuffer(descriptor);
-        ASSERT_TRUE(visibilityBuffer.IsValid());
-        const RGBuffer visibility = frame.ImportExternalBuffer("Vis", visibilityBuffer);
-        const GPUScene::GPUSceneFrameRG sceneRG = scene->ImportFrameResources(frame);
-        const auto schedule = [&](const char* suffix, std::initializer_list<uint8_t> cascades)
-        {
-            for (const uint8_t cascade : cascades)
-            {
-                GPUDrawStreamBuilder::SliceRegistration slice{};
-                slice.viewId = 1u;
-                slice.cascadeIndex = cascade;
-                slice.disableVisibilityCheck = true;
-                builder->RegisterSlice(slice);
-            }
-            return builder->ScheduleUnifiedScatter(frame, suffix, 0, visibility, sceneRG.Instances, sceneRG.ScatterHot,
-                sceneRG.Meshes, registry, {}, {}, {}, {}, 8u, static_cast<uint32_t>(scene->GetMeshes().size()));
-        };
+        GPUDrawStreamBuilder::LateShadowListRequest request{};
+        request.ViewId = viewId;
+        request.CullingIndices = std::span(kPages).first(pageCount);
+        request.Visibility = visibility;
+        request.VisibilityStride = 64u;
+        return builder->ScheduleLateShadowLists(frame, request, sceneRG.Instances, sceneRG.Meshes, registry, {}, {}, {},
+                                                8u, static_cast<uint32_t>(scene->GetMeshes().size()));
+    };
 
-        builder->BeginArenaFrame();
-        if (reserve)
-            builder->ReserveAppendedSlices(2u);
-        EXPECT_TRUE(schedule("First", {GPUDrawStreamBuilder::kCascadeIndexNone}).IsValid());
-        const RGBuffer appended = schedule("Appended", {0x10u, 0x11u});
-        EXPECT_EQ(appended.IsValid(), reserve);
-        EXPECT_EQ(builder->FindBatchDrawRange(1u, 0x11u, 0u, 0u, GPUDrawStreamBuilder::SlicePhase::A).IsValid(), reserve);
-        frame.Execute();
-        dev->WaitForIdle();
-        dev->DestroyBuffer(visibilityBuffer);
-    }
+    builder->BeginArenaFrame();
+    // One page, then eight: the first buffer holds the first call, not both.
+    EXPECT_TRUE(schedule(1u, 1u).IsValid());
+    EXPECT_TRUE(schedule(2u, 8u).IsValid());
+    const auto first = builder->FindBatchDrawRange(1u, kPages[0], 0u, 0u, GPUDrawStreamBuilder::SlicePhase::A);
+    const auto second = builder->FindBatchDrawRange(2u, kPages[7], 0u, 0u, GPUDrawStreamBuilder::SlicePhase::A);
+    ASSERT_TRUE(first.IsValid());
+    ASSERT_TRUE(second.IsValid());
+    EXPECT_NE(first.recordBuffer.id, second.recordBuffer.id);
+    EXPECT_NE(first.indirectionAddress, second.indirectionAddress);
+    EXPECT_TRUE(builder->HasPublishedRangesForPhase(2u, kPages[7], GPUDrawStreamBuilder::SlicePhase::A));
+    frame.Execute();
+    dev->WaitForIdle();
+    builder->Shutdown();
+    dev->DestroyBuffer(visibilityBuffer);
+}
+
+// A late page costs one 4 B word per snapshot instance plus its rows. A unified scatter slice
+// costs blocksPerSlice draw records of 20 B and their 4 B indirection words per instance.
+TEST(RGGpuDriven, LateShadowListLayoutCostsOneWordPerInstanceAndPage)
+{
+    constexpr uint32_t kPages = 24u;
+    constexpr uint32_t kRows = 24u;
+    constexpr uint32_t kInstances = 50000u;
+    const auto layout = GPUDrawStreamBuilder::MakeLateShadowListLayout(16u, kPages, kRows, kRows, kInstances);
+    EXPECT_EQ(layout.CountsBase, 16u);
+    EXPECT_EQ(layout.RunCountsBase, layout.CountsBase + kPages * kRows);
+    EXPECT_EQ(layout.CommandsBase, layout.RunCountsBase + kPages * kRows);
+    EXPECT_EQ(layout.WordsBase, layout.CommandsBase + kPages * kRows * 5u);
+    EXPECT_EQ(layout.EndWord, layout.WordsBase + uint64_t{kPages} * kInstances);
+    const uint64_t listBytes = (layout.EndWord - 16u) * sizeof(uint32_t);
+    const uint64_t consolidatedSliceBytes = uint64_t{kPages} * 2u * kInstances * (20u + 4u);
+    EXPECT_LT(listBytes * 10u, consolidatedSliceBytes);
 }
 
 // E2 — ScheduleUnifiedScatter(RGFrame&): publishes the ordering proxy,

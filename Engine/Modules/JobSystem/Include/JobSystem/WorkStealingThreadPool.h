@@ -1021,23 +1021,23 @@ class WorkStealingThreadPool
     // nobody takes another lock while holding it.
     struct ParkSlot
     {
-        std::mutex Mutex;
+        mutable std::mutex Mutex;
         std::condition_variable Condition;
         bool Signaled = false;
     };
     // Read-mostly: construction writes them; every park and every wake reads them. One slot and one idle bit per
     // worker, each slot and mask word on its own line (none in inline mode). A waker claims a worker when its
-    // fetch_and clears the bit.
-    UniquePtr<GameEngine::FalseSharingPadded<ParkSlot>[]> m_ParkSlots;
+    // fetch_and clears the bit. A Vector tracks the slot count directly. The hardened array accessor in
+    // Apple libc++ can read over-aligned allocation padding as the slot count on arm64.
+    Vector<GameEngine::FalseSharingPadded<ParkSlot>> m_ParkSlots;
     UniquePtr<GameEngine::FalseSharingPadded<std::atomic<uint64>>[]> m_IdleMask;
-    size_t m_ParkSlotCount = 0;
     size_t m_IdleMaskWords = 0;
     // Fills the handles to the bytes of a std::condition_variable and a std::mutex, so m_Counters and the members
     // after it sit at the offsets of the constructor's MeasuredLayout: per-task enqueue time changes with the
     // counters' placement. The constructor checks the offset at compile time.
     [[maybe_unused]] char m_PadKeepsCounterPlacement[sizeof(std::mutex) + sizeof(std::condition_variable) -
                                                      sizeof(m_ParkSlots) - sizeof(m_IdleMask) -
-                                                     sizeof(m_ParkSlotCount) - sizeof(m_IdleMaskWords)];
+                                                     sizeof(m_IdleMaskWords)];
 
     // Wake protocol state: the atomics that threads write on every task or every idle lap, in writer groups. A full
     // separation of char padding comes before each group and after the last, so no two groups, and no group and a

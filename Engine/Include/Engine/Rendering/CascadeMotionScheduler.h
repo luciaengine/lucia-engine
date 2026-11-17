@@ -32,8 +32,11 @@
 // instead of silently deferring against arbitrarily old content.
 //
 // Under CascadeMotionSource::CasterDeformation (vegetation sway at a still
-// camera) a forced render goes on top of the budget, because a held near
-// cascade shows as a hitch: the cycle is {0,1}, {0,1}, {0,1,2,3}.
+// camera) the budget keeps the near cascades fresh, and the slots outside it
+// render on top of the budget in deadline order, one per frame where the
+// staleness bound allows, so they never all render in one frame: cap 2 /
+// maxAge 2 gives {0,1,2}, {0,1,3}, {0,1}; cap 1 / maxAge 3 gives {0,1},
+// {0,2}, {0,3}, {0}.
 //
 // Correctness classes (caster content, contributor, under-draw, physical,
 // config, first render, cull-settle) NEVER defer and NEVER consume budget:
@@ -144,7 +147,7 @@ class CascadeMotionScheduler
     {
         uint64_t Deferred = 0;        // slot-frames deferred
         uint64_t ForcedByAge = 0;     // renders forced by the staleness bound
-        uint64_t ForcedBeyondCap = 0; // staleness-forced renders past the budget
+        uint64_t ForcedBeyondCap = 0; // renders past the budget the staleness bound required
     };
     // Per-view aggregate. Returns a zero Stats for an unknown view.
     const Stats& GetStats(uint32_t viewId) const;

@@ -763,6 +763,7 @@ set(RENDERING_CORE_SOURCES
 		    Source/Core/GPUCulling.cpp
 		    Source/Core/PrevVisibleResetTracker.cpp
 		    Source/Core/GPUDrawStreamBuilder.cpp
+		    Source/Core/GPUDrawStreamLateShadowLists.cpp
 		    Source/Core/RecomputeElision.cpp
 		    Source/Core/FrustumCullingStrategy.cpp
 		    Source/Core/HzbCullingStrategy.cpp
@@ -1540,6 +1541,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(draw_command_scatter draw_command_scatter.comp)
     _ge_add_shaderpkg_compute(draw_stream_group_compact draw_stream_group_compact.comp)
     _ge_add_shaderpkg_compute(draw_stream_instance_compact draw_stream_instance_compact.comp)
+    _ge_add_shaderpkg_compute(draw_stream_late_shadow_lists draw_stream_late_shadow_lists.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_compact draw_command_scatter_compact.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_stats draw_command_scatter_stats.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_compact_stats draw_command_scatter_compact_stats.comp)
