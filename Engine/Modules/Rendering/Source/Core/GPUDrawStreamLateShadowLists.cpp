@@ -338,7 +338,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleLateShadowLists(
     const RenderGraph::RGBuffer ordering = frame.ImportExternalBuffer("DrawStream.Ordering", m_SentinelBuffer);
     frame.AddPass(
         "GPUDrawStream.LateShadowLists", PassPhase::kEarlySetup,
-        [&](RenderGraph::RGPassBuilder& builder)
+        [&request, instances, meshes, ordering, pass](RenderGraph::RGPassBuilder& builder)
         {
             builder.Read(request.Visibility);
             builder.Read(instances);
