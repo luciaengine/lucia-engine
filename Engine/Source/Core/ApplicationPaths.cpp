@@ -291,7 +291,7 @@ std::filesystem::path ApplicationPaths::GetUserCacheDirectory()
     std::error_code ec;
 
 #if defined(GE_PLATFORM_MOBILE)
-    char* path = SDL_GetPrefPath("OpenEngine", "Player");
+    char* path = SDL_GetPrefPath("LuciaEngine", "Player");
     fs::path result = path ? path : "";
     SDL_free(path);
     return result;
@@ -323,7 +323,7 @@ std::filesystem::path ApplicationPaths::GetUserDataDirectory()
     std::error_code ec;
 
 #if defined(GE_PLATFORM_MOBILE)
-    char* path = SDL_GetPrefPath("OpenEngine", "Player");
+    char* path = SDL_GetPrefPath("LuciaEngine", "Player");
     fs::path result = path ? path : "";
     SDL_free(path);
     return result;

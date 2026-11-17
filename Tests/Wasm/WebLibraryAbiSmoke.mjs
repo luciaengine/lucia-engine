@@ -140,8 +140,8 @@ function deferred() {
 }
 
 before(async () => {
-    const { default: createOpenEngine } = await import(pathToFileURL(modulePath).href);
-    core = await createOpenEngine();
+    const { default: createLuciaEngine } = await import(pathToFileURL(modulePath).href);
+    core = await createLuciaEngine();
     abi = adaptModule(core);
     const model = fs.readFileSync(modelPath);
     server = http.createServer((request, response) => {
