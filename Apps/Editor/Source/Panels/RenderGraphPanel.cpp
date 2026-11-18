@@ -237,6 +237,13 @@ std::vector<BarrierDetail> QueryBarrierDetails(RG::RGFrame* frame, const std::st
     return out;
 }
 
+// The Profile button's label and icon: Stop Profiling with a stop icon while profiling runs.
+void ShowProfileState(Button& button, bool profiling)
+{
+    button.SetText(profiling ? "Stop Profiling" : "Profile");
+    button.SetGlyphClass(profiling ? "button-glyph-stop" : "button-glyph-profile");
+}
+
 } // namespace
 
 RenderGraphPanel::~RenderGraphPanel()
@@ -264,13 +271,13 @@ void RenderGraphPanel::BuildUI()
     profileBtn->AddClass("small");
     profileBtn->AddClass("secondary");
     profileBtn->AddClass("render-graph-btn-profile");
-    profileBtn->SetText("Profile");
+    ShowProfileState(*profileBtn, false);
     profileBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent& e) {
         Button& b = static_cast<Button&>(*e.CurrentTarget);
         m_ProfilingEnabled = !m_ProfilingEnabled;
         if (m_LastFrame)
             m_LastFrame->SetProfilingEnabled(m_ProfilingEnabled);
-        b.SetText(m_ProfilingEnabled ? "Stop Profiling" : "Profile");
+        ShowProfileState(b, m_ProfilingEnabled);
     });
     m_ProfileButton = profileBtn.get();
     toolbar->AddChild(std::move(profileBtn));
@@ -288,6 +295,7 @@ void RenderGraphPanel::BuildUI()
     captureBtn->AddClass("secondary");
     captureBtn->AddClass("render-graph-btn-capture");
     captureBtn->SetText("Capture in RenderDoc");
+    captureBtn->SetGlyphClass("button-glyph-capture");
     captureBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
         if (!m_LastRenderDoc || !m_LastRenderDoc->IsAvailable())
             return;
@@ -313,6 +321,7 @@ void RenderGraphPanel::BuildUI()
     exportBtn->AddClass("secondary");
     exportBtn->AddClass("render-graph-btn-export");
     exportBtn->SetText("Export CSV");
+    exportBtn->SetGlyphClass("button-glyph-export");
     exportBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { ExportCsv(); });
     m_ExportCsvButton = exportBtn.get();
     toolbar->AddChild(std::move(exportBtn));
@@ -321,6 +330,7 @@ void RenderGraphPanel::BuildUI()
     sortBtn->AddClass("small");
     sortBtn->AddClass("secondary");
     sortBtn->AddClass("render-graph-btn-sort");
+    sortBtn->SetGlyphClass("button-glyph-sort");
     sortBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { CycleSortMode(); });
     m_SortButton = sortBtn.get();
     toolbar->AddChild(std::move(sortBtn));
@@ -460,7 +470,7 @@ void RenderGraphPanel::BuildUI()
                 if (m_LastFrame)
                     m_LastFrame->SetProfilingEnabled(m_ProfilingEnabled);
                 if (m_ProfileButton)
-                    m_ProfileButton->SetText(m_ProfilingEnabled ? "Stop Profiling" : "Profile");
+                    ShowProfileState(*m_ProfileButton, m_ProfilingEnabled);
                 e.Stop();
             }
         });
@@ -561,7 +571,7 @@ void RenderGraphPanel::Update(RenderDocCapture* renderDoc, Rendering::RenderGrap
     }
 
     if (m_ProfileButton)
-        m_ProfileButton->SetText(m_ProfilingEnabled ? "Stop Profiling" : "Profile");
+        ShowProfileState(*m_ProfileButton, m_ProfilingEnabled);
     RefreshProfilingHint();
     RefreshCaptureHint();
 

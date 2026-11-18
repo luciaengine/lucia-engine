@@ -83,6 +83,7 @@ void CpuProfilerPanel::BuildUI()
     pauseBtn->AddClass("secondary");
     pauseBtn->AddClass("cpu-profiler-btn-pause");
     pauseBtn->SetText("Pause");
+    pauseBtn->SetGlyphClass("button-glyph-pause");
     pauseBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { TogglePause(); });
     m_EnableButton = pauseBtn.get();
     toolbar->AddChild(std::move(pauseBtn));
@@ -92,6 +93,7 @@ void CpuProfilerPanel::BuildUI()
     dumpBtn->AddClass("secondary");
     dumpBtn->AddClass("cpu-profiler-btn-dump");
     dumpBtn->SetText("Dump to Log");
+    dumpBtn->SetGlyphClass("button-glyph-log");
     dumpBtn->RegisterEventHandler(kEventButtonClick, [](UIEvent&) { Profiling::CpuProfiler::Get().RequestDump(); });
     toolbar->AddChild(std::move(dumpBtn));
 
@@ -338,11 +340,13 @@ void CpuProfilerPanel::UpdateHeaderLabel()
         if (m_Paused)
         {
             m_EnableButton->SetText("Resume");
+            m_EnableButton->SetGlyphClass("button-glyph-resume");
             m_EnableButton->AddClass("paused");
         }
         else
         {
             m_EnableButton->SetText("Pause");
+            m_EnableButton->SetGlyphClass("button-glyph-pause");
             m_EnableButton->RemoveClass("paused");
         }
     }

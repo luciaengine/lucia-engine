@@ -158,3 +158,36 @@ TEST(ButtonTests, RightClickIsNeverClaimed)
     EXPECT_FALSE(SendWithButton(b, kEventMouseUp, 10, 10, 1));
     EXPECT_FALSE(b.HasClass("pressed"));
 }
+
+// The glyph is one child with the class "button-glyph" and the class the owner gives. A new class
+// replaces the old one on the same child, and an empty class removes the child.
+TEST(ButtonTests, SetGlyphClassAddsReplacesAndRemovesOneGlyphChild)
+{
+    Button button;
+    button.SetText("Pause");
+    const auto glyphs = [&button]() {
+        std::vector<UIElement*> found;
+        for (const auto& child : button.GetChildren())
+        {
+            if (child->HasClass("button-glyph"))
+                found.push_back(child.get());
+        }
+        return found;
+    };
+
+    EXPECT_TRUE(glyphs().empty());
+    button.SetGlyphClass("button-glyph-pause");
+    ASSERT_EQ(glyphs().size(), 1u);
+    UIElement* glyph = glyphs().front();
+    EXPECT_TRUE(glyph->HasClass("button-glyph-pause"));
+
+    button.SetGlyphClass("button-glyph-resume");
+    ASSERT_EQ(glyphs().size(), 1u);
+    EXPECT_EQ(glyphs().front(), glyph) << "a new class made a second glyph";
+    EXPECT_TRUE(glyph->HasClass("button-glyph-resume"));
+    EXPECT_FALSE(glyph->HasClass("button-glyph-pause")) << "the old class stayed";
+
+    button.SetGlyphClass("");
+    EXPECT_TRUE(glyphs().empty());
+    EXPECT_EQ(button.GetText(), "Pause");
+}

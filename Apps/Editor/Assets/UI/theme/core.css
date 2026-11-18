@@ -875,9 +875,10 @@ button.stacked-curves-icon,
 	display: none;
 }
 
+/* 16 px: the art reaches its canvas edge, so "contain" draws it larger than its toolbar neighbors. */
 .frame-playback-range-icon {
 	background-image: url("editor:Icons/FramePlaybackRange.png");
-	background-size: contain;
+	background-size: 16px 16px;
 	background-repeat: no-repeat;
 	background-position: center;
 	opacity: 0.35;

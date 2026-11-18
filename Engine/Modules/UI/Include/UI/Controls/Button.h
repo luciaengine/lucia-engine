@@ -24,6 +24,10 @@ public:
     // laid out as text.
     float WidthForText(std::string_view text) const;
 
+    // The icon before the label: a child with the class "button-glyph" and `glyphClass`, both
+    // drawn by the host's stylesheet. A new class replaces the old one; empty removes the icon.
+    void SetGlyphClass(std::string_view glyphClass);
+
     // Event handling
     void OnEvent(UIEvent& e) override;
 
@@ -110,6 +114,8 @@ private:
     EventHandlerToken m_OnClickToken{};
     std::string m_Text;
     Label* m_LabelChild = nullptr; // owned by UIElement children vector
+    UIElement* m_GlyphChild = nullptr; // owned by UIElement children vector
+    std::string m_GlyphClass;
 
     bool m_Armed = false; // true if mouse down started on this element
 };
