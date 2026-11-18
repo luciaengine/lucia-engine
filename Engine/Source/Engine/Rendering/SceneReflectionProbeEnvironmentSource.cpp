@@ -6,6 +6,7 @@
 #include "Engine/Rendering/IrradianceReadbackFeature.h"
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
+#include "Engine/Rendering/ProbeCaptureWorldPass.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "RenderServicesDetail.h"
@@ -659,9 +660,7 @@ bool SceneReflectionProbeEnvironmentSource::DeclareFaceCapture(
     m_Services->SetWorldPassExcludeEnvironment(!CaptureDesc().CaptureEnvironment);
     // The capture view runs no render graph, so its pass binds the fallback ExposureHistory, whose
     // pre-exposure reads as 1: the cube stores absolute radiance (P = 1 by construction).
-    const auto world = m_Services->AddWorldPassForView(
-        frame, m_ViewId, targets, MaterialKeyword::Instanced,
-        RenderServices::WorldPassDrawScope::All, ProbeFaceCullingIndex(face));
+    const auto world = AddProbeCaptureWorldPass(*m_Services, frame, m_ViewId, targets, ProbeFaceCullingIndex(face));
     m_Services->SetWorldPassExcludeEnvironment(false);
     return world.Pass.IsValid();
 }

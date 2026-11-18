@@ -2,7 +2,14 @@
 
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 
+#include <cstdint>
 #include <string>
+
+namespace GameEngine::Rendering
+{
+struct CameraData;
+struct ViewParamsUBO;
+} // namespace GameEngine::Rendering
 
 namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 {
@@ -33,6 +40,12 @@ class ViewParamsUploadNode final : public IRenderPipelineNode
     // (renderWidth >= outputWidth, or either extent is zero) — the scale-1.0
     // byte-neutrality invariant RenderPipelineDeclareTests pins.
     static float ComputeTaauMipBias(uint32_t renderWidth, uint32_t outputWidth);
+
+    // Writes the ViewParams fields that the camera and the raster extent set: the matrices, the eye,
+    // the render origin, the depth terms, ge_viewRanges.xyz and ge_screenSize. The other fields stay.
+    // cullingRange is the far distance of the light clusters, in meters.
+    static void PackCameraFields(const Rendering::CameraData& camera, float cullingRange, uint32_t width,
+                                 uint32_t height, Rendering::ViewParamsUBO& ubo);
 
   private:
     std::string m_Id;

@@ -243,6 +243,12 @@ const ExtractedLight* SelectPrimaryDirectional(std::span<const ExtractedLight> s
 // darkness in its colour, not its intensity, so no consumer may gate on the intensity alone.
 float DeliveredLuminance(const ExtractedLight& light);
 
+// The distance in meters from the position of a point, spot or area light beyond which it lights
+// nothing: the range, plus the half size of an area light's emitter (GE_AreaLightExtent in
+// clustered_lighting.glsl). The probe capture and its scene digest use the same reach.
+float LocalLightReach(GameEngine::Components::LightType type, GameEngine::Components::AreaLightShape shape,
+                      float range, float areaWidth, float areaHeight, float areaRadius);
+
 // The primary directional when it lights anything: SelectPrimaryDirectional, or null when there is
 // none, it does not cast light, or it delivers nothing. The fog sun (height fog, clouds, volumetric
 // fog) comes from here and falls back to the sky when this is null.
@@ -1889,6 +1895,14 @@ class RenderServices
                                       ::GameEngine::Rendering::RenderGraph::RGBuffer buffer,
                                       ::GameEngine::Rendering::RenderGraph::RGBufferRead access,
                                       ForwardBufferReaders readers);
+    // Binds a host-written buffer range by its shader block name in every pass of `viewId` that this
+    // frame declares after the call. For a view that runs no render pipeline (a reflection probe
+    // capture face); a pipeline binding of the same name wins. A second call with the same name
+    // replaces the first. Returns false when the view already holds kMaxViewFrameBuffers names.
+    bool BindViewFrameBuffer(::GameEngine::Rendering::RenderGraph::RGFrame& frame,
+                             ::GameEngine::Rendering::ViewId viewId, StringId name,
+                             ::GameEngine::Rendering::BufferHandle buffer, uint64_t offset, uint64_t bytes);
+    static constexpr uint32_t kMaxViewFrameBuffers = 8;
     std::span<const DrawCommand> GetForwardCommands(::GameEngine::Rendering::ViewId viewId) const;
     bool HasForwardCommands(::GameEngine::Rendering::ViewId viewId) const;
     std::span<const DrawCommand> GetLateForwardCommands(
@@ -2329,6 +2343,14 @@ class RenderServices
         // declaration that binds it and bound by name "CompatInstanceList" in
         // every pass of the view. Invalid when the view draws nothing.
         UploadedBuffer CompatInstanceList{};
+        // The buffers BindViewFrameBuffer binds by shader block name in this view's passes.
+        struct NamedBuffer
+        {
+            StringId Name{};
+            UploadedBuffer Range{};
+        };
+        std::array<NamedBuffer, kMaxViewFrameBuffers> BoundBuffers{};
+        uint32_t BoundBufferCount = 0;
         // The depth texture the prepass arm attached this frame. The world
         // arm suppresses its depth clear / binds read-only ONLY when this
         // matches ITS depth target — identity, not a bool: a prepass run on

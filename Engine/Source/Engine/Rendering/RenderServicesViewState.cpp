@@ -105,6 +105,25 @@ float DeliveredLuminance(const ExtractedLight& l)
     return std::max(luma, 0.0f) * std::max(l.intensity, 0.0f);
 }
 
+float LocalLightReach(GameEngine::Components::LightType type, GameEngine::Components::AreaLightShape shape, float range, float areaWidth,
+                      float areaHeight, float areaRadius)
+{
+    const float reach = std::max(range, 0.0f);
+    if (type != GameEngine::Components::LightType::Area)
+        return reach;
+    const float width = std::max(areaWidth, 0.001f);
+    const float height = std::max(areaHeight, 0.001f);
+    const float radius = std::max(areaRadius, 0.001f);
+    switch (shape)
+    {
+    case GameEngine::Components::AreaLightShape::Rectangle: return reach + 0.5f * std::hypot(width, height);
+    case GameEngine::Components::AreaLightShape::Disc:
+    case GameEngine::Components::AreaLightShape::Sphere: return reach + radius;
+    case GameEngine::Components::AreaLightShape::Cylinder: return reach + std::hypot(radius, 0.5f * height);
+    }
+    return reach;
+}
+
 namespace
 {
 // View-independent light importance for contribution ordering. Higher = keep
