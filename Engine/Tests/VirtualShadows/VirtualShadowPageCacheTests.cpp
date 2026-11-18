@@ -238,6 +238,22 @@ TEST(VirtualShadowPageCacheTests, MissingPagesTakeTheRenderBudgetBeforeDeformedP
     EXPECT_EQ(std::ranges::count_if(rows, &VirtualShadowPageWork::NeedsRender), kVirtualShadowPageRenderBudget);
 }
 
+TEST(VirtualShadowPageCacheTests, ARefreshedPageKeepsItsTileContentAndANewPageDoesNot)
+{
+    VirtualShadowPageCache cache(64);
+    const auto resident = SunRow(0, 4);
+    ASSERT_EQ(RenderAll(cache, cache.Plan(resident, 1, 0)).size(), resident.size());
+
+    cache.MarkDeformed();
+    auto demand = SunRow(100, 2);
+    demand.insert(demand.end(), resident.begin(), resident.end());
+    for (const auto& row : cache.Plan(demand, 2, 1))
+    {
+        ASSERT_TRUE(row.NeedsRender);
+        EXPECT_EQ(row.Refresh, row.Page.X < 100) << "page " << row.Page.X;
+    }
+}
+
 TEST(VirtualShadowPageCacheTests, CropMapsTopLeftAtlasCoordinatesWithoutChangingPerspectiveDepth)
 {
     constexpr float kDepth = 2.0f;

@@ -164,6 +164,7 @@ void VirtualShadowPageCache::RefreshDeformed(std::span<VirtualShadowPageWork> ro
         tile.RenderFrame = frame;
         candidate.Row->Revision = tile.Revision;
         candidate.Row->NeedsRender = true;
+        candidate.Row->Refresh = true;
     }
 }
 
