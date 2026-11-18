@@ -209,8 +209,6 @@ private:
 
     std::string m_SearchQuery;
     size_t m_FilteredProjectCount = 0;
-    float m_LogoHueAnimationTime = 0.0f;
-    float m_LastLogoUpdateTime = -1.0f;
 };
 
 } // namespace GameEngine
