@@ -72,6 +72,8 @@ bool ApplyForceCompatOverride(RenderingDeviceCapabilities& caps)
     caps.supportsBufferDeviceAddress = false;
     caps.supportsDrawIndirectCountNative = false;
     caps.supportsShaderInt64 = false;
+    // WGSL has no 64-bit float type.
+    caps.supportsShaderFloat64 = false;
     // WGSL has no interpolate-at-offset builtin.
     caps.supportsShaderInterpolationFunctions = false;
     // Clip distances are an optional WebGPU feature.
