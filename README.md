@@ -96,7 +96,7 @@ build/                Build trees, one per preset (gitignored)
 
 ## Contributing
 
-This is an alpha: APIs and file formats may change between releases.
+APIs and file formats may change between releases.
 
 The engine is yours as much as ours: open issues, send pull requests, and help shape it. [CONTRIBUTING.md](CONTRIBUTING.md) and [CodingStyle.md](CodingStyle.md) say how.
 
