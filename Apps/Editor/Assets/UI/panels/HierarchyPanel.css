@@ -74,14 +74,16 @@
 	opacity: 0.4;
 }
 
+/* A hidden entity's crossed eye shows on every row, dimmer than the open eye of a hovered row, so it
+   reads as off. Hidden by a parent is dimmer still. */
 .hierarchy-panel .tree .tree-item .hierarchy-eye.eye-closed-by-parent {
 	background-image: url("editor:Icons/eye-off.svg");
-	opacity: 0.35;
+	opacity: 0.2;
 }
 
 .hierarchy-panel .tree .tree-item .hierarchy-eye.eye-closed {
 	background-image: url("editor:Icons/eye-off.svg");
-	opacity: 0.55;
+	opacity: 0.3;
 }
 
 .hierarchy-panel .tree .tree-item .hierarchy-eye:hover {
