@@ -293,7 +293,7 @@ TEST(SceneViewToolStrip, TheSplineEntryMenuListsTheSplineSettingsInOrder)
     const std::vector<std::string> expected = {
         "Curve Type", "Selection Shape", "Control Render Shape", "Knot Size", "Knot Outline Thickness",
         "Spline Thickness", "Default Radius", "Simplify Tolerance", "Smoothing Passes", "Mesh Acceleration",
-        "Auto-Connect to Nearby Spline", "Snap to Scene Meshes", "Pivot From Spline Center", "Spline Color...",
+        "Snap Ends to Nearby Splines", "Snap to Scene Meshes", "Pivot From Spline Center", "Spline Color...",
         "Brush Stroke Color...", "Reset to Defaults"};
     std::size_t next = 0;
     for (const ContextMenuManipulator::Item& item : items)

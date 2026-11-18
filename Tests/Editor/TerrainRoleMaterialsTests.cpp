@@ -391,9 +391,10 @@ TEST(TerrainRoleMaterials, TheGridIsOneCardPerLiveMaterialThenTheAddTile)
 
     EXPECT_EQ(root.FindById(HashStringId(CardId(4, "-card"))), nullptr) << "a retired material has a card";
 
-    // Wrapping is what makes the grid answer to the panel's width; a single row that overflows is
-    // the failure a fixed card width otherwise guarantees.
-    EXPECT_EQ(grid->Style().Get(Style::FlexWrap), std::optional<bool>(true));
+    // Wrapping is what makes the grid answer to the panel's width. The grid class holds the wrap
+    // (.terrain-role-material-grid in inspector.css); a wrap set from code would beat the sheet.
+    EXPECT_TRUE(grid->HasClass("terrain-role-material-grid"));
+    EXPECT_FALSE(grid->Style().Get(Style::FlexWrap).has_value()) << "code sets the grid's wrap";
 }
 
 // The row has to reach the width the fields beside it reach. Cards of one fixed width divide it
@@ -417,29 +418,18 @@ TEST(TerrainRoleMaterials, CardsShareOutTheRowRatherThanLeavingItShort)
     UIElement* grid = Roles::AddMaterialGrid(&root, &library, {}, {});
     ASSERT_NE(grid, nullptr);
 
-    // Stretched to the section body's width, which is what gives wrapping something to wrap
-    // against — content-sized, the row would end wherever its cards happened to end.
-    EXPECT_EQ(grid->Style().Get(Style::AlignSelf),
-              std::optional<AlignItems>(AlignItems::Stretch));
+    EXPECT_TRUE(grid->HasClass("terrain-role-material-grid"));
+    EXPECT_FALSE(grid->Style().Get(Style::AlignSelf).has_value()) << "code stretches the grid";
 
     const auto& cells = grid->GetChildren();
     ASSERT_EQ(cells.size(), 7u) << "six materials and the add tile";
     for (const auto& cell : cells)
     {
-        const std::optional<float> grow = cell->Style().Get(Style::FlexGrow);
-        ASSERT_TRUE(grow.has_value()) << cell->GetId() << " cannot take up slack";
-        EXPECT_GT(*grow, 0.0f) << cell->GetId() << " leaves the row short";
-
-        // Bounded on both ends: never below a card, never grown past one.
-        const std::optional<StyleLength> basis = cell->Style().Get(Style::FlexBasis);
-        const std::optional<StyleLength> minimum = cell->Style().Get(Style::MinWidth);
-        const std::optional<StyleLength> maximum = cell->Style().Get(Style::MaxWidth);
-        ASSERT_TRUE(basis.has_value() && minimum.has_value() && maximum.has_value())
-            << cell->GetId();
-        EXPECT_FLOAT_EQ(basis->Value, minimum->Value) << cell->GetId() << " starts off its floor";
-        EXPECT_GT(maximum->Value, minimum->Value) << cell->GetId() << " cannot grow at all";
-        EXPECT_LE(maximum->Value, minimum->Value * 2.0f)
-            << cell->GetId() << " may grow past a card into a banner";
+        EXPECT_TRUE(cell->HasClass("terrain-role-material-card")) << cell->GetId() << " is not sized as a card";
+        EXPECT_FALSE(cell->Style().Get(Style::FlexGrow).has_value()) << cell->GetId() << " grows from code";
+        EXPECT_FALSE(cell->Style().Get(Style::FlexBasis).has_value()) << cell->GetId() << " has a basis from code";
+        EXPECT_FALSE(cell->Style().Get(Style::MinWidth).has_value()) << cell->GetId() << " has a floor from code";
+        EXPECT_FALSE(cell->Style().Get(Style::MaxWidth).has_value()) << cell->GetId() << " has a cap from code";
     }
 }
 
@@ -473,44 +463,22 @@ TEST(TerrainRoleMaterials, ALongNameWrapsToASecondLineFromItsStart)
     // the data, so the tooltip and any later widening still have all of it.
     EXPECT_EQ(name->GetText(), "Weathered Limestone Scree");
 
-    // Wraps instead of being cut mid-line...
-    EXPECT_EQ(name->Style().Get(Style::WhiteSpaceProp),
-              std::optional<WhiteSpace>(WhiteSpace::Normal))
-        << "the name is still one clipped line";
-    // ...starts at the beginning, which is the half the centred clip was eating...
-    EXPECT_EQ(name->Style().Get(Style::TextAlignProp), std::optional<TextAlign>(TextAlign::Left))
-        << "a name that overruns loses its start again";
-    // ...and a word with no break in it breaks rather than escaping the card.
-    EXPECT_EQ(name->Style().Get(Style::OverflowWrapProp),
-              std::optional<OverflowWrap>(OverflowWrap::BreakWord))
-        << "an unbreakable name runs past its card";
+    // The name class holds the wrap, the left alignment, the word breaking and the two-line height.
+    for (Label* each : {name, dynamic_cast<Label*>(root.FindById(HashStringId(CardId(3, "-name"))))})
+    {
+        ASSERT_NE(each, nullptr);
+        EXPECT_TRUE(each->HasClass("terrain-role-material-name"));
+        EXPECT_FALSE(each->Style().Get(Style::WhiteSpaceProp).has_value()) << "code sets the name's wrap";
+        EXPECT_FALSE(each->Style().Get(Style::TextAlignProp).has_value()) << "code aligns the name";
+        EXPECT_FALSE(each->Style().Get(Style::OverflowWrapProp).has_value()) << "code breaks the name";
+        EXPECT_FALSE(each->Style().Get(Style::Height).has_value()) << "code sets the name's height";
+    }
+    EXPECT_EQ(dynamic_cast<Label*>(root.FindById(HashStringId(CardId(3, "-name"))))->GetText(),
+              "Unbrokenlimestonescreename");
 
-    // Two lines, reserved: fixed height, so a one-word card and a five-word card are the same size.
-    const std::optional<StyleLength> height = name->Style().Get(Style::Height);
-    const std::optional<StyleLength> minHeight = name->Style().Get(Style::MinHeight);
-    const std::optional<StyleLength> maxHeight = name->Style().Get(Style::MaxHeight);
-    const std::optional<float> lineHeight = name->Style().Get(Style::LineHeight);
-    ASSERT_TRUE(height.has_value() && minHeight.has_value() && maxHeight.has_value());
-    ASSERT_TRUE(lineHeight.has_value());
-    EXPECT_FLOAT_EQ(height->Value, *lineHeight * 2.0f) << "the name block is not two lines tall";
-    EXPECT_FLOAT_EQ(minHeight->Value, height->Value);
-    EXPECT_FLOAT_EQ(maxHeight->Value, height->Value) << "a third line grows the card past its row";
-    // A line has to fit the glyphs it holds, or two lines of reserve show one and a half.
-    const std::optional<StyleLength> font = name->Style().Get(Style::FontSize);
-    ASSERT_TRUE(font.has_value());
-    EXPECT_GT(*lineHeight, font->Value) << "the line box is tighter than the type in it";
-
-    // Whatever spills past line two is caught by the card, not painted over its neighbour.
-    EXPECT_EQ(name->Style().Get(Style::OverflowProp), std::optional<Overflow>(Overflow::Hidden));
-    EXPECT_EQ(card->Style().Get(Style::OverflowProp), std::optional<Overflow>(Overflow::Hidden))
-        << "a long name escapes its card";
-
-    // The unbreakable name gets the same treatment rather than a special case.
-    Label* unbroken = dynamic_cast<Label*>(root.FindById(HashStringId(CardId(3, "-name"))));
-    ASSERT_NE(unbroken, nullptr);
-    EXPECT_EQ(unbroken->GetText(), "Unbrokenlimestonescreename");
-    EXPECT_EQ(unbroken->Style().Get(Style::OverflowWrapProp),
-              std::optional<OverflowWrap>(OverflowWrap::BreakWord));
+    // The card class clips what spills past line two.
+    EXPECT_TRUE(card->HasClass("terrain-role-material-card"));
+    EXPECT_FALSE(card->Style().Get(Style::OverflowProp).has_value()) << "code sets the card's clip";
 }
 
 // A card has to say which material it is, in both the way you scan a palette and the way you read
@@ -538,14 +506,9 @@ TEST(TerrainRoleMaterials, ACardShowsItsMaterialsTintAndName)
     Label* name = dynamic_cast<Label*>(root.FindById(HashStringId(CardId(5, "-name"))));
     ASSERT_NE(name, nullptr);
     EXPECT_EQ(name->GetText(), "Packed Snow");
-    const std::optional<StyleLength> size = name->Style().Get(Style::FontSize);
-    ASSERT_TRUE(size.has_value());
-    EXPECT_EQ(size->Unit, StyleLength::UnitType::Px);
-    // Editor UI floor — a card is the smallest text in this panel, so it is where a shrink lands.
-    EXPECT_GE(size->Value, 12.0f);
-    // And it reads at the panel's own label size (.inspector-label, 13px) rather than at the
-    // floor: a name a size below every label beside it looked like a caption, not an identity.
-    EXPECT_FLOAT_EQ(size->Value, 13.0f);
+    // The name class sets the panel's label size (13 px in inspector.css), not code.
+    EXPECT_TRUE(name->HasClass("terrain-role-material-name"));
+    EXPECT_FALSE(name->Style().Get(Style::FontSize).has_value()) << "code sizes the name";
 
     // The slot is still reachable — it is what painted ground stores — without being printed on
     // the card, which is what read as hardcoded.
@@ -582,16 +545,10 @@ TEST(TerrainRoleMaterials, ASwatchSaysItIsATintEvenWhenTheTintIsWhite)
     EXPECT_EQ(chip->GetText(), "Tint");
     EXPECT_EQ(chip->GetParent(), swatch) << "the chip is not on the swatch it describes";
 
-    // It rides on an arbitrary colour, so it brings its own contrast rather than inheriting the
-    // panel's: an opaque-enough plate under light text reads over white and over black alike.
-    const std::optional<std::uint32_t> plate = chip->Style().Get(Style::BackgroundColor);
-    ASSERT_TRUE(plate.has_value()) << "the chip has no plate, so it vanishes into a pale tint";
-    EXPECT_GE(*plate >> 24, 0x80u) << "the plate is too sheer to carry text over any tint";
-    EXPECT_TRUE(chip->Style().Get(Style::Color).has_value());
-
-    const std::optional<StyleLength> size = chip->Style().Get(Style::FontSize);
-    ASSERT_TRUE(size.has_value());
-    EXPECT_GE(size->Value, 12.0f) << "the chip is under the editor's font floor";
+    // It rides on an arbitrary color, so it brings its own contrast: the chip class holds a dark
+    // plate under light text (.terrain-role-material-tint-chip in inspector.css), not code.
+    EXPECT_TRUE(chip->HasClass("terrain-role-material-tint-chip"));
+    EXPECT_FALSE(chip->Style().Get(Style::BackgroundColor).has_value()) << "code colors the chip";
 }
 
 // Double click, the idiom the asset browser's own grid uses (GridView activates a cell on the
