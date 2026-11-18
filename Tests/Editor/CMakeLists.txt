@@ -981,6 +981,7 @@ set(EDITOR_TEST_SOURCES
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkySun/SkySunCurveReference.cpp
 	# Switching the Sky Mode across a selection, the same way.
 	SkyModeSwitchTests.cpp
+	SkyTimeOfDayTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkyEnvironment/SkyEnvironmentEdit.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/LuxText.cpp
 	# Source-level guard on the sky inspector: which container each group's rows are added to.

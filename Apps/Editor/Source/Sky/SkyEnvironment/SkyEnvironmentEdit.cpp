@@ -79,4 +79,10 @@ void SwitchSkyMode(ECS::World* w, ECS::EntityHandle primary, const std::vector<E
                                                              EditorChangeNotifications::ChangeKind::InspectorRebuild);
 }
 
+void SetSkyHourAndPlaceSun(Components::SkyEnvironment& sky, float hours)
+{
+    sky.TimeOfDayHours = hours;
+    sky.AutoSunMoon = true;
+}
+
 } // namespace GameEngine::Editor
