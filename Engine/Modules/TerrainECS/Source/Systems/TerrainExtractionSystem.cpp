@@ -1035,8 +1035,10 @@ void TerrainExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 // manager streams every tiled terrain, each through its own state.
                 if (!m_StreamingManager)
                 {
-                    auto* jobSystem = &EngineCore::GetInstance().GetJobSystem();
-                    m_StreamingManager = std::make_unique<TileStreamingManager>(jobSystem);
+                    // Before EngineCore::Initialize there is no pool, and the manager dispatches no tile load.
+                    EngineCore& engine = EngineCore::GetInstance();
+                    m_StreamingManager = std::make_unique<TileStreamingManager>(
+                        engine.IsInitialized() ? &engine.GetJobSystem() : nullptr);
                 }
 
                 const std::vector<TileCoord>* integratedTilesThisFrame = nullptr;
