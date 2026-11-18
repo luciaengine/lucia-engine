@@ -104,7 +104,7 @@ Join us on Discord: https://discord.gg/ptyXSNz7NW
 
 ## A note on AI
 
-AI tools were used in the development of Lucia Engine and of Open Engine, the base it shares. The engine is not "vibe coded": every change draws on its developers' experience and passes human review before it lands, and the same review stands at the door for contributions. Pull requests are judged on design, correctness and evidence, whoever or whatever wrote them; generated code that is not understood, tested and explained by its author is not accepted.
+AI tools were used in the development of Lucia Engine and of Open Engine, the base it shares. Every change draws on its developers' experience and passes human review before it lands, and the same review stands at the door for contributions. Pull requests are judged on design, correctness and evidence, whoever or whatever wrote them; generated code that is not understood, tested and explained by its author is not accepted.
 
 The team welcomes the responsible use of AI. The engine ships with built-in MCP tools and integrations to enable agentic workflows driven by human creativity and design.
 
