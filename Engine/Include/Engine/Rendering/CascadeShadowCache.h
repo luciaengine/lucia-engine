@@ -30,10 +30,9 @@
 // setting, the camera, the project resolution). The node then refits, and that
 // frame's render was culled with the OLD planes — its content can be
 // edge-deficient beyond the overlap margin. A re-render heals it; a cache must
-// not freeze it. A record is therefore only skippable once a render happened on
-// a frame whose fit equalled the previous frame's fit (CullSettled) — one extra
-// re-render per fit transition buys exact parity with the always-render
-// pipeline whichever fit the cull ran on.
+// not freeze it. A record settles when its caller proves that the current
+// culling fit produced the recorded draw stream. Without that proof, require
+// consecutive equal fits before treating a render as a valid cached baseline.
 //
 // Fit-freeze qualification: with GE_SHADOW_FIT_FREEZE on, the cull-consumed
 // camera is part of the same lagged input — GPU LOD selection reads the FROZEN
@@ -197,9 +196,10 @@ class CascadeShadowCache
     // Commit: the pass for (viewId, slot) actually recorded this frame with `in`.
     // Call from pass exec, not from declare — a declared-then-culled pass must
     // not settle against an unwritten reverse-Z image (cleared-to-near = fully
-    // shadowed). Must still follow the same frame's Evaluate (the settle stamp
-    // reads the prev-fit equality Evaluate computed).
-    void OnRendered(uint32_t viewId, uint32_t slot, const CascadeRenderInputs& in);
+    // shadowed). Must still follow the same frame's Evaluate. Pass
+    // currentFitCulled only when the draw stream used the recorded fit.
+    void OnRendered(uint32_t viewId, uint32_t slot, const CascadeRenderInputs& in,
+                    bool currentFitCulled = false);
 
     // Exec→declare feedback: the slot's LAST declared render reported a silent
     // under-draw at exec time (DepthUnderDrawTracker). Called by the declare
@@ -247,7 +247,7 @@ class CascadeShadowCache
         bool HasObservedCasters = false;
         CascadeRenderInputs Rendered{}; // inputs at last committed render
         bool HasRendered = false;
-        bool CullSettled = false; // last render's fit equalled the CONSECUTIVE previous frame's fit
+        bool CullSettled = false; // last recorded cull and raster fit are known to agree
         bool UnderDrew = false;   // exec feedback: last render silently dropped draws
         CascadeRenderInputs PrevFrame{}; // last Evaluate's inputs (settle tracking)
         bool HasPrevFrame = false;

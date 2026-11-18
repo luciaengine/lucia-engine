@@ -246,6 +246,7 @@ const CascadeFrameData& ShadowMapRenderFeature::FitViewCascades(
     ApplySceneDistanceFit(record, inputs);
     const bool reuse = record.FittedForCull && SameFitInputs(record.Inputs, inputs);
     record.FittedForCull = false;
+    record.ReusedCullFit = reuse;
     if (!reuse)
         return RefitView(rs, viewId, inputs, record);
     // Another view's fit may have run since: the rest of this node's declaration

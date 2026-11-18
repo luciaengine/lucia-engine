@@ -137,6 +137,10 @@ TEST(RGGpuDriven, CullingSubmissionsScheduleUnderTheRGArm)
 
     ASSERT_TRUE(pipeline->GetVisibilityRG().IsValid())
         << "submissions were dropped — the RenderGraph arm is a no-op again";
+    EXPECT_TRUE(pipeline->HasScheduledCascadeCull(frame, 7, 0));
+    EXPECT_TRUE(pipeline->HasScheduledCascadeCull(frame, 7, 1));
+    EXPECT_FALSE(pipeline->HasScheduledCascadeCull(frame, 7, 2));
+    EXPECT_FALSE(pipeline->HasScheduledCascadeCull(frame, 8, 0));
 
     // Anchor a consumer so the chain survives cull, then execute for real.
     // EARLIER phase than the culling passes (kEarlySetup=0): at equal phase
@@ -165,6 +169,9 @@ TEST(RGGpuDriven, CullingSubmissionsScheduleUnderTheRGArm)
     EXPECT_LT(cullPos, consumerPos) << "culling must precede its consumer (RAW edge)";
     // Per-view ranges published exactly like the old arm (1 view + 2 cascades).
     EXPECT_EQ(pipeline->GetViewVisibilityRanges().size(), 3u);
+
+    frame.BeginFrame(1);
+    EXPECT_FALSE(pipeline->HasScheduledCascadeCull(frame, 7, 0));
 }
 
 // T2 — the skinning-atlas coupling: two writers + one reader through THREE

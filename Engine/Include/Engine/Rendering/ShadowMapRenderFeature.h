@@ -1518,6 +1518,8 @@ class ShadowMapRenderFeature : public IRenderFeature
         DirectionalShadowSettings Authored{};
         bool HasAuthored = false;
         bool FittedForCull = false;
+        RenderGraph::RGFrameStamp CullSubmission;
+        bool ReusedCullFit = false;
         // The scene fit's range (FitShadowDistanceToScene); 0 = none yet.
         float FittedDistance = 0.0f;
     };
