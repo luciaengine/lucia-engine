@@ -25,7 +25,7 @@
         <Button id="LogClear" class="small secondary" text="Clear">
           <UIElement class="button-glyph button-glyph-clear" />
         </Button>
-        <Button id="LogPause" class="small secondary pause-toggle-button" text="Pause">
+        <Button id="LogPause" class="small secondary" text="Pause">
           <UIElement id="LogPauseGlyph" class="button-glyph button-glyph-pause" />
         </Button>
         <Button id="LogCopyAll" class="small secondary" text="Copy All">
