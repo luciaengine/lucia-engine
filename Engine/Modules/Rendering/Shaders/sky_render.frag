@@ -103,13 +103,41 @@ const float PI = 3.14159265359;
 // is clamped to a half-texel inset so the warped poles never read past the edge.
 const float kSkyViewLutHeight = 256.0;
 
+// The sky-view LUT at `uv` through a cubic B-spline: 4 bilinear taps. A LUT texel spans about
+// 1.4 degrees, and a linear read of the sun's sharp glow shows its texels as blocks and steps.
+// The B-spline weights are never negative, so the glow does not ring.
+vec3 SampleSkyViewLutSmooth(vec2 uv)
+{
+    vec2 size = vec2(textureSize(uSkyViewLUT, 0));
+    vec2 texel = uv * size - 0.5;
+    vec2 base = floor(texel);
+    vec2 f = texel - base;
+    vec2 f2 = f * f;
+    vec2 f3 = f2 * f;
+    vec2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+    vec2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    vec2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    vec2 w3 = f3 / 6.0;
+    vec2 g0 = w0 + w1;
+    vec2 g1 = w2 + w3;
+    vec2 t0 = (base - 0.5 + w1 / g0) / size;
+    vec2 t1 = (base + 1.5 + w3 / g1) / size;
+    // The elevation stays inside the half-texel inset the pole clamp gives a linear read.
+    t0.y = clamp(t0.y, 0.5 / size.y, 1.0 - 0.5 / size.y);
+    t1.y = clamp(t1.y, 0.5 / size.y, 1.0 - 0.5 / size.y);
+    return g0.y * (g0.x * GE_TAP_LOD0(uSkyViewLUT, vec2(t0.x, t0.y)).rgb +
+                   g1.x * GE_TAP_LOD0(uSkyViewLUT, vec2(t1.x, t0.y)).rgb) +
+           g1.y * (g0.x * GE_TAP_LOD0(uSkyViewLUT, vec2(t0.x, t1.y)).rgb +
+                   g1.x * GE_TAP_LOD0(uSkyViewLUT, vec2(t1.x, t1.y)).rgb);
+}
+
 // The sky-view LUT's radiance toward `dirWS`, in the planet-local horizon frame (east, up, north).
 vec3 SkyViewLutRadiance(vec3 dirWS, vec3 east, vec3 up, vec3 north)
 {
     vec3 dLocal = vec3(dot(dirWS, east), dot(dirWS, up), dot(dirWS, north));
     vec2 skyUv = GE_SkyDirToViewLutUv(dLocal);
     skyUv.y = clamp(skyUv.y, 0.5 / kSkyViewLutHeight, 1.0 - 0.5 / kSkyViewLutHeight);
-    return GE_TAP_LOD0(uSkyViewLUT, skyUv).rgb;
+    return SampleSkyViewLutSmooth(skyUv);
 }
 
 vec2 EncodeDirToLatLongUv(vec3 dirWS)

@@ -299,7 +299,8 @@ Rgb SkyRadiance(const Atmosphere& a, const double dir[3], const double sun[3], i
 
 // The direction a sky-view LUT texel centre stores (GE_SkyViewLutUvToDir with the ContinueHorizon
 // fold of sky_view_lut.comp at the planet's horizon), in the planet-local frame the pass builds for a
-// camera cameraHeight up on +Y: east = +X, up = +Y, north = +Z.
+// camera cameraHeight up on +Y: east = +X, up = +Y, north = +Z. The fold's turn away from the
+// brightest body is left out: it starts at the fold and is under 1e-4 rad at the rows read here.
 void SkyViewTexelDirection(const Atmosphere& a, uint32_t x, uint32_t y, double out[3],
                            double cameraHeight = kCameraHeight)
 {
@@ -321,6 +322,12 @@ void SkyViewTexelDirection(const Atmosphere& a, uint32_t x, uint32_t y, double o
         out[1] = foldSin;
         out[2] = foldCos * std::sin(az);
     }
+}
+
+// The sky-view texel at (column, row).
+const Rgb& SkyViewTexel(const std::vector<Rgb>& lut, uint32_t column, uint32_t row)
+{
+    return lut[static_cast<size_t>(row) * kSkyViewSize + column];
 }
 
 // The sky-view row whose texel centres sit closest above the given elevation.
@@ -884,6 +891,29 @@ TEST_F(SkyAtmosphereLutReferenceTest, ASunBelowTheHorizonIsShadowedByThePlanet)
     }
 }
 
+// A sun 2 degrees up glows brightest on the horizon under it. Far under the horizon the fold turns
+// every azimuth away from the sun, so the ground under the sun stores the same colour as the ground
+// 90 degrees to either side, and the glow does not run down to the nadir as one column.
+TEST_F(SkyAtmosphereLutReferenceTest, TheGroundUnderALowSunHasNoColumnOfItsGlow)
+{
+    double sun[3];
+    SunDirection(2.0, sun);
+    const std::vector<Rgb> lut = RunSkyView(sun, true);
+    const uint32_t sunColumn = kSkyViewSize / 2u;  // azimuth 0, the sun's
+    const uint32_t leftColumn = kSkyViewSize / 4u; // 90 degrees to one side
+    const uint32_t rightColumn = 3u * kSkyViewSize / 4u;
+    const uint32_t deepRow = kSkyViewSize / 16u;   // about 70 degrees under the horizon
+    const Rgb& underSun = SkyViewTexel(lut, sunColumn, deepRow);
+    EXPECT_LT(WorstRatioError(underSun, SkyViewTexel(lut, leftColumn, deepRow)), 0.02)
+        << "under the sun " << Describe(underSun) << ", 90 degrees aside "
+        << Describe(SkyViewTexel(lut, leftColumn, deepRow));
+    EXPECT_LT(WorstRatioError(underSun, SkyViewTexel(lut, rightColumn, deepRow)), 0.02);
+    // The horizon itself keeps the sun's glow: the turn starts at the fold.
+    const uint32_t horizonRow = kSkyViewSize / 2u;
+    EXPECT_GT(SkyViewTexel(lut, sunColumn, horizonRow)[0], 2.0 * SkyViewTexel(lut, leftColumn, horizonRow)[0])
+        << "the horizon under a low sun lost its glow";
+}
+
 // The whole chain at the horizon and 10 degrees up, with the multiscatter LUT the pass reads: what
 // the sky draws there for the Basic 3D template's 10 h sun. Before the model was fixed this was 2 to
 // 5 times the integral and blue where the integral is near-white. Under the default crisp day's
@@ -996,10 +1026,11 @@ TEST_F(SkyAtmosphereLutReferenceTest, AtAltitudeTheSkyViewReachesDownToThePlanet
     }
 }
 
-// Every texel below the horizon stores its own azimuth's horizon, down to the nadir: on the ground
-// and at 30 km the bottom row equals the row just below the planet's horizon. A fold that raised y
-// and renormalised turned the texels near the nadir, whose horizontal part is tiny, toward the
-// zenith on the ground and toward the nadir at altitude.
+// Every texel well below the horizon stores a horizon colour, down to the nadir: on the ground and
+// at 30 km the bottom row equals the row 20 degrees below the horizontal, where the fold has turned
+// every azimuth fully away from the sun. A fold that raised y and renormalised turned the texels
+// near the nadir, whose horizontal part is tiny, toward the zenith on the ground and toward the
+// nadir at altitude.
 TEST_F(SkyAtmosphereLutReferenceTest, TheTexelsNearTheNadirHoldTheirAzimuthsHorizon)
 {
     double sun[3];
@@ -1007,8 +1038,9 @@ TEST_F(SkyAtmosphereLutReferenceTest, TheTexelsNearTheNadirHoldTheirAzimuthsHori
     for (const double altitude : {kCameraHeight, 30000.0})
     {
         const std::vector<Rgb> lut = RunSkyView(sun, false, altitude);
-        // 6 degrees below the horizontal: below the planet's horizon at both altitudes.
-        const double s = -std::sqrt(2.0 * 6.0 / 180.0);
+        // 20 degrees below the horizontal: past the fold's full turn at both altitudes (the horizon
+        // dips 5.6 degrees at 30 km, and the turn is complete 8 degrees under it).
+        const double s = -std::sqrt(2.0 * 20.0 / 180.0);
         const uint32_t foldedRow = static_cast<uint32_t>(std::lround(0.5 * (s + 1.0) * kSkyViewSize - 0.5));
         for (const uint32_t column : {kSkyViewSize / 2u, kSkyViewSize / 4u})
         {
