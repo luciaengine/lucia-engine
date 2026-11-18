@@ -1399,6 +1399,20 @@ void VulkanCommandList::DrawMeshTasks(uint32_t taskCount)
     }
 }
 
+void VulkanCommandList::DrawMeshTasksIndirect(BufferHandle argsBuffer, size_t argsOffsetBytes)
+{
+    if (m_CommandBuffer == VK_NULL_HANDLE || !m_IsRecording || !m_Device)
+        return;
+    const auto dispatch = m_Device->GetCmdDrawMeshTasksIndirectEXT();
+    const VkBuffer buffer = m_Device->GetVkBuffer(argsBuffer);
+    if (!dispatch || buffer == VK_NULL_HANDLE)
+        return;
+
+    ApplyRasterState();
+    MaybeCaptureDescriptorState();
+    dispatch(m_CommandBuffer, buffer, argsOffsetBytes, 1, sizeof(VkDrawMeshTasksIndirectCommandEXT));
+}
+
 void VulkanCommandList::DrawIndirect(BufferHandle commandBuffer, uint32_t drawCount, uint32_t stride)
 {
     if (m_CommandBuffer == VK_NULL_HANDLE || !m_IsRecording)

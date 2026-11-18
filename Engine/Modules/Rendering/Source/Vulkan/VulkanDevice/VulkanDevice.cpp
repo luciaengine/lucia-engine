@@ -3235,6 +3235,9 @@ bool VulkanDevice::CreateLogicalDevice()
         ? reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(m_Device, "vkCmdDrawMeshTasksEXT"))
         : nullptr;
     m_SupportsMeshShaderEXT = (m_FpCmdDrawMeshTasksEXT != nullptr);
+    m_FpCmdDrawMeshTasksIndirectEXT = m_SupportsMeshShaderEXT
+        ? reinterpret_cast<PFN_vkCmdDrawMeshTasksIndirectEXT>(vkGetDeviceProcAddr(m_Device, "vkCmdDrawMeshTasksIndirectEXT"))
+        : nullptr;
 #ifdef VK_EXT_HDR_METADATA_EXTENSION_NAME
     m_FpSetHdrMetadataEXT = m_HdrMetadataExtEnabled
         ? reinterpret_cast<PFN_vkSetHdrMetadataEXT>(vkGetDeviceProcAddr(m_Device, "vkSetHdrMetadataEXT"))
@@ -3602,6 +3605,7 @@ void VulkanDevice::QueryDeviceCapabilities()
 
     // Basic capabilities - check for extensions
     m_Capabilities.supportsMeshShaders = m_SupportsMeshShaderEXT;
+    m_Capabilities.supportsIndirectMeshTasks = m_FpCmdDrawMeshTasksIndirectEXT != nullptr;
     m_Capabilities.supportsRayTracing = CheckExtensionSupport("VK_KHR_ray_tracing_pipeline");
     // Enabled-at-init stash, not detection: true only when acceleration
     // structures + ray query were actually enabled on the logical device

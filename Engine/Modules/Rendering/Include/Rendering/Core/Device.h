@@ -865,6 +865,7 @@ constexpr GpuVendor ClassifyGpuVendor(uint32_t vendorId) noexcept
 struct RenderingDeviceCapabilities
 {
     bool supportsMeshShaders = false;
+    bool supportsIndirectMeshTasks = false;
     bool supportsRayTracing = false;
     // True when the backend's acceleration-structure and ray-query extensions
     // (plus the deferred-host-operations support they need) are ENABLED on the
