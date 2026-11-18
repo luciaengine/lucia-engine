@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "InspectorRegistry.h"
 #include "Inspectors/RenderPipeline/RenderPipelineInspector.h"
@@ -81,6 +83,7 @@ struct MountedPipelineInspector
         InspectorContext ctx{};
         ctx.Parent = Root;
         ctx.Object = &pipe;
+        ctx.AssetReloadedCallbacks = &ReloadCallbacks;
         if (fn)
             (*fn)(ctx);
     }
@@ -94,8 +97,20 @@ struct MountedPipelineInspector
         Manager.DrainDeferredActionsOnce();
     }
 
+    // True when every reload callback keeps the tree, as the Inspector panel asks after a reload.
+    bool KeepsTreeAfterReload() const
+    {
+        if (ReloadCallbacks.empty())
+            return false;
+        for (const auto& callback : ReloadCallbacks)
+            if (!callback())
+                return false;
+        return true;
+    }
+
     UIManager Manager{nullptr};
     UIElement* Root = nullptr;
+    std::vector<std::function<bool()>> ReloadCallbacks;
 };
 } // namespace
 
@@ -288,6 +303,71 @@ TEST_F(RenderPipelineInspectorTest, ShadowMapPassEditsTheCascadeCountInThePipeli
     ASSERT_NE(invalidCascades, nullptr);
     EXPECT_EQ(invalidCascades->GetSelectedValue(), "0");
     EXPECT_EQ(invalidCascades->GetSelectedLabel(), "0 (invalid)");
+}
+
+// An edit of one pass rebuilds that pass and leaves every other row of the tree in place. The save
+// changes only the edited key: building the tree adds no key to a pass.
+TEST_F(RenderPipelineInspectorTest, AnEditOfAPassRebuildsOnlyThatPass)
+{
+    const TestUtils::ScopedTempDir tmpDir{TestUtils::MakeUniqueTempDirectory("ge_editor_tests")};
+    const std::filesystem::path pipePath = tmpDir.Path() / "TwoPasses.rendergraph";
+    WriteTextFile(pipePath, R"JSON({ "schemaVersion": 2, "pipelineName": "TwoPasses", "passes": [
+        { "id": "Compute", "type": "ComputeShader", "shaderPkg": "Shaders/none.shaderpkg" },
+        { "id": "Shadows", "type": "ShadowMap", "resolution": 2048 } ],
+        "outputs": { "FinalColor": "View.Resolve" } })JSON");
+    RenderPipelineAsset pipe(GUID::Generate(), pipePath);
+    ASSERT_TRUE(pipe.Load());
+    const nlohmann::json computeBefore = nlohmann::json::parse(ReadTextFile(pipePath))["passes"][0];
+
+    MountedPipelineInspector inspector(pipe);
+    UIElement& root = *inspector.Root;
+    UIElement* computeId = root.FindById("rp-pass-0-id"_sid);
+    UIElement* pipelineName = root.FindById("rp-foldout-settings"_sid);
+    auto* resolution = dynamic_cast<Dropdown*>(root.FindById("rp-pass-1-resolution"_sid));
+    ASSERT_NE(computeId, nullptr);
+    ASSERT_NE(pipelineName, nullptr);
+    ASSERT_NE(resolution, nullptr);
+    // A rebuilt element does not keep this class, whatever address it gets.
+    computeId->AddClass("test-built-before-edit");
+    pipelineName->AddClass("test-built-before-edit");
+    resolution->AddClass("test-built-before-edit");
+
+    inspector.EditAsUser([resolution] { resolution->SetSelectedValue("4096"); });
+
+    EXPECT_TRUE(root.FindById("rp-pass-0-id"_sid)->HasClass("test-built-before-edit")) << "the other pass was rebuilt";
+    EXPECT_TRUE(root.FindById("rp-foldout-settings"_sid)->HasClass("test-built-before-edit")) << "the tree was rebuilt";
+    auto* rebuilt = dynamic_cast<Dropdown*>(root.FindById("rp-pass-1-resolution"_sid));
+    ASSERT_NE(rebuilt, nullptr);
+    EXPECT_FALSE(rebuilt->HasClass("test-built-before-edit")) << "the edited pass was not rebuilt";
+    EXPECT_EQ(rebuilt->GetSelectedValue(), "4096");
+
+    const nlohmann::json saved = nlohmann::json::parse(ReadTextFile(pipePath));
+    EXPECT_EQ(saved["passes"][1].value("resolution", 0u), 4096u);
+    EXPECT_EQ(saved["passes"][0], computeBefore) << "the save added keys to a pass it did not edit";
+}
+
+// The reload that follows a save of the Inspector keeps the tree. A reload of other text, as after
+// an undo or an edit outside the editor, asks the panel for a rebuild.
+TEST_F(RenderPipelineInspectorTest, OnlyAReloadOfOtherTextRebuildsTheTree)
+{
+    const TestUtils::ScopedTempDir tmpDir{TestUtils::MakeUniqueTempDirectory("ge_editor_tests")};
+    const std::filesystem::path pipePath = tmpDir.Path() / "ShadowPipe.rendergraph";
+    WriteTextFile(pipePath, MakeShadowMapPipeline(R"(, "resolution": 2048)"));
+    RenderPipelineAsset pipe(GUID::Generate(), pipePath);
+    ASSERT_TRUE(pipe.Load());
+
+    MountedPipelineInspector inspector(pipe);
+    auto* resolution = dynamic_cast<Dropdown*>(inspector.Root->FindById("rp-pass-0-resolution"_sid));
+    ASSERT_NE(resolution, nullptr);
+    EXPECT_TRUE(inspector.KeepsTreeAfterReload());
+
+    inspector.EditAsUser([resolution] { resolution->SetSelectedValue("4096"); });
+    ASSERT_EQ(pipe.Reload(), ReloadOutcome::Reloaded);
+    EXPECT_TRUE(inspector.KeepsTreeAfterReload()) << "the reload of the saved file rebuilds the tree";
+
+    WriteTextFile(pipePath, MakeShadowMapPipeline(R"(, "resolution": 1024)"));
+    ASSERT_EQ(pipe.Reload(), ReloadOutcome::Reloaded);
+    EXPECT_FALSE(inspector.KeepsTreeAfterReload()) << "the tree keeps showing a document that is not loaded";
 }
 
 // A resolution the node refuses stays selected and marked, so opening the inspector does not
