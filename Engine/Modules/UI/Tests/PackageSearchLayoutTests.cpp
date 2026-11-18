@@ -1,5 +1,5 @@
 #include "IsolatedUIFixture.h"
-#include "Core/Application.h"
+#include "Core/ApplicationPaths.h"
 #include "UI/Controls/SearchFieldWithFilter.h"
 
 #include <gtest/gtest.h>
@@ -14,7 +14,7 @@ TEST(PackageSearchLayout, ShippedSearchStaysCompactAndLeavesRoomForTheList)
     for (const char* relative : {"theme/tokens.css", "theme/widgets.css", "theme/views.css",
                                  "panels/PackageManagerPanel.css"})
     {
-        std::ifstream file(PathUtils::GetExecutableDirectory() / "Assets/UI" / relative);
+        std::ifstream file(ApplicationPaths::GetExecutableDirectory() / "Assets/UI" / relative);
         ASSERT_TRUE(file) << relative;
         std::ostringstream contents;
         contents << file.rdbuf();
