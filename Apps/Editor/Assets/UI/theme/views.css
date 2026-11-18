@@ -1495,9 +1495,9 @@ ListView {
 	display: none;
 }
 
-/* The Classic look (EditorSearchBars puts "search-bar-classic" on the bar): the field fill and a
+/* The Bordered look (EditorSearchBars puts "search-bar-bordered" on the bar): the field fill and a
    subtle border that lifts on hover. It comes before the active rule, so focus still wins. */
-.panel-search-bar.search-bar-classic {
+.panel-search-bar.search-bar-bordered {
 	background-color: var(--ui_color_bg_field);
 	border-color: var(--ui_color_border_subtle);
 }
@@ -1518,14 +1518,14 @@ ListView {
 	border-color: transparent;
 }
 
-/* The Classic look is always a filled field: Filled Search Bars applies to the Lucia look only. */
-.panel-search-bar.search-bar-classic.hidden:not(.active) {
+/* The Bordered look is always a filled field: Filled Search Bars applies to the Borderless look only. */
+.panel-search-bar.search-bar-bordered.hidden:not(.active) {
 	background-color: var(--ui_color_bg_field);
 	border-color: var(--ui_color_border_subtle);
 }
 
-/* After the rule above, so a resting Classic bar lifts its border on hover. */
-.panel-search-bar.search-bar-classic:hover:not(.active) {
+/* After the rule above, so a resting Bordered bar lifts its border on hover. */
+.panel-search-bar.search-bar-bordered:hover:not(.active) {
 	border-color: var(--ui_color_dropdown_outline_hover);
 }
 

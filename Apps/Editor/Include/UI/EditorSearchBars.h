@@ -25,8 +25,8 @@ public:
     // The look of a registered search bar: the editor's own, or a field fill with a subtle border.
     enum class Look
     {
-        Lucia,
-        Classic,
+        Borderless,
+        Bordered,
     };
     static Look GetLook();
     static void SetLook(Look look);
@@ -71,7 +71,7 @@ private:
     static inline bool s_Visible = false;
     static inline bool s_AtTop = false;
     static inline bool s_AccentFocusOutline = true;
-    static inline bool s_ClassicLook = false;
+    static inline bool s_BorderedLook = false;
     static inline bool s_ShowIconAndHint = false;
     static inline bool s_Loaded = false;
     static inline std::vector<RegisteredBar> s_Bars;

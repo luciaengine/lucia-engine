@@ -144,27 +144,27 @@ TEST(SearchBarSettings, TheIconAndHintRowShowsAndHidesBoth)
     toggle.Set(initial);
 }
 
-TEST(SearchBarSettings, TheStyleRowIsLuciaByDefaultAndSetsClassic)
+TEST(SearchBarSettings, TheStyleRowIsBorderlessByDefaultAndSetsBordered)
 {
     const auto style = SearchBarRow<SettingsFieldDescriptor::DropdownField>("Search Bar Style");
     ASSERT_TRUE(style.Set && style.Get);
-    EXPECT_EQ(style.DefaultValue, "Lucia");
-    EXPECT_EQ(style.Get(), "Lucia") << "with no saved choice, the style is not Lucia";
+    EXPECT_EQ(style.DefaultValue, "Borderless");
+    EXPECT_EQ(style.Get(), "Borderless") << "with no saved choice, the style is not Borderless";
     const std::string initial = style.Get();
     const RegisteredSearchBar bar;
-    EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-classic"));
+    EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-bordered"));
 
-    style.Set("Classic");
-    EXPECT_EQ(EditorSearchBars::GetLook(), EditorSearchBars::Look::Classic);
-    EXPECT_TRUE(bar.Built.RootPtr->HasClass("search-bar-classic"));
+    style.Set("Bordered");
+    EXPECT_EQ(EditorSearchBars::GetLook(), EditorSearchBars::Look::Bordered);
+    EXPECT_TRUE(bar.Built.RootPtr->HasClass("search-bar-bordered"));
 
-    style.Set("Lucia");
-    EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-classic"));
+    style.Set("Borderless");
+    EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-bordered"));
 
     style.Set(initial);
 }
 
-TEST(SearchBarSettings, TheFilledRowShowsForTheLuciaLookOnly)
+TEST(SearchBarSettings, TheFilledRowShowsForTheBorderlessLookOnly)
 {
     RegisterSearchBarSettingsCategory();
     SettingsCategoryDescriptor category;
@@ -178,9 +178,9 @@ TEST(SearchBarSettings, TheFilledRowShowsForTheLuciaLookOnly)
     ASSERT_TRUE(filledVisible) << "the Filled Search Bars row shows for every look";
     const EditorSearchBars::Look initial = EditorSearchBars::GetLook();
 
-    EditorSearchBars::SetLook(EditorSearchBars::Look::Lucia);
+    EditorSearchBars::SetLook(EditorSearchBars::Look::Borderless);
     EXPECT_TRUE(filledVisible());
-    EditorSearchBars::SetLook(EditorSearchBars::Look::Classic);
+    EditorSearchBars::SetLook(EditorSearchBars::Look::Bordered);
     EXPECT_FALSE(filledVisible());
 
     EditorSearchBars::SetLook(initial);

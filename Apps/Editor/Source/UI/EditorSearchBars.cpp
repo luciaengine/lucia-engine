@@ -70,12 +70,12 @@ EditorSearchBars::Look EditorSearchBars::GetLook()
 {
     if (!s_Loaded)
         LoadFromPreferences();
-    return s_ClassicLook ? Look::Classic : Look::Lucia;
+    return s_BorderedLook ? Look::Bordered : Look::Borderless;
 }
 
 void EditorSearchBars::SetLook(Look look)
 {
-    s_ClassicLook = look == Look::Classic;
+    s_BorderedLook = look == Look::Bordered;
     s_Loaded = true;
     SaveToPreferences();
     PruneNulls();
@@ -222,10 +222,10 @@ void EditorSearchBars::UnregisterRowIcon(UIElement* icon)
 
 void EditorSearchBars::ApplyLook(UIElement* searchBar)
 {
-    if (s_ClassicLook)
-        searchBar->AddClass("search-bar-classic");
+    if (s_BorderedLook)
+        searchBar->AddClass("search-bar-bordered");
     else
-        searchBar->RemoveClass("search-bar-classic");
+        searchBar->RemoveClass("search-bar-bordered");
 }
 
 void EditorSearchBars::ApplyHint(UIElement* searchBar)
@@ -295,7 +295,7 @@ void EditorSearchBars::LoadFromPreferences()
     prefs.TryGetBool("ui.searchBarsVisible", s_Visible);
     prefs.TryGetBool("ui.searchBarsAtTop", s_AtTop);
     prefs.TryGetBool("ui.searchBarsAccentFocusOutline", s_AccentFocusOutline);
-    prefs.TryGetBool("ui.searchBarsClassicLook", s_ClassicLook);
+    prefs.TryGetBool("ui.searchBarsBorderedLook", s_BorderedLook);
     prefs.TryGetBool("ui.searchBarsShowIconAndHint", s_ShowIconAndHint);
     s_Loaded = true;
 }
@@ -309,7 +309,7 @@ void EditorSearchBars::SaveToPreferences()
     prefs.SetBool("ui.searchBarsVisible", s_Visible);
     prefs.SetBool("ui.searchBarsAtTop", s_AtTop);
     prefs.SetBool("ui.searchBarsAccentFocusOutline", s_AccentFocusOutline);
-    prefs.SetBool("ui.searchBarsClassicLook", s_ClassicLook);
+    prefs.SetBool("ui.searchBarsBorderedLook", s_BorderedLook);
     prefs.SetBool("ui.searchBarsShowIconAndHint", s_ShowIconAndHint);
     prefs.Save(&err);
 }
