@@ -5,6 +5,7 @@
 #include "UI/Controls/DockPanel.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -21,6 +22,7 @@ class LogView;
 class Splitter;
 class TextArea;
 class UIElement;
+struct UIEvent;
 class WeightedPane;
 
 namespace EditorUI {
@@ -77,6 +79,8 @@ private:
     std::optional<float> FindNoticeTopBesideSelection() const;
     void OpenSelectedSource();
     void OpenSource(const std::string& file, int line);
+    /// A double-click on a stack trace line opens that frame's file and line.
+    void OnTraceMouseUp(UIEvent& e);
     void ShowContextMenu(float x, float y);
     void OnContextMenuCommand(uint32_t commandId);
 
@@ -93,7 +97,7 @@ private:
     Button* m_DetailSource = nullptr;
     TextArea* m_DetailMessage = nullptr;
     UIElement* m_DetailTraceTitle = nullptr;
-    UIElement* m_DetailFrames = nullptr;
+    TextArea* m_DetailTrace = nullptr;
     UIElement* m_SearchBar = nullptr;
     Button* m_PauseButton = nullptr;
     UIElement* m_PauseGlyph = nullptr;
@@ -105,6 +109,9 @@ private:
     std::function<void(const std::string&, int)> m_OnOpenSourceFile;
 
     std::uint64_t m_CallbackId = 0;
+
+    std::optional<size_t> m_LastTraceClickLine;
+    std::chrono::steady_clock::time_point m_LastTraceClickTime;
 
     bool m_DetailLayoutInitialized = false;
     bool m_DetailSideBySide = false;

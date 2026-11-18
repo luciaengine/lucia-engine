@@ -143,6 +143,11 @@ public:
     static std::string FormatSource(const Entry& entry);
     /// FormatLine, then the source and the stack trace when the entry has them: what Copy puts on the clipboard.
     static std::string FormatDetails(const Entry& entry);
+    /// The stack trace, one line per frame and no final newline: "[index] module!symbol  file:line".
+    /// Line N of the text is frame N.
+    static std::string FormatBacktrace(const Entry& entry);
+    /// The file and line of one stack frame; nothing when the frame names no file and line.
+    static std::optional<SourceToOpen> FrameSourceToOpen(const Entry& entry, size_t frameIndex);
     /// The C# location the message names (a compiler error names the script), else the entry's own
     /// source file and line, else the first stack frame with a file and line outside the logger;
     /// nothing when the entry names no line to open.

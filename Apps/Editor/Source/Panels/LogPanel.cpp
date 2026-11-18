@@ -2,11 +2,11 @@
 
 #include "EditorContextMenu/UIContextMenu.h"
 #include "Logger/Logger.h"
-#include "Panels/BacktraceFrameView.h"
 #include "Panels/LogPanel/LogChannelPopover.h"
 #include "Panels/LogView.h"
 #include "Platform/Clipboard.h"
 #include "Platform/ContextMenu.h"
+#include "Platform/SystemMetrics.h"
 #include "ScriptEditor/SourceLocation.h"
 #include "UI/ControlLayoutLoader.h"
 #include "UI/Controls/Button.h"
@@ -62,7 +62,7 @@ constexpr std::array<std::string_view, 24> kRequiredIds = {
     "LogDetailBody",
     "LogDetailMessage",
     "LogDetailTraceTitle",
-    "LogDetailFrames",
+    "LogDetailTrace",
 };
 constexpr const char* kHiddenClass = "hidden";
 constexpr const char* kFilterOnClass = "active";
@@ -194,7 +194,7 @@ void LogPanel::BuildFromLayout()
     m_DetailSource = FindIn<Button>(*root, "LogDetailSource");
     m_DetailMessage = FindIn<TextArea>(*root, "LogDetailMessage");
     m_DetailTraceTitle = FindIn<UIElement>(*root, "LogDetailTraceTitle");
-    m_DetailFrames = FindIn<UIElement>(*root, "LogDetailFrames");
+    m_DetailTrace = FindIn<TextArea>(*root, "LogDetailTrace");
     m_PauseButton = FindIn<Button>(*root, "LogPause");
     m_PauseGlyph = FindIn<UIElement>(*root, "LogPauseGlyph");
     m_ChannelsButton = FindIn<Button>(*root, "LogChannels");
@@ -202,7 +202,7 @@ void LogPanel::BuildFromLayout()
     UIElement* detailBody = FindIn<UIElement>(*root, "LogDetailBody");
     UIElement* searchHost = FindIn<UIElement>(*root, "LogSearchHost");
     if (!m_LogView || !m_Notice || !m_SplitBody || !m_ListPane || !m_DetailSplitter || !m_DetailPane ||
-        !m_DetailMessage || !m_DetailFrames || !m_PauseButton || !detailScroll || !detailBody || !searchHost)
+        !m_DetailMessage || !m_DetailTrace || !m_PauseButton || !detailScroll || !detailBody || !searchHost)
     {
         Logger::Log::Error("Log panel: {} is missing an element the panel needs; check its ids against LogPanel.cpp.",
                            kLayoutAssetPath);
@@ -214,6 +214,9 @@ void LogPanel::BuildFromLayout()
     if (UIElement* bodyParent = detailBody->GetParent())
         detailScroll->GetViewport()->AddChild(bodyParent->TakeChild(detailBody));
     m_DetailMessage->SetReadOnly(true);
+    m_DetailTrace->SetReadOnly(true);
+    m_DetailTrace->SetTooltip("Double-click a line to open its file in the Script Editor.");
+    m_DetailTrace->RegisterEventHandler(kEventMouseUp, [this](UIEvent& e) { OnTraceMouseUp(e); });
 
     WireFilterToggle(*root, LogModel::Severity::Error, "LogFilterError");
     WireFilterToggle(*root, LogModel::Severity::Warning, "LogFilterWarning");
@@ -415,7 +418,6 @@ void LogPanel::ShowDetail(const LogModel::Entry& entry)
     }
     m_DetailMessage->SetValue(entry.Text);
 
-    m_DetailFrames->RemoveAllChildren();
     const bool hasTrace = entry.Backtrace && !entry.Backtrace->empty();
     if (m_DetailTraceTitle)
     {
@@ -424,13 +426,12 @@ void LogPanel::ShowDetail(const LogModel::Entry& entry)
         else
             m_DetailTraceTitle->AddClass(kHiddenClass);
     }
+    m_DetailTrace->SetValue(LogModel::FormatBacktrace(entry));
     if (hasTrace)
-    {
-        const std::vector<Logger::BacktraceFrame>& frames = *entry.Backtrace;
-        for (size_t index = 0; index < frames.size(); ++index)
-            m_DetailFrames->AddChild(BuildBacktraceFrameRow(
-                index, frames[index], [this](const std::string& file, int line) { OpenSource(file, line); }));
-    }
+        m_DetailTrace->RemoveClass(kHiddenClass);
+    else
+        m_DetailTrace->AddClass(kHiddenClass);
+    m_LastTraceClickLine.reset();
 
     if (m_DetailPane->HasClass(kHiddenClass))
     {
@@ -444,6 +445,27 @@ void LogPanel::ShowDetail(const LogModel::Entry& entry)
     m_SplitBody->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
 }
 
+void LogPanel::OnTraceMouseUp(UIEvent& e)
+{
+    if (e.Button != 0)
+        return;
+    const std::string& text = m_DetailTrace->GetValue();
+    const size_t caret = std::min(static_cast<size_t>(std::max(m_DetailTrace->GetCaretIndex(), 0)), text.size());
+    const size_t line = static_cast<size_t>(std::count(text.begin(), text.begin() + caret, '\n'));
+    const auto now = std::chrono::steady_clock::now();
+    const bool secondClick = m_LastTraceClickLine == line &&
+                             now - m_LastTraceClickTime < Platform::GetDoubleClickInterval();
+    m_LastTraceClickLine = secondClick ? std::nullopt : std::optional<size_t>(line);
+    m_LastTraceClickTime = now;
+    if (!secondClick)
+        return;
+    const LogModel::Entry* entry = m_LogView ? m_LogView->GetSelectedEntry() : nullptr;
+    if (!entry)
+        return;
+    if (const std::optional<LogModel::SourceToOpen> source = LogModel::FrameSourceToOpen(*entry, line))
+        OpenSource(source->File, source->Line);
+}
+
 void LogPanel::HideDetail()
 {
     if (!m_DetailPane || m_DetailPane->HasClass(kHiddenClass))
@@ -454,7 +476,8 @@ void LogPanel::HideDetail()
     m_DetailSplitter->AddClass(kHiddenClass);
     m_DetailPane->SetFlexWeight(0.0f);
     m_ListPane->SetFlexWeight(1.0f);
-    m_DetailFrames->RemoveAllChildren();
+    m_DetailTrace->SetValue({});
+    m_LastTraceClickLine.reset();
     m_SplitBody->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
 }
 
