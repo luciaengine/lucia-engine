@@ -82,4 +82,11 @@ void main()
     Visibility[34] = CompareQuad(complete, 0u, vec2(127.75, 127.875) / 256.0, 0.0, 0.5);
     Visibility[35] = CompareQuad(missing, 0u, vec2(127.75 / 256.0, 0.25), 0.0, 0.5);
     Visibility[36] = CompareQuad(complete, 0u, vec2(0.001, 0.25), 1.5 / 1024.0, 0.5);
+
+    // A level of 8 x 8 pages with a resident radius of 4 pages fades between 2 and 3 pages from its center.
+    Visibility[37] = GE_VirtualShadowLevelFade(vec2(0.5), 8u, 4.0);
+    Visibility[38] = GE_VirtualShadowLevelFade(vec2(0.75, 0.5), 8u, 4.0);
+    Visibility[39] = GE_VirtualShadowLevelFade(vec2(0.8125, 0.5), 8u, 4.0);
+    Visibility[40] = GE_VirtualShadowLevelFade(vec2(0.9375, 0.5), 8u, 4.0);
+    Visibility[41] = GE_VirtualShadowLevelFade(vec2(0.9375, 0.5), 8u, 0.0);
 }

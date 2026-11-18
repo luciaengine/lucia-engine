@@ -103,4 +103,9 @@ std::vector<VirtualShadowPage> DecodeVirtualShadowFeedback(
     std::span<const uint32_t> words, const VirtualShadowFeedbackLayout& dispatched,
     const VirtualShadowFeedbackLayout& current);
 
+// Pages from the center of a sun window to the nearest of its requested pages that are past the
+// pool cut (the plan rows from tileCount on). Half the window side when no requested page is past the cut.
+float VirtualShadowResidentRadius(std::span<const VirtualShadowPageWork> work, size_t tileCount,
+                                  const VirtualShadowFeedbackProjection& window);
+
 } // namespace GameEngine::Engine::Renderer

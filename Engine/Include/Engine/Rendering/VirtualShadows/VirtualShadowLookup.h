@@ -28,7 +28,8 @@ struct alignas(16) VirtualShadowLookupProjectionGPU
     uint32_t LastMip;
     uint32_t Reserved;
     // xyz = relative light position and w = far plane for local lights.
-    // x = world units per texel and y = light depth span for directional levels.
+    // x = world units per texel, y = light depth span and z = resident radius in pages from the
+    // window center (VirtualShadowResidentRadius; 0 = no cut) for directional levels.
     Mathematics::Vector4 LightPositionRelAndFar;
 };
 static_assert(sizeof(VirtualShadowLookupProjectionGPU) == 96);

@@ -133,7 +133,8 @@ TEST_F(VirtualShadowLookupTest, FiltersNonAdjacentLayersAndSignalsMissingPages)
                                   0.0f, 1.0f, -1.0f, -1.0f, 0.0f, 1.0f, 0.5625f, 0.0625f,
                                   0.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f, 0.0f, 0.0f, -1.0f, -1.0f,
                                   0.5625f, 0.0625f, 0.0f, -1.0f, -1.0f, -1.0f, 1.0f, -1.0f,
-                                  0.25f, 0.5625f, 0.15625f, -1.0f, -1.0f};
+                                  0.25f, 0.5625f, 0.15625f, -1.0f, -1.0f,
+                                  0.0f, 0.0f, 0.5f, 1.0f, 0.0f};
     using namespace GameEngine::Engine::Renderer;
     struct Projections
     {

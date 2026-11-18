@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -207,6 +208,28 @@ TEST(VirtualShadowFeedbackTests, DirectionalWindowRetainsOnlyOverlappingDelayedW
     changed = active;
     changed.Projections[0].DirectionalGrid->LightAxes[0][0] = -1.0f;
     EXPECT_FALSE(SameVirtualShadowProjection(oldRow, changed.Projections[0]));
+}
+
+// The lookup fades a sun level before the nearest page that the pool could not hold.
+TEST(VirtualShadowFeedbackTests, TheResidentRadiusEndsAtTheNearestPagePastThePoolCut)
+{
+    const auto window = BuildVirtualShadowDirectionalWindow(8, 0, 4, 8, 32.0f, Mathematics::Matrix4x4::Identity(),
+                                                             Mathematics::WorldPosition{0.1, -0.1, 1.0}, {});
+    ASSERT_TRUE(window);
+    const VirtualShadowFeedbackProjection row{window->Origin, window->WorldToLight, 0, 8, 0, window->Grid};
+    const auto at = [&window](int64_t x, int64_t y)
+    {
+        VirtualShadowPage page = window->Origin;
+        page.X += x;
+        page.Y += y;
+        return VirtualShadowPageWork{.Page = page};
+    };
+    // Page centers 0.5 to 3.5 pages from the window center of 8 x 8 pages.
+    const std::array work{at(4, 4), at(5, 4), at(7, 4), at(4, 6), at(7, 7)};
+
+    EXPECT_FLOAT_EQ(VirtualShadowResidentRadius(work, work.size(), row), 4.0f) << "no cut: half the side";
+    EXPECT_FLOAT_EQ(VirtualShadowResidentRadius(work, 3, row), std::sqrt(0.5f * 0.5f + 2.5f * 2.5f));
+    EXPECT_FLOAT_EQ(VirtualShadowResidentRadius(work, 4, row), 4.0f) << "a cut past the window edge clamps";
 }
 
 // The physical pool is smaller than the demand of a view. The pages nearest to the window
