@@ -8,6 +8,19 @@
 
 using namespace GameEngine;
 
+namespace
+{
+const UIElement* FindPlaceholder(const UIElement& element)
+{
+    if (element.HasClass("field-placeholder"))
+        return &element;
+    for (const auto& child : element.GetChildren())
+        if (const UIElement* found = FindPlaceholder(*child))
+            return found;
+    return nullptr;
+}
+} // namespace
+
 TEST(PackageSearchLayout, ShippedSearchStaysCompactAndLeavesRoomForTheList)
 {
     std::string css;
@@ -41,14 +54,10 @@ TEST(PackageSearchLayout, ShippedSearchStaysCompactAndLeavesRoomForTheList)
         EXPECT_GT(field->GetLayoutHeight(), 0.0f);
         EXPECT_LE(field->GetLayoutHeight(), 28.0f);
         EXPECT_GT(fixture.Element("body")->GetLayoutHeight(), height - 65.0f);
-        bool checkedPlaceholder = false;
-        for (const auto& child : field->GetChildren())
-            if (child->HasClass("search-field-with-filter-placeholder"))
-            {
-                EXPECT_EQ(child->GetResolvedStyle().Visual.FontStyle, FontStyle::Normal);
-                checkedPlaceholder = true;
-            }
-        EXPECT_TRUE(checkedPlaceholder);
+        // The search hint is the field's placeholder, upright (theme/widgets.css).
+        const UIElement* placeholder = FindPlaceholder(*field);
+        ASSERT_NE(placeholder, nullptr);
+        EXPECT_EQ(placeholder->GetResolvedStyle().Visual.FontStyle, FontStyle::Normal);
         field->AddClass("search-bar-at-top");
         fixture.Settle();
         EXPECT_GE(fixture.Element("body")->GetLayoutY() -

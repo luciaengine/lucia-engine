@@ -39,10 +39,6 @@
     order: -1;
 }
 
-.search-field-with-filter-placeholder {
-    font-style: normal;
-}
-
 .pkg-refresh-status {
     flex: 0 0 auto;
     font-size: 12px;
