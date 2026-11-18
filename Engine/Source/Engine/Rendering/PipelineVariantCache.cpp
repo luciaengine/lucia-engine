@@ -670,7 +670,6 @@ void PipelineVariantCache::ReleaseVariantCompile(const InstancedVariantKey& key,
         std::lock_guard lock(m_PendingVariantMutex);
         (isDepth ? m_DepthCompilesInFlight : m_ColorCompilesInFlight).erase(key);
     }
-    m_VariantCompilesRunning.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 void PipelineVariantCache::PurgePendingVariantCompiles(const Material* mat)
@@ -725,15 +724,9 @@ void PipelineVariantCache::SubmitPendingVariantCompiles()
     std::stable_partition(pending.begin(), pending.end(),
                           [](const PendingVariantCompile& p) { return !p.IsDepth; });
 
-    // Off-thread when the engine job system is up (the compiles run on prewarm
-    // workers on the Background lane, tracked by the JobCounter the editor pill
-    // reads). Inline when it's down (headless/tests) so the material is never dark;
-    // inline is serial, so no cap applies.
+    // With the job system up, this drain submits every request to the compile gate, and the
+    // gate bounds how many run. Without it (headless, tests), each compile runs inline.
     const bool async = m_Materials->CanSubmitAsyncBaseCompile();
-    const uint32_t cap = async
-        ? static_cast<uint32_t>(std::max<size_t>(
-              1, GameEngine::EngineCore::GetInstance().GetJobSystem().GetWorkerCount() / 2))
-        : 0xFFFFFFFFu;
 
     const auto requeueRemainder = [&](size_t from) {
         if (from >= pending.size())
@@ -766,11 +759,6 @@ void PipelineVariantCache::SubmitPendingVariantCompiles()
                 m_ColorCompilesInFlight.erase(req.Key);
                 continue;
             }
-            // Throttle: stop submitting once the cap is already in flight; the rest
-            // resume next BeginFrame (markers stay set — no record re-enqueue churn).
-            if (m_VariantCompilesRunning.load(std::memory_order_acquire) >= cap)
-                break;
-
             VariantCompileRequest job{};
             job.Key = req.Key;
             job.IsDepth = req.IsDepth;
@@ -797,9 +785,6 @@ void PipelineVariantCache::SubmitPendingVariantCompiles()
             job.CacheKey.Source = MakeShaderSourceKey(job.Spec.surfaceShaderPath, job.Spec.vertexModifierPath,
                                                      job.MaterialAssetPath);
 
-            // Count the compile as running BEFORE dispatch so the throttle sees it;
-            // every Run* exit decrements via the RAII guard (ReleaseVariantCompile).
-            m_VariantCompilesRunning.fetch_add(1, std::memory_order_acq_rel);
             if (async)
             {
                 try
@@ -835,14 +820,11 @@ void PipelineVariantCache::SubmitPendingVariantCompiles()
     }
     catch (...)
     {
-        // An inline Run* (headless) threw: its own guard cleared its marker + running
-        // count. Requeue the UNPROCESSED remainder so their markers aren't wedged.
+        // An inline Run* (headless) threw: its own guard cleared its marker.
+        // Requeue the UNPROCESSED remainder so their markers aren't wedged.
         requeueRemainder(i + 1);
         throw;
     }
-
-    // Throttle remainder (broke at i): requeue [i, end) with markers intact.
-    requeueRemainder(i);
 }
 
 void PipelineVariantCache::InsertVariantEntry(
@@ -959,14 +941,9 @@ void PipelineVariantCache::ApplyPendingVariantPublishes()
 
 void PipelineVariantCache::RunColorVariantCompile(const VariantCompileRequest& req)
 {
-    // RAII: decrements the running counter on EVERY exit, and clears the
-    // in-flight marker on every FAILURE exit (early return, or a throw
-    // mid-compile — bad_alloc under a 10-30s shaderc run). A wedged marker would
-    // dedup-block the key from ever re-enqueueing — permanently dark draws. On
-    // the success path the marker is handed to the serial apply instead, which
-    // erases it AFTER inserting the cache entry, so preparation never
-    // observes a cache miss with no marker (which would re-enqueue a compiled
-    // variant).
+    // RAII: every failure exit (an early return or a throw) clears the in-flight marker, so a key
+    // is never wedged dark. On success the serial apply erases the marker after it inserts the
+    // entry, so preparation never sees a miss without a marker.
     struct ReleaseScope
     {
         PipelineVariantCache* Self;
@@ -974,9 +951,7 @@ void PipelineVariantCache::RunColorVariantCompile(const VariantCompileRequest& r
         bool PublishQueued = false;
         ~ReleaseScope()
         {
-            if (PublishQueued)
-                Self->m_VariantCompilesRunning.fetch_sub(1, std::memory_order_acq_rel);
-            else
+            if (!PublishQueued)
                 Self->ReleaseVariantCompile(Req->Key, Req->IsDepth);
         }
     } releaseScope{this, &req};
@@ -1081,8 +1056,7 @@ void PipelineVariantCache::RunColorVariantCompile(const VariantCompileRequest& r
 
 void PipelineVariantCache::RunDepthVariantCompile(const VariantCompileRequest& req)
 {
-    // RAII counter release on every exit, marker release on failure exits only —
-    // see RunColorVariantCompile.
+    // RAII marker release on failure exits only: see RunColorVariantCompile.
     struct ReleaseScope
     {
         PipelineVariantCache* Self;
@@ -1090,9 +1064,7 @@ void PipelineVariantCache::RunDepthVariantCompile(const VariantCompileRequest& r
         bool PublishQueued = false;
         ~ReleaseScope()
         {
-            if (PublishQueued)
-                Self->m_VariantCompilesRunning.fetch_sub(1, std::memory_order_acq_rel);
-            else
+            if (!PublishQueued)
                 Self->ReleaseVariantCompile(Req->Key, Req->IsDepth);
         }
     } releaseScope{this, &req};
