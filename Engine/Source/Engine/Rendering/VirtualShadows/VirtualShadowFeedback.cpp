@@ -203,19 +203,23 @@ bool VirtualShadowPageTouchedByCasters(const VirtualShadowFeedbackProjection& pr
 
 namespace
 {
+// The squared distance from the window center to the page center, in half pages.
+int64_t DoubledDistanceSquaredFromWindowCenter(const VirtualShadowPage& page,
+                                               const VirtualShadowFeedbackProjection& window)
+{
+    const int64_t side = static_cast<int64_t>(window.PagesPerAxis >> page.Mip);
+    const int64_t x = 2 * (page.X - window.BasePage.X) + 1 - side;
+    const int64_t y = 2 * (page.Y - window.BasePage.Y) + 1 - side;
+    return x * x + y * y;
+}
+
 // A sun window is centered on the camera. The physical pool is smaller than the demand,
 // so the pages nearest to the center get tiles first. Equal distances keep the scan order.
 void OrderByDistanceFromWindowCenter(std::vector<VirtualShadowPage>& pages,
                                      const VirtualShadowFeedbackProjection& window)
 {
-    const auto doubledDistanceSquared = [&window](const VirtualShadowPage& page)
-    {
-        const int64_t side = static_cast<int64_t>(window.PagesPerAxis >> page.Mip);
-        const int64_t x = 2 * (page.X - window.BasePage.X) + 1 - side;
-        const int64_t y = 2 * (page.Y - window.BasePage.Y) + 1 - side;
-        return x * x + y * y;
-    };
-    std::ranges::stable_sort(pages, {}, doubledDistanceSquared);
+    std::ranges::stable_sort(pages, {}, [&window](const VirtualShadowPage& page)
+                             { return DoubledDistanceSquaredFromWindowCenter(page, window); });
 }
 } // namespace
 
@@ -290,6 +294,21 @@ std::vector<VirtualShadowPage> DecodeVirtualShadowFeedback(
             if (rank < pages.size())
                 result.push_back(pages[rank]);
     return result;
+}
+
+float VirtualShadowResidentRadius(std::span<const VirtualShadowPageWork> work, size_t tileCount,
+                                  const VirtualShadowFeedbackProjection& window)
+{
+    float radius = 0.5f * static_cast<float>(window.PagesPerAxis);
+    for (size_t row = tileCount; row < work.size(); ++row)
+    {
+        const auto& page = work[row].Page;
+        if (!FindVirtualShadowFeedbackBit(window, page))
+            continue;
+        const auto doubled = static_cast<float>(DoubledDistanceSquaredFromWindowCenter(page, window));
+        radius = std::min(radius, 0.5f * std::sqrt(doubled));
+    }
+    return radius;
 }
 
 } // namespace GameEngine::Engine::Renderer
