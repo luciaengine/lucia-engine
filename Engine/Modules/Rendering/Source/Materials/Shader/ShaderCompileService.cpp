@@ -560,7 +560,7 @@ static bool CompileOneStage(const ShaderStageCompileSpec& spec,
     options.SetIncluder(std::make_unique<FileIncluder>(includeDirs, outIncludeHashes));
 
     const shaderc_shader_kind sk = ToShadercKind(stageKind);
-    if (stageKind == ShaderStageKind::Mesh || sk == shaderc_glsl_infer_from_source)
+    if (sk == shaderc_glsl_infer_from_source)
     {
         outDiagnostics = "Stage not supported by shaderc in this build: " + spec.stage;
         return false;
