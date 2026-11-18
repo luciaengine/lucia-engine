@@ -26,7 +26,6 @@
 #include "UI/Interaction/ContextMenuManipulator.h"
 #include "Core/Engine.h"
 #include "Input/KeyCodes.h"
-#include "Types/Color.h"
 #include "Types/StringUtils.h"
 #include <algorithm>
 #include <array>
@@ -119,9 +118,6 @@ constexpr std::array<std::string_view, 3> kImportActionsRequiredIds = {
 };
 constexpr const char* kRecentGridLayoutAssetPath = "UI/controls/ProjectPicker/ProjectPickerRecentGrid.uxml";
 constexpr std::array<std::string_view, 1> kRecentGridRequiredIds = {"recent-projects-container"};
-constexpr float kLogoHueDegreesPerSecond = 360.0f / 12.0f;
-constexpr float kLogoTintSaturation = 0.5f;
-constexpr float kLogoTintValue = 1.0f;
 // The library window fits the four-column recents grid with even 24px side
 // margins; create/import opens as a narrower stacked modal sized to the
 // three-column template grid, matching the reference prototype's layered
@@ -133,8 +129,8 @@ constexpr float kProjectPickerStackedModalWidthPx = 940.0f;
 constexpr float kProjectPickerStackedModalHeightPx = 700.0f;
 constexpr float kProjectPickerModalHeightPx = 768.0f;
 constexpr float kProjectPickerModalHeaderHorizontalPaddingPx = 24.0f;
-constexpr float kProjectPickerCubeLogoSizePx = 128.0f;
-constexpr float kProjectPickerCubeLogoHalfPx = kProjectPickerCubeLogoSizePx * 0.5f;
+constexpr float kProjectPickerEngineLogoSizePx = 128.0f;
+constexpr float kProjectPickerEngineLogoHalfPx = kProjectPickerEngineLogoSizePx * 0.5f;
 constexpr float kProjectPickerCardWidthPx = 280.0f;
 constexpr float kProjectPickerCardGapPx = 14.0f;
 constexpr float kProjectPickerGridWidthPx = kProjectPickerCardWidthPx * 3.0f + kProjectPickerCardGapPx * 2.0f;
@@ -655,7 +651,6 @@ void ProjectPickerModal::BuildTree()
     UIElement* header = RequireLayoutElement(*this, "modal-header", layoutComplete);
     UIElement* engineRegion = RequireLayoutElement(*this, "header-engine-region", layoutComplete);
     UIElement* versionRegion = RequireLayoutElement(*this, "header-version-region", layoutComplete);
-    UIElement* cubeIcon = RequireLayoutElement(*this, "cube-icon", layoutComplete);
     UIElement* content = RequireLayoutElement(*this, "modal-content", layoutComplete);
     UIElement* projectHeader = RequireLayoutElement(*this, "projects-header", layoutComplete);
     UIElement* title = RequireLayoutElement(*this, "modal-title", layoutComplete);
@@ -681,8 +676,8 @@ void ProjectPickerModal::BuildTree()
     // still part of the id contract: a rename in the layout asset must be
     // reported rather than silently leaving the element unstyled.
     for (const char* styledOnlyId :
-         {"modal-backdrop", "engine-label", "version-label", "cube-container",
-          "projects-title-row", "projects-header-spacer", "path-container", "path-input"})
+         {"modal-backdrop", "engine-label", "version-label", "engine-logo-container",
+          "engine-logo", "projects-title-row", "projects-header-spacer", "path-container", "path-input"})
     {
         RequireLayoutElement(*this, styledOnlyId, layoutComplete);
     }
@@ -703,15 +698,13 @@ void ProjectPickerModal::BuildTree()
     // The hero band doubles as the window's title bar.
     EnableWindowDrag(*header, *windowPtr);
 
-    // Side bands: inner width from header padding to cube edge (symmetric).
+    // Side bands: inner width from header padding to logo edge (symmetric).
     const float headerInnerWidthPx =
         kProjectPickerLibraryWidthPx - 2.0f * kProjectPickerModalHeaderHorizontalPaddingPx;
     const float headerInnerHalfPx = headerInnerWidthPx * 0.5f;
-    const float sideTitleBandWidthPx = headerInnerHalfPx - kProjectPickerCubeLogoHalfPx;
+    const float sideTitleBandWidthPx = headerInnerHalfPx - kProjectPickerEngineLogoHalfPx;
     engineRegion->Style().Set(Style::Width, StyleLength::Px(sideTitleBandWidthPx));
     versionRegion->Style().Set(Style::Width, StyleLength::Px(sideTitleBandWidthPx));
-
-    UI::Layout::SetBackgroundPath(*cubeIcon, "Icons/logo.svg");
 
     // The content padding is part of the window width budget above, and the
     // projects header cancels it with equal negative margins, so the pair stays
@@ -1007,7 +1000,6 @@ void ProjectPickerModal::BuildTree()
     else
         browseButton->Style().Set(Style::Display, DisplayMode::None);
 
-    UI::Layout::SetBackgroundPath(*projectLogo, "Icons/logo.svg");
     m_ProjectLogo = projectLogo;
 
     ApplyModalButtonStyle(*openButton, ModalButtonRole::Primary);
@@ -1587,27 +1579,6 @@ void ProjectPickerModal::Update()
         // Now call the callback which will trigger SetProjectFolder
         m_OnFolderSelected(pathToLoad);
         // Note: Hide() will be called after loading completes in SetProjectFolder
-    }
-
-    if (m_Visible)
-    {
-        if (m_LastLogoUpdateTime < 0.0f)
-            m_LastLogoUpdateTime = now;
-        const float dt = std::max(0.0f, now - m_LastLogoUpdateTime);
-        m_LastLogoUpdateTime = now;
-        m_LogoHueAnimationTime = std::fmod(
-            m_LogoHueAnimationTime + dt * kLogoHueDegreesPerSecond, 360.0f);
-
-        if (UIElement* cubeIcon = FindById("cube-icon"_sid))
-        {
-            const uint32_t tint =
-                ColorHSV(m_LogoHueAnimationTime, kLogoTintSaturation, kLogoTintValue).ToARGB();
-            cubeIcon->Style().Set(Style::BackgroundTint, tint);
-        }
-    }
-    else
-    {
-        m_LastLogoUpdateTime = -1.0f;
     }
 }
 

@@ -547,10 +547,10 @@
 }
 
 /* Absolute centre: left/top 50% plus half-size negative margins. The half must
-   stay exactly half the size - kProjectPickerCubeLogoHalfPx in
+   stay exactly half the size - kProjectPickerEngineLogoHalfPx in
    ProjectPickerModal.cpp derives the header side bands from the same
    pair. */
-.project-picker-modal #cube-container {
+.project-picker-modal #engine-logo-container {
 	width: 128px;
 	height: 128px;
 	position: absolute;
@@ -561,7 +561,7 @@
 	z-index: 1;
 }
 
-.project-picker-modal #cube-icon {
+.project-picker-modal #engine-logo {
 	width: 128px;
 	height: 128px;
 	background-size: contain;
@@ -1276,4 +1276,9 @@
 
 .project-picker-modal .project-picker-button-noshrink {
 	flex-shrink: 0;
+}
+
+/* The Lucia engine mark: the hero logo and the footer project logo. */
+.project-picker-engine-mark {
+	background-image: url("editor:Icons/LuciaEngine.png");
 }

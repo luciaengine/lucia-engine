@@ -17,8 +17,8 @@
         <UIElement id="header-version-region">
           <Label id="version-label" text="version 1.0" />
         </UIElement>
-        <UIElement id="cube-container">
-          <UIElement id="cube-icon" />
+        <UIElement id="engine-logo-container">
+          <UIElement id="engine-logo" class="project-picker-engine-mark" />
         </UIElement>
       </UIElement>
 
@@ -34,7 +34,7 @@
           <UIElement id="path-container" class="path-container">
             <Button id="browse-button" class="browse-button" text="Browse" />
             <Label id="path-input" class="path-input" />
-            <UIElement id="project-logo" />
+            <UIElement id="project-logo" class="project-picker-engine-mark" />
           </UIElement>
           <UIElement id="button-container" class="button-container">
             <Button id="open-button" class="open-button" text="Open" />
