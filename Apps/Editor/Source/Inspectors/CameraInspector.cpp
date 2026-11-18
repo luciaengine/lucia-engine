@@ -349,10 +349,7 @@ void RegisterCameraInspector()
 
             if (cam->PixelPerfect)
             {
-                AddComponentIntRowWithDrag<Components::Camera>(ctx.Parent, "Pixels Per Unit", static_cast<int>(cam->PixelPerfectPixelsPerUnit), w, e, n, undo,
-                    "Change Camera Pixels Per Unit",
-                    [](Components::Camera& u, int v) { u.PixelPerfectPixelsPerUnit = static_cast<uint32>(std::max(1, v)); },
-                    static_cast<int>(cam->PixelPerfectPixelsPerUnit), "Reference pixel size: source texels per world unit", extras);
+                AddCameraPixelsPerUnitRows(ctx, notifyInspectorRebuild);
                 AddComponentIntRowWithDrag<Components::Camera>(ctx.Parent, "Reference Width", static_cast<int>(cam->PixelPerfectReferenceWidth), w, e, n, undo,
                     "Change Camera Reference Width",
                     [](Components::Camera& u, int v) { u.PixelPerfectReferenceWidth = static_cast<uint32>(std::max(1, v)); },

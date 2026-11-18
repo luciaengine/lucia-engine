@@ -185,10 +185,14 @@ struct Camera {
     // yielding integer screen-pixels-per-source-texel for crisp pixel art.
     bool PixelPerfect {false};
     // Reference pixel size: source texels per world unit (Pixels Per Unit).
+    // While PixelPerfectAutoPixelsPerUnit resolves a density from the scene, this value is the fallback.
     uint32 PixelPerfectPixelsPerUnit {32};
     // Reference resolution the integer upscale is computed against.
     uint32 PixelPerfectReferenceWidth {320};
     uint32 PixelPerfectReferenceHeight {180};
+    // Take Pixels Per Unit from the scene's tile maps (tile pixel width / cell width) each frame.
+    // A scene with no resolvable tile map layer uses PixelPerfectPixelsPerUnit.
+    bool PixelPerfectAutoPixelsPerUnit {true};
     // Snap the camera's world X/Y translation to the pixel grid to avoid shimmer.
     bool PixelPerfectPixelSnap {true};
     // Crop mode for non-matching screen aspects. false = letterbox: show exactly

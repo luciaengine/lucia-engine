@@ -7,6 +7,11 @@
 
 #include <string>
 
+namespace GameEngine::ECS
+{
+class World;
+} // namespace GameEngine::ECS
+
 namespace GameEngine::Engine::Renderer
 {
 
@@ -81,6 +86,11 @@ CameraAspectResolution ResolveCameraAspect(const Components::Camera& camera,
 PixelPerfectViewState ComputePixelPerfectViewState(const Components::Camera& camera,
                                                    uint32_t viewportWidth,
                                                    uint32_t viewportHeight);
+
+// Pixels per unit the pixel-perfect camera renders at: the scene's tile map density when
+// PixelPerfectAutoPixelsPerUnit is on and a tile map resolves, else PixelPerfectPixelsPerUnit.
+// Always at least 1. The game camera and the Camera inspector share this one derivation.
+uint32 ResolvePixelPerfectPixelsPerUnit(ECS::World& world, const Components::Camera& camera);
 
 ViewLetterbox ComputeLetterboxRect(uint32_t viewportWidth,
                                  uint32_t viewportHeight,

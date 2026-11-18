@@ -51,6 +51,10 @@ void CameraSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
     // Transient: reverts once the planet is disabled or deleted.
     cameraComp.FarZ = ExpandFarClipForSphericalTerrain(world, cameraComp.FarZ);
 
+    // Auto pixel-perfect cameras take their texel density from the scene's tile maps each frame.
+    if (cameraComp.PixelPerfect && !cameraComp.Perspective)
+        cameraComp.PixelPerfectPixelsPerUnit = ResolvePixelPerfectPixelsPerUnit(world, cameraComp);
+
     uint32 viewportW = 0;
     uint32 viewportH = 0;
     if (auto* device = rs->GetDevice())

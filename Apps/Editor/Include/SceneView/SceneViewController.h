@@ -43,6 +43,11 @@ namespace Scene
 struct PickHit;
 }
 
+namespace Editor::CameraRig
+{
+struct Vec3d;
+}
+
 namespace Rendering
 {
 namespace RenderGraph
@@ -348,13 +353,10 @@ class SceneViewController
     // the current 3D pose so Toggle2DMode can restore it later.
     void Set2DMode(bool is2D);
 
-    // Pixel-perfect mode for 2D views. When enabled and the view is in 2D mode,
-    // the orthographic visible height is locked so one world unit maps to an
-    // integer number of screen pixels (pixelScale). Must be called whenever the
-    // user changes the setting so the projection updates immediately.
+    // Pixel-perfect mode for 2D views: one source texel of the scene's tile maps covers the
+    // pixel scale in render pixels. Call it after the setting changes.
     void RefreshPixelPerfect2D();
 
-    // Reference texel count one world unit represents in pixel-perfect 2D. The
     // Set the 2D ortho visible height. In pixel-perfect mode, snaps to the
     // largest power-of-2 scale (1..64) whose visible height still encloses
     // the requested height.
@@ -649,10 +651,19 @@ class SceneViewController
     // center hit region is enabled/disabled to match the scene view mode.
     void Sync2DModeToTransformTool();
 
-    // When 2D mode and pixel-perfect are both active, force the orthographic
-    // visible height to match an integer world-unit-per-pixel ratio derived
-    // from the current viewport pixel height and the configured pixel scale.
+    // In 2D pixel-perfect mode, set the orthographic height so that one source texel of the
+    // scene's tile maps covers the configured pixel scale of render pixels.
     void ApplyPixelPerfectIfActive();
+
+    // Source texels per world unit for the 2D pixel grid: the scene's tile map density, else 1.
+    float ResolvePixelPerfectPixelsPerUnit();
+
+    // The camera position this frame renders from. In 2D pixel-perfect mode the orthographic
+    // window's minimum edge is on the texel grid; m_CamPos stays continuous for panning.
+    Editor::CameraRig::Vec3d PublishedCameraPosition(float aspect) const;
+
+    // World units per source texel of the last applied 2D pixel-perfect grid.
+    float m_PixelPerfectWorldUnitsPerTexel = 1.0f;
 
     CameraBookmarksWidget* m_BookmarksWidget = nullptr;
 

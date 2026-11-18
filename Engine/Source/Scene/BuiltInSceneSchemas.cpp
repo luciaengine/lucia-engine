@@ -4073,6 +4073,7 @@ class CameraSchema final : public ISceneComponentSchema
         outLines.push_back(std::string("Camera.customAspectHeight = ") + FormatFloat(c->CustomAspectHeight));
         outLines.push_back(std::string("Camera.pixelPerfect = ") + (c->PixelPerfect ? "true" : "false"));
         outLines.push_back(std::string("Camera.pixelPerfectPixelsPerUnit = ") + std::to_string(c->PixelPerfectPixelsPerUnit));
+        outLines.push_back(std::string("Camera.pixelPerfectAutoPixelsPerUnit = ") + (c->PixelPerfectAutoPixelsPerUnit ? "true" : "false"));
         outLines.push_back(std::string("Camera.pixelPerfectReferenceWidth = ") + std::to_string(c->PixelPerfectReferenceWidth));
         outLines.push_back(std::string("Camera.pixelPerfectReferenceHeight = ") + std::to_string(c->PixelPerfectReferenceHeight));
         outLines.push_back(std::string("Camera.pixelPerfectPixelSnap = ") + (c->PixelPerfectPixelSnap ? "true" : "false"));
@@ -4196,6 +4197,11 @@ class CameraSchema final : public ISceneComponentSchema
         else if (property == "pixelperfectpixelsperunit")
         {
             if (!ParseU32(value, c.PixelPerfectPixelsPerUnit, outError))
+                return false;
+        }
+        else if (property == "pixelperfectautopixelsperunit")
+        {
+            if (!ParseBool(value, c.PixelPerfectAutoPixelsPerUnit, outError))
                 return false;
         }
         else if (property == "pixelperfectreferencewidth")
