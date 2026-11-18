@@ -336,10 +336,10 @@ TEST_F(MarkupRegionInspectorTest, AnOutlineChangedUnderTheOpenBlockRebuildsItOnc
     EXPECT_EQ(refreshes, 2) << "a new overlapping mark-up did not reach the member list";
 }
 
-// Checking an overlapping mark-up makes it an Include member, its Exclude segment makes it Exclude,
-// and unchecking takes it out: each one undo step that writes the region's list. The filled segment
-// shows the mode; a candidate that is not a member shows neither filled, its segments disabled.
-TEST_F(MarkupRegionInspectorTest, TheMemberCheckboxesAndSwitchWriteTheListOneUndoStepEach)
+// The Include and Exclude toggles replace the member checkbox. A candidate's Include makes it an Include
+// member, the member's Exclude switches it, and its lit Exclude takes it out: each one undo step that
+// writes the region's list. The lit toggle shows the mode; a candidate shows neither lit, both live.
+TEST_F(MarkupRegionInspectorTest, TheIncludeAndExcludeTogglesWriteTheListOneUndoStepEach)
 {
     const ECS::EntityHandle forest = CreateRegion(kForest);
     const ECS::EntityHandle lake = CreateBox(Vector3(50.0f, 4.0f, 50.0f), Vector3(20.0f, 8.0f, 20.0f));
@@ -347,14 +347,19 @@ TEST_F(MarkupRegionInspectorTest, TheMemberCheckboxesAndSwitchWriteTheListOneUnd
 
     {
         const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(forest);
-        std::vector<Toggle*> toggles;
         for (Toggle* toggle : FindAll<Toggle>(*section))
         {
             if (toggle->HasClass("entity-member-toggle"))
-                toggles.push_back(toggle);
+                EXPECT_TRUE(toggle->HasClass("hidden")) << "a member row shows a checkbox beside its toggles";
         }
-        ASSERT_EQ(toggles.size(), 1u) << "the list offers the overlapping box only";
-        toggles[0]->SetValue(true);
+        Button* include = FindSegment(*section, "Include");
+        Button* exclude = FindSegment(*section, "Exclude");
+        ASSERT_NE(include, nullptr) << "the list offers the overlapping box";
+        ASSERT_NE(exclude, nullptr);
+        EXPECT_FALSE(include->HasClass("segmented-button-selected") || exclude->HasClass("segmented-button-selected"))
+            << "a candidate shows a mode";
+        EXPECT_TRUE(include->IsEnabled() && exclude->IsEnabled()) << "a candidate's toggles are off";
+        include->TriggerClick();
     }
     ASSERT_EQ(RegionOf(forest).MemberCount, 1u);
     EXPECT_EQ(RegionOf(forest).Members[0].Entity, lake);
@@ -368,8 +373,6 @@ TEST_F(MarkupRegionInspectorTest, TheMemberCheckboxesAndSwitchWriteTheListOneUnd
         ASSERT_NE(exclude, nullptr);
         EXPECT_TRUE(include->HasClass("segmented-button-selected"));
         EXPECT_FALSE(exclude->HasClass("segmented-button-selected"));
-        include->TriggerClick();
-        EXPECT_EQ(RegionOf(forest).Members[0].Mode, MarkupMemberMode::Include) << "the filled segment switched";
         exclude->TriggerClick();
     }
     EXPECT_EQ(RegionOf(forest).Members[0].Mode, MarkupMemberMode::Exclude);
@@ -381,28 +384,10 @@ TEST_F(MarkupRegionInspectorTest, TheMemberCheckboxesAndSwitchWriteTheListOneUnd
         ASSERT_NE(exclude, nullptr);
         EXPECT_TRUE(exclude->HasClass("segmented-button-selected"));
         EXPECT_FALSE(include->HasClass("segmented-button-selected"));
-        EXPECT_TRUE(exclude->HasClass("entity-member-segment-warning")) << "a filled Exclude is not in the warning color";
+        EXPECT_TRUE(exclude->HasClass("entity-member-segment-warning")) << "a lit Exclude is not in the warning color";
+        exclude->TriggerClick();
     }
-
-    {
-        const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(forest);
-        for (Toggle* toggle : FindAll<Toggle>(*section))
-        {
-            if (toggle->HasClass("entity-member-toggle"))
-                toggle->SetValue(false);
-        }
-    }
-    EXPECT_EQ(RegionOf(forest).MemberCount, 0u);
-    {
-        const std::unique_ptr<UIElement> section = BuildSection<Components::Markup>(forest);
-        Button* include = FindSegment(*section, "Include");
-        Button* exclude = FindSegment(*section, "Exclude");
-        ASSERT_NE(include, nullptr);
-        ASSERT_NE(exclude, nullptr);
-        EXPECT_FALSE(include->HasClass("segmented-button-selected") || exclude->HasClass("segmented-button-selected"))
-            << "a candidate shows a mode";
-        EXPECT_FALSE(include->IsEnabled() || exclude->IsEnabled()) << "a candidate's mode can be set";
-    }
+    EXPECT_EQ(RegionOf(forest).MemberCount, 0u) << "the lit toggle did not take the member out";
 
     Undo.Undo();
     EXPECT_EQ(RegionOf(forest).MemberCount, 1u);

@@ -60,13 +60,16 @@ class EntityMemberList final : public UIElement
 
     /// The rows in their order. A non-empty `AddRefusal` turns off the toggle of every row that is not a
     /// member and is its tooltip (the owner holds no more members). While not `Editable`, no toggle and
-    /// no mode can change.
+    /// no mode can change. With `ModeToggles`, a row that offers two modes shows no checkbox: its modes
+    /// are toggles. A click on an unlit mode calls SetMode (the owner adds a row that is not a member,
+    /// with that mode); a click on the lit mode calls SetOn with false.
     struct Content
     {
         Words Text;
         std::vector<Row> Rows;
         std::string AddRefusal;
         bool Editable = true;
+        bool ModeToggles = false;
     };
 
     /// Called with the row's entity. `SetOn` gets the toggle's new value. `Select` is called on a click on

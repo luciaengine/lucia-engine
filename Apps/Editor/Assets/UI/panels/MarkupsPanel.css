@@ -247,13 +247,12 @@
 	white-space: normal;
 }
 
-/* What was done (created, a status change, an edit): one muted line in the small style, in the
-   Activity tab and the inspector's Thread alike. */
+/* What was done (created, a status change, an edit): one muted line in the small style, upright, in
+   the Activity tab and the inspector's Thread alike. */
 .markup-entry-action .markups-entry-text,
 .markup-entry-action .markup-inspector-entry-action-text {
 	color: var(--ui_color_text_dim);
 	font-size: 12px;
-	font-style: italic;
 }
 
 .markups-spacer {
@@ -329,10 +328,10 @@
    the accent while it is typed in. */
 .markup-inspector-comment {
 	min-height: 56px;
-	margin-bottom: 4px;
+	margin-bottom: var(--inspector-row-gap);
 	padding: 4px 8px;
 	border-width: 1px;
-	border-radius: 6px;
+	border-radius: var(--ui_radius_sm);
 	border-color: transparent;
 	background-color: #202020;
 	white-space: pre-wrap;
@@ -397,14 +396,13 @@
 	flex-direction: column;
 }
 
-/* The hint in an empty comment field: the text fields' placeholder look
-   (controls/FieldPlaceholder/FieldPlaceholder.css), quiet and italic. */
+/* The hint in an empty comment field: the text fields' placeholder color
+   (controls/FieldPlaceholder/FieldPlaceholder.css), upright. */
 .markup-inspector-comment-placeholder {
 	position: absolute;
 	left: 7px;
 	top: 5px;
 	color: var(--ui_color_text_placeholder);
-	font-style: italic;
 	pointer-events: none;
 }
 
@@ -415,16 +413,17 @@
 .markup-inspector-comment-actions {
 	flex-direction: row;
 	justify-content: flex-end;
-	margin-bottom: 6px;
+	margin-bottom: var(--ui_spacing_md);
 }
 
-/* The Thread: its title and its entries in one inset box. */
+/* The Thread: its title and its entries in one inset box, spaced as the Members box
+   (EntityMemberList.css). */
 .markup-inspector-thread-group {
 	flex-direction: column;
-	margin-top: 4px;
-	margin-bottom: 6px;
+	margin-top: var(--inspector-row-gap);
+	margin-bottom: var(--ui_spacing_md);
 	border-width: 1px;
-	border-radius: 4px;
+	border-radius: var(--ui_radius_sm);
 	border-color: var(--ui_color_border_subtle);
 	background-color: var(--ui_color_bg_hover_alt);
 }

@@ -3,10 +3,10 @@
 
 .entity-member-group {
 	flex-direction: column;
-	margin-top: 4px;
-	margin-bottom: 6px;
+	margin-top: var(--inspector-row-gap);
+	margin-bottom: var(--ui_spacing_md);
 	border-width: 1px;
-	border-radius: 4px;
+	border-radius: var(--ui_radius_sm);
 	border-color: var(--ui_color_border_subtle);
 	background-color: var(--ui_color_bg_hover_alt);
 }

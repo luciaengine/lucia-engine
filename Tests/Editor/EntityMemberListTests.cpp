@@ -266,6 +266,41 @@ TEST_F(EntityMemberListTest, TheFilledSegmentIsTheModeAndAnotherSegmentSwitchesI
     EXPECT_FALSE(candidateKeep->IsEnabled() || candidateCut->IsEnabled()) << "a candidate's mode can be set";
 }
 
+// With mode toggles, a row with two modes shows no checkbox. A candidate's segment adds it in that
+// mode, the member's lit segment takes it out, and its other segment switches the mode.
+TEST_F(EntityMemberListTest, ModeTogglesReplaceTheCheckbox)
+{
+    Calls calls;
+    EntityMemberList::Content content = MakeContent();
+    content.ModeToggles = true;
+    content.Rows.push_back(MakeRow(First, "Pond", kCut));
+    content.Rows.push_back(MakeCandidate(Second, "Shed"));
+    EntityMemberList list(content, Record(calls));
+
+    const std::vector<UIElement*> rows = Rows(list);
+    ASSERT_EQ(rows.size(), 2u);
+    for (UIElement* row : rows)
+    {
+        Toggle* checkbox = Part<Toggle>(*row, "entity-member-toggle");
+        ASSERT_NE(checkbox, nullptr);
+        EXPECT_TRUE(checkbox->HasClass("hidden")) << "a row with mode toggles shows its checkbox";
+    }
+
+    Button* candidateCut = Segment(*rows[1], kCut);
+    ASSERT_NE(candidateCut, nullptr);
+    EXPECT_TRUE(candidateCut->IsEnabled()) << "a candidate's mode toggle is off";
+    candidateCut->TriggerClick();
+    ASSERT_EQ(calls.Switched.size(), 1u);
+    EXPECT_EQ(calls.Switched[0], std::make_pair(Second, kCut));
+
+    Segment(*rows[0], kCut)->TriggerClick();
+    EXPECT_EQ(calls.SwitchedOff, std::vector<EntityHandle>{First}) << "the lit mode did not take the member out";
+    Segment(*rows[0], kKeep)->TriggerClick();
+    ASSERT_EQ(calls.Switched.size(), 2u);
+    EXPECT_EQ(calls.Switched[1], std::make_pair(First, kKeep));
+    EXPECT_TRUE(calls.SwitchedOn.empty());
+}
+
 // A row that offers one mode shows it as a label, not as a segment.
 TEST_F(EntityMemberListTest, ARowWithOneModeShowsItAsALabel)
 {
