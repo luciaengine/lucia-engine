@@ -306,8 +306,14 @@
         "colorGradeSaturation": 1.0
       },
       "samplers": {
+        "uLut1d": "LinearClamp",
+        "uLut3d": "LinearClamp",
         "uSceneColor": "LinearClamp"
       },
+      "serviceTextures": [
+        "uLut3d",
+        "uLut1d"
+      ],
       "shaderPkg": "Shaders/hdr_color_fx.shaderpkg",
       "skipWhen": {
         "hdrColorFxActive": 0.0
@@ -329,8 +335,14 @@
         "tonemapMode": 0
       },
       "samplers": {
-        "uHDRColor": "LinearClamp"
+        "uHDRColor": "LinearClamp",
+        "uLut1d": "LinearClamp",
+        "uLut3d": "LinearClamp"
       },
+      "serviceTextures": [
+        "uLut3d",
+        "uLut1d"
+      ],
       "shaderPkg": "Shaders/tonemap.shaderpkg",
       "skipWhen": {
         "tonemapMode": 5.0,

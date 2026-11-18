@@ -1624,13 +1624,19 @@
         "useAutoExposure": 0
       },
       "samplers": {
+        "uLut1d": "LinearClamp",
+        "uLut3d": "LinearClamp",
         "uSceneColor": "LinearClamp"
       },
       "shaderPkg": "Shaders/hdr_color_fx.shaderpkg",
       "skipWhen": {
         "hdrColorFxActive": 0.0
       },
-      "type": "FullscreenShader"
+      "type": "FullscreenShader",
+      "serviceTextures": [
+        "uLut3d",
+        "uLut1d"
+      ]
     },
     {
       "enabled": true,
@@ -1708,7 +1714,9 @@
         "useAutoExposure": 0
       },
       "samplers": {
-        "uHDRColor": "LinearClamp"
+        "uHDRColor": "LinearClamp",
+        "uLut1d": "LinearClamp",
+        "uLut3d": "LinearClamp"
       },
       "shaderPkg": "Shaders/tonemap.shaderpkg",
       "skipWhen": {
@@ -1718,7 +1726,11 @@
         "ictcpChromaCompression": 0.0,
         "useAutoExposure": 0.0
       },
-      "type": "FullscreenShader"
+      "type": "FullscreenShader",
+      "serviceTextures": [
+        "uLut3d",
+        "uLut1d"
+      ]
     },
     {
       "enabled": true,
