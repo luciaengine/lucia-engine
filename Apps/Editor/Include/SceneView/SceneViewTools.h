@@ -27,6 +27,8 @@ public:
     virtual void OnDeactivated() { }
 
     virtual void OnPointerEvent(const ScenePointerEvent& event) = 0;
+    // The pointer left the view: a preview that follows the pointer hides until it returns.
+    virtual void OnPointerLeave() { }
     virtual void OnKeyEvent(const SceneKeyEvent& event) = 0;
     // The Delete key while the tool is active, before the view deletes the selected
     // entity: true when the tool took the key (it holds a selection of its own).
