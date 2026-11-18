@@ -1614,6 +1614,26 @@ TEST(TextInputGeometryTests, DoubleClickSelectionSurvivesAStationaryDrag)
               static_cast<int>(kSampleText.size()));
 }
 
+// A field read as one unit (an address) selects its whole value on a double click, not one word.
+TEST(TextInputGeometryTests, DoubleClickSelectsTheWholeValueWhenTheFieldAsksForIt)
+{
+    TextFieldFixture fx;
+    const bool inited = fx.Init(1.0f, 14.0f, 220.0f, 26.0f, kSampleText); // "Hello World"
+    REQUIRE_FIXTURE(fx, inited);
+    fx.Field->SetDoubleClickSelectsAll(true);
+    fx.Focus();
+
+    const std::optional<float> clickX = fx.LogicalXAcrossCharacter(8, 9, kLeftHalf); // inside "World"
+    ASSERT_TRUE(clickX.has_value());
+
+    fx.PlaceCaretAt(0);
+    fx.DoubleClickAtLogicalX(*clickX);
+
+    EXPECT_EQ(std::min(fx.Input->GetSelectionStart(), fx.Input->GetSelectionEnd()), 0);
+    EXPECT_EQ(std::max(fx.Input->GetSelectionStart(), fx.Input->GetSelectionEnd()),
+              static_cast<int>(kSampleText.size()));
+}
+
 // A drag that really moves still takes over from the press's selection.
 TEST(TextInputGeometryTests, DraggingAwayAfterADoubleClickResumesRangeSelection)
 {
