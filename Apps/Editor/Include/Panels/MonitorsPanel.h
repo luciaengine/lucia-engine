@@ -106,6 +106,8 @@ class MonitorsPanel : public DockPanel {
     void PushBuiltInSamples();
     void UpdateHdrStatusLabel();
     void LoadAndAttachPanelStyle();
+    // Pause button label, state class and glyph: Resume with a play glyph while paused.
+    void ShowPauseState(bool paused);
 
     // UI roots
     UIElement* m_ListContainer = nullptr;
@@ -113,6 +115,7 @@ class MonitorsPanel : public DockPanel {
     Label* m_ChartDragGhost = nullptr;
     UIElement* m_ChartDropIndicator = nullptr;
     Button* m_PauseButton = nullptr;
+    UIElement* m_PauseGlyph = nullptr;
     Button* m_ClearButton = nullptr;
     Label* m_HdrStatusLabel = nullptr;
 

@@ -68,8 +68,8 @@ constexpr const char* kHiddenClass = "hidden";
 constexpr const char* kFilterOnClass = "active";
 constexpr const char* kFilterOffClass = "log-filter-off";
 constexpr const char* kFilterEmptyClass = "log-filter-empty";
-constexpr const char* kPauseGlyphClass = "log-toolbar-glyph-pause";
-constexpr const char* kResumeGlyphClass = "log-toolbar-glyph-resume";
+constexpr const char* kPauseGlyphClass = "button-glyph-pause";
+constexpr const char* kResumeGlyphClass = "button-glyph-resume";
 constexpr const char* kSideBySideClass = "log-split--side-by-side";
 constexpr const char* kSearchBarClass = "log-search-bar";
 

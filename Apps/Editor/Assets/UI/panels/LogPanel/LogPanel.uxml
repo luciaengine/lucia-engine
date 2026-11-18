@@ -5,31 +5,31 @@
   <UIElement class="log-toolbar">
     <UIElement class="log-filters">
       <Button id="LogFilterError" class="small secondary log-filter log-filter-error active" text="Errors">
-        <UIElement class="log-toolbar-glyph log-row-glyph-error" />
+        <UIElement class="button-glyph log-row-glyph-error" />
       </Button>
       <Button id="LogFilterWarning" class="small secondary log-filter log-filter-warning active" text="Warnings">
-        <UIElement class="log-toolbar-glyph log-row-glyph-warning" />
+        <UIElement class="button-glyph log-row-glyph-warning" />
       </Button>
       <Button id="LogFilterInfo" class="small secondary log-filter log-filter-info active" text="Info">
-        <UIElement class="log-toolbar-glyph log-row-glyph-info" />
+        <UIElement class="button-glyph log-row-glyph-info" />
       </Button>
       <Button id="LogFilterDebug" class="small secondary log-filter log-filter-debug active" text="Debug">
-        <UIElement class="log-toolbar-glyph log-row-glyph-debug" />
+        <UIElement class="button-glyph log-row-glyph-debug" />
       </Button>
       <Button id="LogChannels" class="small secondary log-channels" text="Channels">
-        <UIElement class="log-toolbar-glyph log-toolbar-glyph-channels" />
+        <UIElement class="button-glyph button-glyph-channels" />
       </Button>
     </UIElement>
     <UIElement class="log-toolbar-end">
       <UIElement class="log-actions">
         <Button id="LogClear" class="small secondary" text="Clear">
-          <UIElement class="log-toolbar-glyph log-toolbar-glyph-clear" />
+          <UIElement class="button-glyph button-glyph-clear" />
         </Button>
         <Button id="LogPause" class="small secondary" text="Pause">
-          <UIElement id="LogPauseGlyph" class="log-toolbar-glyph log-toolbar-glyph-pause" />
+          <UIElement id="LogPauseGlyph" class="button-glyph button-glyph-pause" />
         </Button>
         <Button id="LogCopyAll" class="small secondary" text="Copy All">
-          <UIElement class="log-toolbar-glyph log-toolbar-glyph-copy" />
+          <UIElement class="button-glyph button-glyph-copy" />
         </Button>
       </UIElement>
       <UIElement id="LogSearchHost" class="log-search-host" />
