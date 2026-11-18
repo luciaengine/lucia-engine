@@ -75,10 +75,17 @@
 	border-color: var(--ui_color_accent_blue_pressed);
 }
 
+/* Wraps the caption above the button when the line is narrower than both, so the button stays
+   inside the inspector. */
 .day-cycle-save {
 	flex-direction: row;
+	flex-wrap: wrap;
+	justify-content: flex-end;
 	align-items: center;
+	flex-shrink: 1;
+	max-width: 100%;
 	gap: 6px;
+	row-gap: 4px;
 }
 
 .day-cycle-save-caption {
