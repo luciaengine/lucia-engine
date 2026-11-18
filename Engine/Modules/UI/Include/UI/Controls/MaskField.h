@@ -29,8 +29,8 @@ struct MaskOption
 /// A field that picks any set of options, each with its own bit in a 32-bit value.
 ///
 /// The header shows a summary of the value: "Everything" when every option is set, "Nothing" when none
-/// is, one or two option labels ("Props, Foliage"), "All but X" or "All but X, Y" when one or two options
-/// are off, otherwise "N <noun>". It shows "Mixed" while a multi-selection disagrees on any bit.
+/// is, one or two option labels ("Props, Foliage"), "Mixed" when one or two options are off, otherwise
+/// "N <noun>". It also shows "Mixed" while a multi-selection disagrees on any bit.
 /// The popup lists "Everything" and "Nothing", a rule, then one row per option; a row the selection
 /// disagrees on is drawn mixed.
 ///

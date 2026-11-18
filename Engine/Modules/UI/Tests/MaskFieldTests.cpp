@@ -100,9 +100,9 @@ TEST(MaskFieldTests, SummaryNamesTheValueByTheRules)
     field.SetValueWithoutNotify(0x08u | 0x400u);
     EXPECT_EQ(MaskFieldAccess::Summary(field), "C, G");
     field.SetValueWithoutNotify(0x55Bu & ~0x10u);
-    EXPECT_EQ(MaskFieldAccess::Summary(field), "All but D");
+    EXPECT_EQ(MaskFieldAccess::Summary(field), "Mixed");
     field.SetValueWithoutNotify(0x55Bu & ~0x10u & ~0x01u);
-    EXPECT_EQ(MaskFieldAccess::Summary(field), "All but A, D");
+    EXPECT_EQ(MaskFieldAccess::Summary(field), "Mixed");
     field.SetValueWithoutNotify(0x01u | 0x02u | 0x08u);
     EXPECT_EQ(MaskFieldAccess::Summary(field), "3 layers");
     field.SetMixedBits(0x02u);

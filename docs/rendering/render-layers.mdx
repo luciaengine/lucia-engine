@@ -32,11 +32,10 @@ The **Render Layers** row is on the Mesh Renderer, the Terrain and the Particle 
 |---|---|
 | `Default` | one layer, by its name |
 | `Props, Foliage` | two layers |
-| `All but Foliage` | every layer except one or two |
 | `5 layers` | any other set |
 | `Everything` | every layer |
 | `Nothing` | no layer |
-| `Mixed` | the selected objects do not agree |
+| `Mixed` | every layer except one or two, or the selected objects do not agree |
 
 Click the row to open the picker. **Everything** and **Nothing** at the top set or clear every layer. Below them is one row per layer: a click turns that layer on or off. With several objects selected, a click changes that one layer on each object and keeps the other layers of each object. A layer the selection does not agree on is drawn mixed, and a click turns it on for every selected object. The change is one undo step.
 

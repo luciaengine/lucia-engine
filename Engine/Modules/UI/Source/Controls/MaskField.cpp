@@ -315,10 +315,8 @@ std::string MaskField::Summarize() const
         return *on[0];
     if (on.size() == 2)
         return *on[0] + ", " + *on[1];
-    if (off.size() == 1)
-        return "All but " + *off[0];
-    if (off.size() == 2)
-        return "All but " + *off[0] + ", " + *off[1];
+    if (off.size() <= 2)
+        return "Mixed";
     return std::to_string(on.size()) + " " + m_Plural;
 }
 
