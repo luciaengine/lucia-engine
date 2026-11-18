@@ -561,15 +561,16 @@
 	z-index: 1;
 }
 
+/* The logo sits 8 px inside its 128 px container, so the header bands keep their width. */
 .project-picker-modal #engine-logo {
-	width: 128px;
-	height: 128px;
+	width: 112px;
+	height: 112px;
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
 	position: absolute;
-	left: 0px;
-	top: 0px;
+	left: 8px;
+	top: 8px;
 }
 
 .project-picker-modal #modal-content {
@@ -1278,7 +1279,10 @@
 	flex-shrink: 0;
 }
 
-/* The Lucia engine mark: the hero logo and the footer project logo. */
+/* The Lucia engine mark: the hero logo and the footer project logo. The tint dims the mark to 80 %
+   against the dark plate. The image is 512 px, so the UI builds a mip chain for it (the limit is
+   1024 px); without the chain the edges alias. */
 .project-picker-engine-mark {
 	background-image: url("editor:Icons/LuciaEngine.png");
+	background-image-tint: rgba(204, 204, 204, 1.0);
 }
