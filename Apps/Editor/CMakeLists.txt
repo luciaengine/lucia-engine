@@ -1566,6 +1566,7 @@ if(EMSCRIPTEN)
 		"SHELL:--preload-file ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Adapters@/Assets/Shaders/Adapters"
 		"SHELL:--preload-file ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes@/Assets/Shaders/Includes"
 		"SHELL:--preload-file ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Surfaces@/Assets/Shaders/Surfaces"
+		"SHELL:--preload-file ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/VertexModifiers@/Assets/Shaders/VertexModifiers"
 		"SHELL:--preload-file ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Particles@/Assets/Shaders/Particles"
 		# Shader-graph node library: reflection for the editor palette and the
 		# helper includes a materialized graph surface pulls in.
@@ -2418,6 +2419,7 @@ file(GLOB_RECURSE _GE_STAGE_INPUTS CONFIGURE_DEPENDS
 	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Adapters/*"
 	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes/*"
 	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Surfaces/*"
+	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/VertexModifiers/*"
 	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Particles/*"
 	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Ocean/*"
 	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Slang/*"
@@ -2524,6 +2526,8 @@ _ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
 	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes" "${_GE_EDITOR_ASSETS_DEST}/Shaders/Includes")
 _ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
 	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Surfaces" "${_GE_EDITOR_ASSETS_DEST}/Shaders/Surfaces")
+_ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
+	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/VertexModifiers" "${_GE_EDITOR_ASSETS_DEST}/Shaders/VertexModifiers")
 _ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
 	"${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Particles" "${_GE_EDITOR_ASSETS_DEST}/Shaders/Particles")
 # GPU fog particle surface implementation (included by Shaders/Surfaces/gpu_fog_particles.glsl).

@@ -16,6 +16,12 @@ struct TreeOptions;
 namespace Mathematics
 {
 struct BoundingBox;
+struct Vector3;
+enum class OctahedralLayout : uint8_t;
+}
+namespace Engine::Renderer
+{
+struct ImpostorAtlas;
 }
 
 namespace EZTreeECS
@@ -27,10 +33,11 @@ namespace EZTreeECS
 struct TreeVariantMaterials
 {
     GUID Bark;
-    GUID BarkStatic; // Bark without wind, drawn while the wind material cannot compile.
+    GUID BarkStatic; // Bark without wind: drawn while the wind material cannot compile, and baked into the impostor.
     GUID Leaves;
     GUID LeavesStatic;
     GUID Trellis;
+    GUID Impostor; // The card that draws the variant's baked atlas beyond the switch distance.
 };
 
 TreeVariantMaterials VariantMaterialGuids(uint32 slot);
@@ -42,6 +49,16 @@ void RegisterVariantMaterials(Engine::Renderer::RenderServices& renderServices,
                               const TreeVariantMaterials& materials,
                               const EZTree::TreeOptions& options,
                               const Mathematics::BoundingBox& bounds);
+
+/// Registers the impostor card material over a baked atlas of the variant: the engine's impostor
+/// surface and card modifier, with the atlas textures bound by handle.
+void RegisterImpostorMaterial(Engine::Renderer::RenderServices& renderServices,
+                              const GUID& material,
+                              const Engine::Renderer::ImpostorAtlas& atlas,
+                              const Mathematics::Vector3& center,
+                              float radius,
+                              uint32 framesPerSide,
+                              Mathematics::OctahedralLayout layout);
 
 /// True when the wind materials have a pipeline. Until then the static twins draw.
 bool VariantMaterialsReady(Engine::Renderer::RenderServices& renderServices, const TreeVariantMaterials& materials);

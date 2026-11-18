@@ -3,6 +3,7 @@
 #include "ECS/Systems.h"
 #include "Types/FlatMap.h"
 #include "Types/Types.h"
+#include "Rendering/Core/Handle.h"
 
 #include <array>
 #include <utility>
@@ -48,7 +49,15 @@ private:
     {
         uint64 Hash = 0;   // Options hash of the variant this tree holds a reference to; 0 = none.
         uint64 Stamp = 0;  // m_UpdateStamp of the last pass that visited the tree.
-        std::array<uint32, 3> Instances{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu}; // Branch, leaf, trellis.
+        // Branch, leaf, trellis, impostor card.
+        std::array<uint32, 4> Instances{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+        bool Impostor = false; // The tree is past the impostor switch (with hysteresis).
+    };
+    // The impostor card material of a variant, registered over its atlas once the atlas is baked.
+    struct ImpostorMaterial
+    {
+        Rendering::TextureHandle Color; // The atlas the material was registered over.
+        bool Ready = false; // Atlas baked and card pipeline built.
     };
 
     struct FrameContext;
@@ -56,9 +65,11 @@ private:
     void ExtractTree(FrameContext& frame, ECS::EntityHandle entity, Components::EZTree& tree, bool active);
     static void ReleaseVariantFields(Components::EZTree& tree);
     void ReleaseUnseenTrees(uint64 worldId, EZTreeService& service);
+    void RequestImpostors(FrameContext& frame);
 
     Engine::Renderer::RenderServices* m_RenderServices = nullptr;
     FlatMap<BindingKey, TreeBinding> m_Bindings;
+    FlatMap<uint64, ImpostorMaterial> m_ImpostorMaterials; // By variant options hash.
     uint64 m_UpdateStamp = 0;
     // A device rebuild frees the GPU meshes; when the generation moves, the trees add
     // their instances again over the regenerated variants.

@@ -34,6 +34,7 @@ struct TreeVariant
     TreeVariantMaterials Materials;
     bool MaterialsReady = false;
     Mathematics::BoundingBox Bounds{};
+    float ImpostorRadius = 0.0f; // Largest vertex distance from Bounds.center: the impostor's sphere.
     uint32 VertexCount = 0;
     uint32 TriangleCount = 0;
     uint32 BranchCount = 0;

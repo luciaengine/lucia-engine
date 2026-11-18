@@ -3,6 +3,8 @@
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderServices.h"
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace GameEngine::EZTreeECS
@@ -130,6 +132,13 @@ void EZTreeService::Generate(TreeVariant& variant, const EZTree::TreeOptions& op
     EZTree::Generator generator;
     const EZTree::GeneratedTree tree = generator.Generate(options);
     variant.Bounds = tree.bounds;
+    float radiusSquared = 0.0f;
+    for (const auto& vertex : tree.combined.Vertices)
+    {
+        const Mathematics::Vector3 offset = Mathematics::Vector3(vertex.Position[0], vertex.Position[1], vertex.Position[2]) - tree.bounds.center;
+        radiusSquared = std::max(radiusSquared, Mathematics::Vector3::Dot(offset, offset));
+    }
+    variant.ImpostorRadius = std::sqrt(radiusSquared);
     variant.VertexCount = static_cast<uint32>(tree.combined.Vertices.size());
     variant.TriangleCount = static_cast<uint32>(tree.combined.Indices.size() / 3u);
     variant.BranchCount = tree.stats.generatedBranchCount;

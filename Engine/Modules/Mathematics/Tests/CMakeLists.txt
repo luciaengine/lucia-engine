@@ -18,6 +18,7 @@ add_executable(MathematicsTests
     Matrix3x3AffineTests.cpp
     Matrix4x4Tests.cpp
     MulAddTests.cpp
+    OctahedralTests.cpp
     TranscendentalTests.cpp
     Vector3IntTests.cpp
     CurveEvaluationTests.cpp

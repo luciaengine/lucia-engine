@@ -28,4 +28,24 @@ vec3 GE_OctDecode(vec2 f)
     return normalize(n);
 }
 
+// Hemi-octahedral encode/decode of the upper hemisphere around +Y into [0,1]^2: +Y at the
+// center, the horizon on the square's edge. A vector below the horizon encodes as its
+// horizon point; straight down encodes as the +X horizon point.
+// CPU mirror: Mathematics/Octahedral.h (HemiOctahedralEncode/Decode).
+vec2 GE_HemiOctEncode(vec3 n)
+{
+    float norm = abs(n.x) + max(n.y, 0.0) + abs(n.z);
+    if (norm < 1e-6)
+        return vec2(1.0, 0.0);
+    vec2 p = n.xz / norm;
+    return vec2(p.x + p.y, p.y - p.x) * 0.5 + 0.5;
+}
+
+vec3 GE_HemiOctDecode(vec2 f)
+{
+    vec2 e = f * 2.0 - 1.0;
+    vec2 p = vec2(e.x - e.y, e.x + e.y) * 0.5;
+    return normalize(vec3(p.x, max(1.0 - abs(p.x) - abs(p.y), 0.0), p.y));
+}
+
 #endif // GE_OCTAHEDRAL_NORMAL_GLSL

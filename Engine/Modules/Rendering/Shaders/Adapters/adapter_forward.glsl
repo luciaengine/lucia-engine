@@ -159,6 +159,9 @@ layout(location = 13) GE_SURFACE_CENTROID in vec2 vUV7;
 #if defined(GE_DEPTH_ONLY_FRAGMENT) && defined(GE_GLASS_SHADOW_COLOR)
 #error "GE_DEPTH_ONLY_FRAGMENT and GE_GLASS_SHADOW_COLOR are different attachment shapes: a depth-only variant attaches NO colour target and the glass tint writes the transmittance attachment. The tint pass is a light-space cascade and draws no crossfade tail (DepthPassDrawsCrossfadeTails); compose the tint variant without GE_DEPTH_ONLY_FRAGMENT."
 #endif
+#if defined(GE_MOTION_VECTORS) && defined(GE_IMPOSTOR_BAKE)
+#error "GE_MOTION_VECTORS and GE_IMPOSTOR_BAKE both claim the colour output at location 0. A bake draws the rest pose once and has no previous endpoint; compose them as separate variants."
+#endif
 #ifdef GE_MOTION_VECTORS
 #ifdef GE_DEPTH_ONLY_FRAGMENT
 #error "GE_MOTION_VECTORS and GE_DEPTH_ONLY_FRAGMENT are different attachment shapes: a depth-only variant attaches NO colour target and a motion variant attaches exactly one. Compose the motion variant without GE_DEPTH_ONLY_FRAGMENT - it already runs the depth variant's coverage block."
@@ -194,6 +197,17 @@ vec4 ge_DeformationMotionPayload()
         viewport, MotionParams.uMotionJitterUv.xy,
         vec4(vMotionPrevClipXY, vMotionPrevClipZ, vMotionPrevClipW));
 }
+#elif defined(GE_IMPOSTOR_BAKE)
+#ifdef GE_DEPTH_ONLY_FRAGMENT
+#error "GE_IMPOSTOR_BAKE and GE_DEPTH_ONLY_FRAGMENT are different attachment shapes: a depth-only variant attaches NO colour target and a bake variant attaches two. Compose the bake variant without GE_DEPTH_ONLY_FRAGMENT - it already runs the alpha cutoff."
+#endif
+#ifdef GE_GLASS_SHADOW_COLOR
+#error "GE_IMPOSTOR_BAKE and GE_GLASS_SHADOW_COLOR both claim the colour output at location 0. The glass tint is a light-space cascade write and a bake is never drawn into a cascade; compose them as separate variants."
+#endif
+// The impostor atlas: base colour and coverage, then the normal (object space: the bake draws
+// the mesh untransformed) and the depth along the frame axis.
+layout(location = 0) out vec4 oBakeColor;
+layout(location = 1) out vec4 oBakeNormalDepth;
 #else
 #ifndef GE_DEPTH_ONLY_FRAGMENT
 layout(location = 0) out vec4 oColor;
@@ -306,7 +320,8 @@ layout(set = 0, binding = 6) uniform LightUBO {
 // stored at the frame's pre-exposure P (GE_PreExposure). Shapes that shade no colour (depth only,
 // motion vectors, the glass shadow colour, a transmittance rather than a radiance) read none. Included ahead of the IBL and the surface,
 // whose scene-colour grabs are stored at P too.
-#if !defined(GE_DEPTH_ONLY_FRAGMENT) && !defined(GE_MOTION_VECTORS) && !defined(GE_GLASS_SHADOW_COLOR)
+#if !defined(GE_DEPTH_ONLY_FRAGMENT) && !defined(GE_MOTION_VECTORS) && !defined(GE_GLASS_SHADOW_COLOR) \
+    && !defined(GE_IMPOSTOR_BAKE)
 #define GE_SHADES_SCENE_COLOUR
 #include "../Includes/view_exposure.glsl"
 // The fog by this surface's own distance, under the HeightFog and VolumetricFog pass keywords: no pass
@@ -866,6 +881,19 @@ void main()
     // fragment's sample mask.
     oCoverageAlpha = vec4(0.0, 0.0, 0.0, so.opacity);
   #endif
+#elif defined(GE_IMPOSTOR_BAKE)
+  #ifdef ALPHA_TEST
+    if (so.opacity < clamp(Props.alphaCutoff, 0.0, 1.0))
+        discard;
+  #endif
+    vec3 bakeNormal = normalize(so.normalWS);
+  #ifndef GE_TWO_SIDED_KEEP_NORMAL
+    if (!gl_FrontFacing)
+        bakeNormal = -bakeNormal;
+  #endif
+    // The bake camera is orthographic, so the window depth is linear along the frame axis.
+    oBakeColor = vec4(so.baseColor, 1.0);
+    oBakeNormalDepth = vec4(bakeNormal * 0.5 + 0.5, gl_FragCoord.z);
 #else // the shading path — the only one that declares oColor
 
     so.normalWS = normalize(so.normalWS);

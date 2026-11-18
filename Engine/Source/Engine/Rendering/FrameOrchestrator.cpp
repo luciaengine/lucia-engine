@@ -1376,6 +1376,7 @@ bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
         // this frame, and after extraction so the worlds' resolved shadow
         // modes are this frame's.
         m_Services->ScheduleRTShadowMask(frame);
+        m_Services->ForEachFeature([this, &frame](IRenderFeature& feature) { feature.DeclareFrameStage(frame, *m_Services); });
 
         slot->Values = m_Services->m_FrameRG;
         if (m_SelectedSceneProducerEpoch == m_WorldFrameEpoch)

@@ -1,5 +1,6 @@
 #include "EZTreeECS/Systems/EZTreeExtractionSystem.h"
 
+#include "Assets/HlodSelect.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MeshRenderer.h"
@@ -12,7 +13,11 @@
 #include "EZTreeECS/Components/EZTreeComponent.h"
 #include "EZTreeECS/EZTreeService.h"
 #include "EZTreeECS/EZTreeVariantMaterials.h"
+#include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/PrimitiveGenerator.h"
+#include "Engine/Rendering/ViewRegistry.h"
+#include "Platform/Environment.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -79,7 +84,8 @@ void SubmitPart(Engine::Renderer::RenderServices& renderServices,
                 Rendering::MeshGPUHandle meshHandle,
                 const GUID& materialGuid,
                 float boundsInflation,
-                uint32& instanceIndex)
+                uint32& instanceIndex,
+                const Rendering::Vector4& custom0 = Rendering::Vector4(1.0f, 1.0f, 1.0f, 1.0f))
 {
     if (!meshHandle.IsValid())
         return;
@@ -136,6 +142,7 @@ void SubmitPart(Engine::Renderer::RenderServices& renderServices,
     if (mirrored && Rendering::MirroredWindingEnabled())
         instance.flags |= Rendering::kInstanceFlagMirrored;
     instance.lodBias = 0.0f;
+    instance.custom0 = custom0;
     // The bounding center is local to the sector in sectorPacked; each reader composes it.
     instance.boundingCenter = localMatrix.TransformPoint(bounds.Box.center);
     const float sx = std::sqrt(elements[0] * elements[0] + elements[1] * elements[1] + elements[2] * elements[2]);
@@ -184,7 +191,7 @@ void RemoveInstance(Rendering::GPUScene* scene, uint32& index)
     index = 0xFFFFFFFFu;
 }
 
-void ReleasePartInstances(Engine::Renderer::RenderServices& renderServices, Components::EZTree& tree)
+void ReleaseMeshInstances(Engine::Renderer::RenderServices& renderServices, Components::EZTree& tree)
 {
     auto* scene = renderServices.GetGPUScene();
     RemoveInstance(scene, tree.RuntimeBranchInstanceIndex);
@@ -192,9 +199,78 @@ void ReleasePartInstances(Engine::Renderer::RenderServices& renderServices, Comp
     RemoveInstance(scene, tree.RuntimeTrellisInstanceIndex);
 }
 
-std::array<uint32, 3> PartInstances(const Components::EZTree& tree)
+void ReleasePartInstances(Engine::Renderer::RenderServices& renderServices, Components::EZTree& tree)
 {
-    return {tree.RuntimeBranchInstanceIndex, tree.RuntimeLeafInstanceIndex, tree.RuntimeTrellisInstanceIndex};
+    ReleaseMeshInstances(renderServices, tree);
+    RemoveInstance(renderServices.GetGPUScene(), tree.RuntimeImpostorInstanceIndex);
+}
+
+std::array<uint32, 4> PartInstances(const Components::EZTree& tree)
+{
+    return {tree.RuntimeBranchInstanceIndex, tree.RuntimeLeafInstanceIndex, tree.RuntimeTrellisInstanceIndex,
+            tree.RuntimeImpostorInstanceIndex};
+}
+
+// The tree's impostor sphere in world space.
+void WorldSphere(const Components::WorldTransform& worldTransform, const Mathematics::Vector3& localCenter,
+                 float localRadius, float (&outCenter)[3], float& outRadius)
+{
+    const Mathematics::Vector3 rotated = Mathematics::Vector3(worldTransform.Basis[0]) * localCenter.x +
+                                         Mathematics::Vector3(worldTransform.Basis[1]) * localCenter.y +
+                                         Mathematics::Vector3(worldTransform.Basis[2]) * localCenter.z;
+    const Mathematics::Vector3 center = (worldTransform.GetPosition() - Mathematics::WorldPosition{}) + rotated;
+    outCenter[0] = center.x;
+    outCenter[1] = center.y;
+    outCenter[2] = center.z;
+    outRadius = localRadius * LargestAxisScale(worldTransform);
+}
+
+// custom0 of an impostor card: xy the hemi-octahedral code of the direction from the tree toward
+// the camera in the tree's own frame, zw the cosine and sine of the tree's yaw (impostor.glsl).
+Rendering::Vector4 ImpostorCardData(const Components::WorldTransform& worldTransform, const float (&center)[3],
+                                    const float (&camera)[3])
+{
+    const Mathematics::Vector3 axisX = Mathematics::Vector3(worldTransform.Basis[0]).Normalize();
+    const Mathematics::Vector3 axisY = Mathematics::Vector3(worldTransform.Basis[1]).Normalize();
+    const Mathematics::Vector3 axisZ = Mathematics::Vector3(worldTransform.Basis[2]).Normalize();
+    const Mathematics::Vector3 toCamera =
+        Mathematics::Vector3(camera[0] - center[0], camera[1] - center[1], camera[2] - center[2]);
+    const Mathematics::Vector3 local(Mathematics::Vector3::Dot(toCamera, axisX), Mathematics::Vector3::Dot(toCamera, axisY),
+                                     Mathematics::Vector3::Dot(toCamera, axisZ));
+    const Mathematics::Vector2 code = Mathematics::HemiOctahedralEncode(local.NormalizeOr(Mathematics::Vector3(0.0f, 1.0f, 0.0f)));
+    const float yawLength = std::max(std::sqrt(axisX.x * axisX.x + axisX.z * axisX.z), 1e-6f);
+    return Rendering::Vector4(code.x, code.y, axisX.x / yawLength, -axisX.z / yawLength);
+}
+
+// Impostor atlas of a tree variant: hemi-octahedral, 8 x 8 frames of 128 pixels.
+constexpr uint32 kImpostorFramesPerSide = 8u;
+constexpr uint32 kImpostorFrameSize = 128u;
+// Screen coverage (Hlod::ClusterCoverage: radius * proj[1][1] / distance, with the impostor's
+// sphere) under which a tree draws its impostor. A frame spans the sphere over kImpostorFrameSize
+// pixels, so at 1080 lines this is about one atlas texel per screen pixel.
+constexpr float kImpostorSwitchCoverage = 0.12f;
+constexpr float kImpostorSwitchHysteresis = 0.15f;
+// A tree requests its atlas a little before it switches, so the bake is ready when it is needed.
+constexpr float kImpostorBakeCoverage = 1.5f * kImpostorSwitchCoverage;
+
+Engine::Renderer::ImpostorBakeRequest MakeImpostorBakeRequest(const TreeVariant& variant)
+{
+    Engine::Renderer::ImpostorBakeRequest request{};
+    // The options hash fixes the meshes and the materials alike.
+    request.Key.MeshHash = variant.Hash;
+    request.Key.MaterialHash = variant.Hash;
+    request.Key.Layout = Mathematics::OctahedralLayout::Hemisphere;
+    request.Key.FramesPerSide = kImpostorFramesPerSide;
+    request.Key.FrameSize = kImpostorFrameSize;
+    request.Center = variant.Bounds.center;
+    request.Radius = variant.ImpostorRadius;
+    if (variant.Branches.IsValid())
+        request.Parts.push_back({variant.Branches, variant.Materials.BarkStatic});
+    if (variant.Leaves.IsValid())
+        request.Parts.push_back({variant.Leaves, variant.Materials.LeavesStatic});
+    if (variant.Trellis.IsValid())
+        request.Parts.push_back({variant.Trellis, variant.Materials.Trellis});
+    return request;
 }
 
 void WriteVariantToTree(const TreeVariant& variant, Components::EZTree& tree)
@@ -221,6 +297,13 @@ struct EZTreeExtractionSystem::FrameContext
     bool DeviceRebuilt = false;
     // The variants this pass has read, so each one is copied out of the service once.
     FlatMap<uint64, TreeVariant> Variants;
+    // The viewpoint camera the impostor switch measures coverage from; no camera keeps every
+    // tree on its mesh.
+    Hlod::ViewLod View;
+    Hlod::SwitchConfig ImpostorSwitch;
+    Rendering::MeshGPUHandle ImpostorCard;
+    // Variants with a tree near or past the switch: their atlases are requested after the pass.
+    FlatMap<uint64, bool> WantedImpostors;
 };
 
 EZTreeExtractionSystem::~EZTreeExtractionSystem()
@@ -257,7 +340,23 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     service->Refresh(deviceGeneration);
 
     ++m_UpdateStamp;
-    FrameContext frame{world, *service, world.GetWorldId(), WindVolumeSpeedBound(world), deviceRebuilt, {}};
+    FrameContext frame{world, *service, world.GetWorldId(), WindVolumeSpeedBound(world), deviceRebuilt, {}, {}, {}, {}, {}};
+    frame.ImpostorSwitch = Hlod::MakeSwitchConfig(kImpostorSwitchCoverage, kImpostorSwitchHysteresis);
+    // GE_IMPOSTORS=0 keeps every tree on its mesh: the reference for comparisons, as GE_HLOD=0 is.
+    static const bool impostorsEnabled = Platform::EnvironmentSwitchEnabled("GE_IMPOSTORS", true);
+    if (const Rendering::CameraData* camera = impostorsEnabled
+            ? m_RenderServices->Views().FindCameraData(m_RenderServices->Views().GetViewpointCamera())
+            : nullptr)
+    {
+        frame.View.CameraPos[0] = camera->cameraPos.x;
+        frame.View.CameraPos[1] = camera->cameraPos.y;
+        frame.View.CameraPos[2] = camera->cameraPos.z;
+        // An orthographic or 2D view has no distance-based switch.
+        frame.View.ProjScaleY = camera->cameraPos.w == 1.0f ? 0.0f : std::abs(camera->proj[1][1]);
+    }
+    frame.ImpostorCard = m_RenderServices->GetMeshGPURegistry().RegisterSubmesh(
+        Rendering::MeshGPUKey{Engine::Renderer::PrimitiveGenerator::PlaneSpriteUvGuid(), 0u},
+        Engine::Renderer::PrimitiveGenerator::GeneratePlaneSpriteUv());
 
     // Every tree is visited whatever its enable state: one that is switched off,
     // or whose entity is, releases the GPU instances this system gave it.
@@ -272,6 +371,35 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         { ExtractTree(frame, entity, tree, !disabled && !inactive && !treeOff); });
 
     ReleaseUnseenTrees(frame.WorldId, *service);
+
+    RequestImpostors(frame);
+}
+
+void EZTreeExtractionSystem::RequestImpostors(FrameContext& frame)
+{
+    auto& baker = m_RenderServices->EnsureFeature<Engine::Renderer::ImpostorBaker>();
+    for (const auto& [hash, wanted] : frame.WantedImpostors)
+    {
+        const TreeVariant* variant = frame.Variants.Find(hash);
+        if (!variant)
+            continue;
+        const Engine::Renderer::ImpostorAtlas atlas = baker.Request(MakeImpostorBakeRequest(*variant), m_UpdateStamp);
+        ImpostorMaterial* material = m_ImpostorMaterials.Find(hash);
+        if (!material)
+            material = &m_ImpostorMaterials.InsertOrAssign(hash, ImpostorMaterial{});
+        const bool atlasReady = atlas.Color.IsValid() && atlas.NormalDepth.IsValid();
+        if (atlasReady && material->Color != atlas.Color)
+        {
+            RegisterImpostorMaterial(*m_RenderServices, variant->Materials.Impostor, atlas, variant->Bounds.center,
+                                     variant->ImpostorRadius,
+                                     kImpostorFramesPerSide, Mathematics::OctahedralLayout::Hemisphere);
+            material->Color = atlas.Color;
+        }
+        // A card whose pipeline is not built yet would draw nothing: the tree keeps its mesh until then.
+        const Engine::Renderer::Material* card =
+            atlasReady ? m_RenderServices->Materials().Registry().Find(variant->Materials.Impostor) : nullptr;
+        material->Ready = card && card->GetGraphicsPipelineId().IsValid();
+    }
 }
 
 void EZTreeExtractionSystem::ExtractTree(FrameContext& frame,
@@ -339,6 +467,26 @@ void EZTreeExtractionSystem::ExtractTree(FrameContext& frame,
 
     Components::LocalBounds bounds{};
     bounds.Box = variant->Bounds;
+
+    float center[3];
+    float radius = 0.0f;
+    WorldSphere(*worldTransform, variant->Bounds.center, variant->ImpostorRadius, center, radius);
+    const float coverage = Hlod::ClusterCoverage(frame.View, center, radius);
+    if (coverage < kImpostorBakeCoverage)
+        frame.WantedImpostors.InsertOrAssign(hash, true);
+    binding->Impostor = Hlod::UpdateProxyActive(binding->Impostor, coverage, frame.ImpostorSwitch);
+    const ImpostorMaterial* impostor = m_ImpostorMaterials.Find(hash);
+    if (binding->Impostor && impostor && impostor->Ready)
+    {
+        ReleaseMeshInstances(*m_RenderServices, tree);
+        SubmitPart(*m_RenderServices, frame.World, entity, *worldTransform, bounds, frame.ImpostorCard,
+                   variant->Materials.Impostor, 0.0f, tree.RuntimeImpostorInstanceIndex,
+                   ImpostorCardData(*worldTransform, center, frame.View.CameraPos));
+        binding->Instances = PartInstances(tree);
+        return;
+    }
+    RemoveInstance(m_RenderServices->GetGPUScene(), tree.RuntimeImpostorInstanceIndex);
+
     const float inflation =
         WindBoundsInflation(tree.Options, LargestAxisScale(*worldTransform), frame.VolumeSpeedBound);
     SubmitPart(*m_RenderServices, frame.World, entity, *worldTransform, bounds, variant->Branches,
@@ -358,6 +506,7 @@ void EZTreeExtractionSystem::ReleaseVariantFields(Components::EZTree& tree)
     tree.RuntimeBranchInstanceIndex = 0xFFFFFFFFu;
     tree.RuntimeLeafInstanceIndex = 0xFFFFFFFFu;
     tree.RuntimeTrellisInstanceIndex = 0xFFFFFFFFu;
+    tree.RuntimeImpostorInstanceIndex = 0xFFFFFFFFu;
 }
 
 void EZTreeExtractionSystem::ReleaseUnseenTrees(uint64 worldId, EZTreeService& service)
