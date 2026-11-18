@@ -186,7 +186,8 @@ bool LightWithinCaptureReach(const Components::Light& light, const Components::W
     return offset.LengthSquared() <= reach * reach;
 }
 
-// The position and the shape of a point, spot or area light, which a directional light does not have.
+// The position, the shape and the shadow of a point, spot or area light, which a directional light does
+// not have in a capture.
 void HashLocalLightShape(const Components::Light& light, const Components::WorldTransform& transform, uint64_t& hash)
 {
     hash = Hashing::Fnv1a64Value(hash, light.Type);
@@ -200,6 +201,8 @@ void HashLocalLightShape(const Components::Light& light, const Components::World
     hash = Hashing::Fnv1a64Value(hash, light.AreaRadius);
     hash = Hashing::Fnv1a64Value(hash, light.Falloff);
     hash = Hashing::Fnv1a64Value(hash, light.Decay);
+    hash = Hashing::Fnv1a64Value(hash, light.CastsShadows);
+    hash = Hashing::Fnv1a64Value(hash, light.ShadowResolutionTier);
 }
 
 // Membership, transforms and material versions inside the capture's far

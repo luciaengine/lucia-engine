@@ -10,6 +10,7 @@
 #include "Engine/Rendering/ProbeCaptureWorldPass.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"
+#include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "Events/Event.h"
@@ -50,6 +51,8 @@ namespace
 constexpr uint64_t kWorldId = 7u;
 constexpr uint32_t kTargetSize = 8u;
 constexpr float kSurfaceDepth = 0.5f;
+// The plane of the shadow test's occluder.
+constexpr float kOccluderX = 0.5f;
 // The variant compiles off the frame thread; the surface draws a few frames after the first request.
 constexpr int kMaxFrames = 32;
 // The emission of the surface in scene-linear units: color x luminance / 203.
@@ -106,6 +109,32 @@ Mesh MakeSurfaceMesh()
     return mesh;
 }
 
+// A wall in the plane x = kOccluderX, between a light at kShadowLightPosition and the center of the
+// surface. The camera looks along +Z, so it sees the wall edge-on and draws no texel of it.
+Mesh MakeOccluderMesh()
+{
+    Mesh mesh{};
+    mesh.Name = "Occluder";
+    constexpr std::array<std::array<float, 2>, 4> kCorners{{{-0.3f, 0.3f}, {0.3f, 0.3f}, {0.3f, 0.5f}, {-0.3f, 0.5f}}};
+    for (const auto& corner : kCorners)
+    {
+        Vertex vertex{};
+        vertex.Position[0] = kOccluderX;
+        vertex.Position[1] = corner[0];
+        vertex.Position[2] = corner[1];
+        vertex.Normal[0] = 1.0f;
+        vertex.Tangent[2] = 1.0f;
+        mesh.Vertices.push_back(vertex);
+    }
+    mesh.Indices = {0u, 1u, 2u, 0u, 2u, 3u};
+    mesh.MinBounds[0] = mesh.MaxBounds[0] = kOccluderX;
+    mesh.MinBounds[1] = -0.3f;
+    mesh.MaxBounds[1] = 0.3f;
+    mesh.MinBounds[2] = 0.3f;
+    mesh.MaxBounds[2] = 0.5f;
+    return mesh;
+}
+
 // A rough white surface with an emission, on the standard surface shader.
 MaterialDocument EmissiveDocument()
 {
@@ -138,6 +167,16 @@ ExtractedLight PointLightAt(double z)
 ExtractedLight PointLightNearTheSurface()
 {
     return PointLightAt(0.2);
+}
+
+// A shadow-casting point light beside the surface. Its light reaches the center of the surface past
+// the x = kOccluderX plane, at a slant.
+ExtractedLight ShadowCastingPointLight()
+{
+    ExtractedLight light = PointLightAt(0.2);
+    light.positionWS = Mathematics::WorldPosition{0.9, 0.0, 0.2};
+    light.castsShadows = 1u;
+    return light;
 }
 
 // A point light whose reach does not meet the face frustum: the world has a light list but the face
@@ -179,7 +218,8 @@ struct SurfaceDraw
 };
 
 // Draws the surface each frame, as a capture face does, until it shows at the center of the target.
-SurfaceDraw DrawTheSurface(IDevice* device, const std::vector<ExtractedLight>& lights)
+// With `occluder`, a shadow-casting wall stands between ShadowCastingPointLight and the surface center.
+SurfaceDraw DrawTheSurface(IDevice* device, const std::vector<ExtractedLight>& lights, bool occluder = false)
 {
     SurfaceDraw draw;
     const std::filesystem::path shaderDir = TestPaths::StagedRenderingShadersDir();
@@ -200,6 +240,15 @@ SurfaceDraw DrawTheSurface(IDevice* device, const std::vector<ExtractedLight>& l
     context.CacheRoot = cacheRoot.Path() / "Shaders";
     context.IncludeDirs = {shaderDir};
     rs.Materials().SetMaterialBuildContext(context);
+    CascadedShadowConfig shadowConfig{};
+    shadowConfig.NumCascades = 1;
+    shadowConfig.Resolution = kTargetSize;
+    if (!rs.EnsureFeature<ShadowMapRenderFeature>().Initialize(device, shadowConfig))
+    {
+        ADD_FAILURE() << "the shadow feature did not start";
+        rs.Shutdown();
+        return draw;
+    }
 
     const Material* material = rs.Materials().RegisterMaterialFromDocument(GUID::Generate(), EmissiveDocument());
     const Mesh mesh = MakeSurfaceMesh();
@@ -218,7 +267,7 @@ SurfaceDraw DrawTheSurface(IDevice* device, const std::vector<ExtractedLight>& l
     camera.proj = Mathematics::Matrix4x4::Identity();
     camera.viewProj = Mathematics::Matrix4x4::Identity();
     rs.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), {0.1f, 1000.0f});
-    const ViewId viewId = rs.Views().AllocateView("ProbeCaptureFace.View", cameraId);
+    const ViewId viewId = rs.Views().AllocateView("ProbeCaptureFace.View", cameraId, ViewPurpose::UtilityCapture);
     rs.Views().SetViewRenderLayerMask(viewId, RenderLayerMask::Default());
     rs.Views().SetViewWorldId(viewId, kWorldId);
     ViewClearConfig clear{};
@@ -242,12 +291,36 @@ SurfaceDraw DrawTheSurface(IDevice* device, const std::vector<ExtractedLight>& l
                      (PackWorldKey16(kWorldId) << 16);
     instance.boundingCenter = Mathematics::Vector3(0.0f, 0.0f, kSurfaceDepth);
     instance.boundingRadius = 1.5f;
-    std::array<WorldSubmissionRecord, 1> submissions{};
+    std::vector<WorldSubmissionRecord> submissions(1);
     submissions[0].viewId = viewId;
     submissions[0].meshHandle = meshHandle;
     submissions[0].material = material;
     submissions[0].instanceIndex = rs.GetGPUScene()->AddInstance(instance);
     submissions[0].renderLayerMask = RenderLayerMask::Default();
+    if (occluder)
+    {
+        const Mesh wall = MakeOccluderMesh();
+        const MeshGPUHandle wallHandle = rs.GetMeshGPURegistry().RegisterSubmesh({GUID::Generate(), 0}, wall);
+        const MeshGPUEntry* wallEntry = rs.GetMeshGPURegistry().Find(wallHandle);
+        if (wallEntry == nullptr)
+        {
+            ADD_FAILURE() << "the occluder mesh did not register";
+            rs.Shutdown();
+            return draw;
+        }
+        GPUInstance wallInstance = instance;
+        wallInstance.meshIndex = wallEntry->gpuMeshIndex;
+        wallInstance.flags |= kSubmissionFlagCastShadows;
+        wallInstance.boundingCenter = Mathematics::Vector3(kOccluderX, 0.0f, 0.4f);
+        wallInstance.boundingRadius = 0.5f;
+        WorldSubmissionRecord& record = submissions.emplace_back();
+        record.viewId = viewId;
+        record.meshHandle = wallHandle;
+        record.material = material;
+        record.instanceIndex = rs.GetGPUScene()->AddInstance(wallInstance);
+        record.renderLayerMask = RenderLayerMask::Default();
+        record.flags = kSubmissionFlagCastShadows;
+    }
 
     {
         int events = 0;
@@ -400,4 +473,20 @@ TEST(ProbeCaptureFaceDraw, APointLightInReachAddsItsLightToTheEmission)
     EXPECT_GT(texel.r - kEmission.r, 0.1f) << "the point light did not reach the surface";
     EXPECT_GE(texel.g, kEmission.g - kChannelTolerance);
     EXPECT_GE(texel.b, kEmission.b - kChannelTolerance);
+}
+
+// A point light casts the shadow of a wall onto a capture face. The same light without the wall lights
+// the surface, so a black result fails too.
+TEST(ProbeCaptureFaceDraw, AWallBetweenAShadowCastingPointLightAndTheSurfaceShadowsTheCaptureFace)
+{
+    const auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No rendering device available";
+    const SurfaceDraw open = DrawTheSurface(device.get(), {ShadowCastingPointLight()});
+    const SurfaceDraw walled = DrawTheSurface(device.get(), {ShadowCastingPointLight()}, /*occluder=*/true);
+    ASSERT_TRUE(open.Texel.has_value() && walled.Texel.has_value())
+        << "the surface did not draw in " << kMaxFrames << " frames";
+    ASSERT_TRUE(IsFinite(*open.Texel) && IsFinite(*walled.Texel)) << "a color is not a number";
+    EXPECT_GT(open.Texel->r - kEmission.r, 0.1f) << "the light does not reach the surface without the wall";
+    EXPECT_NEAR(walled.Texel->r, kEmission.r, kChannelTolerance) << "the wall does not shadow the surface";
 }

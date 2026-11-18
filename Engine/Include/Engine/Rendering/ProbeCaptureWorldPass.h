@@ -13,7 +13,8 @@ inline constexpr uint32_t kMaxProbeCaptureLocalLights = 64;
 
 // Declares the world pass of one reflection probe capture face with the Forward+ lit variant. One light
 // cluster holds the point, spot and area lights whose reach meets the face frustum, strongest first, and
-// the pass binds a ViewParams of the face camera. The view's camera, world and LightUBO must be current
+// the pass binds a ViewParams of the face camera. The face declares the point, spot and area shadow maps
+// of its own view first, so these lights cast shadows; the sun casts none in a capture. The view's camera, world and LightUBO must be current
 // for the face. The face stores absolute radiance, so ViewParams carries exposure 1. Returns an invalid
 // pass when an upload fails; the caller then arms the face again.
 RenderServices::WorldPassRG AddProbeCaptureWorldPass(RenderServices& services,

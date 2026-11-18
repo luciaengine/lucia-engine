@@ -562,7 +562,11 @@ const RenderServices::PointShadowAssignment& RenderServices::EnsurePointShadowAs
         return entry;
 
     const auto lights = GetWorldLights(worldId);
-    const auto pointCull = MakePointShadowCullInputs(camData, m_ViewRegistry.ResolveCameraRanges(viewId));
+    // A capture view (a reflection probe face) turns its camera between the frames of one capture
+    // and keeps what it rendered, so its shadow cubes render every face, not the faces this camera sees.
+    const bool captureView = viewDesc && viewDesc->purpose == Rendering::ViewPurpose::UtilityCapture;
+    const auto pointCull = captureView ? std::nullopt
+                                       : MakePointShadowCullInputs(camData, m_ViewRegistry.ResolveCameraRanges(viewId));
     const PointShadowCameraCull* cull = pointCull ? &*pointCull : nullptr;
 
     // Enumerate shadow-casting point candidates (clusterable index matches the

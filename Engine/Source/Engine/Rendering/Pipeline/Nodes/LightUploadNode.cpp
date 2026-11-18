@@ -69,6 +69,50 @@ LightUploadNode::GPULightPacked LightUploadNode::PackLight(const ExtractedLight&
     return p;
 }
 
+LightUploadNode::LightBufferUpload LightUploadNode::UploadLightBuffer(Rendering::RenderGraph::RGFrame& frame,
+                                                                     std::span<const ExtractedLight> lights,
+                                                                     const Rendering::CameraData& camera,
+                                                                     std::span<const int32_t> shadowSlotOfCluster)
+{
+    uint32_t clusterableCount = 0;
+    for (const auto& in : lights)
+    {
+        if (!IsBufferedLight(in))
+            continue;
+        if (clusterableCount >= kMaxBufferedLights)
+            break;
+        ++clusterableCount;
+    }
+
+    // At least one (zeroed) record even with no clusterable lights: WebGPU
+    // validates the binding against the WGSL struct's minimum size, which
+    // counts one element of the runtime light array; the header's count=0
+    // keeps the shader from reading it.
+    const size_t bytes =
+        kLightBufferHeaderBytes + size_t(std::max(clusterableCount, 1u)) * sizeof(GPULightPacked);
+    const auto alloc = frame.AllocUpload(bytes, 256);
+    if (!alloc.Ptr)
+        return {};
+
+    uint8_t* dst = static_cast<uint8_t*>(alloc.Ptr);
+    std::memset(dst, 0, bytes);
+    std::memcpy(dst, &clusterableCount, sizeof(uint32_t));
+
+    auto* outLights = reinterpret_cast<GPULightPacked*>(dst + kLightBufferHeaderBytes);
+    uint32_t writeIdx = 0;
+    for (const auto& in : lights)
+    {
+        if (!IsBufferedLight(in))
+            continue;
+        if (writeIdx >= kMaxBufferedLights)
+            break;
+        const int32_t shadowSlot = writeIdx < shadowSlotOfCluster.size() ? shadowSlotOfCluster[writeIdx] : -1;
+        outLights[writeIdx] = PackLight(in, camera, shadowSlot);
+        ++writeIdx;
+    }
+    return {alloc.Buffer, alloc.Offset, bytes};
+}
+
 bool LightUploadNode::Initialize(std::string nodeId, std::string nodeJson, std::string* outError)
 {
     m_Id = std::move(nodeId);
@@ -101,7 +145,7 @@ bool LightUploadNode::Initialize(std::string nodeId, std::string nodeJson, std::
 void LightUploadNode::DeclareForView(ViewDeclare& d)
 {
     // Dissolved into the upload ring, EXACT-size: header +
-    // count*sizeof(GPULightPacked) instead of the blueprint's full kMaxLights
+    // count*sizeof(GPULightPacked) instead of the blueprint's full kMaxBufferedLights
     // worst case — every byte written at
     // declaration, so the old zero-fill of unused records has nothing to
     // cover. Directional/ambient stay out-of-band via LightUBO (same filter
@@ -109,7 +153,7 @@ void LightUploadNode::DeclareForView(ViewDeclare& d)
     const auto* viewDesc = d.Services.Views().FindViewDesc(d.View.id);
     const uint64_t worldId = viewDesc ? viewDesc->worldId : 0u;
     // Pre-sorted strongest-first by RenderServices::FinalizeWorldLights, so the
-    // kMaxLights truncation below (a first-N walk) keeps the top-contribution
+    // kMaxBufferedLights truncation below (a first-N walk) keeps the top-contribution
     // lights deterministically instead of dropping by arbitrary iteration order.
     const auto lights = d.Services.GetWorldLights(worldId);
 
@@ -140,53 +184,14 @@ void LightUploadNode::DeclareForView(ViewDeclare& d)
         }
     }
 
-    constexpr uint32_t kMaxLights = 1024;
-
-    uint32_t clusterableCount = 0;
-    for (const auto& in : lights)
-    {
-        if (!IsBufferedLight(in))
-            continue;
-        if (clusterableCount >= kMaxLights)
-            break;
-        ++clusterableCount;
-    }
-
-    // At least one (zeroed) record even with no clusterable lights: WebGPU
-    // validates the binding against the WGSL struct's minimum size, which
-    // counts one element of the runtime light array; the header's count=0
-    // keeps the shader from reading it.
-    const size_t bytes =
-        kLightBufferHeaderBytes + size_t(std::max(clusterableCount, 1u)) * sizeof(GPULightPacked);
-    const auto alloc = d.Frame.AllocUpload(bytes, 256);
-    if (!alloc.Ptr)
-        return;
-
-    uint8_t* dst = static_cast<uint8_t*>(alloc.Ptr);
-    std::memset(dst, 0, bytes);
-    std::memcpy(dst, &clusterableCount, sizeof(uint32_t));
-
-    // M1: per-light point-shadow atlas slot, indexed by the same packed clusterable
-    // index this loop assigns (writeIdx). Computed once per (view, frame) by the
-    // shadow assignment; -1 for lights the atlas budget did not admit.
+    // Point-shadow atlas slot of each buffered light, by its buffer index. Computed once per (view,
+    // frame) by the shadow assignment; -1 for lights the atlas budget did not admit.
     const auto camData = d.Services.Views().ResolveCameraData(d.View.id);
-    const std::span<const int32_t> shadowSlotOfCluster =
-        d.Services.PointShadowSlotOfCluster(d.View.id, worldId, camData);
-
-    auto* outLights = reinterpret_cast<GPULightPacked*>(dst + kLightBufferHeaderBytes);
-    uint32_t writeIdx = 0;
-    for (const auto& in : lights)
-    {
-        if (!IsBufferedLight(in))
-            continue;
-        if (writeIdx >= kMaxLights)
-            break;
-        const int32_t shadowSlot = writeIdx < shadowSlotOfCluster.size() ? shadowSlotOfCluster[writeIdx] : -1;
-        outLights[writeIdx] = PackLight(in, camData, shadowSlot);
-        ++writeIdx;
-    }
-
-    d.PublishBuffer(m_BufferRef, {alloc.Buffer, alloc.Offset, bytes, /*Graph*/ {}});
+    const LightBufferUpload upload =
+        UploadLightBuffer(d.Frame, lights, camData, d.Services.PointShadowSlotOfCluster(d.View.id, worldId, camData));
+    if (!upload.Valid())
+        return;
+    d.PublishBuffer(m_BufferRef, {upload.Buffer, upload.Offset, upload.Bytes, /*Graph*/ {}});
 }
 
 } // namespace GameEngine::Engine::Renderer::Pipeline::Nodes
