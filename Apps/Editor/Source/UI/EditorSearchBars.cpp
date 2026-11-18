@@ -118,6 +118,8 @@ void EditorSearchBars::SetAtTop(bool atTop)
     for (const RegisteredBar& registered : s_Bars)
     {
         UIElement* bar = registered.PlacementTarget;
+        if (!bar)
+            continue;
         ApplyPlacement(bar);
 
         UIElement* dirtyRoot = bar->GetParent() ? bar->GetParent() : bar;
@@ -143,8 +145,17 @@ void EditorSearchBars::RegisterHosted(UIElement* searchBar, UIElement* placement
 {
     if (!searchBar || !placementHost)
         return;
+    AddBar(searchBar, placementHost);
+}
 
-    // Load on first register if not yet loaded
+void EditorSearchBars::RegisterInToolbar(UIElement* searchBar)
+{
+    if (searchBar)
+        AddBar(searchBar, nullptr);
+}
+
+void EditorSearchBars::AddBar(UIElement* searchBar, UIElement* placementHost)
+{
     if (!s_Loaded)
         LoadFromPreferences();
 
@@ -281,7 +292,7 @@ void EditorSearchBars::PruneNulls()
 {
     auto it = std::remove_if(s_Bars.begin(), s_Bars.end(),
                              [](const RegisteredBar& registered)
-                             { return !registered.SearchBar || !registered.PlacementTarget; });
+                             { return !registered.SearchBar; });
     if (it != s_Bars.end())
         s_Bars.erase(it, s_Bars.end());
 }

@@ -277,8 +277,8 @@ void LogPanel::BuildSearchBar(UIElement& host)
     m_SearchBar = built.RootPtr;
     m_SearchBar->AddClass(kSearchBarClass);
     host.AddChild(std::move(built.Root));
-    // The search stays in the toolbar wherever panel searches sit; it takes only the focus outline.
-    EditorSearchBars::RegisterFocusTarget(m_SearchBar);
+    // The search stays in the toolbar wherever panel searches sit, and follows the fill and the look.
+    EditorSearchBars::RegisterInToolbar(m_SearchBar);
 }
 
 void LogPanel::WireFilterToggle(UIElement& root, LogModel::Severity severity, const char* id)
