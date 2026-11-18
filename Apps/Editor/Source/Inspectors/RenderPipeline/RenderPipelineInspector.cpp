@@ -477,29 +477,29 @@ static void RequestRebuild(UIElement* root,
         action();
 }
 
-static void SaveJsonToDisk(RenderPipelineAsset* pipe, const nlohmann::json& j)
+// Writes the document to the pipeline file. Returns false when the file is not fully written.
+static bool SaveJsonToDisk(RenderPipelineAsset& pipe, const nlohmann::json& document)
 {
-    if (!pipe)
-        return;
-    bool wrote = false;
     try
     {
-        std::ofstream out(pipe->GetPath(), std::ios::binary);
+        const std::string serialized = document.dump(2);
+        std::ofstream out(pipe.GetPath(), std::ios::binary);
         if (!out.is_open())
-            return;
-        out << j.dump(2);
-        wrote = true;
+            return false;
+        out << serialized;
+        out.close();
+        if (!out)
+            return false;
     }
     catch (...)
     {
+        return false;
     }
 
     // Wake the VCS poll; poll-thread cooldown absorbs rapid-fire edits.
-    if (wrote)
-    {
-        if (auto* vcs = Editor::EditorVcsProviderRegistry::Get().ActiveIntegration())
-            vcs->RefreshStatus();
-    }
+    if (auto* vcs = Editor::EditorVcsProviderRegistry::Get().ActiveIntegration())
+        vcs->RefreshStatus();
+    return true;
 }
 
 static Editor::UndoRedoService::SnapshotTarget MakeRenderPipelineSnapshotTarget(RenderPipelineAsset* pipe,
@@ -553,9 +553,10 @@ static Editor::UndoRedoService::SnapshotTarget MakeRenderPipelineSnapshotTarget(
 }
 
 // Saves the document to the pipeline file and reloads the asset, as one undo step when an undo
-// service is given.
+// service is given. When the save or the reload fails, no undo step is kept and the document
+// becomes the loaded document again, so the tree shows what the file holds.
 static void SaveJsonUndoable(RenderPipelineAsset* pipe,
-                             const nlohmann::json& document,
+                             nlohmann::json& document,
                              Editor::UndoRedoService* undo,
                              const std::string& label)
 {
@@ -565,10 +566,13 @@ static void SaveJsonUndoable(RenderPipelineAsset* pipe,
     if (undo)
         edit = undo->BeginInteractiveEdit(std::string("Render Pipeline ") + label,
                                           MakeRenderPipelineSnapshotTarget(pipe, label));
-    SaveJsonToDisk(pipe, document);
-    (void)pipe->Reload();
-    if (edit)
-        edit.Commit();
+    if (SaveJsonToDisk(*pipe, document) && pipe->Reload() == ReloadOutcome::Reloaded)
+    {
+        if (edit)
+            edit.Commit();
+        return;
+    }
+    document = nlohmann::json::parse(pipe->GetDocument().jsonText, nullptr, /*allow_exceptions=*/false);
 }
 
 // Saves an edit that can change any part of the tree, then rebuilds the whole tree.
