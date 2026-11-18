@@ -132,6 +132,7 @@ void DefineBuiltInControls()
         reg.Attr("value", &BaseField::SetValue);
         reg.Attr("selectallonmousefocus", &TextFieldBase<std::string>::SetSelectsAllOnMouseFocus);
         reg.Attr("masked", &TextField::SetMasked);
+        reg.Attr("doubleclickselectsall", &TextField::SetDoubleClickSelectsAll);
         reg.Attr("placeholder", &TextFieldBase<std::string>::SetPlaceholder);
         reg.TagAlias("textfield"); // legacy lowercase tag
         reg.TagAlias("input");     // legacy <input> alias

@@ -53,6 +53,9 @@ class TextInput : public BaseField, public ITextMeasurable
         the byte offsets of the typed text. For a password or a key. */
     void SetMasked(bool masked);
     bool IsMasked() const { return m_Masked; }
+    /** A double click selects the whole value in place of one word: for a value read as one unit,
+        such as an address. */
+    void SetDoubleClickSelectsAll(bool selectsAll) { m_DoubleClickSelectsAll = selectsAll; }
 
     // Input hooks implemented by TextInput
     bool OnChar(unsigned int codepoint) override;
@@ -110,6 +113,7 @@ class TextInput : public BaseField, public ITextMeasurable
     int m_CaretIndex = 0;
 
     bool m_Masked = false;
+    bool m_DoubleClickSelectsAll = false;
     // The bullets GetTextContent returns while masked: three bytes per code point of the value.
     mutable std::string m_MaskedText;
     const std::string& MaskedText() const;
@@ -835,6 +839,14 @@ class TextField : public TextFieldBase<std::string>
         // click's caret alone. An inspector field that wants the numeric-field
         // behaviour calls SetSelectsAllOnMouseFocus(true).
         SetSelectsAllOnMouseFocus(false);
+    }
+
+    /** A double click selects the whole value (TextInput::SetDoubleClickSelectsAll); the
+        `doubleclickselectsall` attribute in a layout. */
+    void SetDoubleClickSelectsAll(bool selectsAll)
+    {
+        if (TextInput* input = GetTextInput())
+            input->SetDoubleClickSelectsAll(selectsAll);
     }
 
     /** Draws the value as bullets (TextInput::SetMasked); the `masked` attribute in a layout. */

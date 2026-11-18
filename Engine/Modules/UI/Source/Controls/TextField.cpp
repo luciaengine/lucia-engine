@@ -789,8 +789,9 @@ void TextInput::SelectWordAt(float mouseX, float x, float y, float W, float H,
         MarkDirty(VisualDirty);
         return;
     }
-    // A word of a masked value would show where its spaces and punctuation are.
-    if (m_Masked)
+    // A word of a masked value would show where its spaces and punctuation are. A field read as
+    // one unit selects all of it.
+    if (m_Masked || m_DoubleClickSelectsAll)
     {
         SelectAll();
         return;
