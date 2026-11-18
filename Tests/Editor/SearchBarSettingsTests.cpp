@@ -64,6 +64,21 @@ struct RegisteredSearchBar
     ~RegisteredSearchBar() { EditorSearchBars::Unregister(Built.RootPtr); }
 };
 
+// A toolbar search bar in its toolbar, registered for the test, unregistered before it is destroyed.
+struct RegisteredToolbarSearchBar
+{
+    GameEngine::UIElement Toolbar;
+    GameEngine::UIElement* Bar = nullptr;
+    RegisteredToolbarSearchBar()
+    {
+        PanelSearchBarBuilt built = BuildPanelSearchBar("search-bar-settings-test-toolbar-field");
+        Bar = built.RootPtr;
+        Toolbar.AddChild(std::move(built.Root));
+        EditorSearchBars::RegisterInToolbar(Bar);
+    }
+    ~RegisteredToolbarSearchBar() { EditorSearchBars::Unregister(Bar); }
+};
+
 } // namespace
 
 TEST(SearchBarSettings, SearchBarsSitAtTheBottomByDefault)
@@ -112,6 +127,30 @@ TEST(SearchBarSettings, TheTopRowMovesARegisteredPanelSearchBar)
     EXPECT_FALSE(bar.Built.RootPtr->HasClass("search-bar-at-top"));
 
     toggle.Set(initial);
+}
+
+// A toolbar search, such as the Log panel's, shows no field until the user clicks it or types while
+// Filled Search Bars is off, and stays in its toolbar when the search bars move to the top.
+TEST(SearchBarSettings, AToolbarSearchBarFollowsTheFillButNotThePlacement)
+{
+    const auto filled = SearchBarToggle("Filled Search Bars");
+    const auto top = SearchBarToggle("Search Bars at Top");
+    ASSERT_TRUE(filled.Set && filled.Get && top.Set && top.Get);
+    const bool initialFilled = filled.Get();
+    const bool initialTop = top.Get();
+    const RegisteredToolbarSearchBar toolbar;
+
+    filled.Set(false);
+    EXPECT_TRUE(toolbar.Bar->HasClass("hidden"));
+    filled.Set(true);
+    EXPECT_FALSE(toolbar.Bar->HasClass("hidden"));
+
+    top.Set(true);
+    EXPECT_FALSE(toolbar.Bar->HasClass("search-bar-at-top"));
+    EXPECT_FALSE(toolbar.Toolbar.HasClass("search-bars-at-top"));
+
+    filled.Set(initialFilled);
+    top.Set(initialTop);
 }
 
 TEST(SearchBarSettings, TheIconAndHintAreHiddenByDefault)
