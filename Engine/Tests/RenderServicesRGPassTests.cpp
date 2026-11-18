@@ -18,6 +18,12 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "Rendering/Materials/MaterialBuilder.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Common/Utils.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Engine/Rendering/DrawBindings.h"
 #include "AssetCore/GUID.h"
 #include "TestCameraEye.h"
 #include "Assets/ModelAsset.h"
@@ -26,6 +32,8 @@
 #include "Types/StringId.h"
 
 #include <algorithm>
+#include <array>
+#include <memory>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -147,6 +155,114 @@ bool HasScopeRow(const RenderGraph::RGFrame::RGProfilingSnapshot& profiling, con
             return true;
     return false;
 }
+
+// A full-screen triangle that the world pass and the camera prepass prepare and record. The world pass
+// prepares a contributor only when it has a material; the prepass prepares a head from its pipeline and layout.
+class ScopeRowDraws
+{
+public:
+    explicit ScopeRowDraws(IDevice& device) : m_Device(device)
+    {
+        const auto vertex = Utils::LoadShaderFile("Shaders/fullscreen_noinput.vert.spv");
+        const auto fragment = Utils::LoadShaderFile("Shaders/ubo_sample.frag.spv");
+        StageReflectionResult stage;
+        if (vertex.empty() || fragment.empty() ||
+            !ReflectSpirv(ShaderStageKind::Fragment, reinterpret_cast<const uint32_t*>(fragment.data()),
+                          fragment.size() / sizeof(uint32_t), {}, stage, nullptr))
+            return;
+        m_ColourMeta = MergeStages({stage});
+        if (m_ColourMeta.Sets.size() != 1 || m_ColourMeta.Sets.front().Bindings.size() != 1)
+            return;
+
+        GraphicsPipelineDesc colour{};
+        colour.VertexShader = std::make_shared<const std::vector<uint8_t>>(vertex);
+        colour.PixelShader = std::make_shared<const std::vector<uint8_t>>(fragment);
+        colour.Rasterization.cullMode = CullModeFlagBits::None;
+        colour.ColorBlend.attachments.emplace_back();
+        for (const auto& layout : MaterialBuilder::BuildSetLayouts(m_ColourMeta))
+            colour.DescriptorSetLayouts.push_back(m_Device.InternDescriptorSetLayout(layout));
+        m_ColourPipeline = m_Device.InternGraphicsPipeline(colour);
+
+        GraphicsPipelineDesc depth{};
+        depth.VertexShader = colour.VertexShader;
+        depth.Rasterization.cullMode = CullModeFlagBits::None;
+        m_DepthPipeline = m_Device.InternGraphicsPipeline(depth);
+
+        m_Uniform = CreateUploadBuffer(256, BufferUsage::Uniform);
+        m_Indices = CreateUploadBuffer(sizeof(kTriangle), BufferUsage::Index);
+        if (!m_Uniform.IsValid() || !m_Indices.IsValid())
+            return;
+        m_Device.UpdateBuffer(m_Indices, 0, sizeof(kTriangle), kTriangle.data());
+        m_UniformBinding = {m_ColourMeta.Sets.front().Bindings.front().ResolvedNameId(), m_Uniform, 0, 208};
+    }
+
+    ~ScopeRowDraws()
+    {
+        if (m_Uniform.IsValid())
+            m_Device.DestroyBuffer(m_Uniform);
+        if (m_Indices.IsValid())
+            m_Device.DestroyBuffer(m_Indices);
+    }
+
+    ScopeRowDraws(const ScopeRowDraws&) = delete;
+    ScopeRowDraws& operator=(const ScopeRowDraws&) = delete;
+
+    bool IsValid() const
+    {
+        return m_ColourPipeline.IsValid() && m_DepthPipeline.IsValid() && m_UniformBinding.Buffer.IsValid();
+    }
+
+    DrawCommand Colour(Rendering::DrawProducerId producer) const
+    {
+        DrawCommand command = Triangle(producer);
+        command.Material = &m_Material;
+        command.InternedPipeline = m_ColourPipeline;
+        command.PipelineMeta = &m_ColourMeta;
+        command.Bindings.Buffers = {&m_UniformBinding, 1};
+        return command;
+    }
+
+    DrawCommand DepthHead(Rendering::DrawProducerId producer) const
+    {
+        DrawCommand command = Triangle(producer);
+        command.InternedPipeline = m_DepthPipeline;
+        command.PipelineMeta = &m_DepthMeta;
+        return command;
+    }
+
+private:
+    static constexpr std::array<uint16_t, 3> kTriangle{0, 1, 2};
+
+    BufferHandle CreateUploadBuffer(size_t size, BufferUsage usage)
+    {
+        BufferDesc desc{};
+        desc.size = size;
+        desc.usage = static_cast<uint32_t>(usage);
+        desc.memoryUsage = BufferMemoryUsage::Upload;
+        desc.debugName = "RGPassScopeRowDraws";
+        return m_Device.CreateBuffer(desc);
+    }
+
+    DrawCommand Triangle(Rendering::DrawProducerId producer) const
+    {
+        DrawCommand command{};
+        command.Producer = producer;
+        command.Geometry.AltGeom.IB = m_Indices;
+        command.Geometry.AltGeom.IndexType = IndexType::Uint16;
+        command.IndexCount = static_cast<uint32_t>(kTriangle.size());
+        return command;
+    }
+
+    IDevice& m_Device;
+    ShaderMeta m_ColourMeta;
+    ShaderMeta m_DepthMeta;
+    GraphicsPipelineId m_ColourPipeline{};
+    GraphicsPipelineId m_DepthPipeline{};
+    BufferHandle m_Uniform{};
+    BufferHandle m_Indices{};
+    DrawBindings::BufferEntry m_UniformBinding{};
+    Material m_Material = Material::TestFactory::Create(GUID::Generate(), "RGPassScopeRow", 16u);
+};
 
 RenderGraph::RGResourceId ResourceIdByName(const RenderGraph::RGGraph& g, const std::string& name)
 {
@@ -317,17 +433,15 @@ TEST(RenderServicesRGPassTests, WorldPassScopeRowsNameEachContributorsRegistered
         const Rendering::DrawProducerId grass = Rendering::DrawProducerRegistry::Register("Grass");
         ASSERT_NE(terrain, grass);
 
+        const ScopeRowDraws draws(*f.Device);
+        ASSERT_TRUE(draws.IsValid());
         auto fwdHandle = f.Rs.RegisterForwardEmit(
             [&](ForwardEmitContext& ctx)
             {
                 if (ctx.ViewId != f.View)
                     return;
                 for (const Rendering::DrawProducerId producer : {terrain, grass})
-                {
-                    DrawCommand cmd{};
-                    cmd.Producer = producer;
-                    ctx.Services->EmitForwardCommand(ctx.ViewId, cmd, ForwardDrawDepth::ColourPass);
-                }
+                    ctx.Services->EmitForwardCommand(ctx.ViewId, draws.Colour(producer), ForwardDrawDepth::ColourPass);
             });
 
         FramePools pools(f.Device.get());
@@ -385,18 +499,19 @@ TEST(RenderServicesRGPassTests, DepthPrepassScopeRowsNameEachContributorsRegiste
         const Rendering::DrawProducerId grass = Rendering::DrawProducerRegistry::Register("Grass");
         ASSERT_NE(terrain, grass);
 
+        const ScopeRowDraws draws(*f.Device);
+        ASSERT_TRUE(draws.IsValid());
         auto fwdHandle = f.Rs.RegisterForwardEmit(
             [&](ForwardEmitContext& ctx)
             {
                 if (ctx.ViewId != f.View)
                     return;
-                DrawCommand terrainDraw{};
-                terrainDraw.Producer = terrain;
-                ctx.Services->EmitForwardCommand(ctx.ViewId, terrainDraw, ForwardDrawDepth::Prepass, &terrainDraw);
-                DrawCommand grassDraw{};
-                grassDraw.Producer = grass;
-                ctx.Services->EmitForwardCommand(ctx.ViewId, grassDraw, ForwardDrawDepth::PrepassNonOccluding,
-                                                 &grassDraw);
+                const DrawCommand terrainHead = draws.DepthHead(terrain);
+                ctx.Services->EmitForwardCommand(ctx.ViewId, draws.Colour(terrain), ForwardDrawDepth::Prepass,
+                                                 &terrainHead);
+                const DrawCommand grassHead = draws.DepthHead(grass);
+                ctx.Services->EmitForwardCommand(ctx.ViewId, draws.Colour(grass),
+                                                 ForwardDrawDepth::PrepassNonOccluding, &grassHead);
             });
 
         FramePools pools(f.Device.get());
