@@ -43,6 +43,14 @@ bool IsPreviewOrThumbnailViewName(const char* debugName)
 }
 } // namespace
 
+static_assert(ShadowMapNode::kMaxCascadeCount == kMaxShadowCascades,
+              "the authored cascade limit is the feature's cascade limit");
+
+bool ShadowMapNode::IsSupportedCascadeCount(uint64_t count)
+{
+    return count >= 1u && count <= kMaxCascadeCount;
+}
+
 // The "resolution" key is the one owner of the directional cascade size.
 bool ShadowMapNode::IsSupportedCascadeResolution(uint32_t resolution)
 {
@@ -297,8 +305,20 @@ bool ShadowMapNode::Initialize(std::string nodeId, std::string nodeJson, std::st
         if (!j.is_object())
             return true;
 
-        if (j.contains("cascades") && j["cascades"].is_number_unsigned())
-            m_NumCascades = std::min(j["cascades"].get<uint32_t>(), kMaxShadowCascades);
+        if (j.contains("cascades"))
+        {
+            const auto& cascades = j["cascades"];
+            const uint64_t count = cascades.is_number_unsigned() ? cascades.get<uint64_t>() : 0u;
+            if (!IsSupportedCascadeCount(count))
+            {
+                if (outError)
+                    *outError = "ShadowMapNode: cascades must be from 1 to " + std::to_string(kMaxCascadeCount) +
+                                ", for example " + std::to_string(kDefaultCascadeCount) +
+                                ". It sets the number of directional cascades.";
+                return false;
+            }
+            m_NumCascades = static_cast<uint32_t>(count);
+        }
         if (j.contains("resolution"))
         {
             const auto& resolution = j["resolution"];
@@ -394,7 +414,7 @@ void ShadowMapNode::Declare(RenderPipelineInstance& /*instance*/,
     if (!feature.IsInitialized() && !feature.Initialize(device, config))
         LOG_ERROR("ShadowMapNode: failed to initialize ShadowMapRenderFeature");
     else if (feature.IsInitialized())
-        feature.SetResolution(config.Resolution);
+        feature.SetCascadeMaps(config.NumCascades, config.Resolution);
 
     EnsureMsmResources(device);
     EnsureOverlayResources(device);

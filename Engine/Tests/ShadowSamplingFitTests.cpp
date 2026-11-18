@@ -285,6 +285,26 @@ TEST(ShadowSamplingFit, ShadowMapNodeRefusesAnUnsupportedCascadeResolution)
     }
 }
 
+// The node refuses a cascade count the feature cannot render, and the message names the field
+// and the supported range.
+TEST(ShadowSamplingFit, ShadowMapNodeRefusesAnUnsupportedCascadeCount)
+{
+    for (const char* json : {R"({"cascades":1})", R"({"cascades":4})"})
+    {
+        Renderer::Pipeline::Nodes::ShadowMapNode node;
+        std::string error;
+        EXPECT_TRUE(node.Initialize("CSM", json, &error)) << json << ": " << error;
+    }
+    for (const char* json : {R"({"cascades":0})", R"({"cascades":5})", R"({"cascades":"2"})",
+                             R"({"cascades":-1})", R"({"cascades":4294967297})"})
+    {
+        Renderer::Pipeline::Nodes::ShadowMapNode node;
+        std::string error;
+        EXPECT_FALSE(node.Initialize("CSM", json, &error)) << json;
+        EXPECT_NE(error.find("cascades must be from 1 to 4"), std::string::npos) << json << ": " << error;
+    }
+}
+
 // Penumbra width is driven by the light's angular size, not by a world-space
 // scalar: a directional light sits at infinity, so its penumbra is
 // depthDelta * tan(halfAngle) with no divide by blocker distance. These pin the

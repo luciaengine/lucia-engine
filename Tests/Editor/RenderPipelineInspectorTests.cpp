@@ -254,6 +254,42 @@ TEST_F(RenderPipelineInspectorTest, ShadowMapPassEditsTheCascadeResolutionInTheP
     EXPECT_EQ(resaved["passes"][0].value("splitLambda", 0.0), 0.2) << "a float saves as typed, not as its float expansion";
 }
 
+// A cascade count chosen in the dropdown is saved to the pipeline file, and the saved pass is one the
+// node accepts. A count the node refuses stays selected and marked.
+TEST_F(RenderPipelineInspectorTest, ShadowMapPassEditsTheCascadeCountInThePipelineFile)
+{
+    const TestUtils::ScopedTempDir tmpDir{TestUtils::MakeUniqueTempDirectory("ge_editor_tests")};
+    const std::filesystem::path pipePath = tmpDir.Path() / "ShadowPipe.rendergraph";
+    WriteTextFile(pipePath, MakeShadowMapPipeline(R"(, "cascades": 4)"));
+    RenderPipelineAsset pipe(GUID::Generate(), pipePath);
+    ASSERT_TRUE(pipe.Load());
+
+    MountedPipelineInspector inspector(pipe);
+    UIElement& root = *inspector.Root;
+
+    auto* cascades = dynamic_cast<Dropdown*>(root.FindById("rp-pass-0-cascades"_sid));
+    ASSERT_NE(cascades, nullptr);
+    EXPECT_EQ(cascades->GetSelectedValue(), "4");
+
+    inspector.EditAsUser([cascades] { cascades->SetSelectedValue("2"); });
+
+    const nlohmann::json pass = nlohmann::json::parse(ReadTextFile(pipePath))["passes"][0];
+    EXPECT_EQ(pass.value("cascades", 0u), 2u);
+    Engine::Renderer::Pipeline::Nodes::ShadowMapNode node;
+    std::string error;
+    EXPECT_TRUE(node.Initialize("Shadows", pass.dump(), &error)) << error;
+
+    const std::filesystem::path invalidPath = tmpDir.Path() / "InvalidShadowPipe.rendergraph";
+    WriteTextFile(invalidPath, MakeShadowMapPipeline(R"(, "cascades": 0)"));
+    RenderPipelineAsset invalidPipe(GUID::Generate(), invalidPath);
+    ASSERT_TRUE(invalidPipe.Load());
+    MountedPipelineInspector invalid(invalidPipe);
+    auto* invalidCascades = dynamic_cast<Dropdown*>(invalid.Root->FindById("rp-pass-0-cascades"_sid));
+    ASSERT_NE(invalidCascades, nullptr);
+    EXPECT_EQ(invalidCascades->GetSelectedValue(), "0");
+    EXPECT_EQ(invalidCascades->GetSelectedLabel(), "0 (invalid)");
+}
+
 // A resolution the node refuses stays selected and marked, so opening the inspector does not
 // change the file.
 TEST_F(RenderPipelineInspectorTest, ShadowMapPassKeepsAnUnsupportedResolutionSelectedAndMarked)

@@ -390,15 +390,15 @@ class ShadowMapRenderFeature : public IRenderFeature
 
     const CascadedShadowConfig& GetConfig() const { return m_Config; }
 
-    // Changes the fixed directional cascade-map dimensions. RenderGraph pool
-    // imports observe the new descriptor on the next frame and safely replace
-    // the old physical after in-flight work retires.
-    void SetResolution(uint32_t resolution);
+    // Sets the directional cascade count (1 to kMaxShadowCascades) and the size of each cascade.
+    // RenderGraph pool imports observe the new descriptor on the next frame and replace the old
+    // physical after in-flight work retires.
+    void SetCascadeMaps(uint32_t numCascades, uint32_t resolution);
 
     // Push per-frame directional shadow overrides (from a volume ShadowSettingsEffect)
     // into the cascade config. Only the four per-frame tunables are writable here;
-    // NumCascades / Resolution / MomentsResolution stay fixed because they size the
-    // pooled GPU shadow textures. ShadowMapNode calls this each frame before
+    // NumCascades and Resolution change through SetCascadeMaps, MomentsResolution
+    // through SetMomentsResolution, because they size GPU shadow textures. ShadowMapNode calls this each frame before
     // ComputeCascades — with the resolved volume values when a ShadowSettingsEffect
     // is present, otherwise with the node's blueprint defaults — so toggling or
     // removing the volume reverts to the pipeline-authored look with no residue.
