@@ -167,7 +167,6 @@ struct PostProcessEffectDescriptor
     std::string_view DisplayName;
     std::string_view Description{};
     std::string_view IconPath{};
-    std::string_view IconClass{};
     std::string_view RequiredPackage{};
 
     // Scene-IO metadata. Effects that keep a hand-written schema register with
