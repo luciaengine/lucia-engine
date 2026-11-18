@@ -17956,9 +17956,10 @@ TEST(RenderPipelineDeclareTests, DeviceTextureReadbackRestoresTheDeclaredSampled
     }
 }
 
-// A reflection probe's bake writes the lighting cubes with compute. Every later frame imports them at
-// their sampled resting layout, also a frame whose world pass does not run (a paused camera), so the
-// bake frame must end with them in that layout, not only when a world pass samples them (#7073).
+// A reflection probe's bake writes its staging cubes with compute, one face or filter step per frame,
+// and publishing swaps them into the lighting cubes. Every later frame imports them at their sampled
+// resting layout, also a frame whose world pass does not run (a paused camera), so each bake frame must
+// end with them in that layout, not only when a world pass samples them (#7073).
 TEST(RenderPipelineDeclareTests, AReflectionProbeBakeLeavesTheLightingCubesInTheLayoutTheirImportsClaim)
 {
     auto* device = SharedHeadlessDevice();
@@ -17974,10 +17975,12 @@ TEST(RenderPipelineDeclareTests, AReflectionProbeBakeLeavesTheLightingCubesInThe
         desc.UpdateMode = Engine::Renderer::SceneReflectionProbeUpdateMode::Once;
         probe.SetProbe(desc);
 
+        // An arm frame, six face frames, the filter steps and the publish frame fit in this budget.
+        constexpr uint64_t kMaxBakeFrames = 64;
         FramePools pools(device);
         RenderGraph::RGFrame frame(device, &pools.Persistent, &pools.Transient, &pools.Ring);
-        uint32_t bakeFrames = 0;
-        for (uint64_t index = 0; index < 4; ++index)
+        uint32_t diffuseFrames = 0;
+        for (uint64_t index = 0; index < kMaxBakeFrames && probe.GetDiagnostics().CompletedBakes == 0; ++index)
         {
             frame.BeginFrame(index);
             // The capture's bucketer dispatches need the culling of this frame, as the spine runs it.
@@ -17992,20 +17995,21 @@ TEST(RenderPipelineDeclareTests, AReflectionProbeBakeLeavesTheLightingCubesInThe
             frame.Execute();
             device->WaitForIdle();
             const RenderGraph::RGGraph& graph = frame.Graph();
-            const RenderGraph::RGResourceId irradiance = ResourceNamed(graph, "IBL_Irradiance");
-            if (irradiance == RenderGraph::kInvalidId ||
-                WriterPassNamed(graph, "IBLGen.SceneProbeDiffuseConvolve", irradiance) == RenderGraph::kInvalidId)
-                continue;
-            ++bakeFrames;
-            for (const char* cube : {"IBL_Irradiance", "IBL_Prefilter"})
+            for (const char* cube : {"IBL_ProbeStaging", "IBL_ProbeStagingDiffuse", "IBL_ProbeStagingSpecular"})
             {
                 const RenderGraph::RGResourceId id = ResourceNamed(graph, cube);
-                ASSERT_NE(id, RenderGraph::kInvalidId) << cube;
+                if (id == RenderGraph::kInvalidId)
+                    continue;
                 EXPECT_STREQ(LayoutName(graph.FinalLayout(id)), LayoutName(graph.ImportLayout(id)))
-                    << cube << " ends the bake frame " << index << " outside the layout its next import claims";
+                    << cube << " ends bake frame " << index << " outside the layout its next import claims";
             }
+            const RenderGraph::RGResourceId diffuse = ResourceNamed(graph, "IBL_ProbeStagingDiffuse");
+            if (diffuse != RenderGraph::kInvalidId &&
+                WriterPassNamed(graph, "ReflectionProbe.1.Diffuse.", diffuse) != RenderGraph::kInvalidId)
+                ++diffuseFrames;
         }
-        EXPECT_EQ(bakeFrames, 1u) << "a Once probe bakes in exactly one frame; zero makes the check void";
+        EXPECT_EQ(probe.GetDiagnostics().CompletedBakes, 1u) << "the Once probe did not publish a bake";
+        EXPECT_EQ(diffuseFrames, 1u) << "a bake convolves the diffuse cube in exactly one frame; zero makes the check void";
     }
     rs.Shutdown();
 }
