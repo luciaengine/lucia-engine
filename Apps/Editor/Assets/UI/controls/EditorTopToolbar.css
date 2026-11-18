@@ -205,3 +205,9 @@
 .toolbar-play-active {
     --toolbar-playback-icon-tint: var(--ui_icon_tint_active);
 }
+
+/* A panel button carries its panel's tab icon class (SyncPanelButtons). This rule keeps the
+   toolbar's icon size over the tab icon's own size. */
+.editor-top-toolbar .button.toolbar-panel-button {
+    background-size: 24px 24px;
+}

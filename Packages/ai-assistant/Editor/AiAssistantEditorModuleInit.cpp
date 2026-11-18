@@ -29,6 +29,7 @@ struct AiAssistantEditorModuleRegistrar
         panel.LayoutAssetPath = "Editor/UI/panels/PromptPanel.uxml";
         panel.StyleAssetPath = "Editor/UI/panels/PromptPanel.css";
         panel.DefaultDockAnchorPanelId = "SceneView";
+        panel.ShowOnTopToolbarByDefault = true;
         panel.Factory = []() -> std::unique_ptr<GameEngine::UIElement> {
             return std::make_unique<GameEngine::PromptPanel>();
         };
