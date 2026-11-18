@@ -71,7 +71,7 @@ const std::array<ControlLayout, 50> kControlLayouts = {{
     {"LogPanel",
      "UI/panels/LogPanel/LogPanel.uxml",
      {"LogFilterError", "LogFilterWarning", "LogFilterInfo", "LogFilterDebug", "LogChannels", "LogClear",
-      "LogPause", "LogCopyAll", "LogSearchHost", "LogSplit", "LogListPane", "LogCopyNotice", "LogDetailSplitter",
+      "LogPause", "LogPauseGlyph", "LogCopyAll", "LogSearchHost", "LogSplit", "LogListPane", "LogCopyNotice", "LogDetailSplitter",
       "LogDetailPane", "LogDetailGlyph", "LogDetailSeverity", "LogDetailChannel", "LogDetailTime",
       "LogDetailSource", "LogDetailScroll", "LogDetailBody", "LogDetailMessage", "LogDetailTraceTitle",
       "LogDetailTrace"}},
