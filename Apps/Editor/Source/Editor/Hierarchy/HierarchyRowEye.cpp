@@ -53,6 +53,7 @@ void RegisterHierarchySettingsCategory()
     SettingsCategoryDescriptor hierarchy;
     hierarchy.CategoryId = "hierarchy";
     hierarchy.Title = "Hierarchy";
+    hierarchy.TreeRowClass = "ui-hierarchy-row";
     hierarchy.Group = SettingsCategoryGroup::UI;
     hierarchy.SearchKeywords = "hierarchy rows eye visibility on off enable entity icon";
     hierarchy.Description = "How Hierarchy rows look.";

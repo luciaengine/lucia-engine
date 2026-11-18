@@ -16,6 +16,7 @@ void RegisterScriptPackagesSettingsCategory()
     SettingsCategoryDescriptor page;
     page.CategoryId = "scriptPackages";
     page.Title = "Script Packages";
+    page.TreeRowClass = "script-packages-settings-row";
     page.Group = SettingsCategoryGroup::ProjectSettings;
     page.SearchKeywords = "script packages nuget dependencies csproj packagereference library c#";
     page.Description =

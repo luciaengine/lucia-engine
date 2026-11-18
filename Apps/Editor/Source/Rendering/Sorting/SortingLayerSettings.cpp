@@ -10,6 +10,7 @@ void RegisterSortingLayerSettings()
     SettingsCategoryDescriptor page;
     page.CategoryId = "sortingLayers";
     page.Title = "Sorting Layers";
+    page.TreeRowClass = "sorting-layers-row";
     page.Group = SettingsCategoryGroup::ProjectSettings;
     page.Description = "Lower priorities draw first. Names and priorities can change without changing scene references. "
         "Render layers control visibility separately.";

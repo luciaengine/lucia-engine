@@ -79,6 +79,7 @@ void RegisterRenderLayersSettingsCategory()
     SettingsCategoryDescriptor page;
     page.CategoryId = "renderLayers";
     page.Title = "Render Layers";
+    page.TreeRowClass = "render-layers-row";
     page.Group = SettingsCategoryGroup::ProjectSettings;
     page.SearchKeywords = "render layers layer names mask culling camera visible";
     page.Description =

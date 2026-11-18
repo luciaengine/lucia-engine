@@ -109,7 +109,10 @@
     background-image: url("editor:Icons/SettingsTags.svg");
 }
 
-.settings-tree-pane .build-row .tree-title,
+.settings-tree-pane .build-row .tree-title {
+    background-image: url("editor:Icons/cube.svg");
+}
+
 .settings-tree-pane .platform-row .tree-title {
     background-image: url("editor:Icons/game-controller.svg");
 }
@@ -200,6 +203,30 @@
 
 .settings-tree-pane .experimental-row .tree-title {
     background-image: url("editor:Icons/SettingsExperimental.svg");
+}
+
+.settings-tree-pane .render-layers-row .tree-title {
+    background-image: url("editor:Icons/eye.svg");
+}
+
+.settings-tree-pane .sorting-layers-row .tree-title {
+    background-image: url("editor:Icons/SortingLayers.svg");
+}
+
+.settings-tree-pane .script-packages-settings-row .tree-title {
+    background-image: url("editor:Icons/box.svg");
+}
+
+.settings-tree-pane .ui-hierarchy-row .tree-title {
+    background-image: url("editor:Icons/list.svg");
+}
+
+.settings-tree-pane .startup-row .tree-title {
+    background-image: url("editor:Icons/play.svg");
+}
+
+.settings-tree-pane .tile-palette-row .tree-title {
+    background-image: url("editor:Icons/TilePalette.svg");
 }
 
 /* Tags settings: fixed-size name field and icon-only delete button (toolbar style) */

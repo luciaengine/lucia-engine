@@ -27,6 +27,7 @@ void RegisterStartupSettingsCategory()
     SettingsCategoryDescriptor startup;
     startup.CategoryId = "startup";
     startup.Title = "Startup";
+    startup.TreeRowClass = "startup-row";
     startup.Group = SettingsCategoryGroup::UserSettings;
     startup.SearchKeywords = "startup start launch open project picker";
     startup.Description = "Startup sets what the editor opens when it starts without a project.";
