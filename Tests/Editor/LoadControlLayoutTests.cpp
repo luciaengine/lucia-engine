@@ -74,7 +74,7 @@ const std::array<ControlLayout, 50> kControlLayouts = {{
       "LogPause", "LogCopyAll", "LogSearchHost", "LogSplit", "LogListPane", "LogCopyNotice", "LogDetailSplitter",
       "LogDetailPane", "LogDetailGlyph", "LogDetailSeverity", "LogDetailChannel", "LogDetailTime",
       "LogDetailSource", "LogDetailScroll", "LogDetailBody", "LogDetailMessage", "LogDetailTraceTitle",
-      "LogDetailFrames"}},
+      "LogDetailTrace"}},
     {"HierarchyNavigationBar", "UI/panels/HierarchyNavigationBar/HierarchyNavigationBar.uxml", {}},
     {"FolderBakeStatus", "UI/thumbnails/FolderBakeStatus/FolderBakeStatus.uxml", {}},
     {"CameraCustomAspectModal",

@@ -62,6 +62,42 @@ TEST(LogModel, CopyHoldsTheLineTheSourceAndEveryFrame)
         << "the line carries the whole message, every line of it";
 }
 
+TEST(LogModel, TheStackTraceTextHasOneLinePerFrameInFrameOrder)
+{
+    LogModel::Entry entry = MakeEntry(LogLevel::Error, "Asset import failed");
+    auto frames = std::make_shared<std::vector<BacktraceFrame>>();
+    frames->push_back({0, "Engine.dll", "Importer::Run", "Importer.cpp", 88});
+    frames->push_back({0, "", "", "", 0});
+    frames->push_back({0, "Editor", "Panel::Update", "Panel.cpp", 12});
+    entry.Backtrace = frames;
+
+    EXPECT_EQ(LogModel::FormatBacktrace(entry),
+              "[0] Engine.dll!Importer::Run  Importer.cpp:88\n"
+              "[1] <unknown>\n"
+              "[2] Editor!Panel::Update  Panel.cpp:12")
+        << "line N of the text is frame N, so a double-click on a line finds its frame";
+    EXPECT_TRUE(LogModel::FormatBacktrace(MakeEntry(LogLevel::Info, "no trace")).empty());
+}
+
+TEST(LogModel, AFrameOpensItsFileAndLineOnlyWhenItNamesBoth)
+{
+    LogModel::Entry entry = MakeEntry(LogLevel::Error, "Asset import failed");
+    auto frames = std::make_shared<std::vector<BacktraceFrame>>();
+    frames->push_back({0, "Engine.dll", "Importer::Run", "Importer.cpp", 88});
+    frames->push_back({0, "Engine.dll", "Importer::Read", "Importer.cpp", 0});
+    frames->push_back({0, "Engine.dll", "Importer::Parse", "", 0});
+    entry.Backtrace = frames;
+
+    const std::optional<LogModel::SourceToOpen> source = LogModel::FrameSourceToOpen(entry, 0);
+    ASSERT_TRUE(source.has_value());
+    EXPECT_EQ(source->File, "Importer.cpp");
+    EXPECT_EQ(source->Line, 88);
+    EXPECT_FALSE(LogModel::FrameSourceToOpen(entry, 1).has_value()) << "a file without a line";
+    EXPECT_FALSE(LogModel::FrameSourceToOpen(entry, 2).has_value()) << "no file";
+    EXPECT_FALSE(LogModel::FrameSourceToOpen(entry, 3).has_value()) << "past the last frame";
+    EXPECT_FALSE(LogModel::FrameSourceToOpen(MakeEntry(LogLevel::Info, "no trace"), 0).has_value());
+}
+
 TEST(LogModel, CopyOfAnEntryWithoutSourceIsTheLine)
 {
     const LogModel::Entry entry = MakeEntry(LogLevel::Info, "Scene loaded");

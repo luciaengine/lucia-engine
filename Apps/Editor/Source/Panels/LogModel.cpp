@@ -285,10 +285,22 @@ std::string LogModel::FormatDetails(const Entry& entry)
     if (!entry.Backtrace || entry.Backtrace->empty())
         return out;
     out += "Stack trace:\n";
+    out += FormatBacktrace(entry);
+    out += '\n';
+    return out;
+}
+
+std::string LogModel::FormatBacktrace(const Entry& entry)
+{
+    std::string out;
+    if (!entry.Backtrace)
+        return out;
     const std::vector<Logger::BacktraceFrame>& frames = *entry.Backtrace;
     for (size_t index = 0; index < frames.size(); ++index)
     {
         const Logger::BacktraceFrame& frame = frames[index];
+        if (index > 0)
+            out += '\n';
         out += '[';
         out += std::to_string(index);
         out += "] ";
@@ -303,9 +315,18 @@ std::string LogModel::FormatDetails(const Entry& entry)
             out += "  ";
             AppendFileAndLine(out, frame.File, frame.Line);
         }
-        out += '\n';
     }
     return out;
+}
+
+std::optional<LogModel::SourceToOpen> LogModel::FrameSourceToOpen(const Entry& entry, size_t frameIndex)
+{
+    if (!entry.Backtrace || frameIndex >= entry.Backtrace->size())
+        return std::nullopt;
+    const Logger::BacktraceFrame& frame = (*entry.Backtrace)[frameIndex];
+    if (frame.File.empty() || frame.Line <= 0)
+        return std::nullopt;
+    return SourceToOpen{frame.File, frame.Line};
 }
 
 std::optional<LogModel::SourceToOpen> LogModel::FindSourceToOpen(const Entry& entry)

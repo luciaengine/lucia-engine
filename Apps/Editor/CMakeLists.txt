@@ -174,7 +174,6 @@ set(EDITOR_SOURCES
     Source/Panels/RenderGraphPanel.cpp
     Source/Panels/CpuProfilerPanel.cpp
     Source/Panels/VisualProfilerPanel.cpp
-    Source/Panels/BacktraceFrameView.cpp
     Source/Panels/VramPanel.cpp
     Source/Panels/ProjectPicker/ProjectCard.cpp
     Source/Panels/ProjectPicker/ProjectCard.h

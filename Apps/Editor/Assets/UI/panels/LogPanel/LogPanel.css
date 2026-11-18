@@ -345,13 +345,19 @@
 	white-space: normal;
 }
 
+/* The stack trace: one frame per line, selectable. A double-click on a line opens its file. */
+.log-detail-trace {
+	font-family: var(--ui_font_mono);
+	font-size: var(--ui_font_size_list);
+	color: var(--ui_color_text_dim);
+	background-color: var(--ui_color_bg_field);
+	border-radius: var(--ui_radius_sm);
+	padding: var(--ui_spacing_sm);
+	white-space: normal;
+	word-break: break-all;
+}
+
 .log-detail-section-title {
 	font-weight: 500;
 	color: var(--ui_color_text);
-}
-
-.log-detail-frames {
-	display: flex;
-	flex-direction: column;
-	min-width: 0;
 }
