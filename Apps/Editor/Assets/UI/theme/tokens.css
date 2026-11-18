@@ -59,7 +59,8 @@
      status): 3.2:1 against the grid (#222222). The plate's fill is barely lighter
      than the grid, so the outline is its edge. */
   --ui_color_notice_outline: #707070;
-  --ui_color_dropdown_outline: var(--ui_color_border_subtle);
+  /* Reads the override that .dropdowns-no-outline sets; :root never declares it. */
+  --ui_color_dropdown_outline: var(--ui_color_dropdown_outline_override, var(--ui_color_border_subtle));
   --ui_color_dropdown_outline_hover: #4A4A4A;
   /* The toggle knob while the control refuses input: a step down from the
      resting knob so the switch reads as off-limits while its position is still
@@ -291,9 +292,11 @@
   --ui_icon_tint_hover:   #ffffff;
 }
 
-/* Settings > Appearance > Dropdown Outlines off: ControlAppearanceSettings stamps this class on the
+/* Settings > Controls > Dropdown Outlines off: ControlAppearanceSettings stamps this class on the
    UI root, and dropdowns, asset fields and picture choice fields draw no outline at rest. The hover
-   outline stays. This rule follows :root, so it wins at equal specificity. */
+   outline stays. A docked panel's tree has no parent, so it matches :root and declares
+   --ui_color_dropdown_outline again. Set the override, which :root never declares, so that the
+   value inherits into every panel. */
 .dropdowns-no-outline {
-  --ui_color_dropdown_outline: transparent;
+  --ui_color_dropdown_outline_override: transparent;
 }

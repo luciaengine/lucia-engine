@@ -157,7 +157,7 @@
 	flex: 1;
 }
 
-/* Match the bundled identity movie matte across its letterbox area. */
+/* The identity movie is a flame on black; the letterbox area matches it. */
 .engine-info-video-area {
-	background-color: #252525;
+	background-color: #000000;
 }
