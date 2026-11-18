@@ -38,7 +38,7 @@ namespace {
 constexpr const char* kLayoutAssetPath = "UI/panels/LogPanel/LogPanel.uxml";
 constexpr const char* kStyleAssetPath = "UI/panels/LogPanel/LogPanel.css";
 // The ids BuildFromLayout looks up. A layout that lacks one does not load.
-constexpr std::array<std::string_view, 24> kRequiredIds = {
+constexpr std::array<std::string_view, 25> kRequiredIds = {
     "LogFilterError",
     "LogFilterWarning",
     "LogFilterInfo",
@@ -46,6 +46,7 @@ constexpr std::array<std::string_view, 24> kRequiredIds = {
     "LogChannels",
     "LogClear",
     "LogPause",
+    "LogPauseGlyph",
     "LogCopyAll",
     "LogSearchHost",
     "LogSplit",
