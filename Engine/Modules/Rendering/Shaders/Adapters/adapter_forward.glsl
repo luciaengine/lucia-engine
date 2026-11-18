@@ -10,6 +10,13 @@
 //   - Single directional light fallback (when FORWARD_PLUS is not defined)
 //   - Alpha test / blend support
 
+// The shadow catcher derives opacity from lighting. The other color variants
+// can reject surface opacity before lighting and use explicit-level light taps.
+#if defined(ALPHA_TEST) && !defined(LIGHTING_MODEL_SHADOW_ONLY) && !defined(GE_DEPTH_ONLY_FRAGMENT) \
+    && !defined(GE_MOTION_VECTORS) && !defined(GE_IMPOSTOR_BAKE) && !defined(GE_GLASS_SHADOW_COLOR)
+#define GE_FORWARD_EARLY_ALPHA_TEST
+#endif
+
 // --- Varyings from vertex shader ---
 // Shade at a covered location on MSAA boundary pixels. Pixel-center
 // interpolation can extrapolate UVs/normals outside thin triangles; centroid
@@ -609,7 +616,7 @@ void main()
 {
 
 
-#if defined(HAS_SHADOWS) && defined(GE_COMPAT_PROFILE)
+#if defined(HAS_SHADOWS) && (defined(GE_COMPAT_PROFILE) || defined(GE_FORWARD_EARLY_ALPHA_TEST))
     ge_shadowReceiverDx = dFdx(vPosRel);
     ge_shadowReceiverDy = dFdy(vPosRel);
 #endif
@@ -953,6 +960,17 @@ void main()
     ge_SurfaceReceivesShadows = (vInstanceFlags & 2u) != 0u;
 #endif
 
+#if defined(GE_FORWARD_EARLY_ALPHA_TEST) && !defined(GE_USER_CUSTOM_LIGHTING)
+    // Shadow debug can return an opaque diagnostic before the regular cutoff.
+    #ifdef HAS_SHADOWS
+    const bool deferAlphaCutoff = GE_ShadowDebugMode() != 0;
+    #else
+    const bool deferAlphaCutoff = false;
+    #endif
+    if (!deferAlphaCutoff && so.opacity < clamp(Props.alphaCutoff, 0.0, 1.0))
+        discard;
+#endif
+
     // --- Evaluate lighting ---
 
     vec3 finalColor = vec3(0.0);
@@ -1130,8 +1148,13 @@ void main()
     float alpha = outputAlpha;
 
 #ifdef ALPHA_TEST
+  #if defined(GE_FORWARD_EARLY_ALPHA_TEST) && !defined(GE_USER_CUSTOM_LIGHTING)
+    if (deferAlphaCutoff && alpha < clamp(Props.alphaCutoff, 0.0, 1.0))
+        discard;
+  #else
     if (alpha < clamp(Props.alphaCutoff, 0.0, 1.0))
         discard;
+  #endif
     alpha = 1.0;
 #elif !defined(GE_ALPHA_BLEND) && !defined(GE_SURFACE_ALPHA_TO_COVERAGE)
     // An opaque surface without an explicit coverage contract covers its pixel: texture or vertex

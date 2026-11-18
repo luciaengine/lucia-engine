@@ -10,10 +10,18 @@
 #ifndef GE_COMPAT_PROFILE_GLSL
 #define GE_COMPAT_PROFILE_GLSL
 
-#if defined(GE_COMPAT_PROFILE)
+// The light textures have one mip. Explicit taps also let masked surfaces
+// sample lighting after discarding without reading gradients from discarded lanes.
+#if defined(GE_COMPAT_PROFILE) || defined(GE_FORWARD_EARLY_ALPHA_TEST)
 #extension GL_EXT_texture_shadow_lod : require
 #define GE_SHADOW_TAP(s, coords) textureLod(s, coords, 0.0)
 #define GE_TAP_LOD0(s, coords) textureLod(s, coords, 0.0)
+#else
+#define GE_SHADOW_TAP(s, coords) texture(s, coords)
+#define GE_TAP_LOD0(s, coords) texture(s, coords)
+#endif
+
+#if defined(GE_COMPAT_PROFILE)
 #define GE_DFDX(v) ((v) * 0.0)
 #define GE_DFDY(v) ((v) * 0.0)
 // naga drops the array layer count from imageSize; callers supply their bound layer count.
@@ -23,8 +31,6 @@
 // away, so only the compat arm takes it.
 #define GE_IS_NAN(v) notEqual(v, v)
 #else
-#define GE_SHADOW_TAP(s, coords) texture(s, coords)
-#define GE_TAP_LOD0(s, coords) texture(s, coords)
 #define GE_DFDX(v) dFdx(v)
 #define GE_DFDY(v) dFdy(v)
 #define GE_ARRAY_IMAGE_SIZE(img, layers) imageSize(img)

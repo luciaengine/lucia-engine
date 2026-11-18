@@ -500,9 +500,14 @@ vec3 GE_AccumulateClusteredLighting(
 {
     vec3 totalLight = vec3(0.0);
 #if defined(HAS_SHADOWS) && defined(GE_VIRTUAL_SHADOW_MAPS)
+    #if defined(GE_FORWARD_EARLY_ALPHA_TEST) && !defined(GE_COMPAT_PROFILE)
+    vec3 virtualReceiverDx = ge_shadowReceiverDx;
+    vec3 virtualReceiverDy = ge_shadowReceiverDy;
+    #else
     // Screen derivatives are not defined inside the light loop.
     vec3 virtualReceiverDx = GE_DFDX(posRel);
     vec3 virtualReceiverDy = GE_DFDY(posRel);
+    #endif
 #endif
 
     // Hoist the per-pixel base multiscatter compensation out of the per-light loop (it depends
