@@ -4,11 +4,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 
 namespace GameEngine::Rendering
 {
 struct CameraData;
+namespace RenderGraph
+{
+class RGFrame;
+} // namespace RenderGraph
 } // namespace GameEngine::Rendering
 
 namespace GameEngine::Engine::Renderer
@@ -73,6 +78,23 @@ class LightUploadNode final : public IRenderPipelineNode
     // The record of a buffered light for a view whose camera is `camera`.
     static GPULightPacked PackLight(const ExtractedLight& light, const Rendering::CameraData& camera,
                                     int32_t shadowSlot);
+    // The most lights a LightBuffer holds; the strongest come first in a world light list.
+    static constexpr uint32_t kMaxBufferedLights = 1024;
+    // A LightBuffer in the upload ring of a frame. Invalid when the ring is full.
+    struct LightBufferUpload
+    {
+        Rendering::BufferHandle Buffer{};
+        uint64_t Offset = 0;
+        size_t Bytes = 0;
+        bool Valid() const { return Bytes != 0; }
+    };
+    // Writes the LightBuffer of `lights` (a world light list) for a view whose camera is `camera`. The
+    // buffer index of a light is its index among the buffered lights of the list; `shadowSlotOfCluster`
+    // gives the point-shadow atlas slot by that index.
+    static LightBufferUpload UploadLightBuffer(Rendering::RenderGraph::RGFrame& frame,
+                                               std::span<const ExtractedLight> lights,
+                                               const Rendering::CameraData& camera,
+                                               std::span<const int32_t> shadowSlotOfCluster);
 
     const char* GetTypeName() const override { return "LightUpload"; }
 

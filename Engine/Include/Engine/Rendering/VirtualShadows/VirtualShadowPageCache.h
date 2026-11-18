@@ -49,6 +49,8 @@ struct VirtualShadowPageWork
     uint32_t Tile = kUnmappedShadowPage;
     uint64_t Revision = 0;
     bool NeedsRender = false;
+    /// The tile holds this page at an older caster pose and draws it again, so the page stays readable.
+    bool Refresh = false;
 };
 
 /// Most page depth passes that one view records in one frame.
@@ -73,8 +75,8 @@ public:
     std::vector<VirtualShadowPageWork> Plan(
         std::span<const VirtualShadowPage> requests, uint64_t frame, uint64_t completedFrame);
 
-    // Refresh a page in place after ordering the atlas writes against reads
-    // in the render graph. Publish only after the actual depth pass submits.
+    // Record that the depth pass of a page submitted. A missing page publishes only after this.
+    // A refreshed page stays published while it draws: the render graph orders its atlas write before the reads.
     bool MarkRendered(const VirtualShadowPageWork& work);
     /// Whether this tile still names the same page and content revision.
     bool Contains(const VirtualShadowPageWork& work) const;

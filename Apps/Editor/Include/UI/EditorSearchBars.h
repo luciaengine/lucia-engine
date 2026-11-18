@@ -40,6 +40,9 @@ public:
     // setting moves: visibility and focus styling follow the search bar, the placement
     // classes go on the host (search-bar-at-top on it, search-bars-at-top on its parent).
     static void RegisterHosted(UIElement* searchBar, UIElement* placementHost);
+    // A search bar in a panel toolbar: it follows the fill and the look, and the focus outline,
+    // but stays in its toolbar when Search Bars at Top changes.
+    static void RegisterInToolbar(UIElement* searchBar);
     static void Unregister(UIElement* searchBar);
     static void RegisterFocusTarget(UIElement* searchBar);
     static void UnregisterFocusTarget(UIElement* searchBar);
@@ -57,8 +60,11 @@ private:
     struct RegisteredBar
     {
         UIElement* SearchBar = nullptr;
+        // Null for a toolbar bar, which the top/bottom setting does not move.
         UIElement* PlacementTarget = nullptr;
     };
+
+    static void AddBar(UIElement* searchBar, UIElement* placementHost);
 
     static void ApplyPlacement(UIElement* placementTarget);
     static void ApplyFocusOutline(UIElement* searchBar);

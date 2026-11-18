@@ -494,9 +494,10 @@ TerrainPages& TerrainService::GetTerrainPages()
         if (const char* overrideSlots = std::getenv("GE_TERRAIN_PAGE_SLOTS"))
             profile.Slots = std::max(1u, static_cast<uint32>(std::strtoul(overrideSlots, nullptr, 10)));
         // No reader threads: the residency reads cooked pages on Background jobs, as it evaluates
-        // generated ones.
-        m_TerrainPages = std::make_unique<TerrainPages>(&EngineCore::GetInstance().GetJobSystem(), nullptr, profile,
-                                                        PlatformSurfacePageProfile());
+        // generated ones. Before EngineCore::Initialize there is no pool, and the pages load inline.
+        EngineCore& engine = EngineCore::GetInstance();
+        m_TerrainPages = std::make_unique<TerrainPages>(engine.IsInitialized() ? &engine.GetJobSystem() : nullptr,
+                                                        nullptr, profile, PlatformSurfacePageProfile());
     }
     return *m_TerrainPages;
 }

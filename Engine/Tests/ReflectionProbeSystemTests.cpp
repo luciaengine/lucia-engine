@@ -578,6 +578,29 @@ TEST(ReflectionProbeSystem, PointLightEditsRefreshOnlyTheCapturesTheLightReaches
     EXPECT_EQ(digest(1), east) << "a lamp that reaches no capture must not rebake it";
 }
 
+// A capture shows the shadow of a point, spot or area light in its reach, so turning that shadow on
+// or off rebakes the probe.
+TEST(ReflectionProbeSystem, ALocalLightShadowSwitchRefreshesTheCaptureItReaches)
+{
+    ECS::World world;
+    AddProbe(world, 0);
+    const auto lamp = world.CreateEntity();
+    Components::Light light{};
+    light.Type = Components::LightType::Point;
+    light.Range = 2.0f;
+    world.AddComponentImmediate(lamp, light);
+    world.AddComponentImmediate(lamp, MakeTransform(0, 1));
+    RenderServices rs;
+    ReflectionProbeSystem system(&rs);
+    system.Update(world, 0.016f);
+    auto* ibl = rs.GetFeature<ImageBasedLightingFeature>();
+    const auto before = ibl->GetLocalProbeDesc(world.GetWorldId(), 0)->SceneEditDigest;
+    world.GetComponentForWrite<Components::Light>(lamp)->CastsShadows = true;
+    system.Update(world, 0.016f);
+    EXPECT_NE(ibl->GetLocalProbeDesc(world.GetWorldId(), 0)->SceneEditDigest, before)
+        << "the shadow of a lamp in reach changes the capture";
+}
+
 TEST(ReflectionProbeSystem, ExplicitRebakeRefreshesProbesWithoutChangingOtherWorlds)
 {
     ECS::World first, second;
