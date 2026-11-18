@@ -221,9 +221,8 @@ EditorUI::EntityMemberList::Content CollectMemberRows(const InspectorContext& ct
     content.Text.HeadingTooltip = "Inside the region = its outline or an Include member, and not an Exclude member";
     content.Text.Empty = "No other mark-up overlaps this region";
     content.Text.DeletedTitle = "Deleted mark-up";
-    content.Text.MemberTooltip = "A member: uncheck to take it out of the region's area";
-    content.Text.CandidateTooltip = "Check to make it a member of the region's area";
     content.Editable = !bridge.IsInPlayMode();
+    content.ModeToggles = true;
     const std::vector<MarkupRegionMember> members = CurrentMembers(region);
     if (members.size() >= Components::kMaxRegionMembers)
         content.AddRefusal = "A region holds at most " + std::to_string(Components::kMaxRegionMembers) +
@@ -262,15 +261,6 @@ std::vector<MarkupRegionMember>::iterator FindMember(std::vector<MarkupRegionMem
     return std::find_if(members.begin(), members.end(), IsMemberEntry(entity));
 }
 
-void AddMember(const InspectorContext& ctx, ECS::EntityHandle entity)
-{
-    std::vector<MarkupRegionMember> members = CurrentMembersOf(ctx);
-    if (FindMember(members, entity) != members.end())
-        return;
-    members.push_back({entity, MarkupMemberMode::Include});
-    CommitMembers(ctx, members, "Add Region Member");
-}
-
 void RemoveMember(const InspectorContext& ctx, ECS::EntityHandle entity)
 {
     std::vector<MarkupRegionMember> members = CurrentMembersOf(ctx);
@@ -281,11 +271,18 @@ void RemoveMember(const InspectorContext& ctx, ECS::EntityHandle entity)
     CommitMembers(ctx, members, "Remove Region Member");
 }
 
-void SwitchMember(const InspectorContext& ctx, ECS::EntityHandle entity, uint8 mode)
+// Makes `entity` a member in `mode`: adds it, or switches the mode of a member.
+void SetMemberMode(const InspectorContext& ctx, ECS::EntityHandle entity, uint8 mode)
 {
     std::vector<MarkupRegionMember> members = CurrentMembersOf(ctx);
     const auto found = FindMember(members, entity);
-    if (found == members.end() || found->Mode == static_cast<MarkupMemberMode>(mode))
+    if (found == members.end())
+    {
+        members.push_back({entity, static_cast<MarkupMemberMode>(mode)});
+        CommitMembers(ctx, members, "Add Region Member");
+        return;
+    }
+    if (found->Mode == static_cast<MarkupMemberMode>(mode))
         return;
     found->Mode = static_cast<MarkupMemberMode>(mode);
     CommitMembers(ctx, members, "Switch Region Member");
@@ -295,8 +292,11 @@ void SwitchMember(const InspectorContext& ctx, ECS::EntityHandle entity, uint8 m
 void AddMemberList(const InspectorContext& ctx, MarkupEditorBridge& bridge, const MarkupRegion& region)
 {
     EditorUI::EntityMemberList::Handlers handlers;
-    handlers.SetOn = [ctx](ECS::EntityHandle entity, bool on) { on ? AddMember(ctx, entity) : RemoveMember(ctx, entity); };
-    handlers.SetMode = [ctx](ECS::EntityHandle entity, uint8 mode) { SwitchMember(ctx, entity, mode); };
+    handlers.SetOn = [ctx](ECS::EntityHandle entity, bool on) {
+        if (!on)
+            RemoveMember(ctx, entity);
+    };
+    handlers.SetMode = [ctx](ECS::EntityHandle entity, uint8 mode) { SetMemberMode(ctx, entity, mode); };
     handlers.Select = [world = ctx.World, &bridge](ECS::EntityHandle entity) { bridge.SelectMarkup(*world, entity); };
     ctx.Parent->AddChild(
         std::make_unique<EditorUI::EntityMemberList>(CollectMemberRows(ctx, bridge, region), handlers));

@@ -76,9 +76,11 @@ RowParts FindRowParts(UIElement& row)
 }
 
 // A segment of a row's modes, filled when it is a member's mode. A click on another segment
-// calls SetMode. The button attaches Button.css to itself; this sheet goes after it, so that the
-// control's single-class rules outrank the segmented look at equal specificity.
-void ShowModeSegment(Button& segment, const Row& row, const Mode& mode, bool editable, const Handlers& handlers)
+// calls SetMode. As a toggle (Content::ModeToggles), a candidate's segment is live too, and a click
+// on the filled segment calls SetOn with false. The button attaches Button.css to itself; this sheet
+// goes after it, so that the control's single-class rules outrank the segmented look at equal
+// specificity.
+void ShowModeSegment(Button& segment, const Row& row, const Mode& mode, const Content& content, const Handlers& handlers)
 {
     segment.RequestSubtreeStyleAssetPath(kStyleAssetPath, "editor");
     segment.SetText(mode.Label);
@@ -88,9 +90,20 @@ void ShowModeSegment(Button& segment, const Row& row, const Mode& mode, bool edi
         segment.AddClass(kSelectedSegmentClass);
     if (current && mode.Warning)
         segment.AddClass("entity-member-segment-warning");
-    segment.SetEnabled(row.Member && editable);
-    if (current)
+    const bool refused = !row.Member && !content.AddRefusal.empty();
+    if (content.ModeToggles && refused)
+        segment.SetTooltip(content.AddRefusal);
+    segment.SetEnabled(content.Editable && (content.ModeToggles ? !refused : row.Member));
+    if (current && !content.ModeToggles)
         return;
+    if (current)
+    {
+        segment.RegisterEventHandler(kEventButtonClick, [setOn = handlers.SetOn, entity = row.Entity](UIEvent&) {
+            if (setOn)
+                setOn(entity, false);
+        });
+        return;
+    }
     segment.RegisterEventHandler(kEventButtonClick,
                                  [setMode = handlers.SetMode, entity = row.Entity, value = mode.Value](UIEvent&) {
                                      if (setMode)
@@ -125,7 +138,7 @@ void ShowModes(const RowParts& parts, const Row& row, const Content& content, co
     }
     parts.ModeLabel->AddClass(kHiddenClass);
     for (std::size_t i = 0; i < kMaxModes; ++i)
-        ShowModeSegment(*parts.Segments[i], row, row.Modes[i], content.Editable, handlers);
+        ShowModeSegment(*parts.Segments[i], row, row.Modes[i], content, handlers);
 }
 
 void ShowMemberToggle(Toggle& toggle, const Row& row, const Content& content, const Handlers& handlers)
@@ -199,7 +212,10 @@ std::unique_ptr<UIElement> BuildRow(const Row& row, const Content& content, cons
     element->AddClass(row.On ? "entity-member-in" : "entity-member-out");
     if (content.Text.Heading.empty())
         element->AddClass("entity-member-row-bare");
-    ShowMemberToggle(*parts.Member, row, content, handlers);
+    if (content.ModeToggles && row.Modes.size() == kMaxModes)
+        parts.Member->AddClass(kHiddenClass);
+    else
+        ShowMemberToggle(*parts.Member, row, content, handlers);
     ShowGlyph(*parts.Glyph, row);
     ShowTitle(*parts.Title, row, content, handlers);
     ShowNote(*parts.Note, row);
