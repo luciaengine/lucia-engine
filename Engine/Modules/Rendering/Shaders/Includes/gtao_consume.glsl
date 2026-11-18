@@ -25,6 +25,9 @@ void GE_ApplyGTAO(inout SurfaceOutput so, vec2 screenUV)
 #if defined(GE_COMPAT_PROFILE)
     const ivec2 texel = ivec2(screenUV * vec2(textureSize(ge_gtao, 0)));
     vec4 g = texelFetch(ge_gtao, texel, 0);
+#elif defined(GE_FORWARD_EARLY_ALPHA_TEST)
+    // The screen-space AO result has one level.
+    vec4 g = textureLod(ge_gtao, screenUV, 0.0);
 #else
     vec4 g = texture(ge_gtao, screenUV);
 #endif

@@ -34,6 +34,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace GameEngine;
@@ -382,6 +383,57 @@ TEST(ForwardAdapterVariantCompile, CanonicalStandardPbrCompilesForLayeredAndCove
             ExpectBuildSucceeded(result);
         }
     }
+}
+
+TEST(ForwardAdapterVariantCompile, MaskedFragmentsDiscardBeforeClusteredLighting)
+{
+    constexpr uint32_t kOpName = 5;
+    constexpr uint32_t kOpEntryPoint = 15;
+    constexpr uint32_t kOpFunction = 54;
+    constexpr uint32_t kOpFunctionCall = 57;
+    constexpr uint32_t kOpKill = 252;
+    constexpr uint32_t kOpTerminateInvocation = 4416;
+    constexpr uint32_t kOpDemoteToHelperInvocation = 5380;
+    const auto result = BuildStockMaterial("StandardPBR", kWorldDrawBase | MaterialKeyword::ForwardPlus |
+        MaterialKeyword::Shadows | MaterialKeyword::VirtualShadowMaps | MaterialKeyword::GTAO,
+        {}, false, MaterialAlphaMode::Mask);
+    SKIP_WITHOUT_SHADERC(result);
+    ExpectBuildSucceeded(result);
+    ASSERT_NE(result.package, nullptr);
+
+    const auto& fragment = result.package->stageBytes.at("fs");
+    ASSERT_EQ(fragment.size() % sizeof(uint32_t), 0u);
+    std::vector<uint32_t> words(fragment.size() / sizeof(uint32_t));
+    std::memcpy(words.data(), fragment.data(), fragment.size());
+    uint32_t entryPoint = 0;
+    uint32_t lighting = 0;
+    uint32_t currentFunction = 0;
+    size_t discardAt = words.size();
+    size_t lightingAt = words.size();
+    for (size_t at = 5; at < words.size();)
+    {
+        const uint32_t count = words[at] >> 16;
+        const uint32_t opcode = words[at] & 0xFFFFu;
+        ASSERT_GT(count, 0u);
+        ASSERT_LE(at + count, words.size());
+        if (opcode == kOpEntryPoint)
+            entryPoint = words[at + 2];
+        if (opcode == kOpName && std::string_view(reinterpret_cast<const char*>(&words[at + 2]),
+            (count - 2) * sizeof(uint32_t)).starts_with("GE_AccumulateClusteredLighting("))
+            lighting = words[at + 1];
+        if (opcode == kOpFunction)
+            currentFunction = words[at + 2];
+        if (currentFunction == entryPoint && entryPoint != 0)
+        {
+            if (opcode == kOpKill || opcode == kOpTerminateInvocation || opcode == kOpDemoteToHelperInvocation)
+                discardAt = std::min(discardAt, at);
+            if (opcode == kOpFunctionCall && words[at + 3] == lighting)
+                lightingAt = at;
+        }
+        at += count;
+    }
+    ASSERT_LT(lightingAt, words.size());
+    EXPECT_LT(discardAt, lightingAt);
 }
 
 // The relief's depth is the only thing that gives a fragment stage a depth output: a height-mapped
