@@ -81,11 +81,13 @@
 	max-width: 320px;
 }
 
-/* A shown severity ("active", the editor's toggle class) is filled, with its label and outline in
-   the severity's color; a hidden one is an outline with a dim label, and its count still reads.
-   The colors reach Button.css's secondary rules through its toggle variables. */
+/* The severity filters are pills. A shown severity ("active", the editor's toggle class) is filled,
+   with its label and outline in the severity's color; a hidden one is an outline with a dim label,
+   and its count still reads. The colors reach Button.css's secondary rules through its toggle
+   variables. */
 .log-filter {
 	min-width: 84px;
+	border-radius: 999px;
 	--ui_button_toggle_on_background: var(--ui_color_bg_selected);
 }
 
