@@ -36,6 +36,12 @@
 	column-gap: var(--ui_spacing_xs);
 }
 
+/* Channels follows the severity filters with the toolbar's group gap: the filters' own gap plus this
+   margin. */
+.log-channels {
+	margin-left: var(--ui_spacing_md);
+}
+
 .log-toolbar-end {
 	display: flex;
 	flex-direction: row;

@@ -16,7 +16,7 @@
       <Button id="LogFilterDebug" class="small secondary log-filter log-filter-debug active" text="Debug">
         <UIElement class="log-toolbar-glyph log-row-glyph-debug" />
       </Button>
-      <Button id="LogChannels" class="small secondary" text="Channels">
+      <Button id="LogChannels" class="small secondary log-channels" text="Channels">
         <UIElement class="log-toolbar-glyph log-toolbar-glyph-channels" />
       </Button>
     </UIElement>
