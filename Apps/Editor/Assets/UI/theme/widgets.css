@@ -1895,6 +1895,13 @@ button.record-icon.secondary.active,
 	padding-right: 36px;
 }
 
+/* A Pause button that shows "Resume" while paused: one width for both labels, so the button does
+   not change size when it toggles. */
+.pause-toggle-button {
+	width: 96px;
+	flex-shrink: 0;
+}
+
 /* The glyph before a button's label: a child element of the button. A pause button shows the
    resume glyph while it is paused; its panel swaps the class. */
 .button-glyph {
@@ -1915,11 +1922,11 @@ button.record-icon.secondary.active,
 }
 
 .button-glyph-pause {
-	background-image: url("editor:Icons/pause.svg");
+	background-image: url("editor:Icons/pause-symbol.svg");
 }
 
 .button-glyph-resume {
-	background-image: url("editor:Icons/play.svg");
+	background-image: url("editor:Icons/play-symbol.svg");
 }
 
 .button-glyph-copy {
