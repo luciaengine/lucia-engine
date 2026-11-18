@@ -58,10 +58,9 @@ float ge_ShadowReceiverDrawLevel = 0.0;
 
 #ifdef HAS_SHADOWS
 
-#ifdef GE_COMPAT_PROFILE
-// Capture the geometric receiver plane before material/light control flow.
-// WebGPU requires derivatives to execute uniformly. The normal offset still
-// biases the center lookup; it does not change this geometric plane's slope.
+#if defined(GE_COMPAT_PROFILE) || defined(GE_FORWARD_EARLY_ALPHA_TEST)
+// Capture the geometric receiver plane before control flow diverges.
+// The normal offset biases the center lookup while the plane keeps its slope.
 vec3 ge_shadowReceiverDx = vec3(0.0);
 vec3 ge_shadowReceiverDy = vec3(0.0);
 #endif
@@ -873,6 +872,11 @@ vec4 GE_SampleCascadeTint(vec3 biasedPos, int cascadeIdx)
     return GE_SHADOW_TAP(ge_transmittanceShadowArray, vec3(shadowUV, float(cascadeIdx)));
 }
 
+int GE_ShadowDebugMode()
+{
+    return GE_FORWARD_SHADOW_DEBUG ? int(ge_shadowDebug.x + 0.5) : 0;
+}
+
 // Sample the cascaded shadow map for a receiver position expressed in the
 // RENDER-ORIGIN-RELATIVE frame (Earth-scale precision): ge_shadowVP is the
 // camera-relative cascade VP, so `posWS` here must be the render-origin-relative
@@ -914,7 +918,7 @@ float GE_ScreenSpaceShadow(float shadow, float linearDepth, vec2 screenPos)
         }
     }
 #endif
-    int mode = (GE_FORWARD_SHADOW_DEBUG ? int(ge_shadowDebug.x + 0.5) : 0);
+    int mode = GE_ShadowDebugMode();
     if (mode == 6)
     {
         ge_lastShadowTint = vec3(1.0);
@@ -956,8 +960,13 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     if ((GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER) <= 1 ||
         (ge_shadowPcss.w > 0.5 && (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER) == 3))
     {
+      #ifdef GE_FORWARD_EARLY_ALPHA_TEST
+        receiverDx = ge_shadowReceiverDx;
+        receiverDy = ge_shadowReceiverDy;
+      #else
         receiverDx = GE_DFDX(posWS);
         receiverDy = GE_DFDY(posWS);
+      #endif
     }
     #endif
 #endif
@@ -1098,7 +1107,7 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
 bool GE_GetShadowDebugColor(float shadowFactor, out vec3 outColor)
 {
     outColor = vec3(0.0);
-    int mode = (GE_FORWARD_SHADOW_DEBUG ? int(ge_shadowDebug.x + 0.5) : 0);
+    int mode = GE_ShadowDebugMode();
     if (mode == 1)
     {
         // Cascade color tint: blend the cascade color with the shadow factor.

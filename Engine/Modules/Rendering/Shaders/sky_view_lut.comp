@@ -127,6 +127,26 @@ void main()
         // renormalising would turn the texels near the nadir, whose horizontal part is
         // tiny, toward the zenith or, at altitude, the nadir.)
         vec2 azimuth = length(local.xz) > 1e-6 ? normalize(local.xz) : vec2(1.0, 0.0);
+        // The farther under the fold, the more the azimuth turns away from the brightest body,
+        // up to 90 degrees from it at kFoldNeutralSin under the fold. Else the body's glow on the
+        // horizon runs straight down to the nadir as one column. 90 degrees from the body every
+        // azimuth stores the same colour, so the ground below has no seam and no column.
+        const float kFoldNeutralSin = 0.139; // sin(8 degrees)
+        if (sunActive || moonActive)
+        {
+            vec3 bodyDir = sunActive ? sunDir : moonDir;
+            vec2 bodyAz = vec2(dot(bodyDir, east), dot(bodyDir, north));
+            if (dot(bodyAz, bodyAz) > 1e-8)
+            {
+                bodyAz = normalize(bodyAz);
+                float turn = smoothstep(0.0, kFoldNeutralSin, foldSin - local.y);
+                float angle = mix(acos(clamp(dot(azimuth, bodyAz), -1.0, 1.0)), 0.5 * PI, turn);
+                float side = (bodyAz.x * azimuth.y - bodyAz.y * azimuth.x) < 0.0 ? -1.0 : 1.0;
+                float c = cos(side * angle);
+                float s = sin(side * angle);
+                azimuth = vec2(bodyAz.x * c - bodyAz.y * s, bodyAz.x * s + bodyAz.y * c);
+            }
+        }
         float foldCos = sqrt(1.0 - foldSin * foldSin);
         local = vec3(azimuth.x * foldCos, foldSin, azimuth.y * foldCos);
     }

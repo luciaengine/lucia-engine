@@ -378,6 +378,29 @@ uint64_t VuidCount(const IDevice& device, std::string_view vuid, std::string* fi
     return 0;
 }
 
+MaterialBuildContext NativeForwardMaterialContext(const std::filesystem::path& shaderDir)
+{
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = shaderDir;
+    context.CacheRoot = std::filesystem::temp_directory_path() / ("ge_native_forward_" + GUID::Generate().ToString());
+    context.IncludeDirs = {shaderDir};
+    return context;
+}
+
+void ExpectNativeForwardPipeline(IDevice& device, GraphicsPipelineId id,
+                                 const GraphicsPipelineDesc& pipeline)
+{
+    PipelineFormatKey format{};
+    format.ColorCount = static_cast<uint8_t>(std::max<size_t>(pipeline.ColorBlend.attachments.size(), 1));
+    for (uint8_t attachment = 0; attachment < format.ColorCount; ++attachment)
+        format.ColorFormats[attachment] = TextureFormat::R16G16B16A16_FLOAT;
+    format.DepthFormat = TextureFormat::D32_FLOAT;
+    format.RasterizationSamples = 4;
+    const PipelineFormatKey formats[] = {format};
+    device.PrewarmGraphicsPipeline(id, formats);
+    EXPECT_TRUE(device.TryGetWarmGraphicsPipeline(id, format).IsValid()) << "the colour pipeline was not built";
+}
+
 // Registers a marching, centroid parallax colour material on `device` and builds its colour
 // pipeline at 4x MSAA. The program takes the pixel-centre footprint exactly where the compile
 // profile has the interpolation functions. With `forceCentroidFootprint`, the profile turns them off
@@ -389,10 +412,7 @@ void BuildTheParallaxColourPipeline(IDevice& device, const std::filesystem::path
     if (forceCentroidFootprint)
         SetInterpolationFunctionsAvailable(false);
     const bool pixelCentreFootprint = AreInterpolationFunctionsAvailable();
-    MaterialBuildContext context{};
-    context.AdapterShaderDir = shaderDir;
-    context.CacheRoot = std::filesystem::temp_directory_path() / ("ge_parallax_validity_" + GUID::Generate().ToString());
-    context.IncludeDirs = {shaderDir};
+    const auto context = NativeForwardMaterialContext(shaderDir);
     services.Materials().SetMaterialBuildContext(context);
 
     MaterialDocument doc{};
@@ -413,15 +433,7 @@ void BuildTheParallaxColourPipeline(IDevice& device, const std::filesystem::path
               pixelCentreFootprint)
         << "the pixel-centre footprint does not follow the enabled interpolation functions";
 
-    PipelineFormatKey format{};
-    format.ColorCount = static_cast<uint8_t>(std::max<size_t>(pipeline->ColorBlend.attachments.size(), 1));
-    for (uint8_t i = 0; i < format.ColorCount; ++i)
-        format.ColorFormats[i] = TextureFormat::R16G16B16A16_FLOAT;
-    format.DepthFormat = TextureFormat::D32_FLOAT;
-    format.RasterizationSamples = 4;
-    const PipelineFormatKey formats[] = {format};
-    device.PrewarmGraphicsPipeline(id, formats);
-    EXPECT_TRUE(device.TryGetWarmGraphicsPipeline(id, format).IsValid()) << "the colour pipeline was not built";
+    ExpectNativeForwardPipeline(device, id, *pipeline);
     services.Shutdown();
     std::error_code ec;
     std::filesystem::remove_all(context.CacheRoot, ec);
@@ -494,6 +506,53 @@ TEST(ParallaxPipelineOnAMetalDevice, TheCentroidParallaxColourPipelineBuildsWith
     }
 
     BuildTheParallaxColourPipeline(*device, shaderDir, false);
+    device->Shutdown();
+}
+
+void BuildMaskedForwardPipelines(IDevice& device, const std::filesystem::path& shaderDir)
+{
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(&device));
+    const auto context = NativeForwardMaterialContext(shaderDir);
+    services.Materials().SetMaterialBuildContext(context);
+
+    MaterialDocument document{};
+    document.materialName = "MaskedForwardProbe";
+    document.lightingModel = "StandardPBR";
+    document.alphaMode = MaterialAlphaMode::Mask;
+    constexpr MaterialKeyword kBaseKeywords =
+        MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::GTAO;
+    for (const auto keywords : {kBaseKeywords, kBaseKeywords | MaterialKeyword::VirtualShadowMaps})
+    {
+        const Material* material = services.Materials().RegisterMaterialFromDocument(GUID::Generate(), document, keywords);
+        ASSERT_NE(material, nullptr);
+        const auto selectedKeywords = material->GetVariantKey().materialKeywords;
+        EXPECT_TRUE(HasKeyword(selectedKeywords, MaterialKeyword::AlphaTest));
+        EXPECT_EQ(selectedKeywords & keywords, keywords);
+        const auto pipelineId = material->GetGraphicsPipelineId();
+        const auto* pipeline = device.LookupGraphicsPipeline(pipelineId);
+        ASSERT_NE(pipeline, nullptr);
+        ExpectNativeForwardPipeline(device, pipelineId, *pipeline);
+    }
+
+    services.Shutdown();
+    std::error_code error;
+    std::filesystem::remove_all(context.CacheRoot, error);
+}
+
+TEST(MaskedForwardPipelineOnAMetalDevice, ClusteredShadowsAndAmbientOcclusionBuildAtFourSamples)
+{
+    const auto shaderDir = TestPaths::StagedRenderingShadersDir();
+    ASSERT_TRUE(std::filesystem::exists(shaderDir));
+    const RestoredShaderCompileProfile restoredProfile;
+    DeviceDesc descriptor{};
+    descriptor.preferredAPI = GraphicsAPI::Metal;
+    descriptor.enableSwapchain = false;
+    auto device = DeviceFactory::CreateDevice(descriptor);
+    if (!device || !device->Initialize(descriptor) || device->GetAPI() != GraphicsAPI::Metal)
+        GTEST_SKIP() << "No Metal device available";
+
+    BuildMaskedForwardPipelines(*device, shaderDir);
     device->Shutdown();
 }
 
