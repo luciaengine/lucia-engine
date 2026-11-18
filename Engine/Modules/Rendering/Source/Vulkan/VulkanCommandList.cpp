@@ -1390,7 +1390,7 @@ void VulkanCommandList::DrawMeshTasks(uint32_t taskCount)
     ApplyRasterState();
     if (m_Device && m_Device->SupportsMeshShadersEXT() && m_Device->GetCmdDrawMeshTasksEXT())
     {
-        m_Device->GetCmdDrawMeshTasksEXT()(m_CommandBuffer, taskCount, 0, 0);
+        m_Device->GetCmdDrawMeshTasksEXT()(m_CommandBuffer, taskCount, 1, 1);
     }
     else
     {

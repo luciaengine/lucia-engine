@@ -3,9 +3,100 @@
 #include <Rendering/Core/CommandList.h>
 #include "Rendering/Common/Utils.h"
 #include "TestUtils.h"
+#include "TestGlslCompile.h"
+#include "ScopedEnvVar.h"
 
 
 using namespace GameEngine::Rendering;
+
+#if RENDERING_HAS_SHADERC
+TEST(DynamicRenderingPipelineFormats, OneVulkanMeshWorkgroupWritesTheTarget)
+{
+    const Tests::ScopedEnvVar headless("GE_HEADLESS_TEST", "1");
+    DeviceDesc deviceDesc{};
+    deviceDesc.preferredAPI = GraphicsAPI::Vulkan;
+    deviceDesc.enableDynamicRendering = true;
+    auto device = DeviceFactory::CreateDevice(deviceDesc);
+    if (!device || !device->Initialize(deviceDesc) || !device->GetCapabilities().supportsMeshShaders)
+        GTEST_SKIP() << "Vulkan mesh shaders unavailable";
+
+    constexpr char kMesh[] = R"(
+#version 460
+#extension GL_EXT_mesh_shader : require
+layout(local_size_x = 1) in;
+layout(triangles, max_vertices = 3, max_primitives = 1) out;
+void main()
+{
+    SetMeshOutputsEXT(3, 1);
+    gl_MeshVerticesEXT[0].gl_Position = vec4(-0.75, -0.75, 0.5, 1.0);
+    gl_MeshVerticesEXT[1].gl_Position = vec4( 0.75, -0.75, 0.5, 1.0);
+    gl_MeshVerticesEXT[2].gl_Position = vec4( 0.0,   0.75, 0.5, 1.0);
+    gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0, 1, 2);
+}
+)";
+    constexpr char kFragment[] = R"(
+#version 450
+layout(location = 0) out vec4 color;
+void main() { color = vec4(0.0, 1.0, 0.0, 1.0); }
+)";
+    constexpr uint32_t kExtent = 16;
+    constexpr auto kFormat = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
+    PipelineDesc pipelineDesc{};
+    pipelineDesc.type = PipelineType::Mesh;
+    pipelineDesc.meshShader = Tests::CompileGlsl(kMesh, shaderc_mesh_shader, "one-workgroup.mesh");
+    pipelineDesc.pixelShader = Tests::CompileGlsl(kFragment, shaderc_fragment_shader, "green.frag");
+    ASSERT_FALSE(pipelineDesc.meshShader.empty());
+    ASSERT_FALSE(pipelineDesc.pixelShader.empty());
+    pipelineDesc.colorAttachmentFormats = {kFormat};
+    pipelineDesc.rasterizationState.cullMode = CullModeFlagBits::None;
+    pipelineDesc.EnableDepthTest(false);
+    pipelineDesc.depthStencilState.depthWriteEnable = false;
+    const PipelineHandle pipeline = device->CreatePipeline(pipelineDesc);
+    ASSERT_TRUE(pipeline.IsValid());
+
+    TextureDesc targetDesc{};
+    targetDesc.width = kExtent;
+    targetDesc.height = kExtent;
+    targetDesc.format = kFormat;
+    targetDesc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::TransferSrc);
+    const TextureHandle target = device->CreateTexture(targetDesc);
+    const BufferHandle readback = device->CreateReadbackBuffer(kExtent * kExtent * 4u, "MeshWorkgroup.Readback");
+    ASSERT_TRUE(target.IsValid());
+    ASSERT_TRUE(readback.IsValid());
+
+    auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+    RenderPassDesc pass{};
+    pass.colorTargets[0] = target;
+    pass.colorTargetCount = 1;
+    pass.clearColor[0] = true;
+    pass.clearColorValue[0][0] = 1.0f;
+    pass.clearColorValue[0][3] = 1.0f;
+    commands->Begin();
+    commands->BeginRenderPass(pass);
+    commands->SetPipeline(pipeline);
+    commands->SetViewport(0.0f, 0.0f, kExtent, kExtent);
+    commands->SetScissor(0, 0, kExtent, kExtent);
+    commands->DrawMeshTasks(1);
+    commands->EndRenderPass();
+    commands->Barrier(ResourceBarrier::CreateTextureBarrier(target, ResourceState::RenderTarget, ResourceState::CopySource));
+    commands->CopyTextureToBuffer(target, readback, kExtent, kExtent);
+    commands->End();
+    device->ExecuteCommandLists({commands.get()});
+    device->WaitForIdle();
+
+    const auto* pixels = static_cast<const uint8_t*>(device->MapBuffer(readback));
+    ASSERT_NE(pixels, nullptr);
+    const auto* center = pixels + ((kExtent / 2) * kExtent + kExtent / 2) * 4;
+    EXPECT_EQ(center[0], 0u);
+    EXPECT_EQ(center[1], 255u);
+    EXPECT_EQ(pixels[0], 255u);
+    EXPECT_EQ(pixels[1], 0u);
+    device->UnmapBuffer(readback);
+    device->DestroyBuffer(readback);
+    device->DestroyTexture(target);
+    device->DestroyPipeline(pipeline);
+}
+#endif
 
 TEST(DynamicRenderingPipelineFormats, OffscreenRGBA8WritesRed)
 {
