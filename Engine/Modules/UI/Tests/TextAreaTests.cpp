@@ -3,6 +3,9 @@
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
 #include "UI/ResolvedStyle.h"
+#include "SharedHeadlessDevice.h"
+#include "UI/UIEvents.h"
+#include "UI/UIManager.h"
 
 #include "Rendering/Text/FontAtlas.h"
 #include "Rendering/Text/TextLayout.h"
@@ -634,4 +637,33 @@ TEST_F(TextAreaLineBreakTest, ShapeText_MoveAndReshape_DifferentText)
         EXPECT_GE(gp.width, 0.0f);
         EXPECT_GE(gp.height, 0.0f);
     }
+}
+
+// A right-button press keeps the selection, so a context menu can still copy it. Only the primary
+// button places the caret.
+TEST(TextAreaTests, ARightButtonPressKeepsTheSelection)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "Device init failed";
+    UITesting::FixedScalePlatform platform(1.0f);
+    UIManager ui(device);
+    ui.SetPlatform(&platform);
+    ui.SetLayoutSizeOverride(400u, 200u);
+    auto owned = std::make_unique<TextArea>();
+    TextArea* area = owned.get();
+    ui.SetRoot(std::move(owned));
+    area->SetValue("alpha beta");
+    ui.Update(0.016f, false);
+    area->SetSelection(0, 5);
+    ASSERT_EQ(area->GetSelectedText(), "alpha");
+
+    UIEvent event;
+    event.Id = kEventMouseDown;
+    event.Button = 1;
+    event.X = area->GetLayoutX() + area->GetLayoutWidth() - 2.0f;
+    event.Y = area->GetLayoutY() + 2.0f;
+    event.Target = area;
+    area->DispatchEvent(event);
+    EXPECT_EQ(area->GetSelectedText(), "alpha") << "a right-button press moved the caret";
 }

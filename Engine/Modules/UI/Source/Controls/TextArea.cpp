@@ -618,6 +618,16 @@ void TextArea::OnPointerDrag(float mouseX, float mouseY,
 // Post-layout: expand bounds for scrolled content hit testing
 // =============================================================================
 
+std::string TextArea::GetSelectedText() const {
+    const std::string& text = GetValue();
+    if (m_SelectionStart < 0 || m_SelectionEnd < 0 || m_SelectionStart == m_SelectionEnd)
+        return std::string();
+    const int size = static_cast<int>(text.size());
+    const int begin = std::clamp(std::min(m_SelectionStart, m_SelectionEnd), 0, size);
+    const int end = std::clamp(std::max(m_SelectionStart, m_SelectionEnd), 0, size);
+    return text.substr(static_cast<size_t>(begin), static_cast<size_t>(end - begin));
+}
+
 void TextArea::OnPostLayout() {
     ScrollView* scrollView = FindParentScrollView(this);
     if (!scrollView) return;

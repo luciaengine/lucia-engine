@@ -2,6 +2,8 @@
 
 #include "UI/UIElement.h"
 
+#include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -34,7 +36,21 @@ public:
     /// that grows at its end (a streamed reply) rebuilds only its last block.
     void SetMarkdown(std::string_view markdown);
 
+    /// True while the user has text of the document selected.
+    bool HasTextSelection() const;
+    /// The selected text as it reads, without its Markdown; empty with no selection.
+    std::string GetSelectedText() const;
+
+    void OnEvent(UIEvent& event) override;
+
 private:
+    friend class MarkdownTextRun;
+    void InvalidateSelectionGeometry();
+    void EmitSelectionFor(UIElement& element, size_t spanIndex, UI::PrimitiveEmitContext& context,
+                          const ResolvedStyle& style, float x, float y);
+    struct SelectionState;
+    std::unique_ptr<SelectionState> m_Selection;
+    void RefreshSelection();
     /// What the children show, one block per child.
     std::vector<UIParsing::MarkdownBlock> m_Blocks;
     /// The child drawing each of m_Blocks. Kept here because RemoveChild may defer, so the

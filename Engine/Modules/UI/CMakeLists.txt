@@ -84,6 +84,7 @@ set(UI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/TableView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/EnableDot.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/MarkdownText.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/MarkdownTextSelection.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Toggle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Checkbox.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Dropdown.cpp

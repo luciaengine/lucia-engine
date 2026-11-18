@@ -64,6 +64,8 @@ public:
     int GetCaretIndex() const { return m_CaretIndex; }
     int GetSelectionStart() const { return m_SelectionStart; }
     int GetSelectionEnd() const { return m_SelectionEnd; }
+    /// The text of the primary selection; empty with no selection.
+    std::string GetSelectedText() const;
 
     /// The distance between two lines' baselines in logical px, as the text is laid
     /// out now; 0 until the element has an owner manager and its font resolves.
