@@ -1083,8 +1083,8 @@ set(EDITOR_TEST_SOURCES
 	PendingAssetHeaderLayoutTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/PendingAssetHeader.cpp
 	# The Hierarchy's slider-and-search row, laid out over the real editor stylesheets, and the
-	# search-bar placement that moves it. The row, its slider and the search-bar registry are
-	# compiled in.
+	# search-bar placement that moves it. The row and its slider are compiled in; the search-bar
+	# registry ships in EditorSDK.dll (linked below).
 	HierarchyNavigationBarLayoutTests.cpp
 	# The row's slider contract: wheel pass-through, the resize gesture, the size round trip.
 	HierarchyNavigationBarTests.cpp
@@ -1092,7 +1092,6 @@ set(EDITOR_TEST_SOURCES
 	EditorSliderThemeTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyNavigationBar.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/ItemSizeSlider.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/EditorSearchBars.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/SearchBarSettingsPage.cpp
 	SearchBarSettingsTests.cpp
 	PanelSearchBarLookTests.cpp
@@ -2147,7 +2146,6 @@ add_executable(AnimationPanelReconcileTests
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EntityMaterialTextureAssign.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Shortcuts/EditorShortcuts.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/AssetField.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/EditorSearchBars.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/InspectorSection.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/ToolbarDragDrop.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Modules/EditorContextMenu/ContextMenuBackendPolicy.cpp

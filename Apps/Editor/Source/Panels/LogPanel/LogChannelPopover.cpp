@@ -1,5 +1,6 @@
 #include "Panels/LogPanel/LogChannelPopover.h"
 
+#include "UI/EditorSearchBars.h"
 #include "Logger/LogChannel.h"
 #include "Logger/Logger.h"
 #include "Panels/LogView.h"
@@ -137,6 +138,7 @@ LogChannelPopover::LogChannelPopover(LogView& view)
     m_Search->AddClass("log-channels-search");
     m_Search->SetFieldId(kSearchFieldId);
     m_Search->SetPlaceholder("Search channels");
+    EditorSearchBars::RegisterHintTarget(m_Search);
     m_Search->SetRefocusAfterClear(true);
     m_Search->SetOnQueryChanging([this](const std::string& query) { OnQueryChanged(query); });
     m_Search->SetOnQueryChanged([this](const std::string& query) { OnQueryChanged(query); });

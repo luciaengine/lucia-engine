@@ -1,5 +1,6 @@
 #include "Inspectors/BoneLOD/ModelBoneLODSection.h"
 
+#include "UI/EditorSearchBars.h"
 #include "Assets/AssetManager.h"
 #include "Assets/BoneLOD/ModelBoneLOD.h"
 #include "Assets/ModelAsset.h"
@@ -107,6 +108,7 @@ ModelBoneLODSection::ModelBoneLODSection(const ModelAsset& model, UndoRedoServic
     search->AddClass("bone-lod-search");
     search->SetFieldId("BoneLODSearch");
     search->SetPlaceholder("Filter bone names");
+    EditorSearchBars::RegisterHintTarget(search.get());
     m_Tree->SetShowRoot(true);
     m_Tree->SetChildIndent(kBoneTreeIndentPx);
     m_Tree->SetDataProvider(m_Provider.get());

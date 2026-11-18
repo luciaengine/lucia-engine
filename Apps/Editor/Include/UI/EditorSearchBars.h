@@ -12,6 +12,7 @@ class UIElement;
 //
 // IMPORTANT: Registered elements MUST be unregistered before they are destroyed
 // (e.g. in panel destructor or before rebuilding UI), since this stores raw pointers.
+// Hint targets (RegisterHintTarget) are the exception: they are held weakly.
 class EditorSearchBars {
 public:
     static bool GetVisible();
@@ -44,6 +45,9 @@ public:
     static void UnregisterFocusTarget(UIElement* searchBar);
     // An icon at the left of a search row. It is hidden while ShowIconAndHint is off.
     static void RegisterRowIcon(UIElement* icon);
+    // A search field whose empty "Search" hint follows ShowIconAndHint. The registry keeps a weak
+    // reference, so a destroyed field needs no unregister.
+    static void RegisterHintTarget(UIElement* searchField);
     static void UnregisterRowIcon(UIElement* icon);
     
     // Load visibility setting from preferences
