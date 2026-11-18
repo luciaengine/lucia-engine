@@ -93,6 +93,7 @@ private:
     void ShowDictationState(bool listening, const std::string& message);
     void BindSpeechLevels(UIElement* left, UIElement* right);
     void ShowSpeechLevels(const Platform::SpeechInput::LevelArray& levels);
+    void OnTextSizeWheel(UIEvent& event);
     void StepTextSize(float scrollY);
     void ApplyTextSize(float px);
     void ScrollRowIntoView(size_t rowIndex);

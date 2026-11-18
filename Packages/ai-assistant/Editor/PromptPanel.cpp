@@ -311,15 +311,12 @@ void PromptPanel::OnLayoutBound()
     });
     m_HistoryList->SetFocusable(true);
     m_HistoryList->RegisterEventHandler(kEventKeyDown, [this](UIEvent& event) { OnHistoryKeyDown(event); });
-    // The Resize Items gesture over the conversation sizes its text, as over the slider. The list
-    // sees the wheel before the scroll view does, so a matching wheel never scrolls.
-    m_HistoryList->RegisterEventHandler(kEventScroll, [this](UIEvent& event)
-    {
-        if (event.ScrollY == 0.0f || !UI::MatchesItemResizeGesture(event.Mods))
-            return;
-        StepTextSize(event.ScrollY);
-        event.Stop();
-    });
+    // The Resize Items gesture (Ctrl or Cmd + wheel) anywhere in the panel sizes its text, as
+    // the slider does. The conversation list and the prompt field see the wheel before their
+    // scroll views, so a matching wheel never scrolls; the panel takes it everywhere else.
+    m_HistoryList->RegisterEventHandler(kEventScroll, [this](UIEvent& event) { OnTextSizeWheel(event); });
+    m_PromptText->RegisterEventHandler(kEventScroll, [this](UIEvent& event) { OnTextSizeWheel(event); });
+    RegisterEventHandler(kEventScroll, [this](UIEvent& event) { OnTextSizeWheel(event); });
     BuildTextSizeSlider(findElement("PromptTextSizeHost"_sid));
 
     UIElement* splitter = findElement("PromptPanelInputSplitter"_sid);
@@ -1308,6 +1305,14 @@ void PromptPanel::BuildTextSizeSlider(UIElement* host)
     m_TextSizeSlider->SetOnResizeGesture([this](float scrollY) { StepTextSize(scrollY); });
     host->AddChild(std::move(slider));
     ApplyTextSize(AiAssistantSettings::TextSize());
+}
+
+void PromptPanel::OnTextSizeWheel(UIEvent& event)
+{
+    if (event.ScrollY == 0.0f || !UI::MatchesItemResizeGesture(event.Mods))
+        return;
+    StepTextSize(event.ScrollY);
+    event.Stop();
 }
 
 // One slider step per wheel notch; wheel up (a negative scrollY) makes the text bigger.
