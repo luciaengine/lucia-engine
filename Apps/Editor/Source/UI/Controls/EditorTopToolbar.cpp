@@ -40,39 +40,42 @@ struct ToolbarButtonInfo
     const char* id;
     const char* title;
     const char* iconPath;
+    // The panel the button opens, or nullptr for an action. The right-click menu lists a
+    // panel button among the panels, under the panel's title.
+    const char* panelId = nullptr;
 };
 
-// Friendly titles for the right-click "show/hide icon" menu. Keep in sync with
-// the buttons declared in EditorTopToolbar.uxml (top-toolbar-left/center/right).
+// The buttons declared in EditorTopToolbar.uxml (top-toolbar-left/center/right), with
+// their titles for the right-click "show/hide icon" menu.
 constexpr ToolbarButtonInfo kToolbarButtons[] = {
     {"TopToolbarUniversalSearch", "Universal Search",    "editor:Icons/usearch.svg"},
     {"TopToolbarLeft1",          "Save Scene",          "editor:Icons/save.svg"},
     {"TopToolbarLeft2",          "Open Project Folder", "editor:Icons/folder_open.svg"},
-    {"TopToolbarPackages",       "Packages",            "editor:Icons/box.svg"},
-    {"TopToolbarLeft3",          "Web Panel",           "editor:Icons/computer.svg"},
-    {"TopToolbarTodos",          "Todos",               "editor:Icons/todolist.svg"},
-    {"TopToolbarBookmarks",      "Bookmarks",           "editor:Icons/book.svg"},
-    {"TopToolbarBuild",          "Build",               "editor:Icons/game-controller.svg"},
-    {"TopToolbarSettings",       "Settings",            "editor:Icons/settings.svg"},
+    {"TopToolbarPackages",       "Packages",            "editor:Icons/box.svg", EditorPanelIds::PackageManager},
+    {"TopToolbarLeft3",          "Web Panel",           "editor:Icons/computer.svg", EditorPanelIds::Web},
+    {"TopToolbarTodos",          "Todos",               "editor:Icons/todolist.svg", EditorPanelIds::Todo},
+    {"TopToolbarBookmarks",      "Bookmarks",           "editor:Icons/book.svg", EditorPanelIds::Bookmarks},
+    {"TopToolbarBuild",          "Build",               "editor:Icons/game-controller.svg", EditorPanelIds::Build},
+    {"TopToolbarSettings",       "Settings",            "editor:Icons/settings.svg", EditorPanelIds::Settings},
     {"TopToolbarHelp",           "Help",                "editor:Icons/help.svg"},
     {"TopToolbarCenter2",        "Stop",                "editor:Icons/stop.svg"},
     {"TopToolbarRecord",         "Record",              "editor:Icons/recording_off_button.svg"},
     {"TopToolbarCenter3",        "Pause",               "editor:Icons/pause.svg"},
     {"TopToolbarCenter4",        "Play",                "editor:Icons/play.svg"},
     {"TopToolbarCenter1",        "Play Fullscreen",     "editor:Icons/fullscreen.svg"},
-    {"TopToolbarUndoHistory",    "Undo History",        "editor:Icons/undo.svg"},
-    {"TopToolbarRight1",         "Script Editor",       "editor:Icons/log.svg"},
+    {"TopToolbarUndoHistory",    "Undo History",        "editor:Icons/undo.svg", EditorPanelIds::UndoHistory},
+    {"TopToolbarRight1",         "Script Editor",       "editor:Icons/log.svg", EditorPanelIds::ScriptEditor},
     {"TopToolbarNodeGraph",      "Node Graph",          "editor:Icons/node.svg"},
-    {"TopToolbarMixer",          "Mixer",               "editor:Icons/mixer.svg"},
-    {"TopToolbarAnimation",      "Animation",           "editor:Icons/alarm.svg"},
-    {"TopToolbarTimeline",       "Timeline",            "editor:Icons/film.svg"},
-    {"TopToolbarVisualProfiler", "Visual Profiler",     "editor:Icons/pulse.svg"},
-    {"TopToolbarCpuProfiler",    "CPU Profiler",        "editor:Icons/timer.svg"},
-    {"TopToolbarMonitors",       "Monitors",            "editor:Icons/stats.svg"},
-    {"TopToolbarVram",           "VRAM",                "editor:Icons/hardware-chip.svg"},
-    {"TopToolbarRenderGraph",    "Render Graph",        "editor:Icons/pie-chart.svg"},
-    {"TopToolbarLog",            "Log",                 "editor:Icons/alert-circle.svg"},
-    {"TopToolbarTilePalette",    "Tile Palette",        "editor:Icons/TilePalette.svg"},
+    {"TopToolbarMixer",          "Mixer",               "editor:Icons/mixer.svg", EditorPanelIds::Mixer},
+    {"TopToolbarAnimation",      "Animation",           "editor:Icons/alarm.svg", EditorPanelIds::Animation},
+    {"TopToolbarTimeline",       "Timeline",            "editor:Icons/film.svg", EditorPanelIds::Timeline},
+    {"TopToolbarVisualProfiler", "Visual Profiler",     "editor:Icons/pulse.svg", EditorPanelIds::VisualProfiler},
+    {"TopToolbarCpuProfiler",    "CPU Profiler",        "editor:Icons/timer.svg", EditorPanelIds::CpuProfiler},
+    {"TopToolbarMonitors",       "Monitors",            "editor:Icons/stats.svg", EditorPanelIds::Monitors},
+    {"TopToolbarVram",           "VRAM",                "editor:Icons/hardware-chip.svg", EditorPanelIds::Vram},
+    {"TopToolbarRenderGraph",    "Render Graph",        "editor:Icons/pie-chart.svg", EditorPanelIds::RenderGraph},
+    {"TopToolbarLog",            "Log",                 "editor:Icons/alert-circle.svg", EditorPanelIds::Log},
+    {"TopToolbarTilePalette",    "Tile Palette",        "editor:Icons/TilePalette.svg", EditorPanelIds::TilePalette},
     {"TopToolbarRight2",         "Info",                "editor:Icons/info.svg"},
     {"TopToolbarPanelMenu",      "Panels",              "editor:Icons/menulist.svg"},
 };
@@ -87,6 +90,78 @@ std::string MakeVisibilityPrefKey(const char* buttonId)
 bool CanHideToolbarButton(std::string_view buttonId)
 {
     return buttonId != EditorPanelIds::TopToolbarPanelMenu;
+}
+
+const ToolbarButtonInfo* FindFixedPanelButton(std::string_view panelId)
+{
+    for (const ToolbarButtonInfo& info : kToolbarButtons)
+        if (info.panelId && panelId == info.panelId)
+            return &info;
+    return nullptr;
+}
+
+std::string MakePanelButtonId(std::string_view panelId)
+{
+    std::string id = "TopToolbarPanel.";
+    id += panelId;
+    return id;
+}
+
+// Buttons live in the hugging icon container; the stretched section around it is the drop
+// zone, so a drag can land in empty bar space.
+const std::vector<Editor::ToolbarDragDrop::ContainerConfig>& TopToolbarContainers()
+{
+    static const std::vector<Editor::ToolbarDragDrop::ContainerConfig> kContainers = {
+        {"toolbar-icons-left",   "ui.toolbar.left.v3.order",   "top-toolbar-left"},
+        {"toolbar-icons-center", "ui.toolbar.center.v2.order", "top-toolbar-center"},
+        {"toolbar-icons-right",  "ui.toolbar.right.v2.order",  "top-toolbar-right"},
+    };
+    return kContainers;
+}
+
+bool IsInSavedButtonOrder(const Editor::SettingsStore& prefs, const std::string& buttonId)
+{
+    for (const auto& container : TopToolbarContainers())
+    {
+        const auto it = prefs.Json().find(container.settingsKey);
+        if (it == prefs.Json().end() || !it->is_array())
+            continue;
+        for (const auto& item : *it)
+            if (item.is_string() && item.get<std::string>() == buttonId)
+                return true;
+    }
+    return false;
+}
+
+// One row of the right-click menu: the actions first, then every panel of the Panels menu.
+struct VisibilityRow
+{
+    std::string ButtonId;
+    std::string Title;
+    std::string IconPath;
+    bool CanHide = true;
+    bool SeparatorBefore = false;
+};
+
+std::vector<VisibilityRow> BuildVisibilityRows(const std::vector<EditorTopToolbar::PanelMenuEntry>& panels)
+{
+    std::vector<VisibilityRow> rows;
+    rows.reserve(std::size(kToolbarButtons) + panels.size());
+    for (const ToolbarButtonInfo& info : kToolbarButtons)
+    {
+        const bool listedAsPanel = info.panelId &&
+            std::any_of(panels.begin(), panels.end(),
+                        [&info](const EditorTopToolbar::PanelMenuEntry& p) { return p.panelId == info.panelId; });
+        if (!listedAsPanel)
+            rows.push_back({info.id, info.title, info.iconPath, CanHideToolbarButton(info.id), false});
+    }
+    for (const EditorTopToolbar::PanelMenuEntry& panel : panels)
+    {
+        const ToolbarButtonInfo* fixed = FindFixedPanelButton(panel.panelId);
+        rows.push_back({fixed ? std::string(fixed->id) : MakePanelButtonId(panel.panelId), panel.title,
+                        panel.iconPath, true, &panel == &panels.front()});
+    }
+    return rows;
 }
 
 // Element that owns a section's icon run, gaps included. Authored in
@@ -208,6 +283,9 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
         if (cb.onUniversalSearchClicked)
             btn->RegisterEventHandler(kEventButtonClick, [fn = cb.onUniversalSearchClicked](UIEvent&) { fn(); });
     }
+
+    m_GetPanelMenuEntries = cb.getPanelMenuEntries;
+    m_OpenPanel = cb.onPanelMenuEntryClicked;
 
     // Panel launcher. Its contents are queried on every click so panels
     // contributed by packages after startup are included automatically.
@@ -602,15 +680,62 @@ void EditorTopToolbar::SetupDragDrop(UIElement* rootEl, Editor::ToolbarDragDrop*
     if (!dragDrop || !rootEl)
         return;
 
-    static const std::vector<Editor::ToolbarDragDrop::ContainerConfig> kTopToolbarContainers = {
-        // Buttons live in the hugging icon container; the stretched section
-        // around it is the drop zone, so a drag can land in empty bar space.
-        {"toolbar-icons-left",   "ui.toolbar.left.v3.order",   "top-toolbar-left"},
-        {"toolbar-icons-center", "ui.toolbar.center.v2.order", "top-toolbar-center"},
-        {"toolbar-icons-right",  "ui.toolbar.right.v2.order",  "top-toolbar-right"},
-    };
-    dragDrop->Setup(rootEl, kTopToolbarContainers);
-    dragDrop->LoadButtonOrder(rootEl, kTopToolbarContainers);
+    m_DragDrop = dragDrop;
+    dragDrop->Setup(rootEl, TopToolbarContainers());
+    dragDrop->LoadButtonOrder(rootEl, TopToolbarContainers());
+}
+
+void EditorTopToolbar::SyncPanelButtons(UIElement* rootEl)
+{
+    if (!rootEl || !m_GetPanelMenuEntries || !m_OpenPanel)
+        return;
+    UIElement* search = rootEl->FindById(HashStringId(EditorPanelIds::TopToolbarUniversalSearch));
+    if (!search || !search->GetParent())
+        return;
+
+    auto prefs = Editor::OpenEditorPreferences();
+    std::string err;
+    (void)prefs.Load(&err);
+    bool added = false;
+    bool addedSavedButton = false;
+    for (const PanelMenuEntry& panel : m_GetPanelMenuEntries())
+    {
+        const std::string buttonId = MakePanelButtonId(panel.panelId);
+        if (FindFixedPanelButton(panel.panelId) || rootEl->FindById(HashStringId(buttonId)))
+            continue;
+        AddPanelButton(*search, panel, buttonId, prefs);
+        added = true;
+        addedSavedButton = addedSavedButton || IsInSavedButtonOrder(prefs, buttonId);
+    }
+    if (!added || !m_DragDrop)
+        return;
+    m_DragDrop->Setup(rootEl, TopToolbarContainers());
+    // A button the user moved before goes back to its saved place; a new one stays before search.
+    if (addedSavedButton)
+        m_DragDrop->LoadButtonOrder(rootEl, TopToolbarContainers());
+}
+
+void EditorTopToolbar::AddPanelButton(UIElement& before, const PanelMenuEntry& panel,
+                                      const std::string& buttonId, const Editor::SettingsStore& prefs)
+{
+    UIElement* container = before.GetParent();
+    size_t index = 0;
+    while (index < container->GetChildren().size() && container->GetChildren()[index].get() != &before)
+        ++index;
+
+    auto button = std::make_unique<Button>();
+    button->SetId(buttonId);
+    for (const char* cls : {"small", "secondary", "icon-button", "toolbar-outline-icon", "toolbar-panel-button"})
+        button->AddClass(cls);
+    button->AddClass(panel.iconClass.empty() ? "menulist-icon" : panel.iconClass.c_str());
+    button->SetTooltip(panel.title);
+    button->RegisterEventHandler(kEventButtonClick,
+                                 [open = m_OpenPanel, panelId = panel.panelId](UIEvent&) { open(panelId); });
+    bool hidden = !panel.showOnTopToolbarByDefault;
+    prefs.TryGetBool(MakeVisibilityPrefKey(buttonId.c_str()), hidden);
+    UIElement* raw = button.get();
+    container->InsertChild(index, std::move(button));
+    ApplyHiddenClass(raw, hidden);
 }
 
 void EditorTopToolbar::ApplyButtonVisibilityFromPrefs(UIElement* rootEl)
@@ -640,32 +765,35 @@ void EditorTopToolbar::WireRightClickToggles(UIElement* rootEl, Platform::Window
         if (!m_ButtonVisibilityMenu)
             return;
 
-        for (uint32_t i = 0; i < std::size(kToolbarButtons); ++i)
+        std::vector<VisibilityRow> rows =
+            BuildVisibilityRows(m_GetPanelMenuEntries ? m_GetPanelMenuEntries() : std::vector<PanelMenuEntry>{});
+        for (uint32_t i = 0; i < rows.size(); ++i)
         {
-            const auto& entry = kToolbarButtons[i];
-            UIElement* button = rootEl->FindById(HashStringId(entry.id));
+            const VisibilityRow& row = rows[i];
+            UIElement* button = rootEl->FindById(HashStringId(row.ButtonId));
             const bool visible = button && !button->HasClass("hidden");
             const uint32_t commandId = i + 1;
             uint32_t flags = visible ? MenuItemFlag_Checked : MenuItemFlag_None;
-            if (!CanHideToolbarButton(entry.id))
+            if (!row.CanHide || !button)
                 flags |= MenuItemFlag_Disabled;
-            m_ButtonVisibilityMenu->AddItem(
-                0, entry.title, commandId, flags);
-            m_ButtonVisibilityMenu->SetItemIcon(commandId, entry.iconPath);
+            if (row.SeparatorBefore)
+                m_ButtonVisibilityMenu->AddSeparator(0);
+            m_ButtonVisibilityMenu->AddItem(0, row.Title, commandId, flags);
+            m_ButtonVisibilityMenu->SetItemIcon(commandId, row.IconPath);
         }
 
-        m_ButtonVisibilityMenu->SetCommandHandler([rootEl](uint32_t commandId)
+        m_ButtonVisibilityMenu->SetCommandHandler([rootEl, rows = std::move(rows)](uint32_t commandId)
         {
-            if (commandId == 0 || commandId > std::size(kToolbarButtons))
+            if (commandId == 0 || commandId > rows.size())
                 return;
-            const auto& entry = kToolbarButtons[commandId - 1];
-            if (!CanHideToolbarButton(entry.id))
+            const VisibilityRow& row = rows[commandId - 1];
+            if (!row.CanHide)
                 return;
-            UIElement* button = rootEl->FindById(HashStringId(entry.id));
+            UIElement* button = rootEl->FindById(HashStringId(row.ButtonId));
             if (!button)
                 return;
             const bool nowHidden = !button->HasClass("hidden");
-            SetButtonHiddenInPrefs(entry.id, nowHidden);
+            SetButtonHiddenInPrefs(row.ButtonId.c_str(), nowHidden);
             ApplyHiddenClass(button, nowHidden);
         });
 
