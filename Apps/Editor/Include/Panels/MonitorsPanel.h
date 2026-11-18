@@ -115,7 +115,6 @@ class MonitorsPanel : public DockPanel {
     Label* m_ChartDragGhost = nullptr;
     UIElement* m_ChartDropIndicator = nullptr;
     Button* m_PauseButton = nullptr;
-    UIElement* m_PauseGlyph = nullptr;
     Button* m_ClearButton = nullptr;
     Label* m_HdrStatusLabel = nullptr;
 

@@ -58,6 +58,31 @@ void Button::SetText(const std::string& t)
     MarkDirty(LayoutDirty | VisualDirty);
 }
 
+void Button::SetGlyphClass(std::string_view glyphClass)
+{
+    if (glyphClass == m_GlyphClass)
+        return;
+    if (m_GlyphChild && !m_GlyphClass.empty())
+        m_GlyphChild->RemoveClass(m_GlyphClass);
+    m_GlyphClass = glyphClass;
+    if (m_GlyphClass.empty())
+    {
+        if (m_GlyphChild)
+            (void)TakeChild(m_GlyphChild);
+        m_GlyphChild = nullptr;
+        return;
+    }
+    if (!m_GlyphChild)
+    {
+        auto glyph = std::make_unique<UIElement>();
+        glyph->AddClass("button-glyph");
+        m_GlyphChild = glyph.get();
+        AddChild(std::move(glyph));
+    }
+    m_GlyphChild->AddClass(m_GlyphClass);
+    MarkDirty(LayoutDirty | VisualDirty);
+}
+
 void Button::SetOnMouseDown(ClickHandler handler)
 {
     m_OnMouseDown = std::move(handler);

@@ -49,6 +49,17 @@ const char* ModeLabel(VisualProfilerPanel::Mode mode)
     return "?";
 }
 
+// The mode button's icon: the CPU profiler's timer, the GPU chip, or the profiler pulse for both.
+const char* ModeGlyphClass(VisualProfilerPanel::Mode mode)
+{
+    switch (mode) {
+    case VisualProfilerPanel::Mode::Both: return "button-glyph-profile";
+    case VisualProfilerPanel::Mode::Cpu:  return "button-glyph-cpu";
+    case VisualProfilerPanel::Mode::Gpu:  return "button-glyph-gpu";
+    }
+    return "";
+}
+
 std::string FormatMs(double ms)
 {
     char buf[32];
@@ -146,6 +157,7 @@ void VisualProfilerPanel::BuildUI()
     pauseBtn->AddClass("secondary");
     pauseBtn->AddClass("visual-profiler-btn-pause");
     pauseBtn->SetText("Pause");
+    pauseBtn->SetGlyphClass("button-glyph-pause");
     pauseBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { TogglePause(); });
     m_PauseButton = pauseBtn.get();
     toolbar->AddChild(std::move(pauseBtn));
@@ -155,6 +167,7 @@ void VisualProfilerPanel::BuildUI()
     clearBtn->AddClass("secondary");
     clearBtn->AddClass("visual-profiler-btn-clear");
     clearBtn->SetText("Clear");
+    clearBtn->SetGlyphClass("button-glyph-clear");
     clearBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
         m_FrozenCpuHistory.clear();
         m_FrozenGpuHistory.clear();
@@ -188,6 +201,7 @@ void VisualProfilerPanel::BuildUI()
     modeBtn->AddClass("secondary");
     modeBtn->AddClass("visual-profiler-btn-mode");
     modeBtn->SetText(ModeLabel(m_Mode));
+    modeBtn->SetGlyphClass(ModeGlyphClass(m_Mode));
     modeBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
         SetSortMode(static_cast<Mode>((static_cast<int>(m_Mode) + 1) % 3));
     });
@@ -567,11 +581,13 @@ void VisualProfilerPanel::RefreshToolbar(Rendering::RenderGraph::RGFrame* render
         if (m_Paused)
         {
             m_PauseButton->SetText("Resume");
+            m_PauseButton->SetGlyphClass("button-glyph-resume");
             m_PauseButton->AddClass("paused");
         }
         else
         {
             m_PauseButton->SetText("Pause");
+            m_PauseButton->SetGlyphClass("button-glyph-pause");
             m_PauseButton->RemoveClass("paused");
         }
     }
@@ -701,7 +717,10 @@ void VisualProfilerPanel::SetSortMode(Mode mode)
 {
     m_Mode = mode;
     if (m_ModeButton)
+    {
         m_ModeButton->SetText(ModeLabel(m_Mode));
+        m_ModeButton->SetGlyphClass(ModeGlyphClass(m_Mode));
+    }
     if (m_Table)
         m_Table->SetSortIndicator(KeyForMode(m_Mode), SortDirection::Descending);
     m_CursorDirty = true;

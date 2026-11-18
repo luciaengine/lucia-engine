@@ -200,19 +200,6 @@ private:
     ApplyFn m_Apply;
 };
 
-constexpr const char* kPauseGlyphClass = "button-glyph-pause";
-constexpr const char* kResumeGlyphClass = "button-glyph-resume";
-
-// Adds the icon before a button's label (theme/widgets.css, .button-glyph).
-UIElement* AddButtonGlyph(Button& button, const char* glyphClass)
-{
-    auto glyph = std::make_unique<UIElement>();
-    glyph->AddClass("button-glyph");
-    glyph->AddClass(glyphClass);
-    UIElement* added = glyph.get();
-    button.AddChild(std::move(glyph));
-    return added;
-}
 
 } // namespace
 
@@ -280,7 +267,7 @@ void MonitorsPanel::BuildUI()
     pauseBtn->AddClass("monitors-btn-pause");
     pauseBtn->SetText("Pause");
     pauseBtn->SetTooltip("Pause monitor updates");
-    m_PauseGlyph = AddButtonGlyph(*pauseBtn, kPauseGlyphClass);
+    pauseBtn->SetGlyphClass("button-glyph-pause");
     pauseBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { TogglePause(); });
     m_PauseButton = pauseBtn.get();
     toolbar->AddChild(std::move(pauseBtn));
@@ -291,7 +278,7 @@ void MonitorsPanel::BuildUI()
     clearBtn->AddClass("monitors-btn-clear");
     clearBtn->SetText("Clear");
     clearBtn->SetTooltip("Clear recorded monitor samples");
-    AddButtonGlyph(*clearBtn, "button-glyph-clear");
+    clearBtn->SetGlyphClass("button-glyph-clear");
     clearBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
         Debug::DebugMetrics::Get().ClearAll();
         ClearCursor();
@@ -717,11 +704,7 @@ void MonitorsPanel::ShowPauseState(bool paused)
         m_PauseButton->AddClass("paused");
     else
         m_PauseButton->RemoveClass("paused");
-    if (m_PauseGlyph)
-    {
-        m_PauseGlyph->RemoveClass(paused ? kPauseGlyphClass : kResumeGlyphClass);
-        m_PauseGlyph->AddClass(paused ? kResumeGlyphClass : kPauseGlyphClass);
-    }
+    m_PauseButton->SetGlyphClass(paused ? "button-glyph-resume" : "button-glyph-pause");
 }
 
 void MonitorsPanel::ResumeFromPause()

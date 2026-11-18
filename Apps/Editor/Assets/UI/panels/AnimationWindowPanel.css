@@ -89,9 +89,10 @@
 }
 
 /* Preview toggle button */
+/* 16 px, as the toolbar's other icons draw: the eye's art reaches its canvas edge. */
 .anim-preview-toggle-icon {
     background-image: url("editor:Icons/eye.svg");
-    background-size: contain;
+    background-size: 16px 16px;
     background-repeat: no-repeat;
     background-position: center;
 }

@@ -1871,6 +1871,42 @@ button.record-icon.secondary.active,
 	background-image: url("editor:Icons/play-symbol.svg");
 }
 
+.button-glyph-stop {
+	background-image: url("editor:Icons/stop-symbol.svg");
+}
+
+.button-glyph-profile {
+	background-image: url("editor:Icons/pulse.svg");
+}
+
+.button-glyph-cpu {
+	background-image: url("editor:Icons/timer.svg");
+}
+
+.button-glyph-gpu {
+	background-image: url("editor:Icons/hardware-chip.svg");
+}
+
+.button-glyph-render-graph {
+	background-image: url("editor:Icons/pie-chart.svg");
+}
+
+.button-glyph-capture {
+	background-image: url("editor:Icons/camera.svg");
+}
+
+.button-glyph-export {
+	background-image: url("editor:Icons/arrow-down.svg");
+}
+
+.button-glyph-sort {
+	background-image: url("editor:Icons/sorting.svg");
+}
+
+.button-glyph-log {
+	background-image: url("editor:Icons/DockLog.svg");
+}
+
 .button-glyph-copy {
 	background-image: url("editor:Icons/copy.svg");
 }

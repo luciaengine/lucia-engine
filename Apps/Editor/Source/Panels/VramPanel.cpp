@@ -121,6 +121,7 @@ void VramPanel::BuildUI()
     sourceBtn->AddClass("secondary");
     sourceBtn->AddClass("vram-btn-source");
     sourceBtn->SetText("Source: GPU");
+    sourceBtn->SetGlyphClass("button-glyph-gpu");
     sourceBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { CycleListSource(); });
     m_SourceButton = sourceBtn.get();
     toolbar->AddChild(std::move(sourceBtn));
@@ -490,8 +491,11 @@ void VramPanel::CycleListSource()
     m_ListSource = (m_ListSource == ListSource::GpuAllocations) ? ListSource::RenderGraph
                                                                : ListSource::GpuAllocations;
     if (m_SourceButton)
-        m_SourceButton->SetText(m_ListSource == ListSource::GpuAllocations ? "Source: GPU"
-                                                                          : "Source: Render Graph");
+    {
+        const bool gpu = m_ListSource == ListSource::GpuAllocations;
+        m_SourceButton->SetText(gpu ? "Source: GPU" : "Source: Render Graph");
+        m_SourceButton->SetGlyphClass(gpu ? "button-glyph-gpu" : "button-glyph-render-graph");
+    }
     // Force the next RefreshList to rebuild against the new source (sentinel that no
     // real signature matches, so even an empty source repaints the list).
     m_LastResourceSignature = static_cast<std::size_t>(-1);
