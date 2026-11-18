@@ -160,8 +160,8 @@ struct GPUDrawStreamBuilder::LateShadowListPass
     size_t InstanceBytes = 0;
     size_t MeshBytes = 0;
     LateShadowListLayout Layout{};
-    // The per-(page, row) counts also go to the cursor readback at this element offset, so the
-    // next frame's stats reduce gives each page its passed-caster count. Invalid = no stats.
+    // A second pass copies the per-(page, row) counts to the cursor readback at this element
+    // offset, so the next frame's stats reduce gives each page its passed-caster count.
     BufferHandle CursorReadback{};
     uint32_t StatsCursorBase = 0;
     LateShadowListPushConstants Constants{};
@@ -226,17 +226,17 @@ struct GPUDrawStreamBuilder::LateShadowListPass
         context.Cmd->SetPushConstants(commands);
         context.Cmd->Dispatch((Constants.rowCount + kLateShadowListGroupSize - 1u) / kLateShadowListGroupSize,
                               Constants.pageCount, 1);
-        if (CursorReadback.IsValid())
-        {
-            context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
-                static_cast<uint64_t>(PipelineStageMask::ComputeShader), static_cast<uint64_t>(PipelineStageMask::Transfer),
-                static_cast<uint64_t>(ResourceAccessMask::ShaderWrite), static_cast<uint64_t>(ResourceAccessMask::TransferRead)));
-            context.Cmd->CopyBuffer(Lists, CursorReadback,
-                                    static_cast<size_t>(Constants.pageCount) * Constants.rowCount * sizeof(uint32_t),
-                                    static_cast<size_t>(Layout.CountsBase) * sizeof(uint32_t),
-                                    static_cast<size_t>(StatsCursorBase) * sizeof(uint32_t));
-        }
         context.Cmd->Barrier(CreateStreamReadyBarrier());
+    }
+
+    // Keep this copy in its own pass. A transfer between the dispatch and the stream-ready barrier
+    // lets the page draws read stale lists on MoltenVK.
+    void RecordStatsCopy(RenderGraph::RGContext& context) const
+    {
+        context.Cmd->CopyBuffer(Lists, CursorReadback,
+                                static_cast<size_t>(Constants.pageCount) * Constants.rowCount * sizeof(uint32_t),
+                                static_cast<size_t>(Layout.CountsBase) * sizeof(uint32_t),
+                                static_cast<size_t>(StatsCursorBase) * sizeof(uint32_t));
     }
 };
 
@@ -394,6 +394,15 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleLateShadowLists(
             builder.Prepare([pass](RenderGraph::RGPrepareContext& context) { return pass->Prepare(context); });
         },
         [pass](RenderGraph::RGContext& context) { pass->Record(context); });
+    if (pass->CursorReadback.IsValid())
+        frame.AddPass(
+            "GPUDrawStream.LateShadowListStats", PassPhase::kEarlySetup,
+            [ordering](RenderGraph::RGPassBuilder& builder)
+            {
+                builder.Read(ordering, RenderGraph::RGBufferRead::CopySrc);
+                builder.PreventCulling();
+            },
+            [pass](RenderGraph::RGContext& context) { pass->RecordStatsCopy(context); });
     return ordering;
 }
 
