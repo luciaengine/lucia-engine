@@ -23,6 +23,7 @@ class Window;
 namespace Editor
 {
 enum class PlayModeState : std::uint8_t;
+class SettingsStore;
 class ToolbarDragDrop;
 } // namespace Editor
 
@@ -40,6 +41,8 @@ class EditorTopToolbar final : public UIElement
         std::string panelId;
         std::string title;
         std::string iconPath; ///< Resolved image file, or empty for no icon.
+        std::string iconClass; ///< The panel's tab icon class, or empty for none.
+        bool showOnTopToolbarByDefault = false;
     };
 
     /// Callbacks invoked when toolbar buttons are clicked. Each is optional.
@@ -98,6 +101,11 @@ class EditorTopToolbar final : public UIElement
     /// Set up toolbar drag-and-drop (icon reordering).
     void SetupDragDrop(UIElement* rootEl, Editor::ToolbarDragDrop* dragDrop);
 
+    /// Add a button for each panel of the Panels menu that no toolbar button opens yet, before
+    /// Universal Search. A new button shows only when its panel asks for it by default or the
+    /// user turned it on. Call it again when panels are registered later.
+    void SyncPanelButtons(UIElement* rootEl);
+
     /// Read user preferences and hide any top-toolbar buttons the user has disabled.
     void ApplyButtonVisibilityFromPrefs(UIElement* rootEl);
 
@@ -127,8 +135,13 @@ class EditorTopToolbar final : public UIElement
 
   private:
     void ScheduleAssetLoad();
+    void AddPanelButton(UIElement& before, const PanelMenuEntry& panel, const std::string& buttonId,
+                        const Editor::SettingsStore& prefs);
 
     EditorPanelManager* m_PanelManager = nullptr; // not owned
+    Editor::ToolbarDragDrop* m_DragDrop = nullptr;  // not owned
+    std::function<std::vector<PanelMenuEntry>()> m_GetPanelMenuEntries;
+    std::function<void(const std::string& panelId)> m_OpenPanel;
     bool m_AssetsLoaded = false;
     bool m_AssetLoadScheduled = false;
     bool m_AssetLoadFailed = false;

@@ -77,6 +77,9 @@ std::vector<EditorPanelManager::PanelMenuEntry> EditorPanelManager::GetPanelMenu
         entry.iconClass = panel ? std::string(panel->GetTabIcon()) : std::string{};
         if (ui)
             entry.iconPath = ResolvePanelMenuIconFile(*ui, entry.iconClass);
+        Editor::EditorPanelDescriptor descriptor;
+        if (Editor::EditorPanelRegistry::Get().TryGetPanel(panelId, descriptor))
+            entry.showOnTopToolbarByDefault = descriptor.ShowOnTopToolbarByDefault;
         entries.push_back(std::move(entry));
     }
 

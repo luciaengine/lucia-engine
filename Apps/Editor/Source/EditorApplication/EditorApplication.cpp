@@ -4353,6 +4353,8 @@ bool EditorApplication::Initialize()
                                     panel.panelId,
                                     panel.title,
                                     panel.iconPath,
+                                    panel.iconClass,
+                                    panel.showOnTopToolbarByDefault,
                                 });
                             }
                             return entries;
@@ -4680,6 +4682,7 @@ bool EditorApplication::Initialize()
                         m_ToolbarDragDrop = std::make_unique<Editor::ToolbarDragDrop>();
                     m_ToolbarDragDrop->SetAccentColor(GetEditorAccentColor());
                     m_TopToolbar->SetupDragDrop(rootEl, m_ToolbarDragDrop.get());
+                    m_TopToolbar->SyncPanelButtons(rootEl);
 
                     // Set up drag-and-drop for scene view toolbar buttons.
                     // The SceneViewPanel loads its UXML asynchronously, so SceneViewToolbar is not yet in
@@ -5105,6 +5108,8 @@ void EditorApplication::ConsumePackagePanelDescriptor(const Editor::EditorPanelD
 
     if (m_EditorToolbar)
         m_EditorToolbar->Refresh();
+    if (m_TopToolbar && !m_Windows.empty() && m_Windows[0] && m_Windows[0]->ui)
+        m_TopToolbar->SyncPanelButtons(m_Windows[0]->ui->GetRootElement());
 }
 
 void EditorApplication::ConsumePackageEditorStyleSheet(

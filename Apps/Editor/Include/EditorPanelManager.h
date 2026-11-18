@@ -49,6 +49,7 @@ class EditorPanelManager
         std::string title;
         std::string iconClass;
         std::string iconPath;
+        bool showOnTopToolbarByDefault = false;
     };
 
     /// Returns the live, sorted panel inventory used by editor panel launchers.

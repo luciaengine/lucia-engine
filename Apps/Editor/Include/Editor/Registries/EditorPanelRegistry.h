@@ -38,6 +38,9 @@ struct EditorPanelDescriptor
     // Existing panel whose dock leaf receives this panel the first time it is
     // opened. Empty keeps the editor's generic package-panel placement.
     std::string DefaultDockAnchorPanelId;
+    // Shows a button that opens the panel on the top toolbar until the user hides it
+    // through the toolbar's right-click menu.
+    bool ShowOnTopToolbarByDefault = false;
     // Creates the panel root — a DockPanel subclass, so the dock tab picks up
     // title/icon and close/drag behave like built-in panels.
     std::function<std::unique_ptr<UIElement>()> Factory;
