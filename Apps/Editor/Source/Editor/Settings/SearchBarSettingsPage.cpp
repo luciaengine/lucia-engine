@@ -54,6 +54,11 @@ void SetLookName(const std::string& name)
         EditorSearchBars::SetLook(look);
 }
 
+bool IsLuciaLook()
+{
+    return EditorSearchBars::GetLook() == EditorSearchBars::Look::Lucia;
+}
+
 SettingsFieldDescriptor MakeLookDropdown()
 {
     SettingsFieldDescriptor field;
@@ -102,11 +107,14 @@ void RegisterSearchBarSettingsCategory()
         "in an empty search field.",
         "search bar hint placeholder icon view rows show hide", false, &EditorSearchBars::GetShowIconAndHint,
         &SetShowIconAndHint));
-    searchBars.Fields.push_back(MakeToggle(
+    SettingsFieldDescriptor filled = MakeToggle(
         "Filled Search Bars",
         "Fills the search field of the Hierarchy, Assets, Inspector and Bookmarks panels. "
         "Off shows an empty strip with the search icon; the field fills when you click it or type.",
-        "search bar filled background hidden show", false, &EditorSearchBars::GetVisible, &SetFilled));
+        "search bar filled background hidden show", false, &EditorSearchBars::GetVisible, &SetFilled);
+    // The Classic look is always filled, so the row applies to the Lucia look only.
+    filled.IsVisible = &IsLuciaLook;
+    searchBars.Fields.push_back(std::move(filled));
     searchBars.Fields.push_back(MakeToggle("Search Bars at Top",
                                            "Puts the panel search fields at the top of their panels. "
                                            "Off puts them at the bottom.",

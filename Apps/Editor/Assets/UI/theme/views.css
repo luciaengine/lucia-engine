@@ -1395,11 +1395,11 @@ ListView {
    Panel Search Bar (shared styles)
    ====================================== */
 
-/* The Hierarchy's bottom strip holds its item size bar (22px at 8px) and, while search bars sit
-   at the bottom, the search above it. */
+/* The Hierarchy's bottom strip holds its navigation row: the item size bar and, while search bars
+   sit at the bottom, the search beside it (22px at 8px). */
 .hierarchy-panel {
 	position: relative;
-	padding-bottom: 66px;
+	padding-bottom: 38px;
 }
 
 /* A panel whose search is pinned to its edge (the class is set where the panel adds its
@@ -1502,10 +1502,6 @@ ListView {
 	border-color: var(--ui_color_border_subtle);
 }
 
-.panel-search-bar.search-bar-classic:hover:not(.active) {
-	border-color: var(--ui_color_dropdown_outline_hover);
-}
-
 .panel-search-bar.active {
 	border: 1px solid var(--ui_color_accent_pressed);
 }
@@ -1520,6 +1516,17 @@ ListView {
 .panel-search-bar.hidden:not(.active) {
 	background-color: transparent;
 	border-color: transparent;
+}
+
+/* The Classic look is always a filled field: Filled Search Bars applies to the Lucia look only. */
+.panel-search-bar.search-bar-classic.hidden:not(.active) {
+	background-color: var(--ui_color_bg_field);
+	border-color: var(--ui_color_border_subtle);
+}
+
+/* After the rule above, so a resting Classic bar lifts its border on hover. */
+.panel-search-bar.search-bar-classic:hover:not(.active) {
+	border-color: var(--ui_color_dropdown_outline_hover);
 }
 
 .panel-search-bar.search-accent-focus:focus-within {
