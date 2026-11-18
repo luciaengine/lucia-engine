@@ -446,6 +446,42 @@ void RenderServices::PackViewWeather(ViewId viewId, uint64 worldId, ForwardLight
     ubo.WeatherWind.Count[2] = std::clamp(settings.WaterRippleSpeed, 0.0f, 4.0f);
 }
 
+ForwardLightUBO RenderServices::BuildViewLightUBO(ViewId viewId, uint64 worldId)
+{
+    ForwardLightUBO ubo{};
+    // Identity light VP (these views have no shadow map).
+    ubo.uLightVP[0] = ubo.uLightVP[5] = ubo.uLightVP[10] = ubo.uLightVP[15] = 1.0f;
+    // No default light — caller must SubmitLight() before WriteViewLightBuffer().
+
+    // Directionals: primary (shadowed) + unshadowed secondaries, packed from
+    // the strongest-first finalized list by the shared packer — the same
+    // primary the shadow node emits cascades for.
+    const auto lights = GetWorldLights(worldId);
+    PackForwardLightDirectionals(lights, ubo);
+    for (const auto& l : lights)
+    {
+        if (l.type == GameEngine::Components::LightType::Ambient)
+        {
+            ubo.uAmbient[0] = l.color[0];
+            ubo.uAmbient[1] = l.color[1];
+            ubo.uAmbient[2] = l.color[2];
+            ubo.uAmbient[3] = l.intensity;
+        }
+    }
+
+    // xy: the process-wide globals. zw: the endpoint lanes a deforming vertex
+    // stage stamps into its InstanceData — the deformation lane rebased against
+    // the origin every view shares so two endpoints of one frame difference
+    // exactly, the scroll lane on its existing bounded wrap.
+    ubo.uTimeParams[0] = GetShaderAnimationTimeSeconds();
+    ubo.uTimeParams[1] = GetScrollAnimationTimeSeconds();
+    ubo.uTimeParams[2] =
+        m_ViewTemporalHistory.ResolveDeformationClock(Time::GetCumulativeSeconds()).TimeSeconds;
+    ubo.uTimeParams[3] = ubo.uTimeParams[1];
+    PackViewWeather(viewId, worldId, ubo);
+    return ubo;
+}
+
 void RenderServices::WriteViewLightBuffer(ViewId viewId)
 {
     const ViewDesc* view = m_ViewRegistry.FindViewDesc(viewId);
@@ -472,37 +508,7 @@ void RenderServices::WriteViewLightBuffer(ViewId viewId)
             return;
     }
 
-    ForwardLightUBO ubo{};
-    // Identity light VP (these views have no shadow map).
-    ubo.uLightVP[0] = ubo.uLightVP[5] = ubo.uLightVP[10] = ubo.uLightVP[15] = 1.0f;
-    // No default light — caller must SubmitLight() before WriteViewLightBuffer().
-
-    // Directionals: primary (shadowed) + unshadowed secondaries, packed from
-    // the strongest-first finalized list by the shared packer — the same
-    // primary the shadow node emits cascades for.
-    const auto lights = GetWorldLights(view->worldId);
-    PackForwardLightDirectionals(lights, ubo);
-    for (const auto& l : lights)
-    {
-        if (l.type == GameEngine::Components::LightType::Ambient)
-        {
-            ubo.uAmbient[0] = l.color[0];
-            ubo.uAmbient[1] = l.color[1];
-            ubo.uAmbient[2] = l.color[2];
-            ubo.uAmbient[3] = l.intensity;
-        }
-    }
-
-    // xy: the process-wide globals. zw: the endpoint lanes a deforming vertex
-    // stage stamps into its InstanceData — the deformation lane rebased against
-    // the origin every view shares so two endpoints of one frame difference
-    // exactly, the scroll lane on its existing bounded wrap.
-    ubo.uTimeParams[0] = GetShaderAnimationTimeSeconds();
-    ubo.uTimeParams[1] = GetScrollAnimationTimeSeconds();
-    ubo.uTimeParams[2] =
-        m_ViewTemporalHistory.ResolveDeformationClock(Time::GetCumulativeSeconds()).TimeSeconds;
-    ubo.uTimeParams[3] = ubo.uTimeParams[1];
-    PackViewWeather(viewId, view->worldId, ubo);
+    const ForwardLightUBO ubo = BuildViewLightUBO(viewId, view->worldId);
 
     void* mapped = m_Device->MapBuffer(buf);
     if (mapped)

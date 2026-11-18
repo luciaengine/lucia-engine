@@ -1705,6 +1705,9 @@ class RenderServices
     // view that renders calls this on every frame it renders, from its declare
     // path; a second writer outside that window races a frame in flight.
     void WriteViewLightBuffer(Rendering::ViewId viewId);
+    // The LightUBO that WriteViewLightBuffer writes for `viewId` in world `worldId`: the directional and
+    // ambient lights, the shader clocks and the weather.
+    ForwardLightUBO BuildViewLightUBO(Rendering::ViewId viewId, uint64 worldId);
 
     Rendering::SamplerHandle GetAreaShadowSampler();
     Rendering::SamplerHandle GetAreaShadowRawSampler();
