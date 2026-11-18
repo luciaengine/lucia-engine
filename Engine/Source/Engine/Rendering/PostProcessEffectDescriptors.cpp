@@ -1736,7 +1736,7 @@ void RegisterBuiltInPostProcessEffectDescriptors()
         .ComponentName = "DepthPixelationEffect",
         .DisplayName = "Depth Pixelation",
         .Description = "Independent near, middle, far and sky pixel resolutions; debug colors show depth ranges",
-        .IconClass = "postfx-depth-pixelation-icon",
+        .IconPath = "Icons/PostFX/CRT.svg",
         .FieldIO = kDepthPixelationIO,
         .SettingsFields = kDepthPixelationSettings,
         .Extract = +[](ECS::World& world, const ECS::EntityHandle& entity,
