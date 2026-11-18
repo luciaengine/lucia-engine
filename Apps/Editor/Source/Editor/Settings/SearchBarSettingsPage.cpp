@@ -38,37 +38,37 @@ void SetShowIconAndHint(bool show)
 }
 
 // The look names are the stored values of the dropdown.
-constexpr const char* kLuciaLook = "Lucia";
-constexpr const char* kClassicLook = "Classic";
+constexpr const char* kBorderlessLook = "Borderless";
+constexpr const char* kBorderedLook = "Bordered";
 
 std::string GetLookName()
 {
-    return EditorSearchBars::GetLook() == EditorSearchBars::Look::Classic ? kClassicLook : kLuciaLook;
+    return EditorSearchBars::GetLook() == EditorSearchBars::Look::Bordered ? kBorderedLook : kBorderlessLook;
 }
 
 void SetLookName(const std::string& name)
 {
     const EditorSearchBars::Look look =
-        name == kClassicLook ? EditorSearchBars::Look::Classic : EditorSearchBars::Look::Lucia;
+        name == kBorderedLook ? EditorSearchBars::Look::Bordered : EditorSearchBars::Look::Borderless;
     if (look != EditorSearchBars::GetLook())
         EditorSearchBars::SetLook(look);
 }
 
-bool IsLuciaLook()
+bool IsBorderlessLook()
 {
-    return EditorSearchBars::GetLook() == EditorSearchBars::Look::Lucia;
+    return EditorSearchBars::GetLook() == EditorSearchBars::Look::Borderless;
 }
 
 SettingsFieldDescriptor MakeLookDropdown()
 {
     SettingsFieldDescriptor field;
     field.Label = "Search Bar Style";
-    field.Tooltip = "Lucia: a dark field with no border. Classic: the field fill with a subtle border "
+    field.Tooltip = "Borderless: a dark field with no border. Bordered: the field fill with a subtle border "
                     "that lights up on hover.";
-    field.SearchKeywords = "search bar style look classic lucia border fill";
+    field.SearchKeywords = "search bar style look bordered borderless border fill";
     SettingsFieldDescriptor::DropdownField dropdown;
-    dropdown.Options = {kLuciaLook, kClassicLook};
-    dropdown.DefaultValue = kLuciaLook;
+    dropdown.Options = {kBorderlessLook, kBorderedLook};
+    dropdown.DefaultValue = kBorderlessLook;
     dropdown.Get = &GetLookName;
     dropdown.Set = &SetLookName;
     field.Control = std::move(dropdown);
@@ -112,8 +112,8 @@ void RegisterSearchBarSettingsCategory()
         "Fills the search field of the Hierarchy, Assets, Inspector and Bookmarks panels. "
         "Off shows an empty strip with the search icon; the field fills when you click it or type.",
         "search bar filled background hidden show", false, &EditorSearchBars::GetVisible, &SetFilled);
-    // The Classic look is always filled, so the row applies to the Lucia look only.
-    filled.IsVisible = &IsLuciaLook;
+    // The Bordered look is always filled, so the row applies to the Borderless look only.
+    filled.IsVisible = &IsBorderlessLook;
     searchBars.Fields.push_back(std::move(filled));
     searchBars.Fields.push_back(MakeToggle("Search Bars at Top",
                                            "Puts the panel search fields at the top of their panels. "

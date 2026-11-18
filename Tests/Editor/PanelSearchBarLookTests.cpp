@@ -148,7 +148,7 @@ TEST(PanelSearchBarLook, ANoHintBarHidesTheSearchHint)
     EXPECT_EQ(hint->GetResolvedStyle().Layout.DisplayMode, GameEngine::DisplayMode::None);
 }
 
-TEST(PanelSearchBarLook, TheClassicLookHasAnotherFillAndABorder)
+TEST(PanelSearchBarLook, TheBorderedLookHasAnotherFillAndABorder)
 {
     SearchBarLook look;
     if (!look.Build())
@@ -156,16 +156,16 @@ TEST(PanelSearchBarLook, TheClassicLookHasAnotherFillAndABorder)
         ASSERT_EQ(look.Fixture.Diagnostic, "no Vulkan device");
         GTEST_SKIP() << look.Fixture.Diagnostic;
     }
-    const uint32_t luciaFill = look.Bar->GetResolvedStyle().Visual.BackgroundColor;
-    const uint32_t luciaBorder = look.Bar->GetResolvedStyle().Visual.BorderColor.Top;
-    EXPECT_EQ(Alpha(luciaBorder), 0u) << "the Lucia look draws a border at rest";
+    const uint32_t borderlessFill = look.Bar->GetResolvedStyle().Visual.BackgroundColor;
+    const uint32_t borderlessBorder = look.Bar->GetResolvedStyle().Visual.BorderColor.Top;
+    EXPECT_EQ(Alpha(borderlessBorder), 0u) << "the Borderless look draws a border at rest";
 
-    look.Bar->AddClass("search-bar-classic");
+    look.Bar->AddClass("search-bar-bordered");
     look.Settle();
-    EXPECT_NE(look.Bar->GetResolvedStyle().Visual.BackgroundColor, luciaFill);
+    EXPECT_NE(look.Bar->GetResolvedStyle().Visual.BackgroundColor, borderlessFill);
     EXPECT_NE(Alpha(look.Bar->GetResolvedStyle().Visual.BorderColor.Top), 0u)
-        << "the Classic look draws no border at rest";
-    EXPECT_NEAR(look.Bar->GetLayoutHeight(), kBarHeightPx, kTolerance) << "the Classic look moved the bar";
+        << "the Bordered look draws no border at rest";
+    EXPECT_NEAR(look.Bar->GetLayoutHeight(), kBarHeightPx, kTolerance) << "the Bordered look moved the bar";
 }
 
 TEST(PanelSearchBarLook, AHiddenRowIconLeavesTheRow)
@@ -188,8 +188,8 @@ TEST(PanelSearchBarLook, AHiddenRowIconLeavesTheRow)
     EXPECT_EQ(group->GetResolvedStyle().Layout.DisplayMode, GameEngine::DisplayMode::None);
 }
 
-// The Classic look is always a filled field, so it reads the same whatever Filled Search Bars says.
-TEST(PanelSearchBarLook, AHiddenClassicBarStaysFilled)
+// The Bordered look is always a filled field, so it reads the same whatever Filled Search Bars says.
+TEST(PanelSearchBarLook, AHiddenBorderedBarStaysFilled)
 {
     SearchBarLook look;
     if (!look.Build())
@@ -197,7 +197,7 @@ TEST(PanelSearchBarLook, AHiddenClassicBarStaysFilled)
         ASSERT_EQ(look.Fixture.Diagnostic, "no Vulkan device");
         GTEST_SKIP() << look.Fixture.Diagnostic;
     }
-    look.Bar->AddClass("search-bar-classic");
+    look.Bar->AddClass("search-bar-bordered");
     look.Bar->AddClass("hidden");
     look.Settle();
     EXPECT_NE(Alpha(look.Bar->GetResolvedStyle().Visual.BackgroundColor), 0u);
