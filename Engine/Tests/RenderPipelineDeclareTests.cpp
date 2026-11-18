@@ -23230,10 +23230,10 @@ size_t CountSceneWarmLines(const std::vector<std::string>& log)
     }));
 }
 
-// A line the colour-variant cache logs when a draw finds its pipeline cold.
+// A line the variant cache logs at the frame begin when waiting draws find their pipeline cold.
 bool IsColdServeLine(const Logger::LogMessage& line)
 {
-    return line.Message.find("GetOrCompileColorVariant") != std::string::npos;
+    return line.Message.starts_with("Cold pipeline '");
 }
 } // namespace
 

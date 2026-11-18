@@ -250,6 +250,7 @@ void PipelineVariantCache::PruneSettledConcreteWarmWaits()
         uint64_t Generation = 0;
         Rendering::GraphicsPipelineId Id{};
         Rendering::PipelineFormatKey FormatKey{};
+        std::string MaterialName;
     };
     std::vector<AskedWait> asked;
     {
@@ -259,18 +260,20 @@ void PipelineVariantCache::PruneSettledConcreteWarmWaits()
         std::erase_if(m_ConcreteWarmWaits, [](const auto& entry) { return entry.second.Materials.empty(); });
         asked.reserve(m_ConcreteWarmWaits.size());
         for (const auto& [warmKey, wait] : m_ConcreteWarmWaits)
-            asked.push_back({warmKey, wait.Generation, wait.Id, wait.FormatKey});
+            asked.push_back({warmKey, wait.Generation, wait.Id, wait.FormatKey, wait.Materials.front()->GetName()});
     }
     // Asked outside the lock, as HasPipelineBuildsInFlight asks: a build the
     // device dropped unrun is queued again, since its materials still wait.
     Rendering::IDevice* device = m_Materials->GetDevice();
     bool turnedWarm = false;
     std::erase_if(asked,
-                  [device, &turnedWarm](const AskedWait& wait)
+                  [this, device, &turnedWarm](const AskedWait& wait)
                   {
                       const Rendering::PipelineBuildState state =
                           device->RequestGraphicsPipeline(wait.Id, wait.FormatKey);
                       turnedWarm |= state == Rendering::PipelineBuildState::Warm;
+                      if (state != Rendering::PipelineBuildState::Warm)
+                          LogColdServe(wait.MaterialName, wait.Id, wait.FormatKey, state);
                       return state == Rendering::PipelineBuildState::Pending;
                   });
     {
@@ -283,6 +286,25 @@ void PipelineVariantCache::PruneSettledConcreteWarmWaits()
     // The draws that waited on these builds were skipped; they can draw now. A failed build moves nothing.
     if (turnedWarm)
         m_Materials->NotePipelineReady();
+}
+
+void PipelineVariantCache::LogColdServe(std::string_view materialName, Rendering::GraphicsPipelineId id,
+                                        const Rendering::PipelineFormatKey& formatKey,
+                                        Rendering::PipelineBuildState state)
+{
+    const uint64_t occurrence = m_ColdServeLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if ((occurrence & (occurrence - 1)) != 0)
+        return;
+    // The device or its backend logs why a build failed; this line only names the material whose
+    // draws are skipped.
+    if (state == Rendering::PipelineBuildState::Pending)
+        Logger::Log::Info("Cold pipeline '{}': graphics pipeline id={} is still building for the current pass ({}); "
+                          "its draws are skipped until it is ready [{}x]",
+                          materialName, id.Value, FormatPipelineKey(formatKey), occurrence);
+    else
+        Logger::Log::Info("Cold pipeline '{}': graphics pipeline id={} did not build for the current pass ({}); "
+                          "its draws are skipped; the device logged why [{}x]",
+                          materialName, id.Value, FormatPipelineKey(formatKey), occurrence);
 }
 
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>

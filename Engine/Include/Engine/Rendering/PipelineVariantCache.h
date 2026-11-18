@@ -26,6 +26,7 @@
 #include <shared_mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -343,7 +344,8 @@ class PipelineVariantCache
     // Failed) or no material waits on it any more. Without it a settled wait
     // nobody polls would outlive its build, and a later cache invalidation
     // would have HasPipelineBuildsInFlight request a pipeline no draw uses.
-    // Serial frame-begin thread (MaterialSystem::BeginFrame).
+    // A build still pending or failed logs at Info that its draws are skipped
+    // (LogColdServe). Serial frame-begin thread (MaterialSystem::BeginFrame).
     void PruneSettledConcreteWarmWaits();
 
     // Drop every queued/in-flight variant compile — every queued, not-yet-
@@ -478,6 +480,11 @@ class PipelineVariantCache
     // an owning-thread backend or when no build dispatcher is installed.
     void QueueConcreteWarm(const Material& material, GraphicsPipelineId id,
                            const Rendering::PipelineFormatKey& formatKey);
+    // Info line for a pipeline that waiting draws found cold: they are skipped while it builds, or
+    // until the next invalidation when its build failed. Rate-limited to powers of two of the count,
+    // because the line repeats every frame of a build.
+    void LogColdServe(std::string_view materialName, GraphicsPipelineId id,
+                      const Rendering::PipelineFormatKey& formatKey, Rendering::PipelineBuildState state);
 
     // Publish-gate: a queued variant miss (enqueued during preparation, drained
     // by SubmitPendingVariantCompiles). Carries only the cache key — which now
@@ -657,6 +664,8 @@ class PipelineVariantCache
     };
     mutable std::mutex m_ConcreteWarmMutex;
     std::unordered_map<uint64_t, ConcreteWarmWait> m_ConcreteWarmWaits;
+    // Occurrence count of LogColdServe; the line logs at its powers of two.
+    std::atomic<uint64_t> m_ColdServeLogCount{0};
 
     struct LoadReport;
     std::shared_ptr<LoadReport> m_LoadReport;
