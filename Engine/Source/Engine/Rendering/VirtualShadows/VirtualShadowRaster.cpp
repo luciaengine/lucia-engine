@@ -92,6 +92,13 @@ bool VirtualShadowRenderFeature::PreparePageTable(RenderGraph::RGPrepareContext&
         if (!page.Render && ValidatePage(view, plan, page.Work, page.Producer))
             words[page.TableIndex] = page.Work.Tile;
     }
+    // A refreshed tile already holds its page, and its depth pass records when the preparation succeeds.
+    // The lighting reads the atlas after that pass, so the page does not fall to a coarser level while it draws.
+    for (const auto& page : pages)
+    {
+        if (page.Render && page.Work.Refresh && page.Producer.Complete)
+            words[page.TableIndex] = page.Work.Tile;
+    }
     return true;
 }
 
