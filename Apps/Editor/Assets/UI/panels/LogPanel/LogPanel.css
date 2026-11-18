@@ -128,40 +128,10 @@
 	--ui_button_toggle_on_border: var(--ui_color_text_dim);
 }
 
-/* The glyph before each toolbar button's label. The severity filters take the glyph of their rows
-   (log-row-glyph-<severity> below); the other buttons take one class each. Pause shows the resume
-   glyph while the list is paused (LogPanel::TogglePause swaps the class). */
-.log-toolbar-glyph {
-	order: -1;
-	width: 14px;
-	height: 14px;
-	flex-shrink: 0;
-	margin-right: var(--ui_spacing_sm);
-	background-size: contain;
-	background-repeat: no-repeat;
-	background-position: center;
-	background-image-tint: var(--ui_color_text);
-	pointer-events: none;
-}
-
-.log-toolbar-glyph-channels {
+/* Each toolbar button takes a glyph (theme/widgets.css, .button-glyph). The severity filters take
+   the glyph of their rows (log-row-glyph-<severity> below). */
+.button-glyph-channels {
 	background-image: url("editor:Icons/list.svg");
-}
-
-.log-toolbar-glyph-clear {
-	background-image: url("editor:Icons/trash.svg");
-}
-
-.log-toolbar-glyph-pause {
-	background-image: url("editor:Icons/pause.svg");
-}
-
-.log-toolbar-glyph-resume {
-	background-image: url("editor:Icons/play.svg");
-}
-
-.log-toolbar-glyph-copy {
-	background-image: url("editor:Icons/copy.svg");
 }
 
 .log-split {

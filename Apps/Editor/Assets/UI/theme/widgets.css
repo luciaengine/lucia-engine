@@ -1894,3 +1894,34 @@ button.record-icon.secondary.active,
 .context-menu-search .search-field-with-filter-input {
 	padding-right: 36px;
 }
+
+/* The glyph before a button's label: a child element of the button. A pause button shows the
+   resume glyph while it is paused; its panel swaps the class. */
+.button-glyph {
+	order: -1;
+	width: 14px;
+	height: 14px;
+	flex-shrink: 0;
+	margin-right: var(--ui_spacing_sm);
+	background-size: contain;
+	background-repeat: no-repeat;
+	background-position: center;
+	background-image-tint: var(--ui_color_text);
+	pointer-events: none;
+}
+
+.button-glyph-clear {
+	background-image: url("editor:Icons/trash.svg");
+}
+
+.button-glyph-pause {
+	background-image: url("editor:Icons/pause.svg");
+}
+
+.button-glyph-resume {
+	background-image: url("editor:Icons/play.svg");
+}
+
+.button-glyph-copy {
+	background-image: url("editor:Icons/copy.svg");
+}

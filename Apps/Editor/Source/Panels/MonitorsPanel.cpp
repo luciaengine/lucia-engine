@@ -200,6 +200,20 @@ private:
     ApplyFn m_Apply;
 };
 
+constexpr const char* kPauseGlyphClass = "button-glyph-pause";
+constexpr const char* kResumeGlyphClass = "button-glyph-resume";
+
+// Adds the icon before a button's label (theme/widgets.css, .button-glyph).
+UIElement* AddButtonGlyph(Button& button, const char* glyphClass)
+{
+    auto glyph = std::make_unique<UIElement>();
+    glyph->AddClass("button-glyph");
+    glyph->AddClass(glyphClass);
+    UIElement* added = glyph.get();
+    button.AddChild(std::move(glyph));
+    return added;
+}
+
 } // namespace
 
 MonitorsPanel::~MonitorsPanel()
@@ -266,6 +280,7 @@ void MonitorsPanel::BuildUI()
     pauseBtn->AddClass("monitors-btn-pause");
     pauseBtn->SetText("Pause");
     pauseBtn->SetTooltip("Pause monitor updates");
+    m_PauseGlyph = AddButtonGlyph(*pauseBtn, kPauseGlyphClass);
     pauseBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { TogglePause(); });
     m_PauseButton = pauseBtn.get();
     toolbar->AddChild(std::move(pauseBtn));
@@ -276,6 +291,7 @@ void MonitorsPanel::BuildUI()
     clearBtn->AddClass("monitors-btn-clear");
     clearBtn->SetText("Clear");
     clearBtn->SetTooltip("Clear recorded monitor samples");
+    AddButtonGlyph(*clearBtn, "button-glyph-clear");
     clearBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
         Debug::DebugMetrics::Get().ClearAll();
         ClearCursor();
@@ -680,14 +696,7 @@ void MonitorsPanel::TogglePause()
     auto& metrics = Debug::DebugMetrics::Get();
     const bool nowPaused = !metrics.IsPaused();
     metrics.SetPaused(nowPaused);
-    if (m_PauseButton)
-    {
-        m_PauseButton->SetText(nowPaused ? "Resume" : "Pause");
-        if (nowPaused)
-            m_PauseButton->AddClass("paused");
-        else
-            m_PauseButton->RemoveClass("paused");
-    }
+    ShowPauseState(nowPaused);
     if (nowPaused)
     {
         SnapshotSeriesForFreeze();
@@ -699,16 +708,28 @@ void MonitorsPanel::TogglePause()
     }
 }
 
+void MonitorsPanel::ShowPauseState(bool paused)
+{
+    if (!m_PauseButton)
+        return;
+    m_PauseButton->SetText(paused ? "Resume" : "Pause");
+    if (paused)
+        m_PauseButton->AddClass("paused");
+    else
+        m_PauseButton->RemoveClass("paused");
+    if (m_PauseGlyph)
+    {
+        m_PauseGlyph->RemoveClass(paused ? kPauseGlyphClass : kResumeGlyphClass);
+        m_PauseGlyph->AddClass(paused ? kResumeGlyphClass : kPauseGlyphClass);
+    }
+}
+
 void MonitorsPanel::ResumeFromPause()
 {
     auto& metrics = Debug::DebugMetrics::Get();
     if (metrics.IsPaused())
         metrics.SetPaused(false);
-    if (m_PauseButton)
-    {
-        m_PauseButton->SetText("Pause");
-        m_PauseButton->RemoveClass("paused");
-    }
+    ShowPauseState(false);
     ClearCursor();
 }
 
