@@ -3,7 +3,7 @@
 
 #include "Input/KeyCodes.h"
 #include "Input/InputSystem.h"
-#include "../Parsers/MarkdownParser.h"
+#include "../Parsers/Markdown/MarkdownParser.h"
 #include "Rendering/Text/TextLayout.h"
 #include "UI/Controls/Label.h"
 #include "UI/TextSelectionFill.h"
@@ -202,6 +202,16 @@ bool MarkdownText::HasTextSelection() const
     return m_Selection && m_Selection->Anchor != m_Selection->Caret;
 }
 
+std::string MarkdownText::GetSelectedText() const
+{
+    if (!HasTextSelection())
+        return std::string();
+    const SelectionState& selection = *m_Selection;
+    const size_t begin = std::min(selection.Anchor, selection.Caret);
+    const size_t end = std::max(selection.Anchor, selection.Caret);
+    return selection.Text.substr(begin, end - begin);
+}
+
 void MarkdownText::InvalidateSelectionGeometry()
 {
     if (m_Selection)
@@ -228,12 +238,8 @@ void MarkdownText::OnEvent(UIEvent& event)
         else if (Input::IsPrimaryShortcutModifier(event.Mods) &&
                  (event.Key == Input::kKeyCode_C || event.Key == Input::kKeyCode_X))
         {
-            if (selection.Anchor != selection.Caret && event.Platform)
-            {
-                const size_t begin = std::min(selection.Anchor, selection.Caret);
-                const size_t end = std::max(selection.Anchor, selection.Caret);
-                event.Platform->SetClipboardText(selection.Text.substr(begin, end - begin).c_str());
-            }
+            if (HasTextSelection() && event.Platform)
+                event.Platform->SetClipboardText(GetSelectedText().c_str());
         }
         else if ((Input::IsPrimaryShortcutModifier(event.Mods) && event.Key == Input::kKeyCode_V) ||
                  event.Key == Input::kKeyCode_Backspace || event.Key == Input::kKeyCode_Delete)

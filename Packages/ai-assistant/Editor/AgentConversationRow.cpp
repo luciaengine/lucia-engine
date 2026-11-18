@@ -3,11 +3,13 @@
 #include "AgentReplyActions.h"
 
 #include "Logger/Logger.h"
+#include "Platform/Clipboard.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/InspectorNotice.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/MarkdownText.h"
 #include "UI/Controls/TextArea.h"
+#include "UI/Interaction/ContextMenuManipulator.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIManager.h"
 #include "UI/UIStyle.h"
@@ -41,6 +43,34 @@ T* TakeElement(UIElement& row, const char* id, size_t index)
     if (element)
         element->SetId(std::string(id) + ":" + std::to_string(index));
     return element;
+}
+
+// A text menu opens at the pointer, where the selection was right-clicked.
+Mathematics::Vector2 PointerAnchor(const UIElement& element)
+{
+    if (const UIManager* ui = element.GetOwnerManager(); ui && ui->IsMousePositionKnown())
+        return ui->GetMousePosition();
+    const Mathematics::Rect drawn = element.GetWindowRect();
+    return {drawn.X, drawn.Bottom()};
+}
+
+// The right-click menu of a text part: Copy while text is selected, no menu without a selection.
+std::vector<ContextMenuManipulator::Item> CopyItems(std::string selected)
+{
+    if (selected.empty())
+        return {};
+    ContextMenuManipulator::Item copy;
+    copy.Path = "Copy";
+    copy.OnActivate = [text = std::move(selected)] { Platform::SetClipboardText(text.c_str()); };
+    return {std::move(copy)};
+}
+
+template <typename TextControl>
+void AddCopyMenu(TextControl& control)
+{
+    auto menu = ContextMenuManipulator::Create([&control] { return CopyItems(control.GetSelectedText()); });
+    menu->SetAnchor(&PointerAnchor);
+    control.AddManipulator(menu);
 }
 } // namespace
 
@@ -99,6 +129,9 @@ bool AgentConversationRow::Build(UIManager& ui)
         Logger::Log::Error("AI Assistant: {} is missing a row element.", kLayoutAssetPath);
         return false;
     }
+    AddCopyMenu(*m_Text);
+    AddCopyMenu(*m_Reply);
+    AddCopyMenu(*m_StatusText);
     // The settings page's Setup row shows the same finding in the same control.
     auto refusal = std::make_unique<EditorUI::InspectorNotice>("", EditorUI::InspectorNotice::Kind::Error);
     m_SetupRefusal = refusal.get();

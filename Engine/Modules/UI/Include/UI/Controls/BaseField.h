@@ -234,7 +234,7 @@ static bool kFieldPointerDebugConsole = false;
 	        // when the event is targeting this field. We only care about the
 	        // primary button for text editing.
 	        if (e.CurrentTarget == this &&
-	            (e.Id == kEventMouseDown || e.Id == kEventMouseMove))
+	            ((e.Id == kEventMouseDown && e.Button == 0) || e.Id == kEventMouseMove))
 	        {
 	            UIManager* owner = GetOwnerManager();
 	        #ifdef _DEBUG
