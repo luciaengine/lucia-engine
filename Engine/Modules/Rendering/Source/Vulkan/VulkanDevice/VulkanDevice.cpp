@@ -2526,6 +2526,7 @@ bool VulkanDevice::CreateLogicalDevice()
     // capability; we enable Int64 purely because our shaders use the uint64_t
     // scalar type.)
     deviceFeatures.shaderInt64 = supportedFeatures.shaderInt64;
+    deviceFeatures.shaderFloat64 = supportedFeatures.shaderFloat64;
     // BC (DXT/BPTC) sampled-texture support. Universal on desktop GPUs;
     // MoltenVK reports it per Metal GPU family. Loaders check the capability
     // flag and fall back to uncompressed RGBA when absent.
@@ -3039,6 +3040,7 @@ bool VulkanDevice::CreateLogicalDevice()
         // Keep Int64 enabled in the fallback path too — buffer_reference shaders
         // on the instanced path declare it regardless of extension availability.
         minimalFeatures.shaderInt64 = supportedFeatures.shaderInt64;
+        minimalFeatures.shaderFloat64 = supportedFeatures.shaderFloat64;
         // Keep BC textures enabled in the fallback path too — capability
         // reporting assumes support == enabled (see caps fill).
         minimalFeatures.textureCompressionBC = supportedFeatures.textureCompressionBC;
@@ -3567,6 +3569,8 @@ void VulkanDevice::QueryDeviceCapabilities()
         VkPhysicalDeviceFeatures baseFeatures{};
         vkGetPhysicalDeviceFeatures(m_PhysicalDevice, &baseFeatures);
         m_Capabilities.supportsShaderInt64 = (baseFeatures.shaderInt64 == VK_TRUE);
+        // All device-creation paths enable shaderFloat64 whenever supported.
+        m_Capabilities.supportsShaderFloat64 = (baseFeatures.shaderFloat64 == VK_TRUE);
         // Same support == enabled contract as shaderInt64: CreateLogicalDevice
         // enables textureCompressionBC whenever the device reports it.
         m_Capabilities.supportsTextureCompressionBC = (baseFeatures.textureCompressionBC == VK_TRUE);

@@ -68,6 +68,15 @@ TEST(RendererProfile, ForcedCompatibilityTakesNoInterpolationFunctions)
     EXPECT_FALSE(RendererProfile::FromCapabilities(caps).UseInterpolationFunctions);
 }
 
+TEST(RendererProfile, ForcedCompatibilityTakesNoShaderFloat64)
+{
+    RenderingDeviceCapabilities caps = DesktopCapabilities();
+    caps.supportsShaderFloat64 = true;
+    ScopedForceCompat forced;
+    ASSERT_TRUE(ApplyForceCompatOverride(caps));
+    EXPECT_FALSE(caps.supportsShaderFloat64) << "WGSL has no 64-bit float type";
+}
+
 TEST(RendererProfile, ClipDistanceFollowsShaderClipDistance)
 {
     RenderingDeviceCapabilities caps = DesktopCapabilities();
