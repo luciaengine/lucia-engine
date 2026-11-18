@@ -160,6 +160,10 @@ struct GPUDrawStreamBuilder::LateShadowListPass
     size_t InstanceBytes = 0;
     size_t MeshBytes = 0;
     LateShadowListLayout Layout{};
+    // The per-(page, row) counts also go to the cursor readback at this element offset, so the
+    // next frame's stats reduce gives each page its passed-caster count. Invalid = no stats.
+    BufferHandle CursorReadback{};
+    uint32_t StatsCursorBase = 0;
     LateShadowListPushConstants Constants{};
     DescriptorSetHandle Set{};
 
@@ -222,9 +226,45 @@ struct GPUDrawStreamBuilder::LateShadowListPass
         context.Cmd->SetPushConstants(commands);
         context.Cmd->Dispatch((Constants.rowCount + kLateShadowListGroupSize - 1u) / kLateShadowListGroupSize,
                               Constants.pageCount, 1);
+        if (CursorReadback.IsValid())
+        {
+            context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+                static_cast<uint64_t>(PipelineStageMask::ComputeShader), static_cast<uint64_t>(PipelineStageMask::Transfer),
+                static_cast<uint64_t>(ResourceAccessMask::ShaderWrite), static_cast<uint64_t>(ResourceAccessMask::TransferRead)));
+            context.Cmd->CopyBuffer(Lists, CursorReadback,
+                                    static_cast<size_t>(Constants.pageCount) * Constants.rowCount * sizeof(uint32_t),
+                                    static_cast<size_t>(Layout.CountsBase) * sizeof(uint32_t),
+                                    static_cast<size_t>(StatsCursorBase) * sizeof(uint32_t));
+        }
         context.Cmd->Barrier(CreateStreamReadyBarrier());
     }
 };
+
+void GPUDrawStreamBuilder::BindLateShadowListStats(LateShadowListPass& pass, const LateShadowListRequest& request,
+                                                   uint32_t rowCount)
+{
+    // The range comes from the arena's unused cursor region, which the readback mirrors. A full
+    // arena leaves the pages without stats rows; their draws do not depend on them.
+    const uint32_t pageCount = static_cast<uint32_t>(request.CullingIndices.size());
+    const uint64_t cursors = static_cast<uint64_t>(pageCount) * rowCount;
+    if (!m_SharedCursorReadback.IsValid() || m_ArenaCursorCursor + cursors > m_CursorCapacity)
+        return;
+    pass.CursorReadback = m_SharedCursorReadback;
+    pass.StatsCursorBase = m_ArenaCursorCursor;
+    m_ArenaCursorCursor += static_cast<uint32_t>(cursors);
+    for (uint32_t page = 0; page < pageCount; ++page)
+    {
+        SliceStatsBinding binding{};
+        binding.viewId = request.ViewId;
+        binding.cascadeIndex = request.CullingIndices[page];
+        binding.phase = static_cast<uint8_t>(SlicePhase::A);
+        // No triangle row: the list kernel counts casters only.
+        binding.statsIndex = kStatsSliceCapacity;
+        binding.cursorBase = pass.StatsCursorBase + page * rowCount;
+        binding.batchCount = rowCount;
+        m_SliceStatsBindings.push_back(binding);
+    }
+}
 
 RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleLateShadowLists(
     RenderGraph::RGFrame& frame, const LateShadowListRequest& request, RenderGraph::RGBuffer instances,
@@ -314,6 +354,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleLateShadowLists(
         if (published)
             m_PublishedSliceKeys.Insert(MakeStreamKey(request.ViewId, cascade, 0u, 0u, SlicePhase::A));
     }
+
+    BindLateShadowListStats(*pass, request, rowCount);
 
     pass->Pipeline = pipeline;
     pass->SetDesc = &m_LateShadowListSetDesc;

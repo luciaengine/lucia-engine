@@ -1099,6 +1099,8 @@ class GPUDrawStreamBuilder
     PipelineHandle GetOrCreateLateShadowListPipeline();
     // Grows the late list buffer to hold `words` uints from this frame's cursor. An outgrown
     // buffer is retired, so this frame's earlier calls keep drawing from it.
+    // Claims cursor readback space for the pages of one late call and adds their stats bindings.
+    void BindLateShadowListStats(LateShadowListPass& pass, const LateShadowListRequest& request, uint32_t rowCount);
     bool EnsureLateShadowListBuffer(uint64_t words);
 
     IDevice*       m_Device   = nullptr;

@@ -1192,6 +1192,103 @@ TEST(RGGpuDriven, LateShadowListsGrowMidFrameAndKeepTheEarlierCallsBuffer)
 
 // A late page costs one 4 B word per snapshot instance plus its rows. A unified scatter slice
 // costs blocksPerSlice draw records of 20 B and their 4 B indirection words per instance.
+// Each late page gets a shadow-arc stats row whose passed-caster count is the number of casters the
+// page lists. One unified scatter before the late call creates the arena and its readback.
+TEST(RGGpuDriven, LateShadowListsReportEachPagesCastersInTheShadowArcStats)
+{
+    RG_REQUIRE_DEVICE(dev);
+    if (!dev->GetCapabilities().supportsBufferDeviceAddress)
+        GTEST_SKIP() << "late shadow lists need buffer device addresses";
+    GPUScene::SetCullingShaderLoader(&TestShaderLoader);
+    GPUDrawStreamBuilder::SetShaderLoader(&TestShaderLoader);
+    if (const char* missing = FirstUnloadablePkg({"Shaders/draw_stream_late_shadow_lists.shaderpkg"}))
+        GTEST_SKIP() << missing << " unavailable";
+
+    auto scene = std::make_unique<GPUScene>(dev.get());
+    ASSERT_TRUE(scene->Initialize(256u, 32u));
+    auto builder = std::make_unique<GPUDrawStreamBuilder>(dev.get());
+    ASSERT_TRUE(builder->Initialize());
+    if (!builder->GetOrCreateScatterPipeline().IsValid())
+        GTEST_SKIP() << "draw_command_scatter shaderpkg unavailable";
+
+    constexpr uint32_t kInstances = 4u;
+    constexpr uint32_t kMaterialDependent = 4u; // keeps (material, mesh) rows without a depth-class map
+    for (uint32_t index = 0; index < kInstances; ++index)
+    {
+        GPUMesh mesh{};
+        mesh.indexCount = 3u;
+        mesh.vertexCount = 3u;
+        mesh.lodCount = 1u;
+        mesh.boundingRadius = 1.0f;
+        mesh.lodIndexCount[0] = 3u;
+        GPUInstance instance{};
+        instance.meshIndex = scene->AddMesh(mesh);
+        instance.flags = kMaterialDependent;
+        instance.boundingRadius = 1.0f;
+        scene->AddInstance(instance);
+    }
+    scene->FlushGPUBuffers();
+
+    // Page 0 sees instances 0 and 1, page 1 sees instance 2. The unified scatter's slice, after
+    // the pages, sees nothing.
+    constexpr uint32_t kStride = 64u;
+    std::vector<uint32_t> bits(3u * kStride, 0u);
+    bits[0u] = bits[1u] = 1u;
+    bits[kStride + 2u] = 1u;
+    BufferDesc descriptor;
+    descriptor.size = bits.size() * sizeof(uint32_t);
+    descriptor.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    descriptor.memoryUsage = BufferMemoryUsage::Upload;
+    const BufferHandle visibilityBuffer = dev->CreateBuffer(descriptor);
+    ASSERT_TRUE(visibilityBuffer.IsValid());
+    dev->UpdateBuffer(visibilityBuffer, 0, descriptor.size, bits.data());
+
+    constexpr uint32_t kViewId = 1u;
+    constexpr std::array<uint8_t, 2> kPages{0xE3u, 0xE4u};
+    FramePools pools(dev.get());
+    RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    for (uint64_t frameIndex = 0; frameIndex < 2u; ++frameIndex)
+    {
+        builder->BeginArenaFrame();
+        frame.BeginFrame(frameIndex);
+        const RGBuffer visibility = frame.ImportExternalBuffer("Vis", visibilityBuffer);
+        const GPUScene::GPUSceneFrameRG sceneRG = scene->ImportFrameResources(frame);
+        GPUDrawStreamBuilder::SliceRegistration slice{};
+        slice.viewId = kViewId;
+        slice.cascadeIndex = 0u;
+        slice.table = GPUDrawStreamBuilder::SliceTable::Shadow;
+        slice.visibilityOffsetBytes = 2u * kStride * sizeof(uint32_t);
+        builder->RegisterSlice(slice);
+        const RGBuffer scatter = builder->ScheduleUnifiedScatter(frame, "Arena", 0, visibility, sceneRG.Instances,
+            sceneRG.ScatterHot, sceneRG.Meshes, scene->GetBatchRegistry(), {}, {}, {}, {}, kInstances,
+            static_cast<uint32_t>(scene->GetMeshes().size()));
+        ASSERT_TRUE(scatter.IsValid());
+        frame.MarkOutput(scatter);
+        GPUDrawStreamBuilder::LateShadowListRequest request{};
+        request.ViewId = kViewId;
+        request.CullingIndices = kPages;
+        request.Visibility = visibility;
+        request.VisibilityStride = kStride;
+        const RGBuffer lists = builder->ScheduleLateShadowLists(frame, request, sceneRG.Instances, sceneRG.Meshes,
+            scene->GetBatchRegistry(), {}, {}, {}, kInstances, static_cast<uint32_t>(scene->GetMeshes().size()));
+        ASSERT_TRUE(lists.IsValid());
+        frame.MarkOutput(lists);
+        frame.Execute();
+        dev->WaitForIdle();
+    }
+    // The reduce in this BeginArenaFrame publishes the last frame's counts.
+    builder->BeginArenaFrame();
+    std::array<int64_t, 2> passed{-1, -1};
+    for (const auto& stats : builder->GetShadowArcStats())
+        for (size_t page = 0; page < kPages.size(); ++page)
+            if (stats.viewId == kViewId && stats.cascadeIndex == kPages[page] && stats.phase == 0u)
+                passed[page] = stats.passedCasters;
+    EXPECT_EQ(passed[0], 2);
+    EXPECT_EQ(passed[1], 1);
+    builder->Shutdown();
+    dev->DestroyBuffer(visibilityBuffer);
+}
+
 TEST(RGGpuDriven, LateShadowListLayoutCostsOneWordPerInstanceAndPage)
 {
     constexpr uint32_t kPages = 24u;
