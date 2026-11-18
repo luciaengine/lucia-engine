@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "UI/EditorSearchBars.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
 #include "UI/Controls/Button.h"
@@ -50,6 +51,7 @@ inline PanelSearchBarBuilt BuildPanelSearchBar(
     SearchFieldWithFilter* searchBarPtr = searchBar.get();
     searchBar->SetFieldId(fieldId);
     searchBar->SetPlaceholder("Search");
+    EditorSearchBars::RegisterHintTarget(searchBarPtr);
     searchBar->SetValue("");
     searchBar->SetFilterOptions(filterOptions, 0);
     searchBar->SetOnFilterChanged(std::move(onFilterChanged));

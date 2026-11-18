@@ -8,6 +8,12 @@
 
 namespace GameEngine {
 
+namespace
+{
+// The fields whose empty hint follows ShowIconAndHint (EditorSearchBars::RegisterHintTarget).
+std::vector<UIElement::WeakRef<UIElement>> s_HintTargets;
+} // namespace
+
 bool EditorSearchBars::GetVisible()
 {
     // Load on first access if not yet loaded
@@ -89,12 +95,13 @@ void EditorSearchBars::SetShowIconAndHint(bool show)
     s_ShowIconAndHint = show;
     s_Loaded = true;
     SaveToPreferences();
-    PruneNulls();
-    for (const RegisteredBar& registered : s_Bars)
+    std::erase_if(s_HintTargets, [](const UIElement::WeakRef<UIElement>& target) { return !target.Get(); });
+    for (const UIElement::WeakRef<UIElement>& target : s_HintTargets)
     {
-        ApplyHint(registered.SearchBar);
-        // The hint rule matches a descendant of the bar, so the bar's subtree restyles.
-        registered.SearchBar->MarkDirtySubtree(UIElement::StyleDirty | UIElement::VisualDirty);
+        UIElement* field = target.Get();
+        ApplyHint(field);
+        // The hint rule matches a descendant of the field, so the field's subtree restyles.
+        field->MarkDirtySubtree(UIElement::StyleDirty | UIElement::VisualDirty);
     }
     for (UIElement* icon : s_RowIcons)
         ApplyRowIcon(icon);
@@ -148,7 +155,6 @@ void EditorSearchBars::RegisterHosted(UIElement* searchBar, UIElement* placement
         searchBar->RemoveClass("hidden");
     ApplyPlacement(placementHost);
     ApplyLook(searchBar);
-    ApplyHint(searchBar);
     RegisterFocusTarget(searchBar);
 
     auto it = std::find_if(s_Bars.begin(), s_Bars.end(),
@@ -197,6 +203,16 @@ void EditorSearchBars::RegisterRowIcon(UIElement* icon)
     ApplyRowIcon(icon);
     if (std::find(s_RowIcons.begin(), s_RowIcons.end(), icon) == s_RowIcons.end())
         s_RowIcons.push_back(icon);
+}
+
+void EditorSearchBars::RegisterHintTarget(UIElement* searchField)
+{
+    if (!searchField)
+        return;
+    if (!s_Loaded)
+        LoadFromPreferences();
+    ApplyHint(searchField);
+    s_HintTargets.push_back(UIElement::MakeWeakRef(searchField));
 }
 
 void EditorSearchBars::UnregisterRowIcon(UIElement* icon)

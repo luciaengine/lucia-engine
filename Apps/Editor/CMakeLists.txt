@@ -276,7 +276,6 @@ set(EDITOR_SOURCES
 	Source/Thumbnails/ModelThumbnail/ModelThumbnailRenderLanes.cpp
 	Source/Thumbnails/TextureThumbnailHandler.cpp
 	Source/Thumbnails/VideoThumbnailHandler.cpp
-	Source/UI/EditorSearchBars.cpp
 	Source/UI/UniversalSearchProvider.cpp
 	Source/Search/UniversalSearchController.cpp
 	Source/Packages/PackageManagerController.cpp
@@ -1172,6 +1171,7 @@ set(EDITOR_SDK_SOURCES
 	Source/UI/Controls/EntityLink.cpp
 	Source/UI/EntityField.cpp
 	Source/Editor/Entities/EntityDisplayName.cpp
+	Source/UI/EditorSearchBars.cpp
 )
 
 # Vendored miniz, behind Editor/ZipArchiveReader.h: one static library, compiled quietly like

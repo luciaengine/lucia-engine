@@ -185,3 +185,40 @@ TEST(SearchBarSettings, TheFilledRowShowsForTheLuciaLookOnly)
 
     EditorSearchBars::SetLook(initial);
 }
+
+// A panel search bar that does not register for visibility or placement (the Log panel's) still hides
+// its hint while the row is off: the builder registers every bar for the hint.
+TEST(SearchBarSettings, TheHintRowReachesAnUnregisteredPanelSearchBar)
+{
+    const auto toggle = SearchBarToggle("Show Icon and Search Hint");
+    ASSERT_TRUE(toggle.Set && toggle.Get);
+    const bool initial = toggle.Get();
+    const PanelSearchBarBuilt bar = BuildPanelSearchBar("search-bar-hint-unregistered-field");
+
+    toggle.Set(false);
+    EXPECT_TRUE(bar.RootPtr->HasClass("search-bar-no-hint"));
+
+    toggle.Set(true);
+    EXPECT_FALSE(bar.RootPtr->HasClass("search-bar-no-hint"));
+
+    toggle.Set(initial);
+}
+
+// The registry holds hint targets weakly: a bar destroyed without an unregister is skipped.
+TEST(SearchBarSettings, TheHintRowSkipsADestroyedSearchBar)
+{
+    const auto toggle = SearchBarToggle("Show Icon and Search Hint");
+    ASSERT_TRUE(toggle.Set && toggle.Get);
+    const bool initial = toggle.Get();
+    {
+        const PanelSearchBarBuilt destroyed = BuildPanelSearchBar("search-bar-hint-destroyed-field");
+    }
+    const PanelSearchBarBuilt live = BuildPanelSearchBar("search-bar-hint-live-field");
+
+    toggle.Set(true);
+    EXPECT_FALSE(live.RootPtr->HasClass("search-bar-no-hint"));
+    toggle.Set(false);
+    EXPECT_TRUE(live.RootPtr->HasClass("search-bar-no-hint"));
+
+    toggle.Set(initial);
+}

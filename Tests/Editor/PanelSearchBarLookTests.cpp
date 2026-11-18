@@ -135,6 +135,10 @@ TEST(PanelSearchBarLook, ANoHintBarHidesTheSearchHint)
     }
     UIElement* hint = FindByClass(look.Bar, "field-placeholder");
     ASSERT_NE(hint, nullptr) << "the panel search has no hint";
+    // The builder sets the class while the hint setting is off (the default); start without it.
+    look.Bar->RemoveClass("search-bar-no-hint");
+    look.Bar->MarkDirtySubtree(UIElement::StyleDirty | UIElement::VisualDirty);
+    look.Settle();
     ASSERT_NE(hint->GetResolvedStyle().Layout.DisplayMode, GameEngine::DisplayMode::None)
         << "the hint is hidden without the class; this test is vacuous";
 

@@ -1,5 +1,6 @@
 #include "Panels/PackageManagerPanel.h"
 
+#include "UI/EditorSearchBars.h"
 #include "Editor/Settings/AssetPreviewSettings.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
@@ -114,6 +115,7 @@ void PackageManagerPanel::BuildLayout()
     search->AddClass("pkg-search");
     search->SetFieldId("PackageSearchField");
     search->SetPlaceholder("Search packages");
+    EditorSearchBars::RegisterHintTarget(search.get());
     search->SetOnQueryChanging([this](const std::string& query) { SetSearchQuery(query); });
     search->SetOnQueryChanged([this](const std::string& query) { SetSearchQuery(query); });
     root->AddChild(std::move(search));
