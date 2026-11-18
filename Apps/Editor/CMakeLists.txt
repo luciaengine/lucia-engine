@@ -65,7 +65,7 @@ set(EDITOR_SOURCES
     Source/Editor/Settings/SearchBarSettingsPage.cpp
     Source/Editor/Settings/StartupSettingsPage.cpp
     Source/Editor/Settings/AssetPreviewSettings.cpp
-    Source/Editor/Settings/ToggleAppearanceSettings.cpp
+    Source/Editor/Settings/ControlAppearanceSettings.cpp
     Source/Editor/Settings/AudioEnabledSettings.cpp
     Source/Editor/Settings/LodProjectSettingsWriter.cpp
     Source/Editor/Settings/GameUIScaleSettingsPage.cpp
