@@ -278,6 +278,7 @@ void MonitorsPanel::BuildUI()
     pauseBtn->AddClass("small");
     pauseBtn->AddClass("secondary");
     pauseBtn->AddClass("monitors-btn-pause");
+    pauseBtn->AddClass("pause-toggle-button");
     pauseBtn->SetText("Pause");
     pauseBtn->SetTooltip("Pause monitor updates");
     m_PauseGlyph = AddButtonGlyph(*pauseBtn, kPauseGlyphClass);

@@ -21,7 +21,6 @@
 
 .monitors-btn-pause {
     flex: 0 0 auto;
-    width: 80px;
     color: var(--ui_color_text_primary);
 }
 
