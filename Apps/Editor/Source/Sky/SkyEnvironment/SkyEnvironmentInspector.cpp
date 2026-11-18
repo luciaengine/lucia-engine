@@ -646,6 +646,7 @@ bool ActivePipelineHasSkyRenderNode()
     return true;
 }
 
+
 } // namespace
 
 void RegisterSkyEnvironmentInspector()
@@ -1002,7 +1003,7 @@ void RegisterSkyEnvironmentInspector()
                 }
 
                 Components::SkyEnvironment updated = *comp;
-                updated.TimeOfDayHours = wrappedHours;
+                Editor::SetSkyHourAndPlaceSun(updated, wrappedHours);
 
                 if (todEditPtr->has_value() && todEditPtr->value())
                 {
@@ -1016,7 +1017,7 @@ void RegisterSkyEnvironmentInspector()
                                                         if (!c)
                                                             continue;
                                                         Components::SkyEnvironment u = *c;
-                                                        u.TimeOfDayHours = captured.TimeOfDayHours;
+                                                        Editor::SetSkyHourAndPlaceSun(u, captured.TimeOfDayHours);
                                                         w->AddComponentImmediate(ex, u);
                                                     }
                                                 });
@@ -1042,7 +1043,7 @@ void RegisterSkyEnvironmentInspector()
                         if (!c)
                             continue;
                         Components::SkyEnvironment u = *c;
-                        u.TimeOfDayHours = wrappedHours;
+                        Editor::SetSkyHourAndPlaceSun(u, wrappedHours);
                         Editor::PreviewComponentUpdate(w, ex, n, u);
                     }
                 }
@@ -1068,7 +1069,7 @@ void RegisterSkyEnvironmentInspector()
                 float wrappedHours = wrapTimeHours(rawHours);
                 todSnapSliderRaw->SetValueWithoutNotify(wrappedHours);
                 Components::SkyEnvironment updated = *comp;
-                updated.TimeOfDayHours = wrappedHours;
+                Editor::SetSkyHourAndPlaceSun(updated, wrappedHours);
 
                 if (todEditPtr->has_value() && todEditPtr->value())
                 {
@@ -1079,7 +1080,7 @@ void RegisterSkyEnvironmentInspector()
                         if (!c)
                             continue;
                         Components::SkyEnvironment u = *c;
-                        u.TimeOfDayHours = wrappedHours;
+                        Editor::SetSkyHourAndPlaceSun(u, wrappedHours);
                         w->AddComponentImmediate(ex, u);
                     }
                     todEditPtr->value().Commit();
@@ -1107,7 +1108,7 @@ void RegisterSkyEnvironmentInspector()
                         if (!c)
                             continue;
                         Components::SkyEnvironment u = *c;
-                        u.TimeOfDayHours = wrappedHours;
+                        Editor::SetSkyHourAndPlaceSun(u, wrappedHours);
                         Editor::CommitComponentUpdate(w, ex, n, u);
                     }
                 }

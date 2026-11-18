@@ -27,4 +27,9 @@ void CommitSkyEnvironmentEdit(ECS::World* world, ECS::EntityHandle primary, cons
 void SwitchSkyMode(ECS::World* world, ECS::EntityHandle primary, const std::vector<ECS::EntityHandle>& extras,
                    EditorChangeNotifications* notifications, UndoRedoService* undo, Components::SkyMode mode);
 
+// Set the sky's hour and let it place the sun: the Time of Day row moves the sun even when the sun
+// was set by hand (Auto Sun/Moon off). The hand-set direction stays in SunDirOverride, so turning
+// Auto Sun/Moon off again brings it back.
+void SetSkyHourAndPlaceSun(Components::SkyEnvironment& sky, float hours);
+
 } // namespace GameEngine::Editor
