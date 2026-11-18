@@ -16,7 +16,7 @@ The scenes are in `Tests/Projects/PerformanceBenchmark/Assets/Scenes/`. `Tools/B
 | `Forest` | Open world, role-playing | 720 wind-animated procedural trees from 12 seeds, a sun, virtual shadow maps | A virtual shadow pass ran |
 | `OpenWorld` | Open world, flight | A 4 km generated terrain, an ocean, 1500 rocks under an HLOD volume, 12 km far plane | The ocean surface pass ran |
 | `Crowd` | Third-person, strategy | 400 skinned foxes that play 3 clips, each with bone LOD | |
-| `City` | Open world, strategy | 256 buildings from 32 unique procedural meshes, cooked to cluster LOD | |
+| `City` | Open world, strategy | 256 buildings from 32 unique procedural meshes, cooked to cluster LOD | Requires a positive `ClusterLOD.SplitInstances` sample in at least one profiled pose. |
 | `Interior` | First-person, cutscene close-up | A closed hall, 48 point lights (4 with shadows), a DDGI volume, 2 realtime reflection probes | A DDGI pass ran |
 | `Sprites2D` | 2D, UI-heavy | 5000 alpha-blended unlit quads under an orthographic camera, 3 UI panels of 60 rows | The UI overlay and sorted transparent passes ran |
 

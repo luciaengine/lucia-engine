@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import benchmark  # noqa: E402
@@ -40,6 +41,28 @@ class ReduceTests(unittest.TestCase):
         self.assertEqual(pose["gpuMs"]["median"], 3.0)
         self.assertEqual([p["name"] for p in pose["passes"]], ["DDGI.Trace", "Shadow"])
         self.assertEqual(pose["missingPasses"], ["Ocean"])
+
+    def test_city_requires_at_least_one_profiled_pose_with_cluster_splits(self):
+        monitor = "ClusterLOD.SplitInstances"
+        poses = [raw_pose([10.0], [[["World", 2.0, True]]]) for _ in range(2)]
+        settings = {"scene": "City.scene", "poses": [], "requiredActiveMonitors": [monitor]}
+        manifest = {"resolution": [1920, 1080], "run": {}}
+
+        def run_player(command, stdout, **_):
+            stdout.write("VulkanDevice: Created window swapchain 1920x1080, presentMode=IMMEDIATE\n")
+            Path(command[-1]).write_text(json.dumps({"poses": poses}))
+            return SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as folder, patch.object(benchmark.subprocess, "run", run_player):
+            work = Path(folder)
+            poses[1]["monitorPeaks"] = {monitor: 0}
+            inactive = benchmark.run_scene("City", settings, manifest, work, work / "Player", work, 10, False)
+            self.assertFalse(inactive["valid"])
+            self.assertIn(monitor, inactive["problems"][0])
+            poses[1]["monitorPeaks"] = {monitor: 12}
+            active = benchmark.run_scene("City", settings, manifest, work, work / "Player", work, 10, False)
+            self.assertTrue(active["valid"])
+            self.assertEqual(active["poses"][1]["monitorPeaks"], {monitor: 12})
 
 
 class LogTests(unittest.TestCase):

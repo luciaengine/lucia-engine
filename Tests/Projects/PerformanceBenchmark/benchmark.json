@@ -143,6 +143,7 @@
       "environment": {
         "GE_CLUSTER_LOD": "1"
       },
+      "requiredActiveMonitors": ["ClusterLOD.SplitInstances"],
       "requiredPasses": [],
       "poses": [
         {

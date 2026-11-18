@@ -37,6 +37,8 @@ struct PlayerBenchmarkPlan
     uint32_t TimingFrames = 600;
     uint32_t ProfiledFrames = 120;
     std::vector<PlayerBenchmarkPose> Poses;
+    /// Named debug monitors sampled for their peak positive value in each profiled pose.
+    std::vector<std::string> ActiveMonitors;
 };
 
 /// Reads a plan from its JSON document. Nullopt, with the reason and its fix in `error`, when a
