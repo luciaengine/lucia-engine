@@ -113,8 +113,8 @@
 }
 
 .log-filter-debug {
-	--ui_button_secondary_text: var(--ui_color_text);
-	--ui_button_toggle_on_border: var(--ui_color_text_dim);
+	--ui_button_secondary_text: var(--ui_color_log_debug);
+	--ui_button_toggle_on_border: var(--ui_color_log_debug);
 }
 
 /* After the severity rules: at equal specificity the later rule sets the label color. A hidden
@@ -222,7 +222,7 @@
 .log-row-glyph-debug {
 	background-image: url("editor:Icons/dot.svg");
 	background-size: 6px 6px;
-	background-image-tint: var(--ui_color_text_disabled);
+	background-image-tint: var(--ui_color_log_debug);
 }
 
 .log-row-time {
