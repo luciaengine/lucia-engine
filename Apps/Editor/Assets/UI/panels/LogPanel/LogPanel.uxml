@@ -55,7 +55,7 @@
       <UIElement id="LogDetailBody" class="log-detail-body">
         <TextArea id="LogDetailMessage" class="log-detail-message" />
         <Label id="LogDetailTraceTitle" class="log-detail-section-title hidden" text="Stack trace" />
-        <UIElement id="LogDetailFrames" class="log-detail-frames" />
+        <TextArea id="LogDetailTrace" class="log-detail-trace hidden" />
       </UIElement>
     </Pane>
   </SplitView>

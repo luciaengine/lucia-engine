@@ -958,57 +958,6 @@ checkbox:checked:hover .checkbox-box,
 	background-color: var(--ui_color_bg_hover);
 }
 
-/* Backtrace frame row (used by LogPanel's detail pane).
-   Splitting [idx] module!symbol and file:line into separate spans keeps deep
-   absolute paths from producing a Label wider than the panel and stalling layout. */
-
-.stack-trace-frame-row {
-	display: flex;
-	flex-direction: column;
-	padding: 2px 0;
-	flex: 0 0 auto;
-	min-width: 0;
-}
-
-.stack-trace-frame-row--clickable {
-	cursor: pointer;
-}
-
-.stack-trace-frame-row--clickable:hover {
-	background-color: var(--ui_color_bg_hover_alt);
-}
-
-.stack-trace-frame-header {
-	display: flex;
-	flex-direction: row;
-	align-items: baseline;
-	flex-wrap: wrap;
-	flex: 0 0 auto;
-	min-width: 0;
-}
-
-.stack-trace-frame-source {
-	display: flex;
-	flex-direction: row;
-	padding-left: 24px;
-	flex: 0 0 auto;
-	min-width: 0;
-}
-
-.stack-trace-frame-span {
-	font-family: var(--ui_font_script);
-	font-size: 14px;
-	padding: 0;
-	white-space: pre;
-}
-
-.stack-trace-frame-span.wrap {
-	flex: 1 1 auto;
-	min-width: 0;
-	white-space: normal;
-	word-break: break-all;
-}
-
 /* ======================================
    Script Editor Panel Styles
    ====================================== */

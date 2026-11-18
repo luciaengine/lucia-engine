@@ -83,10 +83,12 @@ public:
 
     const char* GetName() const override { return "Mark-up"; }
     void OnPointerEvent(const SceneTools::ScenePointerEvent& event) override;
+    void OnPointerLeave() override { m_Ghost.reset(); }
     void OnKeyEvent(const SceneTools::SceneKeyEvent& event) override;
-    void OnDeactivated() override { CancelRegion(); }
+    void OnDeactivated() override;
     void GatherGizmos(SceneTools::GizmoCollector& collector) override;
-    // The outline being drawn: the lasso's samples, or the clicked knots and the pointer.
+    // The outline being drawn: the lasso's samples, or the clicked knots and the pointer. Before a
+    // click, a faint ghost of what the click places: the box or sphere, or the region's first knot.
     void Render(SceneTools::GizmoRenderContext& context) override;
 
 private:
@@ -105,6 +107,7 @@ private:
     std::vector<Mathematics::Vector3> m_Stroke; // the lasso's samples while the button is down
     std::vector<Mathematics::Vector3> m_Knots;  // knots placed by clicks
     Mathematics::Vector3 m_Pointer{};           // the pointer on the ground, for the preview
+    std::optional<Mathematics::Vector3> m_Ghost; // where a click places, while the pointer is over the world
     bool m_Pressed = false;
     bool m_Dragged = false;
 };

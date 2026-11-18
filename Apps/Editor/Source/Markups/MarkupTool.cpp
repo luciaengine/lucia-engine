@@ -53,6 +53,8 @@ constexpr float kCloseClickPixels = 12.0f;
 constexpr const char* kNewRegionName = "Region";
 constexpr const char* kCrossingNotice = "The outline crosses itself; draw it again without crossing";
 const Color kPreviewColor(kMarkupAccentRgb[0], kMarkupAccentRgb[1], kMarkupAccentRgb[2], 1.0f);
+// The ghost of the mark-up a click places: the preview color, faint.
+const Color kGhostColor(kMarkupAccentRgb[0], kMarkupAccentRgb[1], kMarkupAccentRgb[2], 0.45f);
 // The preview rides this far above the ground it was drawn on, so the terrain between its samples
 // does not hide it.
 constexpr float kPreviewLift = 0.3f;
@@ -76,6 +78,19 @@ MarkupRequestContext UserContext(MarkupEditorBridge& bridge, ECS::World& world, 
 }
 
 Vector2 GroundOf(const Vector3& point) { return Vector2(point.x, point.z); }
+
+// The box or sphere a click on `ground` places, standing on the ground.
+struct MarkupPlacement
+{
+    Vector3 Center;
+    Vector3 HalfExtents;
+};
+
+MarkupPlacement PlacementOn(const Vector3& ground, MarkupToolShape shape)
+{
+    const float halfHeight = shape == MarkupToolShape::Sphere ? kNewHalfWidth : kNewHalfHeight;
+    return {Vector3(ground.x, ground.y + halfHeight, ground.z), Vector3(kNewHalfWidth, halfHeight, kNewHalfWidth)};
+}
 
 } // namespace
 
@@ -113,12 +128,11 @@ void SetMarkupToolShape(MarkupToolShape shape)
 nlohmann::json PlaceMarkup(MarkupEditorBridge& bridge, ECS::World& world, UndoRedoService* undo,
                            EditorChangeNotifications* notifications, const Vector3& ground, MarkupToolShape shape)
 {
-    const bool sphere = shape == MarkupToolShape::Sphere;
-    const float halfHeight = sphere ? kNewHalfWidth : kNewHalfHeight;
+    const MarkupPlacement placement = PlacementOn(ground, shape);
     const nlohmann::json params{{"title", "Mark-up"},
-                                {"shape", sphere ? "sphere" : "box"},
-                                {"center", {ground.x, ground.y + halfHeight, ground.z}},
-                                {"halfExtents", {kNewHalfWidth, halfHeight, kNewHalfWidth}},
+                                {"shape", shape == MarkupToolShape::Sphere ? "sphere" : "box"},
+                                {"center", {placement.Center.x, placement.Center.y, placement.Center.z}},
+                                {"halfExtents", {placement.HalfExtents.x, placement.HalfExtents.y, placement.HalfExtents.z}},
                                 {"status", "Requested"},
                                 {"author", "User"}};
     return CreateMarkup(UserContext(bridge, world, undo, notifications), params);
@@ -203,11 +217,15 @@ void MarkupTool::OnPointerEvent(const SceneTools::ScenePointerEvent& event)
     const Mathematics::Ray3D ray{event.ray.origin, event.ray.direction};
     if (GetMarkupToolShape() == MarkupToolShape::Region)
     {
-        if (const std::optional<Vector3> ground = ResolveMarkupRegionGround(ray, *world))
-            DrawRegion(event, *ground);
+        m_Ghost = ResolveMarkupRegionGround(ray, *world);
+        if (m_Ghost)
+            DrawRegion(event, *m_Ghost);
         return;
     }
     const SceneViewDropPoint point = ResolveSceneViewDropPoint(ray, *world);
+    m_Ghost.reset();
+    if (!point.OnPendingMesh)
+        m_Ghost = point.Position;
     if (event.phase != SceneTools::PointerPhase::Down || event.button != SceneTools::PointerButton::Left ||
         point.OnPendingMesh)
         return;
@@ -321,6 +339,12 @@ void MarkupTool::CancelRegion()
     m_Dragged = false;
 }
 
+void MarkupTool::OnDeactivated()
+{
+    CancelRegion();
+    m_Ghost.reset();
+}
+
 void MarkupTool::OnKeyEvent(const SceneTools::SceneKeyEvent& event)
 {
     if (!event.pressed || GetMarkupToolShape() != MarkupToolShape::Region)
@@ -344,12 +368,31 @@ void MarkupTool::OnKeyEvent(const SceneTools::SceneKeyEvent& event)
 
 void MarkupTool::GatherGizmos(SceneTools::GizmoCollector& collector)
 {
-    if (!m_Stroke.empty() || !m_Knots.empty())
+    if (!m_Stroke.empty() || !m_Knots.empty() || m_Ghost)
         collector.AddGizmo(this);
 }
 
 void MarkupTool::Render(SceneTools::GizmoRenderContext& context)
 {
+    const MarkupToolShape shape = GetMarkupToolShape();
+    if (shape != MarkupToolShape::Region)
+    {
+        if (!m_Ghost)
+            return;
+        const MarkupPlacement placement = PlacementOn(*m_Ghost, shape);
+        if (shape == MarkupToolShape::Sphere)
+            context.DrawWireSphere(placement.Center, placement.HalfExtents.x, kGhostColor, 1.0f);
+        else
+            context.DrawWireBox(placement.Center, placement.HalfExtents, kGhostColor, 1.0f);
+        return;
+    }
+    if (m_Stroke.empty() && m_Knots.empty())
+    {
+        if (m_Ghost)
+            context.DrawWireCircle(*m_Ghost + Vector3(0.0f, kPreviewLift, 0.0f), Vector3(0.0f, 1.0f, 0.0f), 0.75f,
+                                   kGhostColor, 1.0f);
+        return;
+    }
     // The lasso while it is painted, or the clicked knots with the pointer as the next one; both
     // close back to their first point, as the region will.
     std::vector<Vector3> outline = m_Stroke.empty() ? m_Knots : m_Stroke;
