@@ -2188,6 +2188,7 @@
       "perFrameCopies": true
     },
     "BloomA": {
+      "transient": true,
       "preExposed": true,
       "extent": {
         "basis": "output",
@@ -2248,6 +2249,7 @@
       ]
     },
     "BloomQuarter": {
+      "transient": true,
       "preExposed": true,
       "extent": {
         "basis": "output",
@@ -2268,6 +2270,7 @@
       ]
     },
     "BloomEighth": {
+      "transient": true,
       "preExposed": true,
       "extent": {
         "basis": "output",
@@ -2288,6 +2291,7 @@
       ]
     },
     "BloomSixteenth": {
+      "transient": true,
       "preExposed": true,
       "extent": {
         "basis": "output",
@@ -2300,6 +2304,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomThirtySecond": {
+      "transient": true,
       "preExposed": true,
       "extent": {
         "basis": "output",
@@ -2312,6 +2317,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomSixtyFourth": {
+      "transient": true,
       "preExposed": true,
       "extent": {
         "basis": "output",
@@ -2324,6 +2330,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomOneTwentyEighth": {
+      "transient": true,
       "preExposed": true,
       "extent": {
         "basis": "output",
@@ -2336,6 +2343,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomTwoFiftySixth": {
+      "transient": true,
       "preExposed": true,
       "extent": {
         "basis": "output",
@@ -2348,6 +2356,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomLensDirtLight": {
+      "transient": true,
       "preExposed": true,
       "extent": {
         "basis": "output",
@@ -2360,6 +2369,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomNormalized": {
+      "transient": true,
       "preExposed": true,
       "extent": { "basis": "output", "scale": [0.5, 0.5] },
       "format": "R16G16B16A16_FLOAT",
