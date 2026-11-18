@@ -41,6 +41,7 @@
 #include "Panels/SettingsPanel.h"
 #include "EditorContextMenu/UIContextMenu.h"
 #include "Platform/ContextMenu.h"
+#include "Types/StringId.h"
 #include "Types/StringUtils.h"
 #include "UndoRedo/UndoRedoService.h"
 
@@ -52,6 +53,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -66,6 +68,10 @@ namespace {
 // Cached host window for native context menus. Set once per inspector build.
 static Platform::Window* s_HostWindow = nullptr;
 static Editor::UndoRedoService* s_UndoService = nullptr;
+
+// The document of one built inspector tree. Every handler of the tree holds this pointer, not a
+// copy, so an edit sees the edits before it and building a handler copies nothing.
+using SharedPipelineDocument = std::shared_ptr<nlohmann::json>;
 
 // Drag/drop payload: a string reference to a render graph resource (e.g. "ClusterParams")
 // or other ref-style strings used in pipeline authoring (e.g. "View.Depth").
@@ -442,15 +448,17 @@ static void ClearChildren(UIElement* root)
 
 static void BuildRenderPipelineEditorUI(UIElement* root,
                                         RenderPipelineAsset* pipe,
-                                        Editor::UndoRedoService* undo);
+                                        Editor::UndoRedoService* undo,
+                                        const SharedPipelineDocument& sharedDoc);
 
 static void RequestRebuild(UIElement* root,
                            RenderPipelineAsset* pipe,
-                           Editor::UndoRedoService* undo = s_UndoService)
+                           Editor::UndoRedoService* undo,
+                           const SharedPipelineDocument& sharedDoc)
 {
     if (!root || !pipe)
         return;
-    auto action = [root, pipe, undo]()
+    auto action = [root, pipe, undo, sharedDoc]()
     {
         ScrollView* scrollAncestor = nullptr;
         for (UIElement* p = root->GetParent(); p && !scrollAncestor; p = p->GetParent())
@@ -458,7 +466,7 @@ static void RequestRebuild(UIElement* root,
         const float savedScrollY = scrollAncestor ? scrollAncestor->GetScrollY() : 0.0f;
 
         ClearChildren(root);
-        BuildRenderPipelineEditorUI(root, pipe, undo);
+        BuildRenderPipelineEditorUI(root, pipe, undo, sharedDoc);
 
         if (scrollAncestor)
             scrollAncestor->SetScrollY(savedScrollY);
@@ -492,16 +500,6 @@ static void SaveJsonToDisk(RenderPipelineAsset* pipe, const nlohmann::json& j)
         if (auto* vcs = Editor::EditorVcsProviderRegistry::Get().ActiveIntegration())
             vcs->RefreshStatus();
     }
-}
-
-static void SaveReloadRebuild(UIElement* root, RenderPipelineAsset* pipe, const nlohmann::json& j)
-{
-    SaveJsonToDisk(pipe, j);
-    if (pipe)
-    {
-        (void)pipe->Reload();
-    }
-    RequestRebuild(root, pipe, s_UndoService);
 }
 
 static Editor::UndoRedoService::SnapshotTarget MakeRenderPipelineSnapshotTarget(RenderPipelineAsset* pipe,
@@ -554,27 +552,34 @@ static Editor::UndoRedoService::SnapshotTarget MakeRenderPipelineSnapshotTarget(
     return target;
 }
 
+// Saves the document to the pipeline file and reloads the asset, as one undo step when an undo
+// service is given.
+static void SaveJsonUndoable(RenderPipelineAsset* pipe,
+                             const nlohmann::json& document,
+                             Editor::UndoRedoService* undo,
+                             const std::string& label)
+{
+    if (!pipe)
+        return;
+    Editor::UndoRedoService::InteractiveEdit edit;
+    if (undo)
+        edit = undo->BeginInteractiveEdit(std::string("Render Pipeline ") + label,
+                                          MakeRenderPipelineSnapshotTarget(pipe, label));
+    SaveJsonToDisk(pipe, document);
+    (void)pipe->Reload();
+    if (edit)
+        edit.Commit();
+}
+
+// Saves an edit that can change any part of the tree, then rebuilds the whole tree.
 static void SaveReloadRebuildUndoable(UIElement* root,
                                       RenderPipelineAsset* pipe,
-                                      const nlohmann::json& j,
+                                      const SharedPipelineDocument& sharedDoc,
                                       Editor::UndoRedoService* undo,
                                       const std::string& label)
 {
-    if (undo && pipe)
-    {
-        Editor::UndoRedoService::InteractiveEdit edit =
-            undo->BeginInteractiveEdit(std::string("Render Pipeline ") + label,
-                                       MakeRenderPipelineSnapshotTarget(pipe, label));
-        if (edit)
-        {
-            SaveJsonToDisk(pipe, j);
-            (void)pipe->Reload();
-            edit.Commit();
-            RequestRebuild(root, pipe, undo);
-            return;
-        }
-    }
-    SaveReloadRebuild(root, pipe, j);
+    SaveJsonUndoable(pipe, *sharedDoc, undo, label);
+    RequestRebuild(root, pipe, undo, sharedDoc);
 }
 
 static Label* AddRowLabel(UIElement* row, const std::string& text)
@@ -809,6 +814,86 @@ static std::string MakeUniqueKeyForObject(const nlohmann::json& obj, const std::
     return k + "_X";
 }
 
+// Building the tree reads the document and never adds a key to it, so an edit saves only what it changed.
+static const nlohmann::json& EmptyJsonObject()
+{
+    static const nlohmann::json kEmpty = nlohmann::json::object();
+    return kEmpty;
+}
+
+// The object at `key` of `object`, or an empty object when it is absent.
+static const nlohmann::json& ObjectAt(const nlohmann::json& object, const char* key)
+{
+    if (!object.is_object())
+        return EmptyJsonObject();
+    const auto it = object.find(key);
+    return it != object.end() && it->is_object() ? *it : EmptyJsonObject();
+}
+
+// Pass `passIndex` of the document, or an empty object when it is absent.
+static const nlohmann::json& PassAt(const nlohmann::json& doc, size_t passIndex)
+{
+    const auto it = doc.find("passes");
+    if (it == doc.end() || !it->is_array() || passIndex >= it->size() || !(*it)[passIndex].is_object())
+        return EmptyJsonObject();
+    return (*it)[passIndex];
+}
+
+// What the fields of a pass need to build and to save an edit. One context serves every pass of a tree.
+struct PassFieldsContext
+{
+    UIElement* Root = nullptr;
+    RenderPipelineAsset* Pipe = nullptr;
+    Editor::UndoRedoService* Undo = nullptr;
+    SharedPipelineDocument Doc;
+    std::vector<std::string> KnownPassTypes;
+    std::vector<std::string> RgUsages;
+};
+using SharedPassFieldsContext = std::shared_ptr<const PassFieldsContext>;
+
+static void BuildPassFields(const SharedPassFieldsContext& fields, size_t passIndex, UIElement& passSection);
+
+static std::string PassFoldoutId(size_t passIndex)
+{
+    return "rp-pass-" + std::to_string(passIndex) + "-foldout";
+}
+
+static std::string PassFoldoutTitle(const nlohmann::json& pass, size_t passIndex)
+{
+    const std::string passId = pass.value("id", "<missing>");
+    const std::string passType = pass.value("type", "");
+    return "Pass " + std::to_string(passIndex) + ": " + passId + (passType.empty() ? "" : " (" + passType + ")");
+}
+
+// Builds the fields of pass `passIndex` again from the document. The rest of the tree stays.
+static void RequestPassRebuild(const SharedPassFieldsContext& fields, size_t passIndex)
+{
+    auto action = [fields, passIndex]()
+    {
+        auto* foldout = dynamic_cast<Foldout*>(fields->Root->FindById(HashStringId(PassFoldoutId(passIndex))));
+        const nlohmann::json& pass = PassAt(*fields->Doc, passIndex);
+        if (!foldout || pass.empty())
+            return;
+        if (UIElement* content = foldout->GetContentContainer())
+            content->RemoveAllChildren();
+        foldout->SetTitle(PassFoldoutTitle(pass, passIndex));
+        BuildPassFields(fields, passIndex, *foldout);
+        NormalizeRenderPipelineInspectorRows(foldout);
+        InspectorDrag::AutoSetupDragForInspector(foldout);
+    };
+    if (UIElement::IsInEventDispatch())
+        fields->Root->PostAction(std::move(action));
+    else
+        action();
+}
+
+// Saves an edit of pass `passIndex` as one undo step, then rebuilds only that pass.
+static void SavePassEditUndoable(const SharedPassFieldsContext& fields, size_t passIndex, const std::string& label)
+{
+    SaveJsonUndoable(fields->Pipe, *fields->Doc, fields->Undo, label);
+    RequestPassRebuild(fields, passIndex);
+}
+
 static void EnsureObjectPath(nlohmann::json& doc, size_t passIndex, const char* field)
 {
     if (!doc.contains("passes") || !doc["passes"].is_array())
@@ -821,36 +906,32 @@ static void EnsureObjectPath(nlohmann::json& doc, size_t passIndex, const char* 
 }
 
 static void BuildStringMapEditor(UIElement* uiRoot,
-                                 UIElement* rebuildRoot,
+                                 const SharedPassFieldsContext& fields,
                                  const std::string& title,
-                                 RenderPipelineAsset* pipe,
-                                 nlohmann::json doc,
                                  size_t passIndex,
                                  const char* field,
                                  const std::string& idPrefix,
                                  bool allowDropRefs)
 {
-    if (!uiRoot || !rebuildRoot || !pipe)
+    const nlohmann::json& doc = *fields->Doc;
+    if (!uiRoot)
         return;
     AddTextBlock(uiRoot, title);
 
-    EnsureObjectPath(doc, passIndex, field);
-
-    const auto& obj = (doc.contains("passes") && doc["passes"].is_array() && passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
-                          ? doc["passes"][passIndex][field]
-                          : nlohmann::json::object();
+    const nlohmann::json& entries = ObjectAt(PassAt(doc, passIndex), field);
 
     size_t rowIdx = 0;
-    if (obj.is_object())
+    if (entries.is_object())
     {
-        for (auto it = obj.begin(); it != obj.end(); ++it, ++rowIdx)
+        for (auto it = entries.begin(); it != entries.end(); ++it, ++rowIdx)
         {
             const std::string key = it.key();
             const std::string value = it.value().is_string() ? it.value().get<std::string>() : std::string();
 
             AddInspectorTextRow(uiRoot, "Key", key, idPrefix + "-key-" + std::to_string(rowIdx),
-                [rebuildRoot, pipe, doc, passIndex, field, oldKey = key](const std::string& newKey) mutable
+                [fields, passIndex, field, oldKey = key](const std::string& newKey) mutable
                 {
+                    nlohmann::json& doc = *fields->Doc;
                     if (newKey.empty() || newKey == oldKey)
                         return;
                     EnsureObjectPath(doc, passIndex, field);
@@ -860,7 +941,7 @@ static void BuildStringMapEditor(UIElement* uiRoot,
                     const nlohmann::json v = o[oldKey];
                     o.erase(oldKey);
                     o[newKey] = v;
-                    SaveReloadRebuildUndoable(rebuildRoot, pipe, doc, s_UndoService, std::string(field) + " Key");
+                    SavePassEditUndoable(fields, passIndex, std::string(field) + " Key");
                 });
 
             // Value row
@@ -875,14 +956,15 @@ static void BuildStringMapEditor(UIElement* uiRoot,
                     fieldValue = std::make_unique<TextField>();
                 fieldValue->SetId(idPrefix + "-value-" + std::to_string(rowIdx));
                 fieldValue->SetValue(value);
-                fieldValue->SetOnValueChanged([rebuildRoot, pipe, doc, passIndex, field, key](const std::string& v) mutable
+                fieldValue->SetOnValueChanged([fields, passIndex, field, key](const std::string& v) mutable
                                               {
+                                                  nlohmann::json& doc = *fields->Doc;
                                                   EnsureObjectPath(doc, passIndex, field);
                                                   auto& o = doc["passes"][passIndex][field];
                                                   if (!o.is_object())
                                                       return;
                                                   o[key] = v;
-                                                  SaveReloadRebuildUndoable(rebuildRoot, pipe, doc, s_UndoService, std::string(field) + " Value");
+                                                  SavePassEditUndoable(fields, passIndex, std::string(field) + " Value");
                                               });
                 fieldContainer->AddChild(std::move(fieldValue));
 
@@ -895,13 +977,14 @@ static void BuildStringMapEditor(UIElement* uiRoot,
                 xBtnRaw->AddClass("rp-entry-remove");
                 xBtnRaw->SetTooltip("Remove Entry");
                 xBtnRaw->SetId(idPrefix + "-remove-" + std::to_string(rowIdx));
-                xBtnRaw->RegisterEventHandler(kEventButtonClick, [rebuildRoot, pipe, doc, passIndex, field, key](UIEvent&) mutable
+                xBtnRaw->RegisterEventHandler(kEventButtonClick, [fields, passIndex, field, key](UIEvent&) mutable
                                     {
+                                        nlohmann::json& doc = *fields->Doc;
                                         EnsureObjectPath(doc, passIndex, field);
                                         auto& o = doc["passes"][passIndex][field];
                                         if (o.is_object())
                                             o.erase(key);
-                                        SaveReloadRebuildUndoable(rebuildRoot, pipe, doc, s_UndoService, std::string("Remove ") + field);
+                                        SavePassEditUndoable(fields, passIndex, std::string("Remove ") + field);
                                     });
                 fieldContainer->AddChild(std::move(xBtn));
             }
@@ -911,50 +994,47 @@ static void BuildStringMapEditor(UIElement* uiRoot,
     // Add entry button with + icon
     {
         AddInspectorButtonRow(uiRoot, "", "Add Entry", idPrefix + "-add",
-            [rebuildRoot, pipe, doc, passIndex, field](UIEvent&) mutable
+            [fields, passIndex, field](UIEvent&) mutable
             {
+                nlohmann::json& doc = *fields->Doc;
                 EnsureObjectPath(doc, passIndex, field);
                 auto& o = doc["passes"][passIndex][field];
                 const std::string k = MakeUniqueKeyForObject(o, "New");
                 o[k] = "";
-                SaveReloadRebuildUndoable(rebuildRoot, pipe, doc, s_UndoService, std::string("Add ") + field);
+                SavePassEditUndoable(fields, passIndex, std::string("Add ") + field);
             });
     }
 }
 
 static void BuildUsageMapEditor(UIElement* uiRoot,
-                                UIElement* rebuildRoot,
+                                const SharedPassFieldsContext& fields,
                                 const std::string& title,
-                                RenderPipelineAsset* pipe,
-                                nlohmann::json doc,
                                 size_t passIndex,
                                 const char* field,
                                 const std::string& idPrefix,
                                 const std::vector<std::string>& usageOptions,
                                 const std::string& defaultUsage)
 {
-    if (!uiRoot || !rebuildRoot || !pipe)
+    const nlohmann::json& doc = *fields->Doc;
+    if (!uiRoot)
         return;
     AddTextBlock(uiRoot, title);
 
-    EnsureObjectPath(doc, passIndex, field);
     auto opts = MakeOptionsFromLabels(usageOptions);
-
-    const auto& obj = (doc.contains("passes") && doc["passes"].is_array() && passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
-                          ? doc["passes"][passIndex][field]
-                          : nlohmann::json::object();
+    const nlohmann::json& entries = ObjectAt(PassAt(doc, passIndex), field);
 
     size_t rowIdx = 0;
-    if (obj.is_object())
+    if (entries.is_object())
     {
-        for (auto it = obj.begin(); it != obj.end(); ++it, ++rowIdx)
+        for (auto it = entries.begin(); it != entries.end(); ++it, ++rowIdx)
         {
             const std::string key = it.key();
             const std::string value = it.value().is_string() ? it.value().get<std::string>() : defaultUsage;
 
             AddInspectorTextRow(uiRoot, "Key", key, idPrefix + "-key-" + std::to_string(rowIdx),
-                [rebuildRoot, pipe, doc, passIndex, field, oldKey = key](const std::string& newKey) mutable
+                [fields, passIndex, field, oldKey = key](const std::string& newKey) mutable
                 {
+                    nlohmann::json& doc = *fields->Doc;
                     if (newKey.empty() || newKey == oldKey)
                         return;
                     EnsureObjectPath(doc, passIndex, field);
@@ -964,7 +1044,7 @@ static void BuildUsageMapEditor(UIElement* uiRoot,
                     const nlohmann::json v = o[oldKey];
                     o.erase(oldKey);
                     o[newKey] = v;
-                    SaveReloadRebuildUndoable(rebuildRoot, pipe, doc, s_UndoService, std::string(field) + " Key");
+                    SavePassEditUndoable(fields, passIndex, std::string(field) + " Key");
                 });
 
             // Value row (dropdown)
@@ -979,14 +1059,15 @@ static void BuildUsageMapEditor(UIElement* uiRoot,
                 ddRaw->SetId(idPrefix + "-usage-" + std::to_string(rowIdx));
                 ddRaw->SetOptions(opts, 0);
                 ddRaw->SetSelectedValue(value);
-                ddRaw->SetOnValueChanged([rebuildRoot, pipe, doc, passIndex, field, key](const std::string& v) mutable
+                ddRaw->SetOnValueChanged([fields, passIndex, field, key](const std::string& v) mutable
                                          {
+                                             nlohmann::json& doc = *fields->Doc;
                                              EnsureObjectPath(doc, passIndex, field);
                                              auto& o = doc["passes"][passIndex][field];
                                              if (!o.is_object())
                                                  return;
                                              o[key] = v;
-                                             SaveReloadRebuildUndoable(rebuildRoot, pipe, doc, s_UndoService, std::string(field) + " Value");
+                                             SavePassEditUndoable(fields, passIndex, std::string(field) + " Value");
                                          });
                 fieldContainer->AddChild(std::move(dd));
 
@@ -999,13 +1080,14 @@ static void BuildUsageMapEditor(UIElement* uiRoot,
                 xBtnRaw->AddClass("rp-entry-remove");
                 xBtnRaw->SetTooltip("Remove Entry");
                 xBtnRaw->SetId(idPrefix + "-remove-" + std::to_string(rowIdx));
-                xBtnRaw->RegisterEventHandler(kEventButtonClick, [rebuildRoot, pipe, doc, passIndex, field, key](UIEvent&) mutable
+                xBtnRaw->RegisterEventHandler(kEventButtonClick, [fields, passIndex, field, key](UIEvent&) mutable
                                     {
+                                        nlohmann::json& doc = *fields->Doc;
                                         EnsureObjectPath(doc, passIndex, field);
                                         auto& o = doc["passes"][passIndex][field];
                                         if (o.is_object())
                                             o.erase(key);
-                                        SaveReloadRebuildUndoable(rebuildRoot, pipe, doc, s_UndoService, std::string("Remove ") + field);
+                                        SavePassEditUndoable(fields, passIndex, std::string("Remove ") + field);
                                     });
                 fieldContainer->AddChild(std::move(xBtn));
             }
@@ -1015,13 +1097,14 @@ static void BuildUsageMapEditor(UIElement* uiRoot,
     // + button to add entry
     {
         AddInspectorButtonRow(uiRoot, "", "Add Entry", idPrefix + "-add",
-            [rebuildRoot, pipe, doc, passIndex, field, defaultUsage](UIEvent&) mutable
+            [fields, passIndex, field, defaultUsage](UIEvent&) mutable
             {
+                nlohmann::json& doc = *fields->Doc;
                 EnsureObjectPath(doc, passIndex, field);
                 auto& o = doc["passes"][passIndex][field];
                 const std::string k = MakeUniqueKeyForObject(o, "New");
                 o[k] = defaultUsage;
-                SaveReloadRebuildUndoable(rebuildRoot, pipe, doc, s_UndoService, std::string("Add ") + field);
+                SavePassEditUndoable(fields, passIndex, std::string("Add ") + field);
             });
     }
 }
@@ -1055,25 +1138,28 @@ static void EnsureArrayPath(nlohmann::json& doc, const std::vector<std::string>&
         *cur = nlohmann::json::array();
 }
 
-static void BuildStringListEditor(UIElement* root,
+static void BuildStringListEditor(UIElement* parent,
+                                  UIElement* root,
                                   const std::string& title,
                                   RenderPipelineAsset* pipe,
-                                  nlohmann::json doc,
+                                  const SharedPipelineDocument& sharedDoc,
                                   const std::vector<std::string>& path,
                                   const std::string& idPrefix,
                                   const std::vector<std::string>& suggestions = {})
 {
-    if (!root || !pipe)
+    nlohmann::json& doc = *sharedDoc;
+    if (!parent || !root || !pipe)
         return;
-    AddTextBlock(root, title);
+    AddTextBlock(parent, title);
 
-    EnsureArrayPath(doc, path);
-
-    // Navigate to array (safe, since EnsureArrayPath created it).
+    static const nlohmann::json kEmptyArray = nlohmann::json::array();
     const nlohmann::json* cur = &doc;
-    for (const auto& k : path)
-        cur = &(*cur)[k];
-    const auto& arr = *cur;
+    for (const auto& key : path)
+    {
+        const auto it = cur->is_object() ? cur->find(key) : cur->end();
+        cur = (cur->is_object() && it != cur->end()) ? &*it : &kEmptyArray;
+    }
+    const nlohmann::json& arr = cur->is_array() ? *cur : kEmptyArray;
 
     // Existing entries
     for (size_t i = 0; i < arr.size(); ++i)
@@ -1091,8 +1177,9 @@ static void BuildStringListEditor(UIElement* root,
             ddRaw->SetId(idPrefix + "-value-" + std::to_string(i));
             ddRaw->SetOptions(MakeOptionsFromLabels(suggestions), 0);
             ddRaw->SetSelectedValue(v);
-            ddRaw->SetOnValueChanged([root, pipe, doc, path, i](const std::string& newV) mutable
+            ddRaw->SetOnValueChanged([root, pipe, sharedDoc, path, i](const std::string& newV) mutable
                                      {
+                                         nlohmann::json& doc = *sharedDoc;
                                          EnsureArrayPath(doc, path);
                                          nlohmann::json* c = &doc;
                                          for (const auto& k : path)
@@ -1100,7 +1187,7 @@ static void BuildStringListEditor(UIElement* root,
                                          if (!c->is_array() || i >= c->size())
                                              return;
                                          (*c)[i] = newV;
-                                         SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                         SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                      });
             row->AddChild(std::move(dd));
         }
@@ -1110,8 +1197,9 @@ static void BuildStringListEditor(UIElement* root,
             tf->AddClass("settings-row-field");
             tf->SetId(idPrefix + "-value-" + std::to_string(i));
             tf->SetValue(v);
-            tf->SetOnValueChanged([root, pipe, doc, path, i](const std::string& newV) mutable
+            tf->SetOnValueChanged([root, pipe, sharedDoc, path, i](const std::string& newV) mutable
                                   {
+                                      nlohmann::json& doc = *sharedDoc;
                                       EnsureArrayPath(doc, path);
                                       nlohmann::json* c = &doc;
                                       for (const auto& k : path)
@@ -1119,7 +1207,7 @@ static void BuildStringListEditor(UIElement* root,
                                       if (!c->is_array() || i >= c->size())
                                           return;
                                       (*c)[i] = newV;
-                                      SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                      SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                   });
             row->AddChild(std::move(tf));
         }
@@ -1132,8 +1220,9 @@ static void BuildStringListEditor(UIElement* root,
         rm->AddClass("xclose-icon");
         rm->SetTooltip("Remove Entry");
         rm->SetId(idPrefix + "-remove-" + std::to_string(i));
-        rm->RegisterEventHandler(kEventButtonClick, [root, pipe, doc, path, i](UIEvent&) mutable
+        rm->RegisterEventHandler(kEventButtonClick, [root, pipe, sharedDoc, path, i](UIEvent&) mutable
                        {
+                           nlohmann::json& doc = *sharedDoc;
                            EnsureArrayPath(doc, path);
                            nlohmann::json* c = &doc;
                            for (const auto& k : path)
@@ -1141,10 +1230,10 @@ static void BuildStringListEditor(UIElement* root,
                            if (!c->is_array() || i >= c->size())
                                return;
                            c->erase(c->begin() + (nlohmann::json::difference_type)i);
-                           SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                           SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                        });
         row->AddChild(std::move(rm));
-        root->AddChild(std::move(row));
+        parent->AddChild(std::move(row));
     }
 
     // Add entry button with + icon
@@ -1155,8 +1244,9 @@ static void BuildStringListEditor(UIElement* root,
         btn->AddClass("settings-row-field");
         btn->SetId(idPrefix + "-add");
         btn->SetText("Add Entry");
-        btn->RegisterEventHandler(kEventButtonClick, [root, pipe, doc, path, suggestions](UIEvent&) mutable
+        btn->RegisterEventHandler(kEventButtonClick, [root, pipe, sharedDoc, path, suggestions](UIEvent&) mutable
                         {
+                            nlohmann::json& doc = *sharedDoc;
                             EnsureArrayPath(doc, path);
                             nlohmann::json* c = &doc;
                             for (const auto& k : path)
@@ -1167,16 +1257,406 @@ static void BuildStringListEditor(UIElement* root,
                                 c->push_back(suggestions.front());
                             else
                                 c->push_back("");
-                            SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                            SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                         });
         row->AddChild(std::move(btn));
-        root->AddChild(std::move(row));
+        parent->AddChild(std::move(row));
+    }
+}
+
+// Adds the text row of one dispatch axis ("x", "y" or "z") of pass `passIndex`. The value is an
+// expression or a number, shown without quotes.
+static void AddDispatchRow(UIElement& passSection,
+                           const SharedPassFieldsContext& fields,
+                           size_t passIndex,
+                           const nlohmann::json& dispatch,
+                           const char* axis)
+{
+    std::string value = dispatch.contains(axis) ? dispatch[axis].dump() : std::string("1");
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+        value = value.substr(1, value.size() - 2);
+    const std::string label = std::string("dispatch.") + axis;
+    AddInspectorTextRow(&passSection, label, value, "rp-pass-" + std::to_string(passIndex) + "-dispatch-" + axis,
+        [fields, passIndex, axis](const std::string& newValue)
+        {
+            nlohmann::json& doc = *fields->Doc;
+            if (passIndex >= doc["passes"].size() || !doc["passes"][passIndex].is_object())
+                return;
+            if (!doc["passes"][passIndex].contains("dispatch") || !doc["passes"][passIndex]["dispatch"].is_object())
+                doc["passes"][passIndex]["dispatch"] = nlohmann::json::object();
+            doc["passes"][passIndex]["dispatch"][axis] = newValue;
+            SavePassEditUndoable(fields, passIndex, std::string("Dispatch ") + axis);
+        });
+}
+
+// Builds the fields of pass `passIndex` into `passSection`. An edit of a field saves the document and
+// rebuilds only this pass.
+static void BuildPassFields(const SharedPassFieldsContext& fields, size_t passIndex, UIElement& passSection)
+{
+    nlohmann::json& doc = *fields->Doc;
+    UIElement* passUI = &passSection;
+    const std::vector<std::string>& knownPassTypes = fields->KnownPassTypes;
+    const std::vector<std::string>& rgUsages = fields->RgUsages;
+    // enabled
+    {
+        AddInspectorToggleRow(passUI, "Enabled", doc["passes"][passIndex].value("enabled", true),
+            "rp-pass-" + std::to_string(passIndex) + "-enabled",
+            [fields, passIndex](bool v) mutable
+            {
+                nlohmann::json& doc = *fields->Doc;
+                if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                    doc["passes"][passIndex]["enabled"] = v;
+                SavePassEditUndoable(fields, passIndex, "Pass Enabled");
+            });
+    }
+
+    // id
+    {
+        AddInspectorTextRow(passUI, "Id", doc["passes"][passIndex].value("id", ""),
+            "rp-pass-" + std::to_string(passIndex) + "-id",
+            [fields, passIndex](const std::string& v) mutable
+            {
+                nlohmann::json& doc = *fields->Doc;
+                if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                    doc["passes"][passIndex]["id"] = v;
+                SavePassEditUndoable(fields, passIndex, "Pass Id");
+            });
+    }
+
+    // type
+    {
+        const std::string currentType = doc["passes"][passIndex].value("type", "");
+
+        std::vector<Dropdown::Option> opts;
+        opts.reserve(knownPassTypes.size() + 1);
+
+        int selectedIndex = 0;
+        bool found = false;
+        for (size_t typeIndex = 0; typeIndex < knownPassTypes.size(); ++typeIndex)
+        {
+            if (!currentType.empty() && knownPassTypes[typeIndex] == currentType)
+            {
+                found = true;
+                selectedIndex = static_cast<int>(opts.size());
+            }
+            opts.push_back(Dropdown::Option{knownPassTypes[typeIndex], knownPassTypes[typeIndex]});
+        }
+        if (!found && !currentType.empty())
+        {
+            // Keep any unknown/custom type selectable so we don't destroy data.
+            opts.insert(opts.begin(), Dropdown::Option{currentType, currentType + " (custom)"});
+            selectedIndex = 0;
+        }
+
+        AddInspectorDropdownRow(passUI, "Type", opts, selectedIndex,
+            "rp-pass-" + std::to_string(passIndex) + "-type",
+            [fields, passIndex](const std::string& v) mutable
+            {
+                nlohmann::json& doc = *fields->Doc;
+                if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                {
+                    doc["passes"][passIndex]["type"] = v;
+                    const nlohmann::json defaults = MakeDefaultPassForType(v, doc["passes"]);
+                    for (auto it = defaults.begin(); it != defaults.end(); ++it)
+                    {
+                        if (it.key() == "id" || it.key() == "type" ||
+                            doc["passes"][passIndex].contains(it.key()))
+                            continue;
+                        doc["passes"][passIndex][it.key()] = it.value();
+                    }
+                }
+                SavePassEditUndoable(fields, passIndex, "Pass Type");
+            });
+    }
+
+    // shaderPkg (for FullscreenShader / ComputeShader)
+    {
+        const std::string typeLower = ToLowerAscii(doc["passes"][passIndex].value("type", ""));
+        if (typeLower == "fullscreenshader" || typeLower == "computeshader")
+        {
+            AddInspectorTextRow(passUI, "shaderPkg", doc["passes"][passIndex].value("shaderPkg", ""),
+                "rp-pass-" + std::to_string(passIndex) + "-shaderPkg",
+                [fields, passIndex](const std::string& v) mutable
+                {
+                    nlohmann::json& doc = *fields->Doc;
+                    if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                        doc["passes"][passIndex]["shaderPkg"] = v;
+                    SavePassEditUndoable(fields, passIndex, "Shader Package");
+                });
+        }
+    }
+
+    // FullscreenShader specific
+    {
+        const std::string typeLower = ToLowerAscii(doc["passes"][passIndex].value("type", ""));
+        if (typeLower == "fullscreenshader")
+        {
+            // alphaBlend
+            {
+                AddInspectorToggleRow(passUI, "alphaBlend", doc["passes"][passIndex].value("alphaBlend", false),
+                    "rp-pass-" + std::to_string(passIndex) + "-alphaBlend",
+                    [fields, passIndex](bool v) mutable
+                    {
+                        nlohmann::json& doc = *fields->Doc;
+                        if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                            doc["passes"][passIndex]["alphaBlend"] = v;
+                        SavePassEditUndoable(fields, passIndex, "Alpha Blend");
+                    });
+            }
+
+            BuildStringMapEditor(passUI, fields, "inputs:", passIndex, "inputs", "rp-pass-" + std::to_string(passIndex) + "-inputs", /*allowDropRefs=*/true);
+            BuildStringMapEditor(passUI, fields, "samplers:", passIndex, "samplers", "rp-pass-" + std::to_string(passIndex) + "-samplers", /*allowDropRefs=*/false);
+            BuildStringMapEditor(passUI, fields, "buffers:", passIndex, "buffers", "rp-pass-" + std::to_string(passIndex) + "-buffers", /*allowDropRefs=*/true);
+            BuildUsageMapEditor(passUI,
+                                fields,
+                                "bufferUsages:",
+                                passIndex,
+                                "bufferUsages",
+                                "rp-pass-" + std::to_string(passIndex) + "-bufferUsages",
+                                rgUsages,
+                                "StorageRead");
+
+            // Push constants: editable float/int fields for each entry.
+            if (doc["passes"][passIndex].contains("pushConstants") && doc["passes"][passIndex]["pushConstants"].is_object())
+            {
+                AddTextBlock(passUI, "pushConstants:", "inspector-section-subheader");
+                const auto& pcObj = doc["passes"][passIndex]["pushConstants"];
+                for (auto it = pcObj.begin(); it != pcObj.end(); ++it)
+                {
+                    const std::string key = it.key();
+                    // Skip padding fields (pad, pad0, pad1, etc.)
+                    if (key.size() >= 3 && key.substr(0, 3) == "pad" && (key.size() == 3 || std::isdigit(key[3])))
+                        continue;
+                    if (it.value().is_number_float())
+                    {
+                        AddInspectorFloatRow(passUI, key, it.value().get<float>(), it.value().get<float>(),
+                            -std::numeric_limits<float>::infinity(),
+                            std::numeric_limits<float>::infinity(),
+                            "rp-pass-" + std::to_string(passIndex) + "-pc-" + key,
+                            [fields, passIndex, key](float v) mutable
+                            {
+                                nlohmann::json& doc = *fields->Doc;
+                                if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                                    doc["passes"][passIndex]["pushConstants"][key] = v;
+                                SavePassEditUndoable(fields, passIndex, "Push Constant " + key);
+                            });
+                    }
+                    else if (it.value().is_number_integer())
+                    {
+                        AddInspectorIntRow(passUI, key, it.value().get<int>(), it.value().get<int>(),
+                            "rp-pass-" + std::to_string(passIndex) + "-pc-" + key,
+                            [fields, passIndex, key](int v) mutable
+                            {
+                                nlohmann::json& doc = *fields->Doc;
+                                if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                                    doc["passes"][passIndex]["pushConstants"][key] = v;
+                                SavePassEditUndoable(fields, passIndex, "Push Constant " + key);
+                            });
+                    }
+                }
+            }
+        }
+    }
+
+    // ShadowMap specific
+    {
+        const std::string typeLower = ToLowerAscii(doc["passes"][passIndex].value("type", ""));
+        if (typeLower == "shadowmap" || typeLower == "cascadedshadowmap")
+        {
+            BuildShadowMapPassFields(*passUI, doc["passes"][passIndex], "rp-pass-" + std::to_string(passIndex),
+                [fields, passIndex](const std::string& key, nlohmann::json value,
+                                           const std::string& undoLabel) mutable
+                {
+                    nlohmann::json& doc = *fields->Doc;
+                    if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                        doc["passes"][passIndex][key] = std::move(value);
+                    SavePassEditUndoable(fields, passIndex, undoLabel);
+                });
+        }
+    }
+
+    // ComputeShader specific
+    {
+        const std::string typeLower = ToLowerAscii(doc["passes"][passIndex].value("type", ""));
+        if (typeLower == "computeshader")
+        {
+            // targetBuffer/targetTexture
+            {
+                AddInspectorTextRow(passUI, "targetBuffer", doc["passes"][passIndex].value("targetBuffer", ""),
+                    "rp-pass-" + std::to_string(passIndex) + "-targetBuffer",
+                    [fields, passIndex](const std::string& v) mutable
+                    {
+                        nlohmann::json& doc = *fields->Doc;
+                        if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                            doc["passes"][passIndex]["targetBuffer"] = v;
+                        SavePassEditUndoable(fields, passIndex, "Target Buffer");
+                    });
+            }
+            {
+                AddInspectorTextRow(passUI, "targetTexture", doc["passes"][passIndex].value("targetTexture", ""),
+                    "rp-pass-" + std::to_string(passIndex) + "-targetTexture",
+                    [fields, passIndex](const std::string& v) mutable
+                    {
+                        nlohmann::json& doc = *fields->Doc;
+                        if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                            doc["passes"][passIndex]["targetTexture"] = v;
+                        SavePassEditUndoable(fields, passIndex, "Target Texture");
+                    });
+            }
+
+            // dispatch expressions
+            {
+                const nlohmann::json& dispatch = ObjectAt(doc["passes"][passIndex], "dispatch");
+                for (const char* axis : {"x", "y", "z"})
+                    AddDispatchRow(*passUI, fields, passIndex, dispatch, axis);
+            }
+
+            BuildStringMapEditor(passUI, fields, "inputs:", passIndex, "inputs", "rp-pass-" + std::to_string(passIndex) + "-inputs", /*allowDropRefs=*/true);
+            BuildUsageMapEditor(passUI,
+                                fields,
+                                "inputUsages:",
+                                passIndex,
+                                "inputUsages",
+                                "rp-pass-" + std::to_string(passIndex) + "-inputUsages",
+                                rgUsages,
+                                "Sampled");
+            BuildStringMapEditor(passUI, fields, "samplers:", passIndex, "samplers", "rp-pass-" + std::to_string(passIndex) + "-samplers", /*allowDropRefs=*/false);
+            BuildStringMapEditor(passUI, fields, "buffers:", passIndex, "buffers", "rp-pass-" + std::to_string(passIndex) + "-buffers", /*allowDropRefs=*/true);
+            BuildUsageMapEditor(passUI,
+                                fields,
+                                "bufferUsages:",
+                                passIndex,
+                                "bufferUsages",
+                                "rp-pass-" + std::to_string(passIndex) + "-bufferUsages",
+                                rgUsages,
+                                "StorageRead");
+
+            // uniformWrites (u32x4) editor
+            AddTextBlock(passUI, "uniformWrites (u32x4):");
+            {
+                size_t uwIdx = 0;
+                const nlohmann::json& uw = ObjectAt(doc["passes"][passIndex], "uniformWrites");
+                for (auto it = uw.begin(); it != uw.end(); ++it, ++uwIdx)
+                {
+                    const std::string binding = it.key();
+                    const auto& entry = it.value();
+                    std::array<int, 4> v{0, 0, 0, 0};
+                    if (entry.is_object() && entry.contains("u32x4") && entry["u32x4"].is_array() && entry["u32x4"].size() == 4)
+                    {
+                        for (int component = 0; component < 4; ++component)
+                        {
+                            if (entry["u32x4"][component].is_number_integer())
+                                v[component] = (int)entry["u32x4"][component].get<int64_t>();
+                        }
+                    }
+
+                    AddTextBlock(passUI, std::string("- ") + binding);
+
+                    // 4 int fields
+                    for (int component = 0; component < 4; ++component)
+                    {
+                        AddInspectorIntRow(passUI, std::string("u32x4[") + std::to_string(component) + "]",
+                            v[component], v[component],
+                            "rp-pass-" + std::to_string(passIndex) + "-uw-" + std::to_string(uwIdx) + "-" + std::to_string(component),
+                            [fields, passIndex, binding, component](int newV) mutable
+                            {
+                                nlohmann::json& doc = *fields->Doc;
+                                if (passIndex >= doc["passes"].size() || !doc["passes"][passIndex].is_object())
+                                    return;
+                                if (!doc["passes"][passIndex].contains("uniformWrites") || !doc["passes"][passIndex]["uniformWrites"].is_object())
+                                    doc["passes"][passIndex]["uniformWrites"] = nlohmann::json::object();
+                                auto& uw2 = doc["passes"][passIndex]["uniformWrites"];
+                                if (!uw2.contains(binding) || !uw2[binding].is_object())
+                                    uw2[binding] = nlohmann::json::object();
+                                auto& e = uw2[binding];
+                                if (!e.contains("u32x4") || !e["u32x4"].is_array() || e["u32x4"].size() != 4)
+                                    e["u32x4"] = nlohmann::json::array({0, 0, 0, 0});
+                                e["u32x4"][component] = newV;
+                                SavePassEditUndoable(fields, passIndex, "Uniform Write");
+                            });
+                    }
+
+                    // Remove binding
+                    {
+                        AddInspectorButtonRow(passUI, "", "Remove uniformWrites entry",
+                            "rp-pass-" + std::to_string(passIndex) + "-uw-remove-" + std::to_string(uwIdx),
+                            [fields, passIndex, binding](UIEvent&) mutable
+                            {
+                                nlohmann::json& doc = *fields->Doc;
+                                if (passIndex >= doc["passes"].size() || !doc["passes"][passIndex].is_object())
+                                    return;
+                                if (doc["passes"][passIndex].contains("uniformWrites") && doc["passes"][passIndex]["uniformWrites"].is_object())
+                                    doc["passes"][passIndex]["uniformWrites"].erase(binding);
+                                SavePassEditUndoable(fields, passIndex, "Remove Uniform Write");
+                            });
+                    }
+                }
+
+                // Add binding
+                {
+                    AddInspectorButtonRow(passUI, "", "Add uniformWrites entry",
+                        "rp-pass-" + std::to_string(passIndex) + "-uw-add",
+                        [fields, passIndex](UIEvent&) mutable
+                        {
+                            nlohmann::json& doc = *fields->Doc;
+                            if (passIndex >= doc["passes"].size() || !doc["passes"][passIndex].is_object())
+                                return;
+                            if (!doc["passes"][passIndex].contains("uniformWrites") || !doc["passes"][passIndex]["uniformWrites"].is_object())
+                                doc["passes"][passIndex]["uniformWrites"] = nlohmann::json::object();
+                            auto& uw2 = doc["passes"][passIndex]["uniformWrites"];
+                            const std::string key = MakeUniqueKeyForObject(uw2, "NewUniform");
+                            uw2[key] = nlohmann::json::object({{"u32x4", nlohmann::json::array({0, 0, 0, 0})}});
+                            SavePassEditUndoable(fields, passIndex, "Add Uniform Write");
+                        });
+                }
+            }
+        }
+    }
+
+    // output (for FullscreenShader)
+    {
+        const std::string typeLower = ToLowerAscii(doc["passes"][passIndex].value("type", ""));
+        if (typeLower == "fullscreenshader")
+        {
+            AddInspectorTextRow(passUI, "output", doc["passes"][passIndex].value("output", "View.Resolve"),
+                "rp-pass-" + std::to_string(passIndex) + "-output",
+                [fields, passIndex](const std::string& v) mutable
+                {
+                    nlohmann::json& doc = *fields->Doc;
+                    if (passIndex < doc["passes"].size() && doc["passes"][passIndex].is_object())
+                        doc["passes"][passIndex]["output"] = v;
+                    SavePassEditUndoable(fields, passIndex, "Pass Output");
+                });
+        }
+    }
+
+    // Existing diagnostics view (kept; helpful while authoring)
+    {
+        const std::string typeLower = ToLowerAscii(doc["passes"][passIndex].value("type", ""));
+        if (typeLower == "fullscreenshader")
+        {
+            const std::string shaderPkg = doc["passes"][passIndex].value("shaderPkg", "");
+            std::vector<std::string> inputNames;
+            if (doc["passes"][passIndex].contains("inputs") && doc["passes"][passIndex]["inputs"].is_object())
+            {
+                for (auto it = doc["passes"][passIndex]["inputs"].begin(); it != doc["passes"][passIndex]["inputs"].end(); ++it)
+                {
+                    if (it.value().is_string())
+                        inputNames.push_back(it.key());
+                }
+            }
+            if (!shaderPkg.empty())
+            {
+                AddTextBlock(passUI, FormatShaderPkgValidation(shaderPkg, inputNames));
+            }
+        }
     }
 }
 
 static void BuildRenderPipelineEditorUI(UIElement* root,
                                         RenderPipelineAsset* pipe,
-                                        Editor::UndoRedoService* undo)
+                                        Editor::UndoRedoService* undo,
+                                        const SharedPipelineDocument& sharedDoc)
 {
     if (!root || !pipe)
         return;
@@ -1306,7 +1786,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     }
 
     // Parse JSON so we can offer a basic form editor (no manual JSON editing required).
-    nlohmann::json doc;
+    nlohmann::json& doc = *sharedDoc;
     try
     {
         doc = nlohmann::json::parse(pipe->GetDocument().jsonText);
@@ -1331,10 +1811,11 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
         field->AddClass("settings-row-field");
         field->SetValue(doc.value("pipelineName", pipe->GetName()));
 
-        field->SetOnValueChanged([root, pipe, doc](const std::string& v) mutable
+        field->SetOnValueChanged([root, pipe, sharedDoc](const std::string& v) mutable
                                  {
+                                     nlohmann::json& doc = *sharedDoc;
                                      doc["pipelineName"] = v;
-                                     SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                     SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                  });
 
         row->AddChild(std::move(field));
@@ -1354,12 +1835,13 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
             out = doc["outputs"][kFinalColor].get<std::string>();
         field->SetValue(out);
 
-        field->SetOnValueChanged([root, pipe, doc](const std::string& v) mutable
+        field->SetOnValueChanged([root, pipe, sharedDoc](const std::string& v) mutable
                                  {
+                                     nlohmann::json& doc = *sharedDoc;
                                      if (!doc.contains("outputs") || !doc["outputs"].is_object())
                                          doc["outputs"] = nlohmann::json::object();
                                      doc["outputs"][Engine::Renderer::Pipeline::Names::Output::FinalColor] = v;
-                                     SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                     SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                  });
 
         row->AddChild(std::move(field));
@@ -1367,10 +1849,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     }
 
     // ---- Editor: resources ----
-    if (!doc.contains("resources") || !doc["resources"].is_object())
-    {
-        doc["resources"] = nlohmann::json::object();
-    }
+    const nlohmann::json& resources = ObjectAt(doc, "resources");
 
     const std::vector<std::string> resourceKinds = {"Buffer", "Texture"};
     const std::vector<std::string> resourceScopes = {"Frame", "PerView"};
@@ -1395,34 +1874,34 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
         btn->AddClass("settings-row-field");
         btn->SetId("rp-res-add");
         btn->SetText("Add Resource");
-        btn->RegisterEventHandler(kEventButtonClick, [root, pipe, doc](UIEvent&) mutable
+        btn->RegisterEventHandler(kEventButtonClick, [root, pipe, sharedDoc](UIEvent&) mutable
                         {
+                            nlohmann::json& doc = *sharedDoc;
                             if (!doc.contains("resources") || !doc["resources"].is_object())
                                 doc["resources"] = nlohmann::json::object();
                             auto& r = doc["resources"];
                             const std::string name = MakeUniqueKeyForObject(r, "NewResource");
                             r[name] = nlohmann::json::object({{"kind", "Buffer"}, {"scope", "PerView"}, {"size", nlohmann::json::object({{"bytes", 16}})}});
-                            SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                            SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                         });
         row->AddChild(std::move(btn));
         resourcesFoldoutPtr->AddChild(std::move(row));
     }
 
     // Resource entries
-    if (doc["resources"].is_object())
     {
         size_t idx = 0;
         // Iterate over a stable snapshot of keys so edits don't invalidate iterators.
         std::vector<std::string> keys;
-        keys.reserve(doc["resources"].size());
-        for (auto it = doc["resources"].begin(); it != doc["resources"].end(); ++it)
+        keys.reserve(resources.size());
+        for (auto it = resources.begin(); it != resources.end(); ++it)
             keys.push_back(it.key());
 
         for (const auto& resName : keys)
         {
-            if (!doc["resources"].contains(resName) || !doc["resources"][resName].is_object())
+            if (!resources.at(resName).is_object())
                 continue;
-            auto& res = doc["resources"][resName];
+            const nlohmann::json& res = resources.at(resName);
             const std::string idRes = MakeIdSafe(resName);
 
             auto resFoldout = std::make_unique<Foldout>();
@@ -1454,8 +1933,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                 tf->AddClass("settings-row-field");
                 tf->SetId("rp-res-" + idRes + "-name");
                 tf->SetValue(resName);
-                tf->SetOnValueChanged([root, pipe, doc, oldKey = resName](const std::string& newKey) mutable
+                tf->SetOnValueChanged([root, pipe, sharedDoc, oldKey = resName](const std::string& newKey) mutable
                                       {
+                                          nlohmann::json& doc = *sharedDoc;
                                           if (newKey.empty() || newKey == oldKey)
                                               return;
                                           if (!doc.contains("resources") || !doc["resources"].is_object())
@@ -1466,7 +1946,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                           const nlohmann::json v = r[oldKey];
                                           r.erase(oldKey);
                                           r[newKey] = v;
-                                          SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                          SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                       });
                 row->AddChild(std::move(tf));
                 resFoldoutPtr->AddChild(std::move(row));
@@ -1482,12 +1962,13 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                 ddRaw->SetId("rp-res-" + idRes + "-kind");
                 ddRaw->SetOptions(MakeOptionsFromLabels(resourceKinds), 0);
                 ddRaw->SetSelectedValue(res.value("kind", "Buffer"));
-                ddRaw->SetOnValueChanged([root, pipe, doc, resName](const std::string& v) mutable
+                ddRaw->SetOnValueChanged([root, pipe, sharedDoc, resName](const std::string& v) mutable
                                          {
+                                             nlohmann::json& doc = *sharedDoc;
                                              if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                  return;
                                              doc["resources"][resName]["kind"] = v;
-                                             SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                             SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                          });
                 row->AddChild(std::move(dd));
                 resFoldoutPtr->AddChild(std::move(row));
@@ -1503,12 +1984,13 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                 ddRaw->SetId("rp-res-" + idRes + "-scope");
                 ddRaw->SetOptions(MakeOptionsFromLabels(resourceScopes), 0);
                 ddRaw->SetSelectedValue(res.value("scope", "PerView"));
-                ddRaw->SetOnValueChanged([root, pipe, doc, resName](const std::string& v) mutable
+                ddRaw->SetOnValueChanged([root, pipe, sharedDoc, resName](const std::string& v) mutable
                                          {
+                                             nlohmann::json& doc = *sharedDoc;
                                              if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                  return;
                                              doc["resources"][resName]["scope"] = v;
-                                             SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                             SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                          });
                 row->AddChild(std::move(dd));
                 resFoldoutPtr->AddChild(std::move(row));
@@ -1531,15 +2013,16 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                 f->AddClass("settings-row-field");
                 f->SetId("rp-res-" + idRes + "-size-bytes");
                 f->SetValue(bytes);
-                f->SetOnValueChanged([root, pipe, doc, resName](const int& v) mutable
+                f->SetOnValueChanged([root, pipe, sharedDoc, resName](const int& v) mutable
                                      {
+                                         nlohmann::json& doc = *sharedDoc;
                                          if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                              return;
                                          auto& r = doc["resources"][resName];
                                          if (!r.contains("size") || !r["size"].is_object())
                                              r["size"] = nlohmann::json::object();
                                          r["size"]["bytes"] = std::max(0, v);
-                                         SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                         SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                      });
                 row->AddChild(std::move(f));
                 resFoldoutPtr->AddChild(std::move(row));
@@ -1560,15 +2043,16 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                 tf->AddClass("settings-row-field");
                 tf->SetId("rp-res-" + idRes + "-size-expr");
                 tf->SetValue(expr);
-                tf->SetOnValueChanged([root, pipe, doc, resName](const std::string& v) mutable
+                tf->SetOnValueChanged([root, pipe, sharedDoc, resName](const std::string& v) mutable
                                       {
+                                          nlohmann::json& doc = *sharedDoc;
                                           if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                               return;
                                           auto& r = doc["resources"][resName];
                                           if (!r.contains("size") || !r["size"].is_object())
                                               r["size"] = nlohmann::json::object();
                                           r["size"]["expression"] = v;
-                                          SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                          SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                       });
                 row->AddChild(std::move(tf));
                 resFoldoutPtr->AddChild(std::move(row));
@@ -1577,12 +2061,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
             // size.variables (object map: key -> number|string)
             {
                 AddTextBlock(resFoldoutPtr, "size.variables:");
-                if (!res.contains("size") || !res["size"].is_object())
-                    res["size"] = nlohmann::json::object();
-                if (!res["size"].contains("variables") || !res["size"]["variables"].is_object())
-                    res["size"]["variables"] = nlohmann::json::object();
-
-                const auto& vars = res["size"]["variables"];
+                const nlohmann::json& vars = ObjectAt(ObjectAt(res, "size"), "variables");
                 std::vector<std::string> varKeys;
                 if (vars.is_object())
                 {
@@ -1597,7 +2076,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                 {
                     const std::string varKey = varKeys[vi];
                     const std::string idVar = MakeIdSafe(varKey);
-                    const auto& varVal = res["size"]["variables"][varKey];
+                    const nlohmann::json& varVal = vars.at(varKey);
                     const bool isNumber = varVal.is_number();
                     const std::string type = isNumber ? "number" : "string";
 
@@ -1609,8 +2088,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                         tf->AddClass("settings-row-field");
                         tf->SetId("rp-res-" + idRes + "-size-var-" + idVar + "-key");
                         tf->SetValue(varKey);
-                        tf->SetOnValueChanged([root, pipe, doc, resName, oldKey = varKey](const std::string& newKey) mutable
+                        tf->SetOnValueChanged([root, pipe, sharedDoc, resName, oldKey = varKey](const std::string& newKey) mutable
                                               {
+                                                  nlohmann::json& doc = *sharedDoc;
                                                   if (newKey.empty() || newKey == oldKey)
                                                       return;
                                                   if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
@@ -1626,7 +2106,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                                   const nlohmann::json oldVal = v[oldKey];
                                                   v.erase(oldKey);
                                                   v[newKey] = oldVal;
-                                                  SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                  SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                               });
                         row->AddChild(std::move(tf));
                         resFoldoutPtr->AddChild(std::move(row));
@@ -1642,8 +2122,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                         ddRaw->SetId("rp-res-" + idRes + "-size-var-" + idVar + "-type");
                         ddRaw->SetOptions(MakeOptionsFromLabels(varTypes), 0);
                         ddRaw->SetSelectedValue(type);
-                        ddRaw->SetOnValueChanged([root, pipe, doc, resName, varKey](const std::string& newType) mutable
+                        ddRaw->SetOnValueChanged([root, pipe, sharedDoc, resName, varKey](const std::string& newType) mutable
                                                  {
+                                                     nlohmann::json& doc = *sharedDoc;
                                                      if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                          return;
                                                      auto& r = doc["resources"][resName];
@@ -1656,7 +2137,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                                          v[varKey] = 0.0;
                                                      else
                                                          v[varKey] = "";
-                                                     SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                     SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                                  });
                         row->AddChild(std::move(dd));
                         resFoldoutPtr->AddChild(std::move(row));
@@ -1671,8 +2152,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                         ff->AddClass("settings-row-field");
                         ff->SetId("rp-res-" + idRes + "-size-var-" + idVar + "-number");
                         ff->SetValue(varVal.get<float>());
-                        ff->SetOnValueChanged([root, pipe, doc, resName, varKey](const float& v) mutable
+                        ff->SetOnValueChanged([root, pipe, sharedDoc, resName, varKey](const float& v) mutable
                                               {
+                                                  nlohmann::json& doc = *sharedDoc;
                                                   if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                       return;
                                                   auto& r = doc["resources"][resName];
@@ -1681,7 +2163,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                                   if (!r["size"].contains("variables") || !r["size"]["variables"].is_object())
                                                       r["size"]["variables"] = nlohmann::json::object();
                                                   r["size"]["variables"][varKey] = (double)v;
-                                                  SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                  SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                               });
                         row->AddChild(std::move(ff));
                         resFoldoutPtr->AddChild(std::move(row));
@@ -1694,8 +2176,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                         tf->AddClass("settings-row-field");
                         tf->SetId("rp-res-" + idRes + "-size-var-" + idVar + "-string");
                         tf->SetValue(varVal.is_string() ? varVal.get<std::string>() : std::string());
-                        tf->SetOnValueChanged([root, pipe, doc, resName, varKey](const std::string& v) mutable
+                        tf->SetOnValueChanged([root, pipe, sharedDoc, resName, varKey](const std::string& v) mutable
                                               {
+                                                  nlohmann::json& doc = *sharedDoc;
                                                   if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                       return;
                                                   auto& r = doc["resources"][resName];
@@ -1704,7 +2187,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                                   if (!r["size"].contains("variables") || !r["size"]["variables"].is_object())
                                                       r["size"]["variables"] = nlohmann::json::object();
                                                   r["size"]["variables"][varKey] = v;
-                                                  SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                  SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                               });
                         row->AddChild(std::move(tf));
                         resFoldoutPtr->AddChild(std::move(row));
@@ -1718,8 +2201,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                         btn->AddClass("settings-row-field");
                         btn->SetId("rp-res-" + idRes + "-size-var-" + idVar + "-remove");
                         btn->SetText("Remove Var");
-                        btn->RegisterEventHandler(kEventButtonClick, [root, pipe, doc, resName, varKey](UIEvent&) mutable
+                        btn->RegisterEventHandler(kEventButtonClick, [root, pipe, sharedDoc, resName, varKey](UIEvent&) mutable
                                         {
+                                            nlohmann::json& doc = *sharedDoc;
                                             if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                 return;
                                             auto& r = doc["resources"][resName];
@@ -1728,7 +2212,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                             if (r["size"].contains("variables") && r["size"]["variables"].is_object())
                                             {
                                                 r["size"]["variables"].erase(varKey);
-                                                SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                             }
                                         });
                         row->AddChild(std::move(btn));
@@ -1744,8 +2228,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                     btn->AddClass("settings-row-field");
                     btn->SetId("rp-res-" + idRes + "-size-vars-add");
                     btn->SetText("Add Var");
-                    btn->RegisterEventHandler(kEventButtonClick, [root, pipe, doc, resName](UIEvent&) mutable
+                    btn->RegisterEventHandler(kEventButtonClick, [root, pipe, sharedDoc, resName](UIEvent&) mutable
                                     {
+                                        nlohmann::json& doc = *sharedDoc;
                                         if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                             return;
                                         auto& r = doc["resources"][resName];
@@ -1756,7 +2241,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                         auto& v = r["size"]["variables"];
                                         const std::string k = MakeUniqueKeyForObject(v, "var");
                                         v[k] = 0.0;
-                                        SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                        SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                     });
                     row->AddChild(std::move(btn));
                     resFoldoutPtr->AddChild(std::move(row));
@@ -1767,9 +2252,10 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
             {
                 BuildStringListEditor(
                     resFoldoutPtr,
+                    root,
                     "usage[]:",
                     pipe,
-                    doc,
+                    sharedDoc,
                     {"resources", resName, "usage"},
                     "rp-res-" + idRes + "-usage",
                     resourceUsages);
@@ -1785,12 +2271,13 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                 ddRaw->SetId("rp-res-" + idRes + "-memoryUsage");
                 ddRaw->SetOptions(MakeOptionsFromLabels(memoryUsages), 0);
                 ddRaw->SetSelectedValue(res.value("memoryUsage", "DeviceLocal"));
-                ddRaw->SetOnValueChanged([root, pipe, doc, resName](const std::string& v) mutable
+                ddRaw->SetOnValueChanged([root, pipe, sharedDoc, resName](const std::string& v) mutable
                                          {
+                                             nlohmann::json& doc = *sharedDoc;
                                              if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                  return;
                                              doc["resources"][resName]["memoryUsage"] = v;
-                                             SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                             SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                          });
                 row->AddChild(std::move(dd));
                 resFoldoutPtr->AddChild(std::move(row));
@@ -1800,9 +2287,10 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
             {
                 BuildStringListEditor(
                     resFoldoutPtr,
+                    root,
                     "flags[]:",
                     pipe,
-                    doc,
+                    sharedDoc,
                     {"resources", resName, "flags"},
                     "rp-res-" + idRes + "-flags",
                     commonFlags);
@@ -1819,12 +2307,13 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                     tf->AddClass("settings-row-field");
                     tf->SetId("rp-res-" + idRes + "-format");
                     tf->SetValue(res.value("format", ""));
-                    tf->SetOnValueChanged([root, pipe, doc, resName](const std::string& v) mutable
+                    tf->SetOnValueChanged([root, pipe, sharedDoc, resName](const std::string& v) mutable
                                           {
+                                              nlohmann::json& doc = *sharedDoc;
                                               if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                   return;
                                               doc["resources"][resName]["format"] = v;
-                                              SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                              SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                           });
                     row->AddChild(std::move(tf));
                     resFoldoutPtr->AddChild(std::move(row));
@@ -1862,8 +2351,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                             ddRaw->SetId("rp-res-" + idRes + "-extent-mode");
                             ddRaw->SetOptions(MakeOptionsFromLabels({"Scale", "Absolute"}), 0);
                             ddRaw->SetSelectedValue(useAbs ? "Absolute" : "Scale");
-                            ddRaw->SetOnValueChanged([root, pipe, doc, resName](const std::string& v) mutable
+                            ddRaw->SetOnValueChanged([root, pipe, sharedDoc, resName](const std::string& v) mutable
                                                      {
+                                                         nlohmann::json& doc = *sharedDoc;
                                                          if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                              return;
                                                          auto& r = doc["resources"][resName];
@@ -1883,7 +2373,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                                              ex.erase("height");
                                                              ex["scale"] = nlohmann::json::array({1.0, 1.0});
                                                          }
-                                                         SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                         SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                                      });
                             rowMode->AddChild(std::move(dd));
                             resFoldoutPtr->AddChild(std::move(rowMode));
@@ -1897,15 +2387,16 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                             iw->AddClass("settings-row-field");
                             iw->SetId("rp-res-" + idRes + "-extent-width");
                             iw->SetValue(w);
-                            iw->SetOnValueChanged([root, pipe, doc, resName](const int& v) mutable
+                            iw->SetOnValueChanged([root, pipe, sharedDoc, resName](const int& v) mutable
                                                   {
+                                                      nlohmann::json& doc = *sharedDoc;
                                                       if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                           return;
                                                       auto& r = doc["resources"][resName];
                                                       if (!r.contains("extent") || !r["extent"].is_object())
                                                           r["extent"] = nlohmann::json::object();
                                                       r["extent"]["width"] = std::max(1, v);
-                                                      SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                      SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                                   });
                             rowW->AddChild(std::move(iw));
                             resFoldoutPtr->AddChild(std::move(rowW));
@@ -1916,15 +2407,16 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                             ih->AddClass("settings-row-field");
                             ih->SetId("rp-res-" + idRes + "-extent-height");
                             ih->SetValue(h);
-                            ih->SetOnValueChanged([root, pipe, doc, resName](const int& v) mutable
+                            ih->SetOnValueChanged([root, pipe, sharedDoc, resName](const int& v) mutable
                                                   {
+                                                      nlohmann::json& doc = *sharedDoc;
                                                       if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                           return;
                                                       auto& r = doc["resources"][resName];
                                                       if (!r.contains("extent") || !r["extent"].is_object())
                                                           r["extent"] = nlohmann::json::object();
                                                       r["extent"]["height"] = std::max(1, v);
-                                                      SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                      SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                                   });
                             rowH->AddChild(std::move(ih));
                             resFoldoutPtr->AddChild(std::move(rowH));
@@ -1938,8 +2430,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                             fx->AddClass("settings-row-field");
                             fx->SetId("rp-res-" + idRes + "-extent-scale-x");
                             fx->SetValue(sx);
-                            fx->SetOnValueChanged([root, pipe, doc, resName](const float& v) mutable
+                            fx->SetOnValueChanged([root, pipe, sharedDoc, resName](const float& v) mutable
                                                   {
+                                                      nlohmann::json& doc = *sharedDoc;
                                                       if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                           return;
                                                       auto& r = doc["resources"][resName];
@@ -1949,7 +2442,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                                       if (!ex.contains("scale") || !ex["scale"].is_array() || ex["scale"].size() < 2)
                                                           ex["scale"] = nlohmann::json::array({1.0, 1.0});
                                                       ex["scale"][0] = (double)v;
-                                                      SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                      SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                                   });
                             rowSX->AddChild(std::move(fx));
                             resFoldoutPtr->AddChild(std::move(rowSX));
@@ -1960,8 +2453,9 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                             fy->AddClass("settings-row-field");
                             fy->SetId("rp-res-" + idRes + "-extent-scale-y");
                             fy->SetValue(sy);
-                            fy->SetOnValueChanged([root, pipe, doc, resName](const float& v) mutable
+                            fy->SetOnValueChanged([root, pipe, sharedDoc, resName](const float& v) mutable
                                                   {
+                                                      nlohmann::json& doc = *sharedDoc;
                                                       if (!doc.contains("resources") || !doc["resources"].is_object() || !doc["resources"].contains(resName))
                                                           return;
                                                       auto& r = doc["resources"][resName];
@@ -1971,7 +2465,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                                       if (!ex.contains("scale") || !ex["scale"].is_array() || ex["scale"].size() < 2)
                                                           ex["scale"] = nlohmann::json::array({1.0, 1.0});
                                                       ex["scale"][1] = (double)v;
-                                                      SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                                      SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                                   });
                             rowSY->AddChild(std::move(fy));
                             resFoldoutPtr->AddChild(std::move(rowSY));
@@ -1988,12 +2482,13 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                 btn->AddClass("settings-row-field");
                 btn->SetId("rp-res-" + idRes + "-remove");
                 btn->SetText("Remove Resource");
-                btn->RegisterEventHandler(kEventButtonClick, [root, pipe, doc, resName](UIEvent&) mutable
+                btn->RegisterEventHandler(kEventButtonClick, [root, pipe, sharedDoc, resName](UIEvent&) mutable
                                 {
+                                    nlohmann::json& doc = *sharedDoc;
                                     if (!doc.contains("resources") || !doc["resources"].is_object())
                                         return;
                                     doc["resources"].erase(resName);
-                                    SaveReloadRebuildUndoable(root, pipe, doc, s_UndoService, "Render Pipeline Edit");
+                                    SaveReloadRebuildUndoable(root, pipe, sharedDoc, s_UndoService, "Render Pipeline Edit");
                                 });
                 row->AddChild(std::move(btn));
                 resFoldoutPtr->AddChild(std::move(row));
@@ -2004,10 +2499,8 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     }
 
     // ---- Editor: passes ----
-    if (!doc.contains("passes") || !doc["passes"].is_array())
-    {
-        doc["passes"] = nlohmann::json::array();
-    }
+    const auto passesIt = doc.find("passes");
+    const size_t passCount = passesIt != doc.end() && passesIt->is_array() ? passesIt->size() : 0;
 
     std::vector<std::string> knownPassTypes;
     if (auto* rs = GameEngine::EngineCore::GetInstance().GetRenderServices())
@@ -2032,7 +2525,8 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
 
     // Right-click on Passes header: "Add Pass" context menu
     passesFoldoutPtr->RegisterEventHandler(kEventMouseDown,
-        [root, pipe, doc, undo, knownPassTypes, passesFoldoutPtr](UIEvent& e) mutable {
+        [root, pipe, sharedDoc, undo, knownPassTypes, passesFoldoutPtr](UIEvent& e) mutable {
+            nlohmann::json& doc = *sharedDoc;
             if (e.Button != 1)
                 return;
             if (!s_HostWindow)
@@ -2045,7 +2539,8 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
             constexpr uint32_t kCmdAddPass = 1;
             menu->AddItem(0, "Add Pass...", kCmdAddPass);
             menu->SetItemIcon(kCmdAddPass, EditorIcons::kPlus);
-            menu->SetCommandHandler([root, pipe, doc, undo, knownPassTypes, passesFoldoutPtr](uint32_t cmd) mutable {
+            menu->SetCommandHandler([root, pipe, sharedDoc, undo, knownPassTypes, passesFoldoutPtr](uint32_t cmd) mutable {
+                nlohmann::json& doc = *sharedDoc;
                 if (cmd != kCmdAddPass)
                     return;
                 UIManager* mgr = passesFoldoutPtr->GetOwnerManager();
@@ -2060,14 +2555,15 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                 dialog->SetProvider(provider.get());
                 SearchDialog* dialogPtr = dialog.get();
 
-                dialog->SetOnResult([root, pipe, doc, undo, uiRoot, dialogPtr, provider](const SearchResultItem& item) mutable {
+                dialog->SetOnResult([root, pipe, sharedDoc, undo, uiRoot, dialogPtr, provider](const SearchResultItem& item) mutable {
+                    nlohmann::json& doc = *sharedDoc;
                     auto* typeName = std::any_cast<std::string>(&item.UserData);
                     if (!typeName)
                         return;
                     nlohmann::json p = MakeDefaultPassForType(*typeName, doc["passes"]);
                     doc["passes"].push_back(std::move(p));
                     uiRoot->RemoveChild(dialogPtr);
-                    SaveReloadRebuildUndoable(root, pipe, doc, undo, "Add Pass");
+                    SaveReloadRebuildUndoable(root, pipe, sharedDoc, undo, "Add Pass");
                 });
                 dialog->SetOnCancel([uiRoot, dialogPtr, provider]() {
                     uiRoot->RemoveChild(dialogPtr);
@@ -2086,7 +2582,8 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     // Pass list: drag a pass's header to reorder the passes. Entries are keyed by pass index.
     auto passContainer = std::make_unique<EditorUI::ReorderableSectionList>(
         "RenderPipelinePasses",
-        [root, pipe, doc, undo](uint64_t sourceKey, uint64_t targetKey, bool after) mutable {
+        [root, pipe, sharedDoc, undo](uint64_t sourceKey, uint64_t targetKey, bool after) mutable {
+        nlohmann::json& doc = *sharedDoc;
         if (!doc.contains("passes") || !doc["passes"].is_array())
             return;
         const size_t srcIdx = static_cast<size_t>(sourceKey);
@@ -2103,24 +2600,21 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
         if (dstIdx > doc["passes"].size())
             dstIdx = doc["passes"].size();
         doc["passes"].insert(doc["passes"].begin() + static_cast<ptrdiff_t>(dstIdx), std::move(moved));
-        SaveReloadRebuildUndoable(root, pipe, doc, undo, "Reorder Passes");
+        SaveReloadRebuildUndoable(root, pipe, sharedDoc, undo, "Reorder Passes");
     });
     EditorUI::ReorderableSectionList* passContainerPtr = passContainer.get();
     passesFoldoutPtr->AddChild(std::move(passContainer));
 
-    for (size_t i = 0; i < doc["passes"].size(); ++i)
+    const SharedPassFieldsContext fields = std::make_shared<const PassFieldsContext>(
+        PassFieldsContext{root, pipe, undo, sharedDoc, knownPassTypes, rgUsages});
+    for (size_t i = 0; i < passCount; ++i)
     {
         if (!doc["passes"][i].is_object())
             continue;
 
-        const std::string passId = doc["passes"][i].value("id", "<missing>");
-        const std::string passType = doc["passes"][i].value("type", "");
-        const std::string foldTitle =
-            std::string("Pass ") + std::to_string(i) + ": " + passId + (passType.empty() ? "" : (" (" + passType + ")"));
-
         auto passFoldout = std::make_unique<Foldout>();
-        passFoldout->SetTitle(foldTitle);
-        passFoldout->SetId("rp-pass-" + std::to_string(i) + "-foldout");
+        passFoldout->SetTitle(PassFoldoutTitle(doc["passes"][i], i));
+        passFoldout->SetId(PassFoldoutId(i));
         passFoldout->AddClass("rp-foldout");
         passFoldout->SetExpanded(FoldoutStateCache::Get(pipe, passFoldout->GetId(), false));
         NormalizeRenderPipelineFoldoutContent(passFoldout.get());
@@ -2128,388 +2622,15 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                           { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
         UIElement* passUI = passFoldout.get();
 
-        {
-        // enabled
-        {
-            AddInspectorToggleRow(passUI, "Enabled", doc["passes"][i].value("enabled", true),
-                "rp-pass-" + std::to_string(i) + "-enabled",
-                [root, pipe, doc, undo, i](bool v) mutable
-                {
-                    if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                        doc["passes"][i]["enabled"] = v;
-                    SaveReloadRebuildUndoable(root, pipe, doc, undo, "Pass Enabled");
-                });
-        }
-
-        // id
-        {
-            AddInspectorTextRow(passUI, "Id", doc["passes"][i].value("id", ""),
-                "rp-pass-" + std::to_string(i) + "-id",
-                [root, pipe, doc, undo, i](const std::string& v) mutable
-                {
-                    if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                        doc["passes"][i]["id"] = v;
-                    SaveReloadRebuildUndoable(root, pipe, doc, undo, "Pass Id");
-                });
-        }
-
-        // type
-        {
-            const std::string currentType = doc["passes"][i].value("type", "");
-
-            std::vector<Dropdown::Option> opts;
-            opts.reserve(knownPassTypes.size() + 1);
-
-            int selectedIndex = 0;
-            bool found = false;
-            for (size_t k = 0; k < knownPassTypes.size(); ++k)
-            {
-                if (!currentType.empty() && knownPassTypes[k] == currentType)
-                {
-                    found = true;
-                    selectedIndex = static_cast<int>(opts.size());
-                }
-                opts.push_back(Dropdown::Option{knownPassTypes[k], knownPassTypes[k]});
-            }
-            if (!found && !currentType.empty())
-            {
-                // Keep any unknown/custom type selectable so we don't destroy data.
-                opts.insert(opts.begin(), Dropdown::Option{currentType, currentType + " (custom)"});
-                selectedIndex = 0;
-            }
-
-            AddInspectorDropdownRow(passUI, "Type", opts, selectedIndex,
-                "rp-pass-" + std::to_string(i) + "-type",
-                [root, pipe, doc, undo, i](const std::string& v) mutable
-                {
-                    if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                    {
-                        doc["passes"][i]["type"] = v;
-                        const nlohmann::json defaults = MakeDefaultPassForType(v, doc["passes"]);
-                        for (auto it = defaults.begin(); it != defaults.end(); ++it)
-                        {
-                            if (it.key() == "id" || it.key() == "type" ||
-                                doc["passes"][i].contains(it.key()))
-                                continue;
-                            doc["passes"][i][it.key()] = it.value();
-                        }
-                    }
-                    SaveReloadRebuildUndoable(root, pipe, doc, undo, "Pass Type");
-                });
-        }
-
-        // shaderPkg (for FullscreenShader / ComputeShader)
-        {
-            const std::string typeLower = ToLowerAscii(doc["passes"][i].value("type", ""));
-            if (typeLower == "fullscreenshader" || typeLower == "computeshader")
-            {
-                AddInspectorTextRow(passUI, "shaderPkg", doc["passes"][i].value("shaderPkg", ""),
-                    "rp-pass-" + std::to_string(i) + "-shaderPkg",
-                    [root, pipe, doc, undo, i](const std::string& v) mutable
-                    {
-                        if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                            doc["passes"][i]["shaderPkg"] = v;
-                        SaveReloadRebuildUndoable(root, pipe, doc, undo, "Shader Package");
-                    });
-            }
-        }
-
-        // FullscreenShader specific
-        {
-            const std::string typeLower = ToLowerAscii(doc["passes"][i].value("type", ""));
-            if (typeLower == "fullscreenshader")
-            {
-                // alphaBlend
-                {
-                    AddInspectorToggleRow(passUI, "alphaBlend", doc["passes"][i].value("alphaBlend", false),
-                        "rp-pass-" + std::to_string(i) + "-alphaBlend",
-                        [root, pipe, doc, undo, i](bool v) mutable
-                        {
-                            if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                                doc["passes"][i]["alphaBlend"] = v;
-                            SaveReloadRebuildUndoable(root, pipe, doc, undo, "Alpha Blend");
-                        });
-                }
-
-                BuildStringMapEditor(passUI, root, "inputs:", pipe, doc, i, "inputs", "rp-pass-" + std::to_string(i) + "-inputs", /*allowDropRefs=*/true);
-                BuildStringMapEditor(passUI, root, "samplers:", pipe, doc, i, "samplers", "rp-pass-" + std::to_string(i) + "-samplers", /*allowDropRefs=*/false);
-                BuildStringMapEditor(passUI, root, "buffers:", pipe, doc, i, "buffers", "rp-pass-" + std::to_string(i) + "-buffers", /*allowDropRefs=*/true);
-                BuildUsageMapEditor(passUI,
-                                    root,
-                                    "bufferUsages:",
-                                    pipe,
-                                    doc,
-                                    i,
-                                    "bufferUsages",
-                                    "rp-pass-" + std::to_string(i) + "-bufferUsages",
-                                    rgUsages,
-                                    "StorageRead");
-
-                // Push constants: editable float/int fields for each entry.
-                if (doc["passes"][i].contains("pushConstants") && doc["passes"][i]["pushConstants"].is_object())
-                {
-                    AddTextBlock(passUI, "pushConstants:", "inspector-section-subheader");
-                    const auto& pcObj = doc["passes"][i]["pushConstants"];
-                    for (auto it = pcObj.begin(); it != pcObj.end(); ++it)
-                    {
-                        const std::string key = it.key();
-                        // Skip padding fields (pad, pad0, pad1, etc.)
-                        if (key.size() >= 3 && key.substr(0, 3) == "pad" && (key.size() == 3 || std::isdigit(key[3])))
-                            continue;
-                        if (it.value().is_number_float())
-                        {
-                            AddInspectorFloatRow(passUI, key, it.value().get<float>(), it.value().get<float>(),
-                                -std::numeric_limits<float>::infinity(),
-                                std::numeric_limits<float>::infinity(),
-                                "rp-pass-" + std::to_string(i) + "-pc-" + key,
-                                [root, pipe, doc, undo, i, key](float v) mutable
-                                {
-                                    if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                                        doc["passes"][i]["pushConstants"][key] = v;
-                                    SaveReloadRebuildUndoable(root, pipe, doc, undo, "Push Constant " + key);
-                                });
-                        }
-                        else if (it.value().is_number_integer())
-                        {
-                            AddInspectorIntRow(passUI, key, it.value().get<int>(), it.value().get<int>(),
-                                "rp-pass-" + std::to_string(i) + "-pc-" + key,
-                                [root, pipe, doc, undo, i, key](int v) mutable
-                                {
-                                    if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                                        doc["passes"][i]["pushConstants"][key] = v;
-                                    SaveReloadRebuildUndoable(root, pipe, doc, undo, "Push Constant " + key);
-                                });
-                        }
-                    }
-                }
-            }
-        }
-
-        // ShadowMap specific
-        {
-            const std::string typeLower = ToLowerAscii(doc["passes"][i].value("type", ""));
-            if (typeLower == "shadowmap" || typeLower == "cascadedshadowmap")
-            {
-                BuildShadowMapPassFields(*passUI, doc["passes"][i], "rp-pass-" + std::to_string(i),
-                    [root, pipe, doc, undo, i](const std::string& key, nlohmann::json value,
-                                               const std::string& undoLabel) mutable
-                    {
-                        if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                            doc["passes"][i][key] = std::move(value);
-                        SaveReloadRebuildUndoable(root, pipe, doc, undo, undoLabel);
-                    });
-            }
-        }
-
-        // ComputeShader specific
-        {
-            const std::string typeLower = ToLowerAscii(doc["passes"][i].value("type", ""));
-            if (typeLower == "computeshader")
-            {
-                // targetBuffer/targetTexture
-                {
-                    AddInspectorTextRow(passUI, "targetBuffer", doc["passes"][i].value("targetBuffer", ""),
-                        "rp-pass-" + std::to_string(i) + "-targetBuffer",
-                        [root, pipe, doc, undo, i](const std::string& v) mutable
-                        {
-                            if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                                doc["passes"][i]["targetBuffer"] = v;
-                            SaveReloadRebuildUndoable(root, pipe, doc, undo, "Target Buffer");
-                        });
-                }
-                {
-                    AddInspectorTextRow(passUI, "targetTexture", doc["passes"][i].value("targetTexture", ""),
-                        "rp-pass-" + std::to_string(i) + "-targetTexture",
-                        [root, pipe, doc, undo, i](const std::string& v) mutable
-                        {
-                            if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                                doc["passes"][i]["targetTexture"] = v;
-                            SaveReloadRebuildUndoable(root, pipe, doc, undo, "Target Texture");
-                        });
-                }
-
-                // dispatch expressions
-                {
-                    if (!doc["passes"][i].contains("dispatch") || !doc["passes"][i]["dispatch"].is_object())
-                        doc["passes"][i]["dispatch"] = nlohmann::json::object();
-                    auto& d = doc["passes"][i]["dispatch"];
-                    const std::string x = d.contains("x") ? d["x"].dump() : std::string("1");
-                    const std::string y = d.contains("y") ? d["y"].dump() : std::string("1");
-                    const std::string z = d.contains("z") ? d["z"].dump() : std::string("1");
-
-                    auto makeDispatchField = [&](const char* label, const char* axis, const std::string& initial, const std::string& id)
-                    {
-                        // Stored JSON might be a number; normalize to string without quotes.
-                        std::string v = initial;
-                        if (!v.empty() && v.front() == '"' && v.back() == '"')
-                            v = v.substr(1, v.size() - 2);
-                        AddInspectorTextRow(passUI, label, v, id,
-                            [root, pipe, doc, undo, i, axis](const std::string& v2) mutable
-                            {
-                                if (i >= doc["passes"].size() || !doc["passes"][i].is_object())
-                                    return;
-                                if (!doc["passes"][i].contains("dispatch") || !doc["passes"][i]["dispatch"].is_object())
-                                    doc["passes"][i]["dispatch"] = nlohmann::json::object();
-                                doc["passes"][i]["dispatch"][axis] = v2;
-                                SaveReloadRebuildUndoable(root, pipe, doc, undo, std::string("Dispatch ") + axis);
-                            });
-                    };
-
-                    makeDispatchField("dispatch.x", "x", x, "rp-pass-" + std::to_string(i) + "-dispatch-x");
-                    makeDispatchField("dispatch.y", "y", y, "rp-pass-" + std::to_string(i) + "-dispatch-y");
-                    makeDispatchField("dispatch.z", "z", z, "rp-pass-" + std::to_string(i) + "-dispatch-z");
-                }
-
-                BuildStringMapEditor(passUI, root, "inputs:", pipe, doc, i, "inputs", "rp-pass-" + std::to_string(i) + "-inputs", /*allowDropRefs=*/true);
-                BuildUsageMapEditor(passUI,
-                                    root,
-                                    "inputUsages:",
-                                    pipe,
-                                    doc,
-                                    i,
-                                    "inputUsages",
-                                    "rp-pass-" + std::to_string(i) + "-inputUsages",
-                                    rgUsages,
-                                    "Sampled");
-                BuildStringMapEditor(passUI, root, "samplers:", pipe, doc, i, "samplers", "rp-pass-" + std::to_string(i) + "-samplers", /*allowDropRefs=*/false);
-                BuildStringMapEditor(passUI, root, "buffers:", pipe, doc, i, "buffers", "rp-pass-" + std::to_string(i) + "-buffers", /*allowDropRefs=*/true);
-                BuildUsageMapEditor(passUI,
-                                    root,
-                                    "bufferUsages:",
-                                    pipe,
-                                    doc,
-                                    i,
-                                    "bufferUsages",
-                                    "rp-pass-" + std::to_string(i) + "-bufferUsages",
-                                    rgUsages,
-                                    "StorageRead");
-
-                // uniformWrites (u32x4) editor
-                AddTextBlock(passUI, "uniformWrites (u32x4):");
-                if (!doc["passes"][i].contains("uniformWrites") || !doc["passes"][i]["uniformWrites"].is_object())
-                    doc["passes"][i]["uniformWrites"] = nlohmann::json::object();
-                {
-                    size_t uwIdx = 0;
-                    const auto& uw = doc["passes"][i]["uniformWrites"];
-                    for (auto it = uw.begin(); it != uw.end(); ++it, ++uwIdx)
-                    {
-                        const std::string binding = it.key();
-                        const auto& entry = it.value();
-                        std::array<int, 4> v{0, 0, 0, 0};
-                        if (entry.is_object() && entry.contains("u32x4") && entry["u32x4"].is_array() && entry["u32x4"].size() == 4)
-                        {
-                            for (int k = 0; k < 4; ++k)
-                            {
-                                if (entry["u32x4"][k].is_number_integer())
-                                    v[k] = (int)entry["u32x4"][k].get<int64_t>();
-                            }
-                        }
-
-                        AddTextBlock(passUI, std::string("- ") + binding);
-
-                        // 4 int fields
-                        for (int k = 0; k < 4; ++k)
-                        {
-                            AddInspectorIntRow(passUI, std::string("u32x4[") + std::to_string(k) + "]",
-                                v[k], v[k],
-                                "rp-pass-" + std::to_string(i) + "-uw-" + std::to_string(uwIdx) + "-" + std::to_string(k),
-                                [root, pipe, doc, undo, i, binding, k](int newV) mutable
-                                {
-                                    if (i >= doc["passes"].size() || !doc["passes"][i].is_object())
-                                        return;
-                                    if (!doc["passes"][i].contains("uniformWrites") || !doc["passes"][i]["uniformWrites"].is_object())
-                                        doc["passes"][i]["uniformWrites"] = nlohmann::json::object();
-                                    auto& uw2 = doc["passes"][i]["uniformWrites"];
-                                    if (!uw2.contains(binding) || !uw2[binding].is_object())
-                                        uw2[binding] = nlohmann::json::object();
-                                    auto& e = uw2[binding];
-                                    if (!e.contains("u32x4") || !e["u32x4"].is_array() || e["u32x4"].size() != 4)
-                                        e["u32x4"] = nlohmann::json::array({0, 0, 0, 0});
-                                    e["u32x4"][k] = newV;
-                                    SaveReloadRebuildUndoable(root, pipe, doc, undo, "Uniform Write");
-                                });
-                        }
-
-                        // Remove binding
-                        {
-                            AddInspectorButtonRow(passUI, "", "Remove uniformWrites entry",
-                                "rp-pass-" + std::to_string(i) + "-uw-remove-" + std::to_string(uwIdx),
-                                [root, pipe, doc, undo, i, binding](UIEvent&) mutable
-                                {
-                                    if (i >= doc["passes"].size() || !doc["passes"][i].is_object())
-                                        return;
-                                    if (doc["passes"][i].contains("uniformWrites") && doc["passes"][i]["uniformWrites"].is_object())
-                                        doc["passes"][i]["uniformWrites"].erase(binding);
-                                    SaveReloadRebuildUndoable(root, pipe, doc, undo, "Remove Uniform Write");
-                                });
-                        }
-                    }
-
-                    // Add binding
-                    {
-                        AddInspectorButtonRow(passUI, "", "Add uniformWrites entry",
-                            "rp-pass-" + std::to_string(i) + "-uw-add",
-                            [root, pipe, doc, undo, i](UIEvent&) mutable
-                            {
-                                if (i >= doc["passes"].size() || !doc["passes"][i].is_object())
-                                    return;
-                                if (!doc["passes"][i].contains("uniformWrites") || !doc["passes"][i]["uniformWrites"].is_object())
-                                    doc["passes"][i]["uniformWrites"] = nlohmann::json::object();
-                                auto& uw2 = doc["passes"][i]["uniformWrites"];
-                                const std::string k = MakeUniqueKeyForObject(uw2, "NewUniform");
-                                uw2[k] = nlohmann::json::object({{"u32x4", nlohmann::json::array({0, 0, 0, 0})}});
-                                SaveReloadRebuildUndoable(root, pipe, doc, undo, "Add Uniform Write");
-                            });
-                    }
-                }
-            }
-        }
-
-        // output (for FullscreenShader)
-        {
-            const std::string typeLower = ToLowerAscii(doc["passes"][i].value("type", ""));
-            if (typeLower == "fullscreenshader")
-            {
-                AddInspectorTextRow(passUI, "output", doc["passes"][i].value("output", "View.Resolve"),
-                    "rp-pass-" + std::to_string(i) + "-output",
-                    [root, pipe, doc, undo, i](const std::string& v) mutable
-                    {
-                        if (i < doc["passes"].size() && doc["passes"][i].is_object())
-                            doc["passes"][i]["output"] = v;
-                        SaveReloadRebuildUndoable(root, pipe, doc, undo, "Pass Output");
-                    });
-            }
-        }
-
-        // Existing diagnostics view (kept; helpful while authoring)
-        {
-            const std::string typeLower = ToLowerAscii(doc["passes"][i].value("type", ""));
-            if (typeLower == "fullscreenshader")
-            {
-                const std::string shaderPkg = doc["passes"][i].value("shaderPkg", "");
-                std::vector<std::string> inputNames;
-                if (doc["passes"][i].contains("inputs") && doc["passes"][i]["inputs"].is_object())
-                {
-                    for (auto it = doc["passes"][i]["inputs"].begin(); it != doc["passes"][i]["inputs"].end(); ++it)
-                    {
-                        if (it.value().is_string())
-                            inputNames.push_back(it.key());
-                    }
-                }
-                if (!shaderPkg.empty())
-                {
-                    AddTextBlock(passUI, FormatShaderPkgValidation(shaderPkg, inputNames));
-                }
-            }
-        }
-        }
+        BuildPassFields(fields, i, *passUI);
 
         // The pass's options menu on right-click; the pass list owns the drag to reorder.
         {
             Foldout* foldoutPtr = passFoldout.get();
 
             foldoutPtr->RegisterEventHandler(kEventMouseDown,
-                [root, pipe, doc, undo, i, foldoutPtr, knownPassTypes](UIEvent& e) mutable {
+                [root, pipe, sharedDoc, undo, i, foldoutPtr, knownPassTypes](UIEvent& e) mutable {
+                    nlohmann::json& doc = *sharedDoc;
                     if (e.Button == 1)
                     {
                         // Right-click: show context menu with Remove Pass.
@@ -2531,18 +2652,19 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                         menu->AddSeparator(0);
                         menu->AddItem(0, "Remove Pass", kCmdRemovePass);
                         menu->SetItemIcon(kCmdRemovePass, EditorIcons::kTrash);
-                        menu->SetCommandHandler([root, pipe, doc, undo, i, knownPassTypes, foldoutPtr](uint32_t cmd) mutable {
+                        menu->SetCommandHandler([root, pipe, sharedDoc, undo, i, knownPassTypes, foldoutPtr](uint32_t cmd) mutable {
+                            nlohmann::json& doc = *sharedDoc;
                             if (!doc.contains("passes") || !doc["passes"].is_array())
                                 return;
                             if (cmd == kCmdMoveUp && i > 0 && i < doc["passes"].size())
                             {
                                 std::swap(doc["passes"][i], doc["passes"][i - 1]);
-                                SaveReloadRebuildUndoable(root, pipe, doc, undo, "Move Pass Up");
+                                SaveReloadRebuildUndoable(root, pipe, sharedDoc, undo, "Move Pass Up");
                             }
                             else if (cmd == kCmdMoveDown && i + 1 < doc["passes"].size())
                             {
                                 std::swap(doc["passes"][i], doc["passes"][i + 1]);
-                                SaveReloadRebuildUndoable(root, pipe, doc, undo, "Move Pass Down");
+                                SaveReloadRebuildUndoable(root, pipe, sharedDoc, undo, "Move Pass Down");
                             }
                             else if (cmd == kCmdAddPass)
                             {
@@ -2556,14 +2678,15 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                                 auto dialog = std::make_unique<SearchDialog>();
                                 dialog->SetProvider(provider.get());
                                 SearchDialog* dialogPtr = dialog.get();
-                                dialog->SetOnResult([root, pipe, doc, undo, uiRoot, dialogPtr, provider](const SearchResultItem& item) mutable {
+                                dialog->SetOnResult([root, pipe, sharedDoc, undo, uiRoot, dialogPtr, provider](const SearchResultItem& item) mutable {
+                                    nlohmann::json& doc = *sharedDoc;
                                     auto* typeName = std::any_cast<std::string>(&item.UserData);
                                     if (!typeName)
                                         return;
                                     nlohmann::json p = MakeDefaultPassForType(*typeName, doc["passes"]);
                                     doc["passes"].push_back(std::move(p));
                                     uiRoot->RemoveChild(dialogPtr);
-                                    SaveReloadRebuildUndoable(root, pipe, doc, undo, "Add Pass");
+                                    SaveReloadRebuildUndoable(root, pipe, sharedDoc, undo, "Add Pass");
                                 });
                                 dialog->SetOnCancel([uiRoot, dialogPtr, provider]() {
                                     uiRoot->RemoveChild(dialogPtr);
@@ -2577,7 +2700,7 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
                             else if (cmd == kCmdRemovePass && i < doc["passes"].size())
                             {
                                 doc["passes"].erase(doc["passes"].begin() + (nlohmann::json::difference_type)i);
-                                SaveReloadRebuildUndoable(root, pipe, doc, undo, "Remove Pass");
+                                SaveReloadRebuildUndoable(root, pipe, sharedDoc, undo, "Remove Pass");
                             }
                         });
                         menu->Show(s_HostWindow, (int)e.X, (int)e.Y);
@@ -2602,6 +2725,13 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     InspectorDrag::AutoSetupDragForInspector(root);
 }
 
+// True when the asset's document is the document the tree shows.
+static bool TreeShowsDocument(const RenderPipelineAsset& pipe, const nlohmann::json& shown)
+{
+    const nlohmann::json loaded = nlohmann::json::parse(pipe.GetDocument().jsonText, nullptr, /*allow_exceptions=*/false);
+    return !loaded.is_discarded() && loaded == shown;
+}
+
 } // namespace
 
 void RegisterRenderPipelineInspector()
@@ -2617,7 +2747,12 @@ void RegisterRenderPipelineInspector()
             return;
         s_HostWindow = ctx.Window;
         s_UndoService = ctx.Undo;
-        BuildRenderPipelineEditorUI(ctx.Parent, pipe, ctx.Undo);
+        const SharedPipelineDocument sharedDoc = std::make_shared<nlohmann::json>();
+        BuildRenderPipelineEditorUI(ctx.Parent, pipe, ctx.Undo, sharedDoc);
+        // The reload that follows a save of this inspector keeps the tree, which already shows the
+        // saved document. A reload of other text, after an undo or an edit outside the editor, rebuilds it.
+        if (ctx.AssetReloadedCallbacks)
+            ctx.AssetReloadedCallbacks->push_back([pipe, sharedDoc] { return TreeShowsDocument(*pipe, *sharedDoc); });
     };
 
     InspectorRegistry::Get().RegisterAssetInspector(AssetType::RenderPipeline, std::move(fn));
