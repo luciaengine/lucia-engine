@@ -160,20 +160,17 @@ TEST(SkyInspectorSections, EachSectionContainsTheRowsItTook)
         std::initializer_list<const char*> rows;
     };
     const Group groups[] = {
-        {"fallingStars", "addSkyDiskToggle(fallingStars, \"Falling stars\"",
-         "\"Star density\"",
-         {"\"Falling amount\"", "\"Falling frequency\"", "\"Falling speed\"", "\"Falling length\"",
-          "\"Falling thickness\"", "\"Falling dot size\""}},
+        {"fallingStars", "addSkyDiskToggle(fallingStars, \"Show falling stars\"", "AddSkyStarLookRow(stars,",
+         {"\"Show falling stars\"", "\"Interval (seconds)\""}},
         // The star rows end where the Sun Dir override rows begin. Those go to `physical`, so a
         // span that runs past them reads three of its rows as stars that landed elsewhere.
-        {"stars", "AddComponentFloatRowWithDrag<Components::SkyEnvironment>(stars, \"Star density\"",
-         "if (!sky->AutoSunMoon)",
-         {"\"Brightness\"", "\"Size\"", "\"Diamond Shape\"", "\"Core Size\"", "\"Glow Falloff\"",
-          "\"Twinkle Speed\"", "\"Twinkle Intensity\""}},
+        {"stars", "AddSkyStarLookRow(stars,", "if (!sky->AutoSunMoon)",
+         {"\"Limit\"", "\"Twinkle\"", "\"Highlights\"", "\"Glow\"", "\"Twinkle rate\"", "\"Shape\"",
+          "\"Core\"", "\"Spikes\"", "\"Spike length\""}},
         // Sun size 2D leads the group: it belongs with the other 2D-only knobs rather than beside
         // the sun's real size, because it is a screen fraction and not an angle.
         {"backdrop2D", "(backdrop2D, \"Sun size 2D\"", "",
-         {"\"Sun size 2D\"", "\"Sky pan 2D\"", "\"Moon size 2D\"", "\"Falling dot size 2D\""}},
+         {"\"Sun size 2D\"", "\"Sky pan 2D\"", "\"Moon size 2D\""}},
     };
 
     for (const Group& g : groups)

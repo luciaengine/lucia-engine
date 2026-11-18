@@ -130,7 +130,7 @@ TEST(CollapsibleInfoCardFold, NewCopyKeepsTheChevronUntilItIsMeasured)
 
     cardRaw->SetText(otherTwoRows);
     EXPECT_TRUE(cardRaw->IsFoldable()) << "new copy dropped the fold state before it was measured";
-    EXPECT_FALSE(chevron->HasClass("hidden")) << "new copy hid the chevron before it was measured";
+    EXPECT_FALSE(chevron->HasClass("blank")) << "new copy blanked the chevron before it was measured";
 
     for (int frame = 0; frame < 3; ++frame)
         fixture.Ui->Update(1.0f / 60.0f, /*interactive=*/true);
@@ -140,7 +140,7 @@ TEST(CollapsibleInfoCardFold, NewCopyKeepsTheChevronUntilItIsMeasured)
     for (int frame = 0; frame < 3; ++frame)
         fixture.Ui->Update(1.0f / 60.0f, /*interactive=*/true);
     EXPECT_FALSE(cardRaw->IsFoldable()) << "the measurement of one row still ends the fold";
-    EXPECT_TRUE(chevron->HasClass("hidden"));
+    EXPECT_TRUE(chevron->HasClass("blank")) << "a one-row card shows no chevron glyph";
 }
 
 // A card's action stays hidden until the card is given one; a click on it runs the action and never
