@@ -603,6 +603,9 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     if (!m_RenderServices)
         return;
 
+    // The texture service lives between RenderServices::Initialize and Shutdown. Without it the
+    // texture slots stay empty and the shader uses its procedural fallbacks.
+    auto* textures = m_RenderServices->GetDevice() ? &m_RenderServices->Textures() : nullptr;
     auto& feature = m_RenderServices->EnsureFeature<OceanRenderFeature>();
     m_Time += deltaTime;
     m_PresetOverrideValidator.Validate(world);
@@ -1599,17 +1602,16 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         auto material = BuildOceanWaterMaterial(surface);
         material.EntityId = entity;
         material.Priority = priority;
-        const GUID textures[] = {surface.FoamTexture.ToGuid(), surface.NormalTexture.ToGuid()};
+        const GUID textureGuids[] = {surface.FoamTexture.ToGuid(), surface.NormalTexture.ToGuid()};
         for (uint32 i = 0; i < 2; ++i)
-            if (!textures[i].IsNull())
+            if (textures && !textureGuids[i].IsNull())
             {
-                m_RenderServices->Textures().DeclareTextureClassification(
-                    textures[i], TextureColorSpace::Linear,
+                textures->DeclareTextureClassification(
+                    textureGuids[i], TextureColorSpace::Linear,
                     i == 0 ? TextureCookUsage::Mask : TextureCookUsage::Normal);
-                const auto texture = m_RenderServices->Textures().GetOrUpload(textures[i]);
+                const auto texture = textures->GetOrUpload(textureGuids[i]);
                 if (texture.IsValid())
-                    (i == 0 ? material.FoamTexture : material.NormalTexture) =
-                        m_RenderServices->Textures().GetBindlessIndex(texture);
+                    (i == 0 ? material.FoamTexture : material.NormalTexture) = textures->GetBindlessIndex(texture);
             }
         waterMaterials.push_back(material);
         return &waterMaterials.back();
@@ -2210,7 +2212,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         std::vector<Rendering::TextureHandle> flowMapTextures;
         flowMapTextures.reserve(flowMapTextureGuids.size());
         for (const GUID& guid : flowMapTextureGuids)
-            flowMapTextures.push_back(m_RenderServices->Textures().GetOrUpload(guid));
+            flowMapTextures.push_back(textures ? textures->GetOrUpload(guid) : Rendering::TextureHandle{});
         feature.GetFlow().SetFlowMapSources(
             flowMapSources.empty() ? nullptr : flowMapSources.data(),
             flowMapTextures.empty() ? nullptr : flowMapTextures.data(),
@@ -2354,7 +2356,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         std::vector<Rendering::TextureHandle> waveMaskTextures;
         waveMaskTextures.reserve(waveMaskTextureGuids.size());
         for (const GUID& guid : waveMaskTextureGuids)
-            waveMaskTextures.push_back(m_RenderServices->Textures().GetOrUpload(guid));
+            waveMaskTextures.push_back(textures ? textures->GetOrUpload(guid) : Rendering::TextureHandle{});
         feature.GetWaveMask().SetTextureSources(
             waveMaskTextureSources.empty() ? nullptr : waveMaskTextureSources.data(),
             waveMaskTextures.empty() ? nullptr : waveMaskTextures.data(),
@@ -2700,19 +2702,18 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     // Resolve optional texture overrides (GUID -> GPU, cached by RenderServices).
     // Classify normal/foam data before upload. Empty slots clear the handles so
     // the shader can use its procedural fallbacks.
-    m_RenderServices->Textures().DeclareTextureClassification(
-        oceanNormalTextureGuid, TextureColorSpace::Linear, TextureCookUsage::Normal);
-    m_RenderServices->Textures().DeclareTextureClassification(
-        oceanFoamTextureGuid, TextureColorSpace::Linear, TextureCookUsage::Mask);
-    feature.SetUserNormalTexture(oceanNormalTextureGuid.IsNull()
-                                     ? Rendering::TextureHandle{}
-                                     : m_RenderServices->Textures().GetOrUpload(oceanNormalTextureGuid));
-    feature.SetUserFoamTexture(oceanFoamTextureGuid.IsNull()
-                                   ? Rendering::TextureHandle{}
-                                   : m_RenderServices->Textures().GetOrUpload(oceanFoamTextureGuid));
-    feature.SetUserCausticsTexture(oceanCausticsTextureGuid.IsNull()
-                                       ? Rendering::TextureHandle{}
-                                       : m_RenderServices->Textures().GetOrUpload(oceanCausticsTextureGuid));
+    if (textures)
+    {
+        textures->DeclareTextureClassification(oceanNormalTextureGuid, TextureColorSpace::Linear,
+                                               TextureCookUsage::Normal);
+        textures->DeclareTextureClassification(oceanFoamTextureGuid, TextureColorSpace::Linear,
+                                               TextureCookUsage::Mask);
+    }
+    const auto resolveTexture = [textures](const GUID& guid)
+    { return textures && !guid.IsNull() ? textures->GetOrUpload(guid) : Rendering::TextureHandle{}; };
+    feature.SetUserNormalTexture(resolveTexture(oceanNormalTextureGuid));
+    feature.SetUserFoamTexture(resolveTexture(oceanFoamTextureGuid));
+    feature.SetUserCausticsTexture(resolveTexture(oceanCausticsTextureGuid));
 
     // Cascade LOD-count limit from the renderer (clamps the surface's snapped-
     // cascade sampling down, trimming fill). Clamped to the engine ceiling; 0 =
