@@ -290,3 +290,10 @@
   --ui_icon_tint_active:  #E8E8E8;
   --ui_icon_tint_hover:   #ffffff;
 }
+
+/* Settings > Appearance > Dropdown Outlines off: ControlAppearanceSettings stamps this class on the
+   UI root, and dropdowns, asset fields and picture choice fields draw no outline at rest. The hover
+   outline stays. This rule follows :root, so it wins at equal specificity. */
+.dropdowns-no-outline {
+  --ui_color_dropdown_outline: transparent;
+}

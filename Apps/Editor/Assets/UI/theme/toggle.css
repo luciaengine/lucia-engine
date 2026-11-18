@@ -30,7 +30,7 @@
 }
 
 /* Opt-in via Settings > Appearance > Toggle Inner Shadow. The class is
-   stamped on the UI root from ToggleAppearanceSettings. */
+   stamped on the UI root from ControlAppearanceSettings. */
 .toggle-inner-shadow .toggle {
 	box-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.55);
 }

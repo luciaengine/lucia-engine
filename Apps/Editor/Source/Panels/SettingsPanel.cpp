@@ -111,7 +111,7 @@ constexpr bool kInspectorBigNumberSpacingDefault = true;
 #include "Editor/Settings/DynamicResolutionProjectSettings.h"
 #include "Editor/Settings/Render/RenderProjectSettings.h"
 #include "Editor/Settings/SceneViewSettings.h"
-#include "Editor/Settings/ToggleAppearanceSettings.h"
+#include "Editor/Settings/ControlAppearanceSettings.h"
 #include "Editor/Settings/TooltipSettings.h"
 #include "Assets/SvgRasterizer.h"
 #include "Editor/DragDropPayloads.h"
@@ -2251,7 +2251,7 @@ void SettingsPanel::ApplySavedToggleStyle(UIManager* ui)
     prefs.TryGetBool(kPrefKeyCheckmarkToggles, useCheckmarks);
 
     ApplyToggleStyle(ui, useCheckmarks);
-    Editor::ToggleAppearanceSettings::Get().ApplyTo(ui);
+    Editor::ControlAppearanceSettings::Get().ApplyTo(ui);
 }
 
 void SettingsPanel::ApplyToggleStyle(UIManager* ui, bool useCheckmarks)
