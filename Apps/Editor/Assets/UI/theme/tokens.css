@@ -27,6 +27,8 @@
   --ui_color_log_debug: #9cdcfe;
   --ui_color_log_debug_fill: rgba(156, 220, 254, 0.1);
   --ui_color_log_debug_edge: rgba(156, 220, 254, 0.7);
+  /* Debug line text: --ui_color_text_dim with 30 % of --ui_color_log_debug. */
+  --ui_color_log_debug_text: #ABBFC9;
   --ui_color_log_info: #d4d4d4;
   --ui_color_log_info_fill: rgba(212, 212, 212, 0.1);
   --ui_color_log_info_edge: rgba(245, 245, 245, 0.7);

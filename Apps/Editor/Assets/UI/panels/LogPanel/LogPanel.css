@@ -262,7 +262,7 @@
 }
 
 .log-row-message-debug {
-	color: var(--ui_color_text_dim);
+	color: var(--ui_color_log_debug_text);
 }
 
 .log-detail-pane {
