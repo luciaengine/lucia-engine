@@ -348,6 +348,36 @@ TEST(SceneViewportTests, ThePointerEnteringAndLeavingAPaneHoversItInItsHost)
     EXPECT_FALSE(host.HoverCalls[1].Inside);
 }
 
+/// Counts the pointer-leave calls; the other tool calls are not part of these tests.
+class LeaveCountingTool final : public GameEngine::Editor::SceneTools::ISceneTool
+{
+public:
+    const char* GetName() const override { return "Leave counter"; }
+    void OnPointerEvent(const GameEngine::Editor::SceneTools::ScenePointerEvent&) override {}
+    void OnPointerLeave() override { ++Leaves; }
+    void OnKeyEvent(const GameEngine::Editor::SceneTools::SceneKeyEvent&) override {}
+    void GatherGizmos(GameEngine::Editor::SceneTools::GizmoCollector&) override {}
+
+    int Leaves = 0;
+};
+
+TEST(SceneViewportTests, ThePointerLeavingAPaneTellsTheActiveToolOfItsController)
+{
+    SceneViewController* controller = ZeroedController(2);
+    LeaveCountingTool tool;
+    controller->GetToolContext().SetActiveTool(&tool);
+    SceneViewport pane;
+    pane.Bind(BindingTo(controller));
+
+    UIEvent leave;
+    leave.Id = GameEngine::kEventMouseLeave;
+    pane.DispatchEvent(leave);
+
+    EXPECT_EQ(tool.Leaves, 1) << "a preview that follows the pointer stays where the pointer left the view";
+    pane.Bind(SceneViewportBinding{});
+    controller->GetToolContext().SetActiveTool(nullptr);
+}
+
 TEST(SceneViewportTests, AMoveInsideThePaneBoundsIsInsideAndAMoveOutsideIsNot)
 {
     SceneViewport pane;

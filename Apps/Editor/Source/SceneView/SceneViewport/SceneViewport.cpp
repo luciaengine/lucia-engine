@@ -746,6 +746,11 @@ void SceneViewport::OnMouseLeave(UIEvent&)
         m_Binding.Host->HoverViewport(*this, false);
     if (m_RulerOverlay)
         m_RulerOverlay->SetCursor(0.0f, 0.0f, false);
+    if (SceneViewController* controller = m_Binding.Controller)
+    {
+        if (Editor::SceneTools::ISceneTool* tool = controller->GetToolContext().GetActiveTool())
+            tool->OnPointerLeave();
+    }
 }
 
 void SceneViewport::OnScroll(UIEvent& ev)
