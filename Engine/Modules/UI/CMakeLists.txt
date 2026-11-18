@@ -583,6 +583,7 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedSearchPlaceholderTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedHeadingWeightTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedDropdownPictureRowTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedDropdownOutlineSettingTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/FontWeightMatchTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedFontFaceTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/StyleApplierTests.cpp
