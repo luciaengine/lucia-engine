@@ -83,6 +83,7 @@
 #include <cassert>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -520,6 +521,36 @@ Passes::MsaaResolveViewBuffers PipelineMsaaResolveViewBuffers(const Pipeline::Re
     return Pipeline::MsaaResolveViewBuffersFor(viewParams, exposureHistory, placeholder);
 }
 
+
+// The pipeline format key the world pass draws with, from the attachments it declares: the colour
+// target it renders into (the resolve target when MSAA is off and the pass renders straight into
+// it), the providers' extra colour slices and the depth target. Empty when an attachment is a
+// formatless import, whose format only the record context can query.
+std::optional<Rendering::PipelineFormatKey> WorldColorFormatKey(const Rendering::RenderGraph::RGFrame& frame,
+                                                                const RenderServices::WorldPassTargetsRG& targets,
+                                                                bool rendersIntoResolve)
+{
+    namespace RenderGraph = Rendering::RenderGraph;
+    std::array<RenderGraph::RGAttachmentKeyInput, RenderServices::WorldPassTargetsRG::kMaxExtraColorAttachments + 2>
+        inputs{};
+    uint32_t count = 0;
+    const auto add = [&](RenderGraph::RGTexture texture, uint32_t slot, bool isDepth) {
+        const RenderGraph::RGResourceDesc& desc = frame.Graph().ResourceDesc(texture.Id);
+        inputs[count++] = {slot, isDepth, static_cast<Rendering::TextureFormat>(desc.Format), desc.SampleCount};
+        return desc.Format != 0u;
+    };
+    bool resolved = true;
+    if (targets.Color.IsValid())
+        resolved &= add(rendersIntoResolve ? targets.Resolve : targets.Color, 0u, false);
+    for (uint32_t i = 0; i < targets.ExtraColorCount; ++i)
+        if (targets.ExtraColor[i].Texture.IsValid())
+            resolved &= add(targets.ExtraColor[i].Texture, targets.ExtraColor[i].Location, false);
+    if (targets.Depth.IsValid())
+        resolved &= add(targets.Depth, 0u, true);
+    if (!resolved || count == 0)
+        return std::nullopt;
+    return RenderGraph::DeriveFormatKey(inputs.data(), count, Rendering::TextureFormat{});
+}
 
 } // namespace
 
@@ -1997,6 +2028,15 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     if (targets.Color.IsValid())
         m_ViewRegistry.PerView(viewId).WorldColorSampleCount =
             frame.Graph().ResourceDesc(targets.Color.Id).SampleCount;
+    // And the formats it draws with, for the forward producers and the scene warm that request a
+    // pipeline's build at the next frame (PerViewResources::WorldColorFormatKey).
+    if (!isRecover && scope == WorldPassDrawScope::All)
+    {
+        if (const std::optional<Rendering::PipelineFormatKey> fk =
+                WorldColorFormatKey(frame, targets, collapseToResolve))
+            m_ViewRegistry.PerView(viewId).WorldColorFormatKey = *fk;
+        m_ViewRegistry.PerView(viewId).WorldReliefDepthSource = reliefDepthSource;
+    }
 
     // Camera UBO: upload-ring alloc written NOW. Clear-only frames still get
     // valid camera data — the old arm wrote before its draw guard for the
@@ -2058,6 +2098,8 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     // None, which leaves the recorded value unchanged.
     if (passKeywords != Rendering::MaterialKeyword::None)
         m_ViewRegistry.PerView(viewId).WorldPassKeywords = passKeywords;
+    if (!isRecover && scope == WorldPassDrawScope::All)
+        m_ViewRegistry.PerView(viewId).DeclaredWorldPassKeywords = passKeywords;
 
     // Coverage census (GE_PROP_CENSUS; throttled). Declaration-time: extraction
     // is complete and this pass's scatter snapshot was captured from the same
