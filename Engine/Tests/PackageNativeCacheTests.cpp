@@ -235,6 +235,23 @@ TEST_F(PackageNativeCacheTest, BusyMaintenanceKeepsTheLeaseAndSkipsPruning)
     EXPECT_TRUE(fs::exists(Entry(1)));
 }
 
+// The orphan sweep holds a scope lock exclusively for a moment. A lease asked for in that moment
+// waits for it, and does not fail and skip the package's module.
+TEST_F(PackageNativeCacheTest, ALeaseWaitsForTheOrphanSweepsScopeLock)
+{
+    Populate(1, 1);
+    const auto scope = LockFile(Entry(2)).parent_path() / "scope";
+    auto sweep = std::make_unique<FileSystem::ScopedFileLock>(scope, FileSystem::ScopedFileLock::Mode::Exclusive, false);
+    ASSERT_TRUE(sweep->IsLocked());
+    std::thread release([&sweep]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        sweep.reset();
+    });
+    auto lease = Acquire(Entry(2));
+    release.join();
+    EXPECT_NE(lease, nullptr) << "a lease asked for while the sweep held the scope lock failed";
+}
+
 TEST_F(PackageNativeCacheTest, RecentReusePreservesAnOldGeneration)
 {
     Populate(1, 4);

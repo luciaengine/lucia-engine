@@ -261,7 +261,9 @@ std::unique_ptr<FileSystem::ScopedFileLock> AcquireLease(const fs::path& entry, 
         return {};
     std::unique_ptr<ScopedFileLock> lease;
     {
-        ScopedFileLock construction(lockRoot / kScopeLock, ScopedFileLock::Mode::Shared, false);
+        // Waits: the orphan sweep holds this lock exclusively for a moment while it reads the scope's
+        // record, and runs on a job while the main thread leases the other packages.
+        ScopedFileLock construction(lockRoot / kScopeLock, ScopedFileLock::Mode::Shared, true);
         if (!construction.IsLocked())
             return {};
         fs::create_directories(normalizedCacheRoot, error);
