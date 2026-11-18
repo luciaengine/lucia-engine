@@ -5186,7 +5186,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         }
         if (colorBlendAttachments.empty())
         {
-            uint32_t colorCountHint = desc.colorAttachmentFormats.empty() ? 1u : static_cast<uint32_t>(desc.colorAttachmentFormats.size());
+            const uint32_t colorCountHint = static_cast<uint32_t>(desc.colorAttachmentFormats.size());
             for (uint32_t i = 0; i < colorCountHint; ++i)
             {
                 VkPipelineColorBlendAttachmentState a{};

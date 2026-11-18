@@ -87,6 +87,7 @@ enum class RGTextureRead : uint8_t
 enum class RGBufferRead : uint8_t
 {
     Storage, // default
+    MeshStorage, // consumed by the mesh shader stage
     Uniform,
     Indirect,
     Index,

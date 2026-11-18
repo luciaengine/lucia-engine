@@ -57,7 +57,7 @@ const uint64_t kAllEngineStages =
     Bit(PipelineStageMask::GraphicsColor) | Bit(PipelineStageMask::GraphicsDepth) |
     Bit(PipelineStageMask::GraphicsVertex) | Bit(PipelineStageMask::GraphicsFragment) |
     Bit(PipelineStageMask::ComputeShader) | Bit(PipelineStageMask::Transfer) |
-    Bit(PipelineStageMask::DrawIndirect);
+    Bit(PipelineStageMask::DrawIndirect) | Bit(PipelineStageMask::GraphicsMesh);
 
 uint64_t ToEngineStageMask(uint32_t s)
 {
@@ -68,6 +68,8 @@ uint64_t ToEngineStageMask(uint32_t s)
         m |= Bit(PipelineStageMask::DrawIndirect);
     if (s & (RGStage::VertexInput | RGStage::VertexShader))
         m |= Bit(PipelineStageMask::GraphicsVertex);
+    if (s & RGStage::MeshShader)
+        m |= Bit(PipelineStageMask::GraphicsMesh);
     if (s & RGStage::FragmentShader)
         m |= Bit(PipelineStageMask::GraphicsFragment);
     if (s & (RGStage::EarlyFragmentTests | RGStage::LateFragmentTests))

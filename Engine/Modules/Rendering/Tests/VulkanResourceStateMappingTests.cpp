@@ -217,3 +217,11 @@ TEST(VulkanResourceStateMapping, HostReadbackPreservesCombinedTransferScopes)
     EXPECT_EQ(VulkanMappings::TranslateResourceAccessMask(static_cast<uint64_t>(kAccesses)),
               static_cast<VkAccessFlags>(VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_READ_BIT));
 }
+
+TEST(VulkanResourceStateMapping, MeshStorageScopeUsesTheMeshShaderStage)
+{
+    const PipelineStageMask kStages = PipelineStageMask::GraphicsMesh | PipelineStageMask::DrawIndirect;
+    const auto expected = VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    EXPECT_EQ(VulkanMappings::TranslatePipelineStageMask(static_cast<uint64_t>(kStages)),
+              static_cast<VkPipelineStageFlags>(expected));
+}

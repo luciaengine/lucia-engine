@@ -2,9 +2,18 @@
 #include <Rendering/Core/Device.h>
 #include <Rendering/Core/CommandList.h>
 #include "Rendering/Common/Utils.h"
+#include "Rendering/Core/PassPhase.h"
+#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Core/RenderGraph/RGResourcePool.h"
+#include "Rendering/Core/RenderGraph/RGTransientPool.h"
+#include "Rendering/Core/RenderGraph/RGUploadRing.h"
+
 #include "TestUtils.h"
 #include "TestGlslCompile.h"
 #include "ScopedEnvVar.h"
+
+#include <algorithm>
 
 
 using namespace GameEngine::Rendering;
@@ -178,6 +187,199 @@ TEST(DynamicRenderingPipelineFormats, OneVulkanMeshWorkgroupWritesTheTarget)
 TEST(DynamicRenderingPipelineFormats, ComputeWritesTheVulkanMeshWorkgroupCount)
 {
     CheckMeshWorkgroupReadback(true);
+}
+TEST(DynamicRenderingPipelineFormats, GraphMeshDepthReadsComputeOutput)
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    const Tests::ScopedEnvVar headless("GE_HEADLESS_TEST", "1");
+    DeviceDesc deviceDesc{};
+    deviceDesc.preferredAPI = GraphicsAPI::Vulkan;
+    deviceDesc.enableDynamicRendering = true;
+    auto device = DeviceFactory::CreateDevice(deviceDesc);
+    if (!device || !device->Initialize(deviceDesc) || !device->GetCapabilities().supportsIndirectMeshTasks)
+        GTEST_SKIP() << "Vulkan indirect mesh shaders unavailable";
+
+    constexpr char kCompute[] = R"(
+#version 450
+layout(local_size_x = 1) in;
+layout(std430, set=0, binding=0) writeonly buffer Positions { vec4 vertices[]; } positions;
+layout(std430, set=0, binding=1) writeonly buffer Arguments { uint x; uint y; uint z; } args;
+void main()
+{
+    positions.vertices[0] = vec4(-1.0, -1.0, 0.625, 1.0);
+    positions.vertices[1] = vec4( 3.0, -1.0, 0.625, 1.0);
+    positions.vertices[2] = vec4(-1.0,  3.0, 0.625, 1.0);
+    args.x = 1;
+    args.y = 1;
+    args.z = 1;
+}
+)";
+    constexpr char kMesh[] = R"(
+#version 460
+#extension GL_EXT_mesh_shader : require
+layout(local_size_x = 1) in;
+layout(triangles, max_vertices = 3, max_primitives = 1) out;
+layout(std430, set=0, binding=0) readonly buffer Positions { vec4 vertices[]; } positions;
+void main()
+{
+    SetMeshOutputsEXT(3, 1);
+    gl_MeshVerticesEXT[0].gl_Position = positions.vertices[0];
+    gl_MeshVerticesEXT[1].gl_Position = positions.vertices[1];
+    gl_MeshVerticesEXT[2].gl_Position = positions.vertices[2];
+    gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0, 1, 2);
+}
+)";
+    constexpr char kMask[] = R"(
+#version 450
+void main()
+{
+    if (gl_FragCoord.x >= 8.0)
+        discard;
+}
+)";
+
+    DescriptorSetLayoutDesc computeLayout{};
+    computeLayout.bindings = {{0, DescriptorType::StorageBuffer, 1, kShaderStageCompute},
+                              {1, DescriptorType::StorageBuffer, 1, kShaderStageCompute}};
+    PipelineDesc computeDesc{};
+    computeDesc.type = PipelineType::Compute;
+    computeDesc.computeShader = Tests::CompileGlsl(kCompute, shaderc_compute_shader, "mesh-depth-producer.comp");
+    computeDesc.descriptorSetLayouts = {computeLayout};
+    ASSERT_FALSE(computeDesc.computeShader.empty());
+    const auto compute = device->CreatePipeline(computeDesc);
+    ASSERT_TRUE(compute.IsValid());
+
+    DescriptorSetLayoutDesc meshLayout{};
+    meshLayout.bindings = {{0, DescriptorType::StorageBuffer, 1, kShaderStageMesh}};
+    PipelineDesc meshDesc{};
+    meshDesc.type = PipelineType::Mesh;
+    meshDesc.meshShader = Tests::CompileGlsl(kMesh, shaderc_mesh_shader, "graph-depth.mesh");
+    meshDesc.pixelShader = Tests::CompileGlsl(kMask, shaderc_fragment_shader, "graph-depth.frag");
+    meshDesc.descriptorSetLayouts = {meshLayout};
+    meshDesc.rasterizationState.cullMode = CullModeFlagBits::None;
+    meshDesc.EnableDepthTest(true);
+    meshDesc.depthStencilState.depthWriteEnable = true;
+    ASSERT_FALSE(meshDesc.meshShader.empty());
+    ASSERT_FALSE(meshDesc.pixelShader.empty());
+    const auto meshId = PipelineDescTranslator::InternGraphics(*device, meshDesc);
+    ASSERT_TRUE(meshId.IsValid());
+
+    DescriptorSetDesc computeSetDesc{};
+    computeSetDesc.layout = computeLayout;
+    const auto computeSet = device->CreateDescriptorSet(computeSetDesc);
+    DescriptorSetDesc meshSetDesc{};
+    meshSetDesc.layout = meshLayout;
+    const auto meshSet = device->CreateDescriptorSet(meshSetDesc);
+    ASSERT_TRUE(computeSet.IsValid());
+    ASSERT_TRUE(meshSet.IsValid());
+
+    constexpr uint32_t kExtent = 16;
+    constexpr size_t kPositionBytes = 3 * 4 * sizeof(float);
+    constexpr size_t kArgumentBytes = 3 * sizeof(uint32_t);
+    const auto readback = device->CreateReadbackBuffer(kExtent * kExtent * sizeof(float), "MeshDepth.Readback");
+    ASSERT_TRUE(readback.IsValid());
+
+    RG::RGResourcePool persistent(device.get());
+    RG::RGTransientPool transient(device.get());
+    RG::RGUploadRing upload(device.get(), 2, 64 * 1024);
+    RG::RGFrame frame(device.get(), &persistent, &transient, &upload);
+    frame.BeginFrame(0);
+
+    BufferDesc positionsDesc{};
+    positionsDesc.size = kPositionBytes;
+    positionsDesc.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    const auto positions = frame.CreateBuffer("MeshDepth.Positions", positionsDesc);
+    BufferDesc argumentsDesc{};
+    argumentsDesc.size = kArgumentBytes;
+    argumentsDesc.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::Indirect);
+    const auto arguments = frame.CreateBuffer("MeshDepth.Arguments", argumentsDesc);
+    TextureDesc depthDesc{};
+    depthDesc.width = kExtent;
+    depthDesc.height = kExtent;
+    depthDesc.format = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
+    depthDesc.usage = static_cast<uint32_t>(TextureUsage::DepthStencil | TextureUsage::TransferSrc);
+    const auto depth = frame.CreateTexture("MeshDepth.Depth", depthDesc);
+
+    frame.AddPass("MeshDepth.Produce", PassPhase::kWorldRender,
+        [&](RG::RGPassBuilder& pass)
+        {
+            pass.Write(positions);
+            pass.Write(arguments);
+            pass.Prepare([&](RG::RGPrepareContext& context)
+            {
+                device->UpdateStorageBufferBinding(computeSet, 0, context.GetBuffer(positions), 0, kPositionBytes);
+                device->UpdateStorageBufferBinding(computeSet, 1, context.GetBuffer(arguments), 0, kArgumentBytes);
+                return true;
+            });
+        },
+        [&](RG::RGContext& context)
+        {
+            context.Cmd->SetPipeline(compute);
+            context.Cmd->BindDescriptorSet(0, computeSet, compute);
+            context.Cmd->Dispatch(1, 1, 1);
+        });
+
+    PipelineHandle mesh{};
+    frame.AddPass("MeshDepth.Draw", PassPhase::kWorldRender,
+        [&](RG::RGPassBuilder& pass)
+        {
+            pass.Read(positions, RG::RGBufferRead::MeshStorage);
+            pass.Read(arguments, RG::RGBufferRead::Indirect);
+            pass.AttachDepth(depth, {.Load = RG::RGLoadOp::Clear, .Clear = {.Depth = ReverseZ::kClearFar}});
+            pass.Prepare([&](RG::RGPrepareContext& context)
+            {
+                mesh = context.PreparePipeline(meshId);
+                if (!mesh.IsValid())
+                    return false;
+                device->UpdateStorageBufferBinding(meshSet, 0, context.GetBuffer(positions), 0, kPositionBytes);
+                return true;
+            });
+        },
+        [&](RG::RGContext& context)
+        {
+            context.Cmd->SetPipeline(mesh);
+            context.Cmd->BindDescriptorSet(0, meshSet, mesh);
+            context.Cmd->SetViewport(0.0f, 0.0f, kExtent, kExtent);
+            context.Cmd->SetScissor(0, 0, kExtent, kExtent);
+            context.Cmd->DrawMeshTasksIndirect(context.GetBuffer(arguments), 0);
+        });
+
+    frame.AddPass("MeshDepth.Copy", PassPhase::kFinalize,
+        [&](RG::RGPassBuilder& pass)
+        {
+            pass.Read(depth, RG::RGTextureRead::CopySrc);
+            pass.PreventCulling();
+        },
+        [&](RG::RGContext& context)
+        {
+            context.Cmd->CopyTextureToBuffer(context.GetTexture(depth), readback, kExtent, kExtent);
+        });
+
+    frame.Execute();
+    device->WaitForIdle();
+    ASSERT_TRUE(mesh.IsValid());
+    const auto& barriers = frame.Graph().Barriers();
+    const auto hasScope = [&](RG::RGBuffer buffer, uint32_t dstStage, uint32_t dstAccess)
+    {
+        return std::any_of(barriers.begin(), barriers.end(), [&](const RG::RGBarrier& barrier)
+        {
+            return barrier.Resource == buffer.Id && barrier.SrcStage == RG::RGStage::ComputeShader &&
+                   barrier.SrcAccess == RG::RGAccessMask::ShaderWrite && barrier.DstStage == dstStage &&
+                   barrier.DstAccess == dstAccess;
+        });
+    };
+    EXPECT_TRUE(hasScope(positions, RG::RGStage::MeshShader, RG::RGAccessMask::ShaderRead));
+    EXPECT_TRUE(hasScope(arguments, RG::RGStage::DrawIndirect, RG::RGAccessMask::IndirectRead));
+
+    const auto* pixels = static_cast<const float*>(device->MapBuffer(readback));
+    ASSERT_NE(pixels, nullptr);
+    EXPECT_FLOAT_EQ(pixels[8 * kExtent + 4], 0.625f);
+    EXPECT_FLOAT_EQ(pixels[8 * kExtent + 12], ReverseZ::kClearFar);
+    device->UnmapBuffer(readback);
+    device->DestroyBuffer(readback);
+    device->DestroyDescriptorSet(meshSet);
+    device->DestroyDescriptorSet(computeSet);
+    device->DestroyPipeline(compute);
 }
 #endif
 

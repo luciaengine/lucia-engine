@@ -33,6 +33,8 @@ inline VkPipelineStageFlags TranslatePipelineStageMask(uint64_t maskValue)
         flags |= (VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
     if (has(StageMask::GraphicsVertex))
         flags |= (VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+    if (has(StageMask::GraphicsMesh))
+        flags |= VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT;
     if (has(StageMask::GraphicsFragment))
         flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
     if (has(StageMask::ComputeShader))
