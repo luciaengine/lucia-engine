@@ -144,17 +144,20 @@ bool TryLoadProjectPackagesManifest(const std::filesystem::path& manifestFile,
 }
 
 bool SetPackageDisabledInProjectManifest(const std::filesystem::path& manifestFile,
-                                         const std::string& packageName,
+                                         const std::vector<std::string>& packageNames,
                                          bool disabled,
                                          std::string& outError)
 {
     outError.clear();
-    if (!IsValidPackageName(packageName))
-    {
-        outError = "'" + packageName + "' is not a valid package name";
-        return false;
-    }
-
+    const std::set<std::string> names(packageNames.begin(), packageNames.end());
+    for (const auto& name : names)
+        if (!IsValidPackageName(name))
+        {
+            outError = "'" + name + "' is not a valid package name";
+            return false;
+        }
+    if (names.empty())
+        return true;
 
     nlohmann::json doc = nlohmann::json::object();
     std::error_code ec;
@@ -191,10 +194,11 @@ bool SetPackageDisabledInProjectManifest(const std::filesystem::path& manifestFi
         nlohmann::json filtered = nlohmann::json::array();
         if (doc.contains(field))
             for (const auto& item : doc[field])
-                if (item != packageName)
+                if (!item.is_string() || !names.contains(item.get_ref<const std::string&>()))
                     filtered.push_back(item);
         if (disabled == (std::string_view(field) == "disabled"))
-            filtered.push_back(packageName);
+            for (const auto& name : names)
+                filtered.push_back(name);
         if (filtered.empty())
             doc.erase(field);
         else

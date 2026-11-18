@@ -309,8 +309,8 @@ void PackageManagerController::WirePanels()
     // eject loaded assets under the open scene and swap script ALCs, which is
     // exactly the churn the project-switch path exists to contain.
     PackageManagerActions actions;
-    actions.Toggle = [this](const std::string& packageName, bool disable, std::string& outError) {
-        if (!SetPackageDisabledInProjectManifest(m_ManifestFile, packageName, disable, outError))
+    actions.Toggle = [this](const std::vector<std::string>& packageNames, bool disable, std::string& outError) {
+        if (!SetPackageDisabledInProjectManifest(m_ManifestFile, packageNames, disable, outError))
             return false;
         RefreshResolution();
         return true;

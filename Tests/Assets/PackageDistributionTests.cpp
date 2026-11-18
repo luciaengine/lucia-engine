@@ -548,7 +548,7 @@ TEST(ProjectPackagesManifestEdit, DisableEnableRoundTripPreservesOtherFields)
                   "}\n");
 
     std::string error;
-    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, "pkg-a", true, error)) << error;
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, {"pkg-a"}, true, error)) << error;
 
     ProjectPackagesManifest manifest;
     ASSERT_TRUE(TryLoadProjectPackagesManifest(manifestFile, manifest, error)) << error;
@@ -559,8 +559,8 @@ TEST(ProjectPackagesManifestEdit, DisableEnableRoundTripPreservesOtherFields)
         << "unrelated manifest fields must survive the rewrite";
 
     // Re-enable both; the empty array is dropped entirely.
-    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, "pkg-a", false, error));
-    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, "pkg-b", false, error));
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, {"pkg-a"}, false, error));
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, {"pkg-b"}, false, error));
     ASSERT_TRUE(TryLoadProjectPackagesManifest(manifestFile, manifest, error)) << error;
     EXPECT_TRUE(manifest.Disabled.empty());
     EXPECT_EQ(ReadTextFile(manifestFile).find("\"disabled\""), std::string::npos);
@@ -568,13 +568,13 @@ TEST(ProjectPackagesManifestEdit, DisableEnableRoundTripPreservesOtherFields)
     // Disabling into a missing manifest creates it — a project that never
     // opted out must still be able to disable a package from the panel.
     const fs::path createdManifest = dir / "Created" / "manifest.json";
-    EXPECT_TRUE(SetPackageDisabledInProjectManifest(createdManifest, "pkg-a", true, error)) << error;
+    EXPECT_TRUE(SetPackageDisabledInProjectManifest(createdManifest, {"pkg-a"}, true, error)) << error;
     ASSERT_TRUE(TryLoadProjectPackagesManifest(createdManifest, manifest, error)) << error;
     EXPECT_EQ(manifest.Disabled.count("pkg-a"), 1u);
 
     // Enabling records an explicit opt-in, including for default-disabled packages.
     const fs::path untouchedManifest = dir / "Untouched" / "manifest.json";
-    EXPECT_TRUE(SetPackageDisabledInProjectManifest(untouchedManifest, "pkg-a", false, error)) << error;
+    EXPECT_TRUE(SetPackageDisabledInProjectManifest(untouchedManifest, {"pkg-a"}, false, error)) << error;
     ASSERT_TRUE(TryLoadProjectPackagesManifest(untouchedManifest, manifest, error)) << error;
     EXPECT_EQ(manifest.Enabled.count("pkg-a"), 1u);
 
@@ -707,4 +707,28 @@ TEST(PackageGitResolution, RegisteredMountUsesHostCacheOnlyWithManifest)
     }
     std::error_code ec;
     fs::remove_all(root, ec);
+}
+
+TEST(ProjectPackagesManifestEdit, BatchTogglePreservesFieldsAndRejectsInvalidNamesBeforeEditing)
+{
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory("pkgmanifest_batch");
+    const fs::path manifestFile = dir / "Packages" / "manifest.json";
+    WriteTextFile(manifestFile, R"({"customField":42,"disabled":["pkg-c"]})");
+    std::string error;
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, {"pkg-a", "pkg-b", "pkg-a"}, true, error)) << error;
+    ProjectPackagesManifest manifest;
+    ASSERT_TRUE(TryLoadProjectPackagesManifest(manifestFile, manifest, error)) << error;
+    EXPECT_EQ(manifest.Disabled.size(), 3u);
+    EXPECT_TRUE(manifest.Disabled.contains("pkg-a"));
+    EXPECT_TRUE(manifest.Disabled.contains("pkg-b"));
+    const std::string before = ReadTextFile(manifestFile);
+    EXPECT_FALSE(SetPackageDisabledInProjectManifest(manifestFile, {"pkg-a", "../bad"}, false, error));
+    EXPECT_EQ(ReadTextFile(manifestFile), before);
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, {"pkg-a", "pkg-b"}, false, error)) << error;
+    ASSERT_TRUE(TryLoadProjectPackagesManifest(manifestFile, manifest, error)) << error;
+    EXPECT_EQ(manifest.Disabled.size(), 1u);
+    EXPECT_TRUE(manifest.Disabled.contains("pkg-c"));
+    EXPECT_TRUE(manifest.Enabled.contains("pkg-a"));
+    EXPECT_TRUE(manifest.Enabled.contains("pkg-b"));
+    EXPECT_NE(ReadTextFile(manifestFile).find("customField"), std::string::npos);
 }

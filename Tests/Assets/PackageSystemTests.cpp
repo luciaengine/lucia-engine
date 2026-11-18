@@ -2819,13 +2819,13 @@ TEST(PackageResolver, OptionalEnginePackageRequiresExplicitProjectOptIn)
     ASSERT_EQ(resolution.Disabled.size(), 1u);
     const auto manifestFile = project.Root / "Packages" / "manifest.json";
     std::string error;
-    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, "optional-baker", false, error)) << error;
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, {"optional-baker"}, false, error)) << error;
     resolution = PackageResolver::Resolve(project.Root, engineRoot);
     ASSERT_TRUE(resolution.Errors.empty());
     ASSERT_EQ(resolution.MountOrder.size(), 1u);
     EXPECT_EQ(resolution.MountOrder.front().Manifest.Name, "optional-baker");
     EXPECT_TRUE(resolution.Disabled.empty());
-    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, "optional-baker", true, error)) << error;
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, {"optional-baker"}, true, error)) << error;
     resolution = PackageResolver::Resolve(project.Root, engineRoot);
     EXPECT_TRUE(resolution.MountOrder.empty());
     EXPECT_EQ(resolution.Disabled.size(), 1u);

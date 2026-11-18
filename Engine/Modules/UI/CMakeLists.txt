@@ -593,7 +593,8 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CssTransformStyleTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TransitionEngineTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/SearchDialogFocusTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DefaultStylesheetTests.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DefaultStylesheetTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PackageSearchLayoutTests.cpp)
     # Stage the shipped editor stylesheets next to the test exe, at the same
     # relative path the editor reads them from under its own exe. ShippedFocusRingTests
     # asserts against these bytes rather than inline CSS, which is the only way a

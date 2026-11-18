@@ -552,3 +552,94 @@ TEST(ListViewTests, SlowClickOnADifferentRowSelectsWithoutRename)
     fx.ClickRow(1);
     EXPECT_EQ(renameRequests, 0);
 }
+
+namespace
+{
+class ReorderedPackageProvider final : public ListChangeTrackingProvider
+{
+  public:
+    std::vector<ListId> Ids{1, 2, 3, 4};
+    int GetItemCount() const override { return static_cast<int>(Ids.size()); }
+    ListId GetItemId(int index) const override { return Ids[static_cast<size_t>(index)]; }
+    float GetItemHeight(int) const override { return 24.0f; }
+};
+}
+
+TEST(ListViewTests, ShiftRangeFollowsIdsThroughFilteringAndRepeatedRefresh)
+{
+    ReorderedPackageProvider provider;
+    UI::Interaction::SelectionModel selection;
+    ListView view;
+    view.SetDataProvider(&provider);
+    view.SetSelectionModel(&selection);
+    view.SetSelectedIndexKeyboard(2, false, false);
+    provider.Ids = {3, 4};
+    view.RefreshFromProvider();
+    view.RefreshFromProvider();
+    EXPECT_EQ(0, view.GetSelectedIndex());
+    view.SetSelectedIndexKeyboard(1, true, false);
+    EXPECT_TRUE(selection.IsSelected(3));
+    EXPECT_TRUE(selection.IsSelected(4));
+    EXPECT_EQ(2u, selection.GetSelection().size());
+}
+
+TEST(ListViewTests, RefreshKeepsRangeEndpointForNextArrow)
+{
+    ReorderedPackageProvider provider;
+    UI::Interaction::SelectionModel selection;
+    ListView view;
+    view.SetDataProvider(&provider);
+    view.SetSelectionModel(&selection);
+    view.SetSelectedIndexKeyboard(0, false, false);
+    view.SetSelectedIndexKeyboard(2, true, false);
+    view.RefreshFromProvider();
+    view.RefreshFromProvider();
+    EXPECT_EQ(2, view.GetSelectedIndex());
+    view.SetSelectedIndexKeyboard(view.GetSelectedIndex() + 1, true, false);
+    EXPECT_EQ(4u, selection.GetSelection().size());
+}
+
+TEST(ListViewTests, ArrowFromEmptySelectionStartsAtFirstRow)
+{
+    UniformHeightProvider provider(4);
+    UI::Interaction::SelectionModel selection;
+    ListView view;
+    view.SetDataProvider(&provider);
+    view.SetSelectionModel(&selection);
+    UIEvent event{};
+    event.Id = kEventKeyDown;
+    event.Key = Input::kKeyCode_Down;
+    EXPECT_TRUE(view.HandleArrowKey(event));
+    EXPECT_EQ(0, view.GetSelectedIndex());
+    EXPECT_TRUE(selection.IsSelected(1));
+}
+
+TEST(ListViewTests, WhitespaceClearDropsThePreviousRangeOrigin)
+{
+    UniformHeightProvider provider(4);
+    UI::Interaction::SelectionModel selection;
+    ListView view;
+    view.SetDataProvider(&provider);
+    view.SetSelectionModel(&selection);
+    view.SetSelectedIndexKeyboard(2, false, false);
+    std::vector<UIElement*> pending{&view};
+    UIElement* content = nullptr;
+    while (!pending.empty())
+    {
+        auto* element = pending.back();
+        pending.pop_back();
+        if (element->HasClass("list-virtual-content")) { content = element; break; }
+        for (const auto& child : element->GetChildren()) pending.push_back(child.get());
+    }
+    ASSERT_NE(content, nullptr);
+    UIEvent click{};
+    click.Id = kEventMouseDown;
+    click.Target = content;
+    click.CurrentTarget = content;
+    click.Button = 0;
+    content->DispatchEvent(click);
+    ASSERT_TRUE(selection.GetSelection().empty());
+    view.SetSelectedIndexKeyboard(0, true, false);
+    EXPECT_EQ(1u, selection.GetSelection().size());
+    EXPECT_TRUE(selection.IsSelected(1));
+}

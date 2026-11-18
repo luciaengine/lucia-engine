@@ -1,6 +1,7 @@
 #pragma once
 
 #include "UI/Controls/DockPanel.h"
+#include "UI/Interaction/Selection.h"
 #include "Events/Event.h"
 
 #include <cstdint>
@@ -14,6 +15,7 @@ namespace GameEngine
 class Label;
 class TextField;
 class UIElement;
+class ListView;
 
 // One row of the Package Manager list — a display snapshot the provider
 // builds from the current PackageResolver::Resolve output merged with the
@@ -64,7 +66,7 @@ struct PackageManagerSnapshot
 struct PackageManagerActions
 {
     // Enable/disable via the manifest disabled[] array.
-    std::function<bool(const std::string& name, bool disable, std::string& outError)> Toggle;
+    std::function<bool(const std::vector<std::string>& names, bool disable, std::string& outError)> Toggle;
     // Add from free text: a filesystem path OR a git spec ("git+https://...#ref").
     // outName receives the package name learned from its package.json.
     std::function<bool(const std::string& input, std::string& outName, std::string& outError)> Add;
@@ -103,6 +105,7 @@ class PackageManagerPanel : public DockPanel
     std::string_view DeclaredTabIconClass() const override { return "box-icon"; }
 
     PackageManagerPanel();
+    ~PackageManagerPanel() override;
 
     using SnapshotProvider = std::function<PackageManagerSnapshot()>;
 
@@ -115,15 +118,13 @@ class PackageManagerPanel : public DockPanel
     void RebuildRows(const std::vector<PackageManagerEntry>& entries);
     void SetSearchQuery(const std::string& query);
     void ApplyFilter();
-    UIElement* BuildRow(const PackageManagerEntry& entry);
+    void BindRow(UIElement& row, const PackageManagerEntry& entry);
     // Rebuild the right pane from the selected entry (empty-state when nothing
     // selected or the selection left the resolution).
     void RebuildDetail(const std::vector<PackageManagerEntry>& entries);
     void BuildDetailInfo(UIElement& detail, const PackageManagerEntry& entry);
     void BuildDetailActions(UIElement& detail, const PackageManagerEntry& entry);
-    // Select a package (drives the detail pane); clears any pending remove
-    // confirm and rebuilds on the next frame.
-    void SelectPackage(const std::string& name);
+    void ToggleSelectedPackages(bool disable);
     // Run `action`, put its outcome on the action-status line, then rebuild
     // the list on the next frame (handlers run inside rows being torn down).
     void RunAction(const std::function<bool(std::string& outError)>& action,
@@ -135,17 +136,20 @@ class PackageManagerPanel : public DockPanel
     PackageManagerActions m_Actions;
     std::vector<PackageManagerEntry> m_Entries;
     std::string m_SearchQuery;
+    std::vector<PackageManagerEntry> m_VisibleEntries;
+    class PackageListProvider;
+    std::unique_ptr<PackageListProvider> m_ListProvider;
+    UI::Interaction::SelectionModel m_Selection;
+    ListView* m_ListView = nullptr;
+    UIElement* m_SearchBar = nullptr;
 
     Label* m_StatusLabel = nullptr;
     Label* m_ActionStatusLabel = nullptr;
     Label* m_RefreshStatusLabel = nullptr;
     TextField* m_AddField = nullptr;
     UIElement* m_IssuesBox = nullptr;
-    UIElement* m_ListContainer = nullptr;   // ScrollView viewport for list rows
     UIElement* m_DetailContainer = nullptr; // ScrollView viewport for detail
 
-    // Selected package shown in the detail pane; empty = none.
-    std::string m_SelectedPackage;
     // Two-click remove guard: the package whose Remove is awaiting confirm.
     std::string m_ConfirmRemovePackage;
     std::string m_ActionStatus;
