@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -97,6 +98,7 @@ bool VirtualShadowRenderFeature::PreparePageTable(RenderGraph::RGPrepareContext&
         }
         else
         {
+            assert(page.Prepared && "a rendered page and the first cached page of each family have a prepared pass");
             if (!PrepareDepthOnlyPass(depth, *page.Prepared, inputs))
                 return false;
             page.Producer = GetPreparedDepthProducerState(*page.Prepared, CascadeCasters::All);
@@ -185,6 +187,9 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
     auto* pages = frame.AllocatePassData<std::vector<PreparedPage>>();
     pages->reserve(candidates.size());
     uint32_t slice = 0;
+    // A cached page does not draw: PreparePageTable gives it the producer of the first cached page of its family.
+    // So only rendered pages and that first cached page need a prepared pass.
+    std::array<bool, kVirtualShadowLightFamilies> cachedFamilyPrepared{};
     for (const auto& candidate : candidates)
     {
         const auto& work = *candidate.Work;
@@ -192,6 +197,16 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
             ? static_cast<uint8_t>(kVirtualShadowPageCullingIndexBase + slice++) : kVirtualShadowCasterCullingIndex;
         if (work.NeedsRender && !pageOrdering.IsValid())
             continue;
+        if (!work.NeedsRender)
+        {
+            auto& familyPrepared = cachedFamilyPrepared[static_cast<size_t>(work.Page.Family)];
+            if (familyPrepared)
+            {
+                pages->push_back({work, candidate.Bit, nullptr, {}, false, false});
+                continue;
+            }
+            familyPrepared = true;
+        }
         const auto camera = frame.AllocUpload<Rendering::CameraData>();
         if (!camera.Valid())
             return {};
