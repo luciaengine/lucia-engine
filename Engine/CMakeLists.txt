@@ -2169,6 +2169,7 @@ endif()
                 Tests/SamplerPresetResolutionTests.cpp
                 Tests/TextureServiceSamplerTests.cpp
                 Tests/TextureGPUCacheTests.cpp
+                Tests/MaterialMipDemandSystemTests.cpp
                 Tests/MaterialMipStepPlannerTests.cpp
                 Tests/MaterialScreenDemandTests.cpp
                 Tests/VideoTextureSystemTests.cpp
