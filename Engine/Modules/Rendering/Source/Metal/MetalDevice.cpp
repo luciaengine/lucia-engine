@@ -1485,13 +1485,8 @@ bool MetalDevice::BeginFrame()
     m_FrameSyncIssued = false;
     m_FrameActive.store(true, std::memory_order_relaxed);
 
-    // Late submissions tagged with this slot must finish before query samples are reused.
-    WaitForSlotCommandBuffers(m_FrameIndex);
-    if (GetDeviceHealth() != DeviceHealth::Healthy)
-    {
-        m_FrameActive.store(false, std::memory_order_relaxed);
-        return false;
-    }
+    // The previous frame's end recycled this slot (RecycleFrameSlot). Work submitted since then
+    // holds the slot until it completes; the frame does not wait for it.
     if (m_QueryPool != nullptr)
     {
         m_QueryPool->BeginFrame(m_FrameIndex);
