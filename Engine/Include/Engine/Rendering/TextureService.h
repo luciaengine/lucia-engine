@@ -565,6 +565,9 @@ class TextureService
     void FinishMaterialMipStep();
     void CancelMaterialMipStep();
     TextureGPUCache::Entry RemoveMaterialMipStreamLocked(const GUID& guid);
+    // Writes the bytes that the streams hold now to the "Rendering.MaterialMipStreams" stats record.
+    // Call after each change to m_MaterialMipStreams.
+    void ReportMaterialMipBytesLocked();
 
     struct PendingGpuUpload
     {
@@ -794,6 +797,7 @@ class TextureService
     // Material images have a separate lifetime from full-resolution handles returned to callers.
     uint64_t m_MaterialMipBudgetBytes = 0;
     FlatMap<GUID, MaterialMipStream> m_MaterialMipStreams;
+    uint64_t m_ReportedMaterialMipBytes = 0; // what ReportMaterialMipBytesLocked wrote last
     MaterialMipStep m_MaterialMipStep;
     FlatMap<GUID, ReleasedUploadRead> m_ReleasedUploadReads;
     // Screen coverage by GPUScene material index (UpdateMaterialMipDemand). Empty without demand data.

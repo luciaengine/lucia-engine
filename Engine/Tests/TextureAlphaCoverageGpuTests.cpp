@@ -6,6 +6,7 @@
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/TextureService.h"
+#include "Memory/StatsSnapshot.h"
 #include "Rendering/Core/CommandList.h"
 #include "StagedTestPaths.h"
 #include "TestDeviceHelper.h"
@@ -328,6 +329,15 @@ class TextureCoverageGPU : public testing::Test
         return handle;
     }
 
+    // The bytes of the "Rendering.MaterialMipStreams" record: 0 before a stream reports.
+    static uint64 StreamedBytesInMemoryStats()
+    {
+        for (const Memory::StatsEntry& entry : Memory::SnapshotStats())
+            if (entry.Name == "Rendering.MaterialMipStreams")
+                return entry.Bytes;
+        return 0;
+    }
+
     uint32 WidthOf(TextureHandle texture)
     {
         uint32 width = 0, height = 0;
@@ -596,6 +606,39 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
         m_Materials.Unregister(entry.MaterialGuid);
     }
     m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, TheMemoryStatsReportTheBytesThatTheMaterialMipStreamsHold)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    // RGBA8 levels of 512 texels a side and smaller, and of 256 texels a side and smaller.
+    constexpr uint64 kFullBytes = 1398100;
+    constexpr uint64 kTailBytes = 349524;
+    const uint64 before = StreamedBytesInMemoryStats();
+    Access::SetMipBudget(m_Textures, kMiB);
+    GUID texture;
+    SharedPtr<TextureAsset> asset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(texture, asset));
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingStats");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    Access::Queue(m_Textures, texture, materialGuid, asset, slot);
+    m_Textures.FlushPendingUploads();
+    ASSERT_EQ(WidthOf(material->GetTexture(slot)), 256u);
+    EXPECT_EQ(StreamedBytesInMemoryStats() - before, kTailBytes);
+
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    SettleMipStreams();
+    ASSERT_EQ(WidthOf(material->GetTexture(slot)), 512u);
+    EXPECT_EQ(StreamedBytesInMemoryStats() - before, kFullBytes);
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+    EXPECT_EQ(StreamedBytesInMemoryStats(), before);
 }
 
 TEST_F(TextureCoverageGPU, MaterialMipStreamKeepsNoPixelsAndReadsItsLevelsFromTheFile)
