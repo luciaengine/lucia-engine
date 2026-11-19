@@ -3187,7 +3187,7 @@ void AssetRegistry::Shutdown()
         m_AssetSourceOwner.clear();
         m_MountOverlays.clear();
         m_PathClaims.clear();
-        m_GuidRemaps.clear();
+        ClearGuidRemapsLocked();
         m_AssetCount.store(0, std::memory_order_relaxed);
     }
 
@@ -4046,8 +4046,8 @@ bool AssetRegistry::RegisterAsset(const std::filesystem::path& path, std::string
             // an unresolvable window (the overlapping-source load-null race).
             // Drop any inverse alias first — alternating re-claims between
             // two overlapping sources must not form a lookup cycle.
-            m_GuidRemaps.erase(derivedGuid);
-            m_GuidRemaps[existingGuid] = derivedGuid;
+            EraseGuidRemapLocked(derivedGuid);
+            SetGuidRemapLocked(existingGuid, derivedGuid);
 
             // Persist into the source's local store / cache if configured.
             if (src->HasStore())
@@ -4484,8 +4484,7 @@ void AssetRegistry::RetireStaleAliasesOnRegistrationLocked(const GUID& guid)
     // this registration shadows it already; erasing it keeps the alias from
     // resurfacing — and answering with the migrated asset — once the
     // registration is unregistered again.
-    if (!m_GuidRemaps.empty())
-        m_GuidRemaps.erase(guid);
+    EraseGuidRemapLocked(guid);
 
     // TryGetAssetMetadata prefers a redirect's chased target over a direct
     // record whenever the target record is live, so a redirect whose source
@@ -4582,7 +4581,7 @@ bool AssetRegistry::TryHealRenameKeptIdentityLocked(const GUID& collidingGuid,
     // a primary in the same writer section, which retires any alias it
     // carries. An alias FROM the migrated asset's new identity would be
     // stale the moment it becomes a primary.
-    m_GuidRemaps.erase(holderDerived);
+    EraseGuidRemapLocked(holderDerived);
 
     // Store: the migrated asset's row moves to its path-derived identity,
     // carrying its kv whole (subasset derive keys included — the stale-redirect
@@ -5705,8 +5704,29 @@ std::vector<std::filesystem::path> AssetRegistry::GetRegisteredAssetPaths() cons
     return out;
 }
 
+void AssetRegistry::SetGuidRemapLocked(const GUID& from, const GUID& to)
+{
+    m_GuidRemaps[from] = to;
+    m_HasGuidRemaps.store(true, std::memory_order_release);
+}
+
+void AssetRegistry::EraseGuidRemapLocked(const GUID& guid)
+{
+    if (m_GuidRemaps.erase(guid) != 0 && m_GuidRemaps.empty())
+        m_HasGuidRemaps.store(false, std::memory_order_release);
+}
+
+void AssetRegistry::ClearGuidRemapsLocked()
+{
+    m_GuidRemaps.clear();
+    m_HasGuidRemaps.store(false, std::memory_order_release);
+}
+
 GUID AssetRegistry::ResolveSessionAlias(const GUID& guid) const
 {
+    // A session with no remaps answers without the lock: a writer can hold it for milliseconds.
+    if (!m_HasGuidRemaps.load(std::memory_order_acquire))
+        return guid;
     std::shared_lock<std::shared_mutex> readLock(m_RegistryMutex);
     if (m_GuidRemaps.empty())
         return guid;
@@ -8096,7 +8116,7 @@ bool AssetRegistry::LoadFromFile(const std::filesystem::path& path)
             shard.clear();
         m_MountOverlays.clear();
         m_PathClaims.clear();
-        m_GuidRemaps.clear();
+        ClearGuidRemapsLocked();
         for (const auto& src : m_Sources)
             src->ResidentGuids.clear();
         m_AssetCount.store(0, std::memory_order_relaxed);
