@@ -22,11 +22,14 @@
 #include "TestTempDir.h"
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <cstdlib>
+#include <string>
+#include <vector>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -1912,4 +1915,80 @@ TEST(UIHotReloadTests, ControlSheetLosesEqualSpecificityTieToHostSheetAcrossRelo
     DriveUiRender(ui, rg);
     EXPECT_NEAR(probeRaw->GetLayoutHeight(), 30.0f, 1.0f) << "the rebuilt control sheet does not style the element";
     EXPECT_NEAR(probeRaw->GetLayoutWidth(), 120.0f, 1.0f) << "the rebuilt control sheet won a tie against the host sheet";
+}
+
+// Adds `count` rows to the live root of `ui`. Each row requests one shared sheet, so each
+// AddChild attaches that sheet to the row. Returns the time of the attaches.
+static std::chrono::nanoseconds AttachStyledRows(UIManager& ui, const std::string& stylePath, size_t count,
+                                                 std::vector<UIElement*>& rows)
+{
+    std::vector<std::unique_ptr<UIElement>> pending;
+    pending.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        auto row = std::make_unique<UIElement>();
+        row->AddClass("row");
+        row->RequestSubtreeStyleAssetPath(stylePath);
+        rows.push_back(row.get());
+        pending.push_back(std::move(row));
+    }
+    const auto start = std::chrono::steady_clock::now();
+    for (auto& row : pending)
+        ui.GetRootElement()->AddChild(std::move(row));
+    return std::chrono::steady_clock::now() - start;
+}
+
+// An attach styles only the attached subtree. The cost of one attach does not grow with
+// the number of elements that the sheet already styles, and a reload still reaches all of them.
+TEST(UIHotReloadTests, AttachCostDoesNotGrowWithBoundTargetsAndReloadReachesAll)
+{
+    auto dev = MakeHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "No device";
+    TemporaryStyleDirectory directory;
+    const auto stylePath = directory.Path / "row.css";
+    std::ofstream(stylePath) << ".row { width: 40px; height: 10px; }";
+    JobSystem::WorkStealingThreadPool pool(2);
+    AssetManager assets;
+    ASSERT_TRUE(assets.Initialize(directory.Path, &pool));
+    assets.WaitForStartupScan();
+    const std::string styleAssetPath = stylePath.string();
+
+    constexpr size_t kSmall = 64;
+    constexpr size_t kLarge = 4 * kSmall;
+    constexpr int kRepeats = 3;
+    std::chrono::nanoseconds bestSmall = std::chrono::nanoseconds::max();
+    std::chrono::nanoseconds bestLarge = std::chrono::nanoseconds::max();
+    for (int repeat = 0; repeat < kRepeats; ++repeat)
+    {
+        for (const size_t count : {kSmall, kLarge})
+        {
+            UIManager ui(dev.get(), &assets);
+            ui.SetRoot(std::make_unique<UIElement>());
+            std::vector<UIElement*> rows;
+            const auto elapsed = AttachStyledRows(ui, styleAssetPath, count, rows);
+            ASSERT_EQ(rows.back()->GetRequestedSubtreeStyleAssetGuids().size(), 1u) << "the sheet did not attach";
+            auto& best = count == kSmall ? bestSmall : bestLarge;
+            best = std::min(best, elapsed);
+        }
+    }
+    // Constant cost per attach gives a ratio near 4. The ratio grows to 16 when each attach
+    // restyles every element that the sheet already styles.
+    const double ratio = static_cast<double>(bestLarge.count()) / static_cast<double>(bestSmall.count());
+    RecordProperty("SmallAttachMicroseconds", std::to_string(bestSmall.count() / 1000));
+    RecordProperty("LargeAttachMicroseconds", std::to_string(bestLarge.count() / 1000));
+    EXPECT_LT(ratio, 10.0) << kLarge << " attaches took " << bestLarge.count() / 1000 << " us, " << kSmall
+                           << " attaches took " << bestSmall.count() / 1000 << " us";
+
+    UIManager ui(dev.get(), &assets);
+    ui.SetRoot(std::make_unique<UIElement>());
+    std::vector<UIElement*> rows;
+    AttachStyledRows(ui, styleAssetPath, kSmall, rows);
+    ui.Update(0.0f, false);
+    EXPECT_FLOAT_EQ(rows.front()->GetResolvedStyle().Layout.Width.Value, 40.0f);
+    EXPECT_FLOAT_EQ(rows.back()->GetResolvedStyle().Layout.Width.Value, 40.0f);
+    SaveStyle(assets, stylePath, ".row { width: 70px; height: 10px; }");
+    ui.Update(0.0f, false);
+    for (const UIElement* row : rows)
+        ASSERT_FLOAT_EQ(row->GetResolvedStyle().Layout.Width.Value, 70.0f) << "the reload did not reach every row";
 }

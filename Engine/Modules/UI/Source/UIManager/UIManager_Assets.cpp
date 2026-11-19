@@ -483,7 +483,7 @@ bool UIManager::AttachStyleToSubtreeFromAsset(UIElement* target, const UIStyleAs
         return false;
 
     if (m_HotReload)
-        m_HotReload->ApplyStyleNow(asset.GetGUID());
+        m_HotReload->ApplySubtreeStylesNow(*target);
     // Attach to subtree and register hot reload.
     const auto& existing = target->GetStylesheets();
     for (const auto& h : cascade)
