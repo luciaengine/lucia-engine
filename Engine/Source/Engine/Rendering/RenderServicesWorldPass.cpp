@@ -1229,19 +1229,22 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             TextureHandle resolveRough = m_Textures->GetDefaultBlackTexture();
             TextureHandle resolveGlossy = m_Textures->GetDefaultBlackTexture();
             TextureHandle resolveIrradiance = m_Textures->GetDefaultBlackTexture();
+            TextureHandle resolveGatherNormal = m_Textures->GetDefaultBlackTexture();
             if (targets && targets->DDGIResolveRough.IsValid() &&
                 targets->DDGIResolveGlossy.IsValid() &&
-                targets->DDGIResolveIrradiance.IsValid())
+                targets->DDGIResolveIrradiance.IsValid() && targets->DDGIResolveGatherNormal.IsValid())
             {
                 const TextureHandle roughPhys = frame.PhysicalTexture(targets->DDGIResolveRough);
                 const TextureHandle glossyPhys = frame.PhysicalTexture(targets->DDGIResolveGlossy);
                 const TextureHandle irrPhys =
                     frame.PhysicalTexture(targets->DDGIResolveIrradiance);
-                if (roughPhys.IsValid() && glossyPhys.IsValid() && irrPhys.IsValid())
+                const TextureHandle gatherNormalPhys = frame.PhysicalTexture(targets->DDGIResolveGatherNormal);
+                if (roughPhys.IsValid() && glossyPhys.IsValid() && irrPhys.IsValid() && gatherNormalPhys.IsValid())
                 {
                     resolveRough = roughPhys;
                     resolveGlossy = glossyPhys;
                     resolveIrradiance = irrPhys;
+                    resolveGatherNormal = gatherNormalPhys;
                 }
             }
             addTexture(HashStringId("ge_ddgiResolveRough"), resolveRough,
@@ -1250,6 +1253,8 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                        reflectionFallbackSampler);
             addTexture(HashStringId("ge_ddgiResolveIrradiance"), resolveIrradiance,
                        reflectionFallbackSampler);
+            // b59, the upsample's normal guide; the compat profile does not declare it.
+            addTexture(HashStringId("ge_ddgiResolveGatherNormal"), resolveGatherNormal, reflectionFallbackSampler);
             // Compat spellings: the WebGPU profile declares these as separate texture2D
             // images over the shared ge_iblSampler (ibl.glsl), so their reflected names carry
             // the Tex suffix. Both spellings are registered; the binder writes only the one the
@@ -2245,12 +2250,13 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             // transition the ge_gtao read above provides, gated exactly like
             // their bindings in BuildPassResourcesRG.
             if (targets.DDGIResolveRough.IsValid() && targets.DDGIResolveGlossy.IsValid() &&
-                targets.DDGIResolveIrradiance.IsValid() &&
+                targets.DDGIResolveIrradiance.IsValid() && targets.DDGIResolveGatherNormal.IsValid() &&
                 HasKeyword(passKeywords, MaterialKeyword::DDGI))
             {
                 p.Read(targets.DDGIResolveRough, RenderGraph::RGTextureRead::Sampled);
                 p.Read(targets.DDGIResolveGlossy, RenderGraph::RGTextureRead::Sampled);
                 p.Read(targets.DDGIResolveIrradiance, RenderGraph::RGTextureRead::Sampled);
+                p.Read(targets.DDGIResolveGatherNormal, RenderGraph::RGTextureRead::Sampled);
             }
             DeclareDdgiGatherReads(p, ddgiReads);
             // ge_sceneColor samples the transmission grab: the read is the
@@ -2607,12 +2613,13 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
             // transition the ge_gtao read above provides, gated exactly like
             // their bindings in BuildPassResourcesRG.
             if (targets.DDGIResolveRough.IsValid() && targets.DDGIResolveGlossy.IsValid() &&
-                targets.DDGIResolveIrradiance.IsValid() &&
+                targets.DDGIResolveIrradiance.IsValid() && targets.DDGIResolveGatherNormal.IsValid() &&
                 HasKeyword(passKeywords, MaterialKeyword::DDGI))
             {
                 p.Read(targets.DDGIResolveRough, RenderGraph::RGTextureRead::Sampled);
                 p.Read(targets.DDGIResolveGlossy, RenderGraph::RGTextureRead::Sampled);
                 p.Read(targets.DDGIResolveIrradiance, RenderGraph::RGTextureRead::Sampled);
+                p.Read(targets.DDGIResolveGatherNormal, RenderGraph::RGTextureRead::Sampled);
             }
             DeclareDdgiGatherReads(p, ddgiReads);
             // ge_sceneColor: same copy->draw RAW edge as the entity world pass

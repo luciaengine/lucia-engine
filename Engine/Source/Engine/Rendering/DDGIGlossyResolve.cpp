@@ -82,7 +82,7 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
     Rendering::RenderGraph::RGTexture viewDepth, uint32_t renderWidth, uint32_t renderHeight,
     uint32_t viewId, float viewExposureScale, const char* passName,
     Rendering::RenderGraph::RGTexture& outRough, Rendering::RenderGraph::RGTexture& outGlossy,
-    Rendering::RenderGraph::RGTexture& outIrradiance,
+    Rendering::RenderGraph::RGTexture& outIrradiance, Rendering::RenderGraph::RGTexture& outGatherNormal,
     Rendering::RenderGraph::RGTexture& outShadingNormal)
 {
     // NOT gated on EnableGlossy. This pass resolves the diffuse irradiance as
@@ -165,7 +165,13 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
     bool irradianceBlurBFresh = false;
     const RG::RGTexture irradianceBlurB =
         frame.ImportPersistentTexture(irrBlurBPool.c_str(), td, &irradianceBlurBFresh);
-    if (!irradiance.IsValid() || !irradianceBlur.IsValid() || !irradianceBlurB.IsValid())
+    // The normal each irradiance texel was gathered for: the guide of the forward upsample.
+    // The resolve writes every texel each frame.
+    const std::string gatherNormalPool = "DDGIGlossyResolve.GatherNormal." + std::to_string(viewId);
+    td.debugName = gatherNormalPool.c_str();
+    const RG::RGTexture gatherNormal = frame.ImportPersistentTexture(gatherNormalPool.c_str(), td);
+    if (!irradiance.IsValid() || !irradianceBlur.IsValid() || !irradianceBlurB.IsValid() ||
+        !gatherNormal.IsValid())
         return false;
     const bool evenFrame = (frame.FrameIndex() & 1ull) == 0ull;
     const RG::RGTexture irrHistoryRead = evenFrame ? irradianceBlur : irradianceBlurB;
@@ -303,8 +309,9 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
                 p.Write(glossy, RG::RGTextureWrite::Storage);
             }
             p.Write(irradiance, RG::RGTextureWrite::Storage);
+            p.Write(gatherNormal, RG::RGTextureWrite::Storage);
         },
-        [viewDepth, rough, glossy, irradiance, normalRead, irrHistoryRead, viewParams,
+        [viewDepth, rough, glossy, irradiance, gatherNormal, normalRead, irrHistoryRead, viewParams,
          viewParamsOffset, viewParamsSize, volumeData,
          volumeDataFine, probeState, probeStateFine, irradianceAtlas, depthAtlas,
          irradianceAtlasFine, depthAtlasFine, roughAtlas, glossyAtlas, roughAtlasFine,
@@ -319,10 +326,11 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
             const auto roughTex = ctx.GetTexture(rough);
             const auto glossyTex = ctx.GetTexture(glossy);
             const auto irradianceTex = ctx.GetTexture(irradiance);
+            const auto gatherNormalTex = ctx.GetTexture(gatherNormal);
             const auto prevNormalTex = ctx.GetTexture(normalRead);
             const auto prevIrradianceTex = ctx.GetTexture(irrHistoryRead);
             if (!depthTex.IsValid() || !roughTex.IsValid() || !glossyTex.IsValid() ||
-                !irradianceTex.IsValid() || !prevNormalTex.IsValid() ||
+                !irradianceTex.IsValid() || !gatherNormalTex.IsValid() || !prevNormalTex.IsValid() ||
                 !prevIrradianceTex.IsValid())
                 return;
 
@@ -364,6 +372,8 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
                                                             glossyTex);
             Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *meta, "uResolveIrradiance",
                                                             irradianceTex);
+            Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *meta, "uResolveNormal",
+                                                            gatherNormalTex);
 
             Rendering::PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(pipelineId);
             if (!pipe.IsValid())
@@ -469,6 +479,7 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
     outRough = roughBlur;
     outGlossy = glossyBlur;
     outIrradiance = irrHistoryWrite;
+    outGatherNormal = gatherNormal;
     outShadingNormal = normalWrite;
     return true;
 }

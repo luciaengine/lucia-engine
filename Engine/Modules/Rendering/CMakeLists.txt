@@ -1550,6 +1550,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(virtual_shadow_sun_mask virtual_shadow_sun_mask.comp)
     if(BUILD_TESTING)
         _ge_add_shaderpkg_compute(virtual_shadow_lookup_test virtual_shadow_lookup_test.comp)
+        _ge_add_shaderpkg_compute(ddgi_resolve_upsample_test ddgi_resolve_upsample_test.comp)
         _ge_add_shaderpkg_compute(virtual_shadow_sun_mask_test virtual_shadow_sun_mask_test.comp)
         _ge_add_shaderpkg_compute(virtual_shadow_sun_mask_read_test virtual_shadow_sun_mask_read_test.comp)
         _ge_add_shaderpkg_compute(virtual_shadow_receiver_test virtual_shadow_receiver_test.comp)

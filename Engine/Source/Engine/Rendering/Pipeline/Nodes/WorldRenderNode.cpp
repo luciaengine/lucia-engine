@@ -151,6 +151,7 @@ void WorldRenderNode::DeclareForView(ViewDeclare& d)
             Rendering::RenderGraph::RGTexture resolveRough{};
             Rendering::RenderGraph::RGTexture resolveGlossy{};
             Rendering::RenderGraph::RGTexture resolveIrradiance{};
+            Rendering::RenderGraph::RGTexture resolveGatherNormal{};
             // For the DDGIVolume debug overlay ONLY. The overlay writes
             // display-referred [0,1] colours into the scene-linear irradiance
             // target, and the kernel divides them by this scale so they read
@@ -164,14 +165,16 @@ void WorldRenderNode::DeclareForView(ViewDeclare& d)
                     d.ViewDepthResolved, d.RenderWidth, d.RenderHeight,
                     static_cast<uint32_t>(d.View.id), viewExposureScale,
                     d.PassName("DDGIGlossyResolve").c_str(), resolveRough, resolveGlossy,
-                    resolveIrradiance, shadingNormal))
+                    resolveIrradiance, resolveGatherNormal, shadingNormal))
             {
                 t.DDGIResolveRough = resolveRough;
                 t.DDGIResolveGlossy = resolveGlossy;
                 t.DDGIResolveIrradiance = resolveIrradiance;
+                t.DDGIResolveGatherNormal = resolveGatherNormal;
                 d.PublishTexture(Names::View::DDGIResolveRough, resolveRough);
                 d.PublishTexture(Names::View::DDGIResolveGlossy, resolveGlossy);
                 d.PublishTexture(Names::View::DDGIResolveIrradiance, resolveIrradiance);
+                d.PublishTexture(Names::View::DDGIResolveGatherNormal, resolveGatherNormal);
             }
         }
     }
