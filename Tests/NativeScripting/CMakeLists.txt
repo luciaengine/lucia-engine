@@ -27,13 +27,6 @@ ge_set_output_tests(UserSystemOrderTests)
 ge_stage_runtime_dependencies(UserSystemOrderTests)
 add_test(NAME UserSystemOrderTests COMMAND $<TARGET_FILE:UserSystemOrderTests>)
 
-# dotnet + the ComponentScanner DLL feed the C10 scan-path test (a macro-free
-# fixture auto-detected by the scanner). DOTNET_EXECUTABLE is already cached by the
-# engine build (the scanner is mandatory there); re-find defensively in case this
-# subdir is configured standalone. The scanner DLL is built transitively when the
-# test links Engine (Engine's generated reflection TU depends on the scanner).
-find_program(DOTNET_EXECUTABLE dotnet)
-
 # ---------------------------------------------------------------------------
 # Probe DLL — stand-in for a Phase-2 user module.
 #
@@ -169,7 +162,8 @@ if(WIN32)
     target_link_libraries(NativeModuleLoggerTests PRIVATE Engine Types GTest::gtest_main)
     target_include_directories(NativeModuleLoggerTests PRIVATE
         ${CMAKE_SOURCE_DIR}/Engine/Include
-        ${CMAKE_SOURCE_DIR}/Engine/Modules/Logger/Tests)
+        ${CMAKE_SOURCE_DIR}/Engine/Modules/Logger/Tests
+        ${CMAKE_SOURCE_DIR}/Engine/Modules/Logger/Source)
     ge_set_output_tests(NativeModuleLoggerTests)
     ge_stage_runtime_dependencies(NativeModuleLoggerTests)
     add_dependencies(NativeModuleLoggerTests NativeLoggerModuleProbe)
@@ -303,18 +297,24 @@ endif()
 # test needs their headers (Vector3/Quaternion/ColorLinear field types via MathReflectionTraits).
 target_link_libraries(NativeScriptManagerTests PRIVATE
     Engine Mathematics Types GTest::gtest GTest::gtest_main)
-target_include_directories(NativeScriptManagerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 target_include_directories(NativeScriptManagerTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Engine/Include
     # GltfTestFiles.h: in-memory glTF clips for AnimatorEventsAbiTests.
-    ${CMAKE_SOURCE_DIR}/Engine/Tests)
+    ${CMAKE_SOURCE_DIR}/Engine/Tests
+    # TestTempDir.h.
+    ${CMAKE_SOURCE_DIR}/Tests
+    # ShippedScriptSources.h: the export's C# decision, private to the engine's build code.
+    ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Build)
 
 # D1: blob (C#) components registered with a field schema through the scripting ABI —
 # scene round-trip, hot-reload layout migration, snapshot round-trip. The ABI entry points
 # are exported by GameEngine.Native (not Engine), so this piece needs the scripting shim;
 # both DLLs link Engine SHARED, so they operate on the same process-wide registries.
 # EnableStateAbiTests drives the component switch the managed EntityCommands.SetEnabled uses,
-# through the same exports; AnimatorEventsAbiTests the event poll AnimatorApi.PollEvents uses.
+# through the same exports; AnimatorEventsAbiTests the event poll AnimatorApi.PollEvents uses;
+# UiElementTypeThreadRuleAbiTests the UI element-type registry's thread rules, in a binary that
+# starts no CLR, so the element-type callbacks it installs are the first and only ones;
+# ScriptComponentWriteAbiTests the component write and the defaults a C# mirror's Set and new use.
 if(TARGET GameEngine.Native)
     target_sources(NativeScriptManagerTests PRIVATE BlobComponentSchemaAbiTests.cpp EnableStateAbiTests.cpp
         AnimatorEventsAbiTests.cpp AnimatorInputAbiTests.cpp UiElementTypeThreadRuleAbiTests.cpp
@@ -373,6 +373,7 @@ file(GENERATE
     CONTENT
 "cmake=${CMAKE_COMMAND}
 importlib=$<TARGET_LINKER_FILE:Engine>
+enginebinary=$<TARGET_FILE:Engine>
 config=$<CONFIG>
 sdkinc=${_c10_sdk_inc}
 sdkentry=${_c10_sdk_entry}
@@ -380,8 +381,7 @@ workdir=${CMAKE_BINARY_DIR}/Tests/NativeScripting/c10work
 includes=$<TARGET_PROPERTY:Engine,INTERFACE_INCLUDE_DIRECTORIES>
 defs=$<TARGET_PROPERTY:Engine,INTERFACE_COMPILE_DEFINITIONS>
 globaldefs=GLM_FORCE_DEPTH_ZERO_TO_ONE;NOMINMAX;WIN32_LEAN_AND_MEAN;GE_DEBUG_INSTRUMENTATION=${GE_DEBUG_INSTRUMENTATION_VALUE}
-dotnet=${DOTNET_EXECUTABLE}
-scannerdll=${CMAKE_SOURCE_DIR}/Managed/ComponentScanner/bin/$<CONFIG>/net10.0/ComponentScanner.dll
+scanner=$<TARGET_FILE:ComponentScanner>
 ")
 
 add_test(NAME UserModuleBuildLoadTest
