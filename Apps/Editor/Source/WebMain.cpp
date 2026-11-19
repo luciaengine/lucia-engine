@@ -265,7 +265,26 @@ void MakePreloadedTreeWritable(const char* root)
 
 } // namespace
 
+#if defined(GE_WEB_MANAGED_EDITOR)
+extern "C" EMSCRIPTEN_KEEPALIVE void GePrepareEditorStorage()
+{
+    GameEngine::Platform::Web::PreparePersistentStorage();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE bool GeEditorStoragePrepared()
+{
+    return GameEngine::Platform::Web::IsPersistentStoragePrepared();
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void GeTickEditor()
+{
+    Frame(nullptr);
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE int GeStartEditor()
+#else
 int main()
+#endif
 {
     // Diagnostic switches first: the query string is this host's environment,
     // and engine subsystems read theirs as they initialize.
@@ -368,6 +387,7 @@ int main()
 
     std::printf("WEBEDITOR: initialized, entering rAF loop\n");
     Logger::Log::Info("Web editor initialized; entering the browser frame loop");
+#if !defined(GE_WEB_MANAGED_EDITOR)
     emscripten_set_main_loop_arg(Frame, nullptr, 0, 0);
     // requestAnimationFrame stops for hidden pages — and Chrome marks a fully
     // OCCLUDED window hidden, not just background tabs. Everything frame-driven
@@ -390,5 +410,6 @@ int main()
     EmscriptenVisibilityChangeEvent vis{};
     if (emscripten_get_visibility_status(&vis) == EMSCRIPTEN_RESULT_SUCCESS && vis.hidden)
         emscripten_set_main_loop_timing(EM_TIMING_SETTIMEOUT, 33);
+#endif
     return 0;
 }

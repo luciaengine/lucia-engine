@@ -1746,15 +1746,45 @@ if(EMSCRIPTEN)
 		"SHELL:-s EXPORTED_RUNTIME_METHODS=FS"
 		"SHELL:-s INITIAL_MEMORY=512MB"
 		"SHELL:--shell-file ${GE_WEB_SHELL}")
-	# The checkMailbox defer patch (see the ASYNCIFY note above): classic
-	# asyncify's rewind window must not run the pthread mailbox pump.
-	# A patch revision must regenerate the linked JS before applying it.
-	set_property(TARGET WebEditor APPEND PROPERTY LINK_DEPENDS
-		${CMAKE_SOURCE_DIR}/Tools/Web/patch_check_mailbox.py)
-	add_custom_command(TARGET WebEditor POST_BUILD
-		COMMAND ${GE_PYTHON3} ${CMAKE_SOURCE_DIR}/Tools/Web/patch_check_mailbox.py
-			$<TARGET_FILE_DIR:WebEditor>/WebEditor.js
-		COMMENT "Patching checkMailbox against the asyncify rewind race")
+	option(GE_WEB_MANAGED_EDITOR "Host C# GameSystems in the web editor" OFF)
+	if(GE_WEB_MANAGED_EDITOR)
+		if(GE_WASM_SINGLE_THREAD OR NOT CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
+			message(FATAL_ERROR "The managed web editor requires a threaded wasm build with Ninja or Make.")
+		endif()
+		find_program(GE_WEB_DOTNET NAMES dotnet REQUIRED)
+		set(_ge_managed_web_root "${CMAKE_SOURCE_DIR}/Managed/Scripting.Web")
+		set(_ge_managed_web_host "${_ge_managed_web_root}/EditorHost")
+		set(_ge_managed_web_linker "${CMAKE_SOURCE_DIR}/Tools/Web/link_managed_editor.py")
+		set(_ge_managed_web_sources "${CMAKE_SOURCE_DIR}/Managed/Directory.Build.props")
+		foreach(source_dir Scripting.Web Scripting.Runtime Scripting.ABI Scripting.Bindings
+			ECS.ABI Common SourceGenerators/EntitySystemGenerator)
+			set(source_dir "${CMAKE_SOURCE_DIR}/Managed/${source_dir}")
+			file(GLOB_RECURSE managed_sources CONFIGURE_DEPENDS "${source_dir}/*.cs" "${source_dir}/*.csproj")
+			list(FILTER managed_sources EXCLUDE REGEX "/(bin|obj)/")
+			list(APPEND _ge_managed_web_sources ${managed_sources})
+		endforeach()
+		add_library(WebEditorEcsAbi STATIC "${CMAKE_SOURCE_DIR}/Engine/Source/Scripting/ECSABI.cpp")
+		target_compile_features(WebEditorEcsAbi PRIVATE cxx_std_20)
+		target_link_libraries(WebEditorEcsAbi PRIVATE Engine)
+		target_compile_definitions(WebEditorEcsAbi PRIVATE GE_SCRIPTING_BUILD)
+		set_target_properties(WebEditorEcsAbi PROPERTIES PREFIX "" OUTPUT_NAME "GameEngine.ECS.ABI")
+		target_link_libraries(WebEditor PRIVATE WebEditorEcsAbi)
+		target_compile_definitions(WebEditor PRIVATE GE_WEB_MANAGED_EDITOR=1)
+		set_property(TARGET WebEditor PROPERTY CXX_LINKER_LAUNCHER
+			"${GE_PYTHON3};${_ge_managed_web_linker};--dotnet;${GE_WEB_DOTNET};--project;${_ge_managed_web_host}/Lucia.Web.Editor.csproj;--")
+		set_property(TARGET WebEditor APPEND PROPERTY LINK_DEPENDS
+			"${_ge_managed_web_linker};${_ge_managed_web_host}/main.mjs;${_ge_managed_web_sources};${CMAKE_SOURCE_DIR}/VERSION")
+	else()
+		# The checkMailbox defer patch (see the ASYNCIFY note above): classic
+		# asyncify's rewind window must not run the pthread mailbox pump.
+		# A patch revision must regenerate the linked JS before applying it.
+		set_property(TARGET WebEditor APPEND PROPERTY LINK_DEPENDS
+			${CMAKE_SOURCE_DIR}/Tools/Web/patch_check_mailbox.py)
+		add_custom_command(TARGET WebEditor POST_BUILD
+			COMMAND ${GE_PYTHON3} ${CMAKE_SOURCE_DIR}/Tools/Web/patch_check_mailbox.py
+				$<TARGET_FILE_DIR:WebEditor>/WebEditor.js
+			COMMENT "Patching checkMailbox against the asyncify rewind race")
+	endif()
 	if(NOT GE_WASM_SINGLE_THREAD)
 		# Match the root wasm pool. Each worker maps the whole wasm
 		# SharedArrayBuffer, so the pool stays small and background work

@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <WasmMainJSPath>main.mjs</WasmMainJSPath>
+    <WasmBuildNative>true</WasmBuildNative>
+    <WasmEnableThreads>true</WasmEnableThreads>
+    <WasmEnableExceptionHandling>false</WasmEnableExceptionHandling>
+    <WasmInitialHeapSize>536870912</WasmInitialHeapSize>
+    <PublishTrimmed>false</PublishTrimmed>
+    <CompressionEnabled>false</CompressionEnabled>
+  </PropertyGroup>
+  <Import Project="$(LuciaEditorNativeReferences)" />
+  <ItemGroup>
+    <ProjectReference Include="../GameEngine.Scripting.Web.csproj" />
+    <EmccExportedRuntimeMethod Include="ccall" />
+    <EmccExportedRuntimeMethod Include="FS" />
+  </ItemGroup>
+  <Target Name="CollectScriptReferences" BeforeTargets="PrepareResourceNames"
+          DependsOnTargets="ResolveReferences">
+    <PropertyGroup>
+      <ScriptReferenceDirectory>$(IntermediateOutputPath)project-script-references/</ScriptReferenceDirectory>
+      <ScriptReferenceArchive>$(IntermediateOutputPath)project-script-references.zip</ScriptReferenceArchive>
+    </PropertyGroup>
+    <ItemGroup>
+      <ScriptReference Include="@(ReferencePath)"
+        Condition="'%(ReferencePath.FrameworkReferenceName)' == 'Microsoft.NETCore.App' Or $([System.String]::Copy('%(ReferencePath.Filename)').StartsWith('GameEngine.'))" />
+      <EmbeddedResource Include="$(ScriptReferenceArchive)" LogicalName="Lucia.ScriptReferences" />
+    </ItemGroup>
+    <RemoveDir Directories="$(ScriptReferenceDirectory)" />
+    <MakeDir Directories="$(ScriptReferenceDirectory)" />
+    <Copy SourceFiles="@(ScriptReference)" DestinationFolder="$(ScriptReferenceDirectory)" />
+    <ZipDirectory SourceDirectory="$(ScriptReferenceDirectory)"
+                  DestinationFile="$(ScriptReferenceArchive)" Overwrite="true" />
+  </Target>
+</Project>

@@ -31,6 +31,11 @@ inline constexpr const char* kProjectsMount = "/project";
 inline constexpr const char* kUserDataDir = "/project/.user-data";
 inline constexpr const char* kUserCacheDir = "/project/.cache";
 
+// The managed browser host can start the workers before entering the native
+// editor. It polls readiness while the browser remains free to service messages.
+void PreparePersistentStorage();
+bool IsPersistentStoragePrepared();
+
 /**
  * @brief Mount the origin's persistent storage at @p mountPoint.
  *

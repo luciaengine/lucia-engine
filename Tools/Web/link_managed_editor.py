@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Link the threaded WebEditor objects into the .NET browser host."""
+
+import argparse
+import base64
+import hashlib
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import xml.etree.ElementTree as ET
+
+
+def editor_inputs(arguments):
+    """Keep editor Emscripten settings; let the .NET SDK own its entry point."""
+    options = []
+    objects = []
+    output = None
+    shell = None
+    args = iter(arguments)
+    for arg in args:
+        if arg == "-o":
+            output = Path(next(args)).resolve()
+        elif arg == "--shell-file":
+            shell = Path(next(args)).resolve()
+        elif arg == "-s":
+            setting = next(args)
+            if setting.split("=")[0] not in {"INITIAL_MEMORY", "EXPORTED_RUNTIME_METHODS", "ENVIRONMENT", "PTHREAD_POOL_SIZE"}:
+                options.append("-s" + setting)
+        elif arg in {"--pre-js", "--extern-pre-js", "--post-js", "--js-library", "--preload-file", "--embed-file", "--exclude-file"}:
+            value = next(args)
+            options.extend([arg, value])
+        elif arg.endswith((".o", ".a")):
+            objects.append(Path(arg).resolve())
+        elif arg not in {"-O3", "-O2", "-O1", "-O0", "-DNDEBUG", "-fuse-ld=mold", "-pthread"}:
+            options.append(arg)
+    if output is None or shell is None or not objects:
+        raise ValueError("WebEditor link command is missing its output, shell, or native inputs")
+    return output, shell, objects, options
+
+
+def write_file(path, content):
+    if not path.exists() or path.read_text() != content:
+        path.write_text(content)
+
+
+def write_link_inputs(build, objects, options):
+    flags = build / "native-link.rsp"
+    write_file(flags, "\n".join(map(shlex.quote, options)) + "\n")
+    project = ET.Element("Project")
+    group = ET.SubElement(project, "PropertyGroup")
+    ET.SubElement(group, "EmccExtraLDFlags").text = "@" + str(flags)
+    items = ET.SubElement(project, "ItemGroup")
+    # Ninja invokes this launcher only after a native, managed, or preload input changes.
+    # The SDK cannot see assets named inside emcc's nested response file.
+    stamp = build / "native-inputs.stamp"
+    stamp.touch()
+    ET.SubElement(items, "_WasmLinkDependencies", {"Include": str(stamp)})
+    for path in dict.fromkeys(objects):
+        # Mono's static P/Invoke table maps this archive's basename to the managed library.
+        attributes = {"Include": str(path), "ScanForPInvokes": "false"}
+        if path.name == "GameEngine.ECS.ABI.a":
+            del attributes["ScanForPInvokes"]
+        ET.SubElement(items, "NativeFileReference", attributes)
+    refs = build / "NativeReferences.targets"
+    write_file(refs, ET.tostring(project, encoding="unicode"))
+    return refs
+
+
+def replace_once(source, before, after):
+    if source.count(before) != 1:
+        raise ValueError("The pinned .NET browser glue changed: " + before.splitlines()[0])
+    return source.replace(before, after)
+
+
+def patch_glue(framework):
+    loader = framework / "dotnet.js"
+    boot = loader.read_text()
+    native, = (path for path in framework.glob("dotnet.native.*.js") if path.name in boot)
+    source = native.read_text()
+    # Leave Mono exports as actual Wasm functions because Mono puts them into its table.
+    patched = replace_once(
+        source,
+        'if (typeof original == "function") {\n        var wrapper = Asyncify.instrumentFunction(original);',
+        'if (name === "GeStartEditor" || name === "GeTickEditor") {\n'
+        '        var wrapper = Asyncify.instrumentFunction(original);',
+    )
+    # The SDK replaces Module fields during runtime setup. Resolve against the native module
+    # URL and retain the download locally until Emscripten installs it into WasmFS.
+    start = patched.index("    async function fetchRemotePackage(")
+    end = patched.index("    var fetchPromise;", start)
+    patched = patched[:start] + """    async function fetchRemotePackage(packageName) {
+      const response = await globalThis.fetch(new URL(packageName, import.meta.url));
+      if (!response.ok) throw new Error(`Editor data request failed: ${response.status}`);
+      return await response.arrayBuffer();
+    }
+""" + patched[end:]
+    # Emscripten's worker URL is emitted before the SDK fingerprints this module.
+    patched = replace_once(patched, 'new URL("dotnet.native.js", import.meta.url)', 'new URL(import.meta.url)')
+    # Asyncify has only one continuation per thread. Defer mailbox entry until
+    # the native editor's suspended frame or startup call returns.
+    patched = replace_once(patched, "var checkMailbox = () => {", """var checkMailbox = () => {
+  if (Asyncify.state !== 0 || Asyncify.currData || Asyncify.exportCallStack.length) {
+    setTimeout(checkMailbox, 0);
+    return;
+  }""")
+    native.write_text(patched)
+
+    # Some SDK versions attach a digest to the native JS resource.
+    def digest(value):
+        return base64.b64encode(hashlib.sha256(value.encode()).digest()).decode()
+
+    write_file(loader, boot.replace(digest(source), digest(patched)))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dotnet", required=True)
+    parser.add_argument("--project", required=True, type=Path)
+    parser.add_argument("link", nargs=argparse.REMAINDER)
+    config = parser.parse_args()
+    if len(config.link) < 2 or config.link[0] != "--":
+        parser.error("expected '-- em++ ...' after launcher options")
+
+    arguments = []
+    for arg in config.link[2:]:
+        if arg.startswith("@"):
+            arguments.extend(shlex.split(Path(arg[1:]).read_text()))
+        else:
+            arguments.append(arg)
+    output, shell, objects, options = editor_inputs(arguments)
+    build = Path.cwd() / "WebEditorManaged"
+    build.mkdir(exist_ok=True)
+    project = config.project.resolve()
+    references = write_link_inputs(build, objects, options)
+    publish = build / "publish"
+    subprocess.run(
+        [
+            config.dotnet, "publish", str(project), "-c", "Release", "--output", str(publish),
+            "-p:LuciaEditorNativeReferences=" + str(references),
+            "-p:ArtifactsPath=" + str(build / "artifacts"),
+            "-p:WasmCachePath=" + str(build / "emscripten-cache"),
+            "-p:WasmRunWasmOpt=false",
+        ],
+        check=True,
+    )
+
+    web = publish / "wwwroot"
+    framework = web / "_framework"
+    patch_glue(framework)
+    native_packages = sorted((build / "artifacts" / "obj").glob("**/for-publish/dotnet.native.data"))
+    if len(native_packages) != 1:
+        raise ValueError("Expected one .NET native editor data package")
+    shutil.copy2(native_packages[0], framework)
+    shutil.copytree(framework, output.parent / "_framework", dirs_exist_ok=True)
+    shutil.copy2(project.with_name("main.mjs"), output.with_name("WebEditorManaged.mjs"))
+    html = replace_once(shell.read_text(), "{{{ SCRIPT }}}",
+                        '<script type="module" src="WebEditorManaged.mjs"></script>')
+    output.write_text(html)
+
+
+if __name__ == "__main__":
+    main()

@@ -24,7 +24,11 @@ std::string DescribeManaged(const ScriptAssemblyStatus& managed)
     case ScriptAssemblyState::Failed:
         return "C# scripts failed - see Log";
     case ScriptAssemblyState::Disabled:
+#if defined(GE_WEB_MANAGED_EDITOR)
+        return "C# scripts compile on Play";
+#else
         return "C# scripting is off in this build";
+#endif
     case ScriptAssemblyState::NotLoaded:
         break;
     }

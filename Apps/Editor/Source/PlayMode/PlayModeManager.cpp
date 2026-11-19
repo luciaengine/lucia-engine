@@ -28,8 +28,122 @@
 #include "Scripting/PathResolver.h"
 #include "Scripting/ScriptManager.h"
 
+#if defined(__EMSCRIPTEN__)
+#include "Types/PathUtils.h"
+
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
+#include <memory>
+
+#include <emscripten/emscripten.h>
+#include <nlohmann/json.hpp>
+
+EM_JS_DEPS(BrowserPlayScripts, "$UTF8ToString,$stringToNewUTF8");
+EM_JS(int, BrowserPlayScriptsAvailable, (), {
+    return typeof Module.webScriptSession?.start === 'function';
+});
+EM_ASYNC_JS(char*, StartBrowserPlayScripts, (int world, const char* sources), {
+    try {
+        const diagnostic = await Module.webScriptSession.start(world, UTF8ToString(sources));
+        return diagnostic ? stringToNewUTF8(diagnostic) : 0;
+    } catch (error) {
+        return stringToNewUTF8(String(error));
+    }
+});
+EM_ASYNC_JS(char*, TickBrowserPlayScripts, (float delta), {
+    try {
+        await Module.webScriptSession.tick(delta);
+        return 0;
+    } catch (error) {
+        return stringToNewUTF8(String(error));
+    }
+});
+EM_ASYNC_JS(char*, StopBrowserPlayScripts, (), {
+    try {
+        await Module.webScriptSession.stop();
+        return 0;
+    } catch (error) {
+        return stringToNewUTF8(String(error));
+    }
+});
+#endif
+
 namespace GameEngine::Editor
 {
+
+#if defined(__EMSCRIPTEN__)
+namespace
+{
+bool g_BrowserScriptsRunning = false;
+
+bool ReportBrowserScriptError(char* error)
+{
+    const std::unique_ptr<char, decltype(&std::free)> diagnostic(error, &std::free);
+    if (!diagnostic)
+        return false;
+    Logger::Log::Error("C# scripts: {}", diagnostic.get());
+    return true;
+}
+
+int32_t BrowserScriptsEnter()
+{
+    auto& engine = EngineCore::GetInstance();
+    const auto& root = engine.GetResolvedAssetRoot();
+    std::error_code error;
+    nlohmann::json sources = nlohmann::json::object();
+    for (std::filesystem::recursive_directory_iterator entry(root, error), end;
+         !error && entry != end; entry.increment(error))
+    {
+        if (!entry->is_regular_file(error) || LowerCaseExtension(entry->path()) != ".cs")
+            continue;
+        std::ifstream file(entry->path(), std::ios::binary);
+        std::string source{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        if (!file || file.bad())
+        {
+            Logger::Log::Error("C# scripts: unable to read '{}'", entry->path().string());
+            return 1;
+        }
+        if (source.starts_with("\xef\xbb\xbf"))
+            source.erase(0, 3);
+        const auto name = entry->path().lexically_relative(root).generic_string();
+        sources[name] = std::move(source);
+    }
+    if (error)
+    {
+        Logger::Log::Error("C# scripts: unable to enumerate project sources: {}", error.message());
+        return 1;
+    }
+    if (sources.empty())
+        return 0;
+    const auto world = reinterpret_cast<std::uintptr_t>(engine.GetPrimaryWorld());
+    const auto request = sources.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+    g_BrowserScriptsRunning = !ReportBrowserScriptError(StartBrowserPlayScripts(static_cast<int>(world), request.c_str()));
+    return g_BrowserScriptsRunning ? 0 : 1;
+}
+
+int32_t BrowserScriptsTick(float delta)
+{
+    if (g_BrowserScriptsRunning && ReportBrowserScriptError(TickBrowserPlayScripts(delta)))
+    {
+        g_BrowserScriptsRunning = false;
+        ReportBrowserScriptError(StopBrowserPlayScripts());
+        return 1;
+    }
+    return 0;
+}
+
+int32_t BrowserScriptsExit()
+{
+    if (!g_BrowserScriptsRunning)
+        return 0;
+    g_BrowserScriptsRunning = false;
+    return ReportBrowserScriptError(StopBrowserPlayScripts()) ? 1 : 0;
+}
+} // namespace
+#endif
+
 static void SetRuntimeAudioSystemsEnabled(bool enabled)
 {
     // Audio ECS systems (names come from Engine::Audio::AddAudioSystemsToSchedule).
@@ -127,6 +241,13 @@ void PlayModeManager::EnsureManagedPlayModeBindings()
     m_ManagedPlayMode.enter = enterPtr;
     m_ManagedPlayMode.exit = exitPtr;
     m_ManagedPlayMode.tick = tickPtr;
+#elif defined(__EMSCRIPTEN__)
+    if (BrowserPlayScriptsAvailable())
+    {
+        m_ManagedPlayMode.enter = reinterpret_cast<void*>(BrowserScriptsEnter);
+        m_ManagedPlayMode.tick = reinterpret_cast<void*>(BrowserScriptsTick);
+        m_ManagedPlayMode.exit = reinterpret_cast<void*>(BrowserScriptsExit);
+    }
 #endif
 }
 
