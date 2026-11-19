@@ -13,6 +13,7 @@
 #include "Assets/Parsers/PngTextureParser.h"
 #include "Assets/Parsers/MaterialAssetParser.h"
 #include "Assets/Parsers/LensFlareParsers.h"
+#include "Assets/Parsers/LocalizationAssetParser.h"
 #include "Assets/Parsers/TerrainMaterialLibraryParser.h"
 #include "Particles/Assets/ParticleStackParser.h"
 #include "Assets/Parsers/TimelineAssetParser.h"
@@ -488,6 +489,8 @@ void ParserRegistry::RegisterDefaultParsers()
     RegisterParser(std::make_shared<JpegTextureParser>());
     RegisterParser(std::make_shared<Ktx2TextureParser>());
     RegisterParser(std::make_shared<OtherTextureParser>());
+
+    RegisterParser(std::make_shared<LocalizationAssetParser>());
 
     // Register UI parsers (UI module assets)
     RegisterParser(std::make_shared<UILayoutAssetParser>());
