@@ -14,6 +14,7 @@ endif()
 
 add_executable(TypesTests
     FunctionRefTests.cpp
+    MoveOnlyFunctionTests.cpp
     InlineVectorTests.cpp
     ByteBufferTests.cpp
     Base64Tests.cpp

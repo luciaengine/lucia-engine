@@ -6,6 +6,7 @@
 #include "Assets/AssetDecodeInputFiles.h"
 #include "Types/ByteBuffer.h"
 #include "Types/FunctionRef.h"
+#include "Types/MoveOnlyFunction.h"
 #include "Types/Types.h"
 #include <atomic>
 #include <condition_variable>
@@ -80,31 +81,31 @@ class AssetIOService
         // Parses and registers the asset from the raw file bytes. Runs as a
         // JobPriority::Background pool job; the return value becomes the
         // continuation handle's result (null = processing failure).
-        Function<SharedPtr<Asset>(ByteBuffer)> ProcessData;
+        MoveOnlyFunction<SharedPtr<Asset>(ByteBuffer)> ProcessData;
 
         // The files ProcessData reads besides Metadata.Path (a texture's cooked artifact, a
         // glTF's external buffers), resolved from the read bytes. Runs on the reader thread
         // after the read; the reader reads each file and ProcessData's call tree takes them
         // through ReadAssetDecodeInputFile (Assets/AssetDecodeInputFiles.h), and the plan the
         // resolver returns with them through CurrentAssetDecodePlan. Null = none.
-        Function<AssetDecodeInputs(std::span<const uint8>)> ResolveDecodeInputs;
+        MoveOnlyFunction<AssetDecodeInputs(std::span<const uint8>)> ResolveDecodeInputs;
 
         // The files that let ProcessData run without the bytes of Metadata.Path (a texture's cooked
         // artifact), named from the path before the read. When it names files and the reader reads every
         // one, the reader does not read Metadata.Path and ProcessData gets no bytes. Otherwise the reader
         // reads the path and resolves ResolveDecodeInputs. Null = none.
-        Function<AssetDecodeInputs()> ResolveDecodeInputsWithoutBytes;
+        MoveOnlyFunction<AssetDecodeInputs()> ResolveDecodeInputsWithoutBytes;
 
         // Invoked on the reader thread right after the continuation is
         // submitted, with its TaskHandle — the caller's cancellation surface.
-        Function<void(const JobSystem::TaskHandle&)> OnSubmitted;
+        MoveOnlyFunction<void(const JobSystem::TaskHandle&)> OnSubmitted;
 
         // Invoked when no continuation will ever be submitted: read failure
         // (reader thread), pool shutdown gate (reader thread), queue
         // abandonment during Stop() (stopping thread), or SubmitRead on a
         // stopped service (calling thread). The owner must resolve the load
         // here.
-        Function<void(const String& error)> OnFailure;
+        MoveOnlyFunction<void(const String& error)> OnFailure;
     };
 
     AssetIOService() = default;
