@@ -2434,6 +2434,7 @@ endif()
                 Tests/DDGIRelocationComputeTests.cpp
                 Tests/DDGILightShadowHitComputeTests.cpp
                 Tests/DDGIResolveBlurComputeTests.cpp
+                Tests/DDGIResolveUpsampleComputeTests.cpp
                 Tests/OceanCascadeLayoutTests.cpp
                 Tests/OceanPreparedDispatchTests.cpp
                 Tests/OceanReadbackPreparationTests.cpp
