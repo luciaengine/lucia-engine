@@ -263,14 +263,6 @@ public:
 	     */
 	    TextureColorSpace GetColorSpace() const { return m_ColorSpace; }
 
-	    /**
-	     * @brief Override texture color space (for tools / user workflows).
-	     *
-	     * This only affects how the texture will be treated when uploaded
-	     * to the GPU (e.g. choice of *_SRGB vs *_UNORM formats). It does
-	     * not modify the stored pixel data.
-	     */
-	    void SetColorSpace(TextureColorSpace colorSpace) { m_ColorSpace = colorSpace; }
 
     /**
      * @brief Get raw pixel data

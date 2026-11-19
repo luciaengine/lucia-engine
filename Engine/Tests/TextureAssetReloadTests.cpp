@@ -22,15 +22,14 @@ namespace
 // A cooked RGBA8 container of `size` texels a side. `seed` changes every texel.
 std::vector<uint8> CookedContainer(uint8 seed, uint8 size = 64)
 {
-    const uint32 kSize = size;
     std::vector<uint8> tga(18, 0);
     tga[2] = 2; // uncompressed true color
     tga[12] = size;
     tga[14] = size;
     tga[16] = 32;
     tga[17] = 0x28;
-    for (uint32 y = 0; y < kSize; ++y)
-        for (uint32 x = 0; x < kSize; ++x)
+    for (uint32 y = 0; y < size; ++y)
+        for (uint32 x = 0; x < size; ++x)
             tga.insert(tga.end(), {static_cast<uint8>(x + seed), static_cast<uint8>(y + seed), seed, 255});
     std::vector<uint8> cooked;
     std::string error;

@@ -774,8 +774,9 @@ TEST_F(TextureCoverageGPU, ANormalMapStreamReadsItsVarianceCompanionFromItsFile)
     const auto loaded =
         std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
     ASSERT_NE(loaded, nullptr);
-    if (!loaded->GetNormalVarianceCompanion())
-        GTEST_SKIP() << "the cook made no variance companion on this device (no BC5 output)";
+    if (loaded->GetFormat() != GameEngine::TextureFormat::BC5)
+        GTEST_SKIP() << "the cook made no BC5 normal map on this device";
+    ASSERT_NE(loaded->GetNormalVarianceCompanion(), nullptr);
     ASSERT_EQ(WidthOf(tail), 256u);
     const auto tailCompanion = Access::StreamedCompanion(m_Textures, texture);
     ASSERT_TRUE(tailCompanion.IsValid());

@@ -85,11 +85,10 @@ Rendering::TextureHandle UploadBackgroundImageFromAsset(Rendering::IDevice* devi
     bool decodedFromContainer = false;
     if (IsBlockCompressedTextureFormat(fmt))
     {
-        const uint64 level0Offset = 0;
         const uint64 level0Size = held.Level0Bytes;
         const std::filesystem::path& assetPath = texA->GetPath();
         const bool decoded =
-            DecodeBlockPayloadRGBA8(fmt, width, height, pixelsTyped + level0Offset, level0Size, converted) ||
+            DecodeBlockPayloadRGBA8(fmt, width, height, pixelsTyped, level0Size, converted) ||
             DecodeSourceImageToRgba8(assetPath, converted, width, height);
         if (!decoded)
         {
