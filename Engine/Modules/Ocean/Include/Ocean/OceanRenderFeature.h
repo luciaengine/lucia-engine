@@ -672,7 +672,7 @@ public:
         float ChopBias = 0.0f;
         float Coverage = 1.0f;
         float Feather = 0.0f;
-        OceanCpuTextureRG Texture;
+        std::shared_ptr<const OceanCpuTextureRG> Texture; // null without a CPU copy
     };
     struct WaterBodyWaveOverrideSample
     {
