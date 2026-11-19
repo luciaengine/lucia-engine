@@ -2669,7 +2669,7 @@ TEST(PackageMountE2E, SvnVcsModuleStaysEditorOnlyAndChromeCssResolves)
 
     // The chrome stylesheet + settings icon ship with the PACKAGE mount.
     const GUID chromeGuid = am.ResolveAssetGuid(fs::path("Editor/UI/SvnVcsChrome.css"), "svn-vcs");
-    const GUID iconGuid = am.ResolveAssetGuid(fs::path("Icons/SettingsSVN.png"), "svn-vcs");
+    const GUID iconGuid = am.ResolveAssetGuid(fs::path("Icons/SettingsSVN.svg"), "svn-vcs");
     EXPECT_FALSE(chromeGuid.IsNull());
     EXPECT_FALSE(iconGuid.IsNull());
     EXPECT_TRUE(am.ResolveAssetGuid(fs::path("Editor/UI/SvnVcsChrome.css"), "project").IsNull());
@@ -2725,7 +2725,7 @@ TEST(PackageMountE2E, DiversionVcsModuleStaysEditorOnlyAndChromeCssResolves)
     const GUID chromeGuid =
         am.ResolveAssetGuid(fs::path("Editor/UI/DiversionVcsChrome.css"), "diversion-vcs");
     const GUID iconGuid =
-        am.ResolveAssetGuid(fs::path("Icons/SettingsDiversion.png"), "diversion-vcs");
+        am.ResolveAssetGuid(fs::path("Icons/SettingsDiversion.svg"), "diversion-vcs");
     EXPECT_FALSE(chromeGuid.IsNull());
     EXPECT_FALSE(iconGuid.IsNull());
     EXPECT_TRUE(am.ResolveAssetGuid(fs::path("Editor/UI/DiversionVcsChrome.css"), "project").IsNull());
@@ -2780,7 +2780,7 @@ TEST(PackageMountE2E, LoreVcsModuleStaysEditorOnlyAndChromeCssResolves)
 
     // The chrome stylesheet + settings icon ship with the PACKAGE mount.
     const GUID chromeGuid = am.ResolveAssetGuid(fs::path("Editor/UI/LoreVcsChrome.css"), "lore-vcs");
-    const GUID iconGuid = am.ResolveAssetGuid(fs::path("Icons/SettingsLore.png"), "lore-vcs");
+    const GUID iconGuid = am.ResolveAssetGuid(fs::path("Icons/SettingsLore.svg"), "lore-vcs");
     EXPECT_FALSE(chromeGuid.IsNull());
     EXPECT_FALSE(iconGuid.IsNull());
     EXPECT_TRUE(am.ResolveAssetGuid(fs::path("Editor/UI/LoreVcsChrome.css"), "project").IsNull());
