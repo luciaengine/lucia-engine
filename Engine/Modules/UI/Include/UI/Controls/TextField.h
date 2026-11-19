@@ -167,9 +167,7 @@ class TextInput : public BaseField, public ITextMeasurable
     void CancelEditing();
     void BumpCaretForceVisible();
 
-    // A non-empty range is selected. A collapsed pair (start == end) or an
-    // unset one (-1) both mean "nothing selected" — rendering, copy and
-    // delete-selection all agree on that.
+    friend class TextField;
     bool HasSelection() const;
 
     // Anchor a shift-extend. Extending an existing range keeps its anchor;
@@ -840,6 +838,9 @@ class TextField : public TextFieldBase<std::string>
         // behaviour calls SetSelectsAllOnMouseFocus(true).
         SetSelectsAllOnMouseFocus(false);
     }
+
+    /// Offer Copy and Paste using the host's context menu and normal text editing actions.
+    void EnableClipboardContextMenu();
 
     /** A double click selects the whole value (TextInput::SetDoubleClickSelectsAll); the
         `doubleclickselectsall` attribute in a layout. */

@@ -487,6 +487,19 @@ bool UIManager::DismissPopupsForOutsidePress(UIElement* pressTarget)
     //
     // Collect before dismissing — DismissPopup mutates the tree, which would
     // invalidate a registry walk in progress.
+    const UIElement* pressAnchor = nullptr;
+    for (DismissablePopup* popup : m_DismissablePopupRegistry)
+    {
+        const UIElement* anchor = popup->GetPopupAnchor();
+        if (!pressTarget || !anchor)
+            continue;
+        if (UIElement* popupRoot = LivePopupRoot(popup, root); popupRoot && IsDescendantOf(pressTarget, popupRoot))
+        {
+            pressAnchor = anchor;
+            break;
+        }
+    }
+
     std::vector<DismissablePopup*> toDismiss;
     bool pressInsideSurvivor = false;
     for (DismissablePopup* popup : m_DismissablePopupRegistry)
@@ -494,8 +507,8 @@ bool UIManager::DismissPopupsForOutsidePress(UIElement* pressTarget)
         UIElement* popupRoot = LivePopupRoot(popup, root);
         if (!popupRoot)
             continue;
-        if (pressTarget && (IsDescendantOf(pressTarget, popupRoot) ||
-                            popup->PressWithinPopupGroup(pressTarget)))
+        if ((pressTarget && (IsDescendantOf(pressTarget, popupRoot) || popup->PressWithinPopupGroup(pressTarget))) ||
+            (pressAnchor && (IsDescendantOf(pressAnchor, popupRoot) || popup->PressWithinPopupGroup(pressAnchor))))
         {
             pressInsideSurvivor = true;
             continue;

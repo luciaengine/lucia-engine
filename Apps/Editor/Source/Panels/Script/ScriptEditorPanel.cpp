@@ -320,15 +320,7 @@ void ScriptEditorPanel::SetupUI()
         }
     });
     
-    // Right-click clears the search field
-    m_SearchField->RegisterEventHandler(kEventMouseDown, [this, applySearchVisualState](UIEvent& e) {
-        if (e.Button == 1) { // Right mouse button
-            m_SearchField->SetValue("");
-            OnSearchTextChanged("");
-            applySearchVisualState("");
-            e.Stop();
-        }
-    });
+    m_SearchField->EnableClipboardContextMenu();
 
     clearButtonPtr->RegisterEventHandler(kEventButtonClick, [this, applySearchVisualState](UIEvent&) {
         if (!m_SearchField || m_SearchField->GetValue().empty()) {

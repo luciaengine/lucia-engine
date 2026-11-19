@@ -23,6 +23,7 @@ class FakePopup : public UIElement, public DismissablePopup
   public:
     FakePopup() : DismissablePopup(this) {}
 
+    const UIElement* GetPopupAnchor() const override { return Anchor; }
     bool IsPopupOpen() const override { return Open; }
     void DismissPopup() override
     {
@@ -30,6 +31,7 @@ class FakePopup : public UIElement, public DismissablePopup
         ++DismissCount;
     }
 
+    UIElement* Anchor = nullptr;
     bool Open = false;
     int DismissCount = 0;
 };
@@ -163,6 +165,29 @@ TEST(DismissablePopupTests, PressInHostClosesNestedPopupButKeepsTheHost)
     EXPECT_FALSE(ui.DismissPopupsForOutsidePress(body));
     EXPECT_FALSE(nested->IsPopupOpen());
     EXPECT_TRUE(host->IsPopupOpen());
+}
+
+TEST(DismissablePopupTests, PressInDetachedMenuKeepsTheAnchorsPopupOpen)
+{
+    Fixture fixture;
+    if (!fixture.Init())
+        GTEST_SKIP() << "Device init failed";
+
+    auto menu = std::make_unique<FakePopup>();
+    FakePopup* overlay = menu.get();
+    overlay->Anchor = fixture.Inside;
+    overlay->Open = true;
+    fixture.Ui->GetRootElement()->AddChild(std::move(menu));
+    fixture.Ui->RegisterDismissablePopup(overlay);
+    fixture.Popup->Open = true;
+
+    EXPECT_FALSE(fixture.Ui->DismissPopupsForOutsidePress(overlay));
+    EXPECT_TRUE(fixture.Popup->IsPopupOpen());
+    EXPECT_TRUE(overlay->IsPopupOpen());
+
+    EXPECT_TRUE(fixture.Ui->DismissPopupsForOutsidePress(fixture.Outside));
+    EXPECT_FALSE(fixture.Popup->IsPopupOpen());
+    EXPECT_FALSE(overlay->IsPopupOpen());
 }
 
 TEST(DismissablePopupTests, EscapeClosesOnlyTheTopmostPopup)

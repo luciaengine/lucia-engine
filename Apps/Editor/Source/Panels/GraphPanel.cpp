@@ -3807,6 +3807,7 @@ void GraphPanel::SetupUI()
     searchField->SetId("NodeGraphPaletteSearch");
     searchField->SetValue("");
     searchField->AddClass("node-graph-palette-search");
+    searchField->EnableClipboardContextMenu();
     searchField->SetOnValueChanging([schedulePaletteSearchRebuild, updatePaletteSearchClear](const std::string& value) {
         updatePaletteSearchClear(value);
         schedulePaletteSearchRebuild();

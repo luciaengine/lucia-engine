@@ -3862,6 +3862,10 @@ void AnimationWindowPanel::ResolveElementPointers()
 // and scroll. State that only mirrors panel members is re-applied on every pass.
 void AnimationWindowPanel::ConfigureElements()
 {
+    TextField* propertiesSearch = m_PropertiesSearchField.Get();
+    if (m_ConfiguredElements.ClaimNew(propertiesSearch))
+        propertiesSearch->EnableClipboardContextMenu();
+
     const bool configureTree = m_ConfiguredElements.ClaimNew(m_PropertiesTree);
     const bool configureRangeSlider = m_ConfiguredElements.ClaimNew(m_TimeRangeSlider);
     const bool configureRangeStart = m_ConfiguredElements.ClaimNew(m_RangeStartField);
