@@ -94,6 +94,10 @@ inline Vector3 SectorLocalPointRelativeTo(const Vector3& local, uint32_t p0, uin
     return Mathematics::WorldPosition::FromSector(delta, local) - Mathematics::WorldPosition{};
 }
 
+// meshIndex and materialIndex of a freed instance row. The row stays in the instance array until the
+// scene trims it, and the scatter rejects it.
+inline constexpr uint32_t kTombstoneIndex = 0xFFFFFFFFu;
+
 /**
  * @brief GPU-resident instance data
  *
@@ -731,7 +735,8 @@ class GPUScene
     void SetDebugName(const char* name) { m_DebugName = name ? name : "GPUScene"; }
     const char* GetDebugName() const { return m_DebugName.c_str(); }
 
-    // Debug access to instance data
+    // The CPU copy of the instance rows, freed rows included (kTombstoneIndex). The instance mutators
+    // write it on the extraction path: read it after extraction, with no mutator running.
     const std::vector<GPUInstance>& GetInstances() const { return m_Instances; }
 
     // Debug / test accessors: the free-slot reuse pool and the coalesced

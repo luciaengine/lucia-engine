@@ -12,6 +12,7 @@
 #include "Assets/AssetManager.h"     // AssetLoadHandle in m_TextureLoadHandles
 #include "Engine/Rendering/CpuTextureSource.h"
 #include "Engine/Rendering/MaterialBindingCache.h"
+#include "Engine/Rendering/MaterialMipStreaming/MaterialMipStepPlanner.h"
 #include "Engine/Rendering/TextureGPUCache.h"
 #include "JobSystem/JobCounter.h"
 #include "Rendering/Core/BindlessResourceManager.h"
@@ -294,6 +295,13 @@ class TextureService
     // Render thread only — called once per frame from BeginWorldDrawFrame.
     void FlushPendingUploads();
 
+    // True when material textures stream their mips under a budget (GE_MATERIAL_MIP_BUDGET_MB).
+    bool StreamsMaterialMips() const { return m_MaterialMipBudgetBytes != 0; }
+    // Gives the streams their order: the screen coverage of each material, by GPUScene material
+    // index (MaterialScreenDemand). The stream with the most coverage per resident texel gains detail
+    // first and loses it last. An empty table removes the order. Any thread.
+    void UpdateMaterialMipDemand(std::span<const float> coverageByMaterialIndex);
+
     // ── Material texture binding ──────────────────────────────────────────
     // Assign a texture + its bindless index to a material slot in one call. An
     // invalid handle is a texture that failed to upload: the slot takes its
@@ -514,8 +522,11 @@ class TextureService
         TextureGPUCache::Entry Resident;
         uint32_t FirstMip = 0;
         uint32_t Epoch = 0;
+        float ScreenCoverage = 0.0f; // MaterialMipCoverageLocked at the last demand table
     };
     bool TryGetMaterialTextureLocked(const GUID& guid, TextureGPUCache::Entry& out) const;
+    // The largest coverage in m_MaterialCoverage of the materials that bind `guid`. Render thread.
+    float MaterialMipCoverageLocked(const GUID& guid) const;
     std::shared_ptr<const MaterialMipData> PrepareMaterialMipStream(const GUID& guid,
                                                                   const PreparedTextureUpload& prepared);
     void AdvanceMaterialMipStreams();
@@ -748,6 +759,13 @@ class TextureService
     // Material images have a separate lifetime from full-resolution handles returned to callers.
     uint64_t m_MaterialMipBudgetBytes = 0;
     FlatMap<GUID, MaterialMipStream> m_MaterialMipStreams;
+    // Screen coverage by GPUScene material index (UpdateMaterialMipDemand). Empty without demand data.
+    std::vector<float> m_MaterialCoverage;
+    bool m_MaterialCoverageChanged = false;
+    // True while no step improves the streams. A change to a stream, the demand or the budget clears it.
+    bool m_MaterialMipStreamsSettled = false;
+    MaterialMipStepPlanner m_MaterialMipPlanner;
+    std::vector<MaterialMipStepPlanner::Stream> m_MaterialMipPlanInput; // AdvanceMaterialMipStreams scratch
     FlatSet<GUID> m_FullTextureRequests;
     FlatSet<GUID> m_HotSwapTextureRequests;
     std::vector<PendingGpuUpload> m_PendingGpuUploads;
