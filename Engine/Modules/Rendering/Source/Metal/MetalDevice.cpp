@@ -209,6 +209,8 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     m_Capabilities.maxPerStageSamplers = 16;
     // Metal's per-stage buffer argument table.
     m_Capabilities.maxPerStageStorageBuffers = tier2ArgumentBuffers ? 31 : 25;
+    // MTLTextureDescriptor.arrayLength is at most 2048 on every Metal device.
+    m_Capabilities.maxTextureArrayLayers = 2048;
 
     // Per-stage sampled-image / resource limits. Callers (e.g. the UI texture
     // registry) size their bindless sampled-image arrays against these. The
