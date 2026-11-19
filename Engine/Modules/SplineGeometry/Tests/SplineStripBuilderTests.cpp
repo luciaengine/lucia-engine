@@ -907,15 +907,20 @@ uint64 FrozenRunDigest(SplineProfileShape shape)
 
 } // namespace
 
-// x86-64 digests of a run with no corner or ground offset. libm's sin/cos round differently on
-// arm64, where no baseline has been captured.
+// x86-64 digests of a run with no corner or ground offset. libm's sin/cos round differently in each
+// C library and on arm64: one baseline for the MSVC runtime, one for glibc, none yet for arm64.
 TEST(SplineStripBuilder, AStationWithNoCornerOrGroundOffsetSweepsByteForByteAsBefore)
 {
 #if defined(__aarch64__) || defined(_M_ARM64)
     GTEST_SKIP() << "x86-64 baseline only";
 #endif
+#if defined(__GLIBC__)
+    EXPECT_EQ(FrozenRunDigest(SplineProfileShape::Rectangle), 10416643848259376218ull);
+    EXPECT_EQ(FrozenRunDigest(SplineProfileShape::Crown), 11495869204616665572ull);
+#else
     EXPECT_EQ(FrozenRunDigest(SplineProfileShape::Rectangle), 16515474040106232554ull);
     EXPECT_EQ(FrozenRunDigest(SplineProfileShape::Crown), 16772227992747215084ull);
+#endif
 }
 
 // A station's GroundOffset moves the profile's grounded points along Up and
