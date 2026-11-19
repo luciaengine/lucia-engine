@@ -8,8 +8,10 @@
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
 
+#include <array>
 #include <chrono>
 #include <filesystem>
+#include <limits>
 #include <memory_resource>
 
 #include <gtest/gtest.h>
@@ -66,6 +68,46 @@ TEST(RenderSorting, MeshOnlyAlternatingMaterialsStayInDepthOrderAtLargeCounts)
         EXPECT_EQ(partition.RunStart[recordIndex], recordIndex);
         EXPECT_EQ(partition.RunCount[recordIndex], 1u);
     }
+}
+
+TEST(RenderSorting, MeshOnlyDepthTiesUseEntityThenInputOrder)
+{
+    const std::array<SortedTransparentRecord, 6> records{};
+    std::array<RenderSortKey, 6> keys{};
+    constexpr std::array depths{2.0, -1.0, -0.0, 0.0, 2.0, 2.0};
+    for (size_t index = 0; index < keys.size(); ++index)
+        keys[index].Depth = depths[index];
+    const std::array entities{ECS::EntityHandle(5), ECS::EntityHandle(3), ECS::EntityHandle(2),
+                              ECS::EntityHandle(9), ECS::EntityHandle(1), ECS::EntityHandle(1)};
+
+    SortedTransparentRunPartition partition;
+    std::pmr::monotonic_buffer_resource scratch;
+    std::vector<uint32> order;
+    std::vector<TransparentCompositionSlot> slots;
+    BuildTransparentComposition(records, keys, entities, {}, scratch, partition, order, slots, false);
+
+    EXPECT_EQ(order, (std::vector<uint32>{4, 5, 0, 2, 3, 1}));
+    EXPECT_EQ(partition.RunCount, (std::vector<uint32>{6}));
+}
+
+TEST(RenderSorting, MeshOnlyFallbackKeepsWideDepthAndGroupOrdering)
+{
+    const std::array<SortedTransparentRecord, 2> records{};
+    std::array<RenderSortKey, 2> keys{};
+    keys[0].Depth = 1.0;
+    keys[1].Depth = 1.0 + std::numeric_limits<float64>::epsilon();
+    const std::array entities{ECS::EntityHandle(1), ECS::EntityHandle(2)};
+    SortedTransparentRunPartition partition;
+    std::pmr::monotonic_buffer_resource scratch;
+    std::vector<uint32> order;
+    std::vector<TransparentCompositionSlot> slots;
+    BuildTransparentComposition(records, keys, entities, {}, scratch, partition, order, slots, false);
+    EXPECT_EQ(order, (std::vector<uint32>{1, 0}));
+
+    keys[1].Depth = 1.0;
+    keys[0].Grouped = true;
+    BuildTransparentComposition(records, keys, entities, {}, scratch, partition, order, slots, false);
+    EXPECT_EQ(order, (std::vector<uint32>{1, 0}));
 }
 
 TEST(RenderSorting, ParentGroupUsesViewDepthAndKeepsChildrenTogether)
