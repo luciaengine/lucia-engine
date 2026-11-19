@@ -132,7 +132,7 @@ void AddProjection(ProjectionSet& set, const ProjectionInput& input, const Camer
 // The row the lighting shader reads for one projection.
 VirtualShadowLookupProjectionGPU MakeLookupRow(const VirtualShadowMarkProjectionGPU& mark,
     const VirtualShadowFeedbackProjection& address, const CameraData& lightCamera,
-    std::span<const VirtualShadowPageWork> work)
+    std::span<const VirtualShadowPageWork> work, uint32_t physicalPages)
 {
     VirtualShadowLookupProjectionGPU row{};
     row.RelativeToLightClip = lightCamera.viewProjRel;
@@ -145,7 +145,7 @@ VirtualShadowLookupProjectionGPU MakeLookupRow(const VirtualShadowMarkProjection
             static_cast<float>(address.DirectionalGrid->PageWorldSize / kVirtualShadowPageTexels);
         row.LightPositionRelAndFar[1] =
             static_cast<float>(address.DirectionalGrid->DepthStep * kVirtualShadowDirectionalDepthBands);
-        row.LightPositionRelAndFar[2] = VirtualShadowResidentRadius(work, kVirtualShadowPhysicalTiles, address);
+        row.LightPositionRelAndFar[2] = VirtualShadowResidentRadius(work, physicalPages, address);
         return row;
     }
     const WorldPosition position = address.LocalPosition.value_or(WorldPosition{});
@@ -484,7 +484,7 @@ void VirtualShadowPageRequests::DeclareForView(Pipeline::ViewDeclare& d, Virtual
     std::memcpy(bytes, &lookup, sizeof(lookup));
     for (size_t index = 0; index < set.Rows.size(); ++index)
     {
-        const auto row = MakeLookupRow(set.Rows[index], set.Layout.Projections[index], set.Cameras[index], plan.Work);
+        const auto row = MakeLookupRow(set.Rows[index], set.Layout.Projections[index], set.Cameras[index], plan.Work, plan.PhysicalPages);
         std::memcpy(bytes + sizeof(lookup) + index * sizeof(row), &row, sizeof(row));
     }
     VirtualShadowViewInputs published{};

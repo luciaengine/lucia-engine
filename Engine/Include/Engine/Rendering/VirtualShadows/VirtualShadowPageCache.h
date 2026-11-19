@@ -26,6 +26,9 @@ enum class VirtualShadowLight : uint8_t
     Point,
 };
 
+/// The number of VirtualShadowLight values.
+inline constexpr std::size_t kVirtualShadowLightFamilies = 3;
+
 struct VirtualShadowPage
 {
     uint64_t LightId = 0;
@@ -57,8 +60,11 @@ struct VirtualShadowPageWork
 inline constexpr uint32_t kVirtualShadowPageRenderBudget = 24;
 /// Most deformed pages that one view refreshes in one frame, after the missing pages.
 inline constexpr uint32_t kVirtualShadowDeformedRefreshBudget = 16;
-/// Frames a deformed page of the finest level may wait. Each coarser level doubles it.
+/// Frames the first deformed page of the finest level may wait. Each coarser level doubles it.
 inline constexpr uint64_t kVirtualShadowDeformedMaxAgeFrames = 2;
+/// A deformed page's wait limit grows by its first value every this many rows. The sun levels
+/// interleave in the rows, so 64 rows are about 16 pages of each of 4 levels.
+inline constexpr double kVirtualShadowDeformedRefreshRowScale = 64.0;
 
 // CPU reference for a per-view page table backed by a bounded depth atlas.
 class VirtualShadowPageCache
@@ -70,8 +76,9 @@ public:
     // fallback pages it will publish. Distinct, valid requests each get a row.
     // The first tileCount rows are eligible for residency. An in-flight lower
     // priority tile may delay a new mapping until completedFrame advances.
-    // Deformed pages refresh in the render budget that missing pages leave: pages over
-    // their age limit first, then finer levels, then older pages.
+    // Deformed pages refresh in the render budget that missing pages leave, the pages with the
+    // highest wait over limit first. The limit grows with the level and with the row, so near fine
+    // pages refresh most often and no page waits forever.
     std::vector<VirtualShadowPageWork> Plan(
         std::span<const VirtualShadowPage> requests, uint64_t frame, uint64_t completedFrame);
 

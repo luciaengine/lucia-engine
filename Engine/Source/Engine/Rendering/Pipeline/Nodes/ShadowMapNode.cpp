@@ -365,11 +365,13 @@ bool ShadowMapNode::Initialize(std::string nodeId, std::string nodeJson, std::st
             m_VirtualShadows.DirectionalResolution = j["virtualDirectionalResolution"].get<uint32_t>();
         if (j.contains("virtualLocalResolution") && j["virtualLocalResolution"].is_number_unsigned())
             m_VirtualShadows.LocalResolution = j["virtualLocalResolution"].get<uint32_t>();
+        if (j.contains("virtualPhysicalPages") && j["virtualPhysicalPages"].is_number_unsigned())
+            m_VirtualShadows.PhysicalPages = j["virtualPhysicalPages"].get<uint32_t>();
         if (!m_VirtualShadows.IsValid())
         {
             if (outError)
                 *outError = "ShadowMapNode: virtualDirectionalResolution and virtualLocalResolution must be "
-                            "powers of two from 128 to 16384.";
+                            "powers of two from 128 to 16384, and virtualPhysicalPages must be from 64 to 4096.";
             return false;
         }
     }

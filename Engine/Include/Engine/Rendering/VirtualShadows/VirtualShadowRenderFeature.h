@@ -31,6 +31,8 @@ class VirtualShadowRenderFeature final : public IRenderFeature
     {
         // Work belongs to this graph incarnation, not the next declaration's view state.
         std::span<const VirtualShadowPageWork> Work;
+        /// The atlas layers of this view's pool; rows of Work from this index on have no tile.
+        uint32_t PhysicalPages = 0;
         Rendering::RenderGraph::RGTexture Atlas;
         Rendering::TextureHandle PhysicalAtlas;
         uint64_t ViewGeneration = 0;
@@ -84,6 +86,8 @@ class VirtualShadowRenderFeature final : public IRenderFeature
     struct PreparedPage;
 
     ViewState* FindView(Rendering::ViewId view, const RasterPlan& plan);
+    // The pool size of a new view: the configured pages, at most the device's array layer limit.
+    uint32_t PhysicalPages();
     bool IsCurrentPage(Rendering::ViewId view, const RasterPlan& plan, const VirtualShadowPageWork& work);
     bool MatchesLayout(Rendering::ViewId view, const RasterPlan& plan,
                         const VirtualShadowFeedbackLayout& layout);
@@ -94,6 +98,7 @@ class VirtualShadowRenderFeature final : public IRenderFeature
     Rendering::IDevice* m_Device = nullptr;
     VirtualShadowOptions m_Options;
     uint64_t m_NextViewGeneration = 1;
+    uint32_t m_LoggedPoolLimit = 0;
     FlatMap<Rendering::ViewId, std::unique_ptr<ViewState>> m_Views;
     std::vector<std::unique_ptr<ViewState>> m_RetiredViews;
     std::unique_ptr<VirtualShadowSunMask> m_SunMask;
