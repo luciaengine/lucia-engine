@@ -5,7 +5,8 @@
 
 const int kLookFilmic = 1;
 const int kLookPhotographic = 2;
+const int kLookGT7 = 3;
 // The no-look debug arm: identity after exposure. A view selects it; a volume never does.
-const int kNoLookArm = 3;
+const int kNoLookArm = 4;
 
 #endif // GE_TONEMAP_LOOK_GLSL

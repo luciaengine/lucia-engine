@@ -74,12 +74,20 @@ float PhotographicTonemap(float x)
     return std::pow(std::max(sigmoid, 0.0f), 2.2f);
 }
 
+// GT7's achromatic output in the linear segment and shoulder.
+float GT7Tonemap(float x)
+{
+    const float mapped = x < 1.11f ? x : 2.9633333f - 3.3733512f * std::exp(-0.53956835f * x);
+    return std::min(0.4f * mapped, 1.0f);
+}
+
 // tonemap.frag's look values: Components::Look and the no-look arm.
 enum class Look : int32_t
 {
     Neutral = static_cast<int32_t>(Components::Look::Neutral),
     Filmic = static_cast<int32_t>(Components::Look::Filmic),
     Photographic = static_cast<int32_t>(Components::Look::Photographic),
+    GT7 = static_cast<int32_t>(Components::Look::GT7),
     None = Passes::kTonemapNoLookArm,
 };
 
@@ -92,6 +100,8 @@ float LookTonemap(Look look, float x)
         return FilmicTonemap(x);
     case Look::Photographic:
         return PhotographicTonemap(x);
+    case Look::GT7:
+        return GT7Tonemap(x);
     case Look::None:
         return x;
     default:
@@ -528,7 +538,7 @@ TEST_P(MsaaColorResolveTest, EachPixelShowsTheMeanLightOfItsSamplesUnderTheViews
     constexpr float kMeteredExposure = 0.5f;
     constexpr float kPreExposure = 2.0f;
     constexpr float kScale = kMeteredExposure / kPreExposure;
-    constexpr Look kLooks[] = {Look::Neutral, Look::Filmic, Look::Photographic, Look::None};
+    constexpr Look kLooks[] = {Look::Neutral, Look::Filmic, Look::Photographic, Look::GT7, Look::None};
     // In sRGB-encoded 8-bit levels; the fitted curve's error adds to the half-float rounding.
     constexpr float kLevelTolerance = 0.5f;
     constexpr float kFittedLevelTolerance = 1.5f;

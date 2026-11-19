@@ -1,6 +1,6 @@
 ---
 title: HDR post-processing
-description: Setting up tonemapping, color grading, and bloom with Post Process Volumes and the render pipeline inspector, blending volumes, the looks, and the debug modes.
+description: Setting up tonemapping, color grading, and bloom with Post Process Volumes and the render pipeline inspector, blending volumes, the tonemappers, and the debug modes.
 ---
 
 This guide covers how to use the HDR post-processing system in the Editor: setting up tonemapping and bloom through PostProcessVolume components and the render pipeline inspector. Exposure is set on the Camera, not on a volume.
@@ -11,7 +11,7 @@ This guide covers how to use the HDR post-processing system in the Editor: setti
 2. In the Inspector, click **Add Component** and choose **Post Process Volume**
 3. Adjust the settings:
    - **Bloom**: add a **Bloom Effect** component to the same entity. Its **Threshold** and **Intensity** control glow on bright areas
-   - **Look**: choose Neutral (the default), Filmic, or Photographic
+   - **Tonemapper** gives you Khronos PBR Neutral (the default), ACES 2, AgX, or GT7 (ICtCp)
 
 Changes take effect immediately in the viewport.
 
@@ -25,7 +25,7 @@ The PostProcessVolume is an ECS component that controls how the final image look
 |----------|---------|-------|-------------|
 | **Priority** | 0 | any int | Higher priority volumes override lower ones |
 | **Weight** | 1.0 | 0.0 - 1.0 | Blend strength when overriding lower-priority volumes |
-| **Look** | Neutral | Neutral, Filmic, Photographic | The display transform the image is rendered with |
+| **Tonemapper** | Khronos PBR Neutral | Khronos PBR Neutral, ACES 2, AgX, GT7 (ICtCp) | The display transform the image is rendered with |
 
 Bloom is not a volume property: it is set on a **Bloom Effect** component on the same entity (see [Bloom Controls](#bloom-controls)). Exposure is not a volume property either: it lives on the **Camera** component (the Scene View sets its own exposure: [The Scene View's exposure](exposure.mdx#the-scene-views-exposure)). A volume can add an **Exposure Adjustment** effect, which offsets the camera's exposure in stops. How the camera meters a scene is in [Exposure](exposure.mdx).
 
@@ -36,19 +36,20 @@ You can have multiple PostProcessVolume entities in a scene. They are blended by
 - Volumes are sorted by **Priority** (lowest first, highest last)
 - Each volume blends into the accumulated result using its **Weight**
 - Float properties are linearly interpolated
-- The look uses the highest-priority volume's value. It never crossfades
+- The highest-priority volume selects the tonemapper
 
-**Example**: A "base" volume at priority 0 with the Neutral look, and a "cinematic" volume at priority 10 with the Filmic look and an Exposure Adjustment effect at -1 stop. When the cinematic volume is enabled, it overrides the base.
+A base volume can use Khronos PBR Neutral at priority 0. A cinematic volume at priority 10 can override it with ACES 2 and an Exposure Adjustment effect at -1 stop.
 
-## Looks
+## Tonemappers
 
-| Look | What it does | Pick it for |
+| Tonemapper | What it does | Pick it for |
 |---|---|---|
-| **Neutral** (default) | The Khronos PBR Neutral curve. It lowers every color by up to 4 percent of white, so shadows read slightly darker and dark colors slightly more saturated. Only the brightest highlights are compressed toward white. No added contrast. | product shots, stylized and painted art, converted content |
-| **Filmic** | Film contrast: upper mid-tones sit lower and bright, saturated colors roll off to white with little change in hue. Upper mid-tones sit lower than Neutral's. Raise the exposure compensation if a scene reads dark. | cinematic and realistic scenes, cutscenes |
-| **Photographic** | Gentle contrast; bright colors fade toward white the way film stock does, shifting slightly in hue. | natural, photographic daylight |
+| **Khronos PBR Neutral** (default) | It lowers every color by up to 4 percent of white, so shadows read slightly darker and dark colors slightly more saturated. Only the brightest highlights are compressed toward white. No added contrast. | product shots, stylized and painted art, converted content |
+| **ACES 2** | Upper midtones are darker than with Khronos PBR Neutral, and bright, saturated colors roll off to white with little change in hue. Raise the exposure compensation if a scene reads dark. | cinematic and realistic scenes, cutscenes |
+| **AgX** | Gentle contrast; bright colors fade toward white the way film stock does, shifting slightly in hue. | natural, photographic daylight |
+| **GT7 (ICtCp)** | Uses ICtCp to preserve highlight colors and fades the brightest highlights toward white. | scenes with saturated bright lights |
 
-A scene stores the look by name: `PostProcessVolume.look = Filmic`.
+Scenes store the tonemapper under `PostProcessVolume.look`. The values are `Neutral` for Khronos PBR Neutral, `Filmic` for ACES 2, `Photographic` for AgX, and `GT7` for GT7 (ICtCp).
 
 ## Color grading with a LUT
 
