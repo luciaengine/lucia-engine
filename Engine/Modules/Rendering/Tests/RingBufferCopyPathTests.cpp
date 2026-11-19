@@ -41,8 +41,9 @@ TEST(RingBufferCopyPath, GPUOnlyWriteFlushAndReadback) {
     ASSERT_TRUE(cmd != nullptr);
     cmd->Begin();
     FlushRingBufferWrites<uint32_t>(dev.get(), cmd.get(), rb, frame);
-    // Copy from GPU buffer section to readback buffer
+    // The flush is a copy into the GPU buffer: the copy out of it reads only after that write.
     BufferHandle src = GetBufferForBinding<uint32_t>(rb);
+    cmd->Barrier(ResourceBarrier::CreateBufferBarrier(src, ResourceState::CopyDest, ResourceState::CopySource));
     cmd->CopyBuffer(src, readback, alloc.sizeBytes, alloc.byteOffset, 0);
     cmd->End();
 
