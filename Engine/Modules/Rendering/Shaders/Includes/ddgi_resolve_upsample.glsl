@@ -35,20 +35,20 @@ vec3 GE_DDGIUpsampleIrradiance(vec2 uv, float rawDepth, vec3 pixelN)
     vec3 taps[4];
     float agreement[4];
     float best = kDDGIUpsampleRejected;
-    for (int k = 0; k < 4; ++k)
+    for (int corner = 0; corner < 4; ++corner)
     {
-        ivec2 texel = clamp(base + ivec2(k & 1, k >> 1), ivec2(0), inSize - ivec2(1));
+        ivec2 texel = clamp(base + ivec2(corner & 1, corner >> 1), ivec2(0), inSize - ivec2(1));
         vec4 tap = texelFetch(GE_DDGI_UPSAMPLE_IRRADIANCE, texel, 0);
-        taps[k] = tap.rgb;
+        taps[corner] = tap.rgb;
         bool sameDepth = tap.a > 0.0 && abs(tap.a - rawDepth) <= kDDGIUpsampleDepthTolerance * max(rawDepth, 1.0e-6);
 #if defined(GE_DDGI_UPSAMPLE_GATHER_NORMAL)
         vec3 gatherN = texelFetch(GE_DDGI_UPSAMPLE_GATHER_NORMAL, texel, 0).xyz;
-        agreement[k] = sameDepth && dot(gatherN, gatherN) > 0.25 ? dot(pixelN, normalize(gatherN))
-                                                                  : kDDGIUpsampleRejected;
+        agreement[corner] = sameDepth && dot(gatherN, gatherN) > 0.25 ? dot(pixelN, normalize(gatherN))
+                                                                       : kDDGIUpsampleRejected;
 #else
-        agreement[k] = sameDepth ? 1.0 : kDDGIUpsampleRejected;
+        agreement[corner] = sameDepth ? 1.0 : kDDGIUpsampleRejected;
 #endif
-        best = max(best, agreement[k]);
+        best = max(best, agreement[corner]);
     }
 
     if (best <= kDDGIUpsampleRejected)
@@ -60,14 +60,14 @@ vec3 GE_DDGIUpsampleIrradiance(vec2 uv, float rawDepth, vec3 pixelN)
     }
     vec3 sum = vec3(0.0);
     float wsum = 0.0;
-    for (int k = 0; k < 4; ++k)
+    for (int corner = 0; corner < 4; ++corner)
     {
-        if (agreement[k] < best - kDDGIUpsampleNormalMargin)
+        if (agreement[corner] < best - kDDGIUpsampleNormalMargin)
             continue;
-        float wx = (k & 1) == 0 ? 1.0 - frac.x : frac.x;
-        float wy = (k >> 1) == 0 ? 1.0 - frac.y : frac.y;
+        float wx = (corner & 1) == 0 ? 1.0 - frac.x : frac.x;
+        float wy = (corner >> 1) == 0 ? 1.0 - frac.y : frac.y;
         float w = max(wx * wy, kDDGIUpsampleMinWeight);
-        sum += taps[k] * w;
+        sum += taps[corner] * w;
         wsum += w;
     }
     return sum / wsum;
