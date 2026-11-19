@@ -1946,7 +1946,7 @@ void TextureService::AdvanceMaterialMipStreams()
         m_MaterialMipStreamsSettled = !step.has_value();
         if (!step)
             return;
-        chosen = m_MaterialMipPlanInput[step->Stream].Id;
+        chosen = m_MaterialMipPlanInput[step->StreamIndex].Id;
         candidate = *m_MaterialMipStreams.Find(chosen);
         targetMip = step->TargetMip;
     }

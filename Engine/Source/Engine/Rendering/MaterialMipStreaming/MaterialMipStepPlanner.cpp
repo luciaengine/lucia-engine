@@ -36,93 +36,83 @@ float32 Need(const Stream& stream)
 }
 } // namespace
 
-bool MaterialMipStepPlanner::HasLessNeed(std::span<const Stream> streams, uint32 left, uint32 right) const
+bool MaterialMipStepPlanner::GainsBefore(const Candidate& left, const Candidate& right)
 {
-    if (m_Need[left] != m_Need[right])
-        return m_Need[left] < m_Need[right];
-    const uint64 leftBytes = LossBytes(streams[left]);
-    const uint64 rightBytes = LossBytes(streams[right]);
-    if (leftBytes != rightBytes)
-        return leftBytes > rightBytes;
-    return streams[left].Id < streams[right].Id;
+    if (left.Need != right.Need)
+        return left.Need > right.Need;
+    if (left.Bytes != right.Bytes)
+        return left.Bytes < right.Bytes;
+    return left.Id < right.Id;
 }
 
-bool MaterialMipStepPlanner::HasMoreNeed(std::span<const Stream> streams, uint32 left, uint32 right) const
+bool MaterialMipStepPlanner::LosesBefore(const Candidate& left, const Candidate& right)
 {
-    if (m_Need[left] != m_Need[right])
-        return m_Need[left] > m_Need[right];
-    const uint64 leftBytes = GainBytes(streams[left]);
-    const uint64 rightBytes = GainBytes(streams[right]);
-    if (leftBytes != rightBytes)
-        return leftBytes < rightBytes;
-    return streams[left].Id < streams[right].Id;
+    if (left.Need != right.Need)
+        return left.Need < right.Need;
+    if (left.Bytes != right.Bytes)
+        return left.Bytes > right.Bytes;
+    return left.Id < right.Id;
+}
+
+bool MaterialMipStepPlanner::NeedsLessThan(const Candidate& donor, float32 need)
+{
+    return donor.Need < need;
 }
 
 std::optional<MaterialMipStepPlanner::Step> MaterialMipStepPlanner::Plan(std::span<const Stream> streams,
                                                                          uint64 budgetBytes)
 {
-    m_Need.resize(streams.size());
     m_Takers.clear();
     m_Donors.clear();
     uint64 usedBytes = 0;
     for (uint32 index = 0; index < streams.size(); ++index)
     {
         const Stream& stream = streams[index];
-        m_Need[index] = Need(stream);
+        const float32 need = Need(stream);
         usedBytes += ResidentBytes(stream);
         if (stream.FirstMip > 0)
-            m_Takers.push_back(index);
+            m_Takers.push_back({need, GainBytes(stream), index, stream.Id});
         if (stream.FirstMip < stream.Tail)
-            m_Donors.push_back(index);
+            m_Donors.push_back({need, LossBytes(stream), index, stream.Id});
     }
     return usedBytes > budgetBytes ? PlanLoss(streams) : PlanGain(streams, budgetBytes - usedBytes);
 }
 
 std::optional<MaterialMipStepPlanner::Step> MaterialMipStepPlanner::PlanLoss(std::span<const Stream> streams) const
 {
-    const auto least = std::min_element(m_Donors.begin(), m_Donors.end(), [&](uint32 left, uint32 right)
-    {
-        return HasLessNeed(streams, left, right);
-    });
+    const auto least = std::min_element(m_Donors.begin(), m_Donors.end(), LosesBefore);
     if (least == m_Donors.end())
         return std::nullopt;
-    return Step{*least, streams[*least].FirstMip + 1};
+    return Step{least->StreamIndex, streams[least->StreamIndex].FirstMip + 1};
 }
 
 std::optional<MaterialMipStepPlanner::Step> MaterialMipStepPlanner::PlanGain(std::span<const Stream> streams,
                                                                              uint64 freeBytes)
 {
-    std::sort(m_Takers.begin(), m_Takers.end(), [&](uint32 left, uint32 right)
-    {
-        return HasMoreNeed(streams, left, right);
-    });
-    std::sort(m_Donors.begin(), m_Donors.end(), [&](uint32 left, uint32 right)
-    {
-        return HasLessNeed(streams, left, right);
-    });
+    std::sort(m_Takers.begin(), m_Takers.end(), GainsBefore);
+    std::sort(m_Donors.begin(), m_Donors.end(), LosesBefore);
     m_DonorSavings.resize(m_Donors.size());
     uint64 savings = 0;
     for (size_t donor = 0; donor < m_Donors.size(); ++donor)
     {
-        savings += LossBytes(streams[m_Donors[donor]]);
+        savings += m_Donors[donor].Bytes;
         m_DonorSavings[donor] = savings;
     }
 
-    for (const uint32 taker : m_Takers)
+    for (const Candidate& taker : m_Takers)
     {
-        const uint64 gainBytes = GainBytes(streams[taker]);
-        if (gainBytes <= freeBytes)
-            return Step{taker, streams[taker].FirstMip - 1};
+        if (taker.Bytes <= freeBytes)
+            return Step{taker.StreamIndex, streams[taker.StreamIndex].FirstMip - 1};
 
         // The donors of this taker are a prefix of m_Donors: need rises along it.
-        const float32 donorNeedLimit = m_Need[taker] / kDonorNeedMargin;
-        const auto firstTooNeedy = std::partition_point(m_Donors.begin(), m_Donors.end(), [&](uint32 donor)
-        {
-            return m_Need[donor] < donorNeedLimit;
-        });
+        const auto firstTooNeedy =
+            std::lower_bound(m_Donors.begin(), m_Donors.end(), taker.Need / kDonorNeedMargin, NeedsLessThan);
         const size_t donorCount = static_cast<size_t>(firstTooNeedy - m_Donors.begin());
-        if (donorCount > 0 && m_DonorSavings[donorCount - 1] >= gainBytes - freeBytes)
-            return Step{m_Donors.front(), streams[m_Donors.front()].FirstMip + 1};
+        if (donorCount > 0 && m_DonorSavings[donorCount - 1] >= taker.Bytes - freeBytes)
+        {
+            const uint32 donor = m_Donors.front().StreamIndex;
+            return Step{donor, streams[donor].FirstMip + 1};
+        }
     }
     return std::nullopt;
 }

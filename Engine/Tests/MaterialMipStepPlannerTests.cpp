@@ -79,7 +79,7 @@ TEST(MaterialMipStepPlanner, TheStreamWithTheMostNeedGainsFirst)
     const auto step = planner.Plan(streams, Used(streams) + oneGain);
 
     ASSERT_TRUE(step.has_value());
-    EXPECT_EQ(step->Stream, 1u);
+    EXPECT_EQ(step->StreamIndex, 1u);
     EXPECT_EQ(step->TargetMip, texture.Tail - 1);
 }
 
@@ -93,7 +93,7 @@ TEST(MaterialMipStepPlanner, NeedCountsResidentTexelsNotOnlyCoverage)
     const auto step = planner.Plan(streams, Used(streams) * 4);
 
     ASSERT_TRUE(step.has_value());
-    EXPECT_EQ(step->Stream, 1u);
+    EXPECT_EQ(step->StreamIndex, 1u);
 }
 
 TEST(MaterialMipStepPlanner, OverTheBudgetTheStreamWithTheLeastNeedLosesFirst)
@@ -105,7 +105,7 @@ TEST(MaterialMipStepPlanner, OverTheBudgetTheStreamWithTheLeastNeedLosesFirst)
     const auto step = planner.Plan(streams, Used(streams) - 1);
 
     ASSERT_TRUE(step.has_value());
-    EXPECT_EQ(step->Stream, 1u);
+    EXPECT_EQ(step->StreamIndex, 1u);
     EXPECT_EQ(step->TargetMip, 1u);
 }
 
@@ -119,7 +119,7 @@ TEST(MaterialMipStepPlanner, ALevelThatDoesNotFitTakesBytesFromAStreamWithLessTh
     const auto step = planner.Plan(streams, Used(streams));
 
     ASSERT_TRUE(step.has_value());
-    EXPECT_EQ(step->Stream, 0u);
+    EXPECT_EQ(step->StreamIndex, 0u);
     EXPECT_EQ(step->TargetMip, 1u);
 }
 
@@ -158,7 +158,7 @@ TEST(MaterialMipStepPlanner, ATradeSettlesAndIsNotTradedBack)
         const auto step = planner.Plan(streams, budget);
         if (!step)
             break;
-        streams[step->Stream].FirstMip = step->TargetMip;
+        streams[step->StreamIndex].FirstMip = step->TargetMip;
     }
 
     ASSERT_LT(steps, kStepLimit);
@@ -177,7 +177,7 @@ TEST(MaterialMipStepPlanner, WithoutDemandTheSmallestGainGoesFirstThenTheLowestI
     const auto step = planner.Plan(streams, Used(streams) * 4);
 
     ASSERT_TRUE(step.has_value());
-    EXPECT_EQ(step->Stream, 2u);
+    EXPECT_EQ(step->StreamIndex, 2u);
     EXPECT_EQ(step->TargetMip, 0u);
 }
 

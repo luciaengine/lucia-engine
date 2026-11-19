@@ -245,6 +245,13 @@ class TextureCoverageGPU : public testing::Test
         ASSERT_EQ(asset->GetMipChain().size(), 10u);
     }
 
+    uint32 WidthOf(TextureHandle texture)
+    {
+        uint32 width = 0, height = 0;
+        m_Device->GetTextureSize(texture, width, height);
+        return width;
+    }
+
     std::vector<float> Render(TextureHandle texture, uint32 width, uint32 height, float lod,
                               uint32 mode = 0, float phase = 0.0f)
     {
@@ -477,12 +484,6 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     // Without demand the lower GUID gains first: the demand goes to the higher one.
     if (streamed[1].Texture < streamed[0].Texture)
         std::swap(streamed[0], streamed[1]);
-    const auto extentOf = [&](const Streamed& entry)
-    {
-        uint32 width = 0, height = 0;
-        m_Device->GetTextureSize(entry.BoundMaterial->GetTexture(slot), width, height);
-        return width;
-    };
     constexpr int kFramesToSettle = 4;
 
     std::array<float, 2> coverage{};
@@ -491,8 +492,8 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     m_Textures.UpdateMaterialMipDemand(coverage);
     for (int frame = 0; frame < kFramesToSettle; ++frame)
         m_Textures.FlushPendingUploads();
-    EXPECT_EQ(extentOf(streamed[0]), 256u);
-    EXPECT_EQ(extentOf(streamed[1]), 512u);
+    EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 256u);
+    EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 512u);
 
     // The demand moves: the first texture takes the level that the second one held.
     coverage[streamed[0].MaterialIndex] = 0.9f;
@@ -500,8 +501,8 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     m_Textures.UpdateMaterialMipDemand(coverage);
     for (int frame = 0; frame < kFramesToSettle; ++frame)
         m_Textures.FlushPendingUploads();
-    EXPECT_EQ(extentOf(streamed[0]), 512u);
-    EXPECT_EQ(extentOf(streamed[1]), 256u);
+    EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 512u);
+    EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 256u);
 
     for (const Streamed& entry : streamed)
     {
