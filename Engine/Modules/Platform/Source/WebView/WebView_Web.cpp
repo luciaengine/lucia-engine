@@ -64,6 +64,18 @@ EM_JS(void, GeWebViewLoadHtml, (std::uint32_t id, const char* html), {
     frame.srcdoc = UTF8ToString(html);
 });
 
+EM_JS(void, GeWebViewReload, (std::uint32_t id), {
+    var frame = (Module.__geWebViews || {})[id];
+    if (!frame)
+        return;
+    // Assigning an attribute its own value reloads the frame: srcdoc when it shows inline
+    // HTML, src otherwise.
+    if (frame.hasAttribute('srcdoc'))
+        frame.srcdoc = frame.srcdoc;
+    else if (frame.src)
+        frame.src = frame.src;
+});
+
 EM_JS(void, GeWebViewSetBackgroundColor, (std::uint32_t id, int r, int g, int b), {
     var frame = (Module.__geWebViews || {})[id];
     if (frame)
@@ -154,17 +166,7 @@ class WebViewWeb final : public IWebView
     {
         if (m_Destroyed)
             return;
-        EM_ASM({
-            var frame = (Module.__geWebViews || {})[$0];
-            if (!frame)
-                return;
-            // Assigning an attribute its own value reloads the frame: srcdoc when it shows inline
-            // HTML, src otherwise.
-            if (frame.hasAttribute('srcdoc'))
-                frame.srcdoc = frame.srcdoc;
-            else if (frame.src)
-                frame.src = frame.src;
-        }, m_Id);
+        GeWebViewReload(m_Id);
     }
 
     void StopLoading() override {}

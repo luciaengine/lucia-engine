@@ -144,10 +144,9 @@ endif()
 # Option to enable SPIR-V reflection; default ON for dev/editor builds
 option(RENDERING_ENABLE_SPIRV_REFLECTION "Enable SPIR-V reflection to generate ShaderMeta at build or runtime" ON)
 
-# Force-enable reflection in this subproject for dev unless overridden by parent.
-# wasm: spirv-reflect is not in the wasm triplet (shader authoring is a
-# desktop/editor concern; the browser runtime consumes prebuilt WGSL/SPIR-V).
-if(EMSCRIPTEN)
+# The browser editor reflects SPIR-V when live compiler assets are staged.
+set(GE_WEB_SHADER_COMPILER_DIR "" CACHE PATH "Directory containing the BrowserShaderCompilerAssets output")
+if(EMSCRIPTEN AND NOT GE_WEB_SHADER_COMPILER_DIR)
     set(RENDERING_ENABLE_SPIRV_REFLECTION OFF CACHE BOOL "Enable SPIR-V reflection" FORCE)
 else()
     set(RENDERING_ENABLE_SPIRV_REFLECTION ON CACHE BOOL "Enable SPIR-V reflection" FORCE)
@@ -1014,7 +1013,9 @@ find_package(nlohmann_json CONFIG QUIET)
         endif()
 	        # vcpkg-installed spirv_reflect.h defaults to including "./include/spirv/unified1/spirv.h",
 	        # which does not resolve in standard package layouts. Prefer the system SPIR-V headers.
-	        target_compile_definitions(GameEngineRendering PRIVATE SPIRV_REFLECT_USE_SYSTEM_SPIRV_H=1)
+        if(NOT EMSCRIPTEN)
+            target_compile_definitions(GameEngineRendering PRIVATE SPIRV_REFLECT_USE_SYSTEM_SPIRV_H=1)
+        endif()
         target_compile_definitions(GameEngineRendering PUBLIC RENDERING_ENABLE_SPIRV_REFLECTION=1)
         message(STATUS "SPIR-V reflection enabled and linked")
     else()

@@ -1,0 +1,15 @@
+[package]
+name = "lucia-web-shader-translator"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+naga = { version = "=29.0.4", default-features = false, features = ["spv-in", "wgsl-out"] }
+
+[profile.release]
+lto = true
+opt-level = "s"
+strip = true

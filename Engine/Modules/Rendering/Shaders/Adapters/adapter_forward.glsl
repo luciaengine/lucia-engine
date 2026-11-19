@@ -90,10 +90,17 @@ flat layout(location = 7) in vec4 vCustom0;
 // Per-instance flags (bit0=castShadows, bit1=receiveShadows). Matches the vertex
 // adapter's location 14 (above the conditional vUV2..vUV7 at 8..13).
 #ifdef GE_LOD_CROSSFADE
+// WGSL requires one varying per location.
+#if defined(GE_COMPAT_PROFILE)
+flat layout(location = 14) in uvec2 vInstanceFlagsAndLod;
+#define vInstanceFlags vInstanceFlagsAndLod.x
+#define vLodFadeCode vInstanceFlagsAndLod.y
+#else
 flat layout(location = 14, component = 0) in uint vInstanceFlags;
 // Packed LOD-crossfade code, sharing location 14 with the flags — see the
 // vertex adapter for why it takes a component rather than a slot of its own.
 flat layout(location = 14, component = 1) in uint vLodFadeCode;
+#endif
 
 // GE_LodCrossfadeKeep lives here: the depth prepass and the colour pass compile
 // the SAME definition against the same record's code, which is what makes

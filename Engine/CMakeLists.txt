@@ -1846,6 +1846,7 @@ endif()
 if(GTest_FOUND OR TARGET GTest::gtest)
     add_executable(OceanQueryTests
         Tests/OceanQueryTests.cpp
+        Tests/OceanCpuTextureCacheTests.cpp
         Tests/OceanPresetOverrideTests.cpp
         Tests/OceanScheduleTests.cpp
         )

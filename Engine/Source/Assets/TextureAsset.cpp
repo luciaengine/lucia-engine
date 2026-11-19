@@ -477,14 +477,15 @@ void TextureAsset::Unload() {
         m_LevelFile.reset();
         m_MipChain.clear();
         m_DataSize = 0;
+        m_Width = 0;
+        m_Height = 0;
+        m_Channels = 0;
+        m_Format = TextureFormat::Unknown;
+        m_ColorSpace = TextureColorSpace::Unknown;
+        m_PayloadGeneration.store(NextPayloadGeneration(), std::memory_order_release);
     }
     m_NormalVarianceCompanion.reset();
 
-    m_Width = 0;
-    m_Height = 0;
-    m_Channels = 0;
-    m_Format = TextureFormat::Unknown;
-	    m_ColorSpace = TextureColorSpace::Unknown;
     m_HasMipmaps = false;
     m_SwizzleBaked = false;
     m_MipmapLevels = 1;
@@ -495,6 +496,12 @@ void TextureAsset::Unload() {
 
     SetState(AssetState::Unloaded);
     Logger::Log::Debug("Unloaded texture: {}", GetName());
+}
+
+uint64 TextureAsset::NextPayloadGeneration()
+{
+    static std::atomic<uint64> s_Next{1};
+    return s_Next.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool TextureAsset::ReloadFromData(std::span<const uint8> data) {
@@ -522,20 +529,21 @@ bool TextureAsset::AdoptReloadedPayload(Asset& staged) {
     // previous payload moves into `staged`, which frees it when destroyed.
     // Sampler settings (filter/wrap) are user state that survives a Reload(),
     // so adoption preserves them too.
-    std::swap(m_Width, other->m_Width);
-    std::swap(m_Height, other->m_Height);
-    std::swap(m_Channels, other->m_Channels);
-    std::swap(m_Format, other->m_Format);
-    std::swap(m_ColorSpace, other->m_ColorSpace);
     {
         // AcquirePixels on another thread reads these together. It keeps the pixels that it got.
         std::scoped_lock lock(m_PixelMutex, other->m_PixelMutex);
+        std::swap(m_Width, other->m_Width);
+        std::swap(m_Height, other->m_Height);
+        std::swap(m_Channels, other->m_Channels);
+        std::swap(m_Format, other->m_Format);
+        std::swap(m_ColorSpace, other->m_ColorSpace);
         std::swap(m_PixelData, other->m_PixelData);
         std::swap(m_BorrowedPixels, other->m_BorrowedPixels);
         std::swap(m_DataSize, other->m_DataSize);
         std::swap(m_MipChain, other->m_MipChain);
         std::swap(m_LevelFile, other->m_LevelFile);
         std::swap(m_NormalVarianceCompanion, other->m_NormalVarianceCompanion);
+        m_PayloadGeneration.store(NextPayloadGeneration(), std::memory_order_release);
     }
     std::swap(m_HasMipmaps, other->m_HasMipmaps);
     std::swap(m_SwizzleBaked, other->m_SwizzleBaked);
@@ -1529,12 +1537,22 @@ bool TextureAsset::RestoreLevelPixels()
     return false;
 }
 
-std::shared_ptr<const uint8[]> TextureAsset::AcquirePixels() const
+TexturePixels TextureAsset::AcquirePixels() const
 {
     // The file read is inside the lock: a second reader of the same asset waits for the first
     // and then takes its pixels.
     std::lock_guard<std::mutex> lock(m_PixelMutex);
-    return BorrowPixelsLocked();
+    TexturePixels pixels;
+    pixels.Pixels = BorrowPixelsLocked();
+    pixels.DataSize = m_DataSize;
+    pixels.Level0Bytes = m_MipChain.empty() ? m_DataSize : m_MipChain.front().Size;
+    pixels.Width = m_Width;
+    pixels.Height = m_Height;
+    pixels.Channels = m_Channels;
+    pixels.Format = m_Format;
+    pixels.ColorSpace = m_ColorSpace;
+    pixels.PayloadGeneration = m_PayloadGeneration.load(std::memory_order_acquire);
+    return pixels;
 }
 
 bool TextureAsset::LoadFromSvgData(const std::string& svgText, const String& extensionLower)

@@ -251,7 +251,7 @@ void OceanFlowSim::SetPolygonSources(const OceanFlowPolygonGPU* polygons, uint32
 void OceanFlowSim::SetFlowMapSources(const OceanFlowMapSourceGPU* sources,
                                      const TextureHandle* textures,
                                      uint32 count,
-                                     const OceanCpuTextureRG* cpuTextures)
+                                     const std::shared_ptr<const OceanCpuTextureRG>* cpuTextures)
 {
     const uint32 n = (sources && textures) ? std::min(count, kMaxOceanFlowMapSources) : 0u;
     bool changed =
@@ -333,7 +333,8 @@ OceanCurrentSample OceanFlowSim::SampleFlow(float worldX, float worldZ) const
         const float halfZ = std::max(map.OriginExtent[3], 1e-3f);
         const float u = (worldX - map.OriginExtent[0]) / (2.0f * halfX) + 0.5f;
         const float v = (worldZ - map.OriginExtent[1]) / (2.0f * halfZ) + 0.5f;
-        m_FlowMapCpuTextures[i].SampleLinear(u, v, encodedX, encodedZ);
+        if (m_FlowMapCpuTextures[i])
+            m_FlowMapCpuTextures[i]->SampleLinear(u, v, encodedX, encodedZ);
         const float decodedX = (encodedX - 0.5f) * 2.0f;
         const float decodedZ = (encodedZ - 0.5f) * 2.0f;
         sample.FlowX += (decodedX * map.StrengthFeather[0] + map.StrengthFeather[2]) * weight;

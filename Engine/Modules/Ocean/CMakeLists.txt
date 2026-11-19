@@ -32,6 +32,7 @@ add_library(Ocean OBJECT
     Source/OceanDepthCacheAsset.cpp
     Source/OceanSeabedDepth.cpp
     Source/OceanSeabedVisibility.cpp
+    Source/OceanCpuTextureCache.cpp
     Source/OceanFlowSim.cpp
     Source/OceanWaveMaskSim.cpp
     Source/OceanDynWaves.cpp

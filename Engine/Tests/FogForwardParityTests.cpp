@@ -329,11 +329,13 @@ class FogForwardParity : public ::testing::Test
             GTEST_SKIP() << "No usable Vulkan device";
         m_Sampler = m_Device->CreateSampler(SamplerDesc::MaterialLinearClamp("HeightFogParity"));
         ASSERT_TRUE(m_Sampler.IsValid());
+        // Each buffer is the size of its block: an update larger than the buffer writes nothing.
         BufferDesc bd{};
-        bd.size = 512;
+        bd.size = sizeof(ViewParamsUBO);
         bd.usage = static_cast<uint32_t>(BufferUsage::Uniform);
         bd.memoryUsage = BufferMemoryUsage::Upload;
         m_ViewBuffer = m_Device->CreateBuffer(bd);
+        bd.size = sizeof(HeightFogParamsUBO);
         m_FogBuffer = m_Device->CreateBuffer(bd);
         bd.size = sizeof(VolumetricFogParams);
         m_VolumetricBuffer = m_Device->CreateBuffer(bd);

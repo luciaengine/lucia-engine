@@ -94,19 +94,30 @@ namespace GameEngine.ECS.Internal
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         private delegate int GE_ECS_GetInterface_Delegate(uint abiVersion, out nint table, out uint sizeBytes);
 
-        /// <summary>
-        /// Returns a copy of the native interface table. Throws when the native engine cannot
-        /// be loaded, lacks the export, rejects the ABI version, or is older than this mirror.
-        /// </summary>
-        internal static GE_ECS_Interface_v2 Acquire()
+        [DllImport("GameEngine.ECS.ABI", EntryPoint = "GE_ECS_GetInterface",
+            CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        private static extern int GetStaticInterface(uint abiVersion, out nint table, out uint sizeBytes);
+
+        private static GE_ECS_GetInterface_Delegate GetDynamicInterface()
         {
             nint nativeHandle = NativeEngineLibrary.Load(null, out _);
 
             if (!NativeLibrary.TryGetExport(nativeHandle, "GE_ECS_GetInterface", out nint getIfacePtr) || getIfacePtr == 0)
                 throw new MissingMethodException("GE_ECS_GetInterface export not found in GameEngine.Native");
 
-            var getIface = Marshal.GetDelegateForFunctionPointer<GE_ECS_GetInterface_Delegate>(getIfacePtr);
-            int rc = getIface(kAbi, out nint tablePtr, out uint sizeBytes);
+            return Marshal.GetDelegateForFunctionPointer<GE_ECS_GetInterface_Delegate>(getIfacePtr);
+        }
+
+        /// <summary>
+        /// Returns a copy of the native interface table. Throws when the native engine cannot
+        /// be loaded, lacks the export, rejects the ABI version, or is older than this mirror.
+        /// </summary>
+        internal static GE_ECS_Interface_v2 Acquire()
+        {
+            GE_ECS_GetInterface_Delegate getInterface = OperatingSystem.IsBrowser()
+                ? GetStaticInterface
+                : GetDynamicInterface();
+            int rc = getInterface(kAbi, out nint tablePtr, out uint sizeBytes);
             if (rc != 0 || tablePtr == 0 || sizeBytes == 0)
                 throw new InvalidOperationException($"GE_ECS_GetInterface failed rc={rc}");
 

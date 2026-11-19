@@ -6,6 +6,7 @@
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/TextureService.h"
+#include "Memory/StatsSnapshot.h"
 #include "Rendering/Core/CommandList.h"
 #include "StagedTestPaths.h"
 #include "TestDeviceHelper.h"
@@ -85,6 +86,12 @@ struct TextureCoverageUploadTestAccess
         return !stream ? TextureHandle{} : stream->Resident.Texture;
     }
     static void HotSwap(TextureService& service, const GUID& texture) { service.HotSwapTexture(texture); }
+    static TextureHandle StreamedCompanion(TextureService& service, const GUID& guid)
+    {
+        std::lock_guard lock(service.m_PendingTexturesMutex);
+        const auto* stream = service.m_MaterialMipStreams.Find(guid);
+        return !stream ? TextureHandle{} : stream->Resident.NormalVarianceCompanion;
+    }
     static bool Uploaded(TextureService& service, const GUID& texture)
     {
         return service.m_TextureGPUCache.Contains(texture);
@@ -320,6 +327,15 @@ class TextureCoverageGPU : public testing::Test
             handle = m_Textures.GetOrUpload(texture);
         }
         return handle;
+    }
+
+    // The bytes of the "Rendering.MaterialMipStreams" record: 0 before a stream reports.
+    static uint64 StreamedBytesInMemoryStats()
+    {
+        for (const Memory::StatsEntry& entry : Memory::SnapshotStats())
+            if (entry.Name == "Rendering.MaterialMipStreams")
+                return entry.Bytes;
+        return 0;
     }
 
     uint32 WidthOf(TextureHandle texture)
@@ -592,6 +608,43 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     m_Textures.FlushPendingUploads();
 }
 
+TEST_F(TextureCoverageGPU, TheMemoryStatsReportTheBytesThatTheMaterialMipStreamsHold)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    // RGBA8 levels of 512 texels a side and smaller, and of 256 texels a side and smaller.
+    constexpr uint64 kFullBytes = 1398100;
+    constexpr uint64 kTailBytes = 349524;
+    const uint64 before = StreamedBytesInMemoryStats();
+    Access::SetMipBudget(m_Textures, kMiB);
+    GUID texture;
+    SharedPtr<TextureAsset> asset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(texture, asset));
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingStats");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    Access::Queue(m_Textures, texture, materialGuid, asset, slot);
+    m_Textures.FlushPendingUploads();
+    ASSERT_EQ(WidthOf(material->GetTexture(slot)), 256u);
+    EXPECT_EQ(StreamedBytesInMemoryStats() - before, kTailBytes);
+
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    SettleMipStreams();
+    ASSERT_EQ(WidthOf(material->GetTexture(slot)), 512u);
+    EXPECT_EQ(StreamedBytesInMemoryStats() - before, kFullBytes);
+
+    // An evict ends the stream at once.
+    m_Textures.Evict(texture);
+    EXPECT_EQ(StreamedBytesInMemoryStats(), before);
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+    EXPECT_EQ(StreamedBytesInMemoryStats(), before);
+}
+
 TEST_F(TextureCoverageGPU, MaterialMipStreamKeepsNoPixelsAndReadsItsLevelsFromTheFile)
 {
     using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
@@ -655,7 +708,7 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     // A CPU reader of the shared asset borrows the pixels from the artifact in the cook cache.
     // The asset keeps none.
     {
-        const std::shared_ptr<const uint8[]> held = loaded->AcquirePixels();
+        const std::shared_ptr<const uint8[]> held = loaded->AcquirePixels().Pixels;
         ASSERT_NE(held, nullptr);
         EXPECT_EQ(loaded->GetPixelData(), nullptr);
     }
@@ -667,6 +720,52 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     EXPECT_EQ(WidthOf(direct), 512u);
     EXPECT_EQ(loaded->GetPixelData(), nullptr);
     EXPECT_EQ(Render(direct, 16, 16, 0), Render(streamed, 16, 16, 0));
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, AMaterialMipStreamOfABlockCompressedTextureMatchesTheDirectUpload)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    if (!IsTextureCookEncoderAvailable())
+        GTEST_SKIP() << "BC encoder unavailable";
+    if (!m_Device->GetCapabilities().supportsTextureCompressionBC)
+        GTEST_SKIP() << "the device samples no BC format";
+    // The tail of a BC7 texture of 512 texels a side is about 85 KiB, and the texture about 341 KiB.
+    constexpr uint64 kTailBudgetBytes = 128 * 1024;
+    constexpr uint64 kFullBudgetBytes = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kTailBudgetBytes);
+    const fs::path image = Image(false, 512);
+    const GUID texture = Register(image, false);
+    ASSERT_FALSE(texture.IsNull());
+    Set(image, kTextureCompressionMetaKey, "bc7");
+
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingBlockCompressed");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    const auto tail = WaitForBoundTexture(*material, slot);
+    ASSERT_EQ(WidthOf(tail), 256u);
+    const auto loaded =
+        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->GetFormat(), GameEngine::TextureFormat::BC7);
+    EXPECT_EQ(loaded->GetPixelData(), nullptr);
+
+    const auto direct = WaitForUpload(texture);
+    ASSERT_TRUE(direct.IsValid());
+    EXPECT_EQ(Render(tail, 16, 16, 0), Render(direct, 16, 16, 1));
+
+    Access::SetMipBudget(m_Textures, kFullBudgetBytes);
+    SettleMipStreams();
+    const auto promoted = material->GetTexture(slot);
+    ASSERT_EQ(WidthOf(promoted), 512u);
+    EXPECT_EQ(Render(promoted, 16, 16, 0), Render(direct, 16, 16, 0));
+    EXPECT_EQ(Render(promoted, 16, 16, 3), Render(direct, 16, 16, 3));
 
     m_Textures.OnMaterialUnregistered(materialGuid);
     m_Materials.Unregister(materialGuid);
@@ -740,6 +839,52 @@ TEST_F(TextureCoverageGPU, AHotSwapOfAStreamedTextureBindsTheFullTextureFromItsF
     EXPECT_EQ(WidthOf(swapped), 512u);
     EXPECT_TRUE(Access::Uploaded(m_Textures, texture));
     EXPECT_FALSE(Access::StreamedHandle(m_Textures, texture).IsValid());
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, ANormalMapStreamReadsItsVarianceCompanionFromItsFile)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kKiB = 1024;
+    // The tail of a 512 BC5 normal map and of its companion fits. Level 0 does not.
+    Access::SetMipBudget(m_Textures, 200 * kKiB);
+    const auto path = Image(false, 512);
+    Set(path, kTextureUsageMetaKey, "normal");
+    Set(path, kTextureColorSpaceMetaKey, "linear");
+    const GUID texture = EngineCore::GetInstance().GetAssetManager().GetRegistry().GetAssetGUID(path);
+    ASSERT_FALSE(texture.IsNull());
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingNormalMap");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("normalMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    const auto tail = WaitForBoundTexture(*material, slot);
+    ASSERT_TRUE(tail.IsValid());
+    const auto loaded =
+        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+    if (loaded->GetFormat() != GameEngine::TextureFormat::BC5)
+        GTEST_SKIP() << "the cook made no BC5 normal map on this device";
+    ASSERT_NE(loaded->GetNormalVarianceCompanion(), nullptr);
+    ASSERT_EQ(WidthOf(tail), 256u);
+    const auto tailCompanion = Access::StreamedCompanion(m_Textures, texture);
+    ASSERT_TRUE(tailCompanion.IsValid());
+    // The companion holds the variance of the next smaller mip: half the size of its texture.
+    EXPECT_EQ(WidthOf(tailCompanion), 128u);
+    EXPECT_EQ(loaded->GetPixelData(), nullptr);
+    EXPECT_EQ(loaded->GetNormalVarianceCompanion()->GetPixelData(), nullptr);
+
+    Access::SetMipBudget(m_Textures, 1024 * kKiB);
+    SettleMipStreams();
+    EXPECT_EQ(WidthOf(material->GetTexture(slot)), 512u);
+    const auto fullCompanion = Access::StreamedCompanion(m_Textures, texture);
+    ASSERT_TRUE(fullCompanion.IsValid());
+    EXPECT_NE(fullCompanion, tailCompanion);
+    EXPECT_EQ(WidthOf(fullCompanion), 256u);
 
     m_Textures.OnMaterialUnregistered(materialGuid);
     m_Materials.Unregister(materialGuid);
@@ -980,6 +1125,47 @@ TEST_F(TextureCoverageGPU, AssigningATextureThatIsNotLoadedCooksItOnAWorkerAndBi
     ASSERT_NE(bound, nullptr);
     EXPECT_TRUE(bound->GetTexture(HashStringId("albedoMap")).IsValid());
     EXPECT_EQ(CookedArtifacts(texture), 1u) << "the assign uploaded a raw decode instead of cooking";
+}
+
+TEST_F(TextureCoverageGPU, AssigningATextureThatIsAlreadyLoadedBindsIt)
+{
+    const fs::path path = Image();
+    const GUID texture = Register(path, false);
+    auto& assets = EngineCore::GetInstance().GetAssetManager();
+    auto loaded = std::make_shared<std::atomic<bool>>(false);
+    AssetLoadHandle handle =
+        assets.LoadAsset(texture, [loaded](Result<SharedPtr<Asset>, AssetError>) { loaded->store(true); });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!loaded->load() && std::chrono::steady_clock::now() < deadline)
+    {
+        assets.Update();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_NE(assets.GetAsset(texture), nullptr) << "the texture did not load";
+
+    MaterialDocument doc{};
+    doc.schemaVersion = 3;
+    doc.materialName = "TextureAssignLoaded";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    const GUID material = GUID::Generate();
+    ASSERT_NE(m_Materials.Register(material, doc), nullptr);
+    doc.textures["albedoMap"] = texture.ToString();
+    m_Textures.UpdateMaterialTextures(material, doc);
+
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!m_Textures.IsMaterialTextureBindingComplete(material) && std::chrono::steady_clock::now() < deadline)
+    {
+        assets.Update();
+        m_Textures.FlushPendingUploads();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_TRUE(m_Textures.IsMaterialTextureBindingComplete(material)) << "the loaded texture never bound";
+    const Engine::Renderer::Material* bound = m_Materials.Find(material);
+    ASSERT_NE(bound, nullptr);
+    const TextureHandle albedo = bound->GetTexture(HashStringId("albedoMap"));
+    ASSERT_TRUE(albedo.IsValid());
+    EXPECT_EQ(WidthOf(albedo), 64u);
 }
 
 // GetOrUpload runs on the render thread and on extraction workers: a cook source it has not

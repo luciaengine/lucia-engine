@@ -6,12 +6,14 @@
 #include "Assets/PackagedTexturePayload.h"
 #include "Assets/Packages/PackageMounts.h"
 #include "Engine/Build/TexturePackageCook.h"
+#include "Engine/Rendering/MaterialMipStreaming/MaterialMipStreamSource.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/TextureService.h"
 #include "EngineLogCapture.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RendererProfile.h"
+#include "Rendering/Utils/TextureUploadHelpers.h"
 #include "TestTempDir.h"
 
 #include <bit>
@@ -22,6 +24,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(GE_HAVE_KTX)
@@ -34,11 +37,14 @@ namespace
 namespace fs = std::filesystem;
 using Metadata = decltype(AssetDatabase::AssetRecord::kv);
 
-Vector<uint8> SmallTga(uint8 red = 80, bool cutout = false)
+// `extent` is the edge of a square image, in texels. 0 gives the small default image.
+Vector<uint8> SmallTga(uint8 red = 80, bool cutout = false, uint16 extent = 0)
 {
     Vector<uint8> bytes(18, 0);
-    const uint8 width = cutout ? 19 : 8, height = cutout ? 13 : 8;
-    bytes[2] = 2; bytes[12] = width; bytes[14] = height; bytes[16] = 32; bytes[17] = 0x28;
+    const uint16 width = extent != 0 ? extent : cutout ? 19 : 8, height = extent != 0 ? extent : cutout ? 13 : 8;
+    bytes[2] = 2; bytes[16] = 32; bytes[17] = 0x28;
+    bytes[12] = static_cast<uint8>(width & 0xff); bytes[13] = static_cast<uint8>(width >> 8);
+    bytes[14] = static_cast<uint8>(height & 0xff); bytes[15] = static_cast<uint8>(height >> 8);
     for (size_t i = 0; i != static_cast<size_t>(width) * height; ++i)
     {
         bytes.push_back(180); bytes.push_back(120); bytes.push_back(red);
@@ -166,6 +172,25 @@ struct TextureServiceShutdown
     }
 };
 
+// Expects `levels` to be the levels `firstLevel`..last of `asset`, byte for byte.
+void ExpectLevelsOfAsset(const std::vector<Rendering::TextureMipUploadEntry>& levels, const TextureAsset& asset,
+                         uint32 firstLevel)
+{
+    const auto& chain = asset.GetMipChain();
+    const std::shared_ptr<const uint8[]> pixels = asset.AcquirePixels().Pixels;
+    ASSERT_NE(pixels, nullptr);
+    ASSERT_EQ(levels.size(), chain.size() - firstLevel);
+    for (size_t index = 0; index < levels.size(); ++index)
+    {
+        const TextureMipDesc& level = chain[firstLevel + index];
+        EXPECT_EQ(levels[index].Width, level.Width);
+        EXPECT_EQ(levels[index].Height, level.Height);
+        ASSERT_EQ(levels[index].SizeBytes, level.Size);
+        EXPECT_EQ(std::memcmp(levels[index].Pixels, pixels.get() + level.Offset, level.Size), 0)
+            << "level " << firstLevel + index;
+    }
+}
+
 class TexturePackageCookTest : public testing::Test
 {
 protected:
@@ -181,6 +206,7 @@ protected:
                   {kTextureUsageMetaKey, "color"}, {kTextureFilterMetaKey, "point"}};
     fs::path MountRoot;
     bool Cutout = false;
+    uint16 SourceExtent = 0; // SmallTga: 0 is the small default image
     JobSystem::WorkStealingThreadPool* ManifestParsePool = nullptr;
 
     void SetUp() override
@@ -197,7 +223,7 @@ protected:
     {
         MountRoot = alias == "project" ? Temp.Path() : Temp.Path() / "Packages" / alias;
         const auto source = MountRoot / "Assets" / "Leaves.tga";
-        WriteBytes(source, SmallTga(red, Cutout));
+        WriteBytes(source, SmallTga(red, Cutout, SourceExtent));
         AssetDatabase::AssetRecord record;
         record.guid = Id; record.type = AssetType::Texture; record.path = "Leaves.tga";
         // Exercise the shipping key list before serializing the same manifest
@@ -256,7 +282,7 @@ protected:
     }
     fs::path Artifact(TextureCookOutput output, uint8 red = 80) const
     {
-        const auto bytes = SmallTga(red, Cutout);
+        const auto bytes = SmallTga(red, Cutout, SourceExtent);
         return MountRoot / "Tex" / TextureCookArtifactName(Id,
             ComputeTextureCookSourceHash(bytes.data(), bytes.size()), Inputs(Meta), output);
     }
@@ -476,6 +502,63 @@ TEST_F(TexturePackageCookTest, APackagedNormalMapsDecodeJobTakesTheCompanionItsR
     EXPECT_EQ(texture->GetFormat(), TextureFormat::BC5);
     ASSERT_NE(texture->GetNormalVarianceCompanion(), nullptr);
     EXPECT_EQ(texture->GetNormalVarianceCompanion()->GetFormat(), TextureFormat::BC4);
+    handle = {};
+    player.Shutdown();
+    pool.Shutdown();
+}
+
+// A material mip stream of a packaged normal map reads the payload and its companion in the package.
+TEST_F(TexturePackageCookTest, APackagedNormalMapGivesAMipStreamItsLevelsAndItsCompanionLevels)
+{
+    if (!IsTextureCookEncoderAvailable()) GTEST_SKIP() << "BC encoder unavailable";
+    Meta = {{kTextureColorSpaceMetaKey, "auto"}};
+    SourceExtent = 512;
+    StageSource();
+    StageMaterialBindings({{"normalMap", "Leaves.tga"}});
+    ASSERT_TRUE(Bake()) << Error;
+
+    JobSystem::WorkStealingThreadPool pool(2);
+    AssetManager player;
+    const fs::path userData = Temp.Path() / "UserData";
+    ASSERT_TRUE(player.Initialize(MountRoot / "Assets", &pool, userData / "AssetDatabase.assetdb",
+                                  userData / ".Cache" / "AssetDatabase"));
+    player.WaitForStartupScan();
+    TextureAsset::SetGpuTranscodeTarget(TextureGpuTranscodeTarget::BC7);
+    auto result = std::make_shared<std::promise<SharedPtr<Asset>>>();
+    std::future<SharedPtr<Asset>> loaded = result->get_future();
+    AssetLoadHandle handle = player.LoadAsset(Id, [result](Result<SharedPtr<Asset>, AssetError> loadResult) {
+        result->set_value(loadResult.IsOk() ? loadResult.Value() : SharedPtr<Asset>{});
+    });
+    ASSERT_EQ(loaded.wait_for(std::chrono::seconds(60)), std::future_status::ready);
+    const SharedPtr<Asset> asset = loaded.get();
+    const auto* texture = dynamic_cast<const TextureAsset*>(asset.get());
+    ASSERT_NE(texture, nullptr);
+    const TextureAsset* companion = texture->GetNormalVarianceCompanion();
+    ASSERT_NE(companion, nullptr);
+
+    using Engine::Renderer::MaterialMipStreamSource;
+    const auto source = MaterialMipStreamSource::Create(*texture, Rendering::TextureFormat::BC5_UNORM,
+                                                        Rendering::TextureFormat::BC4_UNORM);
+    ASSERT_NE(source, nullptr) << "the packaged payload gave no level file";
+    ASSERT_TRUE(source->HasCompanion());
+    constexpr uint32 kTailLevel = 1; // 256 texels a side
+    ASSERT_EQ(source->Tail(), kTailLevel);
+    EXPECT_EQ(source->TopExtent(), 512u);
+
+    for (const uint32 firstMip : {kTailLevel, 0u})
+    {
+        const auto read = MaterialMipStreamSource::ReadLevels(source, player, Id, firstMip);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!read->Done() && std::chrono::steady_clock::now() < deadline)
+        {
+            player.Update();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ASSERT_TRUE(read->Done());
+        ASSERT_FALSE(read->Failed.load());
+        ExpectLevelsOfAsset(source->TextureLevels(*read), *texture, firstMip);
+        ExpectLevelsOfAsset(source->CompanionLevels(*read), *companion, source->CompanionMip(firstMip));
+    }
     handle = {};
     player.Shutdown();
     pool.Shutdown();

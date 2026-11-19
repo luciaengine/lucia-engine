@@ -162,6 +162,12 @@ flat layout(location = 7) out vec4 vCustom0;
 // Per-instance flags (bit0=castShadows, bit1=receiveShadows). location 8..13 are
 // the conditional vUV2..vUV7, so this sits above them at 14.
 #ifdef GE_LOD_CROSSFADE
+// WGSL requires one varying per location.
+#if defined(GE_COMPAT_PROFILE)
+flat layout(location = 14) out uvec2 vInstanceFlagsAndLod;
+#define vInstanceFlags vInstanceFlagsAndLod.x
+#define vLodFadeCode vInstanceFlagsAndLod.y
+#else
 flat layout(location = 14, component = 0) out uint vInstanceFlags;
 // Packed LOD-crossfade code (lod_crossfade.glsl). It shares location 14 rather
 // than taking a slot of its own: 0..15 are all occupied and 15 is the last
@@ -169,6 +175,7 @@ flat layout(location = 14, component = 0) out uint vInstanceFlags;
 // prototype feature. Same `flat uint` interpolation as the flags it sits
 // beside, which is what makes two variables on one location legal.
 flat layout(location = 14, component = 1) out uint vLodFadeCode;
+#endif
 #else
 flat layout(location = 14) out uint vInstanceFlags;
 #endif

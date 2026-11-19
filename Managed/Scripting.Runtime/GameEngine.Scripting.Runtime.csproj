@@ -11,6 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="GameEngine.Scripting.Web" />
     <ProjectReference Include="..\Scripting.ABI\GameEngine.Scripting.ABI.csproj" />
     <ProjectReference Include="..\ECS.ABI\GameEngine.ECS.ABI.csproj" />
   </ItemGroup>

@@ -385,15 +385,15 @@ def Preprocess(source: Path, stage: str, glslc: Path, defines: list[str],
 
 def CookFile(source: Path, stage: str, glslc: Path, naga: Path, tint: Path | None,
              validate: bool, defines: list[str], include_dirs: list[Path],
-             out_wgsl: Path, scratch: Path) -> None:
+             out_wgsl: Path, scratch: Path, *, optimize_spirv: bool = True) -> None:
     flattened = scratch / (source.stem + ".pp" + source.suffix)
     Preprocess(source, stage, glslc, defines, include_dirs, flattened)
     compile_source = scratch / (source.stem + ".rewritten" + source.suffix)
     compile_source.write_text(RewritePushConstants(flattened.read_text()))
 
     spv = scratch / (source.stem + ".spv")
-    cmd = [glslc, "--target-env=vulkan1.1", f"-fshader-stage={stage}", "-O",
-           compile_source, "-o", spv]
+    cmd = [glslc, "--target-env=vulkan1.1", f"-fshader-stage={stage}",
+           "-O" if optimize_spirv else "-O0", compile_source, "-o", spv]
     result = Run(cmd)
     if result.returncode != 0:
         raise CookError(f"glslc failed for {source}:\n{result.stderr}")
@@ -418,7 +418,7 @@ def CookFile(source: Path, stage: str, glslc: Path, naga: Path, tint: Path | Non
 
     result = Run([naga, "--keep-coordinate-space", split, out_wgsl])
     if result.returncode != 0:
-        raise CookError(f"naga failed for {source}:\n{result.stderr or result.stdout}")
+        raise CookError(f"naga exited {result.returncode} for {source}:\n{result.stderr or result.stdout}")
 
     if validate:
         if tint is None:

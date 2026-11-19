@@ -83,10 +83,7 @@
     },
     "pugixml",
     "yoga",
-    {
-      "name": "spirv-reflect",
-      "platform": "!wasm32"
-    },
+    "spirv-reflect",
     {
       "name": "spirv-cross",
       "platform": "osx | ios"

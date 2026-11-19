@@ -270,9 +270,8 @@ bool CBTResources::Initialize(IDevice& device, const CBTKernelSet& kernelSet, ui
     }
     m_HeightChainWords = kCBTHeightChainHeaderWords;
     m_PersistentBytes += static_cast<uint64_t>(m_HeightChainWords) * sizeof(uint32_t);
-    // The far-field normal chain, a 1x1 placeholder until a lattice provisions it (both arms: the
-    // surface binds it whichever arm runs).
-    if (!CreateNormalChain(1u, 1u, 1u))
+    // Leave the normal chain absent on devices that cannot write its storage format.
+    if (device.GetCapabilities().supportsRG16FloatStorage && !CreateNormalChain(1u, 1u, 1u))
     {
         Logger::Log::Error("CBTResources: failed to create the normal chain placeholder");
         Shutdown();

@@ -31,6 +31,7 @@
 #include "Mathematics/MatrixOps.h"
 #include "DeathTestChild.h"
 
+#include <memory>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -579,10 +580,7 @@ TEST(OceanQueryTests, FlowSimReportsTextureFlowMapFootprints)
     map.StrengthFeather[2] = 0.25f;
     map.StrengthFeather[3] = -0.75f;
     ::GameEngine::Rendering::TextureHandle texture{};
-    OceanCpuTextureRG cpuTexture{};
-    cpuTexture.Width = 1u;
-    cpuTexture.Height = 1u;
-    cpuTexture.RG = {0.75f, 0.25f};
+    const auto cpuTexture = std::make_shared<const OceanCpuTextureRG>(OceanCpuTextureRG{1u, 1u, {0.75f, 0.25f}});
     flow.SetFlowMapSources(&map, &texture, 1u, &cpuTexture);
 
     const OceanCurrentSample inside = flow.SampleFlow(0.0f, 0.0f);
@@ -1111,9 +1109,7 @@ TEST(OceanQueryTests, TextureWaveMaskFootprintIsReportedBySurfaceQueries)
     box.WeightBias = 0.1f;
     box.ChopBias = 0.2f;
     box.Feather = 1.0f;
-    box.Texture.Width = 1u;
-    box.Texture.Height = 1u;
-    box.Texture.RG = {0.25f, 0.5f};
+    box.Texture = std::make_shared<const OceanCpuTextureRG>(OceanCpuTextureRG{1u, 1u, {0.25f, 0.5f}});
     feature.SetWaterBodyWaveOverrides({}, {}, {box});
 
     const OceanSurfaceSample inside = feature.SampleSurface(0.0f, 0.0f);

@@ -56,7 +56,8 @@ float QuantisePreExposure(float scale)
     if (!IsUsableScale(scale))
         return 1.0;
     float exponent = clamp(floor(log2(scale) + 0.5), -kMaxPreExposureLog2, kMaxPreExposureLog2);
-    return exp2(exponent);
+    // ldexp builds the power of two exactly; exp2 is approximate on Metal (exp2(-2.0) = 0.24999997).
+    return ldexp(1.0, int(exponent));
 }
 
 void main()

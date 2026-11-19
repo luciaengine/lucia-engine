@@ -11,6 +11,7 @@
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
 
+#include <memory>
 #include <array>
 #include <cstdint>
 
@@ -102,7 +103,7 @@ public:
     void SetFlowMapSources(const OceanFlowMapSourceGPU* sources,
                            const ::GameEngine::Rendering::TextureHandle* textures,
                            uint32 count,
-                           const OceanCpuTextureRG* cpuTextures = nullptr);
+                           const std::shared_ptr<const OceanCpuTextureRG>* cpuTextures = nullptr);
 
     // CPU mirror of the closed-form flow bake. Samples analytic rectangle/polygon
     // flow and texture flow-map pixels with the same closed-form source order as
@@ -138,7 +139,8 @@ private:
     ::GameEngine::Rendering::SamplerHandle m_Sampler; // linear/clamp for surface + foam read
     ::GameEngine::Rendering::TextureHandle m_DummyFlowMapTexture;
     std::array<::GameEngine::Rendering::TextureHandle, kMaxOceanFlowMapSources> m_FlowMapTextures{};
-    std::array<OceanCpuTextureRG, kMaxOceanFlowMapSources> m_FlowMapCpuTextures{};
+    // Shared with the cache of the extraction system: null without a CPU copy.
+    std::array<std::shared_ptr<const OceanCpuTextureRG>, kMaxOceanFlowMapSources> m_FlowMapCpuTextures{};
     bool m_HasSpline = false;
     bool m_DispatchDirty = true;
 

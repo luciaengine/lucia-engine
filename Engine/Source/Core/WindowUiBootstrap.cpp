@@ -9,6 +9,11 @@
 #include <chrono>
 #include <thread>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#include <emscripten/threading.h>
+#endif
+
 namespace GameEngine
 {
 
@@ -53,10 +58,18 @@ WindowUiBootstrapResult WindowUiBootstrap::Run(const WindowUiBootstrapRequest& r
     while (!state.complete)
     {
         (void)TickAsync(state);
-        if (!state.complete)
+        if (state.complete)
+            break;
+
+#if defined(__EMSCRIPTEN__)
+        // Asset workers can need the browser event loop before their reads complete.
+        if (emscripten_is_main_browser_thread())
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            emscripten_sleep(1);
+            continue;
         }
+#endif
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     Logger::Log::Info("[Startup]     Bootstrap.Run total: {:.1f}ms", MsSince(tRun));
     return state.result;
