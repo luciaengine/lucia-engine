@@ -71,6 +71,12 @@ struct TextureCoverageUploadTestAccess
     static void SetMipBudget(TextureService& service, uint64 bytes)
     {
         service.m_MaterialMipBudgetBytes = bytes;
+        service.m_MaterialMipStreamsSettled = false;
+    }
+    static bool MipStreamsSettled(TextureService& service)
+    {
+        std::lock_guard lock(service.m_PendingTexturesMutex);
+        return service.m_MaterialMipStreamsSettled;
     }
     static TextureHandle StreamedHandle(TextureService& service, const GUID& guid)
     {
@@ -242,6 +248,13 @@ class TextureCoverageGPU : public testing::Test
         asset = MakeShared<TextureAsset>(texture, path);
         ASSERT_TRUE(asset->LoadFromData(cooked));
         ASSERT_EQ(asset->GetMipChain().size(), 10u);
+    }
+
+    uint32 WidthOf(TextureHandle texture)
+    {
+        uint32 width = 0, height = 0;
+        m_Device->GetTextureSize(texture, width, height);
+        return width;
     }
 
     std::vector<float> Render(TextureHandle texture, uint32 width, uint32 height, float lod,
@@ -437,6 +450,75 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingRespectsBudgetAndKeepsDirectTextu
     m_Textures.FlushPendingUploads();
     EXPECT_FALSE(Access::StreamedHandle(m_Textures, texture).IsValid());
     EXPECT_EQ(m_Textures.GetOrUpload(texture), direct);
+}
+
+TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMostScreenCoverage)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    // Two tails and one level 0 fit. Two level 0 images do not.
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+
+    struct Streamed
+    {
+        GUID Texture;
+        GUID MaterialGuid;
+        Engine::Renderer::Material* BoundMaterial = nullptr;
+        uint32 MaterialIndex = 0;
+    };
+    std::array<Streamed, 2> streamed;
+    const StringId slot = HashStringId("albedoMap");
+    for (uint32 index = 0; index < streamed.size(); ++index)
+    {
+        Streamed& entry = streamed[index];
+        SharedPtr<TextureAsset> asset;
+        ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(true, entry.Texture, asset));
+        entry.MaterialGuid = GUID::Generate();
+        entry.MaterialIndex = index;
+        MaterialDocument doc{};
+        doc.schemaVersion = 3;
+        doc.materialName = "MipStreamingDemand";
+        doc.lightingModel = "StandardPBR";
+        doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+        entry.BoundMaterial = m_Materials.Register(entry.MaterialGuid, doc);
+        ASSERT_NE(entry.BoundMaterial, nullptr);
+        Engine::Renderer::Material::TestFactory::SetGpuSceneMaterialIndex(*entry.BoundMaterial, index);
+        m_Textures.TrackMaterialTextureRefForTesting(entry.MaterialGuid, slot, entry.Texture);
+        Access::Queue(m_Textures, entry.Texture, entry.MaterialGuid, asset, slot);
+    }
+    // Without demand the lower GUID gains first: the demand goes to the higher one.
+    if (streamed[1].Texture < streamed[0].Texture)
+        std::swap(streamed[0], streamed[1]);
+    constexpr int kFramesToSettle = 4;
+
+    std::array<float, 2> coverage{};
+    coverage[streamed[0].MaterialIndex] = 0.01f;
+    coverage[streamed[1].MaterialIndex] = 0.5f;
+    m_Textures.UpdateMaterialMipDemand(coverage);
+    for (int frame = 0; frame < kFramesToSettle; ++frame)
+        m_Textures.FlushPendingUploads();
+    EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 256u);
+    EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 512u);
+    // With no change to the demand, the streams or the budget, the planner does not run again.
+    EXPECT_TRUE(Access::MipStreamsSettled(m_Textures));
+    m_Textures.FlushPendingUploads();
+    EXPECT_TRUE(Access::MipStreamsSettled(m_Textures));
+
+    // The demand moves: the first texture takes the level that the second one held.
+    coverage[streamed[0].MaterialIndex] = 0.9f;
+    coverage[streamed[1].MaterialIndex] = 0.01f;
+    m_Textures.UpdateMaterialMipDemand(coverage);
+    for (int frame = 0; frame < kFramesToSettle; ++frame)
+        m_Textures.FlushPendingUploads();
+    EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 512u);
+    EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 256u);
+
+    for (const Streamed& entry : streamed)
+    {
+        m_Textures.OnMaterialUnregistered(entry.MaterialGuid);
+        m_Materials.Unregister(entry.MaterialGuid);
+    }
+    m_Textures.FlushPendingUploads();
 }
 
 TEST_F(TextureCoverageGPU, FailedDirectTextureLoadKeepsItsMaterialStream)
