@@ -4902,9 +4902,7 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
         addBtn->SetText("Add Component");
         addBtn->SetTooltip("Add a component to the selected entity.");
         addBtn->AddClass("inspector-add-component-button");
-        addBtn->Style()
-            .Set(Style::Width, StyleLength::Px(kInspectorPickerWidthPx))
-            .Set(Style::AlignSelf, AlignItems::Center);
+        addBtn->AddClass("inspector-bottom-add-component-button");
 
         addBtn->RegisterEventHandler(kEventButtonClick, [this, entity](UIEvent& e)
                            {
