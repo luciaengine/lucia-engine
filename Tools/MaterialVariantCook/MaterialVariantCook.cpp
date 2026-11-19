@@ -1108,7 +1108,7 @@ int main(int argc, char** argv)
     // The runtime refuses a program index cooked with other inputs.
     Rendering::RenderingDeviceCapabilities servedDevice{};
     servedDevice.supportsBindlessResources = !options.Web;
-    servedDevice.supportsInterpolationFunctions = !options.Web;
+    servedDevice.supportsShaderInterpolationFunctions = !options.Web;
     servedDevice.supportsShaderClipDistance = !options.Web;
     Rendering::ApplyShaderCompileProfile(Rendering::RendererProfile::FromCapabilities(servedDevice));
     // The SPIR-V target is a compile input too, and a device publishes its own at init
@@ -1116,7 +1116,7 @@ int main(int argc, char** argv)
     // desktop cook serves. A browser device publishes none, so a web cook keys at the default 1.5.
     // A Vulkan 1.2 device asks for 1.5 and compiles its programs at first use.
     if (!options.Web)
-        ShaderCompileService::SetMaxSupportedSpirv(ShaderCompileService::SpirvTarget::Spirv_1_6);
+        ShaderCompileService::SetMaxSupportedSpirv(SpirvTarget::Spirv_1_6);
 
     size_t failed = 0;
     MaterialCookRecord record;

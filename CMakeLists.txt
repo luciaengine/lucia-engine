@@ -1402,6 +1402,21 @@ if(BUILD_TESTING)
 endif()
 if(BUILD_TOOLS)
   add_subdirectory(Tools)
+elseif(TARGET Editor)
+  # The Editor's desktop export runs MaterialVariantCook (BuildPipeline::CookMaterialVariants), so the
+  # Editor builds it whatever BUILD_TOOLS says, staged into bin/<config>/Tools beside ShaderReflect.
+  add_subdirectory(Tools/MaterialVariantCook)
+endif()
+if(TARGET MaterialVariantCook)
+  if(TARGET Editor)
+    add_dependencies(Editor MaterialVariantCook)
+  endif()
+  # The export suites run a desktop export, which runs the cook from bin/<config>/Tools.
+  foreach(_ge_export_suite IN ITEMS PackagedAssetManifestTests PackagedTextureExportTests ShipRulesExportTests)
+    if(TARGET ${_ge_export_suite})
+      add_dependencies(${_ge_export_suite} MaterialVariantCook)
+    endif()
+  endforeach()
 endif()
 if(ENABLE_SCRIPTING)
   # Convenience target to build only scripting-related artifacts
