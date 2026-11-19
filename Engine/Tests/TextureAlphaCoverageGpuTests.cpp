@@ -650,7 +650,8 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     ASSERT_NE(held, nullptr);
     EXPECT_EQ(loaded->GetPixelData(), held.get());
 
-    // A direct upload of the same asset uses those pixels.
+    // A direct upload of the same asset, released again, restores the pixels for its upload.
+    loaded->ReleaseLevelPixels();
     const auto direct = WaitForUpload(texture);
     ASSERT_TRUE(direct.IsValid());
     EXPECT_NE(direct, streamed);

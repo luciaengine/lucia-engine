@@ -502,17 +502,17 @@ bool TextureAsset::AdoptReloadedPayload(Asset& staged) {
     std::swap(m_Format, other->m_Format);
     std::swap(m_ColorSpace, other->m_ColorSpace);
     {
-        // AcquirePixels on another thread reads these 4 together. It keeps the pixels that it got.
+        // AcquirePixels on another thread reads these together. It keeps the pixels that it got.
         std::scoped_lock lock(m_PixelMutex, other->m_PixelMutex);
         std::swap(m_PixelData, other->m_PixelData);
         std::swap(m_DataSize, other->m_DataSize);
         std::swap(m_MipChain, other->m_MipChain);
         std::swap(m_LevelFile, other->m_LevelFile);
+        std::swap(m_NormalVarianceCompanion, other->m_NormalVarianceCompanion);
     }
     std::swap(m_HasMipmaps, other->m_HasMipmaps);
     std::swap(m_SwizzleBaked, other->m_SwizzleBaked);
     std::swap(m_MipmapLevels, other->m_MipmapLevels);
-    std::swap(m_NormalVarianceCompanion, other->m_NormalVarianceCompanion);
     {
         std::scoped_lock lock(m_SvgSourceMutex, other->m_SvgSourceMutex);
         std::swap(m_SvgSource, other->m_SvgSource);

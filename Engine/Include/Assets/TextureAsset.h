@@ -261,12 +261,9 @@ public:
      */
     const uint8* GetPixelData() const { return m_PixelData.get(); }
 
-    /// The pixels as GetPixelData() gives them, with shared ownership: they stay valid while the
-    /// caller holds the result, also when the asset releases or reloads its pixels. When
-    /// ReleaseLevelPixels freed them, this reads them from GetLevelFile() (a blocking read of the
-    /// whole file) and the asset keeps them again. Null when the asset has no pixels and no file
-    /// gives them. Any thread, for the pixels only: the dimensions and the mip chain that the
-    /// caller reads beside them can change in a reload. Use it for an asset that the AssetManager shares.
+    /// The pixels of GetPixelData(), valid while the caller holds them. After ReleaseLevelPixels,
+    /// a blocking read of GetLevelFile() gives them and the asset keeps them again. Null without both.
+    /// Any thread, but not during ReloadFromData, which loads into this instance in place.
     std::shared_ptr<const uint8[]> AcquirePixels() const;
 
     /**
@@ -312,11 +309,9 @@ public:
     /// payload as it is in memory (TextureLevelFile::Parse).
     const TextureLevelFile* GetLevelFile() const { return m_LevelFile ? &*m_LevelFile : nullptr; }
 
-    /// Frees the pixels of this texture and of its companion when GetLevelFile() names where they
-    /// are. GetPixelData() is then null until RestoreLevelPixels. The mip chain and the
-    /// dimensions stay. A reader that holds AcquirePixels() keeps its pixels. A reader that uses
-    /// GetPixelData() must be on the thread that calls this: for an instance that the
-    /// AssetManager shares, the main thread.
+    /// Frees the pixels of this texture and its companion when GetLevelFile() names where they are.
+    /// The mip chain and the dimensions stay. A holder of AcquirePixels() keeps its pixels.
+    /// A reader of GetPixelData() must be on the thread that calls this.
     void ReleaseLevelPixels();
 
     /// Reads the pixels that ReleaseLevelPixels freed from GetLevelFile(). False, with no pixels,
@@ -391,6 +386,10 @@ private:
      */
     bool DecodeSourceBytes(std::span<const uint8> data);
 
+    /// The pixels that GetLevelFile() names, read from the file. Null when it does not read or
+    /// holds another container. m_PixelMutex held.
+    std::shared_ptr<uint8[]> ReadLevelPixels() const;
+
     /**
      * @brief Load DDS texture
      */
@@ -462,10 +461,6 @@ private:
 	    uint32 m_Channels;
 	    TextureFormat m_Format;
 	    TextureColorSpace m_ColorSpace;
-	    /// The pixels that GetLevelFile() names, read from the file. Null when it does not read or
-	    /// holds another container. m_PixelMutex held.
-	    std::shared_ptr<uint8[]> ReadLevelPixels() const;
-
 	    // AcquirePixels fills it again after a release.
 	    mutable std::shared_ptr<uint8[]> m_PixelData;
 	    // After the load, guards m_PixelData, m_DataSize, m_MipChain and m_LevelFile for AcquirePixels
