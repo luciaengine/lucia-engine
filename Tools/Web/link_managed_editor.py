@@ -26,7 +26,7 @@ def editor_inputs(arguments):
             shell = Path(next(args)).resolve()
         elif arg == "-s":
             setting = next(args)
-            if setting.split("=")[0] not in {"INITIAL_MEMORY", "EXPORTED_RUNTIME_METHODS", "ENVIRONMENT", "PTHREAD_POOL_SIZE"}:
+            if setting.split("=")[0] not in {"INITIAL_MEMORY", "EXPORTED_RUNTIME_METHODS", "ENVIRONMENT", "PTHREAD_POOL_SIZE", "MALLOC"}:
                 options.append("-s" + setting)
         elif arg in {"--pre-js", "--extern-pre-js", "--post-js", "--js-library", "--preload-file", "--embed-file", "--exclude-file"}:
             value = next(args)
@@ -109,9 +109,11 @@ def patch_glue(framework):
     # Leave Mono exports as actual Wasm functions because Mono puts them into its table.
     patched = replace_once(
         source,
-        'if (typeof original == "function") {\n        var wrapper = Asyncify.instrumentFunction(original);',
-        'if (name === "GeStartEditor" || name === "GeTickEditor" || '
-        'name === "_emscripten_check_mailbox" || name === "emscripten_proxy_execute_queue") {\n'
+        'for (let [x, original] of Object.entries(exports)) {\n'
+        '      if (typeof original == "function") {\n        var wrapper = Asyncify.instrumentFunction(original);',
+        'for (let [x, original] of Object.entries(exports)) {\n'
+        '      if (x === "GeStartEditor" || x === "GeTickEditor" || '
+        'x === "_emscripten_check_mailbox" || x === "emscripten_proxy_execute_queue") {\n'
         '        var wrapper = Asyncify.instrumentFunction(original);',
     )
     # The SDK replaces Module fields during runtime setup. Resolve against the native module
@@ -186,7 +188,7 @@ def main():
             config.dotnet, "publish", str(project), "-c", "Release", "--output", str(publish),
             "-p:LuciaEditorNativeReferences=" + str(references),
             "-p:ArtifactsPath=" + str(build / "artifacts"),
-            "-p:WasmCachePath=" + str(build / "emscripten-cache"),
+            "-p:WasmCachePath=" + str((build / "emscripten-cache").resolve()),
             "-p:WasmRunWasmOpt=false",
         ],
         check=True,
