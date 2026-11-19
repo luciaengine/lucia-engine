@@ -1293,17 +1293,22 @@ TEST(PostProcessAtmosphericCloudControls, AuthoredColorOwnsHueAndOpacityControls
         << "Beer-Lambert transmittance must not be alpha-composited a second time";
 }
 
-TEST(PostProcessTonemapControls, ExposesTheThreeLooks)
+TEST(PostProcessTonemapControls, ExposesAllTonemappers)
 {
     using GameEngine::Components::Look;
     EXPECT_EQ(static_cast<int32_t>(Look::Neutral), 0);
     EXPECT_EQ(static_cast<int32_t>(Look::Filmic), 1);
     EXPECT_EQ(static_cast<int32_t>(Look::Photographic), 2);
-    EXPECT_EQ(GameEngine::Components::kLookCount, 3);
-    // The names are the scene format and the inspector's labels: no label names a technique.
+    EXPECT_EQ(static_cast<int32_t>(Look::GT7), 3);
+    EXPECT_EQ(GameEngine::Components::kLookCount, 4);
     EXPECT_EQ(GameEngine::Components::LookName(Look::Neutral), "Neutral");
     EXPECT_EQ(GameEngine::Components::LookName(Look::Filmic), "Filmic");
     EXPECT_EQ(GameEngine::Components::LookName(Look::Photographic), "Photographic");
+    EXPECT_EQ(GameEngine::Components::LookName(Look::GT7), "GT7");
+    EXPECT_EQ(GameEngine::Components::TonemapperName(Look::Neutral), "Khronos PBR Neutral");
+    EXPECT_EQ(GameEngine::Components::TonemapperName(Look::Filmic), "ACES 2");
+    EXPECT_EQ(GameEngine::Components::TonemapperName(Look::Photographic), "AgX");
+    EXPECT_EQ(GameEngine::Components::TonemapperName(Look::GT7), "GT7 (ICtCp)");
     EXPECT_EQ(GameEngine::Rendering::Passes::kTonemapNoLookArm, GameEngine::Components::kLookCount)
         << "the no-look debug arm sits past the looks, so no volume value can select it";
 
@@ -1328,10 +1333,12 @@ TEST(PostProcessTonemapControls, ExposesTheThreeLooks)
     EXPECT_NE(compactTonemap.find("casekLookFilmic:returnTonemapACES2(hdr,Aces2TargetOutputMax())"),
               std::string::npos);
     EXPECT_NE(compactTonemap.find("casekLookPhotographic:returnTonemapAgX(hdr)"), std::string::npos);
+    EXPECT_NE(compactTonemap.find("casekLookGT7:returnTonemapGranTurismo7(hdr)"), std::string::npos);
     EXPECT_NE(tonemap.find("#include \"Includes/tonemap_look.glsl\""), std::string::npos);
     const std::string look = readText(shaderRoot / "Includes/tonemap_look.glsl");
     EXPECT_NE(look.find("const int kLookFilmic = 1;"), std::string::npos);
-    EXPECT_NE(look.find("const int kNoLookArm = 3;"), std::string::npos);
+    EXPECT_NE(look.find("const int kLookGT7 = 3;"), std::string::npos);
+    EXPECT_NE(look.find("const int kNoLookArm = 4;"), std::string::npos);
     // Filmic (ACES 2) is peak-parameterised: it routes display-referred (clamped,
     // never extended) so its tier ladder owns the headroom rendering.
     EXPECT_NE(tonemap.find("if (pc.look == kLookFilmic)\n        return min(sdrTonemapped, vec3(outputMax))"),

@@ -133,6 +133,7 @@ set(ENGINE_SOURCES
 	Source/Engine/Rendering/Systems/RenderExtractionSystem.cpp
 	Source/Engine/Rendering/Systems/KeyedWorldSubmissions.cpp
 	Source/Engine/Rendering/Systems/HLODSelectSystem.cpp
+	Source/Engine/Rendering/Systems/MaterialMipDemandSystem.cpp
     Source/Engine/Rendering/Systems/TransformHierarchySystem.cpp
 	Source/Engine/Rendering/Systems/CameraSystem.cpp
 	Source/Engine/Rendering/PlanetCameraFraming.cpp
@@ -404,6 +405,8 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/CpuDrawStreamBuilder.cpp
 	Source/Engine/Rendering/MaterialBinder.cpp
 	Source/Engine/Rendering/MaterialBindingCache.cpp
+	Source/Engine/Rendering/MaterialMipStreaming/MaterialMipStepPlanner.cpp
+	Source/Engine/Rendering/MaterialMipStreaming/MaterialScreenDemand.cpp
 	Source/Engine/Rendering/MeshGPURegistry.cpp
 	Source/Engine/Rendering/MeshGPUResidency.cpp
 	Source/Engine/Rendering/MeshPoolGroupPlan.cpp
@@ -2166,6 +2169,9 @@ endif()
                 Tests/SamplerPresetResolutionTests.cpp
                 Tests/TextureServiceSamplerTests.cpp
                 Tests/TextureGPUCacheTests.cpp
+                Tests/MaterialMipDemandSystemTests.cpp
+                Tests/MaterialMipStepPlannerTests.cpp
+                Tests/MaterialScreenDemandTests.cpp
                 Tests/VideoTextureSystemTests.cpp
                 Tests/VideoPlayerTests.cpp
                 Tests/VideoFrameUploaderTests.cpp

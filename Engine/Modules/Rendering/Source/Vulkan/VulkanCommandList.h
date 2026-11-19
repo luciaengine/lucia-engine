@@ -7,6 +7,7 @@
 
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Handle.h"
+#include "Types/FlatMap.h"
 #include <vulkan/vulkan.h>
 #include <array>
 #include <string>
@@ -363,52 +364,41 @@ namespace Rendering {
         std::vector<VkRenderPass> m_PendingRenderPassDestroys;
         bool m_LegacyOneOffUsesRP2 = false;
 
-        // Views created for attachments during BeginRenderPass, cached by
-        // (texture handle, view desc). Attachment views recur every frame (cube
-        // faces during sliced probe bakes, array slices for shadow cascades), so
-        // they are reused across submits instead of created and deferred-destroyed
-        // per render pass. Lookups revalidate against the texture's CURRENT
-        // VkImage — generational handle ids alone can't be trusted here because
-        // swapchain handles are synthetic (no generation, byte-identical across
-        // swapchain recreation) and the 8-bit generation can wrap while a dormant
-        // command list holds an entry. Dead entries are swept on Begin and on
-        // submit; the destructor releases everything.
+        // Views created for attachments during BeginRenderPass, cached by texture
+        // handle and then by view desc. Attachment views recur every frame (cube
+        // faces during sliced probe bakes, array slices for shadow cascades and
+        // virtual shadow pages), so they are reused across submits. Lookups
+        // revalidate against the texture's CURRENT VkImage: swapchain handles are
+        // synthetic (no generation, byte-identical across swapchain recreation)
+        // and the 8-bit generation can wrap while a dormant command list holds an
+        // entry. Begin and submit sweep the textures, one liveness check for each
+        // texture; the destructor releases everything.
         struct AttachmentViewKey
         {
-            uint64_t Texture = 0;        // TextureHandle.id (index + generation)
             uint32_t FormatOverride = 0;
             uint32_t Packed = 0;         // aspect | viewType | r/g/b/a swizzles
             uint32_t BaseMip = 0;
             uint32_t LevelCount = 0;
             uint32_t BaseLayer = 0;
             uint32_t LayerCount = 0;
-            bool operator==(const AttachmentViewKey&) const = default;
-        };
-        struct AttachmentViewKeyHasher
-        {
-            size_t operator()(const AttachmentViewKey& k) const noexcept
-            {
-                uint64_t h = 1469598103934665603ull;
-                auto mix = [&](uint64_t x) { h ^= x; h *= 1099511628211ull; };
-                mix(k.Texture);
-                mix((static_cast<uint64_t>(k.FormatOverride) << 32) | k.Packed);
-                mix((static_cast<uint64_t>(k.BaseMip) << 32) | k.LevelCount);
-                mix((static_cast<uint64_t>(k.BaseLayer) << 32) | k.LayerCount);
-                return static_cast<size_t>(h);
-            }
+            auto operator<=>(const AttachmentViewKey&) const = default;
         };
         struct AttachmentViewEntry
         {
             TextureViewHandle View{};
             VkImage Image = VK_NULL_HANDLE; // image the view was created on (hit revalidation)
         };
-        std::unordered_map<AttachmentViewKey, AttachmentViewEntry, AttachmentViewKeyHasher>
-            m_AttachmentViewCache;
+        using TextureAttachmentViews = FlatMap<AttachmentViewKey, AttachmentViewEntry>;
+        // Key: TextureHandle.id (index + generation).
+        FlatMap<uint64_t, TextureAttachmentViews> m_AttachmentViewCache;
 
         TextureViewHandle GetOrCreateAttachmentView(TextureHandle texture, const TextureViewDesc& desc);
-        // destroyAll = destructor teardown; otherwise drops only entries whose
-        // texture died (view destruction is timeline-deferred, GPU-safe).
+        // destroyAll = destructor teardown; otherwise drops only the views of
+        // textures that died (view destruction is timeline-deferred, GPU-safe).
         void ReleaseAttachmentViews(bool destroyAll);
+        // Destroys the views of one texture when destroyAll is set or the texture
+        // died. Returns true when it destroyed them.
+        bool ReleaseTextureAttachmentViews(uint64_t texture, TextureAttachmentViews& views, bool destroyAll);
 
         // Last debug marker/pass name (for diagnostics)
         std::string m_LastMarkerName;

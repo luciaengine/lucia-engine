@@ -87,6 +87,7 @@
 #include <Rendering/Core/Device.h>
 #include <Rendering/Materials/MaterialBuilder.h>
 #include <Rendering/Materials/Shader/ShaderReflection.h>
+#include <Rendering/Passes/TonemapPass.h>
 
 #include <Rendering/Utils/CubeLut/CubeLutFileParser.h>
 #include <Rendering/Utils/CubeLut/CubeLutGpuUpload.h>
@@ -98,14 +99,15 @@ using namespace GameEngine::Rendering;
 namespace
 {
 
-// tonemap.frag's `look` push constant: the three looks (Components::Look) and
+// tonemap.frag's `look` push constant: the volume looks (Components::Look) and
 // the no-look debug arm a view selects (Passes::kTonemapNoLookArm).
 enum class Mode : int
 {
     Neutral = 0,
     Filmic = 1,       // ACES 2
     Photographic = 2, // AgX
-    NoLook = 3,
+    GT7 = 3,
+    NoLook = Passes::kTonemapNoLookArm,
 };
 
 const char* ModeName(Mode m)
@@ -115,6 +117,7 @@ const char* ModeName(Mode m)
         case Mode::Neutral: return "Neutral";
         case Mode::Filmic: return "Filmic";
         case Mode::Photographic: return "Photographic";
+        case Mode::GT7: return "GT7";
         case Mode::NoLook: return "NoLook";
     }
     return "?";
@@ -796,6 +799,14 @@ TEST_F(TonemapHdrHeadroom, HdrHeadroomIsActuallyAvailable)
     // extended look can show the SDR arm gaining headroom (mutant M7).
     const Rgb sdr = Sdr({64.0f, 64.0f, 64.0f}, Mode::Photographic);
     EXPECT_LE(sdr.Peak(), 1.0001f) << "SDR Photographic exceeded paper white: " << Fmt(sdr);
+}
+
+TEST_F(TonemapHdrHeadroom, GT7MapsNeutralOneToFortyPercentOfSdrWhite)
+{
+    const Rgb mapped = Sdr({1.0f, 1.0f, 1.0f}, Mode::GT7);
+    EXPECT_NEAR(mapped.R, 0.4f, 0.001f) << Fmt(mapped);
+    EXPECT_NEAR(mapped.G, 0.4f, 0.001f) << Fmt(mapped);
+    EXPECT_NEAR(mapped.B, 0.4f, 0.001f) << Fmt(mapped);
 }
 
 // --- 1. THE REGRESSION GATE ------------------------------------------------

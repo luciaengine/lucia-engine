@@ -32,7 +32,7 @@ constexpr float kEdgePadding = 8.0f;
 std::string Caption(const CubeLutStripRequest& request, bool showsLut)
 {
     const auto look = static_cast<Components::Look>(std::clamp(request.Look, 0, Components::kLookCount - 1));
-    std::string caption = std::string(Components::LookName(look)) + " look";
+    std::string caption = std::string(Components::TonemapperName(look));
     if (!showsLut)
         return caption + "; the LUT effect is off";
     const auto stage = request.Stage == static_cast<uint32_t>(Components::CubeLutStage::Grade)

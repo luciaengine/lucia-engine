@@ -16,7 +16,7 @@ namespace Passes {
 // tonemap.frag's `look` value for the no-look debug arm: exposed scene-linear with
 // no display transform. A view selects it (PostProcessViewOutput::NoLook); it is
 // never a Components::Look, whose values are 0 to 2.
-inline constexpr int32_t kTonemapNoLookArm = 3;
+inline constexpr int32_t kTonemapNoLookArm = 4;
 
 // Parameters for an offscreen tonemap pass. Defaults mirror the main SceneView
 // ForwardPlus pipeline's "Tonemap" node (the Neutral look, exposure 1.0), so

@@ -1223,7 +1223,6 @@
    "Engine/Modules/Rendering/Include/Rendering/Materials/ReflectionCache.h": 1,
    "Engine/Modules/Rendering/Source/Materials/MaterialBuildService.cpp": 1,
    "Engine/Modules/Rendering/Source/Metal/MetalResources.cpp": 1,
-   "Engine/Modules/Rendering/Source/Vulkan/VulkanCommandList.h": 1,
    "Engine/Modules/Rendering/Source/Vulkan/VulkanDevice/VulkanDevice.cpp": 1,
    "Engine/Modules/Scene/Source/TlasInternal.h": 1,
    "Engine/Modules/SplineLayout/Source/SpanMiter.cpp": 1,

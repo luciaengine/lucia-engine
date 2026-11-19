@@ -1689,14 +1689,33 @@ if(EMSCRIPTEN)
 	file(GLOB_RECURSE _ge_webeditor_preload_files CONFIGURE_DEPENDS
 		"${CMAKE_CURRENT_SOURCE_DIR}/Assets/*"
 		"${CMAKE_CURRENT_SOURCE_DIR}/WebFonts/*"
+		"${CMAKE_CURRENT_SOURCE_DIR}/ProjectTemplates/*"
+		"${CMAKE_SOURCE_DIR}/Engine/Assets/SkeletonProfiles/*"
+		"${CMAKE_SOURCE_DIR}/Tools/Web/smoke-project/Assets/*"
+		"${CMAKE_SOURCE_DIR}/Tools/Web/smoke-project/game.config"
+		"${CMAKE_SOURCE_DIR}/Tools/Web/smoke-project/ASSET_PROVENANCE.md"
+		"${CMAKE_SOURCE_DIR}/Tools/Web/smoke-project/.seed-revision"
 		"${CMAKE_SOURCE_DIR}/Engine/Assets/RenderPipelines/*"
 		"${CMAKE_SOURCE_DIR}/Packages/eztree/package.json"
 		"${CMAKE_SOURCE_DIR}/Packages/eztree/Assets/*"
 		"${CMAKE_SOURCE_DIR}/Packages/eztree/Assets/Textures/EZTree/leaves/*"
 		"${CMAKE_SOURCE_DIR}/Packages/eztree/Assets/Textures/EZTree/bark/*"
 		"${GE_EZTREE_PRESETS_SOURCE_DIR}/*")
+	if(GE_WEB_PARITY_SEEDS)
+		file(GLOB_RECURSE _ge_webeditor_parity_preload_files CONFIGURE_DEPENDS
+			"${CMAKE_SOURCE_DIR}/Tools/Web/ddgi-sponza-project/Assets/*"
+			"${CMAKE_SOURCE_DIR}/Tools/Web/ddgi-sponza-project/game.config"
+			"${CMAKE_SOURCE_DIR}/Tools/Web/ddgi-sponza-project/ASSET_PROVENANCE.md"
+			"${CMAKE_SOURCE_DIR}/Tools/Web/ddgi-sponza-project/.seed-revision")
+		list(APPEND _ge_webeditor_preload_files ${_ge_webeditor_parity_preload_files})
+	endif()
+	# Ninja must relink when an input is removed even if the remaining files are unchanged.
+	list(SORT _ge_webeditor_preload_files)
+	set(_ge_webeditor_preload_manifest "${CMAKE_CURRENT_BINARY_DIR}/WebEditorPreloads.txt")
+	string(REPLACE ";" "\n" _ge_webeditor_preload_list "${_ge_webeditor_preload_files}")
+	file(GENERATE OUTPUT "${_ge_webeditor_preload_manifest}" CONTENT "${_ge_webeditor_preload_list}\n")
 	set_property(TARGET WebEditor APPEND PROPERTY
-		LINK_DEPENDS "${_ge_webeditor_preload_files}")
+		LINK_DEPENDS "${_ge_webeditor_preload_files};${_ge_webeditor_preload_manifest}")
 	# The cooked shader tree is generated, so the glob above cannot see it. Its
 	# stamp stands in: recook, relink, repackage.
 	set_property(TARGET WebEditor APPEND PROPERTY

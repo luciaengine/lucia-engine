@@ -1758,6 +1758,7 @@ struct TextureService::MaterialMipData
     std::vector<TextureCookMipLevel> CompanionLevels;
     std::vector<uint64_t> SuffixBytes;
     uint32_t Tail = 0;
+    uint32_t TopExtent = 1; // the longest edge of level 0, in texels
 
     static bool Snapshot(const TextureAsset& asset, std::vector<TextureCookMipLevel>& levels)
     {
@@ -1829,7 +1830,36 @@ TextureGPUCache::Entry TextureService::RemoveMaterialMipStreamLocked(const GUID&
         return {};
     const TextureGPUCache::Entry resident = stream->Resident;
     m_MaterialMipStreams.Erase(guid);
+    m_MaterialMipStreamsSettled = false;
     return resident;
+}
+
+float TextureService::MaterialMipCoverageLocked(const GUID& guid) const
+{
+    float coverage = 0.0f;
+    const auto refs = m_TextureToMaterialBindings.find(guid);
+    if (refs == m_TextureToMaterialBindings.end())
+        return coverage;
+    for (const auto& [materialGuid, slotName] : refs->second)
+    {
+        const Material* material = m_Materials->Find(materialGuid);
+        if (material && material->GetGpuSceneMaterialIndex() < m_MaterialCoverage.size())
+            coverage = std::max(coverage, m_MaterialCoverage[material->GetGpuSceneMaterialIndex()]);
+    }
+    return coverage;
+}
+
+void TextureService::UpdateMaterialMipDemand(std::span<const float> coverageByMaterialIndex)
+{
+    std::lock_guard lock(m_PendingTexturesMutex);
+    m_MaterialCoverage.assign(coverageByMaterialIndex.begin(), coverageByMaterialIndex.end());
+    InvalidateMaterialMipCoverageLocked();
+}
+
+void TextureService::InvalidateMaterialMipCoverageLocked()
+{
+    m_MaterialMipCoverageStale = true;
+    m_MaterialMipStreamsSettled = false;
 }
 
 std::shared_ptr<const TextureService::MaterialMipData> TextureService::PrepareMaterialMipStream(
@@ -1859,6 +1889,7 @@ std::shared_ptr<const TextureService::MaterialMipData> TextureService::PrepareMa
     auto data = std::make_shared<MaterialMipData>();
     data->Format = *format;
     data->Tail = static_cast<uint32_t>(tail - chain.begin());
+    data->TopExtent = std::max(chain.front().Width, chain.front().Height);
     if (!MaterialMipData::Snapshot(texture, data->Levels))
         return {};
     if (const TextureAsset* companion = texture.GetNormalVarianceCompanion())
@@ -1896,49 +1927,35 @@ void TextureService::AdvanceMaterialMipStreams()
     uint32_t targetMip = 0;
     {
         std::lock_guard lock(m_PendingTexturesMutex);
-        uint64_t usedBytes = 0;
-        m_MaterialMipStreams.EraseIf([this](const GUID& guid, const MaterialMipStream& stream)
+        const size_t unbound = m_MaterialMipStreams.EraseIf([this](const GUID& guid, const MaterialMipStream& stream)
         {
             if (m_TextureToMaterialBindings.contains(guid))
                 return false;
             RetireCacheEntry(stream.Resident);
             return true;
         });
-        for (const auto& [guid, stream] : m_MaterialMipStreams)
-            usedBytes += stream.Data->SuffixBytes[stream.FirstMip];
-        uint64_t best = 0;
-        for (const auto& [guid, stream] : m_MaterialMipStreams)
+        if (unbound == 0 && m_MaterialMipStreamsSettled)
+            return;
+
+        m_MaterialMipPlanInput.clear();
+        for (auto& [guid, stream] : m_MaterialMipStreams)
         {
-            const auto& data = *stream.Data;
-            const uint32_t current = stream.FirstMip;
-            if (usedBytes > m_MaterialMipBudgetBytes)
-            {
-                if (current == data.Tail)
-                    continue;
-                const uint64_t saving = data.SuffixBytes[current] - data.SuffixBytes[current + 1];
-                if (saving < best || (saving == best && !chosen.IsNull() && !(guid < chosen)))
-                    continue;
-                best = saving;
-                targetMip = current + 1;
-            }
-            else
-            {
-                if (current == 0)
-                    continue;
-                const uint64_t increase = data.SuffixBytes[current - 1] - data.SuffixBytes[current];
-                if (increase > m_MaterialMipBudgetBytes - usedBytes ||
-                    (!chosen.IsNull() && (increase > best || (increase == best && !(guid < chosen)))))
-                    continue;
-                best = increase;
-                targetMip = current - 1;
-            }
-            chosen = guid;
-            candidate = stream;
+            if (m_MaterialMipCoverageStale)
+                stream.ScreenCoverage = MaterialMipCoverageLocked(guid);
+            const MaterialMipData& data = *stream.Data;
+            m_MaterialMipPlanInput.push_back(
+                {guid, data.SuffixBytes, stream.FirstMip, data.Tail, data.TopExtent, stream.ScreenCoverage});
         }
+        m_MaterialMipCoverageStale = false;
+        const auto step = m_MaterialMipPlanner.Plan(m_MaterialMipPlanInput, m_MaterialMipBudgetBytes);
+        m_MaterialMipStreamsSettled = !step.has_value();
+        if (!step)
+            return;
+        chosen = m_MaterialMipPlanInput[step->StreamIndex].Id;
+        candidate = *m_MaterialMipStreams.Find(chosen);
+        targetMip = step->TargetMip;
     }
 
-    if (chosen.IsNull())
-        return;
     std::vector<Rendering::StagedTextureUpload> batch;
     const char* refusal = kDeviceRefusal;
     const TextureGPUCache::Entry replacement = candidate.Data->Stage(*m_Device, targetMip, batch, refusal);
@@ -2724,9 +2741,13 @@ void TextureService::FlushPendingUploads()
                         {
                             adopted = !m_MaterialMipStreams.Contains(upload.TextureGuid);
                             if (adopted)
+                            {
                                 m_MaterialMipStreams.InsertOrAssign(upload.TextureGuid,
                                     MaterialMipStream{upload.StreamData, upload.Uploaded,
-                                                      upload.StreamData->Tail, upload.Epoch});
+                                                      upload.StreamData->Tail, upload.Epoch,
+                                                      MaterialMipCoverageLocked(upload.TextureGuid)});
+                                m_MaterialMipStreamsSettled = false;
+                            }
                         }
                     }
                     else
@@ -3685,7 +3706,10 @@ void TextureService::TrackMaterialTextureRefLocked(const GUID& matGuid, StringId
                                   return p.first == matGuid && p.second == slotName;
                               });
     if (refIt == refs.end())
+    {
         refs.emplace_back(matGuid, slotName);
+        InvalidateMaterialMipCoverageLocked();
+    }
 }
 
 void TextureService::UntrackMaterialTextureRefLocked(const GUID& matGuid, StringId slotName)
@@ -3714,6 +3738,7 @@ void TextureService::UntrackMaterialTextureRefLocked(const GUID& matGuid, String
                refs.end());
     if (refs.empty())
         m_TextureToMaterialBindings.erase(reverseIt);
+    InvalidateMaterialMipCoverageLocked();
 }
 
 void TextureService::UntrackAllMaterialTextureRefsLocked(const GUID& matGuid)
@@ -3736,6 +3761,7 @@ void TextureService::UntrackAllMaterialTextureRefsLocked(const GUID& matGuid)
             m_TextureToMaterialBindings.erase(reverseIt);
     }
     m_MaterialTextureRefs.erase(matIt);
+    InvalidateMaterialMipCoverageLocked();
 }
 
 void TextureService::UntrackTextureFromAllMaterialsLocked(const GUID& texGuid)

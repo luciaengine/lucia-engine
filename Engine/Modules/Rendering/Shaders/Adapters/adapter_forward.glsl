@@ -1081,6 +1081,11 @@ void main()
         vec3 debugColor;
         if (GE_GetShadowDebugColor(ge_lastShadowResult, debugColor))
         {
+#ifdef ALPHA_TEST
+            // The diagnostic shows only the surface that the lit image shows.
+            if (outputAlpha < clamp(Props.alphaCutoff, 0.0, 1.0))
+                discard;
+#endif
             oColor = vec4(debugColor * GE_PreExposure(), 1.0);
             return;
         }

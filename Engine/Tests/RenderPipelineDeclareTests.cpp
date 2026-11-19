@@ -2808,7 +2808,8 @@ TEST(RenderPipelineDeclareTests, ViewParamsUploadCarriesTheViewsExposureAndLook)
         ASSERT_TRUE(ReadBackViewParams(instance, frame, *device, viewId, automatic));
         EXPECT_EQ(automatic.ge_exposureParams[1], 1.0f)
             << "auto exposure meters the view: shaders read the metered scale from ExposureHistory";
-        EXPECT_EQ(automatic.ge_exposureParams[2], 3.0f) << "the view shows no look: the tonemap's no-look arm";
+        EXPECT_EQ(automatic.ge_exposureParams[2], static_cast<float>(Rendering::Passes::kTonemapNoLookArm))
+            << "the view shows no look: the tonemap's no-look arm";
 
         device->WaitForIdle();
         rs.Shutdown();

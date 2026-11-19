@@ -15,6 +15,7 @@
 #include "ECSModules/Rendering/Systems/MorphTargetSystem.h"
 #include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
 #include "ECSModules/Rendering/Systems/HLODSelectSystem.h"
+#include "ECSModules/Rendering/Systems/MaterialMipDemandSystem.h"
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "Particles/Systems/ParticleSimulationSystem.h"
 #include "ECSModules/Rendering/Systems/CameraSystem.h"
@@ -165,6 +166,9 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     schedule.Add<RenderExtractionSystem>(kExtract, SystemPhase::Extraction, 6,
         afterMovementWriters({kHierarchy, kMorph, kHlodSelect, kNativePostSimulation,
                               "ParticleSimulation", kSkyEnv, OptionalDependency(kClusterPrepare)}), renderServices, particles);
+
+    // Material mip streaming orders its steps by the instance rows that extraction wrote this frame.
+    schedule.Add<MaterialMipDemandSystem>("MaterialMipDemand", SystemPhase::Extraction, 7, {kExtract}, renderServices);
 
     // The scene TLAS has no per-frame system: its consumers bring it current
     // on demand (Scene/SceneTlas.h, RequestCurrent).

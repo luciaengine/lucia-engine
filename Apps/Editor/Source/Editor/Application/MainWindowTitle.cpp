@@ -11,19 +11,21 @@ MainWindowTitle MainWindowTitle::Format(std::string_view scene, bool sceneDirty,
                                         std::string_view session)
 {
     MainWindowTitle title;
-    title.Caption = scene;
-    if (!scene.empty() && sceneDirty)
-        title.Caption += '*';
-    if (!scene.empty() && !project.empty())
-        title.Caption += " - ";
-    title.Caption += project;
-
-    title.WindowTitle = kApplicationName;
-    if (!title.Caption.empty())
+    title.Caption = kApplicationName;
+    if (!project.empty())
     {
-        title.WindowTitle += " - ";
-        title.WindowTitle += title.Caption;
+        title.Caption += " - ";
+        title.Caption += project;
     }
+    if (!scene.empty())
+    {
+        title.Caption += " - ";
+        title.Caption += scene;
+        if (sceneDirty)
+            title.Caption += '*';
+    }
+
+    title.WindowTitle = title.Caption;
     if (!session.empty())
     {
         title.WindowTitle += "  ";
