@@ -118,12 +118,12 @@
 
   "features": {
     "video": {
-      "description": "Video playback / recording via FFmpeg (VideoPlayerFFmpeg + AsyncVideoRecorder). Without this feature, the engine compiles VideoPlayerNull as a stub and video playback/capture is unavailable.",
+      "description": "Video playback / recording via FFmpeg (VideoPlayerFFmpeg + AsyncVideoRecorder). Linux encodes H.264 through openh264 (BSD-2), Windows through Media Foundation. Without this feature, the engine compiles VideoPlayerNull as a stub and video playback/capture is unavailable.",
       "dependencies": [
         {
           "name": "ffmpeg",
           "default-features": false,
-          "features": [ "avcodec", "avformat", "swscale" ],
+          "features": [ "avcodec", "avformat", "swscale", { "name": "openh264", "platform": "linux" } ],
           "platform": "!osx & !wasm32"
         }
       ]
