@@ -19,14 +19,14 @@ using namespace GameEngine;
 namespace
 {
 
-// A cooked RGBA8 container of 64 texels a side. `seed` changes every texel.
-std::vector<uint8> CookedContainer(uint8 seed)
+// A cooked RGBA8 container of `size` texels a side. `seed` changes every texel.
+std::vector<uint8> CookedContainer(uint8 seed, uint8 size = 64)
 {
-    constexpr uint32 kSize = 64;
+    const uint32 kSize = size;
     std::vector<uint8> tga(18, 0);
     tga[2] = 2; // uncompressed true color
-    tga[12] = kSize;
-    tga[14] = kSize;
+    tga[12] = size;
+    tga[14] = size;
     tga[16] = 32;
     tga[17] = 0x28;
     for (uint32 y = 0; y < kSize; ++y)
@@ -84,7 +84,7 @@ TEST(TextureAssetReload, AReloadInPlaceReplacesThePixels)
     ReloadableTexture asset(GUID::Generate(), "reload.ktx2");
     ASSERT_TRUE(asset.LoadFromData(CookedContainer(10)));
     const std::vector<uint8> first = PixelsOf(asset);
-    const std::shared_ptr<const uint8[]> held = asset.AcquirePixels();
+    const std::shared_ptr<const uint8[]> held = asset.AcquirePixels().Pixels;
 
     ASSERT_TRUE(asset.ReloadFromData(CookedContainer(200)));
     EXPECT_TRUE(asset.IsLoaded());
@@ -115,9 +115,50 @@ TEST(TextureAssetReload, AReaderOnAnotherThreadAlwaysGetsAWholePayloadDuringRelo
     {
         while (!done.load())
         {
-            const std::shared_ptr<const uint8[]> held = asset.AcquirePixels();
+            const std::shared_ptr<const uint8[]> held = asset.AcquirePixels().Pixels;
             const bool whole = held && (std::memcmp(held.get(), firstPixels.data(), firstPixels.size()) == 0 ||
                                         std::memcmp(held.get(), secondPixels.data(), secondPixels.size()) == 0);
+            wrongReads.fetch_add(whole ? 0 : 1);
+            reads.fetch_add(1);
+        }
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    int failedReloads = 0;
+    for (int reload = 0;
+         (reload < kReloads || reads.load() < kReads) && std::chrono::steady_clock::now() < deadline; ++reload)
+        failedReloads += asset.ReloadFromData(containers[reload % 2]) ? 0 : 1;
+    done.store(true);
+    reader.join();
+    EXPECT_EQ(failedReloads, 0);
+    EXPECT_GE(reads.load(), kReads);
+    EXPECT_EQ(wrongReads.load(), 0);
+}
+
+TEST(TextureAssetReload, AReaderOnAnotherThreadGetsPixelsWithTheirOwnDimensionsDuringReloads)
+{
+    // 2 payloads of different size: a reader that mixes them reads past the smaller one.
+    const std::vector<uint8> containers[2] = {CookedContainer(10, 64), CookedContainer(200, 32)};
+    ReloadableTexture asset(GUID::Generate(), "reload.ktx2");
+    ASSERT_TRUE(asset.LoadFromData(containers[0]));
+    const std::vector<uint8> largePixels = PixelsOf(asset);
+    ASSERT_TRUE(asset.ReloadFromData(containers[1]));
+    const std::vector<uint8> smallPixels = PixelsOf(asset);
+    ASSERT_LT(smallPixels.size(), largePixels.size());
+
+    constexpr int kReloads = 200;
+    constexpr int kReads = 200;
+    std::atomic<bool> done{false};
+    std::atomic<int> reads{0};
+    std::atomic<int> wrongReads{0};
+    std::thread reader([&asset, &largePixels, &smallPixels, &done, &reads, &wrongReads]
+    {
+        while (!done.load())
+        {
+            const TexturePixels held = asset.AcquirePixels();
+            const std::vector<uint8>& expected = held.Width == 64 ? largePixels : smallPixels;
+            const bool whole = held.Pixels && held.Width == held.Height && (held.Width == 64 || held.Width == 32) &&
+                               held.DataSize == expected.size() &&
+                               std::memcmp(held.Pixels.get(), expected.data(), expected.size()) == 0;
             wrongReads.fetch_add(whole ? 0 : 1);
             reads.fetch_add(1);
         }

@@ -54,17 +54,18 @@ Rendering::TextureHandle UploadBackgroundImageFromAsset(Rendering::IDevice* devi
     if (!device || !texA)
         return Rendering::TextureHandle{};
 
-    uint32_t width = texA->GetWidth();
-    uint32_t height = texA->GetHeight();
+    // The pixels with their dimensions and format, from one payload: a material mip stream can
+    // release the pixels of this asset, and a reload can replace them, during this upload.
+    const TexturePixels held = texA->AcquirePixels();
+    uint32_t width = held.Width;
+    uint32_t height = held.Height;
     if (!width || !height)
         return Rendering::TextureHandle{};
 
-    const auto fmt = texA->GetFormat();
-    const uint32_t channels = texA->GetChannels();
-    const uint64 dataSize = texA->GetDataSize();
-    // A material mip stream can release the pixels of this asset: the held pixels stay valid here.
-    const std::shared_ptr<const uint8[]> heldPixels = texA->AcquirePixels();
-    const uint8* pixelsTyped = heldPixels.get();
+    const auto fmt = held.Format;
+    const uint32_t channels = held.Channels;
+    const uint64 dataSize = held.DataSize;
+    const uint8* pixelsTyped = held.Pixels.get();
     if (!pixelsTyped || dataSize == 0)
         return Rendering::TextureHandle{};
 
@@ -82,11 +83,10 @@ Rendering::TextureHandle UploadBackgroundImageFromAsset(Rendering::IDevice* devi
     // BC6H has no CPU decode, so its source image answers instead (the editor keeps the
     // source; a package does not, and that preview stays empty).
     bool decodedFromContainer = false;
-    if (texA->IsBlockCompressed())
+    if (IsBlockCompressedTextureFormat(fmt))
     {
-        const auto& mips = texA->GetMipChain();
-        const uint64 level0Offset = mips.empty() ? 0 : mips[0].Offset;
-        const uint64 level0Size = mips.empty() ? dataSize : mips[0].Size;
+        const uint64 level0Offset = 0;
+        const uint64 level0Size = held.Level0Bytes;
         const std::filesystem::path& assetPath = texA->GetPath();
         const bool decoded =
             DecodeBlockPayloadRGBA8(fmt, width, height, pixelsTyped + level0Offset, level0Size, converted) ||
@@ -263,7 +263,7 @@ Rendering::TextureHandle UploadBackgroundImageFromAsset(Rendering::IDevice* devi
     // (BackgroundImageCache::CompleteSvgSize).
     TextureCookSettings mipSettings;
     mipSettings.MipsEnabled = std::max(width, height) <= kMaxMippedUiImageEdge;
-    const bool srgb = texA->GetColorSpace() == TextureColorSpace::SRGB;
+    const bool srgb = held.ColorSpace == TextureColorSpace::SRGB;
     const Rendering::TextureFormat gpuFormat =
         srgb ? Rendering::TextureFormat::RGBA8_SRGB : Rendering::TextureFormat::RGBA8_UNORM;
     return UploadRgba8WithMips(device, static_cast<const uint8_t*>(uploadData), width, height, gpuFormat,
