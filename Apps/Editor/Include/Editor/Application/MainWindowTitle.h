@@ -5,10 +5,8 @@
 
 namespace GameEngine::Editor
 {
-/// The caption row and the operating system's title (taskbar, window switcher). The caption reads
-/// "<scene> - <project>", with "*" after a scene that has unsaved changes. The operating system's
-/// title starts with "Lucia Engine - " before the caption, and adds the session in brackets when the
-/// editor runs from a worktree or with a session label.
+/// Both titles read "Lucia Engine - <project> - <scene>", with "*" after an unsaved scene.
+/// The operating system title also includes the session label when present.
 struct MainWindowTitle
 {
     std::string Caption;
