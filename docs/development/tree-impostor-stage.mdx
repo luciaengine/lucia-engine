@@ -77,7 +77,7 @@ The asset system owns the bake, beside the mesh level of detail cache and the HL
 - The bake spreads its frames over several rendered frames. The mesh draws until the atlas is ready. A device rebuild bakes again.
 - The atlas is cached by the mesh content hash, the material hash, the layout and the resolution.
 
-**Atlas memory.** An atlas of 9 x 9 frames at 128 pixels, one RGBA8 and one RGBA16F texture, is 16 MB. The count is odd so that a hemisphere frame looks from the zenith. A forest whose every tree has its own seed has one variant per tree, so a bake for every variant does not fit. The rules:
+**Atlas memory.** An atlas of 8 x 8 frames at 128 pixels, one RGBA8 and one RGBA16F texture, is 12 MB. A forest whose every tree has its own seed has one variant per tree, so a bake for every variant does not fit. The rules:
 
 - A variant bakes on demand, when one of its instances first reaches impostor distance.
 - A memory cap holds the atlases. Past the cap, the least recently drawn atlas goes, and its trees draw the mesh.

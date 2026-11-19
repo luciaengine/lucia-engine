@@ -4,7 +4,7 @@
 // zw the cosine and sine of its yaw, which turn the object normal into world space. The card blends
 // the three frames around the view direction at the surface point that the baked depth gives.
 //
-// @property vec4 impostorAtlas "Impostor Atlas" default=9,0,0,0 group=Impostor
+// @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
 // impostorAtlas.z = 1 tints the cards red (GE_IMPOSTOR_DEBUG_TINT), to show which trees are cards.
 
 #include "Includes/impostor_frame.glsl"

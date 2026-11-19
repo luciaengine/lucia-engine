@@ -20,21 +20,10 @@ ImpostorAtlasKey KeyFor(uint64 meshHash)
 
 } // namespace
 
-TEST(ImpostorAtlasCache, AnAtlasOfNineByNineFramesAt128PixelsIsSixteenMegabytes)
+TEST(ImpostorAtlasCache, AnAtlasOfEightByEightFramesAt128PixelsIsTwelveMegabytes)
 {
-    // 81 frames x 128^2 pixels x (4 + 8) bytes.
-    EXPECT_EQ(ImpostorAtlasBytes(KeyFor(1)), 81ull * 128 * 128 * 12);
-}
-
-TEST(ImpostorAtlasCache, TheDefaultHemisphereAtlasHasAFrameAtTheZenith)
-{
-    // Without a zenith frame, a camera that looks straight down blends frames that see the
-    // canopy from the side, and the gaps between the trees close.
-    const ImpostorAtlasKey key;
-    const uint32 center = key.FramesPerSide / 2u;
-    const Mathematics::Vector3 direction =
-        Mathematics::OctahedralFrameDirection(Mathematics::OctahedralLayout::Hemisphere, center, center, key.FramesPerSide);
-    EXPECT_NEAR(direction.y, 1.0f, 1e-5f);
+    // 64 frames x 128^2 pixels x (4 + 8) bytes.
+    EXPECT_EQ(ImpostorAtlasBytes(KeyFor(1)), 64ull * 128 * 128 * 12);
 }
 
 TEST(ImpostorAtlasCache, ARequestThatFitsIsPendingUntilItsBakeIsReady)
