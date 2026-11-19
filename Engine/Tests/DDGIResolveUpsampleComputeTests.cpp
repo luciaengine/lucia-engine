@@ -1,5 +1,6 @@
-// Run the production DDGI resolve upsample (resolve extent to render extent) on synthetic views: a crease between
-// 2 perpendicular planes with no depth step, one plane at a 3/4 resolve scale, and pixels that no texel describes.
+// Run the production DDGI irradiance upsample of the forward consume (Includes/ddgi_resolve_upsample.glsl, through the
+// fixture ddgi_resolve_upsample_test.comp) on synthetic views: a crease between 2 perpendicular planes with no depth
+// step, one plane at a 3/4 resolve scale, and pixels that no texel describes.
 #include <gtest/gtest.h>
 
 #include "Engine/Rendering/Pipeline/Nodes/PipelineNodeUtils.h"
@@ -112,7 +113,7 @@ class DDGIResolveUpsampleComputeTest : public ::testing::Test
             GTEST_SKIP() << "No Vulkan device available";
         ShaderPackage pkg{};
         std::string err;
-        ASSERT_TRUE(LoadShaderPkg("Shaders/ddgi_glossy_resolve_upsample.shaderpkg",
+        ASSERT_TRUE(LoadShaderPkg("Shaders/ddgi_resolve_upsample_test.shaderpkg",
                                   m_Device->PreferredShaderSource(), pkg, &err))
             << err;
         m_Meta = std::move(pkg.meta);
@@ -127,7 +128,7 @@ class DDGIResolveUpsampleComputeTest : public ::testing::Test
                                                      {true, 128}, keepSet0, &err);
         m_Pipeline = m_Device->GetOrCreateComputePipeline(m_Device->InternComputePipeline(std::move(cd)));
         ASSERT_TRUE(m_Pipeline.IsValid()) << err;
-        // The production pass binds a point sampler; a linear one here proves that the kernel never filters.
+        // The forward pass binds a linear sampler; the upsample must fetch texels and never filter.
         m_Sampler = m_Device->CreateSampler(SamplerDesc::MaterialLinearClamp("DDGIResolveUpsampleTest"));
         ASSERT_TRUE(m_Sampler.IsValid());
     }

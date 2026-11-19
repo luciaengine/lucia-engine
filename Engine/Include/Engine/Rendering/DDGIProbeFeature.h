@@ -328,7 +328,9 @@ class DDGIProbeFeature final : public IRenderFeature
     // frame (GlossyResolveConsumeActive()) or the view cannot feed it (no
     // 1-sample depth, zero extent). Callers bind the outputs as
     // ge_ddgiResolveRough/ge_ddgiResolveGlossy (set 0, b41/b42) on the same
-    // view's DDGI-keyword world passes.
+    // view's DDGI-keyword world passes. outIrradiance (b43) stays at resolve
+    // extent; outGatherNormal (b59) holds the normal each of its texels was
+    // gathered for, the guide of the forward upsample (ddgi_resolve_upsample.glsl).
     //
     // The reflection direction takes the SHADING normal from the previous
     // frame's forward-MRT normal slice (Adapters/adapter_forward.glsl under
@@ -350,6 +352,7 @@ class DDGIProbeFeature final : public IRenderFeature
                                      Rendering::RenderGraph::RGTexture& outRough,
                                      Rendering::RenderGraph::RGTexture& outGlossy,
                                      Rendering::RenderGraph::RGTexture& outIrradiance,
+                                     Rendering::RenderGraph::RGTexture& outGatherNormal,
                                      Rendering::RenderGraph::RGTexture& outShadingNormal);
 
     // The view's world pass attached this frame's outShadingNormal as its
@@ -374,8 +377,7 @@ class DDGIProbeFeature final : public IRenderFeature
         // EnableGlossy-gated (it also resolves diffuse irradiance, the only DDGI
         // diffuse path when the forward shader carries no inline gather), so this
         // read follows the pass rather than the specular toggle.
-        return m_GlossyResolve.PipelineId.IsValid() && m_GlossyResolveBlur.PipelineId.IsValid() &&
-               m_GlossyResolveUpsample.PipelineId.IsValid();
+        return m_GlossyResolve.PipelineId.IsValid() && m_GlossyResolveBlur.PipelineId.IsValid();
     }
 
     // Whether the resolve's rough/glossy targets carry reflection lobes this
@@ -425,14 +427,6 @@ class DDGIProbeFeature final : public IRenderFeature
   private:
     // Both cascade UBOs share the layout owned by this feature.
     static size_t GetVolumeDataSize();
-
-    // Declares the pass that upsamples the blurred resolve irradiance to render extent (DDGIGlossyResolve.cpp).
-    // Returns the upsampled target, or an invalid handle when the pool cannot provide it.
-    Rendering::RenderGraph::RGTexture DeclareGlossyResolveUpsample(
-        Rendering::RenderGraph::RGFrame& frame, Rendering::BufferHandle viewParams, uint64_t viewParamsOffset,
-        uint64_t viewParamsSize, Rendering::RenderGraph::RGTexture viewDepth,
-        Rendering::RenderGraph::RGTexture irradiance, Rendering::RenderGraph::RGTexture gatherNormal,
-        uint32_t renderWidth, uint32_t renderHeight, uint32_t viewId, const char* passName);
 
     struct KernelPipeline
     {
@@ -983,8 +977,6 @@ class DDGIProbeFeature final : public IRenderFeature
     // resolution before the forward pass magnifies them.
     KernelPipeline m_GlossyResolve;
     KernelPipeline m_GlossyResolveBlur;
-    // Upsamples the blurred irradiance to render extent with a depth and gather-normal guide.
-    KernelPipeline m_GlossyResolveUpsample;
     Rendering::SamplerHandle m_GlossyResolveDepthSampler{};
     // Last frame each view's world pass wrote the resolve's shading-normal
     // history (MarkGlossyResolveNormalWritten). The kernel trusts the

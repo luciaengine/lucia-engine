@@ -71,6 +71,7 @@ inline constexpr const char* SSRSpecularRadianceWritten = "View.SSRSpecularRadia
 inline constexpr const char* DDGIResolveRough = "View.DDGIResolveRough";
 inline constexpr const char* DDGIResolveGlossy = "View.DDGIResolveGlossy";
 inline constexpr const char* DDGIResolveIrradiance = "View.DDGIResolveIrradiance";
+inline constexpr const char* DDGIResolveGatherNormal = "View.DDGIResolveGatherNormal";
 inline constexpr const char* EffectiveColor = "View.EffectiveColor";
 inline constexpr const char* DepthResolvedPostOcean = "View.DepthResolvedPostOcean";
 // Split-active only (internal-resolution rendering): the caller's

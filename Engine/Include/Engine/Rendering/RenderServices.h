@@ -878,6 +878,8 @@ class RenderServices
         Rendering::RenderGraph::RGTexture DDGIResolveRough{};
         Rendering::RenderGraph::RGTexture DDGIResolveGlossy{};
         Rendering::RenderGraph::RGTexture DDGIResolveIrradiance{};
+        // The normal each DDGIResolveIrradiance texel was gathered for (ge_ddgiResolveGatherNormal).
+        Rendering::RenderGraph::RGTexture DDGIResolveGatherNormal{};
         // Feature-owned MRT slices (the SSR G-buffer today). The world pass
         // attaches them verbatim and carries no knowledge of what a slice
         // stores — formats, clears and locations belong to the contributing

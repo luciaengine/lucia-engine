@@ -1,7 +1,7 @@
 #ifndef GE_DDGI_DEPTH_NORMAL_GLSL
 #define GE_DDGI_DEPTH_NORMAL_GLSL
 
-// Shared by the resolve, the resolve blur, the resolve upsample and their GPU regression fixtures.
+// Shared by the resolve, the resolve blur and their GPU regression fixtures.
 
 // The raw depth at `uv`. A kernel defines it before this include when it must not sample the depth texture.
 #ifndef GE_DDGI_DEPTH_TAP

@@ -22751,10 +22751,10 @@ TEST(RenderPipelineDeclareTests, DdgiInactiveLobesRespectStorageAliasingCapabili
                 auto params = frame.AllocUpload<ViewParamsUBO>();
                 ASSERT_TRUE(params.Valid());
                 *params.Ptr = {};
-                RenderGraph::RGTexture rough, glossy, irradiance, normal;
+                RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
                 ASSERT_TRUE(feature.DeclareGlossyResolveForView(
                     frame, rs, params.Buffer, params.Offset, sizeof(ViewParamsUBO), depth,
-                    64, 64, 42, 1.0f, "DDGI.Test.Resolve", rough, glossy, irradiance, normal));
+                    64, 64, 42, 1.0f, "DDGI.Test.Resolve", rough, glossy, irradiance, gatherNormal, normal));
 
                 const auto& graph = frame.Graph();
                 EXPECT_EQ(graph.ResourceDesc(irradiance.Id).Width, 32u);
@@ -22878,10 +22878,10 @@ TEST(RenderPipelineDeclareTests, DdgiResolveFirstFrameNeverBlendsUndefinedHistor
             for (float* m : {params.Ptr->ge_invProj, params.Ptr->ge_invView, params.Ptr->ge_prevViewProj})
                 for (int i = 0; i < 4; ++i)
                     m[i * 5] = 1.0f;
-            RenderGraph::RGTexture rough, glossy, irradiance, normal;
+            RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            "DDGI.Test.Resolve", rough, glossy, irradiance, gatherNormal,
                                                             normal));
             const auto& irradianceDesc = frame.Graph().ResourceDesc(irradiance.Id);
             const uint32_t w = irradianceDesc.Width;
@@ -22992,10 +22992,10 @@ void ExecuteGlossyResolveOnce(IDevice& device, RenderServices& rs, DDGIProbeFeat
     auto params = frame.AllocUpload<ViewParamsUBO>();
     ASSERT_TRUE(params.Valid());
     *params.Ptr = {};
-    RenderGraph::RGTexture rough, glossy, irradiance, normal;
+    RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
     ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset, sizeof(ViewParamsUBO),
                                                     depth, 64, 64, 42, 1.0f, "DDGI.Rebuild.Resolve", rough, glossy,
-                                                    irradiance, normal));
+                                                    irradiance, gatherNormal, normal));
     frame.MarkOutput(irradiance);
     frame.Execute();
     device.WaitForIdle();
@@ -23412,10 +23412,10 @@ TEST(RenderPipelineDeclareTests, DdgiResolveDeclaresItsProbeStateReads)
             auto params = frame.AllocUpload<ViewParamsUBO>();
             ASSERT_TRUE(params.Valid());
             *params.Ptr = {};
-            RenderGraph::RGTexture rough, glossy, irradiance, normal;
+            RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            "DDGI.Test.Resolve", rough, glossy, irradiance, gatherNormal,
                                                             normal));
             // Imports dedup by physical, so these return the resources the clears wrote.
             const auto probeStateRG = frame.ImportExternalBuffer("DDGI.Test.ProbeState", probeState.Buffer);
@@ -23490,10 +23490,10 @@ TEST(RenderPipelineDeclareTests, DdgiResolveDeclaresItsAtlasReads)
             auto params = frame.AllocUpload<ViewParamsUBO>();
             ASSERT_TRUE(params.Valid());
             *params.Ptr = {};
-            RenderGraph::RGTexture rough, glossy, irradiance, normal;
+            RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            "DDGI.Test.Resolve", rough, glossy, irradiance, gatherNormal,
                                                             normal));
             const auto& graph = frame.Graph();
             const auto resolve = RGQuery::FindDeclared(graph, RGQuery::Exact{"DDGI.Test.Resolve"});
@@ -23570,7 +23570,7 @@ void ExpectWorldPassDeclaresDdgiGatherReads(IDevice* device, Components::DDGIGlo
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(
                 frame, rs, params.Buffer, params.Offset, sizeof(ViewParamsUBO), targets.Depth, 64, 64, viewId, 1.0f,
                 "DDGI.Test.Resolve", targets.DDGIResolveRough, targets.DDGIResolveGlossy,
-                targets.DDGIResolveIrradiance, normal));
+                targets.DDGIResolveIrradiance, targets.DDGIResolveGatherNormal, normal));
         }
         rs.BeginWorldDrawFrame();
         rs.BuildWorldBatchKeys();

@@ -48,8 +48,8 @@ layout(set = 0, binding = 4) uniform sampler2D uPrevNormal;
 // read here — the raw reverse-Z depth that frame's resolve ran at, which is
 // the reprojection's "same surface" test.
 layout(set = 0, binding = 5) uniform sampler2D uPrevIrradiance;
-// The world normal that each irradiance texel was gathered for (xyz), 0 where no surface is. The upsample to render
-// extent (ddgi_glossy_resolve_upsample.comp) keeps a texel only for pixels that face the same way.
+// The world normal that each irradiance texel was gathered for (xyz), 0 where no surface is. The forward upsample
+// (Includes/ddgi_resolve_upsample.glsl) keeps a texel only for pixels that face the same way.
 layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D uResolveNormal;
 
 layout(push_constant) uniform ResolvePush

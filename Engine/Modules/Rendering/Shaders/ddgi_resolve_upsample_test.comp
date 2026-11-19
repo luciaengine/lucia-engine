@@ -1,0 +1,51 @@
+#version 450
+
+// Runs the production DDGI irradiance upsample (Includes/ddgi_resolve_upsample.glsl) for each pixel of a render
+// extent. The pixel normal comes from the depth, so the fixture needs no forward pass.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "Includes/view_params.glsl"  // ViewParams UBO, set 0 binding 7
+
+// Blurred irradiance at resolve extent: rgb, raw reverse-Z depth in a.
+layout(set = 0, binding = 0) uniform sampler2D uIrradianceIn;
+// The world normal each resolve texel was gathered for, 0 where no surface is.
+layout(set = 0, binding = 1) uniform sampler2D uGatherNormal;
+// 1-sample view depth at render extent, reverse-Z (near = 1, far/cleared = 0).
+layout(set = 0, binding = 2) uniform sampler2D uViewDepth;
+// Irradiance at render extent: rgb, raw reverse-Z depth in a.
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D uIrradianceOut;
+
+// All reads are texel fetches: a filtered read mixes the 2 sides of a crease before the test can reject one.
+float UpsampleDepth(vec2 uv)
+{
+    ivec2 size = textureSize(uViewDepth, 0);
+    return texelFetch(uViewDepth, clamp(ivec2(uv * vec2(size)), ivec2(0), size - ivec2(1)), 0).r;
+}
+#define GE_DDGI_DEPTH_TAP(depthTexture, uv) UpsampleDepth(uv)
+#include "Includes/ddgi_depth_normal.glsl"
+
+#define GE_DDGI_UPSAMPLE_IRRADIANCE uIrradianceIn
+#define GE_DDGI_UPSAMPLE_GATHER_NORMAL uGatherNormal
+#include "Includes/ddgi_resolve_upsample.glsl"
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outSize = imageSize(uIrradianceOut);
+    if (pixel.x >= outSize.x || pixel.y >= outSize.y)
+        return;
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(outSize);
+    float rawDepth = UpsampleDepth(uv);
+    if (rawDepth <= 0.0)
+    {
+        imageStore(uIrradianceOut, pixel, vec4(0.0));
+        return;
+    }
+    vec3 posWS = GE_DDGIWorldPositionAt(uv, rawDepth, ge_invProj, ge_invView);
+    vec3 pixelN = GE_DDGINormalFromDepth(uViewDepth, uv, rawDepth, posWS, ge_invView[3].xyz - posWS,
+                                         ge_invProj, ge_invView);
+
+    imageStore(uIrradianceOut, pixel, vec4(GE_DDGIUpsampleIrradiance(uv, rawDepth, pixelN), rawDepth));
+}

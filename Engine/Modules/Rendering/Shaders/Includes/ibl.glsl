@@ -77,7 +77,13 @@ layout(set = 0, binding = 42) uniform sampler2D ge_ddgiResolveGlossy;
 // Diffuse irradiance from the same resolve pass, looked up along the same
 // normal as the reflection — a per-fragment 8-probe loop it removes entirely.
 layout(set = 0, binding = 43) uniform sampler2D ge_ddgiResolveIrradiance;
+// The world normal each irradiance texel was gathered for: the normal guide of the upsample below. The compat
+// profile has no texture slot for it and keeps the depth guide alone.
+layout(set = 0, binding = 59) uniform sampler2D ge_ddgiResolveGatherNormal;
+#define GE_DDGI_UPSAMPLE_GATHER_NORMAL ge_ddgiResolveGatherNormal
 #endif
+#define GE_DDGI_UPSAMPLE_IRRADIANCE ge_ddgiResolveIrradiance
+#include "ddgi_resolve_upsample.glsl"
 #endif
 
 // Global per-frame environment parameters (NOT per-material — the param block
@@ -371,12 +377,10 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
     // sample instead; every pipeline that resolves depth gets probe diffuse.
     if (DDGIVolume.uParams2.w != 0)
     {
-        // The resolve pass upsamples the irradiance to render extent with a depth and normal guide
-        // (ddgi_glossy_resolve_upsample.comp), so each fragment reads the centre of its own texel. A filtered
-        // read here mixes the 2 sides of a crease or a silhouette again.
-        vec2 irradianceSize = vec2(textureSize(ge_ddgiResolveIrradiance, 0));
-        vec2 irradianceUV = (floor(gl_FragCoord.xy * ge_screenSize.zw * irradianceSize) + 0.5) / irradianceSize;
-        irr = textureLod(ge_ddgiResolveIrradiance, irradianceUV, 0.0).rgb;
+        // The irradiance is at resolve extent. The upsample keeps the texels of this surface: a plain bilinear
+        // read drags irradiance across a silhouette, and across a crease where the depth has no step.
+        // The shading normal is the guide: the resolve gathered most texels for the shading normal of last frame.
+        irr = GE_DDGIUpsampleIrradiance(gl_FragCoord.xy * ge_screenSize.zw, gl_FragCoord.z, N);
     }
 #endif
     // Add the authored irradiance floor (AmbientLight) to the DIFFUSE budget only — irr stays the
