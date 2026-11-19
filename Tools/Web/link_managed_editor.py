@@ -206,14 +206,20 @@ def main():
         check=True,
     )
 
-    web = publish / "wwwroot"
-    framework = web / "_framework"
-    patch_glue(framework)
+    stage_editor(build, output, shell, project)
+
+
+def stage_editor(build, output, shell, project):
+    # Leave the SDK publish output intact. Incremental publish can reuse its
+    # fingerprinted loader and runtime without copying them again.
+    framework = build / "publish" / "wwwroot" / "_framework"
+    staged_framework = output.parent / "_framework"
+    shutil.copytree(framework, staged_framework, dirs_exist_ok=True)
+    patch_glue(staged_framework)
     native_packages = sorted((build / "artifacts" / "obj").glob("**/for-publish/dotnet.native.data"))
     if len(native_packages) != 1:
         raise ValueError("Expected one .NET native editor data package")
-    shutil.copy2(native_packages[0], framework)
-    shutil.copytree(framework, output.parent / "_framework", dirs_exist_ok=True)
+    shutil.copy2(native_packages[0], staged_framework)
     shutil.copy2(project.with_name("main.mjs"), output.with_name("WebEditorManaged.mjs"))
     html = replace_once(shell.read_text(), "{{{ SCRIPT }}}",
                         '<script type="module" src="WebEditorManaged.mjs"></script>')
