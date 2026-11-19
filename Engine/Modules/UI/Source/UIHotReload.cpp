@@ -597,7 +597,7 @@ void UIHotReload::Pump()
     };
     // A destroyed panel's binding still holds its prior snapshots. Release them on a
     // style event, and on the first pump after a new subtree binding. A closed panel's
-    // rules outlive it until the next style event or attach, and no longer.
+    // rules stay alive until the next style event or attach.
     if (m_SubtreeBindingAdded || !stylesReady.empty() || !stylesReloaded.empty() || !stylesFailed.empty() ||
         !stylesModified.empty())
         ReleaseDestroyedSubtreeBindings();
@@ -977,7 +977,7 @@ void UIHotReload::ApplyLayoutReload(const GUID& layoutGuid)
 
 void UIHotReload::UnregisterStyleBinding(const GUID& styleGuid, UIElement* target)
 {
-    const auto bindsGuid = [&](const StyleBinding& binding) { return binding.styleGuid == styleGuid; };
+    const auto bindsGuid = [&styleGuid](const StyleBinding& binding) { return binding.styleGuid == styleGuid; };
     if (!target)
     {
         std::erase_if(m_GlobalStyleBindings, bindsGuid);
@@ -1005,7 +1005,7 @@ void UIHotReload::RegisterStyleBinding(const GUID& styleGuid, UIElement* target,
     }
     // Idempotent registration: keep a single entry per (guid, target).
     if (std::any_of(bindings->begin(), bindings->end(),
-                    [&](const StyleBinding& existing) { return existing.styleGuid == styleGuid; }))
+                    [&styleGuid](const StyleBinding& existing) { return existing.styleGuid == styleGuid; }))
         return;
 
     StyleBinding& binding = bindings->emplace_back();
@@ -1045,7 +1045,7 @@ void UIHotReload::ApplySubtreeStylesNow(UIElement& target)
 bool UIHotReload::BindsAnyStyle(const std::vector<StyleBinding>& bindings, const std::unordered_set<GUID>& styles)
 {
     return std::any_of(bindings.begin(), bindings.end(),
-                       [&](const StyleBinding& binding) { return styles.contains(binding.styleGuid); });
+                       [&styles](const StyleBinding& binding) { return styles.contains(binding.styleGuid); });
 }
 
 void UIHotReload::RefreshStyleImportGraphFor(const GUID& styleGuid)
@@ -1204,14 +1204,14 @@ bool UIHotReload::AdoptCurrentCascades(UIElement* target, std::vector<StyleBindi
         hasNewSnapshot |= cascade != binding.attachedCascade;
         const int owner = static_cast<int>(adoptions.size());
         size_t anchor = attached.size();
-        for (size_t i = 0; i < attached.size(); ++i)
+        for (size_t slot = 0; slot < attached.size(); ++slot)
         {
-            if (slotOwners[i] == -1 &&
-                std::find(binding.attachedCascade.begin(), binding.attachedCascade.end(), attached[i]) !=
+            if (slotOwners[slot] == -1 &&
+                std::find(binding.attachedCascade.begin(), binding.attachedCascade.end(), attached[slot]) !=
                     binding.attachedCascade.end())
             {
-                slotOwners[i] = owner;
-                anchor = std::min(anchor, i);
+                slotOwners[slot] = owner;
+                anchor = std::min(anchor, slot);
             }
         }
         adoptions.push_back({&binding, std::move(cascade), anchor});
@@ -1221,17 +1221,17 @@ bool UIHotReload::AdoptCurrentCascades(UIElement* target, std::vector<StyleBindi
 
     std::vector<StylesheetHandle> replacement;
     std::unordered_set<const Stylesheet*> seen;
-    const auto append = [&](const StylesheetHandle& sheet)
+    const auto append = [&seen, &replacement](const StylesheetHandle& sheet)
     {
         if (sheet && seen.insert(sheet.get()).second)
             replacement.push_back(sheet);
     };
-    for (size_t i = 0; i < attached.size(); ++i)
+    for (size_t slot = 0; slot < attached.size(); ++slot)
     {
-        const int owner = slotOwners[i];
+        const int owner = slotOwners[slot];
         if (owner == -1)
-            append(attached[i]); // Preserve unrelated runtime overrides in place.
-        else if (adoptions[owner].anchor == i)
+            append(attached[slot]); // Preserve unrelated runtime overrides in place.
+        else if (adoptions[owner].anchor == slot)
             for (const auto& sheet : adoptions[owner].cascade)
                 append(sheet);
     }

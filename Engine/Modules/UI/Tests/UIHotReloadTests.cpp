@@ -1924,7 +1924,7 @@ static std::chrono::nanoseconds AttachStyledRows(UIManager& ui, const std::strin
 {
     std::vector<std::unique_ptr<UIElement>> pending;
     pending.reserve(count);
-    for (size_t i = 0; i < count; ++i)
+    for (size_t rowIndex = 0; rowIndex < count; ++rowIndex)
     {
         auto row = std::make_unique<UIElement>();
         row->AddClass("row");
