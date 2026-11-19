@@ -463,6 +463,7 @@ void TextureAsset::Unload() {
     {
         std::lock_guard<std::mutex> lock(m_PixelMutex);
         m_PixelData.reset();
+        m_BorrowedPixels.reset();
         m_LevelFile.reset();
         m_MipChain.clear();
         m_DataSize = 0;
@@ -520,6 +521,7 @@ bool TextureAsset::AdoptReloadedPayload(Asset& staged) {
         // AcquirePixels on another thread reads these together. It keeps the pixels that it got.
         std::scoped_lock lock(m_PixelMutex, other->m_PixelMutex);
         std::swap(m_PixelData, other->m_PixelData);
+        std::swap(m_BorrowedPixels, other->m_BorrowedPixels);
         std::swap(m_DataSize, other->m_DataSize);
         std::swap(m_MipChain, other->m_MipChain);
         std::swap(m_LevelFile, other->m_LevelFile);
@@ -1466,6 +1468,8 @@ void TextureAsset::ReleaseLevelPixels()
         return;
     {
         std::lock_guard<std::mutex> lock(m_PixelMutex);
+        if (m_PixelData)
+            m_BorrowedPixels = m_PixelData;
         m_PixelData.reset();
     }
     if (m_NormalVarianceCompanion)
@@ -1486,11 +1490,26 @@ std::shared_ptr<uint8[]> TextureAsset::ReadLevelPixels() const
     return pixels;
 }
 
+std::shared_ptr<uint8[]> TextureAsset::BorrowPixelsLocked() const
+{
+    if (m_PixelData)
+        return m_PixelData;
+    std::shared_ptr<uint8[]> pixels = m_BorrowedPixels.lock();
+    if (!pixels)
+    {
+        pixels = ReadLevelPixels();
+        m_BorrowedPixels = pixels;
+    }
+    return pixels;
+}
+
 bool TextureAsset::RestoreLevelPixels()
 {
     if (m_NormalVarianceCompanion && !m_NormalVarianceCompanion->RestoreLevelPixels())
         return false;
-    return AcquirePixels() != nullptr;
+    std::lock_guard<std::mutex> lock(m_PixelMutex);
+    m_PixelData = BorrowPixelsLocked();
+    return m_PixelData != nullptr;
 }
 
 std::shared_ptr<const uint8[]> TextureAsset::AcquirePixels() const
@@ -1498,9 +1517,7 @@ std::shared_ptr<const uint8[]> TextureAsset::AcquirePixels() const
     // The file read is inside the lock: a second reader of the same asset waits for the first
     // and then takes its pixels.
     std::lock_guard<std::mutex> lock(m_PixelMutex);
-    if (!m_PixelData)
-        m_PixelData = ReadLevelPixels();
-    return m_PixelData;
+    return BorrowPixelsLocked();
 }
 
 bool TextureAsset::LoadFromSvgData(const std::string& svgText, const String& extensionLower)

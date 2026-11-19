@@ -102,15 +102,14 @@ float ReadTextureChannel01(const uint8* pixels, uint32 channels, size_t pixelInd
     return value;
 }
 
-OceanCpuTextureRG MakeOceanCpuTextureRG(const TextureAsset& texture)
+// `heldPixels` are the pixels of `texture` (TextureAsset::AcquirePixels).
+OceanCpuTextureRG MakeOceanCpuTextureRG(const TextureAsset& texture,
+                                        const std::shared_ptr<const uint8[]>& heldPixels)
 {
     OceanCpuTextureRG out{};
     const uint32 width = texture.GetWidth();
     const uint32 height = texture.GetHeight();
     const uint32 channels = texture.GetChannels();
-    // The asset can be the instance that the AssetManager shares: a material mip stream
-    // releases its pixels on the render thread. The held pixels stay valid for this read.
-    const std::shared_ptr<const uint8[]> heldPixels = texture.AcquirePixels();
     const uint8* pixels = heldPixels.get();
     if (!pixels || width == 0u || height == 0u || channels == 0u)
         return out;
@@ -142,7 +141,11 @@ OceanCpuTextureRG MakeOceanCpuTextureRG(const TextureAsset& texture)
     return out;
 }
 
-OceanCpuTextureRG LoadOceanCpuTextureRG(const GUID& guid)
+// `heldPixels` keeps the pixels that the read acquired from a shared asset, by texture. The
+// caller holds them for as long as it reads the texture again: a material mip stream releases
+// the pixels of a shared asset, and a held texture is not read again from its file.
+OceanCpuTextureRG LoadOceanCpuTextureRG(const GUID& guid,
+                                        FlatMap<GUID, std::shared_ptr<const uint8[]>>& heldPixels)
 {
     if (guid.IsNull())
         return {};
@@ -154,7 +157,11 @@ OceanCpuTextureRG LoadOceanCpuTextureRG(const GUID& guid)
     if (auto* texture = dynamic_cast<TextureAsset*>(asset.get()))
     {
         if (texture->IsLoaded())
-            return MakeOceanCpuTextureRG(*texture);
+        {
+            std::shared_ptr<const uint8[]> pixels = texture->AcquirePixels();
+            heldPixels.InsertOrAssign(guid, pixels);
+            return MakeOceanCpuTextureRG(*texture, pixels);
+        }
     }
 
     AssetMetadata metadata{};
@@ -163,7 +170,7 @@ OceanCpuTextureRG LoadOceanCpuTextureRG(const GUID& guid)
     {
         TextureAsset texture(guid, metadata.Path);
         if (texture.Load())
-            return MakeOceanCpuTextureRG(texture);
+            return MakeOceanCpuTextureRG(texture, texture.AcquirePixels());
     }
 
     return {};
@@ -600,6 +607,9 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
 {
     if (!m_RenderServices)
         return;
+    // The pixels of the last update stay alive until this one ends: a texture that this update
+    // reads again is not read from its file.
+    const auto previousHeldPixels = std::exchange(m_HeldTexturePixels, {});
 
     // The texture service lives between RenderServices::Initialize and Shutdown. Without it the
     // texture slots stay empty and the shader uses its procedural fallbacks.
@@ -2174,7 +2184,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                     if (inputs.AddFlowMapSource(g))
                     {
                         flowMapTextureGuids.push_back(flowMapGuid);
-                        flowMapCpuTextures.push_back(LoadOceanCpuTextureRG(flowMapGuid));
+                        flowMapCpuTextures.push_back(LoadOceanCpuTextureRG(flowMapGuid, m_HeldTexturePixels));
                     }
                 });
 
@@ -2266,7 +2276,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 box.ChopBias = g.ScaleBias[3];
                 box.Coverage = g.FeatherCoverage[1];
                 box.Feather = g.FeatherCoverage[0];
-                box.Texture = LoadOceanCpuTextureRG(maskGuid);
+                box.Texture = LoadOceanCpuTextureRG(maskGuid, m_HeldTexturePixels);
                 waveWeightTextureBoxes.push_back(box);
             });
 

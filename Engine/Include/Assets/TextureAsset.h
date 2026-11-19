@@ -262,8 +262,8 @@ public:
     const uint8* GetPixelData() const { return m_PixelData.get(); }
 
     /// The pixels of GetPixelData(), valid while the caller holds them. After ReleaseLevelPixels,
-    /// a blocking read of GetLevelFile() gives them and the asset keeps them again. Null without both.
-    /// Any thread.
+    /// a blocking read of GetLevelFile() gives them: they go when the last holder drops them, and
+    /// the asset keeps none. Null without both. Any thread.
     std::shared_ptr<const uint8[]> AcquirePixels() const;
 
     /**
@@ -314,9 +314,9 @@ public:
     /// A reader of GetPixelData() must be on the thread that calls this.
     void ReleaseLevelPixels();
 
-    /// Reads the pixels that ReleaseLevelPixels freed from GetLevelFile(). False, with no pixels,
-    /// when a file does not read or holds another container. A blocking read of the whole file
-    /// for this texture and for its companion.
+    /// Makes GetPixelData() valid again after ReleaseLevelPixels, for this texture and its
+    /// companion: a blocking read of the whole file. False, with no pixels, when a file does not
+    /// read or holds another container.
     bool RestoreLevelPixels();
 
     /// The SVG text an asset loaded from, with its intrinsic size in CSS px
@@ -392,6 +392,9 @@ private:
     /// The pixels that GetLevelFile() names, read from the file. Null when it does not read or
     /// holds another container. m_PixelMutex held.
     std::shared_ptr<uint8[]> ReadLevelPixels() const;
+    /// The pixels of the asset, of a holder of AcquirePixels(), or of the file, in that order.
+    /// m_PixelMutex held.
+    std::shared_ptr<uint8[]> BorrowPixelsLocked() const;
 
     /**
      * @brief Load DDS texture
@@ -464,10 +467,11 @@ private:
 	    uint32 m_Channels;
 	    TextureFormat m_Format;
 	    TextureColorSpace m_ColorSpace;
-	    // AcquirePixels fills it again after a release.
-	    mutable std::shared_ptr<uint8[]> m_PixelData;
-	    // After the load, guards m_PixelData, m_DataSize, m_MipChain and m_LevelFile for AcquirePixels
-	    // against a release, a reload and an unload.
+	    std::shared_ptr<uint8[]> m_PixelData;
+	    // The pixels that the holders of AcquirePixels() keep alive after a release.
+	    mutable std::weak_ptr<uint8[]> m_BorrowedPixels;
+	    // After the load, guards m_PixelData, m_BorrowedPixels, m_DataSize, m_MipChain and
+	    // m_LevelFile for AcquirePixels against a release, a reload and an unload.
 	    mutable std::mutex m_PixelMutex;
 	    uint64 m_DataSize;
 	    bool m_HasMipmaps;
