@@ -58,6 +58,7 @@
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Logger/Logger.h"
+#include "Memory/TrackedBytes.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
@@ -485,6 +486,7 @@ void TextureService::ReprovisionAfterDeviceRebuild()
         m_MaterialTextureRefs.clear();
         m_TextureToMaterialBindings.clear();
         m_MaterialMipStreams.Clear();
+        ReportMaterialMipBytesLocked();
         CancelMaterialMipStep();
         m_FullTextureRequests.Clear();
         m_HotSwapTextureRequests.Clear();
@@ -681,6 +683,7 @@ void TextureService::Shutdown()
                     m_Device->DestroyTexture(texture);
         }
         m_MaterialMipStreams.Clear();
+        ReportMaterialMipBytesLocked();
         CancelMaterialMipStep();
 
         if (m_BindlessTextureSet.IsValid())
@@ -1834,7 +1837,22 @@ TextureGPUCache::Entry TextureService::RemoveMaterialMipStreamLocked(const GUID&
     const TextureGPUCache::Entry resident = stream->Resident;
     m_MaterialMipStreams.Erase(guid);
     m_MaterialMipStreamsSettled = false;
+    ReportMaterialMipBytesLocked();
     return resident;
+}
+
+void TextureService::ReportMaterialMipBytesLocked()
+{
+    // The resident bytes of the streams of every texture service, summed.
+    static Memory::TrackedBytes s_ResidentBytes{"Rendering.MaterialMipStreams", Memory::Residency::Gpu};
+    uint64_t bytes = 0;
+    for (const auto& [guid, stream] : m_MaterialMipStreams)
+        bytes += stream.Source->SuffixBytes()[stream.FirstMip];
+    if (bytes > m_ReportedMaterialMipBytes)
+        s_ResidentBytes.Add(bytes - m_ReportedMaterialMipBytes);
+    else
+        s_ResidentBytes.Subtract(m_ReportedMaterialMipBytes - bytes);
+    m_ReportedMaterialMipBytes = bytes;
 }
 
 float TextureService::MaterialMipCoverageLocked(const GUID& guid) const
@@ -1994,6 +2012,8 @@ void TextureService::AdvanceMaterialMipStreams()
             RetireCacheEntry(stream.Resident);
             return true;
         });
+        if (unbound != 0)
+            ReportMaterialMipBytesLocked();
         if (unbound == 0 && m_MaterialMipStreamsSettled)
             return;
 
@@ -2094,6 +2114,7 @@ void TextureService::FinishMaterialMipStep()
         }
         entry->Resident = replacement;
         entry->FirstMip = step.Read->FirstMip;
+        ReportMaterialMipBytesLocked();
     }
     RetireCacheEntry(candidate.Resident);
 }
@@ -2883,6 +2904,7 @@ void TextureService::FlushPendingUploads()
                                                       upload.StreamSource->Tail(), upload.Epoch,
                                                       MaterialMipCoverageLocked(upload.TextureGuid)});
                                 m_MaterialMipStreamsSettled = false;
+                                ReportMaterialMipBytesLocked();
                                 // The stream reads its levels from the file: no copy of them stays in memory.
                                 upload.Prepared->Container->ReleaseLevelPixels();
                             }
