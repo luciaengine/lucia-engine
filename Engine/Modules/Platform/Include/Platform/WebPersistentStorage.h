@@ -33,7 +33,7 @@ inline constexpr const char* kUserCacheDir = "/project/.cache";
 
 // The managed browser host can start the workers before entering the native
 // editor. It polls readiness while the browser remains free to service messages.
-void PreparePersistentStorage();
+void PreparePersistentStorage(const std::filesystem::path& mountPoint);
 bool IsPersistentStoragePrepared();
 
 /**

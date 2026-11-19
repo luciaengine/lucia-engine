@@ -268,7 +268,7 @@ void MakePreloadedTreeWritable(const char* root)
 #if defined(GE_WEB_MANAGED_EDITOR)
 extern "C" EMSCRIPTEN_KEEPALIVE void GePrepareEditorStorage()
 {
-    GameEngine::Platform::Web::PreparePersistentStorage();
+    GameEngine::Platform::Web::PreparePersistentStorage(GameEngine::Platform::Web::kProjectsMount);
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE bool GeEditorStoragePrepared()

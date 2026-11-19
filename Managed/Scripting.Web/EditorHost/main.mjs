@@ -1,11 +1,12 @@
 import { dotnet } from './_framework/dotnet.js';
 
 const pageModule = globalThis.Module;
+const { canvas, print, printErr } = pageModule;
 try {
     // Use the SDK's workers so Mono and native OPFS jobs share the same worker pool.
     const { Module, getAssemblyExports } = await dotnet
         .withConfig({ pthreadPoolInitialSize: 12, pthreadPoolUnusedSize: 4 })
-        .withModuleConfig(pageModule).create();
+        .withModuleConfig({ canvas, print, printErr }).create();
     const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
     const scripts = exports.Lucia.Web.Editor.BrowserPlayMode;
     Module.webScriptSession = {

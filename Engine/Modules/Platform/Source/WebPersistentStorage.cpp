@@ -2,12 +2,13 @@
 
 #include "Logger/Logger.h"
 
+#include <emscripten/threading.h>
 #include <emscripten/wasmfs.h>
 
 #include <cerrno>
 #include <chrono>
-#include <future>
 #include <cstring>
+#include <future>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -18,8 +19,7 @@ namespace Web {
 
 namespace {
 
-std::future<backend_t> s_PreparedBackend;
-bool s_PreparationStarted = false;
+std::future<bool> s_PreparedMount;
 
 // One OPFS backend per page: the backend owns a dedicated worker, and asking
 // WasmFS for a second one would spawn a second worker over the same storage.
@@ -35,8 +35,8 @@ backend_t OpfsBackend()
 {
     static backend_t backend = []
     {
-        if (s_PreparedBackend.valid())
-            return s_PreparedBackend.get();
+        if (!emscripten_is_main_browser_thread())
+            return wasmfs_create_opfs_backend();
 
         backend_t created = nullptr;
         std::thread spawner([&created] { created = wasmfs_create_opfs_backend(); });
@@ -48,18 +48,16 @@ backend_t OpfsBackend()
 
 } // namespace
 
-void PreparePersistentStorage()
+void PreparePersistentStorage(const std::filesystem::path& mountPoint)
 {
-    if (s_PreparationStarted)
-        return;
-    s_PreparedBackend = std::async(std::launch::async, wasmfs_create_opfs_backend);
-    s_PreparationStarted = true;
+    if (!s_PreparedMount.valid())
+        s_PreparedMount = std::async(std::launch::async, [mountPoint] { return MountPersistentStorage(mountPoint); });
 }
 
 bool IsPersistentStoragePrepared()
 {
     using namespace std::chrono_literals;
-    return s_PreparedBackend.valid() && s_PreparedBackend.wait_for(0ms) == std::future_status::ready;
+    return s_PreparedMount.valid() && s_PreparedMount.wait_for(0ms) == std::future_status::ready;
 }
 
 bool MountPersistentStorage(const std::filesystem::path& mountPoint)
