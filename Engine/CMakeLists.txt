@@ -28,6 +28,7 @@ set(ENGINE_SOURCES
     Source/Assets/CubeLutColorSettings.cpp
     Source/Assets/CoreAssetRegistrations.cpp
     Source/Assets/TextureAsset.cpp
+    Source/Assets/TextureLevelFile.cpp
     Source/Assets/TextureParser.cpp
     Source/Assets/PackagedTexturePayload.cpp
     Source/Assets/TextureAlphaDecodeProbe.cpp
@@ -406,6 +407,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/MaterialBinder.cpp
 	Source/Engine/Rendering/MaterialBindingCache.cpp
 	Source/Engine/Rendering/MaterialMipStreaming/MaterialMipStepPlanner.cpp
+	Source/Engine/Rendering/MaterialMipStreaming/MaterialMipStreamSource.cpp
 	Source/Engine/Rendering/MaterialMipStreaming/MaterialScreenDemand.cpp
 	Source/Engine/Rendering/MeshGPURegistry.cpp
 	Source/Engine/Rendering/MeshGPUResidency.cpp
@@ -2176,6 +2178,7 @@ endif()
                 Tests/VideoPlayerTests.cpp
                 Tests/VideoFrameUploaderTests.cpp
                 Tests/TextureAssetKtx2Tests.cpp
+                Tests/TextureLevelFileTests.cpp
                 Tests/TextureCookTests.cpp
                 Tests/TextureCookWorkersTests.cpp
                 Tests/TexturePackageCookTests.cpp

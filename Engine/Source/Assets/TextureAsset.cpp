@@ -332,7 +332,7 @@ bool TextureAsset::LoadFromData(std::span<const uint8> data) {
         break;
     case TextureBytesDecoder::Ktx:
 #if defined(GE_HAVE_KTX)
-        success = LoadWithKTXFromData(data);
+        success = LoadWithKTXFromData(data, GetPath());
 #else
         Logger::Log::Error("KTX texture support not available at build time for '{}' (memory load)", GetName());
 #endif
@@ -383,7 +383,8 @@ std::optional<bool> TextureAsset::LoadPackagedTexture([[maybe_unused]] const std
 #if defined(GE_HAVE_KTX)
     ByteBuffer bytes;
     if (!payload->empty() &&
-        (data ? LoadWithKTXFromData(*data) : ReadFileBytesShared(*payload, bytes) && LoadWithKTXFromData(bytes)))
+        (data ? LoadWithKTXFromData(*data, *payload)
+              : ReadFileBytesShared(*payload, bytes) && LoadWithKTXFromData(bytes, *payload)))
     {
         if (IsBlockCompressed() && gpuUpload && GetGpuTranscodeTarget() != TextureGpuTranscodeTarget::BC7)
         {
@@ -446,6 +447,7 @@ bool TextureAsset::DecodeBlockPayloadForCpuReaders()
     delete[] m_PixelData;
     m_PixelData = new uint8[total];
     m_DataSize = total;
+    m_LevelFile.reset();
     m_MipChain.clear();
     uint64 offset = 0;
     for (size_t level = 0; level < levels.size(); ++level)
@@ -465,6 +467,7 @@ void TextureAsset::Unload() {
         m_PixelData = nullptr;
     }
     m_NormalVarianceCompanion.reset();
+    m_LevelFile.reset();
 
     m_Width = 0;
     m_Height = 0;
@@ -507,6 +510,7 @@ bool TextureAsset::AdoptReloadedPayload(Asset& staged) {
     std::swap(m_MipmapLevels, other->m_MipmapLevels);
     std::swap(m_MipChain, other->m_MipChain);
     std::swap(m_NormalVarianceCompanion, other->m_NormalVarianceCompanion);
+    std::swap(m_LevelFile, other->m_LevelFile);
     {
         std::scoped_lock lock(m_SvgSourceMutex, other->m_SvgSourceMutex);
         std::swap(m_SvgSource, other->m_SvgSource);
@@ -800,7 +804,7 @@ std::unique_ptr<TextureAsset> TextureAsset::LoadVarianceCompanion(const std::fil
     if (!bytes || bytes->Size() == 0)
         return nullptr;
     auto companion = std::make_unique<TextureAsset>(GetGUID(), file);
-    if (!companion->LoadWithKTXFromData(*bytes) || companion->GetFormat() != TextureFormat::BC4)
+    if (!companion->LoadWithKTXFromData(*bytes, file) || companion->GetFormat() != TextureFormat::BC4)
     {
         Logger::Log::Warning("TextureAsset[{}]: normal-variance companion rejected (corrupt): {}",
                              GetName(), file.generic_string());
@@ -939,21 +943,25 @@ bool TextureAsset::TryLoadViaCook(std::span<const uint8> sourceBytes, const Stri
     if (!companionBytes.empty())
     {
         companion = std::make_unique<TextureAsset>(GetGUID(), companionFile);
-        if (!companion->LoadWithKTXFromData(companionBytes))
+        if (!companion->LoadWithKTXFromData(companionBytes, {}))
         {
             Logger::Log::Warning("TextureAsset[{}]: the cooked normal-variance companion did not load; using raw decode",
                                  GetName());
             return false;
         }
     }
-    if ((!companionFile.empty() && !WriteCookArtifact(companionFile, companionBytes)) ||
-        !WriteCookArtifact(cacheFile, cookedBytes))
+    const bool written = (companionFile.empty() || WriteCookArtifact(companionFile, companionBytes)) &&
+                         WriteCookArtifact(cacheFile, cookedBytes);
+    if (!written)
         Logger::Log::Warning("TextureAsset[{}]: failed to write cook cache '{}'",
                              GetName(), cacheFile.generic_string());
     else
         RemoveSupersededTextureCookArtifacts(cacheFile, GetGUID(), output);
+    // The companion loaded before its artifact was on the disk.
+    if (written && companion)
+        companion->AdoptLevelFile(TextureLevelFile::Parse(companionBytes, companionFile), companionBytes.size());
 
-    if (!LoadWithKTXFromData(cookedBytes))
+    if (!LoadWithKTXFromData(cookedBytes, written ? cacheFile : std::filesystem::path{}))
     {
         Logger::Log::Warning("TextureAsset[{}]: freshly cooked texture failed to load — using raw decode",
                              GetName());
@@ -989,7 +997,7 @@ bool TextureAsset::AdoptCookArtifact(const std::filesystem::path& artifact,
         if (!companion)
             return false;
     }
-    if (!LoadWithKTXFromOwnedData(std::move(cooked)))
+    if (!LoadWithKTXFromOwnedData(std::move(cooked), artifact))
     {
         Logger::Log::Warning("TextureAsset[{}]: cooked texture rejected (corrupt): {}", GetName(),
                              artifact.generic_string());
@@ -1206,10 +1214,10 @@ bool TextureAsset::LoadWithKTX() {
         Logger::Log::Error("Failed to read KTX file '{}'", GetPath().string());
         return false;
     }
-    return LoadWithKTXFromData(bytes);
+    return LoadWithKTXFromData(bytes, GetPath());
 }
 
-bool TextureAsset::LoadWithKTXFromData(std::span<const uint8> data) {
+bool TextureAsset::LoadWithKTXFromData(std::span<const uint8> data, const std::filesystem::path& file) {
     if (data.empty()) {
         Logger::Log::Error("TextureAsset KTX loader: empty data for '{}'", GetName());
         return false;
@@ -1228,31 +1236,12 @@ bool TextureAsset::LoadWithKTXFromData(std::span<const uint8> data) {
 
     const bool ok = PopulateFromKtxTexture(ktexture, GetName().c_str(), nullptr);
     ktxTexture2_Destroy(ktexture);
+    if (ok)
+        AdoptLevelFile(file.empty() ? std::nullopt : TextureLevelFile::Parse(data, file), data.size());
     return ok;
 }
 
-namespace
-{
-    // The file offset of the smallest level, where libktx's image data starts. The KTX2 level
-    // index follows the 80-byte header: per level, base level first, three little-endian uint64
-    // (byteOffset, byteLength, uncompressedByteLength). Nullopt when the file is too short.
-    std::optional<size_t> Ktx2FirstLevelFileOffset(std::span<const uint8> file, uint32 levelCount)
-    {
-        constexpr size_t kLevelIndexOffset = 80;
-        constexpr size_t kLevelIndexEntryBytes = 24;
-        if (levelCount == 0)
-            return std::nullopt;
-        const size_t entry = kLevelIndexOffset + kLevelIndexEntryBytes * (levelCount - 1);
-        if (entry + sizeof(uint64) > file.size())
-            return std::nullopt;
-        uint64 offset = 0;
-        for (size_t byte = 0; byte < sizeof(uint64); ++byte)
-            offset |= static_cast<uint64>(file[entry + byte]) << (8 * byte);
-        return static_cast<size_t>(offset);
-    }
-} // namespace
-
-bool TextureAsset::LoadWithKTXFromOwnedData(ByteBuffer data) {
+bool TextureAsset::LoadWithKTXFromOwnedData(ByteBuffer data, const std::filesystem::path& file) {
     if (data.Size() == 0) {
         Logger::Log::Error("TextureAsset KTX loader: empty data for '{}'", GetName());
         return false;
@@ -1268,20 +1257,39 @@ bool TextureAsset::LoadWithKTXFromOwnedData(ByteBuffer data) {
     }
 
     // A Basis payload transcodes and a supercompressed one inflates, both into libktx's own buffer.
-    const std::optional<size_t> firstLevel = Ktx2FirstLevelFileOffset({data.Data(), data.Size()}, ktexture->numLevels);
-    if (ktxTexture2_NeedsTranscoding(ktexture) || ktexture->supercompressionScheme != KTX_SS_NONE || !firstLevel ||
-        *firstLevel > data.Size() || ktexture->dataSize > data.Size() - *firstLevel)
+    // The image data starts at the smallest level, which the file stores first.
+    const uint64 fileBytes = data.Size();
+    std::optional<TextureLevelFile> levelFile = TextureLevelFile::Parse({data.Data(), data.Size()}, file);
+    if (ktxTexture2_NeedsTranscoding(ktexture) || ktexture->supercompressionScheme != KTX_SS_NONE || !levelFile ||
+        ktexture->dataSize > fileBytes - levelFile->Levels().back().Offset)
     {
         ktxTexture2_Destroy(ktexture);
-        return LoadWithKTXFromData({data.Data(), data.Size()});
+        return LoadWithKTXFromData({data.Data(), data.Size()}, file);
     }
 
     // libktx reads the levels where they are in the file. The bytes stay ours: libktx must not free them.
-    ktexture->pData = data.Data() + *firstLevel;
+    ktexture->pData = data.Data() + levelFile->Levels().back().Offset;
     const bool ok = PopulateFromKtxTexture(ktexture, GetName().c_str(), &data);
     ktexture->pData = nullptr;
     ktxTexture2_Destroy(ktexture);
+    if (ok)
+        AdoptLevelFile(std::move(levelFile), fileBytes);
     return ok;
+}
+
+void TextureAsset::AdoptLevelFile(std::optional<TextureLevelFile> levelFile, uint64 fileBytes)
+{
+    m_LevelFile.reset();
+    if (!levelFile || levelFile->Path().empty() || levelFile->Levels().size() != m_MipChain.size())
+        return;
+    for (size_t level = 0; level < m_MipChain.size(); ++level)
+        if (levelFile->Levels()[level].Bytes != m_MipChain[level].Size)
+            return;
+    // Bytes that came from another place than the file (an embedded image) give no level file.
+    std::error_code error;
+    if (std::filesystem::file_size(levelFile->Path(), error) != fileBytes || error)
+        return;
+    m_LevelFile = std::move(levelFile);
 }
 
 bool TextureAsset::PopulateFromKtxTexture(void* ktxTexture2Ptr, const char* sourceName, ByteBuffer* file) {
@@ -1436,6 +1444,34 @@ bool TextureAsset::PopulateFromKtxTexture(void* ktxTexture2Ptr, const char* sour
     return true;
 }
 #endif
+
+void TextureAsset::ReleaseLevelPixels()
+{
+    if (!m_LevelFile)
+        return;
+    delete[] m_PixelData;
+    m_PixelData = nullptr;
+    if (m_NormalVarianceCompanion)
+        m_NormalVarianceCompanion->ReleaseLevelPixels();
+}
+
+bool TextureAsset::RestoreLevelPixels()
+{
+    if (m_PixelData)
+        return true;
+    ByteBuffer file;
+    if (!m_LevelFile || !ReadFileBytesShared(m_LevelFile->Path(), file) ||
+        !m_LevelFile->Matches({file.Data(), file.Size()}) || file.Size() < m_LevelFile->PrefixBytes(0))
+        return false;
+    if (m_NormalVarianceCompanion && !m_NormalVarianceCompanion->RestoreLevelPixels())
+        return false;
+    m_PixelData = new uint8[m_DataSize];
+    const auto levels = m_LevelFile->Levels();
+    for (size_t level = 0; level < m_MipChain.size(); ++level)
+        std::memcpy(m_PixelData + m_MipChain[level].Offset, file.Data() + levels[level].Offset,
+                    static_cast<size_t>(m_MipChain[level].Size));
+    return true;
+}
 
 bool TextureAsset::LoadFromSvgData(const std::string& svgText, const String& extensionLower)
 {

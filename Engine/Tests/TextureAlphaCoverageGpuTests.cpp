@@ -226,7 +226,7 @@ class TextureCoverageGPU : public testing::Test
         Set(path, kTextureAlphaCutoffMetaKey, ".538");
         return EngineCore::GetInstance().GetAssetManager().GetRegistry().GetAssetGUID(path);
     }
-    void MakeStreamedTexture(bool validSourceFile, GUID& texture, SharedPtr<TextureAsset>& asset)
+    void MakeStreamedTexture(GUID& texture, SharedPtr<TextureAsset>& asset)
     {
         const auto source = Read(Image(false, 512));
         TextureCookInputs inputs;
@@ -237,10 +237,7 @@ class TextureCoverageGPU : public testing::Test
         const auto path = s_Workspace / "Assets" / (GUID::Generate().ToString() + ".ktx2");
         {
             std::ofstream stream(path, std::ios::binary);
-            if (validSourceFile)
-                stream.write(reinterpret_cast<const char*>(cooked.data()), cooked.size());
-            else
-                stream << "invalid texture";
+            stream.write(reinterpret_cast<const char*>(cooked.data()), cooked.size());
             ASSERT_TRUE(stream.good());
         }
         texture = Register(path, false);
@@ -248,6 +245,38 @@ class TextureCoverageGPU : public testing::Test
         asset = MakeShared<TextureAsset>(texture, path);
         ASSERT_TRUE(asset->LoadFromData(cooked));
         ASSERT_EQ(asset->GetMipChain().size(), 10u);
+    }
+
+    // Runs frames until the streams have no step left. A step reads its levels on an I/O thread.
+    void SettleMipStreams()
+    {
+        constexpr int kMaximumFrames = 400;
+        for (int frame = 0; frame < kMaximumFrames; ++frame)
+        {
+            m_Textures.FlushPendingUploads();
+            if (Engine::Renderer::TextureCoverageUploadTestAccess::MipStreamsSettled(m_Textures))
+                return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        ADD_FAILURE() << "the material mip streams did not settle";
+    }
+
+    Engine::Renderer::Material* RegisterStreamingMaterial(const GUID& materialGuid, const char* name)
+    {
+        MaterialDocument doc{};
+        doc.schemaVersion = 3;
+        doc.materialName = name;
+        doc.lightingModel = "StandardPBR";
+        doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+        return m_Materials.Register(materialGuid, doc);
+    }
+
+    // Puts bytes that are no texture in the file of `asset`, as a writer that replaces the file does.
+    void ReplaceFileOf(const TextureAsset& asset)
+    {
+        std::ofstream stream(asset.GetPath(), std::ios::binary | std::ios::trunc);
+        stream << "invalid texture";
+        ASSERT_TRUE(stream.good());
     }
 
     // The cooked artifacts the derived cache holds for `texture`.
@@ -278,6 +307,7 @@ class TextureCoverageGPU : public testing::Test
         }
         return handle;
     }
+
     uint32 WidthOf(TextureHandle texture)
     {
         uint32 width = 0, height = 0;
@@ -418,7 +448,7 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingRespectsBudgetAndKeepsDirectTextu
     Access::SetMipBudget(m_Textures, kMiB);
     GUID texture;
     SharedPtr<TextureAsset> asset;
-    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(true, texture, asset));
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(texture, asset));
 
     const GUID materialGuid = GUID::Generate();
     MaterialDocument doc{};
@@ -452,7 +482,7 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingRespectsBudgetAndKeepsDirectTextu
     EXPECT_EQ(Render(tail, 16, 16, 0), Render(direct, 16, 16, 1));
 
     Access::SetMipBudget(m_Textures, 2 * kMiB);
-    m_Textures.FlushPendingUploads();
+    SettleMipStreams();
     const auto promoted = material->GetTexture(slot);
     EXPECT_NE(promoted, tail);
     EXPECT_NE(promoted, direct);
@@ -464,7 +494,7 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingRespectsBudgetAndKeepsDirectTextu
     // An override uses a direct image while the authored texture stays tracked.
     m_Textures.BindMaterialTexture(material, slot, direct);
     Access::SetMipBudget(m_Textures, kMiB);
-    m_Textures.FlushPendingUploads();
+    SettleMipStreams();
     EXPECT_EQ(material->GetTexture(slot), direct);
     m_Textures.RestoreMaterialTextureBinding(material, materialGuid, slot);
     const auto demoted = material->GetTexture(slot);
@@ -502,7 +532,7 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     {
         Streamed& entry = streamed[index];
         SharedPtr<TextureAsset> asset;
-        ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(true, entry.Texture, asset));
+        ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(entry.Texture, asset));
         entry.MaterialGuid = GUID::Generate();
         entry.MaterialIndex = index;
         MaterialDocument doc{};
@@ -519,14 +549,12 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     // Without demand the lower GUID gains first: the demand goes to the higher one.
     if (streamed[1].Texture < streamed[0].Texture)
         std::swap(streamed[0], streamed[1]);
-    constexpr int kFramesToSettle = 4;
 
     std::array<float, 2> coverage{};
     coverage[streamed[0].MaterialIndex] = 0.01f;
     coverage[streamed[1].MaterialIndex] = 0.5f;
     m_Textures.UpdateMaterialMipDemand(coverage);
-    for (int frame = 0; frame < kFramesToSettle; ++frame)
-        m_Textures.FlushPendingUploads();
+    SettleMipStreams();
     EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 256u);
     EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 512u);
     // With no change to the demand, the streams or the budget, the planner does not run again.
@@ -538,8 +566,7 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     coverage[streamed[0].MaterialIndex] = 0.9f;
     coverage[streamed[1].MaterialIndex] = 0.01f;
     m_Textures.UpdateMaterialMipDemand(coverage);
-    for (int frame = 0; frame < kFramesToSettle; ++frame)
-        m_Textures.FlushPendingUploads();
+    SettleMipStreams();
     EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 512u);
     EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 256u);
 
@@ -551,6 +578,118 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     m_Textures.FlushPendingUploads();
 }
 
+TEST_F(TextureCoverageGPU, MaterialMipStreamKeepsNoPixelsAndReadsItsLevelsFromTheFile)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    GUID texture;
+    SharedPtr<TextureAsset> asset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(texture, asset));
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingFromFile");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    Access::Queue(m_Textures, texture, materialGuid, asset, slot);
+    m_Textures.FlushPendingUploads();
+    ASSERT_EQ(WidthOf(material->GetTexture(slot)), 256u);
+    // The stream keeps no copy of the mip chain, and the asset gave its copy up.
+    EXPECT_EQ(asset->GetPixelData(), nullptr);
+
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    SettleMipStreams();
+    const auto promoted = material->GetTexture(slot);
+    ASSERT_EQ(WidthOf(promoted), 512u);
+    // The reference: a direct upload loads the whole file into an asset of its own.
+    const auto direct = m_Textures.GetOrUpload(texture);
+    ASSERT_TRUE(direct.IsValid());
+    EXPECT_EQ(Render(promoted, 16, 16, 0), Render(direct, 16, 16, 0));
+    EXPECT_EQ(Render(promoted, 16, 16, 3), Render(direct, 16, 16, 3));
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTheLoadedAsset)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    // A source image: the AssetManager cooks it, and the stream reads the artifact in the cook cache.
+    const GUID texture = Register(Image(false, 512), false);
+    ASSERT_FALSE(texture.IsNull());
+
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingCookedSource");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    auto& assets = EngineCore::GetInstance().GetAssetManager();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (!material->GetTexture(slot).IsValid() && std::chrono::steady_clock::now() < deadline)
+    {
+        assets.Update();
+        m_Textures.FlushPendingUploads();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(WidthOf(material->GetTexture(slot)), 256u);
+    const auto loaded = std::dynamic_pointer_cast<TextureAsset>(assets.GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetPixelData(), nullptr);
+
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    SettleMipStreams();
+    const auto streamed = material->GetTexture(slot);
+    EXPECT_EQ(WidthOf(streamed), 512u);
+
+    // A direct upload of the same asset reads the pixels again from the artifact.
+    const auto direct = WaitForUpload(texture);
+    ASSERT_TRUE(direct.IsValid());
+    EXPECT_NE(direct, streamed);
+    EXPECT_EQ(WidthOf(direct), 512u);
+    EXPECT_NE(loaded->GetPixelData(), nullptr);
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, MaterialMipStreamKeepsItsLevelWhenItsFileIsAnotherFile)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    GUID texture;
+    SharedPtr<TextureAsset> asset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(texture, asset));
+
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingReplacedFile");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    Access::Queue(m_Textures, texture, materialGuid, asset, slot);
+    m_Textures.FlushPendingUploads();
+    const auto tail = material->GetTexture(slot);
+    ASSERT_EQ(WidthOf(tail), 256u);
+
+    // The budget gets room for level 0. The read of it fails, and the stream does not ask again.
+    ASSERT_NO_FATAL_FAILURE(ReplaceFileOf(*asset));
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    SettleMipStreams();
+    EXPECT_EQ(material->GetTexture(slot), tail);
+    m_Textures.FlushPendingUploads();
+    EXPECT_TRUE(Access::MipStreamsSettled(m_Textures));
+    EXPECT_EQ(material->GetTexture(slot), tail);
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
 TEST_F(TextureCoverageGPU, FailedDirectTextureLoadKeepsItsMaterialStream)
 {
     using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
@@ -558,7 +697,7 @@ TEST_F(TextureCoverageGPU, FailedDirectTextureLoadKeepsItsMaterialStream)
     Access::SetMipBudget(m_Textures, kMiB);
     GUID texture;
     SharedPtr<TextureAsset> asset;
-    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(false, texture, asset));
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(texture, asset));
 
     const GUID materialGuid = GUID::Generate();
     MaterialDocument doc{};
@@ -576,6 +715,7 @@ TEST_F(TextureCoverageGPU, FailedDirectTextureLoadKeepsItsMaterialStream)
     const auto tail = Access::StreamedHandle(m_Textures, texture);
     ASSERT_TRUE(tail.IsValid());
     ASSERT_EQ(material->GetTexture(slot), tail);
+    ASSERT_NO_FATAL_FAILURE(ReplaceFileOf(*asset));
     EXPECT_FALSE(m_Textures.GetOrRequestTexture(texture).IsValid());
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (Access::InFlight(m_Textures, texture) && std::chrono::steady_clock::now() < deadline)

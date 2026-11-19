@@ -60,8 +60,8 @@ chain. The value is in MiB. Leave it unset or set it to zero to use full
 resolution at first upload.
 
 Eligible textures start with the first mip whose longest edge is at most
-256 pixels and the coarser mips below it. The service can change one texture by
-one mip level per frame. It adds detail while the resident payload fits the
+256 pixels and the coarser mips below it. The service changes one texture by
+one mip level at a time. It adds detail while the resident payload fits the
 budget and removes detail when new textures push it over. If the tails alone
 exceed the budget, the tails stay available.
 
@@ -79,9 +79,19 @@ measurement, textures change in a fixed order.
 
 Normal maps stream their normal-variance companion at the matching mip offset.
 The budget counts resident streamed mip bytes for both images. Replacement images can coexist
-with their predecessors until GPU work finishes. Staging memory, other textures,
-and the CPU copy of the decoded mip chain are separate costs. This mode uses a
-shared budget across material textures and loads the prepared chain up front.
+with their predecessors until GPU work finishes. Staging memory and other textures
+are separate costs. This mode uses a shared budget across material textures.
+
+A streamed texture keeps no copy of its mip chain in memory. The first load reads
+the whole cooked file and uploads the tail. Each later change of level reads the
+levels that become resident from the cooked file, on an I/O thread, and one change
+is in progress at a time. A texture streams only when its cooked file stores the
+texels as they are. A file with a Basis payload or a supercompression scheme loads
+at full resolution. If the cooked file of a streamed texture is removed, or replaced
+by a file with another format, size, or mip layout,
+the texture keeps its level and the log says so. The next reload or reimport of the
+texture starts a new stream.
+
 A direct request for the same asset receives a separate full-resolution image.
 An immediate re-upload, such as a texture filter edit, keeps the material
 available with a full-resolution image until the asset is evicted and loaded
