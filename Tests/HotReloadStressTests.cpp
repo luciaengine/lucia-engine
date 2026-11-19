@@ -83,6 +83,11 @@ protected:
         file.close();
     }
 
+    void modifyTestScript() {
+        std::ofstream file(testDir / "TestScript.cs", std::ios::binary | std::ios::app);
+        file << "// edit\n";
+    }
+
     void modifyTestAssembly() {
         // Simulate file modification by updating timestamp and content
         std::ofstream file(testAssemblyPath, std::ios::binary | std::ios::app);
@@ -364,14 +369,15 @@ TEST_F(HotReloadStressTest, FileWatcherDebouncingTest) {
         (void)event;
         hotReloadTriggers.fetch_add(1);
     };
-    GameEngine::FilePattern pattern(testDir, ".*", {".dll"}, /*recursive*/ false);
+    // A hot reload starts from an edited C# source; the watcher skips build outputs such as .dll.
+    GameEngine::FilePattern pattern(testDir, ".*", {".cs"}, /*recursive*/ false);
     auto subscription = fws.Subscribe(pattern, callback, /*priority*/ 0);
     ASSERT_TRUE(fws.StartWatching());
 
     // Simulate rapid file changes
     std::thread fileChangeThread([this, changeIntervalMs]() {
         for (int i = 0; i < numFileChanges; ++i) {
-            modifyTestAssembly();
+            modifyTestScript();
             std::this_thread::sleep_for(std::chrono::milliseconds(changeIntervalMs));
         }
     });
