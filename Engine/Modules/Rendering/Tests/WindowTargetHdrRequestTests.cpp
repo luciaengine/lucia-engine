@@ -60,7 +60,8 @@ TEST(WindowTargetHdrRequest, NewTargetInheritsRequestOfActiveTargetAndKeepsItsOw
 #if !defined(HAVE_GLFW)
     GTEST_SKIP() << "GLFW not available on this build agent";
 #else
-    ASSERT_EQ(glfwInit(), GLFW_TRUE);
+    if (glfwInit() != GLFW_TRUE)
+        GTEST_SKIP() << "GLFW cannot start: this session has no display";
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     GLFWwindow* windowA = glfwCreateWindow(320, 200, "HdrRequestTargetA", nullptr, nullptr);
@@ -151,7 +152,8 @@ TEST(WindowTargetHdrRequest, PerTargetSwapchainFormatSurvivesActivationSwitches)
 #if !defined(HAVE_GLFW)
     GTEST_SKIP() << "GLFW not available on this build agent";
 #else
-    ASSERT_EQ(glfwInit(), GLFW_TRUE);
+    if (glfwInit() != GLFW_TRUE)
+        GTEST_SKIP() << "GLFW cannot start: this session has no display";
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     GLFWwindow* windowA = glfwCreateWindow(320, 200, "SwapFormatTargetA", nullptr, nullptr);
@@ -239,7 +241,8 @@ TEST(WindowTargetHdrRequest, TargetBornWhileHdrOffStaysOff)
 #if !defined(HAVE_GLFW)
     GTEST_SKIP() << "GLFW not available on this build agent";
 #else
-    ASSERT_EQ(glfwInit(), GLFW_TRUE);
+    if (glfwInit() != GLFW_TRUE)
+        GTEST_SKIP() << "GLFW cannot start: this session has no display";
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     GLFWwindow* windowA = glfwCreateWindow(320, 200, "HdrOffTargetA", nullptr, nullptr);
