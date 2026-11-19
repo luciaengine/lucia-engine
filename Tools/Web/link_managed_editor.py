@@ -5,6 +5,7 @@ import argparse
 import base64
 import hashlib
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -73,6 +74,33 @@ def replace_once(source, before, after):
     return source.replace(before, after)
 
 
+
+def use_native_opfs_callbacks(source):
+    # A threaded WasmFS proxy already waits for emscripten_proxy_finish. Let its
+    # browser Promise complete without suspending the native worker's stack.
+    async_import = (
+        r"(var __wasmfs_opfs_\w+ = function\(ctx[^\n]*\n(?:(?!\n};).)*?)"
+        r"return Asyncify\.handleAsync\(innerFunc\);"
+    )
+    source, async_count = re.subn(async_import, r"""\1if (ENVIRONMENT_IS_PTHREAD && ctx) {
+    innerFunc().catch(error => console.error("Project storage failed", error));
+    return;
+  }
+  return Asyncify.handleAsync(innerFunc);""", source, flags=re.DOTALL)
+    # Read and write on a SyncAccessHandle return their byte counts immediately.
+    sync_import = (
+        r"(var __wasmfs_opfs_(?:read|write)_access = function\([^\n]+\n(?:(?!\n};).)*?)"
+        r"return Asyncify\.handleAsync\(innerFunc\);"
+    )
+    source, sync_count = re.subn(
+        sync_import, r"\1return ENVIRONMENT_IS_PTHREAD ? innerFunc() : Asyncify.handleAsync(innerFunc);",
+        source, flags=re.DOTALL,
+    )
+    if async_count == 0 or sync_count != 2:
+        raise ValueError("The pinned .NET project storage bindings changed")
+    return source
+
+
 def patch_glue(framework):
     loader = framework / "dotnet.js"
     boot = loader.read_text()
@@ -82,7 +110,8 @@ def patch_glue(framework):
     patched = replace_once(
         source,
         'if (typeof original == "function") {\n        var wrapper = Asyncify.instrumentFunction(original);',
-        'if (name === "GeStartEditor" || name === "GeTickEditor") {\n'
+        'if (name === "GeStartEditor" || name === "GeTickEditor" || '
+        'name === "_emscripten_check_mailbox" || name === "emscripten_proxy_execute_queue") {\n'
         '        var wrapper = Asyncify.instrumentFunction(original);',
     )
     # The SDK replaces Module fields during runtime setup. Resolve against the native module
@@ -95,6 +124,20 @@ def patch_glue(framework):
       return await response.arrayBuffer();
     }
 """ + patched[end:]
+    # Mono installs its own preRun callbacks. Install the editor pack explicitly
+    # after the runtime has published its final Module and its WasmFS bindings.
+    start = patched.index("    // Detect whether the module JS file has already been loaded.")
+    end = patched.index("\n  }\n  loadPackage", start)
+    patched = (
+        patched[:start]
+        + "    globalThis.geInstallEditorAssets = activeModule => runWithFS(activeModule);"
+        + patched[end:]
+    )
+    patched, count = re.subn(
+        r'(?m)^\s*Module\["(?:add|remove)RunDependency"\]\("datafile_[^\n]+\n', "\n", patched
+    )
+    if count != 2:
+        raise ValueError("The pinned .NET editor data loader changed")
     # Emscripten's worker URL is emitted before the SDK fingerprints this module.
     patched = replace_once(patched, 'new URL("dotnet.native.js", import.meta.url)', 'new URL(import.meta.url)')
     # Asyncify has only one continuation per thread. Defer mailbox entry until
@@ -104,6 +147,10 @@ def patch_glue(framework):
     setTimeout(checkMailbox, 0);
     return;
   }""")
+    patched = replace_once(patched, "      _emscripten_proxy_execute_queue(queue);", """
+      if (Asyncify.state === 0 && !Asyncify.currData && !Asyncify.exportCallStack.length)
+        _emscripten_proxy_execute_queue(queue);""".lstrip("\n"))
+    patched = use_native_opfs_callbacks(patched)
     native.write_text(patched)
 
     # Some SDK versions attach a digest to the native JS resource.

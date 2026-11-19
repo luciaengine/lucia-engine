@@ -4,9 +4,13 @@ const pageModule = globalThis.Module;
 const { canvas, print, printErr } = pageModule;
 try {
     // Use the SDK's workers so Mono and native OPFS jobs share the same worker pool.
-    const { Module, getAssemblyExports } = await dotnet
+    const { Module, getAssemblyExports, getConfig, runMain } = await dotnet
         .withConfig({ pthreadPoolInitialSize: 12, pthreadPoolUnusedSize: 4 })
         .withModuleConfig({ canvas, print, printErr }).create();
+    await runMain(getConfig().mainAssemblyName, []);
+    const installEditorAssets = globalThis.geInstallEditorAssets;
+    delete globalThis.geInstallEditorAssets;
+    await installEditorAssets(Module);
     const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
     const scripts = exports.Lucia.Web.Editor.BrowserPlayMode;
     Module.webScriptSession = {
@@ -23,8 +27,9 @@ try {
 
     async function frame() {
         try {
-            await Module.ccall('GeTickEditor', null, [], [], { async: true });
-            scheduleFrame();
+            const keepRunning = await Module.ccall('GeTickEditor', 'boolean', [], [], { async: true });
+            if (keepRunning)
+                scheduleFrame();
         } catch (error) {
             report(error);
         }

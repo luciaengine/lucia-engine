@@ -191,7 +191,7 @@ size_t WasmHeapBytes()
     }));
 }
 
-void Frame(void*)
+bool TickFrame()
 {
     ++g_Frame;
     // The first frames are reported individually: a browser build that wedges
@@ -240,11 +240,17 @@ void Frame(void*)
     const bool keepRunning = g_App->PollEventsAndTick();
     g_TickInProgress = false;
     if (!keepRunning)
-    {
         Logger::Log::Info("WebEditor: main loop ended");
-        emscripten_cancel_main_loop();
-    }
+    return keepRunning;
 }
+
+#if !defined(GE_WEB_MANAGED_EDITOR)
+void Frame(void*)
+{
+    if (!TickFrame())
+        emscripten_cancel_main_loop();
+}
+#endif
 
 // file_packager mounts every --preload-file directory and file read-only
 // (mode 555). The editor treats /Assets and /.Cache as writable roots — new
@@ -276,9 +282,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE bool GeEditorStoragePrepared()
     return GameEngine::Platform::Web::IsPersistentStoragePrepared();
 }
 
-extern "C" EMSCRIPTEN_KEEPALIVE void GeTickEditor()
+extern "C" EMSCRIPTEN_KEEPALIVE bool GeTickEditor()
 {
-    Frame(nullptr);
+    return TickFrame();
 }
 
 extern "C" EMSCRIPTEN_KEEPALIVE int GeStartEditor()
