@@ -100,6 +100,9 @@ PackagePublishResult PublishPackageAssetManifest(const AssetRegistry& registry,
             }
 
             AssetDatabase::AssetRecord out = rec;
+            // The committed manifest holds folded paths on every host, as a case-insensitive host's registry
+            // hands them over; a case-sensitive mount maps them back to the files (BuildFoldedPathIndex).
+            out.path = AssetPaths::FoldStorePathKey(rec.path);
             const std::string matchKey = RemapMatchKey(rec.path);
             if (auto it = remapByKey.find(matchKey); it != remapByKey.end())
             {
