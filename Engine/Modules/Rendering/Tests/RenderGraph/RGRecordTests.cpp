@@ -40,6 +40,24 @@ void DisarmValidationAssert()
 #endif
 }
 
+// The texture usage audit reads GE_TEXTURE_USAGE_AUDIT once per process, and Release turns it off by default.
+// Set it before the first test, so the audit checks do not depend on which test touches the audit first.
+class TextureUsageAuditEnvironment final : public ::testing::Environment
+{
+public:
+    void SetUp() override
+    {
+#if defined(_WIN32)
+        _putenv_s("GE_TEXTURE_USAGE_AUDIT", "1");
+#else
+        setenv("GE_TEXTURE_USAGE_AUDIT", "1", 1);
+#endif
+    }
+};
+
+::testing::Environment* const kTextureUsageAuditEnvironment =
+    ::testing::AddGlobalTestEnvironment(new TextureUsageAuditEnvironment);
+
 // Failure-message dump: the per-VUID table with first-occurrence context.
 std::string VuidSummary(const ValidationStats& stats)
 {
@@ -405,7 +423,6 @@ TEST(RGRecord, NaNFilledTargetFirstUseIsSynchronized)
     const ScopedEnvVar synchronizationValidation("GE_VK_SYNC_VALIDATION", "1");
     const ScopedEnvVar gpuAssistedValidation("GE_VK_GPU_AV", "0");
     const ScopedEnvVar validationAssert("GE_VK_VALIDATION_ASSERT", "0");
-    const ScopedEnvVar usageAudit("GE_TEXTURE_USAGE_AUDIT", "1");
     auto device = MakeDevice(/*debugLayer=*/true);
     ASSERT_TRUE(device);
     ASSERT_EQ(device->GetAPI(), GraphicsAPI::Vulkan);

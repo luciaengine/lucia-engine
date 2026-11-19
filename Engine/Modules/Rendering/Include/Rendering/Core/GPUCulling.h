@@ -19,6 +19,7 @@
 #include "Rendering/Core/PrevVisibleResetTracker.h"
 #include "Rendering/Core/RecomputeElision.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Core/RenderGraph/RGFrameStamp.h"
 
 namespace GameEngine
 {
@@ -168,6 +169,7 @@ struct ViewVisibilityRange
     uint8_t slicePhase = 0;
     uint32_t visibilityOffset = 0;
     uint32_t visibilityCount = 0;
+    bool cascadeCullScheduled = false;
 };
 
 class GPUCullingPipeline
@@ -332,6 +334,9 @@ class GPUCullingPipeline
     };
     PublishArm LastPublishArm() const { return m_LastPublishArm; }
     const std::vector<ViewVisibilityRange>& GetViewVisibilityRanges() const { return m_ViewVisibilityRanges; }
+    /// Returns true when this frame scheduled a full phase-A cull for the slice.
+    bool HasScheduledCascadeCull(const RenderGraph::RGFrame& frame, ViewId viewId,
+                                 uint8_t cascadeIndex) const;
 
     // Q6 device-lost re-provision (design §8 HZB row + §4 one-shot-guard sweep).
     // The in-place device rebuild freed every GPU object this pipeline owned (the
@@ -442,7 +447,7 @@ class GPUCullingPipeline
     // BeginFrame(RGFrame*), persists past EndFrameRG (union/aggregate run
     // after) — the epilogue passes bail on a different frame, since dense ids
     // from frame A are usually in-range (and silently wrong) in frame B.
-    RenderGraph::RGFrame* m_FrameRGOwner = nullptr;
+    RenderGraph::RGFrameStamp m_VisibilityFrame;
     RenderGraph::RGBuffer m_FrameVisRG{};
     RenderGraph::RGBuffer m_FrameAnyVisRG{};
     RenderGraph::RGBuffer m_FrameRuntimeVisRG{};

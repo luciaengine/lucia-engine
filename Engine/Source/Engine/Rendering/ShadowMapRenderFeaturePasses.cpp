@@ -24,6 +24,7 @@
 #include "Mathematics/Vector3.h"
 #include "Mathematics/WorldPosition.h"
 #include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/Core/GPUCulling.h"
 #include "Rendering/Core/RecomputeElision.h"
 #include "Rendering/Core/HashUtils.h"
 
@@ -615,6 +616,13 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
         m_CascadeShadowCache, cacheSlot, ctx.CascadeMaterialContentKey);
     const bool prepareRigid = IsRigidCascadeCacheEnabled() && ctx.HasPendingSkinnedInstances &&
                               !cacheIn.HasContributorDrawCommands && !rs.GetProfile().IsCompat();
+    const auto viewFit = m_ViewFits.find(viewId);
+    const auto* culling = rs.GetGPUCullingPipeline();
+    const bool currentFitCulled = !prepareRigid && !rs.GetProfile().IsCompat() &&
+        !cacheIn.HasContributorDrawCommands && ctx.DrawStreamOrdering.IsValid() &&
+        viewFit != m_ViewFits.end() && viewFit->second.ReusedCullFit &&
+        viewFit->second.CullSubmission.IsFor(frame) && culling &&
+        culling->HasScheduledCascadeCull(frame, viewId, static_cast<uint8_t>(cascadeIndex));
     if (cascadeIndex == 0)
         LogCascadeCacheStatsPeriodic(viewId, IsStaticShadowCacheEnabled(),
                                      rs.ShadowCasterContentVersion(cacheIn.WorldId), rs.DepthUnderDraw());
@@ -776,8 +784,8 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     const RenderGraph::RGPass pass = DeclareCascadeDepth(
         frame, rs, ctx, passName, shadowArr, std::move(params), load,
         restored, /*publishAfterSubmission=*/false,
-        [this, viewId, cacheSlot, cacheIn, expectedPhysical, scheduledFit, forFrame = &frame]
-        (const PreparedDepthOnlyPass&)
+        [this, viewId, cacheSlot, cacheIn, expectedPhysical, scheduledFit, currentFitCulled, forFrame = &frame]
+        (const PreparedDepthOnlyPass& depth)
         {
             // Another graph/physical may have invalidated this view since declaration.
             const auto fit = m_CascadeContentFit.find(viewId);
@@ -785,7 +793,9 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
                 GetShadowMapTexture(viewId, *forFrame) == expectedPhysical)
             {
                 fit->second[cacheSlot - CascadeShadowCache::kDepthSlotBase] = scheduledFit;
-                m_CascadeShadowCache.OnRendered(viewId, cacheSlot, cacheIn);
+                const bool completeCurrentFit = currentFitCulled &&
+                    GetPreparedDepthProducerState(depth, CascadeCasters::All).Complete;
+                m_CascadeShadowCache.OnRendered(viewId, cacheSlot, cacheIn, completeCurrentFit);
             }
         }, sharedDepth);
     if (pass.IsValid())

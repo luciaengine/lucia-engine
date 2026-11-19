@@ -194,16 +194,16 @@ CascadeCacheDirtyCause CascadeShadowCache::PeekCause(uint32_t viewId, uint32_t s
     return ResolveCause(s, in, s.UnderDrew || pendingUnderDraw);
 }
 
-void CascadeShadowCache::OnRendered(uint32_t viewId, uint32_t slot, const CascadeRenderInputs& in)
+void CascadeShadowCache::OnRendered(uint32_t viewId, uint32_t slot, const CascadeRenderInputs& in,
+                                    bool currentFitCulled)
 {
     assert(slot < kSlotsPerView);
     ViewState& view = m_Views[viewId];
     SlotState& s = view.Slots[slot];
     s.Rendered = in;
     s.HasRendered = true;
-    // The cull that fed this render consumed the PREVIOUS frame's fit; the
-    // render is a skippable baseline only if that fit equalled this one.
-    s.CullSettled = s.PrevFitEqual;
+    // Keep the consecutive-fit rule for callers without a matching draw stream.
+    s.CullSettled = currentFitCulled || s.PrevFitEqual;
     // A fresh render attempt clears the exec feedback — if it under-draws too,
     // the recorder re-marks and the next declare re-dirties.
     s.UnderDrew = false;
