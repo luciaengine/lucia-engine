@@ -539,6 +539,26 @@ class TextureService
     void InvalidateMaterialMipCoverageLocked();
     std::shared_ptr<const MaterialMipStreamSource> PrepareMaterialMipStream(const GUID& guid,
                                                                           const PreparedTextureUpload& prepared);
+    // The level source of a prepared container. Null when a file of it gives no level range.
+    std::shared_ptr<const MaterialMipStreamSource> CreateMaterialMipSource(const PreparedTextureUpload& prepared) const;
+
+    // The read of the levels that the upload of a released container needs (ReleaseLevelPixels):
+    // the tail for a new stream, all levels for a full upload. Render thread.
+    struct ReleasedUploadRead
+    {
+        std::shared_ptr<const MaterialMipStreamSource> Source;
+        std::shared_ptr<MaterialMipStreamSource::LevelRead> Read;
+        uint32_t Epoch = 0;
+        bool ForStream = false;
+    };
+    // Stages the upload of a released container from its file. Nullopt while its read is in
+    // flight: the upload stays queued. An invalid entry, with `refusal` set, when it fails.
+    // `streamSource` becomes the source that the staged levels came from.
+    std::optional<TextureGPUCache::Entry> StageReleasedUpload(
+        const GUID& guid, uint32_t epoch, const PreparedTextureUpload& prepared,
+        std::shared_ptr<const MaterialMipStreamSource>& streamSource,
+        std::vector<Rendering::StagedTextureUpload>& batch, const char*& refusal);
+    void CancelReleasedUploadRead(const GUID& guid);
     // Finishes the step in flight when its read is done, then plans the next step and starts its read.
     void AdvanceMaterialMipStreams();
     // Uploads the levels that the step read and binds them. A read that failed sets KeepsLevel.
@@ -557,6 +577,7 @@ class TextureService
         // Log the upload's timing (an assign's upload); an AssetManager load's stays quiet.
         bool LogTiming = false;
     };
+    static bool HoldsUploadOf(std::span<const PendingGpuUpload> uploads, const GUID& guid);
 
     // How a slot bind loads a texture that is not resident on the GPU.
     enum class TextureLoadRoute
@@ -774,6 +795,7 @@ class TextureService
     uint64_t m_MaterialMipBudgetBytes = 0;
     FlatMap<GUID, MaterialMipStream> m_MaterialMipStreams;
     MaterialMipStep m_MaterialMipStep;
+    FlatMap<GUID, ReleasedUploadRead> m_ReleasedUploadReads;
     // Screen coverage by GPUScene material index (UpdateMaterialMipDemand). Empty without demand data.
     std::vector<float> m_MaterialCoverage;
     bool m_MaterialMipCoverageStale = false;

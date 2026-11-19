@@ -185,9 +185,11 @@ TEST_F(TextureLevelFileTest, AReaderKeepsThePixelsThatItAcquiredWhenTheAssetRele
     asset.ReleaseLevelPixels();
     ASSERT_EQ(asset.GetPixelData(), nullptr);
     EXPECT_EQ(std::memcmp(held.get(), pixels.data(), pixels.size()), 0);
+    // The next reader shares those pixels: no file read while a reader holds them.
+    EXPECT_EQ(asset.AcquirePixels().get(), held.get());
 }
 
-TEST_F(TextureLevelFileTest, AReaderAcquiresReleasedPixelsFromTheFileAndTheAssetKeepsThem)
+TEST_F(TextureLevelFileTest, AReaderBorrowsReleasedPixelsFromTheFileAndTheAssetKeepsNone)
 {
     const fs::path path = m_Directory / "acquire.ktx2";
     ASSERT_NO_FATAL_FAILURE(WriteFile(path, CookedContainer(64)));
@@ -196,14 +198,19 @@ TEST_F(TextureLevelFileTest, AReaderAcquiresReleasedPixelsFromTheFileAndTheAsset
     const std::vector<uint8> pixels(asset.GetPixelData(), asset.GetPixelData() + asset.GetDataSize());
     asset.ReleaseLevelPixels();
 
-    const std::shared_ptr<const uint8[]> held = asset.AcquirePixels();
+    std::shared_ptr<const uint8[]> held = asset.AcquirePixels();
     ASSERT_NE(held, nullptr);
     EXPECT_EQ(std::memcmp(held.get(), pixels.data(), pixels.size()), 0);
-    // The asset has its pixels again: the next reader does not read the file.
-    EXPECT_EQ(asset.GetPixelData(), held.get());
+    EXPECT_EQ(asset.GetPixelData(), nullptr);
+    // A second reader shares the pixels of the first: it does not read the file again.
+    EXPECT_EQ(asset.AcquirePixels().get(), held.get());
+
+    // The pixels go with the last reader.
+    std::weak_ptr<const uint8[]> borrowed = held;
+    held.reset();
+    EXPECT_TRUE(borrowed.expired());
 
     // Another container replaced the file: the reader gets no pixels, not the wrong texture.
-    asset.ReleaseLevelPixels();
     ASSERT_NO_FATAL_FAILURE(WriteFile(path, CookedContainer(32)));
     EXPECT_EQ(asset.AcquirePixels(), nullptr);
 }

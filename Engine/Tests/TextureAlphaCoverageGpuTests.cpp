@@ -84,6 +84,7 @@ struct TextureCoverageUploadTestAccess
         const auto* stream = service.m_MaterialMipStreams.Find(guid);
         return !stream ? TextureHandle{} : stream->Resident.Texture;
     }
+    static void HotSwap(TextureService& service, const GUID& texture) { service.HotSwapTexture(texture); }
     static bool Uploaded(TextureService& service, const GUID& texture)
     {
         return service.m_TextureGPUCache.Contains(texture);
@@ -269,6 +270,19 @@ class TextureCoverageGPU : public testing::Test
         doc.lightingModel = "StandardPBR";
         doc.surfaceShader = "Surfaces/standard_pbr.glsl";
         return m_Materials.Register(materialGuid, doc);
+    }
+
+    // Pumps the asset manager and the upload drain until the slot of `material` has a texture.
+    TextureHandle WaitForBoundTexture(const Engine::Renderer::Material& material, StringId slot)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (!material.GetTexture(slot).IsValid() && std::chrono::steady_clock::now() < deadline)
+        {
+            EngineCore::GetInstance().GetAssetManager().Update();
+            m_Textures.FlushPendingUploads();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return material.GetTexture(slot);
     }
 
     // Puts bytes that are no texture in the file of `asset`, as a writer that replaces the file does.
@@ -628,14 +642,7 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
     m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
     auto& assets = EngineCore::GetInstance().GetAssetManager();
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    while (!material->GetTexture(slot).IsValid() && std::chrono::steady_clock::now() < deadline)
-    {
-        assets.Update();
-        m_Textures.FlushPendingUploads();
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    ASSERT_EQ(WidthOf(material->GetTexture(slot)), 256u);
+    ASSERT_EQ(WidthOf(WaitForBoundTexture(*material, slot)), 256u);
     const auto loaded = std::dynamic_pointer_cast<TextureAsset>(assets.GetAsset(texture));
     ASSERT_NE(loaded, nullptr);
     EXPECT_EQ(loaded->GetPixelData(), nullptr);
@@ -645,18 +652,127 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     const auto streamed = material->GetTexture(slot);
     EXPECT_EQ(WidthOf(streamed), 512u);
 
-    // A CPU reader of the shared asset gets the pixels again from the artifact in the cook cache.
-    const std::shared_ptr<const uint8[]> held = loaded->AcquirePixels();
-    ASSERT_NE(held, nullptr);
-    EXPECT_EQ(loaded->GetPixelData(), held.get());
+    // A CPU reader of the shared asset borrows the pixels from the artifact in the cook cache.
+    // The asset keeps none.
+    {
+        const std::shared_ptr<const uint8[]> held = loaded->AcquirePixels();
+        ASSERT_NE(held, nullptr);
+        EXPECT_EQ(loaded->GetPixelData(), nullptr);
+    }
 
-    // A direct upload of the same asset, released again, restores the pixels for its upload.
-    loaded->ReleaseLevelPixels();
+    // A direct upload of the same asset reads all levels from the artifact, and the asset stays released.
     const auto direct = WaitForUpload(texture);
     ASSERT_TRUE(direct.IsValid());
     EXPECT_NE(direct, streamed);
     EXPECT_EQ(WidthOf(direct), 512u);
-    EXPECT_NE(loaded->GetPixelData(), nullptr);
+    EXPECT_EQ(loaded->GetPixelData(), nullptr);
+    EXPECT_EQ(Render(direct, 16, 16, 0), Render(streamed, 16, 16, 0));
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, AnEvictedStreamOfAReleasedTextureStartsAgainFromItsFile)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    const GUID texture = Register(Image(false, 512), false);
+    ASSERT_FALSE(texture.IsNull());
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingEvicted");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    const auto first = WaitForBoundTexture(*material, slot);
+    ASSERT_EQ(WidthOf(first), 256u);
+    const auto loaded =
+        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->GetPixelData(), nullptr);
+
+    // The file keeps its header and its tail only: a read of the whole file fails.
+    const TextureLevelFile* file = loaded->GetLevelFile();
+    ASSERT_NE(file, nullptr);
+    constexpr uint32 kTailLevel = 1; // 256 texels a side
+    std::filesystem::resize_file(file->Path(), file->PrefixBytes(kTailLevel));
+
+    // The evict ends the stream. The asset stays loaded with no pixels: the new stream reads its
+    // tail from the file, and the asset gets no pixels back.
+    m_Textures.Evict(texture);
+    const auto second = WaitForBoundTexture(*material, slot);
+    ASSERT_EQ(WidthOf(second), 256u);
+    EXPECT_NE(second, first);
+    EXPECT_EQ(loaded->GetPixelData(), nullptr);
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, AHotSwapOfAStreamedTextureBindsTheFullTextureFromItsFile)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    const GUID texture = Register(Image(false, 512), false);
+    ASSERT_FALSE(texture.IsNull());
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingHotSwap");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    const auto streamed = WaitForBoundTexture(*material, slot);
+    ASSERT_EQ(WidthOf(streamed), 256u);
+    const auto loaded =
+        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->GetPixelData(), nullptr);
+
+    // The swap gives a result at once: it reads the released pixels again and uploads all levels.
+    Access::HotSwap(m_Textures, texture);
+    const auto swapped = material->GetTexture(slot);
+    ASSERT_TRUE(swapped.IsValid());
+    EXPECT_NE(swapped, streamed);
+    EXPECT_EQ(WidthOf(swapped), 512u);
+    EXPECT_TRUE(Access::Uploaded(m_Textures, texture));
+    EXPECT_FALSE(Access::StreamedHandle(m_Textures, texture).IsValid());
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, AnEvictDuringAStepReadDropsTheReadAndTheNextStreamSettles)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    const GUID texture = Register(Image(false, 512), false);
+    ASSERT_FALSE(texture.IsNull());
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingEvictedInAStep");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    ASSERT_EQ(WidthOf(WaitForBoundTexture(*material, slot)), 256u);
+    const auto loaded =
+        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+
+    // The flush starts the read of level 0. The evict comes before the flush that finishes it.
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    m_Textures.FlushPendingUploads();
+    ASSERT_FALSE(Access::MipStreamsSettled(m_Textures));
+    m_Textures.Evict(texture);
+    ASSERT_TRUE(WaitForBoundTexture(*material, slot).IsValid());
+    SettleMipStreams();
+    EXPECT_EQ(WidthOf(material->GetTexture(slot)), 512u);
+    EXPECT_EQ(loaded->GetPixelData(), nullptr);
 
     m_Textures.OnMaterialUnregistered(materialGuid);
     m_Materials.Unregister(materialGuid);

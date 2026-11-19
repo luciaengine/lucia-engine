@@ -212,6 +212,16 @@ std::string TextureNineSliceMetaValue(const NineSlice& slice)
     return r;
 }
 
+namespace
+{
+// A pixel buffer, not initialized. The control block is a separate allocation: the weak
+// reference that a released texture keeps (m_BorrowedPixels) does not keep the pixel memory.
+std::shared_ptr<uint8[]> AllocatePixels(uint64 bytes)
+{
+    return std::shared_ptr<uint8[]>(std::make_unique_for_overwrite<uint8[]>(static_cast<size_t>(bytes)));
+}
+} // namespace
+
 TextureAsset::TextureAsset(const GUID& guid, const std::filesystem::path& path)
     : Asset(guid, AssetType::Texture, path)
     , m_Width(0)
@@ -443,7 +453,7 @@ bool TextureAsset::DecodeBlockPayloadForCpuReaders()
         }
         total += decoded[level].size();
     }
-    m_PixelData = std::make_shared_for_overwrite<uint8[]>(total);
+    m_PixelData = AllocatePixels(total);
     m_DataSize = total;
     m_LevelFile.reset();
     m_MipChain.clear();
@@ -463,6 +473,7 @@ void TextureAsset::Unload() {
     {
         std::lock_guard<std::mutex> lock(m_PixelMutex);
         m_PixelData.reset();
+        m_BorrowedPixels.reset();
         m_LevelFile.reset();
         m_MipChain.clear();
         m_DataSize = 0;
@@ -520,6 +531,7 @@ bool TextureAsset::AdoptReloadedPayload(Asset& staged) {
         // AcquirePixels on another thread reads these together. It keeps the pixels that it got.
         std::scoped_lock lock(m_PixelMutex, other->m_PixelMutex);
         std::swap(m_PixelData, other->m_PixelData);
+        std::swap(m_BorrowedPixels, other->m_BorrowedPixels);
         std::swap(m_DataSize, other->m_DataSize);
         std::swap(m_MipChain, other->m_MipChain);
         std::swap(m_LevelFile, other->m_LevelFile);
@@ -1065,7 +1077,7 @@ bool TextureAsset::DecodeSourceFile() {
         m_Format = DetermineFormat(m_Channels, true);
         m_ColorSpace = GuessTextureColorSpace(extension);
         m_DataSize = static_cast<uint64>(decoded.Pixels.size()) * sizeof(float);
-        m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+        m_PixelData = AllocatePixels(m_DataSize);
         std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
         return true;
     }
@@ -1080,7 +1092,7 @@ bool TextureAsset::DecodeSourceFile() {
     m_Format = DetermineFormat(m_Channels, false);
     m_ColorSpace = GuessTextureColorSpace(extension);
     m_DataSize = static_cast<uint64>(decoded.Pixels.size());
-    m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+    m_PixelData = AllocatePixels(m_DataSize);
     std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
     return true;
 }
@@ -1126,7 +1138,7 @@ bool TextureAsset::DecodeSourceBytes(std::span<const uint8> data) {
         m_Format = DetermineFormat(m_Channels, true);
         m_ColorSpace = TextureColorSpace::Linear;
         m_DataSize = static_cast<uint64>(decoded.Pixels.size()) * sizeof(float);
-        m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+        m_PixelData = AllocatePixels(m_DataSize);
         std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
         return true;
     }
@@ -1173,7 +1185,7 @@ bool TextureAsset::DecodeSourceBytes(std::span<const uint8> data) {
             m_Format = DetermineFormat(m_Channels, false);
             m_ColorSpace = TextureColorSpace::SRGB;
             m_DataSize = m_Width * m_Height * m_Channels;
-            m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+            m_PixelData = AllocatePixels(m_DataSize);
             const uint8 pattern[] = { 255,0,255,255, 0,0,0,255, 0,0,0,255, 255,0,255,255 };
             std::memcpy(m_PixelData.get(), pattern, sizeof(pattern));
             return true;
@@ -1188,7 +1200,7 @@ bool TextureAsset::DecodeSourceBytes(std::span<const uint8> data) {
     m_Format = DetermineFormat(m_Channels, false);
     m_ColorSpace = GuessTextureColorSpace(extension);
     m_DataSize = static_cast<uint64>(decoded.Pixels.size());
-    m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+    m_PixelData = AllocatePixels(m_DataSize);
     std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
     return true;
 }
@@ -1437,7 +1449,7 @@ bool TextureAsset::PopulateFromKtxTexture(void* ktxTexture2Ptr, const char* sour
             std::reverse(bytes + mip.Offset, bytes + mip.Offset + mip.Size);
         m_PixelData = std::shared_ptr<uint8[]>(file->Release());
     } else {
-        m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+        m_PixelData = AllocatePixels(m_DataSize);
         for (uint32 level = 0; level < numLevels; ++level) {
             ktx_size_t levelOffset = 0;
             ktxTexture_GetImageOffset(base, level, 0, 0, &levelOffset);
@@ -1466,6 +1478,8 @@ void TextureAsset::ReleaseLevelPixels()
         return;
     {
         std::lock_guard<std::mutex> lock(m_PixelMutex);
+        if (m_PixelData)
+            m_BorrowedPixels = m_PixelData;
         m_PixelData.reset();
     }
     if (m_NormalVarianceCompanion)
@@ -1478,7 +1492,7 @@ std::shared_ptr<uint8[]> TextureAsset::ReadLevelPixels() const
     if (!m_LevelFile || !ReadFileBytesShared(m_LevelFile->Path(), file) ||
         !m_LevelFile->Matches({file.Data(), file.Size()}) || file.Size() < m_LevelFile->PrefixBytes(0))
         return nullptr;
-    auto pixels = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+    auto pixels = AllocatePixels(m_DataSize);
     const auto levels = m_LevelFile->Levels();
     for (size_t level = 0; level < m_MipChain.size(); ++level)
         std::memcpy(pixels.get() + m_MipChain[level].Offset, file.Data() + levels[level].Offset,
@@ -1486,11 +1500,33 @@ std::shared_ptr<uint8[]> TextureAsset::ReadLevelPixels() const
     return pixels;
 }
 
+std::shared_ptr<uint8[]> TextureAsset::BorrowPixelsLocked() const
+{
+    if (m_PixelData)
+        return m_PixelData;
+    std::shared_ptr<uint8[]> pixels = m_BorrowedPixels.lock();
+    if (!pixels)
+    {
+        pixels = ReadLevelPixels();
+        m_BorrowedPixels = pixels;
+    }
+    return pixels;
+}
+
 bool TextureAsset::RestoreLevelPixels()
 {
     if (m_NormalVarianceCompanion && !m_NormalVarianceCompanion->RestoreLevelPixels())
         return false;
-    return AcquirePixels() != nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_PixelMutex);
+        m_PixelData = BorrowPixelsLocked();
+        if (m_PixelData)
+            return true;
+    }
+    // No pixels for the texture: the companion does not keep the pixels that it got.
+    if (m_NormalVarianceCompanion)
+        m_NormalVarianceCompanion->ReleaseLevelPixels();
+    return false;
 }
 
 std::shared_ptr<const uint8[]> TextureAsset::AcquirePixels() const
@@ -1498,9 +1534,7 @@ std::shared_ptr<const uint8[]> TextureAsset::AcquirePixels() const
     // The file read is inside the lock: a second reader of the same asset waits for the first
     // and then takes its pixels.
     std::lock_guard<std::mutex> lock(m_PixelMutex);
-    if (!m_PixelData)
-        m_PixelData = ReadLevelPixels();
-    return m_PixelData;
+    return BorrowPixelsLocked();
 }
 
 bool TextureAsset::LoadFromSvgData(const std::string& svgText, const String& extensionLower)
