@@ -22,6 +22,10 @@
 #include <variant>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 namespace ed = GameEngine::Editor;
 namespace fs = std::filesystem;
 using GameEngine::Label;
@@ -30,6 +34,16 @@ using GameEngine::UIElement;
 
 namespace
 {
+// Root writes a file whatever its permission bits, so a read-only file refuses no write.
+bool WritesIgnorePermissionBits()
+{
+#if defined(_WIN32)
+    return false;
+#else
+    return geteuid() == 0;
+#endif
+}
+
 
 const std::string kProject = "<Project Sdk=\"Microsoft.NET.Sdk\">\n"
                              "  <Import Project=\"GameEngine.Scripts.Engine.props\" />\n"
@@ -157,6 +171,8 @@ TEST_F(ScriptPackagesSettingsPageTest, RemovalRewritesTheFile)
 
 TEST_F(ScriptPackagesSettingsPageTest, RemovalTheFileRefusesKeepsTheRow)
 {
+    if (WritesIgnorePermissionBits())
+        GTEST_SKIP() << "root writes the read-only project file";
     ed::ScriptPackagesList list(m_Project);
     fs::permissions(m_Project, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write,
                     fs::perm_options::remove);
@@ -235,6 +251,8 @@ TEST_F(ScriptPackagesSettingsPageTest, CentralVersionsGoIntoDirectoryPackagesPro
         << "other projects may share the file";
     EXPECT_NE(Status(list).find("Its version stays in " + props.string()), std::string::npos) << Status(list);
 
+    if (WritesIgnorePermissionBits())
+        GTEST_SKIP() << "root writes the read-only Directory.Packages.props";
     fs::permissions(props, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write,
                     fs::perm_options::remove);
     TypeNewPackage(list, "Newtonsoft.Json", "13.0.3");
