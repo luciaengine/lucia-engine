@@ -12,7 +12,9 @@ namespace GameEngine::Engine::Renderer
 {
 
 inline constexpr uint32_t kVirtualShadowMaxSpotProjections = 8;
-inline constexpr uint32_t kVirtualShadowPhysicalTiles = 256;
+/// Fewest and most physical pages (depth atlas layers) that one view's pool may hold.
+inline constexpr uint32_t kVirtualShadowMinPhysicalPages = 64;
+inline constexpr uint32_t kVirtualShadowMaxPhysicalPages = 4096;
 inline constexpr uint8_t kVirtualShadowCasterCullingIndex = 0xFBu;
 // The rendered pages of one frame cull into slices [base, base + kVirtualShadowPageRenderBudget).
 inline constexpr uint8_t kVirtualShadowPageCullingIndexBase =

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <set>
 #include <span>
 #include <vector>
@@ -203,23 +204,32 @@ TEST(VirtualShadowPageCacheTests, DeformedPagesStayPublishedAndTheFinestLevelRef
     EXPECT_LT(frame, 8u);
 }
 
-TEST(VirtualShadowPageCacheTests, ADeformedPageOverItsAgeLimitRefreshesBeforeFinerPages)
+TEST(VirtualShadowPageCacheTests, NoDeformedPageWaitsForeverAndNearPagesRefreshMoreOften)
 {
-    VirtualShadowPageCache cache(64);
-    auto pages = SunRow(0, kVirtualShadowDeformedRefreshBudget + 4, 0);
-    pages.push_back(SunRow(500, 1, 1).front());
+    VirtualShadowPageCache cache(256);
+    auto pages = SunRow(0, 128, 0);
+    const auto coarse = SunRow(1000, 128, 2);
+    pages.insert(pages.end(), coarse.begin(), coarse.end());
     ASSERT_EQ(RenderAll(cache, cache.Plan(pages, 1, 0)).size(), pages.size());
 
-    constexpr uint64_t kLevelOneLimit = kVirtualShadowDeformedMaxAgeFrames << 1;
-    uint64_t refreshedAt = 0;
-    for (uint64_t frame = 2; frame <= 1 + kLevelOneLimit && refreshedAt == 0; ++frame)
+    std::map<int64_t, uint64_t> lastRender;
+    std::map<int64_t, uint64_t> longestWait;
+    for (const auto& page : pages)
+        lastRender[page.X] = 1;
+    constexpr uint64_t kFrames = 400;
+    for (uint64_t frame = 2; frame <= kFrames; ++frame)
     {
         cache.MarkDeformed();
-        const auto rendered = RenderAll(cache, cache.Plan(pages, frame, frame - 1));
-        if (std::ranges::find(rendered, 500) != rendered.end())
-            refreshedAt = frame;
+        for (const int64_t x : RenderAll(cache, cache.Plan(pages, frame, frame - 1)))
+        {
+            longestWait[x] = std::max(longestWait[x], frame - lastRender[x]);
+            lastRender[x] = frame;
+        }
     }
-    EXPECT_EQ(refreshedAt, 1 + kLevelOneLimit);
+    for (const auto& [x, frame] : lastRender)
+        EXPECT_GT(frame, kFrames / 2) << "page " << x << " stopped refreshing";
+    EXPECT_LT(longestWait[0], longestWait[127]) << "the nearest fine page waits less than the farthest";
+    EXPECT_LT(longestWait[0], longestWait[1000]) << "the nearest fine page waits less than a coarse page";
 }
 
 TEST(VirtualShadowPageCacheTests, MissingPagesTakeTheRenderBudgetBeforeDeformedPages)

@@ -939,6 +939,9 @@ struct RenderingDeviceCapabilities
     // maxComputeSharedMemorySize). 0 = the backend did not report it; callers
     // gating LDS-heavy dispatches must treat 0 as unsupported (fail safe).
     uint32_t maxComputeSharedMemorySize = 0;
+    // Most layers of one 2D array texture (Vulkan maxImageArrayLayers, WebGPU maxTextureArrayLayers;
+    // 2048 on Metal and D3D12). The default is the Vulkan and WebGPU minimum.
+    uint32_t maxTextureArrayLayers = 256;
     // Largest MSAA sample count supported for color+depth render targets.
     // Engine MSAA settings clamp to this (Apple GPUs cap at 4; requesting 8
     // there fails texture creation outright).

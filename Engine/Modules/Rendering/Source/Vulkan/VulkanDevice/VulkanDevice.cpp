@@ -3616,6 +3616,7 @@ void VulkanDevice::QueryDeviceCapabilities()
         m_DeviceProperties.limits.maxPerStageDescriptorStorageBuffers;
     m_Capabilities.maxComputeWorkGroupSize = m_DeviceProperties.limits.maxComputeWorkGroupInvocations;
     m_Capabilities.maxComputeSharedMemorySize = m_DeviceProperties.limits.maxComputeSharedMemorySize;
+    m_Capabilities.maxTextureArrayLayers = m_DeviceProperties.limits.maxImageArrayLayers;
     {
         m_Capabilities.vendorId = m_DeviceProperties.vendorID;
         m_Capabilities.vendor   = ClassifyGpuVendor(m_DeviceProperties.vendorID);

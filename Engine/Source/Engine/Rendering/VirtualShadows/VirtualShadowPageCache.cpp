@@ -137,26 +137,26 @@ void VirtualShadowPageCache::RefreshDeformed(std::span<VirtualShadowPageWork> ro
     struct Candidate
     {
         VirtualShadowPageWork* Row;
-        bool Overdue;
-        uint32_t Level;
-        uint64_t Age;
+        double Staleness;
     };
     std::vector<Candidate> deformed;
-    for (auto& row : rows)
+    for (std::size_t index = 0; index < rows.size(); ++index)
     {
+        auto& row = rows[index];
         if (row.Tile == kUnmappedShadowPage || row.NeedsRender || !m_Tiles[row.Tile].Deformed)
             continue;
         // The clip level of a sun page and the mip of a local page both grow with the texel size.
         const uint32_t level = row.Page.Family == VirtualShadowLight::Directional ? row.Page.Projection : row.Page.Mip;
         const uint64_t age = frame - std::min(frame, m_Tiles[row.Tile].RenderFrame);
-        const uint64_t limit = kVirtualShadowDeformedMaxAgeFrames << std::min(level, 16u);
-        deformed.push_back({&row, age >= limit, level, age});
+        // Rows come nearest first, so a page later in the order may wait longer.
+        const double limit = static_cast<double>(kVirtualShadowDeformedMaxAgeFrames << std::min(level, 16u)) *
+                             (1.0 + static_cast<double>(index) / kVirtualShadowDeformedRefreshRowScale);
+        deformed.push_back({&row, static_cast<double>(age) / limit});
     }
     const auto count = std::min<std::size_t>(
         deformed.size(), std::min(kVirtualShadowDeformedRefreshBudget, kVirtualShadowPageRenderBudget - missing));
     std::ranges::partial_sort(deformed, deformed.begin() + static_cast<std::ptrdiff_t>(count), {},
-                              [](const Candidate& candidate)
-                              { return std::tuple{!candidate.Overdue, candidate.Level, ~candidate.Age}; });
+                              [](const Candidate& candidate) { return -candidate.Staleness; });
     for (const auto& candidate : std::span(deformed).first(count))
     {
         auto& tile = m_Tiles[candidate.Row->Tile];

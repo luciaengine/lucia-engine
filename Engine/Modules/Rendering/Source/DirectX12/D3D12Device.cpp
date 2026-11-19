@@ -407,6 +407,7 @@ void D3D12Device::QueryDeviceCapabilities()
     // Bindless/resource binding capability gating
     m_Capabilities.supportsBindlessResources = false;
     m_Capabilities.maxBindlessTextures = 0;
+    m_Capabilities.maxTextureArrayLayers = D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION;
 
     // memoryTopology is left DISENGAGED on purpose, and that is the honest
     // answer rather than a placeholder: filling it with zeroes would tell a

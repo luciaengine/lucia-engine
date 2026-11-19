@@ -225,7 +225,7 @@ class DepthPassPreparation
             const uint8_t casterSlice = m_Data.Params.VirtualCasterSlice;
             const bool pageSlice = casterSlice >= kVirtualShadowPageCullingIndexBase &&
                                    casterSlice < kVirtualShadowCasterCullingIndex;
-            if (*m_Data.Params.VirtualPageTile >= kVirtualShadowPhysicalTiles ||
+            if (*m_Data.Params.VirtualPageTile >= kVirtualShadowMaxPhysicalPages ||
                 (!pageSlice && casterSlice != kVirtualShadowCasterCullingIndex) ||
                 m_Data.Params.Casters != CascadeCasters::All ||
                 m_Data.Params.Phase != Rendering::GPUDrawStreamBuilder::SlicePhase::A ||
@@ -480,12 +480,12 @@ class DepthPassPreparation
     {
         const auto& params = m_Data.Params;
         uint64_t content = HashUtils::HashValue(submissions.MaterialContentKey, params.PassType);
-        content = HashUtils::HashValue(content, params.CascadeIndex);
+        // The page cache checks a virtual page's tile and projection, so the key of a page
+        // describes only the drawn content, the same for every page of one pass type.
         if (params.VirtualPageTile)
-        {
             content = HashUtils::HashValue(content, true);
-            content = HashUtils::HashValue(content, *params.VirtualPageTile);
-        }
+        else
+            content = HashUtils::HashValue(content, params.CascadeIndex);
         content = HashUtils::HashValue(content, params.DepthBiasEnable);
         content = HashUtils::HashValue(content, params.DepthClampEnable);
         content = HashUtils::HashValue(content, params.RasterizationSamples);
