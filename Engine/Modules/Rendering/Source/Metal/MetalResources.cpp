@@ -15,11 +15,13 @@
 #include "Rendering/ShaderCache/ShaderStageRecord.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
+#include "Types/Fnv1a.h"
 
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstring>
+#include <format>
 #include <functional>
 #include <thread>
 
@@ -48,6 +50,7 @@ NS::String* MakeNSString(const std::string& s)
 
 // Debug aids: failed MSL compiles always dump the generated source;
 // GE_METAL_DUMP_MSL=1 dumps every translation for offline inspection.
+// The file name carries the hash of the source, so each variant of a pipeline gets its own file.
 void DumpMslTo(const char* prefix, const std::string& msl, const std::string& debugName)
 {
     std::string safeName = debugName.empty() ? "unnamed" : debugName;
@@ -58,7 +61,8 @@ void DumpMslTo(const char* prefix, const std::string& msl, const std::string& de
             c = '_';
         }
     }
-    const std::string path = std::string("/tmp/") + prefix + safeName + ".metal";
+    const std::string path =
+        std::format("/tmp/{}{}_{:016x}.metal", prefix, safeName, Hashing::Fnv1a64(std::string_view(msl)));
     if (FILE* f = std::fopen(path.c_str(), "w"))
     {
         std::fwrite(msl.data(), 1, msl.size(), f);
