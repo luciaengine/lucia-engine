@@ -128,7 +128,7 @@ class DDGIResolveUpsampleComputeTest : public ::testing::Test
                                                      {true, 128}, keepSet0, &err);
         m_Pipeline = m_Device->GetOrCreateComputePipeline(m_Device->InternComputePipeline(std::move(cd)));
         ASSERT_TRUE(m_Pipeline.IsValid()) << err;
-        // The forward pass binds a linear sampler; the upsample must fetch texels and never filter.
+        // A linear sampler proves that the upsample fetches texels and never filters.
         m_Sampler = m_Device->CreateSampler(SamplerDesc::MaterialLinearClamp("DDGIResolveUpsampleTest"));
         ASSERT_TRUE(m_Sampler.IsValid());
     }
