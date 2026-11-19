@@ -44,7 +44,7 @@ void PrintTo(const ControlLayout& control, std::ostream* stream)
     *stream << control.Name;
 }
 
-const std::array<ControlLayout, 50> kControlLayouts = {{
+const std::array<ControlLayout, 51> kControlLayouts = {{
     {"ConfirmActionModal",
      "UI/controls/ConfirmActionModal/ConfirmActionModal.uxml",
      {"confirm-action-title", "confirm-action-message", "confirm-action-detail", "confirm-action-closing",
