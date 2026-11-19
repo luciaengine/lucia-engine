@@ -550,6 +550,15 @@ vec4 textureLod(GE_MaterialTexture t, vec2 uv, float lod)
 #endif
 #include GE_SURFACE_SHADER_PATH
 
+// The sun shadow of the direct light (shadow_sampling.glsl). A surface that samples it itself defines
+// GE_SURFACE_SUN_SHADOW and its own GE_SurfaceSunShadow, so the fragment samples the cascade once.
+#if defined(HAS_SHADOWS) && !defined(GE_SURFACE_SUN_SHADOW)
+float GE_SurfaceSunShadow(vec3 posRel, vec3 normalWS, float linearDepth, vec3 lightDirWS, vec2 screenPos)
+{
+    return GE_SampleShadow(posRel, normalWS, linearDepth, lightDirWS, screenPos);
+}
+#endif
+
 // A surface whose emission follows the view's exposure only partly defines
 // GE_SURFACE_EMISSIVE_EXPOSURE_WEIGHT as the expression that reads its weight, in [0, 1]. The
 // shading shape then reads the view's exposure (one frame behind the tonemap: the forward passes run
@@ -1007,7 +1016,7 @@ void main()
     #ifdef HAS_SHADOWS
         // Use view-space Z (not Euclidean distance) so cascade splits match.
         float viewZ = (Cam.uVRel * vec4(vPosRel, 1.0)).z;
-        shadowFactor = GE_SampleShadow(vPosRel, so.normalWS, viewZ, L, gl_FragCoord.xy);
+        shadowFactor = GE_SurfaceSunShadow(vPosRel, so.normalWS, viewZ, L, gl_FragCoord.xy);
         shadowTint = ge_lastShadowTint;
     #endif
     #ifdef GE_PARALLAX_MARCH

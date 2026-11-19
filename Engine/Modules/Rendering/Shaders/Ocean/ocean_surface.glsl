@@ -297,6 +297,19 @@ vec3 OceanTintPositiveHighlights(vec3 factor, vec3 tint)
     return darkening + highlight * highlightTint;
 }
 
+#ifdef HAS_SHADOWS
+// The ocean samples the sun's cascade shadow once, in EvaluateSurface, for the scatter tint. The direct
+// sun light reads the same value (GE_SurfaceSunShadow in shadow_sampling.glsl).
+#define GE_SURFACE_SUN_SHADOW
+float g_OceanSunShadow = 1.0;
+vec3 g_OceanSunShadowTint = vec3(1.0);
+float GE_SurfaceSunShadow(vec3 posRel, vec3 normalWS, float linearDepth, vec3 lightDirWS, vec2 screenPos)
+{
+    ge_lastShadowTint = g_OceanSunShadowTint;
+    return g_OceanSunShadow;
+}
+#endif
+
 SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 {
     OceanResolveSurfaceMaterial(sIn.uv0);
@@ -455,7 +468,9 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // macro normal for shadow bias so fine ripple detail cannot jitter shadows.
     float shadow = 1.0;
 #ifdef HAS_SHADOWS
-    shadow = GE_SampleShadow(sIn.positionWS, Nmacro, sIn.linearDepth, sunDir, gl_FragCoord.xy);
+    shadow = GE_SampleShadow(sIn.positionRelWS, Nmacro, sIn.linearDepth, sunDir, gl_FragCoord.xy);
+    g_OceanSunShadow = shadow;
+    g_OceanSunShadowTint = ge_lastShadowTint;
 #endif
     // Accumulated water shadows darken the shallow tint too; the engine shadow
     // alone darkens the deep scatter before the shallow mix.

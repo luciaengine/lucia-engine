@@ -1163,6 +1163,11 @@ bool GE_GetShadowDebugColor(float shadowFactor, out vec3 outColor)
     return false;
 }
 
+// The sun's cascade shadow for the direct light of the surface. The forward adapter defines it after
+// the surface include: as GE_SampleShadow, unless the surface defines GE_SURFACE_SUN_SHADOW and its own
+// GE_SurfaceSunShadow that returns the shadow it already sampled.
+float GE_SurfaceSunShadow(vec3 posRel, vec3 normalWS, float linearDepth, vec3 lightDirWS, vec2 screenPos);
+
 #else
 
 // No-op fallback when shadows are disabled.
