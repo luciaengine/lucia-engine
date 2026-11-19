@@ -1538,8 +1538,15 @@ class AssetRegistry
     // (remaps re-derive deterministically every session). A registration of
     // an aliased GUID retires its alias (RetireStaleAliasesOnRegistrationLocked):
     // the path speaks for itself again, and the alias must not resurface
-    // once that registration is gone. Guarded by m_RegistryMutex.
+    // once that registration is gone. Guarded by m_RegistryMutex; change it only through
+    // SetGuidRemapLocked, EraseGuidRemapLocked and ClearGuidRemapsLocked, which keep m_HasGuidRemaps.
     FastHashMap<GUID, GUID> m_GuidRemaps;
+    // True while m_GuidRemaps has an entry. ResolveSessionAlias reads it without the lock, so a decode
+    // worker does not wait for a writer (a source scan) in a session with no remaps.
+    std::atomic<bool> m_HasGuidRemaps{false};
+    void SetGuidRemapLocked(const GUID& from, const GUID& to);
+    void EraseGuidRemapLocked(const GUID& guid);
+    void ClearGuidRemapsLocked();
 
     // S10 atomic path→GUID claim table: pending first-registration identity
     // reservations, arbitrated under the writer lock BEFORE any store write.
