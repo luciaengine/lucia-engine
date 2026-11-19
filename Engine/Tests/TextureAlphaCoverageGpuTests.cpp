@@ -250,6 +250,34 @@ class TextureCoverageGPU : public testing::Test
         ASSERT_EQ(asset->GetMipChain().size(), 10u);
     }
 
+    // The cooked artifacts the derived cache holds for `texture`.
+    static size_t CookedArtifacts(const GUID& texture)
+    {
+        const auto root = EngineCore::GetInstance().GetAssetManager().GetRegistry().TryGetCacheRoot(texture);
+        if (!root)
+            return 0;
+        size_t count = 0;
+        std::error_code error;
+        for (const auto& entry : fs::directory_iterator(*root / "Tex", error))
+            count += entry.path().filename().string().rfind(texture.ToString(), 0) == 0 ? 1 : 0;
+        return count;
+    }
+    // Pumps the asset manager and the upload drain until GetOrUpload's load of the texture has
+    // an outcome (an upload, or a refusal cached as no texture), and returns it.
+    TextureHandle WaitForUpload(const GUID& texture)
+    {
+        using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        TextureHandle handle = m_Textures.GetOrUpload(texture);
+        while (!Access::Uploaded(m_Textures, texture) && std::chrono::steady_clock::now() < deadline)
+        {
+            EngineCore::GetInstance().GetAssetManager().Update();
+            m_Textures.FlushPendingUploads();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            handle = m_Textures.GetOrUpload(texture);
+        }
+        return handle;
+    }
     uint32 WidthOf(TextureHandle texture)
     {
         uint32 width = 0, height = 0;
@@ -335,9 +363,11 @@ TEST_F(TextureCoverageGPU, RawUploadAndWorkerCookMatchEveryTexelThroughOneByOne)
         const auto path = Image(grayAlpha);
         const GUID guid = Register(path, true);
         ASSERT_FALSE(guid.IsNull());
-        TextureAsset decoded(guid, path);
-        ASSERT_TRUE(decoded.Load());
-        ASSERT_EQ(decoded.GetChannels(), grayAlpha ? 2u : 4u);
+        auto decoded = MakeShared<TextureAsset>(guid, path);
+        ASSERT_TRUE(decoded->Load());
+        ASSERT_EQ(decoded->GetChannels(), grayAlpha ? 2u : 4u);
+        Engine::Renderer::TextureCoverageUploadTestAccess::Queue(m_Textures, guid, GUID::Generate(), decoded);
+        m_Textures.FlushPendingUploads();
         const auto raw = m_Textures.GetOrUpload(guid);
         ASSERT_TRUE(raw.IsValid());
         std::vector<std::vector<float>> rawLevels;
@@ -372,7 +402,7 @@ TEST_F(TextureCoverageGPU, RawUploadAndWorkerCookMatchEveryTexelThroughOneByOne)
             }
         }
         m_Textures.Evict(guid);
-        const auto adopted = m_Textures.GetOrUpload(guid);
+        const auto adopted = WaitForUpload(guid);
         ASSERT_TRUE(adopted.IsValid());
         for (uint32 level = 0, extent = 64; level < 7; ++level, extent = std::max(extent / 2, 1u))
             EXPECT_EQ(Render(adopted, extent, extent, float(level)), rawLevels[level]);
@@ -656,13 +686,11 @@ TEST_F(TextureCoverageGPU, AsyncPreloadMissingAssetRetiresRequestWithoutRetrySto
 }
 
 // Assigning a texture that is not loaded (the editor's texture assign, UpdateMaterialTextures)
-// never decodes it or builds its mips on the calling thread: the call returns with the binding
-// pending, an upload job prepares the texture on a worker, and FlushPendingUploads submits and
-// binds it. The upload's log line names the thread that prepared it.
-TEST_F(TextureCoverageGPU, AssigningATextureThatIsNotLoadedBindsItFromTheWorkerLoad)
+// never decodes it on the calling thread: the call returns with the binding pending, the
+// AssetManager load cooks the texture on a worker (a cold cache misses), and FlushPendingUploads
+// submits and binds the cooked artifact.
+TEST_F(TextureCoverageGPU, AssigningATextureThatIsNotLoadedCooksItOnAWorkerAndBindsIt)
 {
-    std::vector<std::string> lines;
-    TestLog::ScopedEngineLogCapture capture(&lines);
     const fs::path path = Image();
     const GUID texture = Register(path, false);
     MaterialDocument doc{};
@@ -689,50 +717,26 @@ TEST_F(TextureCoverageGPU, AssigningATextureThatIsNotLoadedBindsItFromTheWorkerL
     const Engine::Renderer::Material* bound = m_Materials.Find(material);
     ASSERT_NE(bound, nullptr);
     EXPECT_TRUE(bound->GetTexture(HashStringId("albedoMap")).IsValid());
-
-    Logger::Log::Flush();
-    const std::string name = path.filename().string();
-    const auto upload = std::find_if(lines.begin(), lines.end(), [&](const std::string& line)
-                                     { return line.find(name) != std::string::npos && line.find("[ModelLoad]") != std::string::npos; });
-    ASSERT_NE(upload, lines.end()) << "no upload line for the assigned texture";
-    EXPECT_NE(upload->find("on the worker"), std::string::npos) << *upload;
+    EXPECT_EQ(CookedArtifacts(texture), 1u) << "the assign uploaded a raw decode instead of cooking";
 }
 
-// Assigning a texture the AssetManager already holds never hands its shared instance to a worker:
-// a reload swaps that instance's payload in place on the main thread. The upload is prepared at
-// the drain, on the render thread (a cooked container costs milliseconds there).
-TEST_F(TextureCoverageGPU, AssigningATextureAlreadyLoadedPreparesItOnTheRenderThread)
+// GetOrUpload runs on the render thread and on extraction workers: a cook source it has not
+// uploaded yet comes back as no texture at once, and lands through the drain. Nothing about it
+// is decoded or mipped on the calling thread (an upload log line names that thread).
+TEST_F(TextureCoverageGPU, GetOrUploadNeverPreparesACookSourceOnTheCallingThread)
 {
     std::vector<std::string> lines;
     TestLog::ScopedEngineLogCapture capture(&lines);
     const fs::path path = Image();
     const GUID texture = Register(path, false);
-    ASSERT_NE(EngineCore::GetInstance().GetAssetManager().LoadAssetAsync(texture, AssetLoadPriority::High).get(),
-              nullptr);
-    MaterialDocument doc{};
-    doc.schemaVersion = 3;
-    doc.materialName = "TextureAssignResident";
-    doc.lightingModel = "StandardPBR";
-    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
-    const GUID material = GUID::Generate();
-    ASSERT_NE(m_Materials.Register(material, doc), nullptr);
-
-    doc.textures["albedoMap"] = texture.ToString();
-    m_Textures.UpdateMaterialTextures(material, doc);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-    while (!m_Textures.IsMaterialTextureBindingComplete(material) && std::chrono::steady_clock::now() < deadline)
-    {
-        m_Textures.FlushPendingUploads();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    ASSERT_TRUE(m_Textures.IsMaterialTextureBindingComplete(material));
-
+    EXPECT_FALSE(m_Textures.GetOrUpload(texture).IsValid()) << "the texture was loaded on the calling thread";
+    EXPECT_TRUE(WaitForUpload(texture).IsValid()) << "the texture never uploaded";
     Logger::Log::Flush();
     const std::string name = path.filename().string();
-    const auto upload = std::find_if(lines.begin(), lines.end(), [&](const std::string& line)
-                                     { return line.find(name) != std::string::npos && line.find("[ModelLoad]") != std::string::npos; });
-    ASSERT_NE(upload, lines.end()) << "no upload line for the assigned texture";
-    EXPECT_NE(upload->find("on the render thread"), std::string::npos) << *upload;
+    const auto prepared = std::find_if(lines.begin(), lines.end(), [&](const std::string& line)
+                                       { return line.find(name) != std::string::npos &&
+                                                line.find("on the render thread") != std::string::npos; });
+    EXPECT_EQ(prepared, lines.end()) << *prepared;
 }
 
 // A load result whose epoch an Evict has since moved is never published, whatever route queued it.
@@ -916,11 +920,14 @@ TEST_F(TextureCoverageGPU, InvalidMetadataCannotPublishUncorrectedRawTexture)
         Set(path, kTextureAlphaCoverageMetaKey, invalid[0]);
         Set(path, kTextureAlphaCutoffMetaKey, invalid[1]);
         Set(path, kTextureCompressionMetaKey, invalid[2]);
-        EXPECT_FALSE(m_Textures.GetOrUpload(guid).IsValid());
+        EXPECT_FALSE(WaitForUpload(guid).IsValid());
+        // The refusal is cached as no texture, so GetOrUpload does not request it every frame.
+        EXPECT_TRUE(Engine::Renderer::TextureCoverageUploadTestAccess::Uploaded(m_Textures, guid))
+            << "a texture that cannot load was not cached";
         Set(path, kTextureAlphaCoverageMetaKey, "0");
         Set(path, kTextureCompressionMetaKey, "none");
         m_Textures.Evict(guid);
-        EXPECT_TRUE(m_Textures.GetOrUpload(guid).IsValid());
+        EXPECT_TRUE(WaitForUpload(guid).IsValid());
     }
 }
 
@@ -951,8 +958,8 @@ TEST_F(TextureCoverageGPU, FullChainMaskedCardsMeasureIntegerFractionalAndPhaseC
                 ASSERT_EQ(cooked.GetMipChain().size(), 7u);
             }
         }
-        const auto ordinary = m_Textures.GetOrUpload(ordinaryGuid);
-        const auto covered = m_Textures.GetOrUpload(coveredGuid);
+        const auto ordinary = WaitForUpload(ordinaryGuid);
+        const auto covered = WaitForUpload(coveredGuid);
         ASSERT_TRUE(ordinary.IsValid());
         ASSERT_TRUE(covered.IsValid());
         const double reference = Coverage(Render(ordinary, 256, 256, 0, 1));
