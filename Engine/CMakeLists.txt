@@ -2178,6 +2178,7 @@ endif()
                 Tests/VideoPlayerTests.cpp
                 Tests/VideoFrameUploaderTests.cpp
                 Tests/TextureAssetKtx2Tests.cpp
+                Tests/TextureAssetReloadTests.cpp
                 Tests/TextureLevelFileTests.cpp
                 Tests/TextureCookTests.cpp
                 Tests/TextureCookWorkersTests.cpp

@@ -486,6 +486,11 @@ void TextureAsset::Unload() {
     Logger::Log::Debug("Unloaded texture: {}", GetName());
 }
 
+bool TextureAsset::ReloadFromData(std::span<const uint8> data) {
+    TextureAsset staged(GetGUID(), GetPath());
+    return staged.LoadFromData(data) && AdoptReloadedPayload(staged);
+}
+
 bool TextureAsset::AdoptReloadedPayload(Asset& staged) {
     auto* other = dynamic_cast<TextureAsset*>(&staged);
     if (!other || !other->IsLoaded()) {
