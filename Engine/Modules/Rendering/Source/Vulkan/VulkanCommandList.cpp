@@ -268,7 +268,6 @@ TextureViewHandle VulkanCommandList::GetOrCreateAttachmentView(TextureHandle tex
                   "TextureViewDesc changed — update AttachmentViewKey to cover the new field");
 
     AttachmentViewKey key;
-    key.Texture = texture.id;
     key.FormatOverride = desc.formatOverride;
     key.Packed = ((static_cast<uint32_t>(desc.aspect) & 0xFFu) << 24) |
                  ((static_cast<uint32_t>(desc.viewType) & 0xFFu) << 16) |
@@ -287,46 +286,46 @@ TextureViewHandle VulkanCommandList::GetOrCreateAttachmentView(TextureHandle tex
     // ground truth either way. A mismatch retires the stale view (deferred,
     // GPU-safe) and falls through to create.
     const VkImage image = m_Device->GetVkImage(texture);
-    auto it = m_AttachmentViewCache.find(key);
-    if (it != m_AttachmentViewCache.end())
+    auto& views = m_AttachmentViewCache.GetOrInsert(texture.id);
+    if (auto* entry = views.Find(key))
     {
-        if (image != VK_NULL_HANDLE && it->second.Image == image)
-            return it->second.View;
-        if (it->second.View.IsValid())
-            m_Device->DestroyTextureView(it->second.View);
-        m_AttachmentViewCache.erase(it);
+        if (image != VK_NULL_HANDLE && entry->Image == image)
+            return entry->View;
+        if (entry->View.IsValid())
+            m_Device->DestroyTextureView(entry->View);
+        views.Erase(key);
     }
 
     TextureViewHandle view = m_Device->CreateTextureView(texture, desc);
     if (view.IsValid())
-        m_AttachmentViewCache.emplace(key, AttachmentViewEntry{view, image});
+        views.InsertOrAssign(key, AttachmentViewEntry{view, image});
     return view;
 }
 
 void VulkanCommandList::ReleaseAttachmentViews(bool destroyAll)
 {
-    if (!m_Device || m_AttachmentViewCache.empty())
+    if (!m_Device || m_AttachmentViewCache.Empty())
         return;
+    m_AttachmentViewCache.EraseIf([this, destroyAll](uint64_t texture, TextureAttachmentViews& views)
+                                  { return ReleaseTextureAttachmentViews(texture, views, destroyAll); });
+}
 
-    for (auto it = m_AttachmentViewCache.begin(); it != m_AttachmentViewCache.end();)
+bool VulkanCommandList::ReleaseTextureAttachmentViews(uint64_t texture, TextureAttachmentViews& views,
+                                                      bool destroyAll)
+{
+    // Swapchain handles are synthetic (absent from the managed texture registry, so
+    // IsTextureHandleLive is false even while live); keep their views: lookups
+    // revalidate them against the current VkImage.
+    const TextureHandle handle{texture};
+    const bool live = m_Device->IsSwapchainTextureHandle(handle) || m_Device->IsTextureHandleLive(handle);
+    if (!destroyAll && live && !views.Empty())
+        return false;
+    for (const auto& [key, entry] : views)
     {
-        const TextureHandle tex{it->first.Texture};
-        // Swapchain handles are synthetic (absent from the managed texture
-        // registry, so IsTextureHandleLive is false even while live); keep their
-        // entries — lookups revalidate them against the current VkImage.
-        const bool live = m_Device->IsSwapchainTextureHandle(tex) ||
-                          m_Device->IsTextureHandleLive(tex);
-        if (destroyAll || !live)
-        {
-            if (it->second.View.IsValid())
-                m_Device->DestroyTextureView(it->second.View);
-            it = m_AttachmentViewCache.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
+        if (entry.View.IsValid())
+            m_Device->DestroyTextureView(entry.View);
     }
+    return true;
 }
 
 void VulkanCommandList::OnSubmitted(SemaphoreHandle timeline, uint64_t timelineValue)
