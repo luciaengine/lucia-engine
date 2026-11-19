@@ -66,6 +66,18 @@ TEST(TextureAssetReload, AFailedReloadInPlaceKeepsThePixels)
     EXPECT_EQ(std::memcmp(asset.GetPixelData(), pixels.data(), pixels.size()), 0);
 }
 
+TEST(TextureAssetReload, AReloadInPlaceOfATextureThatIsNotLoadedSetsItsState)
+{
+    ReloadableTexture asset(GUID::Generate(), "reload.ktx2");
+    const std::vector<uint8> notATexture{'n', 'o', 't', ' ', 'k', 't', 'x'};
+    EXPECT_FALSE(asset.ReloadFromData(notATexture));
+    EXPECT_EQ(asset.GetState(), AssetState::Failed);
+
+    ASSERT_TRUE(asset.ReloadFromData(CookedContainer(10)));
+    EXPECT_TRUE(asset.IsLoaded());
+    EXPECT_NE(asset.GetPixelData(), nullptr);
+}
+
 TEST(TextureAssetReload, AReloadInPlaceReplacesThePixels)
 {
     ReloadableTexture asset(GUID::Generate(), "reload.ktx2");
@@ -106,10 +118,12 @@ TEST(TextureAssetReload, AReaderOnAnotherThreadAlwaysGetsAWholePayloadDuringRelo
             reads.fetch_add(1);
         }
     });
+    int failedReloads = 0;
     for (int reload = 0; reload < kReloads; ++reload)
-        ASSERT_TRUE(asset.ReloadFromData(containers[reload % 2]));
+        failedReloads += asset.ReloadFromData(containers[reload % 2]) ? 0 : 1;
     done.store(true);
     reader.join();
+    EXPECT_EQ(failedReloads, 0);
     EXPECT_GT(reads.load(), 0);
     EXPECT_EQ(wrongReads.load(), 0);
 }

@@ -488,7 +488,17 @@ void TextureAsset::Unload() {
 
 bool TextureAsset::ReloadFromData(std::span<const uint8> data) {
     TextureAsset staged(GetGUID(), GetPath());
-    return staged.LoadFromData(data) && AdoptReloadedPayload(staged);
+    if (!staged.LoadFromData(data))
+    {
+        // A texture that had a payload keeps it and stays loaded.
+        if (!IsLoaded())
+            SetState(AssetState::Failed);
+        return false;
+    }
+    if (!AdoptReloadedPayload(staged))
+        return false;
+    SetState(AssetState::Loaded);
+    return true;
 }
 
 bool TextureAsset::AdoptReloadedPayload(Asset& staged) {
