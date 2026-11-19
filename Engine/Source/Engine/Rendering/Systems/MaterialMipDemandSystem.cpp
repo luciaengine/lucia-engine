@@ -1,6 +1,5 @@
 #include "ECSModules/Rendering/Systems/MaterialMipDemandSystem.h"
 
-#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/TextureService.h"
 #include "Rendering/Camera/CameraTypes.h"
@@ -8,43 +7,34 @@
 
 #include "ECS/World.h"
 
-#include <cmath>
-
 namespace GameEngine::Engine::Renderer
 {
 
 namespace
 {
-// Instance rows read per update. A sweep of 1,000,000 rows takes about 120 updates.
-constexpr uint32 kRowsPerUpdate = 8192u;
-
-// The camera's perspective Y scale, or 0 for a camera that gives no demand: an editor 2D view,
-// or a camera with no eye yet.
-float32 DemandProjScaleY(const Rendering::CameraData& camera)
-{
-    const bool orthographic2D = camera.cameraPos.w == 1.0f;
-    const bool hasEye = camera.renderOriginSector[3] != 0;
-    return orthographic2D || !hasEye ? 0.0f : std::abs(camera.proj[1][1]);
-}
+// A sweep of 1,000,000 rows takes about 120 updates. A small scene's sweep takes 30 updates, so a
+// moving camera changes the stream order about 2 times per second at 60 frames per second.
+constexpr MaterialScreenDemand::Pace kSweepPace{8192u, 30u};
 } // namespace
+
+bool MaterialMipDemandSystem::IsEnabled() const
+{
+    // The render services hold a GPUScene only while they also hold the texture service.
+    return Enabled && m_RenderServices && m_RenderServices->GetGPUScene() &&
+           m_RenderServices->Textures().StreamsMaterialMips();
+}
 
 void MaterialMipDemandSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 {
-    if (!m_RenderServices)
-        return;
-    TextureService& textures = m_RenderServices->Textures();
-    if (!textures.StreamsMaterialMips())
-        return;
-
     // One camera orders the streams: the main camera over every world. Only its world sweeps.
     const ViewRegistry& views = m_RenderServices->Views();
     const Rendering::CameraData* camera = views.FindMainCameraData(0);
     if (!camera || camera != views.FindMainCameraData(world.GetWorldId()))
         return;
 
-    const Rendering::GPUScene* scene = m_RenderServices->GetGPUScene();
-    const float32 projScaleY = DemandProjScaleY(*camera);
-    if (!scene || projScaleY <= 0.0f)
+    TextureService& textures = m_RenderServices->Textures();
+    const std::optional<MaterialScreenDemand::View> view = MaterialScreenDemand::ViewOf(*camera);
+    if (!view)
     {
         if (m_HasPublished)
         {
@@ -55,11 +45,7 @@ void MaterialMipDemandSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         return;
     }
 
-    MaterialScreenDemand::View view;
-    view.OriginSector = CameraRenderOriginSector(*camera);
-    view.Eye = CameraEyeRelativeToOrigin(*camera);
-    view.ProjScaleY = projScaleY;
-    if (m_Demand.Advance(scene->GetInstances(), view, kRowsPerUpdate))
+    if (m_Demand.Advance(m_RenderServices->GetGPUScene()->GetInstances(), *view, kSweepPace))
     {
         textures.UpdateMaterialMipDemand(m_Demand.Coverage());
         m_HasPublished = true;

@@ -73,6 +73,11 @@ struct TextureCoverageUploadTestAccess
         service.m_MaterialMipBudgetBytes = bytes;
         service.m_MaterialMipStreamsSettled = false;
     }
+    static bool MipStreamsSettled(TextureService& service)
+    {
+        std::lock_guard lock(service.m_PendingTexturesMutex);
+        return service.m_MaterialMipStreamsSettled;
+    }
     static TextureHandle StreamedHandle(TextureService& service, const GUID& guid)
     {
         std::lock_guard lock(service.m_PendingTexturesMutex);
@@ -494,6 +499,10 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
         m_Textures.FlushPendingUploads();
     EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 256u);
     EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 512u);
+    // With no change to the demand, the streams or the budget, the planner does not run again.
+    EXPECT_TRUE(Access::MipStreamsSettled(m_Textures));
+    m_Textures.FlushPendingUploads();
+    EXPECT_TRUE(Access::MipStreamsSettled(m_Textures));
 
     // The demand moves: the first texture takes the level that the second one held.
     coverage[streamed[0].MaterialIndex] = 0.9f;

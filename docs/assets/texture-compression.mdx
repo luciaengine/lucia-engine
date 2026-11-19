@@ -73,8 +73,9 @@ the texture that is the sharpest for its screen size loses detail first. When
 the budget is full, a texture gives up a mip level to a texture that needs it
 more than twice as much. A material behind the camera keeps its order, so a
 turn of the camera does not reload textures. The order follows the first Game
-view, or the first Scene View when no Game view is open. A 2D orthographic
-view gives no order, and textures then change in a fixed order.
+view, or the first Scene View when no Game view is open. In an orthographic
+view, the size on screen does not change with the distance. Before the first
+measurement, textures change in a fixed order.
 
 Normal maps stream their normal-variance companion at the matching mip offset.
 The budget counts resident streamed mip bytes for both images. Replacement images can coexist

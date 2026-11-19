@@ -2,7 +2,10 @@
 
 #include "Engine/Rendering/MaterialMipStreaming/MaterialScreenDemand.h"
 
+#include "Engine/Rendering/RenderOrigin.h"
+#include "Mathematics/MatrixOps.h"
 #include "Mathematics/WorldPosition.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/GPUScene.h"
 
 #include <gtest/gtest.h>
@@ -17,7 +20,8 @@ using GameEngine::Rendering::GPUInstance;
 namespace
 {
 
-constexpr uint32 kWholeSweep = 1u << 20;
+// Reads every row in one update and completes the sweep in it.
+constexpr MaterialScreenDemand::Pace kWholeSweep{1u << 20, 1u};
 
 GPUInstance MakeRow(uint32 materialIndex, const Mathematics::Vector3& center, float32 radius)
 {
@@ -42,6 +46,19 @@ MaterialScreenDemand::View MakeView(float32 projScaleY)
     MaterialScreenDemand::View view;
     view.ProjScaleY = projScaleY;
     return view;
+}
+
+// A camera at `eye` that looks along +Z, built as an editor builds it: the double eye through SetCameraEye.
+Rendering::CameraData CameraAt(const Mathematics::WorldPosition& eye, const Mathematics::Matrix4x4& proj)
+{
+    const Mathematics::Vector3 eyeLocal = eye - Mathematics::WorldPosition{};
+    Rendering::CameraData camera{};
+    camera.view = Mathematics::MakeLookAtLH(eyeLocal, eyeLocal + Mathematics::Vector3{0.0f, 0.0f, 1.0f},
+                                            Mathematics::Vector3{0.0f, 1.0f, 0.0f});
+    camera.proj = proj;
+    camera.viewProj = camera.proj * camera.view;
+    Engine::Renderer::SetCameraEye(camera, eye);
+    return camera;
 }
 
 } // namespace
@@ -102,11 +119,11 @@ TEST(MaterialScreenDemand, ASweepPublishesOnlyWhenItHasReadEveryRow)
         rows.push_back(MakeRow(material, {0.0f, 0.0f, 11.0f}, 1.0f));
 
     MaterialScreenDemand demand;
-    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), 2));
+    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), MaterialScreenDemand::Pace{2u, 1u}));
     EXPECT_TRUE(demand.Coverage().empty());
-    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), 2));
+    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), MaterialScreenDemand::Pace{2u, 1u}));
     EXPECT_TRUE(demand.Coverage().empty());
-    EXPECT_TRUE(demand.Advance(rows, MakeView(1.0f), 2));
+    EXPECT_TRUE(demand.Advance(rows, MakeView(1.0f), MaterialScreenDemand::Pace{2u, 1u}));
 
     ASSERT_EQ(demand.Coverage().size(), 5u);
     for (const float32 coverage : demand.Coverage())
@@ -133,10 +150,10 @@ TEST(MaterialScreenDemand, ASweepEndsWhenTheSceneTrimsRowsPastItsCursor)
     std::vector<GPUInstance> rows(6, MakeRow(0, {0.0f, 0.0f, 11.0f}, 1.0f));
 
     MaterialScreenDemand demand;
-    ASSERT_FALSE(demand.Advance(rows, MakeView(1.0f), 4));
+    ASSERT_FALSE(demand.Advance(rows, MakeView(1.0f), MaterialScreenDemand::Pace{4u, 1u}));
     rows.resize(2);
 
-    EXPECT_TRUE(demand.Advance(rows, MakeView(1.0f), 4));
+    EXPECT_TRUE(demand.Advance(rows, MakeView(1.0f), MaterialScreenDemand::Pace{4u, 1u}));
     EXPECT_FLOAT_EQ(demand.Coverage()[0], 0.1f);
 }
 
@@ -164,10 +181,98 @@ TEST(MaterialScreenDemand, ResetDropsTheTableAndTheSweepInProgress)
 
     MaterialScreenDemand demand;
     ASSERT_TRUE(demand.Advance(rows, MakeView(1.0f), kWholeSweep));
-    ASSERT_FALSE(demand.Advance(rows, MakeView(1.0f), 2));
+    ASSERT_FALSE(demand.Advance(rows, MakeView(1.0f), MaterialScreenDemand::Pace{2u, 1u}));
     demand.Reset();
 
     EXPECT_TRUE(demand.Coverage().empty());
-    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), 3));
-    EXPECT_TRUE(demand.Advance(rows, MakeView(1.0f), 3));
+    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), MaterialScreenDemand::Pace{3u, 1u}));
+    EXPECT_TRUE(demand.Advance(rows, MakeView(1.0f), MaterialScreenDemand::Pace{3u, 1u}));
+}
+
+TEST(MaterialScreenDemand, AStillViewOfAStillScenePublishesOneTime)
+{
+    const std::vector rows{MakeRow(0, {0.0f, 0.0f, 11.0f}, 1.0f)};
+
+    MaterialScreenDemand demand;
+    EXPECT_TRUE(demand.Advance(rows, MakeView(1.0f), kWholeSweep));
+    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), kWholeSweep));
+    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), kWholeSweep));
+    EXPECT_FLOAT_EQ(demand.Coverage()[0], 0.1f);
+
+    MaterialScreenDemand::View moved = MakeView(1.0f);
+    moved.Eye = {0.0f, 0.0f, 5.0f};
+    EXPECT_TRUE(demand.Advance(rows, moved, kWholeSweep));
+    EXPECT_FLOAT_EQ(demand.Coverage()[0], 0.2f);
+}
+
+TEST(MaterialScreenDemand, ASweepOfASmallSceneTakesItsMinimumUpdates)
+{
+    const std::vector rows{MakeRow(0, {0.0f, 0.0f, 11.0f}, 1.0f)};
+    constexpr MaterialScreenDemand::Pace kThreeUpdates{16u, 3u};
+
+    MaterialScreenDemand demand;
+    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), kThreeUpdates));
+    EXPECT_FALSE(demand.Advance(rows, MakeView(1.0f), kThreeUpdates));
+    EXPECT_TRUE(demand.Coverage().empty());
+    EXPECT_TRUE(demand.Advance(rows, MakeView(1.0f), kThreeUpdates));
+    EXPECT_FLOAT_EQ(demand.Coverage()[0], 0.1f);
+}
+
+TEST(MaterialScreenDemand, AnEmptySceneNeverPublishes)
+{
+    MaterialScreenDemand demand;
+    for (int update = 0; update < 4; ++update)
+        EXPECT_FALSE(demand.Advance({}, MakeView(1.0f), kWholeSweep));
+}
+
+TEST(MaterialScreenDemand, OrthographicCoverageDoesNotChangeWithDistance)
+{
+    const std::vector rows{MakeRow(0, {0.0f, 0.0f, 11.0f}, 2.0f), MakeRow(1, {0.0f, 0.0f, 1001.0f}, 2.0f)};
+    MaterialScreenDemand::View view = MakeView(0.25f);
+    view.Orthographic = true;
+
+    MaterialScreenDemand demand;
+    ASSERT_TRUE(demand.Advance(rows, view, kWholeSweep));
+
+    EXPECT_FLOAT_EQ(demand.Coverage()[0], 0.5f);
+    EXPECT_FLOAT_EQ(demand.Coverage()[1], 0.5f);
+}
+
+TEST(MaterialScreenDemand, TheViewOfACameraCarriesItsEyeAcrossSectors)
+{
+    // The eye is 5 sectors and 40 m from the world origin. The row is 100 m in front of it.
+    constexpr double kSector = Mathematics::kWorldSectorSize;
+    const Rendering::CameraData camera =
+        CameraAt(Mathematics::WorldPosition{5.0 * kSector + 40.0, 0.0, 0.0},
+                 Mathematics::MakePerspectiveLH_ZO_ReverseZ(1.0472f, 1.0f, 0.1f, 1000.0f));
+    GPUInstance row = MakeRow(0, {40.0f, 0.0f, 100.0f}, 1.0f);
+    Rendering::PackSector(5, 0, 0, row.sectorPacked[0], row.sectorPacked[1]);
+    const std::vector rows{row};
+
+    const auto view = MaterialScreenDemand::ViewOf(camera);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_FALSE(view->Orthographic);
+    MaterialScreenDemand demand;
+    ASSERT_TRUE(demand.Advance(rows, *view, kWholeSweep));
+
+    const float32 expected = std::abs(camera.proj[1][1]) / 99.0f;
+    EXPECT_NEAR(demand.Coverage()[0], expected, expected * 1.0e-3f);
+}
+
+TEST(MaterialScreenDemand, TheViewOfAnOrthographicCameraIsOrthographic)
+{
+    const Rendering::CameraData camera =
+        CameraAt(Mathematics::WorldPosition{0.0, 10.0, 0.0},
+                 Mathematics::MakeOrthographicLH_ZO_ReverseZ(-8.0f, 8.0f, -4.0f, 4.0f, 0.1f, 100.0f));
+
+    const auto view = MaterialScreenDemand::ViewOf(camera);
+
+    ASSERT_TRUE(view.has_value());
+    EXPECT_TRUE(view->Orthographic);
+    EXPECT_FLOAT_EQ(view->ProjScaleY, 0.25f);
+}
+
+TEST(MaterialScreenDemand, ACameraWithNoEyeHasNoView)
+{
+    EXPECT_FALSE(MaterialScreenDemand::ViewOf(Rendering::CameraData{}).has_value());
 }
