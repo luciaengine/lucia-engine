@@ -96,8 +96,8 @@ DescriptorSetLayoutDesc MakeCullingDescriptorSetLayout()
 GPUInstance MakeTombstoneInstance()
 {
     GPUInstance instance{};
-    instance.meshIndex = 0xFFFFFFFFu;
-    instance.materialIndex = 0xFFFFFFFFu;
+    instance.meshIndex = kTombstoneIndex;
+    instance.materialIndex = kTombstoneIndex;
     instance.boundingRadius = 0.0f;
     return instance;
 }
