@@ -212,6 +212,16 @@ std::string TextureNineSliceMetaValue(const NineSlice& slice)
     return r;
 }
 
+namespace
+{
+// A pixel buffer, not initialized. The control block is a separate allocation: the weak
+// reference that a released texture keeps (m_BorrowedPixels) does not keep the pixel memory.
+std::shared_ptr<uint8[]> AllocatePixels(uint64 bytes)
+{
+    return std::shared_ptr<uint8[]>(std::make_unique_for_overwrite<uint8[]>(static_cast<size_t>(bytes)));
+}
+} // namespace
+
 TextureAsset::TextureAsset(const GUID& guid, const std::filesystem::path& path)
     : Asset(guid, AssetType::Texture, path)
     , m_Width(0)
@@ -443,7 +453,7 @@ bool TextureAsset::DecodeBlockPayloadForCpuReaders()
         }
         total += decoded[level].size();
     }
-    m_PixelData = std::make_shared_for_overwrite<uint8[]>(total);
+    m_PixelData = AllocatePixels(total);
     m_DataSize = total;
     m_LevelFile.reset();
     m_MipChain.clear();
@@ -1067,7 +1077,7 @@ bool TextureAsset::DecodeSourceFile() {
         m_Format = DetermineFormat(m_Channels, true);
         m_ColorSpace = GuessTextureColorSpace(extension);
         m_DataSize = static_cast<uint64>(decoded.Pixels.size()) * sizeof(float);
-        m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+        m_PixelData = AllocatePixels(m_DataSize);
         std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
         return true;
     }
@@ -1082,7 +1092,7 @@ bool TextureAsset::DecodeSourceFile() {
     m_Format = DetermineFormat(m_Channels, false);
     m_ColorSpace = GuessTextureColorSpace(extension);
     m_DataSize = static_cast<uint64>(decoded.Pixels.size());
-    m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+    m_PixelData = AllocatePixels(m_DataSize);
     std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
     return true;
 }
@@ -1128,7 +1138,7 @@ bool TextureAsset::DecodeSourceBytes(std::span<const uint8> data) {
         m_Format = DetermineFormat(m_Channels, true);
         m_ColorSpace = TextureColorSpace::Linear;
         m_DataSize = static_cast<uint64>(decoded.Pixels.size()) * sizeof(float);
-        m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+        m_PixelData = AllocatePixels(m_DataSize);
         std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
         return true;
     }
@@ -1175,7 +1185,7 @@ bool TextureAsset::DecodeSourceBytes(std::span<const uint8> data) {
             m_Format = DetermineFormat(m_Channels, false);
             m_ColorSpace = TextureColorSpace::SRGB;
             m_DataSize = m_Width * m_Height * m_Channels;
-            m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+            m_PixelData = AllocatePixels(m_DataSize);
             const uint8 pattern[] = { 255,0,255,255, 0,0,0,255, 0,0,0,255, 255,0,255,255 };
             std::memcpy(m_PixelData.get(), pattern, sizeof(pattern));
             return true;
@@ -1190,7 +1200,7 @@ bool TextureAsset::DecodeSourceBytes(std::span<const uint8> data) {
     m_Format = DetermineFormat(m_Channels, false);
     m_ColorSpace = GuessTextureColorSpace(extension);
     m_DataSize = static_cast<uint64>(decoded.Pixels.size());
-    m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+    m_PixelData = AllocatePixels(m_DataSize);
     std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
     return true;
 }
@@ -1439,7 +1449,7 @@ bool TextureAsset::PopulateFromKtxTexture(void* ktxTexture2Ptr, const char* sour
             std::reverse(bytes + mip.Offset, bytes + mip.Offset + mip.Size);
         m_PixelData = std::shared_ptr<uint8[]>(file->Release());
     } else {
-        m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+        m_PixelData = AllocatePixels(m_DataSize);
         for (uint32 level = 0; level < numLevels; ++level) {
             ktx_size_t levelOffset = 0;
             ktxTexture_GetImageOffset(base, level, 0, 0, &levelOffset);
@@ -1482,7 +1492,7 @@ std::shared_ptr<uint8[]> TextureAsset::ReadLevelPixels() const
     if (!m_LevelFile || !ReadFileBytesShared(m_LevelFile->Path(), file) ||
         !m_LevelFile->Matches({file.Data(), file.Size()}) || file.Size() < m_LevelFile->PrefixBytes(0))
         return nullptr;
-    auto pixels = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+    auto pixels = AllocatePixels(m_DataSize);
     const auto levels = m_LevelFile->Levels();
     for (size_t level = 0; level < m_MipChain.size(); ++level)
         std::memcpy(pixels.get() + m_MipChain[level].Offset, file.Data() + levels[level].Offset,
