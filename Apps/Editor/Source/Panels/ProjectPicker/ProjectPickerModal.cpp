@@ -624,6 +624,19 @@ void ProjectPickerModal::BuildTree()
         return;
     }
 
+#if defined(__EMSCRIPTEN__)
+    // The shipped picker must be available even while OPFS asset identities are being reconciled.
+    // Load its fixed layout through the same editor mount as the create and import views.
+    auto layout = Editor::ControlLayoutLoader::Load("UI/controls/ProjectPicker/ProjectPicker.uxml",
+                                                    std::array<std::string_view, 1>{"modal-window"});
+    if (!layout)
+    {
+        m_TreeBuilt = false;
+        return;
+    }
+    while (!layout->GetChildren().empty())
+        AddChild(layout->TakeChild(layout->GetChildren().front().get()));
+#else
     auto& assetManager = EngineCore::GetInstance().GetAssetManager();
     const std::filesystem::path layoutAssetPath =
         std::filesystem::path("UI") / "controls" / "ProjectPicker" / "ProjectPicker.uxml";
@@ -642,6 +655,7 @@ void ProjectPickerModal::BuildTree()
         Logger::Log::Error("ProjectPicker: failed to bind UI/controls/ProjectPicker/ProjectPicker.uxml.");
         return;
     }
+#endif
 
     // The skeleton (backdrop, both windows, the hero and footer bands, the
     // library content column) comes from the layout asset; this function keeps

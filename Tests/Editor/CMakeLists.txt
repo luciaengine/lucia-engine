@@ -2523,7 +2523,7 @@ if(TARGET EditorTests)
 	ge_stage_test_asset(EditorTests
 	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/AddTagModal/AddTagModalList.uxml"
 	    "Assets/UI/controls/AddTagModal/AddTagModalList.uxml")
-	foreach(_layout IN ITEMS ProjectPickerNewProjectView ProjectPickerNewProjectGrid ProjectPickerImportView
+	foreach(_layout IN ITEMS ProjectPicker ProjectPickerNewProjectView ProjectPickerNewProjectGrid ProjectPickerImportView
 	                        ProjectPickerNewProjectActions ProjectPickerImportActions ProjectCard
 	                        RecentProjectNewCard RecentProjectOpenCard ProjectPickerRecentGrid)
 	    ge_stage_test_asset(EditorTests

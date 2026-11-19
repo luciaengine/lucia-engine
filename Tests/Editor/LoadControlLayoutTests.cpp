@@ -44,7 +44,7 @@ void PrintTo(const ControlLayout& control, std::ostream* stream)
     *stream << control.Name;
 }
 
-const std::array<ControlLayout, 50> kControlLayouts = {{
+const std::array<ControlLayout, 51> kControlLayouts = {{
     {"ConfirmActionModal",
      "UI/controls/ConfirmActionModal/ConfirmActionModal.uxml",
      {"confirm-action-title", "confirm-action-message", "confirm-action-detail", "confirm-action-closing",
@@ -140,6 +140,15 @@ const std::array<ControlLayout, 50> kControlLayouts = {{
      "UI/controls/PrefabOverridesList/PrefabOverrideRow.uxml",
      {"prefab-override-icon", "prefab-override-label", "prefab-override-pill", "prefab-override-value",
       "prefab-override-swatch", "prefab-override-apply", "prefab-override-revert", "prefab-override-discard"}},
+    {"ProjectPicker",
+     "UI/controls/ProjectPicker/ProjectPicker.uxml",
+     {"modal-backdrop", "modal-window", "modal-header", "header-engine-region", "header-version-region",
+      "modal-content", "projects-header", "modal-title", "recent-projects-scroll", "bottom-panel",
+      "browse-button", "project-logo", "button-container", "open-button", "loading-label", "modal-footer",
+      "cancel-button", "project-picker-stacked-scrim", "project-picker-stacked-window",
+      "project-picker-stacked-content", "project-picker-stacked-footer", "engine-label", "version-label",
+      "engine-logo-container", "engine-logo", "projects-title-row", "projects-header-spacer",
+      "path-container", "path-input"}},
     {"ProjectPickerNewProjectView",
      "UI/controls/ProjectPicker/ProjectPickerNewProjectView.uxml",
      {"new-project-view", "new-project-top", "new-project-title", "new-project-back", "new-project-tabs",
