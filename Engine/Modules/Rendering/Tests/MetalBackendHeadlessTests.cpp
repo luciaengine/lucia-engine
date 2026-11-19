@@ -73,6 +73,9 @@ struct MetalDeviceTestAccess
         return device.m_GraphicsCbsInFlight.load() == 0;
     }
 
+    // The frames the GPU may still run when the next frame starts: the frame permits the device holds.
+    static constexpr uint32_t FramesQueuedOnGpu() { return MetalDevice::kFramesQueuedOnGpu; }
+
     static uint32_t FramePermits(MetalDevice& device)
     {
         uint32_t count = 0;
@@ -784,14 +787,14 @@ TEST(MetalResources, FailedSubmissionCancelsDependentCopiesAndReturnsFramePermit
                                    {{gateHandle, 1}}, {{resultHandle, 1}}));
     device->FinalizeFrame();
     EXPECT_FALSE(MetalDeviceTestAccess::AllBuffersRetired(metal));
-    EXPECT_EQ(MetalDeviceTestAccess::FramePermits(metal), device->GetFramesInFlight() - 1);
+    EXPECT_EQ(MetalDeviceTestAccess::FramePermits(metal), MetalDeviceTestAccess::FramesQueuedOnGpu() - 1);
     MetalDeviceTestAccess::FailSubmission(metal);
     EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Failed);
     if (device->GetDeviceHealth() == DeviceHealth::Failed)
     {
         device->WaitForIdle();
         EXPECT_TRUE(MetalDeviceTestAccess::AllBuffersRetired(metal));
-        EXPECT_EQ(MetalDeviceTestAccess::FramePermits(metal), device->GetFramesInFlight());
+        EXPECT_EQ(MetalDeviceTestAccess::FramePermits(metal), MetalDeviceTestAccess::FramesQueuedOnGpu());
         EXPECT_EQ(*static_cast<uint32_t*>(destination->contents()), 0u);
         EXPECT_EQ(result->signaledValue(), 0u);
     }
@@ -894,6 +897,9 @@ TEST(MetalResources, RenderGraphPublishesDeclaredWorkBeforeTheUnrelatedTail)
                                        [&computeBuffer](RG::RGContext& context) {
                                            computeBuffer = MetalCommandListTestAccess::RetainBuffer(*context.Cmd);
                                        });
+        // A graphics pass beside the compute pass keeps it on the compute queue (RGGraph::PlaceQueues
+        // moves a lone compute pass to the graphics queue).
+        computeConsumer.AddPass("Shared.Beside", 0, KeepSceneWaitPass, [](RG::RGContext&) {});
         computeConsumer.Execute();
         EXPECT_NE(computeBuffer, nullptr);
         if (computeBuffer)
