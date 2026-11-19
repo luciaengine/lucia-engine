@@ -283,16 +283,10 @@ WGPUTextureSampleType SampleTypeFromBinding(const DescriptorBinding& binding)
     // Float (filterable) sample type on a multisampled layout entry.
     if (binding.imageMultisample)
         return WGPUTextureSampleType_UnfilterableFloat;
-    // Reflection records actual usage: imageFilterableFloat is true exactly
-    // when some stage samples this binding through a filtering-capable op
-    // (ImageInfo.Filtered from the SPIR-V walk). For compute the bit is
-    // authoritative — a texelFetch-only binding stays UnfilterableFloat,
-    // which also accepts depth/R32F views that Float would reject. A graphics
-    // binding with no reflected usage (a hand-synthesized layout that predates
-    // the usage walk and says nothing) keeps the permissive Float default,
-    // which matches its historical behavior.
-    constexpr uint32_t kComputeStageBit = 0x00000020; // VK_SHADER_STAGE_COMPUTE_BIT
-    if (binding.shaderStages == kComputeStageBit && !binding.imageFilterableFloat)
+    // A reflected fetch-only texture may be an unfilterable float view.
+    // Hand-authored graphics layouts keep their filterable-float default.
+    if (!binding.imageFilterableFloat &&
+        (binding.imageUsageReflected || binding.shaderStages == kShaderStageCompute))
         return WGPUTextureSampleType_UnfilterableFloat;
     return WGPUTextureSampleType_Float;
 }

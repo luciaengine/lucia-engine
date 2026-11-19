@@ -123,7 +123,7 @@ static uint32_t ImageFormatToEngineFormat(SpvImageFormat f) {
 
 // (set << 32 | binding) of the image variables the module samples. Filtered holds every image
 // sampled through a filtering-capable op (OpImageSample*, OpImageGather, OpImageDrefGather);
-// Compared holds the images sampled through a depth-compare op (OpImageSample*Dref*,
+// Compared holds images and samplers used by depth-compare ops (OpImageSample*Dref*,
 // OpImageDrefGather), which makes a separate texture2D a depth image. texelFetch (OpImageFetch)
 // marks neither. SPIRV-Reflect exposes declarations,
 // not usage, so this is a direct instruction walk: result ids are chased
@@ -166,6 +166,7 @@ static SampledBindings CollectSampledBindings(const uint32_t* words, size_t word
     };
 
     std::unordered_map<uint32_t, uint32_t> chain;      // result id -> source id
+    std::unordered_map<uint32_t, uint32_t> sampledImageSamplers;
     std::unordered_map<uint32_t, uint32_t> varSet;     // variable id -> set
     std::unordered_map<uint32_t, uint32_t> varBinding; // variable id -> binding
     std::vector<std::pair<uint32_t, bool>> sampledIds; // sampled-image operand, compared
@@ -208,7 +209,10 @@ static SampledBindings CollectSampledBindings(const uint32_t* words, size_t word
             if (len >= 4) chain[words[i + 2]] = words[i + 3];
             break;
         case kOpSampledImage:
-            if (len >= 5) chain[words[i + 2]] = words[i + 3]; // the image operand
+            if (len >= 5) {
+                chain[words[i + 2]] = words[i + 3];
+                sampledImageSamplers[words[i + 2]] = words[i + 4];
+            }
             break;
         default:
             if (isSampleOp(op) && len >= 4) sampledIds.push_back({words[i + 3], isCompareOp(op)});
@@ -233,6 +237,10 @@ static SampledBindings CollectSampledBindings(const uint32_t* words, size_t word
             if (!visited.insert(id).second) continue;
             if (const auto it = chain.find(id); it != chain.end())
                 pending.push_back(it->second);
+            if (compared) {
+                if (const auto it = sampledImageSamplers.find(id); it != sampledImageSamplers.end())
+                    pending.push_back(it->second);
+            }
             if (const auto it = parameterArguments.find(id); it != parameterArguments.end())
                 pending.insert(pending.end(), it->second.begin(), it->second.end());
             const auto setIt = varSet.find(id);

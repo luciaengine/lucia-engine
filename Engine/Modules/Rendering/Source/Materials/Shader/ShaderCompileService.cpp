@@ -18,14 +18,49 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <deque>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string_view>
 #include <unordered_set>
 
 #if defined(RENDERING_HAS_SHADERC) && RENDERING_HAS_SHADERC
 #include <shaderc/shaderc.hpp>
+#endif
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#include <nlohmann/json.hpp>
+#include <cstdlib>
+#endif
+
+#if defined(__EMSCRIPTEN__)
+EM_JS_DEPS(WebShaderCompiler, "$UTF8ToString,$stringToNewUTF8");
+EM_JS(int, BrowserShaderCompilerAvailable, (), {
+    return typeof installGeEditorShaderCompiler === 'function';
+});
+EM_JS(char*, BrowserPrepareShaderCompiler,
+      (const uint8_t* glslc, size_t glslcSize, const uint8_t* optimizer, size_t optimizerSize,
+       const uint8_t* naga, size_t nagaSize), {
+    try {
+        installGeEditorShaderCompiler(Module);
+        Module.prepareShaderCompiler(HEAPU8.slice(glslc, glslc + glslcSize),
+            HEAPU8.slice(optimizer, optimizer + optimizerSize), HEAPU8.subarray(naga, naga + nagaSize));
+        return 0;
+    } catch (error) {
+        return stringToNewUTF8(String(error));
+    }
+});
+EM_JS(char*, BrowserCompileShaderStage, (const char* request), {
+    try {
+        const result = Module.compileShaderStage(JSON.parse(UTF8ToString(request)));
+        return stringToNewUTF8(JSON.stringify(result));
+    } catch (error) {
+        return stringToNewUTF8(JSON.stringify({error: String(error)}));
+    }
+});
 #endif
 
 namespace GameEngine { namespace Rendering {
@@ -36,7 +71,7 @@ static std::atomic<uint64_t> g_TotalCompilations{0};
 // never turn it on; a build that has shaderc may turn it OFF to run exactly as
 // a cook-only runtime does (see SetCompilerAvailable).
 static std::atomic<bool> g_CompilerAvailable{
-#if defined(RENDERING_HAS_SHADERC) && RENDERING_HAS_SHADERC
+#if defined(__EMSCRIPTEN__) || (defined(RENDERING_HAS_SHADERC) && RENDERING_HAS_SHADERC)
     true
 #else
     false
@@ -46,12 +81,16 @@ static std::atomic<bool> g_CompilerAvailable{
 
 bool ShaderCompileService::IsCompilerAvailable()
 {
+#if defined(__EMSCRIPTEN__)
+    return g_CompilerAvailable.load(std::memory_order_relaxed) && BrowserShaderCompilerAvailable();
+#else
     return g_CompilerAvailable.load(std::memory_order_relaxed);
+#endif
 }
 
 void ShaderCompileService::SetCompilerAvailable(bool available)
 {
-#if defined(RENDERING_HAS_SHADERC) && RENDERING_HAS_SHADERC
+#if defined(__EMSCRIPTEN__) || (defined(RENDERING_HAS_SHADERC) && RENDERING_HAS_SHADERC)
     g_CompilerAvailable.store(available, std::memory_order_relaxed);
 #else
     (void)available;
@@ -75,10 +114,10 @@ std::string_view ShaderCompileService::CacheKeyTarget()
     // inputs cannot see (the key format, the embedded compiler, the reflection walker's output), so
     // it is bumped whenever any of those changes, and the entries an older engine wrote are
     // orphaned rather than migrated: never addressed again.
-    // v8: reflection preserves unsigned sampled-image types for WebGPU layouts.
+    // v9: reflection preserves standalone comparison samplers for WebGPU layouts.
     return MaxSupportedSpirv() == SpirvTarget::Spirv_1_6
-        ? "ShaderCompileServiceTarget:v8:backend-max=spv1.6;mesh-floor=spv1.6"
-        : "ShaderCompileServiceTarget:v8:backend-max=spv1.5;mesh-floor=spv1.6";
+        ? "ShaderCompileServiceTarget:v9:backend-max=spv1.6;mesh-floor=spv1.6"
+        : "ShaderCompileServiceTarget:v9:backend-max=spv1.5;mesh-floor=spv1.6";
 }
 
 namespace {
@@ -146,6 +185,124 @@ static bool MapStage(const std::string& stageLower, ShaderStageKind& outStage, s
     outErr = "Unsupported stage key: " + stageLower;
     return false;
 }
+
+#if defined(__EMSCRIPTEN__)
+std::string BrowserShaderPath(const std::filesystem::path& path)
+{
+    if (path.empty())
+        return {};
+    return std::filesystem::absolute(path).lexically_normal().relative_path().generic_string();
+}
+
+bool PrepareBrowserShaderCompiler(std::string& diagnostics)
+{
+    thread_local bool prepared = false;
+    if (prepared)
+        return true;
+
+    auto readTool = [](const char* path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        return std::vector<uint8_t>(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    };
+    const auto glslc = readTool("/WebShaderCompiler/glslc.wasm");
+    const auto optimizer = readTool("/WebShaderCompiler/spirv-opt.wasm");
+    const auto naga = readTool("/WebShaderCompiler/naga-browser.wasm");
+    if (glslc.empty() || optimizer.empty() || naga.empty())
+    {
+        diagnostics = "The browser shader compiler assets could not be read.";
+        return false;
+    }
+    const std::unique_ptr<char, decltype(&std::free)> error(
+        BrowserPrepareShaderCompiler(glslc.data(), glslc.size(), optimizer.data(), optimizer.size(),
+                                     naga.data(), naga.size()), &std::free);
+    if (error)
+    {
+        diagnostics = error.get();
+        return false;
+    }
+    prepared = true;
+    return true;
+}
+
+bool CompileBrowserStage(const ShaderStageCompileSpec& stage,
+                         const ShaderProgramCompileRequest& request,
+                         const std::vector<std::string>& includePaths,
+                         std::vector<uint32_t>& words,
+                         std::vector<uint8_t>& wgsl,
+                         std::string& diagnostics)
+{
+    using nlohmann::json;
+    const auto path = stage.sourcePath.is_absolute() ? stage.sourcePath : request.baseDirectory / stage.sourcePath;
+    if (!IsGlslPath(path) || (!stage.entryPoint.empty() && stage.entryPoint != "main"))
+    {
+        diagnostics = "The browser shader compiler requires GLSL with a main entry point.";
+        return false;
+    }
+    const std::string stageKey = ToLowerAscii(stage.stage);
+    const char* toolStage = stageKey == "vs" ? "vert" : stageKey == "fs" ? "frag" : stageKey == "cs" ? "comp" : nullptr;
+    if (!toolStage)
+    {
+        diagnostics = "The browser shader compiler supports vertex, fragment, and compute stages.";
+        return false;
+    }
+
+    std::string source;
+    if (!ResolveStageSource(stage, path, source, &diagnostics))
+        return false;
+
+    const std::string sourceName = BrowserShaderPath(path);
+    json sources = json::object();
+    for (const auto& includePath : includePaths)
+    {
+        const auto include = ShaderSourceCache::Get().Read(includePath, ShaderSourceCache::NormalizedKey(includePath));
+        if (include)
+            sources[BrowserShaderPath(includePath)] = include->Bytes;
+    }
+    sources[sourceName] = std::move(source);
+
+    std::vector<std::string> includeDirectories;
+    includeDirectories.reserve(request.includeDirs.size() + 1);
+    for (const auto& directory : request.includeDirs)
+    {
+        auto relative = BrowserShaderPath(directory);
+        includeDirectories.push_back(relative.empty() ? "." : std::move(relative));
+    }
+    auto sourceDirectory = BrowserShaderPath(path.parent_path());
+    includeDirectories.push_back(sourceDirectory.empty() ? "." : std::move(sourceDirectory));
+
+    const char* reflectionTarget = request.Target.Spirv == SpirvTarget::Spirv_1_3 ? "vulkan1.1" :
+                                   request.Target.Spirv == SpirvTarget::Spirv_1_6 ? "vulkan1.3" : "vulkan1.2";
+    if (!PrepareBrowserShaderCompiler(diagnostics))
+        return false;
+    const std::string input = json{
+        {"sourceName", sourceName}, {"stage", toolStage}, {"sources", std::move(sources)},
+        {"includeDirectories", includeDirectories}, {"defines", stage.defines},
+        {"reflectionTarget", reflectionTarget},
+    }.dump();
+    const std::unique_ptr<char, decltype(&std::free)> reply(BrowserCompileShaderStage(input.c_str()), &std::free);
+    if (!reply)
+    {
+        diagnostics = "The browser shader compiler returned no response.";
+        return false;
+    }
+    const auto result = json::parse(reply.get(), nullptr, false);
+    if (result.is_object() && result.contains("error"))
+    {
+        diagnostics = result.at("error").get<std::string>();
+        return false;
+    }
+    if (!result.is_object() || !result.contains("words") || !result.contains("wgsl"))
+    {
+        diagnostics = "The browser shader compiler returned an invalid response.";
+        return false;
+    }
+    words = result.at("words").get<std::vector<uint32_t>>();
+    const auto& text = result.at("wgsl").get_ref<const std::string&>();
+    wgsl.assign(text.begin(), text.end());
+    return true;
+}
+#endif
 
 #if defined(RENDERING_HAS_SHADERC) && RENDERING_HAS_SHADERC
 
@@ -580,13 +737,13 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
     // the key format, the embedded compiler, the reflection walker's output —
     // so it is bumped whenever any of those changes, and the entries an older
     // engine wrote are orphaned rather than migrated: never addressed again.
-    // v8: reflection preserves unsigned sampled-image types for WebGPU layouts.
+    // v9: reflection preserves standalone comparison samplers for WebGPU layouts.
     h = HashShaderString(h, std::to_string(req.Target.Hash()));
     h = HashShaderString(h, req.Target.Spirv == SpirvTarget::Spirv_1_6
-            ? "ShaderCompileServiceTarget:v8:backend-max=spv1.6;mesh-floor=spv1.6"
+            ? "ShaderCompileServiceTarget:v9:backend-max=spv1.6;mesh-floor=spv1.6"
             : req.Target.Spirv == SpirvTarget::Spirv_1_3
-                ? "ShaderCompileServiceTarget:v8:backend-max=spv1.3;mesh-floor=spv1.6"
-                : "ShaderCompileServiceTarget:v8:backend-max=spv1.5;mesh-floor=spv1.6");
+                ? "ShaderCompileServiceTarget:v9:backend-max=spv1.3;mesh-floor=spv1.6"
+                : "ShaderCompileServiceTarget:v9:backend-max=spv1.5;mesh-floor=spv1.6");
     // Accumulated across stages: vs and fs of one material share most of their
     // include closure, so a file already folded by an earlier stage need not be
     // read again — the key covers it either way.
@@ -704,11 +861,9 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
         return false;
     }
 
-#if defined(RENDERING_HAS_SHADERC) && RENDERING_HAS_SHADERC
-    // Compile all stages. The compiler emits SPIR-V and nothing else, so this
-    // arm ignores `kind`: the package it writes carries SPIR-V chunks only, and
-    // a Wgsl-kind caller that lands here has an un-cooked program.
+#if defined(__EMSCRIPTEN__) || (defined(RENDERING_HAS_SHADERC) && RENDERING_HAS_SHADERC)
     std::unordered_map<std::string, std::vector<uint8_t>> spvBytes;
+    std::unordered_map<std::string, std::vector<uint8_t>> wgslBytes;
     std::vector<StageReflectionResult> reflectedStages;
     reflectedStages.reserve(req.stages.size());
     std::unordered_map<std::string, uint64_t> includeHashes;
@@ -726,7 +881,11 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
 
         std::vector<uint32_t> words;
         std::string diag;
+#if defined(__EMSCRIPTEN__)
+        if (!CompileBrowserStage(stageSpec, req, out.includeClosurePaths, words, wgslBytes[stageKey], diag))
+#else
         if (!CompileOneStage(stageSpec, req, stageKind, words, diag, &includeHashes))
+#endif
         {
             setErr("Compile failed (" + stageKey + "):\n" + diag);
             return false;
@@ -829,13 +988,13 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
         std::error_code ec;
         std::filesystem::create_directories(out.outputDir, ec);
         std::string saveErr;
-        if (!SaveShaderPkg(out.shaderPkgPath, out.meta, spvBytes, out.cacheInfoJson, &saveErr))
+        if (!SaveShaderPkg(out.shaderPkgPath, out.meta, spvBytes, out.cacheInfoJson, &saveErr, wgslBytes))
         {
             setErr(saveErr.empty() ? "Failed to save .shaderpkg" : saveErr);
             return false;
         }
     }
-    out.stageBytes = std::move(spvBytes);
+    out.stageBytes = kind == ShaderSourceKind::Wgsl && !wgslBytes.empty() ? std::move(wgslBytes) : std::move(spvBytes);
 
     g_TotalCompilations.fetch_add(1, std::memory_order_relaxed);
     return true;

@@ -18,12 +18,8 @@ layout(set = 0, binding = 27) uniform texture2D ge_gtaoTex;
 
 void GE_ApplyGTAO(inout SurfaceOutput so, vec2 screenUV)
 {
-#if defined(GE_FORWARD_EARLY_ALPHA_TEST)
-    // The screen-space AO result has one level.
+    // The screen-space AO result has one level and may be sampled after divergent lighting.
     vec4 g = textureLod(ge_gtao, screenUV, 0.0);
-#else
-    vec4 g = texture(ge_gtao, screenUV);
-#endif
     // Combine with any material (ORM) AO the surface already wrote.
     so.ao = min(so.ao, g.a);
     // Real bent normals are unit length; the zero sentinel means "no GTAO here".

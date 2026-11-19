@@ -42,14 +42,14 @@ void ApplySetMetaImageShapeToLayout(const DescriptorSetMeta& setMeta, Descriptor
             // and Dawn rejects the entry point against the layout.
             binding.imageDim = bm.Image->Cube ? 4u : bm.Image->Dim;
             binding.imageArrayed = bm.Image->Arrayed;
-            binding.imageIsDepth = bm.Image->Depth;
+            // An unused shared GLSL sampler has no SPIR-V comparison operation to reflect.
+            // The world pass still binds the engine's comparison sampler to this slot.
+            binding.imageIsDepth = bm.Image->Depth ||
+                (binding.type == DescriptorType::Sampler && bm.Name == "ge_shadowCompareSampler");
             binding.imageIsUnsignedInteger = bm.Image->UnsignedInteger;
             binding.imageMultisample = bm.Image->Multisample;
-            // Usage, not format: reflection sets Filtered when a stage samples
-            // this binding through a filtering-capable op. A compute layout
-            // that leaves it unset declares UnfilterableFloat, which rejects a
-            // filtering sampler.
             binding.imageFilterableFloat = bm.Image->Filtered;
+            binding.imageUsageReflected = true;
             if (binding.type == DescriptorType::StorageImage)
             {
                 binding.storageTexelFormat = bm.Image->Format;

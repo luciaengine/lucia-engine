@@ -586,10 +586,13 @@ def CookStageShaders(shaderSourceDir: Path, outDir: Path, validate: bool = True,
                 # kSharedShaderRoots for the cross-module bare-name includes the runtime
                 # passes explicitly (grass placement includes CBT's cbt_atlas.glsl so the
                 # blades resolve the atlas exactly as the surface does).
+                # Naga misreads a dominating expression in the optimized grass
+                # planner SPIR-V. Its unoptimized input preserves the source scope.
                 shadercook.CookFile(source, stage, glslc, naga, tint, validate,
                                     kWebDefines + extraDefines,
                                     [shaderSourceDir, source.parent] + kSharedShaderRoots,
-                                    cooked, scratch)
+                                    cooked, scratch,
+                                    optimize_spirv=name != "TerrainGrass/terrain_grass_plan.comp")
                 # A name may carry a subdirectory (CBT/…), mirroring the staged layout the
                 # runtime probes.
                 target = outDir / f"{name}.wgsl"
