@@ -14123,7 +14123,8 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
     upload.DeclareForView(uploadDeclaration);
     frame.Execute();
     fixture.Device->WaitForIdle();
-    ASSERT_TRUE(publication.CacheTexture().IsValid());
+    // The cache is cleared and submitted; readers see it from the next latch on.
+    ASSERT_TRUE(publication.GetReadiness().CacheReady);
     fixture.Rs->BeginWorldDrawFrame();
     fixture.Rs->BuildWorldBatchKeys();
     UploadCbtTerrainParams(terrain, 1);
