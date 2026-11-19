@@ -64,6 +64,7 @@
 #include "Core/CpuProfiler.h"
 #include "Editor/Shortcuts/DiagnosticShortcuts.h"
 #include "Core/Engine.h"
+#include "Engine/Build/GameConfig.h"
 #include "Core/Time.h"
 #include "Core/WindowInputRouter.h"
 // A2.4-P0-R: full JobSystem headers to build the RGFrame fork-join primitive
@@ -1937,6 +1938,29 @@ void EditorApplication::BeginMainWindowAndDevice(JobSystem::JobChannel& startupC
     m_StartupMainWindow = std::move(mainCtx);
 }
 
+namespace
+{
+std::filesystem::path ResolveProjectRenderPipeline(const std::filesystem::path& projectRoot)
+{
+    auto pipeline = Editor::LoadActiveRenderPipelinePathFromProjectSettings(projectRoot);
+#if defined(__EMSCRIPTEN__)
+    std::error_code error;
+    const auto configPath = projectRoot / "game.config";
+    if (pipeline.empty() && std::filesystem::is_regular_file(configPath, error))
+    {
+        const auto configuredPath = std::filesystem::path(LoadGameConfig(configPath).renderPipeline);
+        if (configuredPath.is_relative() && configuredPath.extension() == ".rendergraph")
+        {
+            bool wasMigrated = false;
+            pipeline = Editor::NormalizeConfiguredRenderPipelinePath(
+                configuredPath, EngineCore::GetInstance().GetAssetManager(), wasMigrated);
+        }
+    }
+#endif
+    return pipeline;
+}
+} // namespace
+
 bool EditorApplication::Initialize()
 {
     const auto tEditorStart = std::chrono::high_resolution_clock::now();
@@ -2603,7 +2627,7 @@ bool EditorApplication::Initialize()
         {
             const auto& wsRoot = engine.GetWorkspaceRoot();
             Logger::Log::Info("Editor: loading render pipeline settings (workspace root: '{}')", wsRoot.string());
-            const std::filesystem::path pipelinePath = Editor::LoadActiveRenderPipelinePathFromProjectSettings(wsRoot);
+            const std::filesystem::path pipelinePath = ResolveProjectRenderPipeline(wsRoot);
             Editor::ApplyProjectRenderSettings(*rs, wsRoot);
             if (!pipelinePath.empty())
             {
@@ -5349,7 +5373,7 @@ void EditorApplication::FinishProjectFolderSwitch(const ProjectSwitch& pending)
         // were populated during initial startup.
         Engine::Renderer::PrimitiveGenerator::RegisterAll(*rs);
 
-        const std::filesystem::path pipelinePath = Editor::LoadActiveRenderPipelinePathFromProjectSettings(projectPath);
+        const std::filesystem::path pipelinePath = ResolveProjectRenderPipeline(projectPath);
         if (!pipelinePath.empty())
         {
             Logger::Log::Info("Editor: loaded active render pipeline from project settings after switch: {}",
