@@ -1665,6 +1665,70 @@ TEST(MetalSpirvPipeline, IndirectCountSamplesCopiedHdrTextureAndHonorsCount)
     }
 }
 
+namespace
+{
+// Whether Metal built the pipeline for indirect command buffers.
+bool PipelineSupportsIndirectCommandBuffers(IDevice& device, bool fragmentSamplesTexture)
+{
+    static const char* kVert = R"(
+#version 450
+void main()
+{
+    vec2 p = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)";
+    static const char* kPlainFrag = R"(
+#version 450
+layout(location = 0) out vec4 outColor;
+layout(set = 0, binding = 1) uniform Tint { vec4 tint; } uTint;
+void main() { outColor = uTint.tint; }
+)";
+    static const char* kTexturedFrag = R"(
+#version 450
+layout(location = 0) out vec4 outColor;
+layout(set = 0, binding = 0) uniform sampler2D uTex;
+layout(set = 0, binding = 1) uniform Tint { vec4 tint; } uTint;
+void main() { outColor = texture(uTex, gl_FragCoord.xy) * uTint.tint; }
+)";
+    DescriptorSetLayoutDesc layout{};
+    if (fragmentSamplesTexture)
+        layout.bindings.push_back({0, DescriptorType::CombinedImageSampler, 1, kShaderStageFragment});
+    layout.bindings.push_back({1, DescriptorType::UniformBuffer, 1, kShaderStageFragment});
+    PipelineDesc desc{};
+    desc.type = PipelineType::Graphics;
+    desc.vertexShader = CompileGlsl(kVert, shaderc_vertex_shader, "icb.vert");
+    desc.pixelShader = CompileGlsl(fragmentSamplesTexture ? kTexturedFrag : kPlainFrag, shaderc_fragment_shader,
+                                   "icb.frag");
+    desc.descriptorSetLayouts = {layout};
+    desc.colorAttachmentFormats = {static_cast<uint32_t>(TextureFormat::BGRA8_UNORM)};
+    desc.depthStencilState.depthTestEnable = false;
+    desc.debugName = "MetalIcbSupport";
+    const PipelineHandle pipeline = device.CreatePipeline(desc);
+    EXPECT_TRUE(pipeline.IsValid());
+    const MetalPipeline* metal = static_cast<MetalDevice&>(device).GetMetalPipeline(pipeline);
+    const bool supports = metal != nullptr && metal->renderPipeline != nullptr &&
+                          metal->renderPipeline->supportIndirectCommandBuffers();
+    device.DestroyPipeline(pipeline);
+    return supports;
+}
+} // namespace
+
+// A pipeline whose fragment stage samples textures draws counted draws natively, so Metal builds it
+// without indirect command buffer support: the GPU compiler fails on large fragment stages built for
+// them (the ocean surface). A pipeline with no fragment texture keeps the support its ICB draws need.
+TEST(MetalSpirvPipeline, OnlyPipelinesThatRunInIndirectCommandBuffersSupportThem)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+        GTEST_SKIP() << "Metal backend unavailable";
+    const auto& caps = device->GetCapabilities();
+    EXPECT_FALSE(PipelineSupportsIndirectCommandBuffers(*device, true));
+    EXPECT_EQ(PipelineSupportsIndirectCommandBuffers(*device, false),
+              caps.supportsDrawIndirectCountNative && caps.supportsBindlessResources);
+    device->Shutdown();
+}
+
 TEST(MetalSpirvPipeline, CompatibilityDirectBindingsSampleTextureAndUniformBuffer)
 {
     ScopedMetalCompatibility compatibility;
