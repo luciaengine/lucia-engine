@@ -432,9 +432,9 @@ static bool OpenAndCloseStyledPanel(UIManager& ui, const UIStyleAsset& style)
 }
 
 // A panel that attaches a stylesheet and closes leaves a binding holding its
-// snapshots. With no style event to release them, the next registration does,
-// so a session that only opens and closes panels holds a bounded number of
-// snapshots instead of one more per panel.
+// snapshots. With no style event, the first update after the next registration
+// releases them. A session that only opens and closes panels holds a bounded
+// number of snapshots, not one more for each panel.
 TEST(UIHotReloadTests, ClosedPanelsDoNotAccumulateStylesheetSnapshotsWithoutStyleEvents)
 {
     TemporaryStyleDirectory directory;
