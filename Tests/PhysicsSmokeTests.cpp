@@ -1341,6 +1341,13 @@ TEST(Physics, InterpolatedWritebackSkipsOnlyWhenBothPosesEqualTheLastApplied)
     EXPECT_EQ(PhysicsWorldService::GetLastBodiesComposed(), 0u);
 }
 
+static void CopyTransformPoseToWorld(const GameEngine::Components::Transform& transform,
+                                     GameEngine::Components::WorldTransform& worldTransform)
+{
+    worldTransform.Position = transform.Position;
+    worldTransform.Basis = transform.Basis;
+}
+
 // A kinematic body follows its entity: the step moves the body to the WorldTransform and the writeback
 // leaves the Transform where the game put it. A dynamic body keeps the body's pose.
 TEST(Physics, KinematicBodyFollowsItsTransformAndADynamicBodyKeepsTheBodyPose)
@@ -1368,8 +1375,7 @@ TEST(Physics, KinematicBodyFollowsItsTransformAndADynamicBodyKeepsTheBodyPose)
     {
         auto* transform = world.GetComponentForWrite<Transform>(e);
         transform->Position = GameEngine::Mathematics::WorldPosition::FromVector3(moved);
-        std::memcpy(world.GetComponentForWrite<WorldTransform>(e), transform,
-                    GameEngine::Components::kTransformPoseBytes);
+        CopyTransformPoseToWorld(*transform, *world.GetComponentForWrite<WorldTransform>(e));
     }
 
     GameEngine::PhysicsECS::PhysicsStepSystem step;
@@ -1433,7 +1439,7 @@ static GameEngine::ECS::EntityHandle AddBoxBody(GameEngine::ECS::World& world,
         e, Transform::FromTRS(GameEngine::Mathematics::WorldPosition::FromVector3(position), Quaternion::Identity(),
                               Vector3(1.0f, 1.0f, 1.0f)));
     WorldTransform wt{};
-    std::memcpy(&wt, world.GetComponent<Transform>(e), GameEngine::Components::kTransformPoseBytes);
+    CopyTransformPoseToWorld(*world.GetComponent<Transform>(e), wt);
     world.AddComponentImmediate<WorldTransform>(e, wt);
     world.AddComponentImmediate<PhysicsBody>(e, pb);
     if (motionType == MotionType::Kinematic)
@@ -1445,8 +1451,8 @@ static void SetTransformHeight(GameEngine::ECS::World& world, GameEngine::ECS::E
 {
     auto* transform = world.GetComponentForWrite<GameEngine::Components::Transform>(e);
     transform->Position.Y = y;
-    std::memcpy(world.GetComponentForWrite<GameEngine::Components::WorldTransform>(e), transform,
-                GameEngine::Components::kTransformPoseBytes);
+    auto* worldTransform = world.GetComponentForWrite<GameEngine::Components::WorldTransform>(e);
+    CopyTransformPoseToWorld(*transform, *worldTransform);
 }
 
 // A kinematic platform that the game raises through its Transform moves with a velocity, so a dynamic box
@@ -1741,7 +1747,7 @@ TEST(Physics, KinematicBodyThatStopsIsPlacedOnItsPoseAndLeftAlone)
         *transform = Transform::FromTRS(
             GameEngine::Mathematics::WorldPosition::FromVector3(start + Vector3(0.1f * frame, 0.0f, 0.0f)),
             Quaternion::FromAxisAngle(Vector3(0.0f, 1.0f, 0.0f), 0.05f * frame), Vector3(1.0f, 1.0f, 1.0f));
-        std::memcpy(world.GetComponentForWrite<WorldTransform>(e), transform, GameEngine::Components::kTransformPoseBytes);
+        CopyTransformPoseToWorld(*transform, *world.GetComponentForWrite<WorldTransform>(e));
         runFrame();
     }
     EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 1u);
