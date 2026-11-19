@@ -225,7 +225,7 @@ void BindIblResources(Engine::Renderer::RenderServices& rs,
         if (const auto irradiance = ibl.GetIrradianceCube(); irradiance.IsValid())
         {
             Engine::Renderer::DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("ge_irradianceCube");
+            tex.Name = HashStringId("ge_irradianceCubeTex");
             tex.Texture = irradiance;
             tex.Sampler = cubeSampler;
             textures.push_back(tex);
@@ -233,7 +233,7 @@ void BindIblResources(Engine::Renderer::RenderServices& rs,
         if (const auto prefilter = ibl.GetPrefilterCube(); prefilter.IsValid())
         {
             Engine::Renderer::DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("ge_prefilterCube");
+            tex.Name = HashStringId("ge_prefilterCubeTex");
             tex.Texture = prefilter;
             tex.Sampler = cubeSampler;
             textures.push_back(tex);
@@ -244,7 +244,7 @@ void BindIblResources(Engine::Renderer::RenderServices& rs,
         if (const auto brdfLut = ibl.GetBrdfLut(); brdfLut.IsValid())
         {
             Engine::Renderer::DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("ge_brdfLUT");
+            tex.Name = HashStringId("ge_brdfLUTTex");
             tex.Texture = brdfLut;
             tex.Sampler = lutSampler;
             textures.push_back(tex);

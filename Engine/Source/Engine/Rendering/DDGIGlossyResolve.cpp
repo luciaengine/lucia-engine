@@ -356,15 +356,16 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
             wd.AddStorageBuffer("DDGIProbeStateRO", probeState.Buffer, 0, probeState.Bytes);
             wd.AddStorageBuffer("DDGIProbeStateFineRO", probeStateFine.Buffer, 0,
                                 probeStateFine.Bytes);
-            wd.TryAddCombinedImageSampler("ge_ddgiIrradianceAtlas", irradianceAtlas, atlasSampler);
-            wd.TryAddCombinedImageSampler("ge_ddgiIrradianceAtlasFine", irradianceAtlasFine,
-                                          atlasSampler);
-            wd.AddCombinedImageSampler("ge_ddgiDepthAtlas", depthAtlas, atlasSampler);
-            wd.AddCombinedImageSampler("ge_ddgiDepthAtlasFine", depthAtlasFine, atlasSampler);
-            wd.AddCombinedImageSampler("ge_ddgiRoughAtlas", roughAtlas, atlasSampler);
-            wd.AddCombinedImageSampler("ge_ddgiGlossyAtlas", glossyAtlas, atlasSampler);
-            wd.AddCombinedImageSampler("ge_ddgiRoughAtlasFine", roughAtlasFine, atlasSampler);
-            wd.AddCombinedImageSampler("ge_ddgiGlossyAtlasFine", glossyAtlasFine, atlasSampler);
+            // The atlases are separate images over the shared linear clamp sampler (frame_samplers.glsl).
+            wd.TryAddTexture("ge_ddgiIrradianceAtlasTex", irradianceAtlas);
+            wd.TryAddTexture("ge_ddgiIrradianceAtlasFineTex", irradianceAtlasFine);
+            wd.AddTexture("ge_ddgiDepthAtlasTex", depthAtlas);
+            wd.AddTexture("ge_ddgiDepthAtlasFineTex", depthAtlasFine);
+            wd.AddTexture("ge_ddgiRoughAtlasTex", roughAtlas);
+            wd.AddTexture("ge_ddgiGlossyAtlasTex", glossyAtlas);
+            wd.AddTexture("ge_ddgiRoughAtlasFineTex", roughAtlasFine);
+            wd.AddTexture("ge_ddgiGlossyAtlasFineTex", glossyAtlasFine);
+            wd.AddSampler("ge_linearClampSampler", atlasSampler);
             wd.Flush();
             Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *meta, "uResolveRough",
                                                             roughTex);

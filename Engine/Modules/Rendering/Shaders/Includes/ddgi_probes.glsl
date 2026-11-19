@@ -43,6 +43,8 @@
 #ifndef GE_DDGI_PROBES_GLSL
 #define GE_DDGI_PROBES_GLSL
 
+#include "frame_samplers.glsl"
+
 #include "ddgi_common.glsl"
 
 // On the compat FRAGMENT (ibl.glsl defines GE_DDGI_RESOLVE_ONLY before this
@@ -54,12 +56,10 @@
 // blend/trace COMPUTES, and the full-profile fragment — includes this file
 // WITHOUT that define and gets the full layout below, unchanged.
 //
-// The volume UBO is the one binding both paths share. It moves off b30 on the
-// resolve-only path because ge_iblSampler sits at b30 in the compat fragment;
-// the compute stages have b30 free, so they keep it there. The binder resolves
-// it by its reflected name "DDGIVolume", so the number move needs no CPU change.
+// The volume UBO is the one binding both paths share, at b30 on both. The binder resolves
+// it by its reflected name "DDGIVolume".
 #if defined(GE_DDGI_RESOLVE_ONLY)
-layout(std140, set = 0, binding = 44) uniform DDGIVolumeData
+layout(std140, set = 0, binding = 30) uniform DDGIVolumeData
 {
     vec4 uGridMinWS;
     vec4 uGridSizeWS;
@@ -73,7 +73,8 @@ layout(std140, set = 0, binding = 44) uniform DDGIVolumeData
 } DDGIVolume;
 #else
 
-layout(set = 0, binding = 29) uniform sampler2D ge_ddgiIrradianceAtlas;
+layout(set = 0, binding = 29) uniform texture2D ge_ddgiIrradianceAtlasTex;
+#define ge_ddgiIrradianceAtlas sampler2D(ge_ddgiIrradianceAtlasTex, ge_linearClampSampler)
 
 layout(std140, set = 0, binding = 30) uniform DDGIVolumeData
 {
@@ -91,7 +92,8 @@ layout(std140, set = 0, binding = 30) uniform DDGIVolumeData
                          // y=depth atlas interior tile resolution (GE_DDGIDepthTexelUV)
 } DDGIVolume;
 
-layout(set = 0, binding = 31) uniform sampler2D ge_ddgiDepthAtlas;
+layout(set = 0, binding = 31) uniform texture2D ge_ddgiDepthAtlasTex;
+#define ge_ddgiDepthAtlas sampler2D(ge_ddgiDepthAtlasTex, ge_linearClampSampler)
 
 // xyz = per-probe relocation offset (world-space), w = active (1.0) /
 // inactive (0.0) — Includes/ddgi_common.glsl's doc on ddgi_classify.comp,
@@ -106,7 +108,8 @@ layout(std430, set = 0, binding = 32) readonly buffer DDGIProbeStateRO
 // EnableFineCascade — see DDGIProbeFeature::UploadVolumeDataFine); the
 // world-pass binder supplies a valid but zero-weighted UBO otherwise, same
 // fallback contract as the coarse grid's own DDGIVolumeData.
-layout(set = 0, binding = 33) uniform sampler2D ge_ddgiIrradianceAtlasFine;
+layout(set = 0, binding = 33) uniform texture2D ge_ddgiIrradianceAtlasFineTex;
+#define ge_ddgiIrradianceAtlasFine sampler2D(ge_ddgiIrradianceAtlasFineTex, ge_linearClampSampler)
 layout(std140, set = 0, binding = 34) uniform DDGIVolumeDataFine
 {
     vec4 uGridMinWS;
@@ -118,7 +121,8 @@ layout(std140, set = 0, binding = 34) uniform DDGIVolumeDataFine
     ivec4 uParams3;      // x=debug view (the fine block's copy is unused),
                          // y=depth atlas interior tile resolution
 } DDGIVolumeFine;
-layout(set = 0, binding = 35) uniform sampler2D ge_ddgiDepthAtlasFine;
+layout(set = 0, binding = 35) uniform texture2D ge_ddgiDepthAtlasFineTex;
+#define ge_ddgiDepthAtlasFine sampler2D(ge_ddgiDepthAtlasFineTex, ge_linearClampSampler)
 layout(std430, set = 0, binding = 36) readonly buffer DDGIProbeStateFineRO
 {
     vec4 ge_ddgiProbeStateFine[];
@@ -133,10 +137,14 @@ layout(std430, set = 0, binding = 36) readonly buffer DDGIProbeStateFineRO
 // cascade's uParams2 layout, never GE_DDGIProbeTexelUV. A cascade whose
 // sharp lobe was refused (history cap) reports uParams2.x == 0 and the
 // gather skips the glossy tap.
-layout(set = 0, binding = 37) uniform sampler2D ge_ddgiRoughAtlas;
-layout(set = 0, binding = 38) uniform sampler2D ge_ddgiGlossyAtlas;
-layout(set = 0, binding = 39) uniform sampler2D ge_ddgiRoughAtlasFine;
-layout(set = 0, binding = 40) uniform sampler2D ge_ddgiGlossyAtlasFine;
+layout(set = 0, binding = 37) uniform texture2D ge_ddgiRoughAtlasTex;
+#define ge_ddgiRoughAtlas sampler2D(ge_ddgiRoughAtlasTex, ge_linearClampSampler)
+layout(set = 0, binding = 38) uniform texture2D ge_ddgiGlossyAtlasTex;
+#define ge_ddgiGlossyAtlas sampler2D(ge_ddgiGlossyAtlasTex, ge_linearClampSampler)
+layout(set = 0, binding = 39) uniform texture2D ge_ddgiRoughAtlasFineTex;
+#define ge_ddgiRoughAtlasFine sampler2D(ge_ddgiRoughAtlasFineTex, ge_linearClampSampler)
+layout(set = 0, binding = 40) uniform texture2D ge_ddgiGlossyAtlasFineTex;
+#define ge_ddgiGlossyAtlasFine sampler2D(ge_ddgiGlossyAtlasFineTex, ge_linearClampSampler)
 
 // Width of the soft feather band at the fine cascade's boundary, as a
 // fraction of grid-space half-extent (0 = center, 1 = edge): inside

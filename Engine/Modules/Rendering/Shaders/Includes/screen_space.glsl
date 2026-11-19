@@ -8,9 +8,12 @@
 #ifndef GE_SCREEN_SPACE_GLSL
 #define GE_SCREEN_SPACE_GLSL
 
+#include "frame_samplers.glsl"
+
 // Opaque scene depth (set 0 binding 17): the resolved opaque depth the world pass
 // binds by name to every pass. Single-sample sampler2D, safe at any MSAA level.
-layout(set = 0, binding = 17) uniform sampler2D ge_sceneDepth;
+layout(set = 0, binding = 17) uniform texture2D ge_sceneDepthTex;
+#define ge_sceneDepth sampler2D(ge_sceneDepthTex, ge_linearClampSampler)
 
 // View-space eye distance from a reverse-Z raw depth at a screen UV. ge_invProj is
 // the true projection inverse, so this is correct under reverse-Z (near->1, far->0):

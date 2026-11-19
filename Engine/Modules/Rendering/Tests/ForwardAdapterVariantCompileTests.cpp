@@ -652,9 +652,9 @@ TEST(ForwardAdapterVariantCompile, FoggedVariantDeclaresTheFogsAndTheSkyBackdrop
                                                                                : MaterialKeyword::None));
         ExpectBuildSucceeded(both);
         EXPECT_EQ(FragmentDeclares(both, "VolumetricFogParams", 54), takesVolumetric);
-        EXPECT_EQ(FragmentDeclares(both, "ge_volumetricFog", 55), takesVolumetric);
-        EXPECT_EQ(FragmentDeclares(both, "ge_volumetricFogIrradiance", 56), takesVolumetric);
-        EXPECT_EQ(FragmentDeclares(both, "ge_volumetricClouds", 57), takesVolumetric);
+        EXPECT_EQ(FragmentDeclares(both, "ge_volumetricFogTex", 55), takesVolumetric);
+        EXPECT_EQ(FragmentDeclares(both, "ge_volumetricFogIrradianceTex", 56), takesVolumetric);
+        EXPECT_EQ(FragmentDeclares(both, "ge_volumetricCloudsTex", 57), takesVolumetric);
     }
 }
 
@@ -1098,4 +1098,66 @@ void main()
     device->Shutdown();
     std::error_code ec;
     fs::remove_all(cache, ec);
+}
+
+namespace
+{
+// The sampler descriptors (separate samplers and combined image samplers) a compiled fragment stage
+// declares in one set. Vulkan counts them per stage against maxPerStageDescriptorSamplers, which is 16
+// on MoltenVK and in WebGPU.
+uint32_t FragmentSamplerCount(const MaterialBuildResult& result, uint32_t setIndex, std::string* names)
+{
+    constexpr uint32_t kFragmentStageBit = 1u << 1;
+    uint32_t count = 0;
+    if (result.package == nullptr)
+        return count;
+    for (const DescriptorSetMeta& set : result.package->meta.Sets)
+    {
+        if (set.Set != setIndex)
+            continue;
+        for (const DescriptorBindingMeta& b : set.Bindings)
+        {
+            if ((b.StagesMask & kFragmentStageBit) == 0u)
+                continue;
+            if (b.Type != ShaderMetaBindingType::kSampler && b.Type != ShaderMetaBindingType::kCombinedImageSampler)
+                continue;
+            count += b.Count;
+            if (names)
+                *names += b.Name + " ";
+        }
+    }
+    return count;
+}
+} // namespace
+
+// The frame set (set 0) of a forward fragment stage holds at most kFrameSetSamplerBudget samplers in
+// every pass keyword combination, so the material and contributor sets keep the rest of the 16 per stage.
+TEST(ForwardAdapterVariantCompile, TheFrameSetFitsItsSamplerBudgetInEveryHeavyVariant)
+{
+    constexpr uint32_t kFrameSetSamplerBudget = 4;
+    constexpr MaterialKeyword kOpaque = kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows |
+                                        MaterialKeyword::IBL | MaterialKeyword::GTAO | MaterialKeyword::RTShadowMask |
+                                        MaterialKeyword::ScreenSpaceShadows | MaterialKeyword::HeightFog;
+    constexpr MaterialKeyword kVirtualShadows =
+        kOpaque | MaterialKeyword::VirtualShadowMaps | MaterialKeyword::VirtualShadowSunMask;
+    constexpr MaterialKeyword kProbeLighting = kOpaque | MaterialKeyword::DDGI;
+    constexpr MaterialKeyword kLateBlend = kProbeLighting | MaterialKeyword::VolumetricFog |
+                                           MaterialKeyword::VolumetricClouds | MaterialKeyword::SceneColorGrab;
+    const struct
+    {
+        const char* Name;
+        MaterialKeyword Keywords;
+        MaterialAlphaMode Alpha;
+    } variants[] = {{"virtual shadows", kVirtualShadows, MaterialAlphaMode::Opaque},
+                    {"probe lighting", kProbeLighting, MaterialAlphaMode::Opaque},
+                    {"late blend", kLateBlend, MaterialAlphaMode::Blend}};
+    for (const auto& variant : variants)
+    {
+        SCOPED_TRACE(variant.Name);
+        const MaterialBuildResult result = BuildStockMaterial("StandardPBR", variant.Keywords, {}, false, variant.Alpha);
+        SKIP_WITHOUT_SHADERC(result);
+        ExpectBuildSucceeded(result);
+        std::string names;
+        EXPECT_LE(FragmentSamplerCount(result, 0u, &names), kFrameSetSamplerBudget) << "set 0 samplers: " << names;
+    }
 }

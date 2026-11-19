@@ -1,6 +1,8 @@
 #ifndef GE_VIRTUAL_SHADOW_SUN_MASK_GLSL
 #define GE_VIRTUAL_SHADOW_SUN_MASK_GLSL
 
+#include "frame_samplers.glsl"
+
 #include "prepass_receiver_mask.glsl"
 
 // The value byte of a sun mask texel (prepass_receiver_mask.glsl). 0 to 254: the virtual page
@@ -16,7 +18,8 @@ uint GE_EncodeVirtualShadowSunMask(bool resolved, float visibility)
 
 #ifdef GE_VIRTUAL_SHADOW_SUN_MASK
 // Written by virtual_shadow_sun_mask.comp from the prepass depth, at the prepass resolution.
-layout(set = 0, binding = 66) uniform usampler2D ge_virtualShadowSunMask;
+layout(set = 0, binding = 66) uniform utexture2D ge_virtualShadowSunMaskTex;
+#define ge_virtualShadowSunMask usampler2D(ge_virtualShadowSunMaskTex, ge_pointClampSampler)
 
 // True with the visibility of a matched texel; false when no resident page covers its receiver.
 bool GE_VirtualShadowSunMaskVisibility(uint packed, out float visibility)

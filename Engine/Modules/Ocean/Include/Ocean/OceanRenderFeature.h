@@ -845,7 +845,6 @@ public:
     void SetUserFoamTexture(::GameEngine::Rendering::TextureHandle tex) { m_UserFoamTexture = tex; }
     bool HasUserFoamTexture() const { return m_UserFoamTexture.IsValid(); }
     ::GameEngine::Rendering::TextureHandle GetUserFoamTexture() const { return m_UserFoamTexture; }
-    ::GameEngine::Rendering::SamplerHandle GetUserFoamSampler() const { return m_UserTextureSampler; }
 
     void SetUserCausticsTexture(::GameEngine::Rendering::TextureHandle tex)
     {
@@ -853,7 +852,9 @@ public:
     }
     bool HasUserCausticsTexture() const { return m_UserCausticsTexture.IsValid(); }
     ::GameEngine::Rendering::TextureHandle GetUserCausticsTexture() const { return m_UserCausticsTexture; }
-    ::GameEngine::Rendering::SamplerHandle GetUserCausticsSampler() const { return m_UserTextureSampler; }
+    /// Linear, linear mip, repeat: the sampler of every tiling ocean texture (the FFT displacement,
+    /// the caustics, the user detail textures). The ocean set binds it as uOceanRepeatSampler.
+    ::GameEngine::Rendering::SamplerHandle GetRepeatSampler() const { return m_RepeatSampler; }
 
 private:
     void CreateGridMesh(::GameEngine::Rendering::IDevice* device, uint32 cellsPerTile);
@@ -972,7 +973,7 @@ private:
     ::GameEngine::Rendering::TextureHandle m_UserNormalTexture;
     ::GameEngine::Rendering::TextureHandle m_UserFoamTexture;
     ::GameEngine::Rendering::TextureHandle m_UserCausticsTexture;
-    ::GameEngine::Rendering::SamplerHandle m_UserTextureSampler;
+    ::GameEngine::Rendering::SamplerHandle m_RepeatSampler;
 
     mutable std::mutex m_Mutex;
     OceanParamsGPU m_Params;

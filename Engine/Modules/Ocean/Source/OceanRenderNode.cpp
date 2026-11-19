@@ -403,7 +403,7 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
                 const auto causticsTex =
                     userCaustics.IsValid() ? userCaustics : feature.GetCausticsTexture();
                 const auto causticsSampler = userCaustics.IsValid()
-                    ? feature.GetUserCausticsSampler()
+                    ? feature.GetRepeatSampler()
                     : feature.GetCausticsSampler();
                 // Above water: reflected caustics from the water.
                 feature.GetReflectedCaustics().DeclareForView(d, uwParams, uwSettings, shape,
@@ -423,7 +423,7 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         const auto underwaterCaustics = feature.HasUserCausticsTexture()
             ? feature.GetUserCausticsTexture() : feature.GetCausticsTexture();
         const auto underwaterCausticsSampler = feature.HasUserCausticsTexture()
-            ? feature.GetUserCausticsSampler() : feature.GetCausticsSampler();
+            ? feature.GetRepeatSampler() : feature.GetCausticsSampler();
 
         if (overlayActive)
         {

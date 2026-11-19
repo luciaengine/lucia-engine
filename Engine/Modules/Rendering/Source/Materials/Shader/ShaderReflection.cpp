@@ -121,17 +121,23 @@ static uint32_t ImageFormatToEngineFormat(SpvImageFormat f) {
     }
 }
 
-// (set << 32 | binding) of every image variable the module samples through a
-// filtering-capable op (OpImageSample*, OpImageGather, OpImageDrefGather).
-// texelFetch (OpImageFetch) does not mark. SPIRV-Reflect exposes declarations,
+// (set << 32 | binding) of the image variables the module samples. Filtered holds every image
+// sampled through a filtering-capable op (OpImageSample*, OpImageGather, OpImageDrefGather);
+// Compared holds the images sampled through a depth-compare op (OpImageSample*Dref*,
+// OpImageDrefGather), which makes a separate texture2D a depth image. texelFetch (OpImageFetch)
+// marks neither. SPIRV-Reflect exposes declarations,
 // not usage, so this is a direct instruction walk: result ids are chased
 // through OpLoad / OpAccessChain / OpCopyObject / OpSampledImage back to the
 // OpVariable that carries the DescriptorSet/Binding decorations. Opaque
 // function parameters are followed through every call site's corresponding
 // argument, including nested helpers and calls with different textures.
-static std::unordered_set<uint64_t> CollectFilterSampledBindings(const uint32_t* words,
-                                                                 size_t wordCount) {
-    std::unordered_set<uint64_t> out;
+struct SampledBindings {
+    std::unordered_set<uint64_t> Filtered;
+    std::unordered_set<uint64_t> Compared;
+};
+
+static SampledBindings CollectSampledBindings(const uint32_t* words, size_t wordCount) {
+    SampledBindings out;
     if (wordCount < 5) return out;
 
     constexpr uint16_t kOpFunction = 54;
@@ -153,11 +159,16 @@ static std::unordered_set<uint64_t> CollectFilterSampledBindings(const uint32_t*
         // OpImageGather / OpImageDrefGather.
         return (op >= 87 && op <= 94) || op == 96 || op == 97;
     };
+    auto isCompareOp = [](uint16_t op) {
+        // OpImageSampleDref{Implicit,Explicit}Lod, OpImageSampleProjDref{Implicit,Explicit}Lod,
+        // OpImageDrefGather.
+        return op == 89 || op == 90 || op == 93 || op == 94 || op == 97;
+    };
 
     std::unordered_map<uint32_t, uint32_t> chain;      // result id -> source id
     std::unordered_map<uint32_t, uint32_t> varSet;     // variable id -> set
     std::unordered_map<uint32_t, uint32_t> varBinding; // variable id -> binding
-    std::vector<uint32_t> sampledIds;                  // sampled-image operands
+    std::vector<std::pair<uint32_t, bool>> sampledIds; // sampled-image operand, compared
     std::unordered_map<uint32_t, std::vector<uint32_t>> parameters;
     std::unordered_map<uint32_t, std::vector<uint32_t>> parameterArguments;
     struct Call { uint32_t Function; size_t Arguments; size_t Count; };
@@ -200,7 +211,7 @@ static std::unordered_set<uint64_t> CollectFilterSampledBindings(const uint32_t*
             if (len >= 5) chain[words[i + 2]] = words[i + 3]; // the image operand
             break;
         default:
-            if (isSampleOp(op) && len >= 4) sampledIds.push_back(words[i + 3]);
+            if (isSampleOp(op) && len >= 4) sampledIds.push_back({words[i + 3], isCompareOp(op)});
             break;
         }
         i += len;
@@ -213,7 +224,7 @@ static std::unordered_set<uint64_t> CollectFilterSampledBindings(const uint32_t*
             parameterArguments[it->second[argument]].push_back(words[call.Arguments + argument]);
     }
 
-    for (uint32_t sampledId : sampledIds) {
+    for (const auto& [sampledId, compared] : sampledIds) {
         std::vector<uint32_t> pending{sampledId};
         std::unordered_set<uint32_t> visited;
         while (!pending.empty()) {
@@ -226,8 +237,12 @@ static std::unordered_set<uint64_t> CollectFilterSampledBindings(const uint32_t*
                 pending.insert(pending.end(), it->second.begin(), it->second.end());
             const auto setIt = varSet.find(id);
             const auto bindIt = varBinding.find(id);
-            if (setIt != varSet.end() && bindIt != varBinding.end())
-                out.insert((static_cast<uint64_t>(setIt->second) << 32) | bindIt->second);
+            if (setIt != varSet.end() && bindIt != varBinding.end()) {
+                const uint64_t key = (static_cast<uint64_t>(setIt->second) << 32) | bindIt->second;
+                out.Filtered.insert(key);
+                if (compared)
+                    out.Compared.insert(key);
+            }
         }
     }
     return out;
@@ -296,7 +311,7 @@ bool ReflectSpirv(ShaderStageKind stage, const uint32_t* words, size_t wordCount
     }
 
     // Descriptor sets
-    const std::unordered_set<uint64_t> filterSampled = CollectFilterSampledBindings(words, wordCount);
+    const SampledBindings sampled = CollectSampledBindings(words, wordCount);
     uint32_t setCount = 0; spvReflectEnumerateDescriptorSets(&module, &setCount, nullptr);
     std::vector<SpvReflectDescriptorSet*> sets(setCount);
     spvReflectEnumerateDescriptorSets(&module, &setCount, sets.data());
@@ -351,11 +366,11 @@ bool ReflectSpirv(ShaderStageKind stage, const uint32_t* words, size_t wordCount
             if (b->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLER || b->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLED_IMAGE || b->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE || b->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
                 DescriptorBindingMeta::ImageInfo info{}; info.Dim = ImageDim(*b); info.Arrayed = b->image.arrayed; info.Multisample = b->image.ms;
                 info.Cube = b->image.dim == SpvDimCube;
-                info.Depth = b->image.depth == 1;
+                const uint64_t bindingKey = (static_cast<uint64_t>(s->set) << 32) | b->binding;
+                info.Depth = b->image.depth == 1 || sampled.Compared.count(bindingKey) != 0;
                 info.UnsignedInteger = b->type_description &&
                     ScalarBaseType(*b->type_description) == BaseType::UInt;
-                info.Filtered = filterSampled.count(
-                    (static_cast<uint64_t>(s->set) << 32) | b->binding) != 0;
+                info.Filtered = sampled.Filtered.count(bindingKey) != 0;
                 if (b->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
                     const auto declared = static_cast<SpvImageFormat>(b->image.image_format);
                     info.Format = ImageFormatToEngineFormat(declared);
@@ -467,6 +482,9 @@ ShaderMeta MergeStages(const std::vector<StageReflectionResult>& stages) {
                         // layout must satisfy the strictest consumer.
                         if (eb.Image && b.Image && b.Image->Filtered)
                             eb.Image->Filtered = true;
+                        // A depth image in any stage is a depth image in the layout.
+                        if (eb.Image && b.Image && b.Image->Depth)
+                            eb.Image->Depth = true;
                         mergedB = true; break;
                     }
                 }

@@ -52,12 +52,14 @@ class PointShadowFilterComputeTest : public ::testing::Test
         Rendering::ComputePipelineDesc pipeline{};
         pipeline.ComputeShader = std::make_shared<const std::vector<uint8_t>>(
             std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
-        for (uint32_t binding : {0u, 1u, 25u, 26u})
+        // b26 is the point shadow array; b141 is its compare sampler (frame_samplers.glsl).
+        for (uint32_t binding : {0u, 1u, 25u, 26u, 141u})
         {
             Rendering::DescriptorBinding descriptor{};
             descriptor.binding = binding;
-            descriptor.type = binding == 26 ? Rendering::DescriptorType::CombinedImageSampler
-                                            : Rendering::DescriptorType::StorageBuffer;
+            descriptor.type = binding == 26    ? Rendering::DescriptorType::Texture
+                              : binding == 141 ? Rendering::DescriptorType::Sampler
+                                               : Rendering::DescriptorType::StorageBuffer;
             descriptor.count = 1;
             descriptor.shaderStages = Rendering::kShaderStageCompute;
             m_Layout.bindings.push_back(descriptor);
@@ -244,7 +246,8 @@ class PointShadowFilterComputeTest : public ::testing::Test
         m_Device->UpdateStorageBufferBinding(set, 0, parameters, 0, queries.size() * sizeof(Query));
         m_Device->UpdateStorageBufferBinding(set, 1, output, 0, queries.size() * sizeof(float));
         m_Device->UpdateStorageBufferBinding(set, 25, slotBuffer, 0, sizeof(slots));
-        m_Device->UpdateCombinedImageSamplerBinding(set, 26, texture, m_Sampler);
+        m_Device->UpdateImageBinding(set, 26, texture);
+        m_Device->UpdateSamplerBinding(set, 141, m_Sampler);
         auto commands = m_Device->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
         commands->Begin();
         for (uint32_t layer = 0; layer < kLayerCount; ++layer)

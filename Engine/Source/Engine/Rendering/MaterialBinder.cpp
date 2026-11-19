@@ -743,7 +743,6 @@ Rendering::PipelineHandle MaterialBinder::BindPreparedForDraw(
                 break;
             }
             case DescriptorType::CombinedImageSampler:
-            case DescriptorType::Texture:
             {
                 if (const auto* entry = FindDrawTexture(draw, nameId);
                     entry && entry->Texture.IsValid() && entry->Sampler.IsValid())
@@ -760,6 +759,36 @@ Rendering::PipelineHandle MaterialBinder::BindPreparedForDraw(
                     break;
                 }
                 WarnUnresolvedPipelineBinding(setMeta, binding, "texture");
+                break;
+            }
+            case DescriptorType::Texture:
+            {
+                if (const auto* entry = FindDrawTexture(draw, nameId); entry && entry->Texture.IsValid())
+                {
+                    m_Device.UpdateImageBinding(handle, binding.Binding, entry->Texture, entry->ArrayIndex);
+                    break;
+                }
+                if (const auto* entry = FindPassTexture(pass.PassResources, nameId); entry && entry->Texture.IsValid())
+                {
+                    m_Device.UpdateImageBinding(handle, binding.Binding, entry->Texture);
+                    break;
+                }
+                WarnUnresolvedPipelineBinding(setMeta, binding, "texture");
+                break;
+            }
+            case DescriptorType::Sampler:
+            {
+                if (const auto* entry = FindDrawTexture(draw, nameId); entry && entry->Sampler.IsValid())
+                {
+                    m_Device.UpdateSamplerBinding(handle, binding.Binding, entry->Sampler);
+                    break;
+                }
+                if (const auto* entry = FindPassTexture(pass.PassResources, nameId); entry && entry->Sampler.IsValid())
+                {
+                    m_Device.UpdateSamplerBinding(handle, binding.Binding, entry->Sampler);
+                    break;
+                }
+                WarnUnresolvedPipelineBinding(setMeta, binding, "sampler");
                 break;
             }
             case DescriptorType::AccelerationStructure:

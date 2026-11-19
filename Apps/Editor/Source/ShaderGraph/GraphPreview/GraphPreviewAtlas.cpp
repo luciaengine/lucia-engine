@@ -859,14 +859,15 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
            world pass binds them (RenderServicesWorldPass, IBL keyword block). */
         if (useIbl)
         {
+            m_Services->AddFrameSamplers(resources);
             auto* ibl = m_Services->GetFeature<Engine::Renderer::ImageBasedLightingFeature>();
             const Rendering::BufferHandle envData = ibl->UploadEnvData(m_Services->GetDevice());
-            resources.Textures.push_back({HashStringId("ge_irradianceCube"),
+            resources.Textures.push_back({HashStringId("ge_irradianceCubeTex"),
                                           ibl->GetIrradianceCube(), ibl->GetCubeSampler()});
-            resources.Textures.push_back({HashStringId("ge_prefilterCube"),
+            resources.Textures.push_back({HashStringId("ge_prefilterCubeTex"),
                                           ibl->GetPrefilterCube(), ibl->GetCubeSampler()});
             resources.Textures.push_back(
-                {HashStringId("ge_brdfLUT"), ibl->GetBrdfLut(), ibl->GetLutSampler()});
+                {HashStringId("ge_brdfLUTTex"), ibl->GetBrdfLut(), ibl->GetLutSampler()});
             if (envData.IsValid())
                 resources.Buffers.push_back({HashStringId("Env"), envData, 0, 0});
         }

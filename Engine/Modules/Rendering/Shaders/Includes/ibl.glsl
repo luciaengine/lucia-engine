@@ -9,6 +9,8 @@
 #ifndef GE_IBL_GLSL
 #define GE_IBL_GLSL
 
+#include "frame_samplers.glsl"
+
 #ifdef GE_SSSR_NORMAL_ROUGHNESS
 // The base GGX lobe that SSR can replace. Export the actual forward evaluation,
 // including authored dielectric/film response and every attenuation above it.
@@ -41,7 +43,7 @@ vec3 ge_iblGrabThroughput = vec3(0.0);
 #if defined(GE_DDGI_ENABLED)
 // Compat fragment: sample the screen-space resolve textures only, never the
 // probe atlases. This define makes ddgi_probes.glsl drop the atlas/gather
-// layout (and move the volume UBO off b30, where ge_iblSampler sits here).
+// layout.
 #if defined(GE_COMPAT_PROFILE)
 #define GE_DDGI_RESOLVE_ONLY
 #endif
@@ -62,24 +64,19 @@ vec3 ge_iblGrabThroughput = vec3(0.0);
 // environment sample.
 // Declared HERE, not in ddgi_probes.glsl: the resolve kernel itself includes
 // that file and must not grow its layout with outputs it never binds.
-#if defined(GE_COMPAT_PROFILE)
-// Compat declares the three resolve targets as separate texture2D images over
-// b30 (the standalone IBL sampler): three sampled-texture slots, no sampler slots.
 layout(set = 0, binding = 41) uniform texture2D ge_ddgiResolveRoughTex;
-#define ge_ddgiResolveRough sampler2D(ge_ddgiResolveRoughTex, ge_iblSampler)
+#define ge_ddgiResolveRough sampler2D(ge_ddgiResolveRoughTex, ge_linearClampSampler)
 layout(set = 0, binding = 42) uniform texture2D ge_ddgiResolveGlossyTex;
-#define ge_ddgiResolveGlossy sampler2D(ge_ddgiResolveGlossyTex, ge_iblSampler)
-layout(set = 0, binding = 43) uniform texture2D ge_ddgiResolveIrradianceTex;
-#define ge_ddgiResolveIrradiance sampler2D(ge_ddgiResolveIrradianceTex, ge_iblSampler)
-#else
-layout(set = 0, binding = 41) uniform sampler2D ge_ddgiResolveRough;
-layout(set = 0, binding = 42) uniform sampler2D ge_ddgiResolveGlossy;
+#define ge_ddgiResolveGlossy sampler2D(ge_ddgiResolveGlossyTex, ge_linearClampSampler)
 // Diffuse irradiance from the same resolve pass, looked up along the same
 // normal as the reflection — a per-fragment 8-probe loop it removes entirely.
-layout(set = 0, binding = 43) uniform sampler2D ge_ddgiResolveIrradiance;
+layout(set = 0, binding = 43) uniform texture2D ge_ddgiResolveIrradianceTex;
+#define ge_ddgiResolveIrradiance sampler2D(ge_ddgiResolveIrradianceTex, ge_linearClampSampler)
+#if !defined(GE_COMPAT_PROFILE)
 // The world normal each irradiance texel was gathered for: the normal guide of the upsample below. The compat
-// profile has no texture slot for it and keeps the depth guide alone.
-layout(set = 0, binding = 59) uniform sampler2D ge_ddgiResolveGatherNormal;
+// profile has no sampled-texture slot for it and keeps the depth guide alone.
+layout(set = 0, binding = 59) uniform texture2D ge_ddgiResolveGatherNormalTex;
+#define ge_ddgiResolveGatherNormal sampler2D(ge_ddgiResolveGatherNormalTex, ge_linearClampSampler)
 #define GE_DDGI_UPSAMPLE_GATHER_NORMAL ge_ddgiResolveGatherNormal
 #endif
 #define GE_DDGI_UPSAMPLE_IRRADIANCE ge_ddgiResolveIrradiance
@@ -92,28 +89,14 @@ layout(set = 0, binding = 59) uniform sampler2D ge_ddgiResolveGatherNormal;
 #include "environment_data.glsl"
 #include "local_reflections.glsl"
 
-#if defined(GE_COMPAT_PROFILE)
-// WebGPU counts one sampler per sampled texture per stage, and the IBL trio's
-// three were what pushed the forward variant past the 16-per-stage cap. Under
-// the compat profile the trio is declared as separate images over ONE
-// standalone sampler (binding 30 — no image shares that slot, so the WGSL
-// cook's combined-split renumbering leaves it alone). The macros rebuild the
-// combined-sampler names at every use site, so the sampling code below is one
-// arm, not two. Bound by name: ge_irradianceCubeTex / ge_prefilterCubeTex /
-// ge_brdfLUTTex / ge_iblSampler (RenderServicesWorldPass registers both
-// spellings).
+// The environment cubes and the BRDF LUT. The LUT has 1 mip, so the shared linear clamp sampler
+// reads it as a sampler without mips does.
 layout(set = 0, binding = 18) uniform textureCube ge_irradianceCubeTex;
 layout(set = 0, binding = 19) uniform textureCube ge_prefilterCubeTex;
 layout(set = 0, binding = 20) uniform texture2D   ge_brdfLUTTex;
-layout(set = 0, binding = 30) uniform sampler     ge_iblSampler;
-#define ge_irradianceCube samplerCube(ge_irradianceCubeTex, ge_iblSampler)
-#define ge_prefilterCube  samplerCube(ge_prefilterCubeTex, ge_iblSampler)
-#define ge_brdfLUT        sampler2D(ge_brdfLUTTex, ge_iblSampler)
-#else
-layout(set = 0, binding = 18) uniform samplerCube ge_irradianceCube;
-layout(set = 0, binding = 19) uniform samplerCube ge_prefilterCube;
-layout(set = 0, binding = 20) uniform sampler2D   ge_brdfLUT;
-#endif
+#define ge_irradianceCube samplerCube(ge_irradianceCubeTex, ge_linearClampSampler)
+#define ge_prefilterCube  samplerCube(ge_prefilterCubeTex, ge_linearClampSampler)
+#define ge_brdfLUT        sampler2D(ge_brdfLUTTex, ge_linearClampSampler)
 
 // Apply ground occlusion at consumption time instead of baking black radiance
 // into the shared environment. This preserves a lossless environment for
@@ -189,7 +172,8 @@ vec3 GE_AmbientFloor(vec3 normalWS)
 // the thick path's cross-pixel exit reject reconstructs eye distance via the reverse-Z helpers — so
 // it's declared for every grab variant.
 #include "screen_space.glsl"
-layout(set = 0, binding = 22) uniform sampler2D ge_sceneColor;
+layout(set = 0, binding = 22) uniform texture2D ge_sceneColorTex;
+#define ge_sceneColor sampler2D(ge_sceneColorTex, ge_linearClampSampler)
 #endif
 
 // Lagarde (Frostbite) specular occlusion. Applying raw diffuse AO to the specular term

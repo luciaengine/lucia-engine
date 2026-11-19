@@ -1,6 +1,8 @@
 #ifndef GE_VIRTUAL_SHADOW_LOOKUP_GLSL
 #define GE_VIRTUAL_SHADOW_LOOKUP_GLSL
 
+#include "frame_samplers.glsl"
+
 // Default to the existing shadow comparison sampler. The raw override is for
 // GPU comparison instruments; cross-page samples still resolve texels explicitly.
 #if !defined(GE_VIRTUAL_SHADOW_RAW_COMPARE) && !defined(GE_VIRTUAL_SHADOW_HARDWARE_COMPARE)
@@ -17,14 +19,16 @@
 // A layer contains one complete page. The table is in virtual-address order,
 // with all fine pages followed by each successive coarse mip. A missing page
 // contains 0xffffffff and must never be read from the depth array.
-layout(set = 0, binding = GE_VIRTUAL_SHADOW_DEPTH_BINDING) uniform sampler2DArray ge_virtualShadowDepth;
+layout(set = 0, binding = GE_VIRTUAL_SHADOW_DEPTH_BINDING) uniform texture2DArray ge_virtualShadowDepthTex;
+#define ge_virtualShadowDepth sampler2DArray(ge_virtualShadowDepthTex, ge_pointClampSampler)
 layout(set = 0, binding = GE_VIRTUAL_SHADOW_TABLE_BINDING, std430) readonly buffer VirtualShadowPageTable
 {
     uint ge_virtualShadowTiles[];
 };
 
 #ifdef GE_VIRTUAL_SHADOW_HARDWARE_COMPARE
-layout(set = 0, binding = 61) uniform sampler2DArrayShadow ge_virtualShadowDepthCompare;
+layout(set = 0, binding = 61) uniform texture2DArray ge_virtualShadowDepthCompareTex;
+#define ge_virtualShadowDepthCompare sampler2DArrayShadow(ge_virtualShadowDepthCompareTex, ge_shadowCompareSampler)
 #endif
 
 const uint kGE_VirtualShadowPageTexels = 128u;

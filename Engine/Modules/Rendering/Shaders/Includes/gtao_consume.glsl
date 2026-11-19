@@ -9,23 +9,16 @@
 #ifndef GE_GTAO_CONSUME_GLSL
 #define GE_GTAO_CONSUME_GLSL
 
+#include "frame_samplers.glsl"
+
 #include "surface_io.glsl"
 
-#if defined(GE_COMPAT_PROFILE)
-// Save a sampler on devices with WebGPU's per-stage limit of 16. The AO
-// result is full-resolution, so the fragment can fetch its own texel.
-#extension GL_EXT_samplerless_texture_functions : require
-layout(set = 0, binding = 27) uniform texture2D ge_gtao;
-#else
-layout(set = 0, binding = 27) uniform sampler2D ge_gtao;
-#endif
+layout(set = 0, binding = 27) uniform texture2D ge_gtaoTex;
+#define ge_gtao sampler2D(ge_gtaoTex, ge_linearClampSampler)
 
 void GE_ApplyGTAO(inout SurfaceOutput so, vec2 screenUV)
 {
-#if defined(GE_COMPAT_PROFILE)
-    const ivec2 texel = ivec2(screenUV * vec2(textureSize(ge_gtao, 0)));
-    vec4 g = texelFetch(ge_gtao, texel, 0);
-#elif defined(GE_FORWARD_EARLY_ALPHA_TEST)
+#if defined(GE_FORWARD_EARLY_ALPHA_TEST)
     // The screen-space AO result has one level.
     vec4 g = textureLod(ge_gtao, screenUV, 0.0);
 #else

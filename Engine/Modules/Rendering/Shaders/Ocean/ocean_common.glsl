@@ -185,21 +185,30 @@ layout(std430, set = 2, binding = 1) readonly buffer OceanParamsBuffer
     GerstnerWaveGPU uWaves[];
 };
 
+// The ocean textures are separate images over two samplers, so the ocean set costs 1 sampler per
+// stage: the repeat sampler below for the tiling textures (the FFT displacement, the caustics, the
+// user detail textures), and the frame set's linear clamp sampler (frame_samplers.glsl) for the
+// rest. Bound by name: OceanForwardContributor.
+#include "Includes/frame_samplers.glsl"
+layout(set = 2, binding = 31) uniform sampler uOceanRepeatSampler; // linear, linear mip, repeat
+
 // FFT displacement cascade array: layer c is a tileable 0.5*2^c m patch holding
 // (displaceX, height, displaceZ). Bound by name on the ocean draw; sampled with
 // Repeat wrap + Linear filter. Vertex stage must use textureLod (no derivatives).
-layout(set = 2, binding = 2) uniform sampler2DArray uOceanDisplacement;
+layout(set = 2, binding = 2) uniform texture2DArray uOceanDisplacementTex;
+#define uOceanDisplacement sampler2DArray(uOceanDisplacementTex, uOceanRepeatSampler)
 
 // Simulated foam cascade (RGBA16F): per-LOD camera-snapped foam state built by
 // ocean_foam_sim.comp. R = wave/breaking foam, G = shoreline/contact foam,
-// B = freshness/age, A = latest deposit/debug. Bound by name "uOceanFoam" on the
+// B = freshness/age, A = latest deposit/debug. Bound by name "uOceanFoamTex" on the
 // ocean draw; sampled Linear/Clamp. Its world layout comes from the
 // OceanCascadeLayout UBO below.
 // Compat: compiled out — the surface's split-sampler budget (one per reflected
 // texture) sits exactly at WebGPU's 16-per-stage cap without it. The foam sim
 // still runs there; OceanSampleFoamData and OceanSampleFoamLayer read no foam.
 #if !defined(GE_COMPAT_PROFILE)
-layout(set = 2, binding = 3) uniform sampler2DArray uOceanFoam;
+layout(set = 2, binding = 3) uniform texture2DArray uOceanFoamTex;
+#define uOceanFoam sampler2DArray(uOceanFoamTex, ge_linearClampSampler)
 #endif
 
 // The world layout of every camera-snapped cascade the surface samples, one per
@@ -238,81 +247,92 @@ layout(std140, set = 2, binding = 4) uniform OceanCascadeLayout
 
 // Scene-colour grab (set 2 binding 5): a snapshot of the opaque scene colour
 // taken before the ocean draws, so the surface can refract what's behind it.
-// Bound by name "uOceanSceneColor"; gated by uRefractionFlags.x (0 = opaque).
+// Bound by name "uOceanSceneColorTex"; gated by uRefractionFlags.x (0 = opaque).
 // Sampled LinearClamp at the (normal-distorted) screen UV.
-layout(set = 2, binding = 5) uniform sampler2D uOceanSceneColor;
+layout(set = 2, binding = 5) uniform texture2D uOceanSceneColorTex;
+#define uOceanSceneColor sampler2D(uOceanSceneColorTex, ge_linearClampSampler)
 
 // Sea-floor depth cascade (set 2 binding 6): per-LOD camera-snapped distance from
 // the calm sea level DOWN to the seabed (meters), baked top-down by
 // ocean_seafloor_depth.comp. Placed by its own layout in the OceanCascadeLayout
-// block (binding 4). Bound by name "uOceanSeabedDepth";
+// block (binding 4). Bound by name "uOceanSeabedDepthTex";
 // gated by uSeabedDepthAvailable. Sampled Linear/Clamp.
-layout(set = 2, binding = 6) uniform sampler2DArray uOceanSeabedDepth;
+layout(set = 2, binding = 6) uniform texture2DArray uOceanSeabedDepthTex;
+#define uOceanSeabedDepth sampler2DArray(uOceanSeabedDepthTex, ge_linearClampSampler)
 
 // Procedural caustics texture (set 2 binding 7): a small tileable RGBA8 web of
 // refracted-sunlight focusing, generated once at startup. R,G = a tangent-space
 // distortion normal (xy, [0,1]-encoded) that bends the caustic lookup UVs; B =
 // the caustic intensity (sampled twice at two scrolling scales). Bound by name
-// "uOceanCaustics"; gated by uCausticsAvailable (0 = skip). Sampled Linear /
+// "uOceanCausticsTex"; gated by uCausticsAvailable (0 = skip). Sampled Linear /
 // Repeat / mipmapped (the focal-depth blur selects the mip).
-layout(set = 2, binding = 7) uniform sampler2D uOceanCaustics;
+layout(set = 2, binding = 7) uniform texture2D uOceanCausticsTex;
+#define uOceanCaustics sampler2D(uOceanCausticsTex, uOceanRepeatSampler)
 
 // Flow cascade (set 2 binding 8): per-LOD camera-snapped horizontal current
 // (RG = world XZ velocity, meters/second), baked from the tagged flow sources by
 // ocean_flow_sim.comp. Placed by its own layout in the OceanCascadeLayout block
-// (binding 4). Bound by name "uOceanFlow"; gated by
+// (binding 4). Bound by name "uOceanFlowTex"; gated by
 // uFlowAvailable. Drives the foam advection (in the foam compute) and the
 // detail-UV scroll below. Sampled Linear/Clamp.
-layout(set = 2, binding = 8) uniform sampler2DArray uOceanFlow;
+layout(set = 2, binding = 8) uniform texture2DArray uOceanFlowTex;
+#define uOceanFlow sampler2DArray(uOceanFlowTex, ge_linearClampSampler)
 
 // Dynamic-wave cascade (set 2 binding 9): per-LOD camera-snapped interactive wave
 // state (R = height meters, G = velocity), simulated by ocean_dynwaves_sim.comp
 // (2D wave equation + impulse injection). Placed by its own layout in the
-// OceanCascadeLayout block (binding 4). Bound by name "uOceanDynWaves"; gated by
+// OceanCascadeLayout block (binding 4). Bound by name "uOceanDynWavesTex"; gated by
 // uDynamicWavesAvailable. Read in the vertex stage (textureLod) for the
 // displacement add and in the fragment stage for the normal fold. Sampled
 // Linear/Clamp.
-layout(set = 2, binding = 9) uniform sampler2DArray uOceanDynWaves;
+layout(set = 2, binding = 9) uniform texture2DArray uOceanDynWavesTex;
+#define uOceanDynWaves sampler2DArray(uOceanDynWavesTex, ge_linearClampSampler)
 
 // Clip cascade (set 2 binding 10): per-LOD camera-snapped surface clip state
 // (R = clip value, 1 = clipped/hole, 0 = solid water), baked from the tagged clip
 // sources by ocean_clip_sim.comp over the default clip state. Placed by its own
 // layout in the OceanCascadeLayout block (binding 4). Bound by name
-// "uOceanClip"; gated by uClipAvailable. The surface discards fragments where the
+// "uOceanClipTex"; gated by uClipAvailable. The surface discards fragments where the
 // sampled value exceeds 0.5. Sampled Linear/Clamp.
-layout(set = 2, binding = 10) uniform sampler2DArray uOceanClip;
+layout(set = 2, binding = 10) uniform texture2DArray uOceanClipTex;
+#define uOceanClip sampler2DArray(uOceanClipTex, ge_linearClampSampler)
 
 // Albedo cascade (set 2 binding 11): per-LOD camera-snapped surface paint
 // (RGBA = colour + coverage), baked from the tagged albedo sources by
 // ocean_albedo_sim.comp. Placed by its own layout in the OceanCascadeLayout block
-// (binding 4). Bound by name "uOceanAlbedo"; gated by uAlbedoAvailable.
+// (binding 4). Bound by name "uOceanAlbedoTex"; gated by uAlbedoAvailable.
 // The surface blends baseColor toward rgb by a (decals/paint) before lighting +
 // under foam. Sampled Linear/Clamp.
-layout(set = 2, binding = 11) uniform sampler2DArray uOceanAlbedo;
+layout(set = 2, binding = 11) uniform texture2DArray uOceanAlbedoTex;
+#define uOceanAlbedo sampler2DArray(uOceanAlbedoTex, ge_linearClampSampler)
 
 // User foam-bubble texture (set 2 binding 12): an optional tiling whitecap/bubble
 // image the user assigns on the ocean component. When uFoamTextureAvailable, the
 // surface samples its red channel for the foam dissolve in place of the analytic
-// Worley noise. Bound by name "uOceanFoamBubble". Sampled Linear/Repeat (tiling).
-layout(set = 2, binding = 12) uniform sampler2D uOceanFoamBubble;
-layout(set = 2, binding = 27) uniform sampler2D uOceanDetailNormal;
+// Worley noise. Bound by name "uOceanFoamBubbleTex". Sampled Linear/Repeat (tiling).
+layout(set = 2, binding = 12) uniform texture2D uOceanFoamBubbleTex;
+#define uOceanFoamBubble sampler2D(uOceanFoamBubbleTex, uOceanRepeatSampler)
+layout(set = 2, binding = 27) uniform texture2D uOceanDetailNormalTex;
+#define uOceanDetailNormal sampler2D(uOceanDetailNormalTex, uOceanRepeatSampler)
 
 // Planar reflection capture (set 2 binding 13): the opaque scene re-rendered from
 // the mirror camera (reflected across the sea plane), at half screen resolution.
 // rgb = reflected scene colour, a = coverage (0 where nothing drew — sky/background
 // — so the surface falls back to the procedural sky dome there). Bound by name
-// "uOceanReflection"; gated by uPlanarReflectionAvailable (0 = use the sky dome).
+// "uOceanReflectionTex"; gated by uPlanarReflectionAvailable (0 = use the sky dome).
 // The mirror camera shares the main projection, so the surface samples it at the
 // fragment's screen UV (the reference's _ReflectionTex). Sampled Linear/Clamp.
-layout(set = 2, binding = 13) uniform sampler2D uOceanReflection;
+layout(set = 2, binding = 13) uniform texture2D uOceanReflectionTex;
+#define uOceanReflection sampler2D(uOceanReflectionTex, ge_linearClampSampler)
 
 // Combined displacement cascade (set 2 binding 14): the 16 tileable FFT cascades
 // summed into a camera-snapped viewer cascade (one slice per LOD) by
 // ocean_combine.comp, so OceanSampleDisplacement samples ~2 slices instead of 16.
 // Has its OWN snapped layout (binding 15) — it can allocate more LODs than the foam
-// cascade. Bound by name "uOceanCombinedDisplacement"; gated by
+// cascade. Bound by name "uOceanCombinedDisplacementTex"; gated by
 // uCombineWavesAvailable. Sampled Linear/Clamp.
-layout(set = 2, binding = 14) uniform sampler2DArray uOceanCombinedDisplacement;
+layout(set = 2, binding = 14) uniform texture2DArray uOceanCombinedDisplacementTex;
+#define uOceanCombinedDisplacement sampler2DArray(uOceanCombinedDisplacementTex, ge_linearClampSampler)
 
 // Combine cascade layout (set 2 binding 15): the snapped per-LOD origin/texel of the
 // combined displacement cascade (separate from the foam OceanCascadeLayout because it
@@ -326,22 +346,33 @@ layout(std140, set = 2, binding = 15) uniform OceanCombineCascadeLayout
 // Local wave override mask (set 2 binding 16): R = wave weight/amplitude,
 // G = horizontal chop scale. Placed by its own layout in the OceanCascadeLayout
 // block (binding 4). Bound by name
-// "uOceanWaveMask"; gated by uWaveMaskAvailable. Default sample is (1,1,0,0).
-layout(set = 2, binding = 16) uniform sampler2DArray uOceanWaveMask;
+// "uOceanWaveMaskTex"; gated by uWaveMaskAvailable. Default sample is (1,1,0,0).
+layout(set = 2, binding = 16) uniform texture2DArray uOceanWaveMaskTex;
+#define uOceanWaveMask sampler2DArray(uOceanWaveMaskTex, ge_linearClampSampler)
 
 // Optional local spectrum displacement cascades (set 2 bindings 17-24). These
 // streams are used by spectrum-authored bounded water bodies; the local FFT mask
 // pages store one blend weight per stream.
-layout(set = 2, binding = 17) uniform sampler2DArray uOceanLocalDisplacement0;
-layout(set = 2, binding = 18) uniform sampler2DArray uOceanLocalDisplacement1;
-layout(set = 2, binding = 19) uniform sampler2DArray uOceanLocalDisplacement2;
-layout(set = 2, binding = 20) uniform sampler2DArray uOceanLocalDisplacement3;
-layout(set = 2, binding = 21) uniform sampler2DArray uOceanLocalDisplacement4;
-layout(set = 2, binding = 22) uniform sampler2DArray uOceanLocalDisplacement5;
-layout(set = 2, binding = 23) uniform sampler2DArray uOceanLocalDisplacement6;
-layout(set = 2, binding = 24) uniform sampler2DArray uOceanLocalDisplacement7;
-layout(set = 2, binding = 25) uniform sampler2DArray uOceanLocalFFTMask0;
-layout(set = 2, binding = 26) uniform sampler2DArray uOceanLocalFFTMask1;
+layout(set = 2, binding = 17) uniform texture2DArray uOceanLocalDisplacement0Tex;
+#define uOceanLocalDisplacement0 sampler2DArray(uOceanLocalDisplacement0Tex, uOceanRepeatSampler)
+layout(set = 2, binding = 18) uniform texture2DArray uOceanLocalDisplacement1Tex;
+#define uOceanLocalDisplacement1 sampler2DArray(uOceanLocalDisplacement1Tex, uOceanRepeatSampler)
+layout(set = 2, binding = 19) uniform texture2DArray uOceanLocalDisplacement2Tex;
+#define uOceanLocalDisplacement2 sampler2DArray(uOceanLocalDisplacement2Tex, uOceanRepeatSampler)
+layout(set = 2, binding = 20) uniform texture2DArray uOceanLocalDisplacement3Tex;
+#define uOceanLocalDisplacement3 sampler2DArray(uOceanLocalDisplacement3Tex, uOceanRepeatSampler)
+layout(set = 2, binding = 21) uniform texture2DArray uOceanLocalDisplacement4Tex;
+#define uOceanLocalDisplacement4 sampler2DArray(uOceanLocalDisplacement4Tex, uOceanRepeatSampler)
+layout(set = 2, binding = 22) uniform texture2DArray uOceanLocalDisplacement5Tex;
+#define uOceanLocalDisplacement5 sampler2DArray(uOceanLocalDisplacement5Tex, uOceanRepeatSampler)
+layout(set = 2, binding = 23) uniform texture2DArray uOceanLocalDisplacement6Tex;
+#define uOceanLocalDisplacement6 sampler2DArray(uOceanLocalDisplacement6Tex, uOceanRepeatSampler)
+layout(set = 2, binding = 24) uniform texture2DArray uOceanLocalDisplacement7Tex;
+#define uOceanLocalDisplacement7 sampler2DArray(uOceanLocalDisplacement7Tex, uOceanRepeatSampler)
+layout(set = 2, binding = 25) uniform texture2DArray uOceanLocalFFTMask0Tex;
+#define uOceanLocalFFTMask0 sampler2DArray(uOceanLocalFFTMask0Tex, ge_linearClampSampler)
+layout(set = 2, binding = 26) uniform texture2DArray uOceanLocalFFTMask1Tex;
+#define uOceanLocalFFTMask1 sampler2DArray(uOceanLocalFFTMask1Tex, ge_linearClampSampler)
 
 #endif // !GE_COMPAT_PROFILE
 

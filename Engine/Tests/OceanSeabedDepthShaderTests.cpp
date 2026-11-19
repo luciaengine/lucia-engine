@@ -197,10 +197,11 @@ TEST_F(OceanSeabedDepthShaderTest, UploadedUintFlagControlsProductionDepthSample
         value.shaderStages = kShaderStageCompute;
         return value;
     };
-    outputLayout.bindings = {binding(0, DescriptorType::StorageBuffer)};
+    // b140: the linear clamp sampler the ocean textures read through (frame_samplers.glsl).
+    outputLayout.bindings = {binding(0, DescriptorType::StorageBuffer), binding(140, DescriptorType::Sampler)};
     oceanLayout.bindings = {binding(1, DescriptorType::StorageBuffer),
                            binding(4, DescriptorType::UniformBuffer),
-                           binding(6, DescriptorType::CombinedImageSampler)};
+                           binding(6, DescriptorType::Texture)};
     ComputePipelineDesc pipelineDesc{};
     pipelineDesc.ComputeShader = std::make_shared<const std::vector<uint8_t>>(bytes);
     for (const auto& layout : {outputLayout, emptyLayout, oceanLayout})
@@ -263,7 +264,8 @@ TEST_F(OceanSeabedDepthShaderTest, UploadedUintFlagControlsProductionDepthSample
     m_Device->UpdateStorageBufferBinding(outputSet, 0, outputBuffer, 0, sizeof(poison));
     m_Device->UpdateStorageBufferBinding(oceanSet, 1, paramsBuffer, 0, sizeof(params));
     m_Device->UpdateBufferBinding(oceanSet, 4, cascadeBuffer, 0, sizeof(cascades));
-    m_Device->UpdateCombinedImageSamplerBinding(oceanSet, 6, m_View, m_Sampler);
+    m_Device->UpdateImageBinding(oceanSet, 6, m_View);
+    m_Device->UpdateSamplerBinding(outputSet, 140, m_Sampler);
 
     struct Case { uint32_t available; uint32_t lodCount; float expected; };
     for (const Case test : {Case{0, 1, kSeabedDepthUnavailableMeters},

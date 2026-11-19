@@ -150,10 +150,10 @@ TEST(DDGIReflectionParallaxTests, CascadedReflectionsBlendWithTheSameFeatherAsIr
     const std::string source = ProbesSource();
     ASSERT_FALSE(source.empty());
 
-    EXPECT_NE(source.find("layout(set = 0, binding = 39) uniform sampler2D ge_ddgiRoughAtlasFine;"),
+    EXPECT_NE(source.find("layout(set = 0, binding = 39) uniform texture2D ge_ddgiRoughAtlasFineTex;"),
               std::string::npos)
         << "C1 rough atlas is no longer a dedicated binding; the world pass cannot feed it";
-    EXPECT_NE(source.find("layout(set = 0, binding = 40) uniform sampler2D ge_ddgiGlossyAtlasFine;"),
+    EXPECT_NE(source.find("layout(set = 0, binding = 40) uniform texture2D ge_ddgiGlossyAtlasFineTex;"),
               std::string::npos)
         << "C1 glossy atlas is no longer a dedicated binding; the world pass cannot feed it";
 

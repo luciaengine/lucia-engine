@@ -77,35 +77,6 @@ float GE_FlooredKernelTapDepth(bool floorBinds, float refDepth, vec2 offsetUV, v
     return floorBinds ? GE_ShadowReceiverPlaneDepth(refDepth, offsetUV, receiverGradient, texelSize) : refDepth;
 }
 
-float GE_ShadowPcf5x5(sampler2DArrayShadow shadowMap, vec2 uv, float layer, float depth, vec2 receiverGradient)
-{
-    vec2 size = vec2(textureSize(shadowMap, 0).xy);
-    vec2 texelPosition = uv * size - 0.5;
-    vec2 base = floor(texelPosition);
-    vec3 offsetsX, offsetsY, weightsX, weightsY;
-    GE_ShadowPcfAxis(fract(texelPosition.x), offsetsX, weightsX);
-    GE_ShadowPcfAxis(fract(texelPosition.y), offsetsY, weightsY);
-
-    float visibility = 0.0;
-    for (int y = 0; y < 3; ++y)
-        for (int x = 0; x < 3; ++x)
-        {
-            vec2 sampleUV = (base + vec2(offsetsX[x], offsetsY[y]) + 0.5) / size;
-            // ShadowComparePCF supplies the reverse-Z lit border (depth zero).
-            // Let the sampler blend border texels too: rejecting the whole
-            // bilinear sample at the UV boundary would change the kernel.
-            visibility += weightsX[x] * weightsY[y] *
-                GE_SHADOW_TAP(shadowMap, vec4(sampleUV, layer, depth +
-                    dot(sampleUV - uv, receiverGradient) + dot(abs(receiverGradient), 1.0 / size)));
-        }
-    return visibility / 256.0;
-}
-
-float GE_ShadowPcf5x5(sampler2DArrayShadow shadowMap, vec2 uv, float layer, float depth)
-{
-    return GE_ShadowPcf5x5(shadowMap, uv, layer, depth, vec2(0.0));
-}
-
 // The authored world offset remains an upper bound. Limit normal displacement
 // to the cascade's reconstruction footprint so fine near shadows stay attached
 // to small receivers. Blend texelWorld between cascades BEFORE calling this

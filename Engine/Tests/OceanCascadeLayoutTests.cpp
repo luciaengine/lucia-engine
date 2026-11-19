@@ -247,10 +247,12 @@ class OceanCascadeLayoutTest : public ::testing::Test
         const auto bytes = LoadProbe("ocean_clip_probe.comp.spv");
         EXPECT_FALSE(bytes.empty());
         DescriptorSetLayoutDesc probeLayout{}, emptyLayout{}, oceanLayout{};
-        probeLayout.bindings = {ComputeBinding(0, DescriptorType::StorageBuffer)};
+        // b140: the linear clamp sampler the ocean textures read through (frame_samplers.glsl).
+    probeLayout.bindings = {ComputeBinding(0, DescriptorType::StorageBuffer),
+                            ComputeBinding(140, DescriptorType::Sampler)};
         oceanLayout.bindings = {ComputeBinding(1, DescriptorType::StorageBuffer),
                                 ComputeBinding(4, DescriptorType::UniformBuffer),
-                                ComputeBinding(10, DescriptorType::CombinedImageSampler)};
+                                ComputeBinding(10, DescriptorType::Texture)};
         ComputePipelineDesc pipelineDesc{};
         pipelineDesc.ComputeShader = std::make_shared<const std::vector<uint8_t>>(bytes);
         for (const auto& layout : {probeLayout, emptyLayout, oceanLayout})
@@ -278,7 +280,8 @@ class OceanCascadeLayoutTest : public ::testing::Test
         m_Device->UpdateStorageBufferBinding(probeSet, 0, probeBuffer, 0, sizeof(probe));
         m_Device->UpdateStorageBufferBinding(oceanSet, 1, paramsBuffer, 0, sizeof(oceanParams));
         m_Device->UpdateBufferBinding(oceanSet, 4, cascadeBuffer, 0, sizeof(cascades));
-        m_Device->UpdateCombinedImageSamplerBinding(oceanSet, 10, clip.GetClipTexture(), clip.GetClipSampler());
+        m_Device->UpdateImageBinding(oceanSet, 10, clip.GetClipTexture());
+        m_Device->UpdateSamplerBinding(probeSet, 140, clip.GetClipSampler());
         DispatchOnce(pipeline, probeSet, oceanSet);
         ClipProbeData read{};
         if (void* mapped = m_Device->MapBuffer(probeBuffer))
@@ -305,10 +308,12 @@ TEST_F(OceanCascadeLayoutTest, ClipRegionEdgesStayPutWhenOnlyTheCameraMoves)
     const auto bytes = LoadProbe("ocean_clip_probe.comp.spv");
     ASSERT_FALSE(bytes.empty());
     DescriptorSetLayoutDesc probeLayout{}, emptyLayout{}, oceanLayout{};
-    probeLayout.bindings = {ComputeBinding(0, DescriptorType::StorageBuffer)};
+    // b140: the linear clamp sampler the ocean textures read through (frame_samplers.glsl).
+    probeLayout.bindings = {ComputeBinding(0, DescriptorType::StorageBuffer),
+                            ComputeBinding(140, DescriptorType::Sampler)};
     oceanLayout.bindings = {ComputeBinding(1, DescriptorType::StorageBuffer),
                             ComputeBinding(4, DescriptorType::UniformBuffer),
-                            ComputeBinding(10, DescriptorType::CombinedImageSampler)};
+                            ComputeBinding(10, DescriptorType::Texture)};
     ComputePipelineDesc pipelineDesc{};
     pipelineDesc.ComputeShader = std::make_shared<const std::vector<uint8_t>>(bytes);
     for (const auto& layout : {probeLayout, emptyLayout, oceanLayout})
@@ -344,7 +349,8 @@ TEST_F(OceanCascadeLayoutTest, ClipRegionEdgesStayPutWhenOnlyTheCameraMoves)
     m_Device->UpdateStorageBufferBinding(probeSet, 0, probeBuffer, 0, sizeof(probe));
     m_Device->UpdateStorageBufferBinding(oceanSet, 1, paramsBuffer, 0, sizeof(params));
     m_Device->UpdateBufferBinding(oceanSet, 4, cascadeBuffer, 0, sizeof(cascades));
-    m_Device->UpdateCombinedImageSamplerBinding(oceanSet, 10, m_View, m_Sampler);
+    m_Device->UpdateImageBinding(oceanSet, 10, m_View);
+    m_Device->UpdateSamplerBinding(probeSet, 140, m_Sampler);
 
     // The camera moves along x by whole texels; only the foam cascade has
     // re-snapped to it.
@@ -378,11 +384,13 @@ TEST_F(OceanCascadeLayoutTest, EachHelperSamplesWithItsOwnCascadeLayout)
     // order: foam, seabed depth, flow, dynamic waves, wave mask, clip, albedo.
     constexpr std::array<uint32_t, kSampledCascades> textureBindings{3, 6, 8, 9, 16, 10, 11};
     DescriptorSetLayoutDesc probeLayout{}, emptyLayout{}, oceanLayout{};
-    probeLayout.bindings = {ComputeBinding(0, DescriptorType::StorageBuffer)};
+    // b140: the linear clamp sampler the ocean textures read through (frame_samplers.glsl).
+    probeLayout.bindings = {ComputeBinding(0, DescriptorType::StorageBuffer),
+                            ComputeBinding(140, DescriptorType::Sampler)};
     oceanLayout.bindings = {ComputeBinding(1, DescriptorType::StorageBuffer),
                             ComputeBinding(4, DescriptorType::UniformBuffer)};
     for (const uint32_t slot : textureBindings)
-        oceanLayout.bindings.push_back(ComputeBinding(slot, DescriptorType::CombinedImageSampler));
+        oceanLayout.bindings.push_back(ComputeBinding(slot, DescriptorType::Texture));
     ComputePipelineDesc pipelineDesc{};
     pipelineDesc.ComputeShader = std::make_shared<const std::vector<uint8_t>>(bytes);
     for (const auto& layout : {probeLayout, emptyLayout, oceanLayout})
@@ -426,7 +434,8 @@ TEST_F(OceanCascadeLayoutTest, EachHelperSamplesWithItsOwnCascadeLayout)
     m_Device->UpdateStorageBufferBinding(oceanSet, 1, paramsBuffer, 0, sizeof(params));
     m_Device->UpdateBufferBinding(oceanSet, 4, cascadeBuffer, 0, sizeof(cascades));
     for (const uint32_t slot : textureBindings)
-        m_Device->UpdateCombinedImageSamplerBinding(oceanSet, slot, m_View, m_Sampler);
+        m_Device->UpdateImageBinding(oceanSet, slot, m_View);
+    m_Device->UpdateSamplerBinding(probeSet, 140, m_Sampler);
 
     DispatchOnce(pipeline, probeSet, oceanSet);
     SlotsProbeData read{};

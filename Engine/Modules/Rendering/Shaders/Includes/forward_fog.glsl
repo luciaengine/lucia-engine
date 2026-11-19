@@ -15,6 +15,8 @@
 #ifndef GE_FORWARD_FOG_GLSL
 #define GE_FORWARD_FOG_GLSL
 
+#include "frame_samplers.glsl"
+
 #ifdef GE_HEIGHT_FOG
 layout(set = 0, binding = 52, std140) uniform HeightFogParamsBlock
 {
@@ -35,7 +37,8 @@ layout(set = 0, binding = 53) uniform sampler2D ge_skyBackdrop;
 // The view's resolved volumetric clouds (R light energy, G transmittance, B the transmittance-weighted
 // mean cloud distance in meters), composited over the scene before the blended surfaces that read it
 // are drawn.
-layout(set = 0, binding = 57) uniform sampler2D ge_volumetricClouds;
+layout(set = 0, binding = 57) uniform texture2D ge_volumetricCloudsTex;
+#define ge_volumetricClouds sampler2D(ge_volumetricCloudsTex, ge_linearClampSampler)
 
 /// A blended surface beyond the clouds' mean distance at its pixel stands behind the clouds, which
 /// were composited over the scene before it was drawn: its contribution takes the clouds'

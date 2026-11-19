@@ -15,6 +15,8 @@
 #ifndef GE_SHADOW_SAMPLING_GLSL
 #define GE_SHADOW_SAMPLING_GLSL
 
+#include "frame_samplers.glsl"
+
 #include "forward_shader_specialization.glsl"
 
 #include "compat_profile.glsl"
@@ -67,7 +69,8 @@ vec3 ge_shadowReceiverDy = vec3(0.0);
 
 #include "shadow_data.glsl"
 
-layout(set = 0, binding = 9) uniform sampler2DArrayShadow ge_shadowMapArray;
+layout(set = 0, binding = 9) uniform texture2DArray ge_shadowMapArrayTex;
+#define ge_shadowMapArray sampler2DArrayShadow(ge_shadowMapArrayTex, ge_shadowCompareSampler)
 
 #if defined(GE_COMPAT_PROFILE)
 // The same cascade array as binding 9, read for depth VALUES (the PCSS blocker
@@ -86,7 +89,8 @@ layout(set = 0, binding = 51) uniform texture2DArray ge_shadowMapRaw;
 // non-RT pipelines reflect no b28 binding and this include stays bit-identical
 // without the keyword.
 #ifdef GE_RT_SHADOW_MASK_ENABLED
-layout(set = 0, binding = 28) uniform sampler2D ge_rtShadowMask;
+layout(set = 0, binding = 28) uniform texture2D ge_rtShadowMaskTex;
+#define ge_rtShadowMask sampler2D(ge_rtShadowMaskTex, ge_pointClampSampler)
 #endif
 
 // MSM4 moments array (RGBA16_UNORM). Populated by msm_write +
@@ -95,7 +99,8 @@ layout(set = 0, binding = 28) uniform sampler2D ge_rtShadowMask;
 // layout but the texture content is stale / undefined — the shader
 // dispatch on quality==4 only fires when CPU has confirmed valid
 // moments via the BuildShadowDataGPU fallback chain.
-layout(set = 0, binding = 10) uniform sampler2DArray ge_shadowMomentsArray;
+layout(set = 0, binding = 10) uniform texture2DArray ge_shadowMomentsArrayTex;
+#define ge_shadowMomentsArray sampler2DArray(ge_shadowMomentsArrayTex, ge_linearClampSampler)
 
 // Per-cascade glass transmittance for translucent shadows (RGBA8 colour array,
 // parallel to the depth cascades). The glass-only light-space tint pass
@@ -103,7 +108,8 @@ layout(set = 0, binding = 10) uniform sampler2DArray ge_shadowMomentsArray;
 // transmissionColor*weight here, depth-tested against the opaque cascade so only glass
 // BETWEEN the light and the receiver contributes. RGB = the tint the glass lets through;
 // white = no glass. Sampled with a plain linear sampler (not the depth-compare sampler).
-layout(set = 0, binding = 11) uniform sampler2DArray ge_transmittanceShadowArray;
+layout(set = 0, binding = 11) uniform texture2DArray ge_transmittanceShadowArrayTex;
+#define ge_transmittanceShadowArray sampler2DArray(ge_transmittanceShadowArrayTex, ge_linearClampSampler)
 
 // PCSS reads raw shadow-map depth via texelFetch on the bindless texture array
 // (base index in ge_shadowDebug.y). Declared once via the shared include.
@@ -181,6 +187,8 @@ float GE_TerrainShadow(vec3 posRel, float maxPenumbraRadius)
 #include "shadow_cascade_blend.glsl"
 #include "shadow_distance_fade.glsl"
 #include "shadow_filter.glsl"
+#define GE_SHADOW_PCF_MAP ge_shadowMapArray
+#include "shadow_pcf.glsl"
 
 #include "shadow_pcss_taps.glsl"
 
@@ -842,7 +850,7 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
     vec3 shadowDy = (receiverToShadow * receiverDy) * vec3(0.5, -0.5, 1.0);
     vec2 receiverGradient = GE_ShadowReceiverPlaneGradient(shadowDx, shadowDy);
     if (quality != 1)
-        return GE_ShadowPcf5x5(ge_shadowMapArray, shadowUV, layer, refDepth, receiverGradient);
+        return GE_ShadowPcf5x5(shadowUV, layer, refDepth, receiverGradient);
 
     // Grid3x3 keeps its compact box kernel.
     float shadow = 0.0;
@@ -888,7 +896,8 @@ int GE_ShadowDebugMode()
 // Returns 1.0 (fully lit) to 0.0 (fully shadowed), with cross-cascade blending
 // near split boundaries and the distance fade before MaxShadowDistance.
 #ifdef GE_SCREEN_SPACE_SHADOWS_ENABLED
-layout(set = 0, binding = 48) uniform usampler2D ge_screenSpaceShadowMask;
+layout(set = 0, binding = 48) uniform utexture2D ge_screenSpaceShadowMaskTex;
+#define ge_screenSpaceShadowMask usampler2D(ge_screenSpaceShadowMaskTex, ge_pointClampSampler)
 #endif
 #if defined(GE_SCREEN_SPACE_SHADOWS_ENABLED) || (defined(GE_VIRTUAL_SHADOW_MAPS) && defined(GE_VIRTUAL_SHADOW_SUN_MASK))
 #include "prepass_receiver_mask.glsl"

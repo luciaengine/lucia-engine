@@ -85,10 +85,13 @@ TEST_F(VirtualShadowLookupTest, FiltersNonAdjacentLayersAndSignalsMissingPages)
     auto shader = package.stageBytes.find("cs");
     ASSERT_NE(shader, package.stageBytes.end());
 
-    constexpr std::array types{DescriptorType::CombinedImageSampler, DescriptorType::StorageBuffer,
+    // The atlas is a separate image at b0 and b61; b142 and b141 are the point and compare samplers
+    // (frame_samplers.glsl).
+    constexpr std::array types{DescriptorType::Texture,       DescriptorType::StorageBuffer,
                                DescriptorType::StorageBuffer, DescriptorType::StorageBuffer,
-                               DescriptorType::CombinedImageSampler, DescriptorType::UniformBuffer};
-    constexpr std::array bindings{0u, 1u, 2u, 60u, 61u, 8u};
+                               DescriptorType::Texture,       DescriptorType::UniformBuffer,
+                               DescriptorType::Sampler,       DescriptorType::Sampler};
+    constexpr std::array bindings{0u, 1u, 2u, 60u, 61u, 8u, 142u, 141u};
     DescriptorSetLayoutDesc layout{};
     for (uint32_t i = 0; i < types.size(); ++i)
     {
@@ -175,11 +178,13 @@ TEST_F(VirtualShadowLookupTest, FiltersNonAdjacentLayersAndSignalsMissingPages)
     set.layout = layout;
     m_Set = m_Device->CreateDescriptorSet(set);
     ASSERT_TRUE(m_Set.IsValid());
-    m_Device->UpdateCombinedImageSamplerBinding(m_Set, 0, m_Depth, m_Sampler);
+    m_Device->UpdateImageBinding(m_Set, 0, m_Depth);
+    m_Device->UpdateSamplerBinding(m_Set, 142, m_Sampler);
     m_Device->UpdateStorageBufferBinding(m_Set, 1, pageTable, 0, sizeof(table));
     m_Device->UpdateStorageBufferBinding(m_Set, 2, output, 0, sizeof(expected));
     m_Device->UpdateStorageBufferBinding(m_Set, 60, metadata, 0, sizeof(projections));
-    m_Device->UpdateCombinedImageSamplerBinding(m_Set, 61, m_Depth, m_ComparisonSampler);
+    m_Device->UpdateImageBinding(m_Set, 61, m_Depth);
+    m_Device->UpdateSamplerBinding(m_Set, 141, m_ComparisonSampler);
     m_Device->UpdateBufferBinding(m_Set, 8, shadowConstants, 0, sizeof(shadowData));
 
     ShaderPackage depthPackage{};

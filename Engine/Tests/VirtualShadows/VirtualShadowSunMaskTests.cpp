@@ -244,9 +244,12 @@ void VirtualShadowSunMaskTest::CompareMaskWithLookup(float quality, float tanHal
     ASSERT_FALSE(fixture.Probes.empty());
 
     using Type = DescriptorType;
-    const auto virtualBindings = {std::pair{8u, Type::UniformBuffer}, std::pair{58u, Type::CombinedImageSampler},
+    // The atlas is a separate image at b58 and b61; b142 and b141 are the point and compare samplers
+    // (frame_samplers.glsl).
+    const auto virtualBindings = {std::pair{8u, Type::UniformBuffer}, std::pair{58u, Type::Texture},
                                   std::pair{59u, Type::StorageBuffer}, std::pair{60u, Type::StorageBuffer},
-                                  std::pair{61u, Type::CombinedImageSampler}};
+                                  std::pair{61u, Type::Texture},       std::pair{141u, Type::Sampler},
+                                  std::pair{142u, Type::Sampler}};
     DescriptorSetLayoutDesc maskLayout = Layout({{0u, Type::CombinedImageSampler}, {1u, Type::StorageImage},
                                                  {2u, Type::UniformBuffer}});
     DescriptorSetLayoutDesc referenceLayout = Layout({{0u, Type::StorageBuffer}, {1u, Type::StorageBuffer},
@@ -352,10 +355,12 @@ void VirtualShadowSunMaskTest::CompareMaskWithLookup(float quality, float tanHal
     for (const auto set : {maskSet, referenceSet})
     {
         m_Device->UpdateBufferBinding(set, 8, shadowBuffer, 0, sizeof(shadowData));
-        m_Device->UpdateCombinedImageSamplerBinding(set, 58, atlas, pointSampler);
+        m_Device->UpdateImageBinding(set, 58, atlas);
+        m_Device->UpdateSamplerBinding(set, 142, pointSampler);
         m_Device->UpdateStorageBufferBinding(set, 59, tableBuffer, 0, sizeof(table));
         m_Device->UpdateStorageBufferBinding(set, 60, projectionBuffer, 0, sizeof(projections));
-        m_Device->UpdateCombinedImageSamplerBinding(set, 61, atlas, compareSampler);
+        m_Device->UpdateImageBinding(set, 61, atlas);
+        m_Device->UpdateSamplerBinding(set, 141, compareSampler);
     }
     m_Device->UpdateCombinedImageSamplerBinding(maskSet, 0, depth, pointSampler);
     m_Device->UpdateStorageImageBinding(maskSet, 1, mask);
@@ -494,7 +499,8 @@ std::vector<glm::vec2> VirtualShadowSunMaskTest::ReadMask(const std::vector<uint
 {
     using Type = DescriptorType;
     const DescriptorSetLayoutDesc layout = Layout({{0u, Type::StorageBuffer}, {1u, Type::StorageBuffer},
-                                                   {2u, Type::UniformBuffer}, {66u, Type::CombinedImageSampler}});
+                                                   {2u, Type::UniformBuffer}, {66u, Type::Texture},
+                                                   {142u, Type::Sampler}});
     const auto pipeline = CreatePipeline("Shaders/virtual_shadow_sun_mask_read_test.shaderpkg", layout);
     TextureDesc maskDesc{};
     maskDesc.width = maskDesc.height = side;
@@ -525,7 +531,8 @@ std::vector<glm::vec2> VirtualShadowSunMaskTest::ReadMask(const std::vector<uint
     m_Device->UpdateStorageBufferBinding(set, 0, fragmentBuffer, 0, fragmentBytes);
     m_Device->UpdateStorageBufferBinding(set, 1, resultBuffer, 0, resultBytes);
     m_Device->UpdateBufferBinding(set, 2, params, 0, sizeof(count));
-    m_Device->UpdateCombinedImageSamplerBinding(set, 66, texture, sampler);
+    m_Device->UpdateImageBinding(set, 66, texture);
+    m_Device->UpdateSamplerBinding(set, 142, sampler);
 
     auto commands = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
     commands->Begin();

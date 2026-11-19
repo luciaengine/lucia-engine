@@ -674,11 +674,8 @@ bool OceanRenderFeature::Initialize(::GameEngine::Rendering::IDevice* device)
     if (!m_AlbedoReady)
         Logger::Log::Warning("OceanRenderFeature: albedo init failed; surface albedo off");
 
-    // Shared Linear/Repeat sampler for the user foam + caustics texture overrides
-    // (both tile). Created once; the override textures are resolved per frame by the
-    // extraction system and bound through this sampler by the contributor.
-    m_UserTextureSampler = device->CreateSampler(
-        Rendering::SamplerDesc::MaterialLinearRepeat("Ocean_UserTexture_Sampler"));
+    // The repeat sampler of the ocean set: every tiling texture reads through it.
+    m_RepeatSampler = device->CreateSampler(Rendering::SamplerDesc::MaterialLinearRepeat("Ocean_Repeat_Sampler"));
 
     m_Initialized = true;
     return true;

@@ -58,14 +58,16 @@ constexpr Vec4 kOccludedOverClear{0.5f, 0.25f, 10.0f, 100.0f};
 constexpr Vec4 kLowerLayerColour{1, 0, 0, 1};
 constexpr Vec4 kUpperLayerColour{0, 1, 0, 1};
 
-constexpr std::array<std::pair<uint32_t, DescriptorType>, 14> kBindings{{
-    {0, DescriptorType::StorageBuffer},         {1, DescriptorType::StorageBuffer},
-    {29, DescriptorType::CombinedImageSampler}, {30, DescriptorType::UniformBuffer},
-    {31, DescriptorType::CombinedImageSampler}, {32, DescriptorType::StorageBuffer},
-    {33, DescriptorType::CombinedImageSampler}, {34, DescriptorType::UniformBuffer},
-    {35, DescriptorType::CombinedImageSampler}, {36, DescriptorType::StorageBuffer},
-    {37, DescriptorType::CombinedImageSampler}, {38, DescriptorType::CombinedImageSampler},
-    {39, DescriptorType::CombinedImageSampler}, {40, DescriptorType::CombinedImageSampler},
+// The atlases are separate images over the shared linear clamp sampler at b140 (frame_samplers.glsl).
+constexpr std::array<std::pair<uint32_t, DescriptorType>, 15> kBindings{{
+    {0, DescriptorType::StorageBuffer},  {1, DescriptorType::StorageBuffer},
+    {29, DescriptorType::Texture},       {30, DescriptorType::UniformBuffer},
+    {31, DescriptorType::Texture},       {32, DescriptorType::StorageBuffer},
+    {33, DescriptorType::Texture},       {34, DescriptorType::UniformBuffer},
+    {35, DescriptorType::Texture},       {36, DescriptorType::StorageBuffer},
+    {37, DescriptorType::Texture},       {38, DescriptorType::Texture},
+    {39, DescriptorType::Texture},       {40, DescriptorType::Texture},
+    {140, DescriptorType::Sampler},
 }};
 
 // One value per probe tile, laid out as GE_DDGIProbeTileOriginRes addresses it.
@@ -205,9 +207,10 @@ class DDGIMomentPairComputeTest : public ::testing::Test
         for (uint32_t binding : {32u, 36u})
             device->UpdateStorageBufferBinding(ds, binding, stateBuffer, 0, probeState.size() * sizeof(Vec4));
         for (uint32_t binding : {31u, 35u})
-            device->UpdateCombinedImageSamplerBinding(ds, binding, depth, sampler);
+            device->UpdateImageBinding(ds, binding, depth);
         for (uint32_t binding : {29u, 33u, 37u, 38u, 39u, 40u})
-            device->UpdateCombinedImageSamplerBinding(ds, binding, colour, sampler);
+            device->UpdateImageBinding(ds, binding, colour);
+        device->UpdateSamplerBinding(ds, 140, sampler);
         commands->SetPipeline(pipeline);
         commands->BindDescriptorSet(0, ds, pipeline);
         commands->Dispatch(1, 1, 1);
