@@ -1784,7 +1784,6 @@ bool AssetManager::ReleaseTransientAsset(const GUID& requestedGuid)
     const AssetType type = released->GetType();
     const std::string path = released->GetPath().string();
     released->Unload();
-    UpdateMemoryStatsIncremental(released, false);
     released.reset();
     DispatchWithRedirectSources(AssetEvents::AssetUnloaded(guid, type, path));
     return true;
@@ -1828,73 +1827,6 @@ void AssetManager::SetHotReloadEnabled(bool enabled)
     // File watching is provided by FileWatchingService. We keep the subscription active
     // and only toggle whether change events schedule reloads of loaded assets.
     Logger::Log::Info("Asset hot reloading {}", enabled ? "enabled" : "disabled");
-}
-
-AssetManager::MemoryStats AssetManager::GetMemoryStats() const
-{
-    // Update cache if needed (lock-free check first)
-    if (m_StatsNeedUpdate.load(std::memory_order_acquire))
-    {
-        UpdateMemoryStatsCache();
-    }
-
-    MemoryStats stats{};
-    stats.LoadedAssetCount = m_CachedAssetCount.load(std::memory_order_relaxed);
-    stats.TotalMemoryUsed = m_CachedTotalMemory.load(std::memory_order_relaxed);
-    stats.LastUpdated = std::chrono::steady_clock::now();
-
-    // Copy cached memory by type (this is the only part that needs a brief lock)
-    {
-        std::lock_guard<std::mutex> lock(m_StatsCacheMutex);
-        for (const auto& [type, memory] : m_CachedMemoryByType)
-        {
-            stats.MemoryByType[type] = memory.load(std::memory_order_relaxed);
-        }
-    }
-
-    return stats;
-}
-
-AssetManager::MemoryStats AssetManager::RecalculateMemoryStats() const
-{
-    MemoryStats stats{};
-    std::shared_lock<std::shared_mutex> lock(m_LoadedAssetsMutex);
-
-    stats.LoadedAssetCount = m_LoadedAssets.size();
-    stats.TotalMemoryUsed = 0;
-    stats.LastUpdated = std::chrono::steady_clock::now();
-
-    // Calculate actual memory usage from loaded assets
-    for (const auto& [guid, entry] : m_LoadedAssets)
-    {
-        const auto& asset = entry.Instance;
-        if (asset)
-        {
-            uint64 assetMemory = asset->GetMemoryUsage();
-            stats.TotalMemoryUsed += assetMemory;
-
-            // Track by asset type
-            AssetType type = asset->GetType();
-            stats.MemoryByType[type] += assetMemory;
-        }
-    }
-
-    // Update cache with fresh values
-    m_CachedAssetCount.store(stats.LoadedAssetCount, std::memory_order_relaxed);
-    m_CachedTotalMemory.store(stats.TotalMemoryUsed, std::memory_order_relaxed);
-
-    {
-        std::lock_guard<std::mutex> cacheLock(m_StatsCacheMutex);
-        m_CachedMemoryByType.clear();
-        for (const auto& [type, memory] : stats.MemoryByType)
-        {
-            m_CachedMemoryByType[type].store(memory, std::memory_order_relaxed);
-        }
-    }
-
-    m_StatsNeedUpdate.store(false, std::memory_order_release);
-
-    return stats;
 }
 
 SharedPtr<Asset> AssetManager::CreateAsset(const AssetMetadata& metadata)
@@ -2815,31 +2747,19 @@ void AssetManager::RegisterLoadedAsset(const GUID& guid, SharedPtr<Asset> asset)
         profileLock.OnAcquired();
         m_LoadedAssets.insert_or_assign(key, LoadedAssetEntry{asset, transient});
     }
-
-    // Update memory statistics incrementally (lock-free)
-    UpdateMemoryStatsIncremental(asset, true);
 }
 
 void AssetManager::UnregisterLoadedAsset(const GUID& guid)
 {
+    // Declared before the lock, so the last reference to the asset is released after the lock.
     SharedPtr<Asset> removedAsset;
-
-    {
-        std::unique_lock<std::shared_mutex> lock(m_LoadedAssetsMutex);
-        auto it = m_LoadedAssets.find(guid);
-        if (it != m_LoadedAssets.end())
-        {
-            removedAsset = it->second.Instance;
-            removedAsset->Unload();
-            m_LoadedAssets.erase(it);
-        }
-    }
-
-    // Update memory statistics incrementally (lock-free)
-    if (removedAsset)
-    {
-        UpdateMemoryStatsIncremental(removedAsset, false);
-    }
+    std::unique_lock<std::shared_mutex> lock(m_LoadedAssetsMutex);
+    auto it = m_LoadedAssets.find(guid);
+    if (it == m_LoadedAssets.end())
+        return;
+    removedAsset = it->second.Instance;
+    removedAsset->Unload();
+    m_LoadedAssets.erase(it);
 }
 
 // ========================================
@@ -2944,67 +2864,6 @@ AssetLoadHandle AssetManager::CreateLoadHandle(const GUID& assetGuid, AssetLoadR
     }
 
     return handle;
-}
-
-void AssetManager::UpdateMemoryStatsCache() const
-{
-    // Double-checked locking pattern for cache updates
-    if (!m_StatsNeedUpdate.load(std::memory_order_acquire))
-    {
-        return; // Another thread already updated
-    }
-
-    std::lock_guard<std::mutex> lock(m_StatsCacheMutex);
-
-    // Check again after acquiring lock
-    if (!m_StatsNeedUpdate.load(std::memory_order_relaxed))
-    {
-        return;
-    }
-
-    // Force recalculation (this will update the cache)
-    RecalculateMemoryStats();
-}
-
-void AssetManager::UpdateMemoryStatsIncremental(const SharedPtr<Asset>& asset, bool added) const
-{
-    if (!asset)
-        return;
-
-    uint64 assetMemory = asset->GetMemoryUsage();
-    AssetType assetType = asset->GetType();
-
-    if (added)
-    {
-        // Asset was added
-        m_CachedAssetCount.fetch_add(1, std::memory_order_relaxed);
-        m_CachedTotalMemory.fetch_add(assetMemory, std::memory_order_relaxed);
-
-        // Update type-specific counter
-        std::lock_guard<std::mutex> lock(m_StatsCacheMutex);
-        if (m_CachedMemoryByType.find(assetType) == m_CachedMemoryByType.end())
-        {
-            m_CachedMemoryByType[assetType].store(assetMemory, std::memory_order_relaxed);
-        }
-        else
-        {
-            m_CachedMemoryByType[assetType].fetch_add(assetMemory, std::memory_order_relaxed);
-        }
-    }
-    else
-    {
-        // Asset was removed
-        m_CachedAssetCount.fetch_sub(1, std::memory_order_relaxed);
-        m_CachedTotalMemory.fetch_sub(assetMemory, std::memory_order_relaxed);
-
-        // Update type-specific counter
-        std::lock_guard<std::mutex> lock(m_StatsCacheMutex);
-        auto it = m_CachedMemoryByType.find(assetType);
-        if (it != m_CachedMemoryByType.end())
-        {
-            it->second.fetch_sub(assetMemory, std::memory_order_relaxed);
-        }
-    }
 }
 
 SharedPtr<Asset> AssetManager::GetLoadedAsset(const GUID& guid, bool pinResidency) const
