@@ -679,6 +679,52 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     m_Textures.FlushPendingUploads();
 }
 
+TEST_F(TextureCoverageGPU, AMaterialMipStreamOfABlockCompressedTextureMatchesTheDirectUpload)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    if (!IsTextureCookEncoderAvailable())
+        GTEST_SKIP() << "BC encoder unavailable";
+    if (!m_Device->GetCapabilities().supportsTextureCompressionBC)
+        GTEST_SKIP() << "the device samples no BC format";
+    // The tail of a BC7 texture of 512 texels a side is about 85 KiB, and the texture about 341 KiB.
+    constexpr uint64 kTailBudgetBytes = 128 * 1024;
+    constexpr uint64 kFullBudgetBytes = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kTailBudgetBytes);
+    const fs::path image = Image(false, 512);
+    const GUID texture = Register(image, false);
+    ASSERT_FALSE(texture.IsNull());
+    Set(image, kTextureCompressionMetaKey, "bc7");
+
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingBlockCompressed");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    const auto tail = WaitForBoundTexture(*material, slot);
+    ASSERT_EQ(WidthOf(tail), 256u);
+    const auto loaded =
+        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->GetFormat(), GameEngine::TextureFormat::BC7);
+    EXPECT_EQ(loaded->GetPixelData(), nullptr);
+
+    const auto direct = WaitForUpload(texture);
+    ASSERT_TRUE(direct.IsValid());
+    EXPECT_EQ(Render(tail, 16, 16, 0), Render(direct, 16, 16, 1));
+
+    Access::SetMipBudget(m_Textures, kFullBudgetBytes);
+    SettleMipStreams();
+    const auto promoted = material->GetTexture(slot);
+    ASSERT_EQ(WidthOf(promoted), 512u);
+    EXPECT_EQ(Render(promoted, 16, 16, 0), Render(direct, 16, 16, 0));
+    EXPECT_EQ(Render(promoted, 16, 16, 3), Render(direct, 16, 16, 3));
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
 TEST_F(TextureCoverageGPU, AnEvictedStreamOfAReleasedTextureStartsAgainFromItsFile)
 {
     using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
@@ -1032,6 +1078,47 @@ TEST_F(TextureCoverageGPU, AssigningATextureThatIsNotLoadedCooksItOnAWorkerAndBi
     ASSERT_NE(bound, nullptr);
     EXPECT_TRUE(bound->GetTexture(HashStringId("albedoMap")).IsValid());
     EXPECT_EQ(CookedArtifacts(texture), 1u) << "the assign uploaded a raw decode instead of cooking";
+}
+
+TEST_F(TextureCoverageGPU, AssigningATextureThatIsAlreadyLoadedBindsIt)
+{
+    const fs::path path = Image();
+    const GUID texture = Register(path, false);
+    auto& assets = EngineCore::GetInstance().GetAssetManager();
+    auto loaded = std::make_shared<std::atomic<bool>>(false);
+    AssetLoadHandle handle =
+        assets.LoadAsset(texture, [loaded](Result<SharedPtr<Asset>, AssetError>) { loaded->store(true); });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!loaded->load() && std::chrono::steady_clock::now() < deadline)
+    {
+        assets.Update();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_NE(assets.GetAsset(texture), nullptr) << "the texture did not load";
+
+    MaterialDocument doc{};
+    doc.schemaVersion = 3;
+    doc.materialName = "TextureAssignLoaded";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    const GUID material = GUID::Generate();
+    ASSERT_NE(m_Materials.Register(material, doc), nullptr);
+    doc.textures["albedoMap"] = texture.ToString();
+    m_Textures.UpdateMaterialTextures(material, doc);
+
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (!m_Textures.IsMaterialTextureBindingComplete(material) && std::chrono::steady_clock::now() < deadline)
+    {
+        assets.Update();
+        m_Textures.FlushPendingUploads();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_TRUE(m_Textures.IsMaterialTextureBindingComplete(material)) << "the loaded texture never bound";
+    const Engine::Renderer::Material* bound = m_Materials.Find(material);
+    ASSERT_NE(bound, nullptr);
+    const TextureHandle albedo = bound->GetTexture(HashStringId("albedoMap"));
+    ASSERT_TRUE(albedo.IsValid());
+    EXPECT_EQ(WidthOf(albedo), 64u);
 }
 
 // GetOrUpload runs on the render thread and on extraction workers: a cook source it has not
