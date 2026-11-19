@@ -1548,6 +1548,7 @@ if(EMSCRIPTEN)
 	# chrome is not an editor.
 	set(_ge_webeditor_preload
 		"SHELL:--preload-file ${CMAKE_CURRENT_SOURCE_DIR}/Assets@/Assets"
+		"SHELL:--preload-file ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Assets/UI@/Assets/UI"
 		"SHELL:--preload-file ${CMAKE_SOURCE_DIR}/Engine/Assets/SkeletonProfiles@/Assets/SkeletonProfiles"
 		# The UI faces ship cut down here, and only here: full Roboto is ten
 		# faces of ~2770 codepoints each, 1.9 MB of the compressed payload,
@@ -1688,6 +1689,7 @@ if(EMSCRIPTEN)
 	# re-globs when files are added or removed.
 	file(GLOB_RECURSE _ge_webeditor_preload_files CONFIGURE_DEPENDS
 		"${CMAKE_CURRENT_SOURCE_DIR}/Assets/*"
+		"${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Assets/UI/*"
 		"${CMAKE_CURRENT_SOURCE_DIR}/WebFonts/*"
 		"${CMAKE_CURRENT_SOURCE_DIR}/ProjectTemplates/*"
 		"${CMAKE_SOURCE_DIR}/Engine/Assets/SkeletonProfiles/*"
