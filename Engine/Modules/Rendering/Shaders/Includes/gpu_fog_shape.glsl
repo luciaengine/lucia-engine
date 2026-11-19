@@ -16,9 +16,8 @@
 #ifndef GE_GPU_FOG_SHAPE_GLSL
 #define GE_GPU_FOG_SHAPE_GLSL
 
-// Scene depth bound by RenderServices as the resolved R32F View.DepthResolved.
-// Always single-sample regardless of MSAA mode, so a plain sampler2D reads it.
-layout(set = 0, binding = 17) uniform sampler2D ge_sceneDepth;
+// ge_sceneDepth: the resolved single-sample scene depth that RenderServices binds.
+#include "screen_space.glsl"
 
 float GPUFogRandom(vec2 uv)
 {

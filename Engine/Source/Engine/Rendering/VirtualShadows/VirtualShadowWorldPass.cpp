@@ -103,11 +103,11 @@ void BindVirtualShadowInputs(const RenderGraph::RGFrame& frame, const VirtualSha
     resources.Buffers.push_back({HashStringId("VirtualShadowPageTable"), table, 0, inputs.PageTableBytes});
     resources.Buffers.push_back({HashStringId("VirtualShadowProjections"), inputs.Projections,
                                  inputs.ProjectionsOffset, inputs.ProjectionsBytes});
-    resources.Textures.push_back({HashStringId("ge_virtualShadowDepth"), atlas, inputs.DepthSampler});
-    resources.Textures.push_back({HashStringId("ge_virtualShadowDepthCompare"), atlas, inputs.CompareSampler});
+    resources.Textures.push_back({HashStringId("ge_virtualShadowDepthTex"), atlas, inputs.DepthSampler});
+    resources.Textures.push_back({HashStringId("ge_virtualShadowDepthCompareTex"), atlas, inputs.CompareSampler});
     // R32_UINT: the keyword is set only after the mask pass imported this physical texture.
     if (Rendering::HasKeyword(keywords, MaterialKeyword::VirtualShadowSunMask) && inputs.SunMask.IsValid())
-        resources.Textures.push_back({HashStringId("ge_virtualShadowSunMask"), frame.PhysicalTexture(inputs.SunMask),
+        resources.Textures.push_back({HashStringId("ge_virtualShadowSunMaskTex"), frame.PhysicalTexture(inputs.SunMask),
                                       inputs.DepthSampler});
 }
 } // namespace GameEngine::Engine::Renderer

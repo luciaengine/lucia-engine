@@ -137,7 +137,7 @@ void BindVolumetricFogVolume(RenderGraph::RGPrepareContext& ctx, RenderGraph::RG
     if (!volume.IsValid())
         return;
     if (const TextureHandle texture = ctx.GetTexture(volume); texture.IsValid())
-        res.Textures.push_back({HashStringId("ge_volumetricFog"), texture, sampler});
+        res.Textures.push_back({HashStringId("ge_volumetricFogTex"), texture, sampler});
 }
 
 // Topology for a contributor's colour variant. Mesh-backed contributors carry
@@ -572,6 +572,19 @@ bool RenderServices::BindViewFrameBuffer(Rendering::RenderGraph::RGFrame& frame,
     return true;
 }
 
+void RenderServices::AddFrameSamplers(ResolvedPassResources& resources)
+{
+    // A separate sampler binding reads only the sampler of its entry.
+    const auto add = [&](StringId nameId, SamplerHandle sampler)
+    {
+        if (sampler.IsValid())
+            resources.Textures.push_back({nameId, TextureHandle{}, sampler});
+    };
+    add(HashStringId("ge_linearClampSampler"), m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
+    add(HashStringId("ge_shadowCompareSampler"), GetCascadeShadowSampler());
+    add(HashStringId("ge_pointClampSampler"), m_Textures->GetSampler(Rendering::SamplerPreset::PointClamp));
+}
+
 ResolvedPassResources RenderServices::BuildPassResourcesRG(
     Rendering::RenderGraph::RGFrame& frame,
     Rendering::ViewId viewId,
@@ -732,6 +745,9 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
     if (camBuf.IsValid())
         add(HashStringId("Cam"), camBuf, camOffset, sizeof(CameraData));
 
+    // Bound on every pass whatever the keywords: each frame texture below is a separate image.
+    AddFrameSamplers(resources);
+
     {
         // ge_sceneDepth: prefer the single-sample resolved depth so materials
         // sampling it as sampler2D work at any MSAA level. Targets must be
@@ -761,7 +777,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                     sceneDepth = viewDepth;
             }
         }
-        addTexture(HashStringId("ge_sceneDepth"), sceneDepth,
+        addTexture(HashStringId("ge_sceneDepthTex"), sceneDepth,
                    m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
     }
 
@@ -780,7 +796,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             if (viewGtao.IsValid())
                 gtao = viewGtao;
         }
-        addTexture(HashStringId("ge_gtao"), gtao,
+        addTexture(HashStringId("ge_gtaoTex"), gtao,
                    m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
     }
 
@@ -813,7 +829,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             irradiance = ibl->GetIrradianceCube();
             cubeSampler = ibl->GetCubeSampler();
         }
-        addTexture(HashStringId("ge_volumetricFogIrradiance"), irradiance, cubeSampler);
+        addTexture(HashStringId("ge_volumetricFogIrradianceTex"), irradiance, cubeSampler);
     }
 
     // ge_volumetricClouds: the view's resolved clouds (a pool texture of the graph), for the blended
@@ -821,7 +837,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
     if (HasKeyword(passKeywords, MaterialKeyword::VolumetricClouds) && targets && targets->VolumetricClouds.IsValid())
     {
         const TextureHandle clouds = frame.PhysicalTexture(targets->VolumetricClouds);
-        addTexture(HashStringId("ge_volumetricClouds"), clouds.IsValid() ? clouds : m_Textures->GetDefaultWhiteTexture(),
+        addTexture(HashStringId("ge_volumetricCloudsTex"), clouds.IsValid() ? clouds : m_Textures->GetDefaultWhiteTexture(),
                    m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
     }
 
@@ -840,7 +856,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             if (viewMask.IsValid())
                 mask = viewMask;
         }
-        addTexture(HashStringId("ge_rtShadowMask"), mask,
+        addTexture(HashStringId("ge_rtShadowMaskTex"), mask,
                    m_Textures->GetSampler(Rendering::SamplerPreset::PointClamp));
     }
 
@@ -849,7 +865,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
     {
         // R32_UINT: the keyword is armed only after the service has validated
         // this physical import. A normalized-colour fallback is not type-compatible.
-        addTexture(HashStringId("ge_screenSpaceShadowMask"),
+        addTexture(HashStringId("ge_screenSpaceShadowMaskTex"),
                    frame.PhysicalTexture(vfr->ScreenSpaceShadowMask),
                    m_Textures->GetSampler(Rendering::SamplerPreset::PointClamp));
     }
@@ -867,18 +883,18 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
         TextureHandle sceneColor = m_Textures->GetDefaultBlackTexture();
         if (targets && targets->SceneGrab.IsValid())
             sceneColor = frame.PhysicalTexture(targets->SceneGrab);
-        addTexture(HashStringId("ge_sceneColor"), sceneColor,
+        addTexture(HashStringId("ge_sceneColorTex"), sceneColor,
                    m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
     }
 
     if (HasKeyword(passKeywords, MaterialKeyword::Shadows))
     {
-        const StringId kShadowMapName        = HashStringId("ge_shadowMapArray");
-        const StringId kShadowMomentsName    = HashStringId("ge_shadowMomentsArray");
-        const StringId kAreaShadowMapName    = HashStringId("ge_areaShadowMap");
-        const StringId kAreaShadowMapRawName = HashStringId("ge_areaShadowMapRaw");
-        const StringId kSpotShadowMapName    = HashStringId("ge_spotShadowMap");
-        const StringId kPointShadowMapName   = HashStringId("ge_pointShadowMap");
+        const StringId kShadowMapName        = HashStringId("ge_shadowMapArrayTex");
+        const StringId kShadowMomentsName    = HashStringId("ge_shadowMomentsArrayTex");
+        const StringId kAreaShadowMapName    = HashStringId("ge_areaShadowMapTex");
+        const StringId kAreaShadowMapRawName = HashStringId("ge_areaShadowMapRawTex");
+        const StringId kSpotShadowMapName    = HashStringId("ge_spotShadowMapTex");
+        const StringId kPointShadowMapName   = HashStringId("ge_pointShadowMapTex");
 
         // Prefer this frame's pool import — the SAME physical the cascade arm
         // attached. The feature cache is the second door to the same physical
@@ -934,17 +950,8 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
         // ge_shadowMapArray is declared STATICALLY by every Shadows-keyword
         // receiver, so binding 9 must be written on every such pass or the
         // descriptor keeps the recycled set's previous occupant (the VUID-08114
-        // family). The keyword is blueprint-driven and never consults the shadow
-        // feature, so a Shadows pass can run with no ShadowMap node at all: both
-        // sampler sources above are feature-owned and absent on exactly that
-        // path. RenderServices owns the last resort so the pair is unconditional.
-        SamplerHandle shadowSampler{};
-        if (const auto* shadowRes = m_ViewRegistry.GetViewShadowResources(viewId))
-            shadowSampler = shadowRes->shadowSampler;
-        if (!shadowSampler.IsValid() && feature && feature->IsInitialized())
-            shadowSampler = feature->GetShadowSampler();
-        if (!shadowSampler.IsValid())
-            shadowSampler = GetCascadeShadowSampler();
+        // family). The shared compare sampler (AddFrameSamplers) reads it.
+        const SamplerHandle shadowSampler = GetCascadeShadowSampler();
         if (shadowTex.IsValid() && shadowSampler.IsValid())
         {
             addTexture(kShadowMapName, shadowTex, shadowSampler);
@@ -980,7 +987,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
         // array exists only for views with glass casters; otherwise bind a 1x1 white
         // array so the receiver's tint sample is a no-op. Plain linear sampler (it's a
         // colour array, not depth-compare).
-        const StringId kTransmittanceName = HashStringId("ge_transmittanceShadowArray");
+        const StringId kTransmittanceName = HashStringId("ge_transmittanceShadowArrayTex");
         TextureHandle tintTex{};
         if (vfr && vfr->TransmittanceShadowArray.IsValid())
             tintTex = frame.PhysicalTexture(vfr->TransmittanceShadowArray);
@@ -1052,9 +1059,9 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                                              ? m_FallbackBuffers[HashStringId("Env")]
                                              : ibl->UploadEnvData(m_Device, probeWorld);
 
-            addTexture(HashStringId("ge_irradianceCube"), ibl->GetIrradianceCube(), ibl->GetCubeSampler());
-            addTexture(HashStringId("ge_prefilterCube"), ibl->GetPrefilterCube(), ibl->GetCubeSampler());
-            addTexture(HashStringId("ge_brdfLUT"), ibl->GetBrdfLut(), ibl->GetLutSampler());
+            addTexture(HashStringId("ge_irradianceCubeTex"), ibl->GetIrradianceCube(), ibl->GetCubeSampler());
+            addTexture(HashStringId("ge_prefilterCubeTex"), ibl->GetPrefilterCube(), ibl->GetCubeSampler());
+            addTexture(HashStringId("ge_brdfLUTTex"), ibl->GetBrdfLut(), ibl->GetLutSampler());
             static_assert(std::extent_v<decltype(ViewFrameRG::IblLocalIrradiance)> ==
                           ImageBasedLightingFeature::kMaxLocalProbes);
             // A slot with no capture binds the sky cubes; its Env record has ready = 0.
@@ -1096,15 +1103,6 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                         capture->GetPrefilterMipCount(), ImageBasedLightingFeature::kNumCaptureFaces);
                 }
             }
-            // Compat-profile spellings: ibl.glsl's compat arm declares the trio
-            // as separate images over one standalone sampler (WebGPU's
-            // per-stage sampler budget). Registered unconditionally — the
-            // binder resolves by reflected name, so the unused spelling is
-            // never consumed.
-            addTexture(HashStringId("ge_irradianceCubeTex"), ibl->GetIrradianceCube(), ibl->GetCubeSampler());
-            addTexture(HashStringId("ge_prefilterCubeTex"), ibl->GetPrefilterCube(), ibl->GetCubeSampler());
-            addTexture(HashStringId("ge_brdfLUTTex"), ibl->GetBrdfLut(), ibl->GetCubeSampler());
-            addTexture(HashStringId("ge_iblSampler"), ibl->GetBrdfLut(), ibl->GetCubeSampler());
             add(HashStringId("Env"), envData);
         }
     }
@@ -1136,8 +1134,8 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             }
             else
                 atlasSampler = m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp);
-            addTexture(HashStringId("ge_ddgiIrradianceAtlas"), atlas, atlasSampler);
-            addTexture(HashStringId("ge_ddgiDepthAtlas"), depthAtlas, atlasSampler);
+            addTexture(HashStringId("ge_ddgiIrradianceAtlasTex"), atlas, atlasSampler);
+            addTexture(HashStringId("ge_ddgiDepthAtlasTex"), depthAtlas, atlasSampler);
             // Reflected bindings resolve by the UBO's INSTANCE name (e.g.
             // "Env" for `uniform EnvDataUBO { ... } Env;` above), not its
             // block type name — MaterialBinder.cpp keys off b.Name, which
@@ -1168,11 +1166,11 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             }
             else
                 atlasSamplerFine = m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp);
-            addTexture(HashStringId("ge_ddgiIrradianceAtlasFine"), atlasFine, atlasSamplerFine);
+            addTexture(HashStringId("ge_ddgiIrradianceAtlasFineTex"), atlasFine, atlasSamplerFine);
             // Same instance-vs-block-name fix as C0 above — ddgi_probes.glsl
             // declares `uniform DDGIVolumeDataFine { ... } DDGIVolumeFine;`.
             add(HashStringId("DDGIVolumeFine"), volumeDataFine);
-            addTexture(HashStringId("ge_ddgiDepthAtlasFine"), depthAtlasFine, atlasSamplerFine);
+            addTexture(HashStringId("ge_ddgiDepthAtlasFineTex"), depthAtlasFine, atlasSamplerFine);
             // C1's grid is only allocated while EnableFineCascade is on, but
             // b36 is declared either way — same unconditional bind as C0.
             const auto probeStateFine = ddgi->GetProbeStateBindingFine();
@@ -1193,7 +1191,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 roughAtlas = ddgi->GetRoughAtlas();
             else
                 roughAtlasSampler = reflectionFallbackSampler;
-            addTexture(HashStringId("ge_ddgiRoughAtlas"), roughAtlas, roughAtlasSampler);
+            addTexture(HashStringId("ge_ddgiRoughAtlasTex"), roughAtlas, roughAtlasSampler);
 
             TextureHandle glossyAtlas = m_Textures->GetDefaultBlackTexture();
             SamplerHandle glossyAtlasSampler = ddgiAtlasSampler;
@@ -1201,7 +1199,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 glossyAtlas = ddgi->GetGlossyAtlas();
             else
                 glossyAtlasSampler = reflectionFallbackSampler;
-            addTexture(HashStringId("ge_ddgiGlossyAtlas"), glossyAtlas, glossyAtlasSampler);
+            addTexture(HashStringId("ge_ddgiGlossyAtlasTex"), glossyAtlas, glossyAtlasSampler);
 
             TextureHandle roughAtlasFine = m_Textures->GetDefaultBlackTexture();
             SamplerHandle roughAtlasFineSampler = ddgiAtlasSampler;
@@ -1209,7 +1207,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 roughAtlasFine = ddgi->GetRoughAtlasFine();
             else
                 roughAtlasFineSampler = reflectionFallbackSampler;
-            addTexture(HashStringId("ge_ddgiRoughAtlasFine"), roughAtlasFine, roughAtlasFineSampler);
+            addTexture(HashStringId("ge_ddgiRoughAtlasFineTex"), roughAtlasFine, roughAtlasFineSampler);
 
             TextureHandle glossyAtlasFine = m_Textures->GetDefaultBlackTexture();
             SamplerHandle glossyAtlasFineSampler = ddgiAtlasSampler;
@@ -1217,7 +1215,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 glossyAtlasFine = ddgi->GetGlossyAtlasFine();
             else
                 glossyAtlasFineSampler = reflectionFallbackSampler;
-            addTexture(HashStringId("ge_ddgiGlossyAtlasFine"), glossyAtlasFine, glossyAtlasFineSampler);
+            addTexture(HashStringId("ge_ddgiGlossyAtlasFineTex"), glossyAtlasFine, glossyAtlasFineSampler);
 
             // Scaled glossy-resolve outputs (b41/b42, Includes/ibl.glsl).
             // Same fallback contract as the atlases above: the DDGI keyword's
@@ -1247,24 +1245,11 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                     resolveGatherNormal = gatherNormalPhys;
                 }
             }
-            addTexture(HashStringId("ge_ddgiResolveRough"), resolveRough,
-                       reflectionFallbackSampler);
-            addTexture(HashStringId("ge_ddgiResolveGlossy"), resolveGlossy,
-                       reflectionFallbackSampler);
-            addTexture(HashStringId("ge_ddgiResolveIrradiance"), resolveIrradiance,
-                       reflectionFallbackSampler);
+            addTexture(HashStringId("ge_ddgiResolveRoughTex"), resolveRough, reflectionFallbackSampler);
+            addTexture(HashStringId("ge_ddgiResolveGlossyTex"), resolveGlossy, reflectionFallbackSampler);
+            addTexture(HashStringId("ge_ddgiResolveIrradianceTex"), resolveIrradiance, reflectionFallbackSampler);
             // b59, the upsample's normal guide; the compat profile does not declare it.
-            addTexture(HashStringId("ge_ddgiResolveGatherNormal"), resolveGatherNormal, reflectionFallbackSampler);
-            // Compat spellings: the WebGPU profile declares these as separate texture2D
-            // images over the shared ge_iblSampler (ibl.glsl), so their reflected names carry
-            // the Tex suffix. Both spellings are registered; the binder writes only the one the
-            // active variant declares, exactly as the IBL trio does above.
-            addTexture(HashStringId("ge_ddgiResolveRoughTex"), resolveRough,
-                       reflectionFallbackSampler);
-            addTexture(HashStringId("ge_ddgiResolveGlossyTex"), resolveGlossy,
-                       reflectionFallbackSampler);
-            addTexture(HashStringId("ge_ddgiResolveIrradianceTex"), resolveIrradiance,
-                       reflectionFallbackSampler);
+            addTexture(HashStringId("ge_ddgiResolveGatherNormalTex"), resolveGatherNormal, reflectionFallbackSampler);
         }
     }
 
@@ -1357,7 +1342,7 @@ class RenderServices::WorldPassPreparation
         {
             if (const TextureHandle depth = m_Context.GetTexture(m_PrepassDepth); depth.IsValid())
                 m_Data->Inputs.PassResources.Textures.push_back(
-                    {HashStringId("ge_prepassDepth"), depth, m_PrepassDepthSampler});
+                    {HashStringId("ge_prepassDepthTex"), depth, m_PrepassDepthSampler});
         }
         m_UploadedCompatListBytes =
             UploadedCompatInstanceListBytes(m_Data->Inputs.PassResources);

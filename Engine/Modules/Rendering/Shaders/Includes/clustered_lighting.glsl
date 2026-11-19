@@ -28,6 +28,8 @@
 #ifndef GE_CLUSTERED_LIGHTING_GLSL
 #define GE_CLUSTERED_LIGHTING_GLSL
 
+#include "frame_samplers.glsl"
+
 #include "forward_shader_specialization.glsl"
 
 #include "compat_profile.glsl"
@@ -44,14 +46,16 @@ layout(set = 0, binding = 14, std140) uniform AreaShadowData
     vec4 ge_areaShadowParams;  // x=enabled, y=cluster-light index, z=depthBias, w=normalBias
     vec4 ge_areaShadowParams2; // x=resolution, y=range, z=light size, w=unused
 };
-layout(set = 0, binding = 15) uniform sampler2DShadow ge_areaShadowMap;
+layout(set = 0, binding = 15) uniform texture2D ge_areaShadowMapTex;
+#define ge_areaShadowMap sampler2DShadow(ge_areaShadowMapTex, ge_shadowCompareSampler)
 #if !defined(GE_COMPAT_PROFILE)
 // Raw (non-comparison) view of the area shadow map, read by the PCSS blocker
 // search. Omitted under the compat profile: WebGPU only lets a depth texture be
 // bound to a depth or comparison binding, and GLSL cannot declare a depth
 // texture that is sampled without comparison, so the blocker search is replaced
 // by the light-size penumbra estimate below.
-layout(set = 0, binding = 16) uniform sampler2D ge_areaShadowMapRaw;
+layout(set = 0, binding = 16) uniform texture2D ge_areaShadowMapRawTex;
+#define ge_areaShadowMapRaw sampler2D(ge_areaShadowMapRawTex, ge_pointClampSampler)
 #endif
 layout(set = 0, binding = 23, std140) uniform SpotShadowData
 {
@@ -59,7 +63,8 @@ layout(set = 0, binding = 23, std140) uniform SpotShadowData
     vec4 ge_spotShadowParams;  // x=enabled, y=cluster-light index, z=depthBias, w=normalBias
     vec4 ge_spotShadowParams2; // x=resolution, y=near plane, z=far plane, w=unused
 };
-layout(set = 0, binding = 24) uniform sampler2DShadow ge_spotShadowMap;
+layout(set = 0, binding = 24) uniform texture2D ge_spotShadowMapTex;
+#define ge_spotShadowMap sampler2DShadow(ge_spotShadowMapTex, ge_shadowCompareSampler)
 #endif
 
 // Light data matching the CPU-side LightUploadNode layout. posRange.xyz is relative to the view's

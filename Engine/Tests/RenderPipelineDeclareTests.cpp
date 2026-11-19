@@ -13517,8 +13517,8 @@ bool NamesAny(const std::vector<std::string>& names, std::initializer_list<std::
 }
 
 constexpr std::initializer_list<std::string_view> kShadowAndIblSlots = {
-    "ge_shadowMapArray", "ge_shadowMomentsArray", "ge_transmittanceShadowArray", "ge_areaShadowMap",
-    "ge_spotShadowMap",  "ge_pointShadowMap",     "ge_irradianceCubeTex",        "ge_prefilterCubeTex",
+    "ge_shadowMapArrayTex", "ge_shadowMomentsArrayTex", "ge_transmittanceShadowArrayTex", "ge_areaShadowMapTex",
+    "ge_spotShadowMapTex",  "ge_pointShadowMapTex",     "ge_irradianceCubeTex",           "ge_prefilterCubeTex",
     "ge_brdfLUTTex"};
 
 // What a fragment-less prepass head declares: the meta its binder walks and the bindings in it that no

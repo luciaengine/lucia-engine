@@ -142,9 +142,9 @@ class ImageBasedLightingFeature final : public IRenderFeature
     static_assert((kCaptureFrameSlots & (kCaptureFrameSlots - 1u)) == 0u, "kCaptureFrameSlots must be a power of two");
     static constexpr uint32_t kMaxLocalProbes = 2;
     static constexpr const char* kLocalIrradianceNames[kMaxLocalProbes] = {
-        "ge_localIrradiance0", "ge_localIrradiance1"};
+        "ge_localIrradiance0Tex", "ge_localIrradiance1Tex"};
     static constexpr const char* kLocalPrefilterNames[kMaxLocalProbes] = {
-        "ge_localPrefilter0", "ge_localPrefilter1"};
+        "ge_localPrefilter0Tex", "ge_localPrefilter1Tex"};
     void UpdateLocalProbes(RenderServices& services, uint64_t worldId,
                           std::span<const SceneReflectionProbeEnvironmentDesc> probes);
     void ScheduleLocalProbeBakes(const EnvironmentBakeContext& ctx);

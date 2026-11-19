@@ -546,14 +546,25 @@ class FogForwardParity : public ::testing::Test
                     image = m_DrawDepth.Handle.IsValid() ? m_DrawDepth : m_Depth;
                 else if (binding.Name == "uSkyBackdrop" || binding.Name == "ge_skyBackdrop")
                     image = m_Backdrop;
-                else if (binding.Name == "uIntegrated" || binding.Name == "ge_volumetricFog")
+                else if (binding.Name == "uIntegrated")
                     image = m_Volume;
-                else if (binding.Name == "uFogIrradianceCube" || binding.Name == "ge_volumetricFogIrradiance")
+                else if (binding.Name == "uFogIrradianceCube")
                     image = m_Cube;
                 else
                     throw std::runtime_error("unexpected texture " + binding.Name + " in " + shader);
                 m_Device->UpdateCombinedImageSamplerBinding(ds, binding.Binding, image.Handle, m_Sampler);
             }
+            else if (binding.Type == ShaderMetaBindingType::kSampledImage)
+            {
+                if (binding.Name == "ge_volumetricFogTex")
+                    m_Device->UpdateImageBinding(ds, binding.Binding, m_Volume.Handle);
+                else if (binding.Name == "ge_volumetricFogIrradianceTex")
+                    m_Device->UpdateImageBinding(ds, binding.Binding, m_Cube.Handle);
+                else
+                    throw std::runtime_error("unexpected texture " + binding.Name + " in " + shader);
+            }
+            else if (binding.Type == ShaderMetaBindingType::kSampler)
+                m_Device->UpdateSamplerBinding(ds, binding.Binding, m_Sampler);
             else if (binding.Type == ShaderMetaBindingType::kUniformBuffer)
             {
                 BufferHandle buffer{};

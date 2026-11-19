@@ -111,7 +111,8 @@ vec3 OceanApplyIblAmbient(vec3 fallbackAmbient, vec3 normalDir)
 }
 
 #if !defined(GE_COMPAT_PROFILE)
-layout(set = 2, binding = 28) uniform sampler2DArray uOceanShadows;
+layout(set = 2, binding = 28) uniform texture2DArray uOceanShadowsTex;
+#define uOceanShadows sampler2DArray(uOceanShadowsTex, ge_linearClampSampler)
 layout(std430, set = 2, binding = 29) readonly buffer OceanShadowInfo
 {
     vec4 oceanShadowTiles[7];

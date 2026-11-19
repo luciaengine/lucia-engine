@@ -322,6 +322,14 @@ protected:
                 m_Device->UpdateCombinedImageSamplerBinding(
                     ds, binding.Binding, texture == m_Textures.end() ? m_Black : texture->second, m_Sampler);
             }
+            else if (binding.Type == ShaderMetaBindingType::kSampledImage)
+            {
+                const auto texture = m_Textures.find(name);
+                m_Device->UpdateImageBinding(ds, binding.Binding,
+                                             texture == m_Textures.end() ? m_Black : texture->second);
+            }
+            else if (binding.Type == ShaderMetaBindingType::kSampler)
+                m_Device->UpdateSamplerBinding(ds, binding.Binding, m_Sampler);
             else if (name == "uExposure" || name == "ExposureHistory")
                 m_Device->UpdateStorageBufferBinding(ds, binding.Binding, m_Exposure, 0,
                                                      GameEngine::Engine::Renderer::ExposureReadbackFeature::kStateBytes);
@@ -591,7 +599,7 @@ TEST_F(HeightFogRendering, ABlendedSurfaceBeyondTheCloudsTakesTheirTransmittance
     SetFog(off);
     constexpr float kCloudTransmittance = 0.3f;
     constexpr float kCloudDistance = 500.0f;
-    m_Textures["ge_volumetricClouds"] = Upload({0.0f, kCloudTransmittance, kCloudDistance, 0.0f});
+    m_Textures["ge_volumetricCloudsTex"] = Upload({0.0f, kCloudTransmittance, kCloudDistance, 0.0f});
     const Pixel sprite{0.8f, 0.4f, 0.2f, 0.5f};
     const Pixel near = Render({Surface(400.0f, sprite, Cover::Fullscreen, "forward_fog_probe_clouds")});
     ExpectPixelNear(near, sprite, 1e-6f, "in front of the clouds");

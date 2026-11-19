@@ -1,6 +1,8 @@
 #ifndef GE_POINT_SHADOW_SAMPLING_GLSL
 #define GE_POINT_SHADOW_SAMPLING_GLSL
 
+#include "frame_samplers.glsl"
+
 #include "compat_profile.glsl"
 #include "vogel_disk.glsl"
 
@@ -15,7 +17,8 @@ layout(set = 0, binding = 25, std430) readonly buffer PointShadowData
 {
     PointShadowSlot ge_pointShadowSlots[];
 };
-layout(set = 0, binding = 26) uniform sampler2DArrayShadow ge_pointShadowMap;
+layout(set = 0, binding = 26) uniform texture2DArray ge_pointShadowMapTex;
+#define ge_pointShadowMap sampler2DArrayShadow(ge_pointShadowMapTex, ge_shadowCompareSampler)
 
 int GE_PointShadowFace(vec3 direction)
 {

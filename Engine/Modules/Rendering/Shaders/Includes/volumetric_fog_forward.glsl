@@ -9,13 +9,17 @@
 #ifndef GE_VOLUMETRIC_FOG_FORWARD_GLSL
 #define GE_VOLUMETRIC_FOG_FORWARD_GLSL
 
+#include "frame_samplers.glsl"
+
 layout(set = 0, binding = 54, std140) uniform VolumetricFogParamsBlock
 {
 #include "volumetric_fog_params_fields.glsl"
 } VolumetricFogParams;
 
-layout(set = 0, binding = 55) uniform sampler3D ge_volumetricFog;
-layout(set = 0, binding = 56) uniform samplerCube ge_volumetricFogIrradiance;
+layout(set = 0, binding = 55) uniform texture3D ge_volumetricFogTex;
+#define ge_volumetricFog sampler3D(ge_volumetricFogTex, ge_linearClampSampler)
+layout(set = 0, binding = 56) uniform textureCube ge_volumetricFogIrradianceTex;
+#define ge_volumetricFogIrradiance samplerCube(ge_volumetricFogIrradianceTex, ge_linearClampSampler)
 
 #define GE_VOLUMETRIC_FOG VolumetricFogParams
 #define GE_VOLUMETRIC_FOG_IRRADIANCE ge_volumetricFogIrradiance

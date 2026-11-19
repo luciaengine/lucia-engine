@@ -6,6 +6,8 @@
 
 layout(local_size_x = 64) in;
 layout(set = 0, binding = 0) uniform sampler2DArrayShadow uShadow;
+#define GE_SHADOW_PCF_MAP uShadow
+#include "Includes/shadow_pcf.glsl"
 struct Query
 {
     vec4 uvDepthLayer;
@@ -36,7 +38,7 @@ void main()
     vec2 uv = q.uvDepthLayer.xy;
     float depth = q.uvDepthLayer.z;
     float layer = q.uvDepthLayer.w;
-    float filtered = GE_ShadowPcf5x5(uShadow, uv, layer, depth);
+    float filtered = GE_ShadowPcf5x5(uv, layer, depth, vec2(0.0));
 
     // Independent reference: the unoptimized 25-sample convolution at the
     // original UV. This also checks hardware border and reverse-Z semantics.

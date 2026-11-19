@@ -1,15 +1,21 @@
 #ifndef GE_LOCAL_REFLECTIONS_GLSL
 #define GE_LOCAL_REFLECTIONS_GLSL
 
+#include "frame_samplers.glsl"
+
 #include "forward_shader_specialization.glsl"
 
 // Shared by forward IBL and the screen-space reflection replacement estimate.
 // Explicit samplers keep the two-probe tier independent of descriptor indexing.
 // Slots 62 to 65: the shadow map, the fogs and the virtual shadows use set 0 up to 61.
-layout(set = 0, binding = 62) uniform samplerCube ge_localIrradiance0;
-layout(set = 0, binding = 63) uniform samplerCube ge_localPrefilter0;
-layout(set = 0, binding = 64) uniform samplerCube ge_localIrradiance1;
-layout(set = 0, binding = 65) uniform samplerCube ge_localPrefilter1;
+layout(set = 0, binding = 62) uniform textureCube ge_localIrradiance0Tex;
+#define ge_localIrradiance0 samplerCube(ge_localIrradiance0Tex, ge_linearClampSampler)
+layout(set = 0, binding = 63) uniform textureCube ge_localPrefilter0Tex;
+#define ge_localPrefilter0 samplerCube(ge_localPrefilter0Tex, ge_linearClampSampler)
+layout(set = 0, binding = 64) uniform textureCube ge_localIrradiance1Tex;
+#define ge_localIrradiance1 samplerCube(ge_localIrradiance1Tex, ge_linearClampSampler)
+layout(set = 0, binding = 65) uniform textureCube ge_localPrefilter1Tex;
+#define ge_localPrefilter1 samplerCube(ge_localPrefilter1Tex, ge_linearClampSampler)
 
 vec3 GE_ProbeLocalPosition(GE_LocalProbeData probe, vec3 positionWS)
 {

@@ -1720,6 +1720,10 @@ class RenderServices
     // require that feature to exist, so the world binding table needs a source
     // that is always available — this one.
     Rendering::SamplerHandle GetCascadeShadowSampler();
+    /// Adds the shared set 0 samplers (Shaders/Includes/frame_samplers.glsl) to a pass binding
+    /// table. A pass that binds a frame texture (the shadow maps, the IBL cubes, the scene depth)
+    /// outside the world pass calls this too: those textures are separate images.
+    void AddFrameSamplers(ResolvedPassResources& resources);
 
     // 1x1 kMaxShadowCascades-layer D32 array, every texel at reverse-Z far, for
     // binding ge_shadowMapArray on frames with no live cascade array. Every

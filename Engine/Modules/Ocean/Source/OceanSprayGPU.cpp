@@ -6,6 +6,7 @@
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Rendering/Pipeline/ViewExposureHistory.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/TextureService.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Interpolation.h"
 #include "Mathematics/Matrix4x4.h"
@@ -42,7 +43,7 @@ struct alignas(16) SprayParamsGPU
 };
 static_assert(sizeof(SprayParamsGPU) == 448);
 constexpr uint64 kParticleBytes = 64;
-// Combined-image bindings 2..27 of the shape set, less the uniform blocks at 4 and 15.
+// Image bindings 2..27 of the shape set, less the uniform blocks at 4 and 15.
 constexpr uint32 kShapeTextureCount = 24;
 constexpr float kDegreesToRadians = Mathematics::Pi / 180.0f;
 // Wind speed (m/s) above SprayWindThreshold over which emission ramps to full.
@@ -56,8 +57,12 @@ struct ShapeTexture
 {
     uint32 Binding;
     RenderGraph::RGTexture Texture;
-    SamplerHandle Sampler;
 };
+// The shared samplers the shape functions read through (ocean_common.glsl, frame_samplers.glsl).
+constexpr uint32 kShapeRepeatSamplerBinding = 31;
+constexpr uint32 kFrameLinearClampSamplerBinding = 140;
+constexpr uint32 kFrameShadowCompareSamplerBinding = 141;
+constexpr uint32 kFramePointClampSamplerBinding = 142;
 } // namespace
 
 struct OceanSprayGPU::History
@@ -98,6 +103,7 @@ struct OceanSprayGPU::FramePlan
     RenderGraph::RGFrame::TypedUpload<OceanCascadeLayoutGPU> CombineLayout;
     SprayParamsGPU Inputs{};
     std::array<ShapeTexture, kShapeTextureCount> ShapeTextures{};
+    SamplerHandle RepeatSampler{}, LinearClampSampler{}, PointClampSampler{};
     OceanPreparedDispatch Simulation, Cull;
     DescriptorSetHandle ShapeSet{}, DrawSet{};
     PipelineHandle DrawPipeline{};
@@ -140,19 +146,23 @@ bool OceanSprayGPU::Initialize(IDevice *device)
                             {5, DescriptorType::UniformBuffer, 1, kShaderStageCompute},
                             {6, DescriptorType::CombinedImageSampler, 1, kShaderStageCompute},
                             {7, DescriptorType::CombinedImageSampler, 1, kShaderStageCompute},
-                            {8, DescriptorType::UniformBuffer, 1, kShaderStageCompute}};
+                            {8, DescriptorType::UniformBuffer, 1, kShaderStageCompute},
+                            {kFrameLinearClampSamplerBinding, DescriptorType::Sampler, 1, kShaderStageCompute},
+                            {kFrameShadowCompareSamplerBinding, DescriptorType::Sampler, 1, kShaderStageCompute},
+                            {kFramePointClampSamplerBinding, DescriptorType::Sampler, 1, kShaderStageCompute}};
     // Share the surface's shape functions and resource contract. This includes
     // local spectra, shallow attenuation, wave masks and interactive waves.
     m_OceanLayout.debugName = "Ocean.Spray.Shape.Set2";
     m_OceanLayout.bindings = {{1, DescriptorType::StorageBuffer, 1, kShaderStageCompute},
                               {4, DescriptorType::UniformBuffer, 1, kShaderStageCompute},
-                              {15, DescriptorType::UniformBuffer, 1, kShaderStageCompute}};
+                              {15, DescriptorType::UniformBuffer, 1, kShaderStageCompute},
+                              {kShapeRepeatSamplerBinding, DescriptorType::Sampler, 1, kShaderStageCompute}};
     // Metal argument-buffer translation preserves even statically unused
     // declarations from ocean_common.glsl, so bind its complete resource layout.
     for (uint32 binding = 2; binding <= 27; ++binding)
         if (binding != 4 && binding != 15)
             m_OceanLayout.bindings.push_back(
-                {binding, DescriptorType::CombinedImageSampler, 1, kShaderStageCompute});
+                {binding, DescriptorType::Texture, 1, kShaderStageCompute});
     m_CullLayout.debugName = "Ocean.Spray.Cull.Set0";
     m_CullLayout.bindings = {{0, DescriptorType::UniformBuffer, 1, kShaderStageCompute},
                              {1, DescriptorType::StorageBuffer, 1, kShaderStageCompute},
@@ -385,35 +395,28 @@ bool OceanSprayGPU::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, O
     *cascadeLayouts.Ptr = ocean.SampledCascadeLayouts(d.Frame, available);
     *combineLayout.Ptr = ocean.GetCombineSim().GetLayout();
     const auto foam = ocean.GetFoamSim().ImportWriteRG(d.Frame);
-    const auto foamSampler = ocean.GetFoamSampler(), sampler = m_Sampler;
     std::array<ShapeTexture, kShapeTextureCount> shapeTextures{};
     uint32 shapeTextureCount = 0;
-    const auto add = [&](uint32 binding, RenderGraph::RGTexture texture, SamplerHandle sourceSampler) {
-        shapeTextures[shapeTextureCount++] = {binding, texture.IsValid() ? texture : foam,
-                                              sourceSampler.IsValid() ? sourceSampler : foamSampler};
+    const auto add = [&](uint32 binding, RenderGraph::RGTexture texture) {
+        shapeTextures[shapeTextureCount++] = {binding, texture.IsValid() ? texture : foam};
     };
-    add(2, ocean.IsFFTReady() ? ocean.GetFFT().ImportDisplacementRG(d.Frame) : foam,
-        ocean.IsFFTReady() ? ocean.GetDisplacementSampler() : foamSampler);
-    add(3, foam, foamSampler);
+    add(2, ocean.IsFFTReady() ? ocean.GetFFT().ImportDisplacementRG(d.Frame) : foam);
+    add(3, foam);
     for (uint32 binding : {5u, 7u, 12u, 13u, 27u})
-        add(binding, depth, sampler); // inactive sampler2D declarations
-    add(11, foam, foamSampler);       // inactive albedo array
+        add(binding, depth); // inactive texture2D declarations
+    add(11, foam);           // inactive albedo array
 
-    add(6, seabedReady ? ocean.GetSeabedDepth().ImportRG(d.Frame) : foam, ocean.GetSeabedDepthSampler());
-    add(8, flowReady ? ocean.GetFlow().ImportRG(d.Frame) : foam, ocean.GetFlowSampler());
-    add(9, dynReady ? ocean.GetDynWaves().ImportWriteRG(d.Frame) : foam, ocean.GetDynWavesSampler());
-    add(10, clipReady ? ocean.GetClip().ImportRG(d.Frame) : foam, ocean.GetClipSampler());
-    add(14, ocean.IsCombineReadyForFrame(slot) ? ocean.GetCombineSim().ImportRG(d.Frame) : foam,
-        ocean.GetCombineSim().GetSampler());
-    add(16, maskReady ? ocean.GetWaveMask().ImportMaskRG(d.Frame) : foam, ocean.GetWaveMaskSampler());
+    add(6, seabedReady ? ocean.GetSeabedDepth().ImportRG(d.Frame) : foam);
+    add(8, flowReady ? ocean.GetFlow().ImportRG(d.Frame) : foam);
+    add(9, dynReady ? ocean.GetDynWaves().ImportWriteRG(d.Frame) : foam);
+    add(10, clipReady ? ocean.GetClip().ImportRG(d.Frame) : foam);
+    add(14, ocean.IsCombineReadyForFrame(slot) ? ocean.GetCombineSim().ImportRG(d.Frame) : foam);
+    add(16, maskReady ? ocean.GetWaveMask().ImportMaskRG(d.Frame) : foam);
     const uint32 localMask = ocean.GetLocalFFTReadyMaskForFrame(slot);
     for (uint32 i = 0; i < kMaxOceanLocalFFTStreams; ++i)
-        add(17u + i, (localMask & (1u << i)) ? ocean.GetLocalFFT(i).ImportDisplacementRG(d.Frame) : foam,
-            (localMask & (1u << i)) ? ocean.GetLocalFFT(i).GetSampler() : foamSampler);
+        add(17u + i, (localMask & (1u << i)) ? ocean.GetLocalFFT(i).ImportDisplacementRG(d.Frame) : foam);
     for (uint32 page = 0; page < 2; ++page)
-        add(25u + page,
-            maskReady && localMask ? ocean.GetWaveMask().ImportLocalFFTMaskRG(d.Frame, page) : foam,
-            ocean.GetWaveMaskSampler());
+        add(25u + page, maskReady && localMask ? ocean.GetWaveMask().ImportLocalFFTMaskRG(d.Frame, page) : foam);
     assert(shapeTextureCount == kShapeTextureCount && "every shape-set image binding must be filled");
     const Engine::Renderer::Pipeline::PipelineBufferBindingRG exposure =
         Engine::Renderer::Pipeline::ResolveViewExposureHistory(d);
@@ -449,6 +452,9 @@ bool OceanSprayGPU::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, O
     plan->CascadeLayouts = cascadeLayouts;
     plan->CombineLayout = combineLayout;
     plan->ShapeTextures = shapeTextures;
+    plan->RepeatSampler = ocean.GetRepeatSampler();
+    plan->LinearClampSampler = d.Services.Textures().GetSampler(SamplerPreset::LinearClamp);
+    plan->PointClampSampler = d.Services.Textures().GetSampler(SamplerPreset::PointClamp);
     const auto view = d.View.id;
     d.Frame.AddPass(
         "OceanSpraySimulate", PassPhase::kPostProcess,
@@ -568,6 +574,11 @@ bool OceanSprayGPU::PrepareSimulation(ViewId view, FramePlan& plan, RenderGraph:
     }
     device->UpdateCombinedImageSamplerBinding(set, 7, plan.Irradiance, plan.CubeSampler);
     device->UpdateBufferBinding(set, 8, plan.Environment, 0, Engine::Renderer::ImageBasedLightingFeature::kEnvDataBytes);
+    if (!plan.RepeatSampler.IsValid() || !plan.LinearClampSampler.IsValid() || !plan.PointClampSampler.IsValid())
+        return false;
+    device->UpdateSamplerBinding(set, kFrameLinearClampSamplerBinding, plan.LinearClampSampler);
+    device->UpdateSamplerBinding(set, kFrameShadowCompareSamplerBinding, plan.ShadowSampler);
+    device->UpdateSamplerBinding(set, kFramePointClampSamplerBinding, plan.PointClampSampler);
     desc.layout = m_OceanLayout;
     desc.debugName = "Ocean.Spray.Shape.DS";
     const auto shapeSet = device->CreateDescriptorSet(desc);
@@ -582,10 +593,11 @@ bool OceanSprayGPU::PrepareSimulation(ViewId view, FramePlan& plan, RenderGraph:
     for (const auto& source : plan.ShapeTextures)
     {
         const auto texture = ctx.GetTexture(source.Texture);
-        if (!texture.IsValid() || !source.Sampler.IsValid())
+        if (!texture.IsValid())
             return false;
-        device->UpdateCombinedImageSamplerBinding(shapeSet, source.Binding, texture, source.Sampler);
+        device->UpdateImageBinding(shapeSet, source.Binding, texture);
     }
+    device->UpdateSamplerBinding(shapeSet, kShapeRepeatSamplerBinding, plan.RepeatSampler);
     plan.StateBuffer = state;
     plan.ShapeSet = shapeSet;
     plan.Simulation = {pipeline, set, (plan.Capacity + 63u) / 64u, 1, 1};

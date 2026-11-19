@@ -252,10 +252,13 @@ layout(depth_less) out float gl_FragDepth;
 // relief's depth (ParallaxDepthFromPrepass) rebuilds its hit from it. Multisampled, the relief's sample
 // is the farthest covered one: every covered sample holds this surface's hit or something nearer.
 #ifdef GE_PARALLAX_READS_DEPTH
+#include "frame_samplers.glsl"
   #ifdef GE_PARALLAX_PREPASS_DEPTH_MULTISAMPLE
-layout(set = 0, binding = 49) uniform sampler2DMS ge_prepassDepth;
+layout(set = 0, binding = 49) uniform texture2DMS ge_prepassDepthTex;
+#define ge_prepassDepth sampler2DMS(ge_prepassDepthTex, ge_pointClampSampler)
   #else
-layout(set = 0, binding = 49) uniform sampler2D ge_prepassDepth;
+layout(set = 0, binding = 49) uniform texture2D ge_prepassDepthTex;
+#define ge_prepassDepth sampler2D(ge_prepassDepthTex, ge_pointClampSampler)
   #endif
 #endif
 

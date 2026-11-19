@@ -355,6 +355,13 @@ bool OceanForwardContributor::BuildForwardCommand(
     // for the surface normal). The OceanParamsBuffer's FFTCascadeCount gates
     // whether the shader actually samples it.
     scratch.Textures.clear();
+    // The repeat sampler of the ocean set (ocean_common.glsl): the tiling textures read through it.
+    {
+        DrawBindings::TextureEntry sampler{};
+        sampler.Name = HashStringId("uOceanRepeatSampler");
+        sampler.Sampler = m_Feature.GetRepeatSampler();
+        scratch.Textures.push_back(sampler);
+    }
     // The fallback cascade completes the compat set-2 contract: the compat
     // shader profile declares displacement + foam unconditionally, and WebGPU
     // refuses a bind group with a declared entry unwritten. Sampling stays
@@ -367,7 +374,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (dispTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanDisplacement");
+            tex.Name = HashStringId("uOceanDisplacementTex");
             tex.Texture = dispTex;
             tex.Sampler = m_Feature.GetDisplacementSampler();
             tex.ArrayIndex = 0;
@@ -379,7 +386,7 @@ bool OceanForwardContributor::BuildForwardCommand(
     if (!boundDisplacement && haveFallbackCascade)
     {
         DrawBindings::TextureEntry tex{};
-        tex.Name = HashStringId("uOceanDisplacement");
+        tex.Name = HashStringId("uOceanDisplacementTex");
         tex.Texture = m_FallbackCascade;
         tex.Sampler = m_FallbackCascadeSampler;
         tex.ArrayIndex = 0;
@@ -388,14 +395,14 @@ bool OceanForwardContributor::BuildForwardCommand(
     if (localFFTReady)
     {
         const auto localNames = std::array{
-            HashStringId("uOceanLocalDisplacement0"),
-            HashStringId("uOceanLocalDisplacement1"),
-            HashStringId("uOceanLocalDisplacement2"),
-            HashStringId("uOceanLocalDisplacement3"),
-            HashStringId("uOceanLocalDisplacement4"),
-            HashStringId("uOceanLocalDisplacement5"),
-            HashStringId("uOceanLocalDisplacement6"),
-            HashStringId("uOceanLocalDisplacement7")};
+            HashStringId("uOceanLocalDisplacement0Tex"),
+            HashStringId("uOceanLocalDisplacement1Tex"),
+            HashStringId("uOceanLocalDisplacement2Tex"),
+            HashStringId("uOceanLocalDisplacement3Tex"),
+            HashStringId("uOceanLocalDisplacement4Tex"),
+            HashStringId("uOceanLocalDisplacement5Tex"),
+            HashStringId("uOceanLocalDisplacement6Tex"),
+            HashStringId("uOceanLocalDisplacement7Tex")};
         for (uint32 stream = 0; stream < kMaxOceanLocalFFTStreams; ++stream)
         {
             if ((localFFTReadyMask & (1u << stream)) == 0u)
@@ -414,8 +421,8 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (waveMaskReady)
         {
             const auto localMaskNames = std::array{
-                HashStringId("uOceanLocalFFTMask0"),
-                HashStringId("uOceanLocalFFTMask1")};
+                HashStringId("uOceanLocalFFTMask0Tex"),
+                HashStringId("uOceanLocalFFTMask1Tex")};
             for (uint32 page = 0u; page < kOceanLocalFFTMaskPages; ++page)
             {
                 const auto localFFTMaskTex = m_Feature.GetWaveMask().GetLocalFFTMaskTexture(page);
@@ -449,7 +456,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (foamTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanFoam");
+            tex.Name = HashStringId("uOceanFoamTex");
             tex.Texture = foamTex;
             tex.Sampler = m_Feature.GetFoamSampler();
             tex.ArrayIndex = 0;
@@ -463,7 +470,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         // Completes the compat set-2 contract (see uOceanDisplacement above);
         // LodCount 0 in the layout keeps every foam sample on its fallback path.
         DrawBindings::TextureEntry tex{};
-        tex.Name = HashStringId("uOceanFoam");
+        tex.Name = HashStringId("uOceanFoamTex");
         tex.Texture = m_FallbackCascade;
         tex.Sampler = m_FallbackCascadeSampler;
         tex.ArrayIndex = 0;
@@ -497,7 +504,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (combTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanCombinedDisplacement");
+            tex.Name = HashStringId("uOceanCombinedDisplacementTex");
             tex.Texture = combTex;
             tex.Sampler = m_Feature.GetCombineSim().GetSampler();
             tex.ArrayIndex = 0;
@@ -527,7 +534,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (grabTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanSceneColor");
+            tex.Name = HashStringId("uOceanSceneColorTex");
             tex.Texture = grabTex;
             tex.Sampler = m_Feature.GetSceneGrab().GetSampler();
             tex.ArrayIndex = 0;
@@ -547,7 +554,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (depthTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanSeabedDepth");
+            tex.Name = HashStringId("uOceanSeabedDepthTex");
             tex.Texture = depthTex;
             tex.Sampler = m_Feature.GetSeabedDepthSampler();
             tex.ArrayIndex = 0;
@@ -570,9 +577,9 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (causticsTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanCaustics");
+            tex.Name = HashStringId("uOceanCausticsTex");
             tex.Texture = causticsTex;
-            tex.Sampler = userCaustics.IsValid() ? m_Feature.GetUserCausticsSampler()
+            tex.Sampler = userCaustics.IsValid() ? m_Feature.GetRepeatSampler()
                                                  : m_Feature.GetCausticsSampler();
             tex.ArrayIndex = 0;
             scratch.Textures.push_back(tex);
@@ -586,18 +593,18 @@ bool OceanForwardContributor::BuildForwardCommand(
     if (m_Feature.HasUserNormalTexture())
     {
         DrawBindings::TextureEntry tex{};
-        tex.Name = HashStringId("uOceanDetailNormal");
+        tex.Name = HashStringId("uOceanDetailNormalTex");
         tex.Texture = m_Feature.GetUserNormalTexture();
-        tex.Sampler = m_Feature.GetUserFoamSampler();
+        tex.Sampler = m_Feature.GetRepeatSampler();
         tex.ArrayIndex = 0;
         scratch.Textures.push_back(tex);
     }
     if (foamTextureReady)
     {
         DrawBindings::TextureEntry tex{};
-        tex.Name = HashStringId("uOceanFoamBubble");
+        tex.Name = HashStringId("uOceanFoamBubbleTex");
         tex.Texture = m_Feature.GetUserFoamTexture();
-        tex.Sampler = m_Feature.GetUserFoamSampler();
+        tex.Sampler = m_Feature.GetRepeatSampler();
         tex.ArrayIndex = 0;
         scratch.Textures.push_back(tex);
     }
@@ -609,7 +616,7 @@ bool OceanForwardContributor::BuildForwardCommand(
     if (planarReflectionReady)
     {
         DrawBindings::TextureEntry tex{};
-        tex.Name = HashStringId("uOceanReflection");
+        tex.Name = HashStringId("uOceanReflectionTex");
         tex.Texture = planarReflection->ColorTexture;
         tex.Sampler = m_Feature.GetPlanarReflection().GetSampler();
         tex.ArrayIndex = 0;
@@ -642,7 +649,7 @@ bool OceanForwardContributor::BuildForwardCommand(
             if (const auto irradiance = ibl.GetIrradianceCube(); irradiance.IsValid())
             {
                 DrawBindings::TextureEntry tex{};
-                tex.Name = HashStringId("ge_irradianceCube");
+                tex.Name = HashStringId("ge_irradianceCubeTex");
                 tex.Texture = irradiance;
                 tex.Sampler = cubeSampler;
                 scratch.Textures.push_back(tex);
@@ -650,7 +657,7 @@ bool OceanForwardContributor::BuildForwardCommand(
             if (const auto prefilter = ibl.GetPrefilterCube(); prefilter.IsValid())
             {
                 DrawBindings::TextureEntry tex{};
-                tex.Name = HashStringId("ge_prefilterCube");
+                tex.Name = HashStringId("ge_prefilterCubeTex");
                 tex.Texture = prefilter;
                 tex.Sampler = cubeSampler;
                 scratch.Textures.push_back(tex);
@@ -661,7 +668,7 @@ bool OceanForwardContributor::BuildForwardCommand(
             if (const auto brdfLut = ibl.GetBrdfLut(); brdfLut.IsValid())
             {
                 DrawBindings::TextureEntry tex{};
-                tex.Name = HashStringId("ge_brdfLUT");
+                tex.Name = HashStringId("ge_brdfLUTTex");
                 tex.Texture = brdfLut;
                 tex.Sampler = lutSampler;
                 scratch.Textures.push_back(tex);
@@ -682,7 +689,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (ready)
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanShadows");
+            tex.Name = HashStringId("uOceanShadowsTex");
             tex.Texture = m_Feature.GetShadows().GetTexture(viewId, *ctx.Frame);
             tex.Sampler = m_Feature.GetShadows().GetSampler();
             scratch.Textures.push_back(tex);
@@ -701,7 +708,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (flowTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanFlow");
+            tex.Name = HashStringId("uOceanFlowTex");
             tex.Texture = flowTex;
             tex.Sampler = m_Feature.GetFlowSampler();
             tex.ArrayIndex = 0;
@@ -721,7 +728,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (dynTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanDynWaves");
+            tex.Name = HashStringId("uOceanDynWavesTex");
             tex.Texture = dynTex;
             tex.Sampler = m_Feature.GetDynWavesSampler();
             tex.ArrayIndex = 0;
@@ -739,7 +746,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (maskTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanWaveMask");
+            tex.Name = HashStringId("uOceanWaveMaskTex");
             tex.Texture = maskTex;
             tex.Sampler = m_Feature.GetWaveMaskSampler();
             tex.ArrayIndex = 0;
@@ -759,7 +766,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (clipTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanClip");
+            tex.Name = HashStringId("uOceanClipTex");
             tex.Texture = clipTex;
             tex.Sampler = m_Feature.GetClipSampler();
             tex.ArrayIndex = 0;
@@ -778,7 +785,7 @@ bool OceanForwardContributor::BuildForwardCommand(
         if (albedoTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
-            tex.Name = HashStringId("uOceanAlbedo");
+            tex.Name = HashStringId("uOceanAlbedoTex");
             tex.Texture = albedoTex;
             tex.Sampler = m_Feature.GetAlbedoSampler();
             tex.ArrayIndex = 0;

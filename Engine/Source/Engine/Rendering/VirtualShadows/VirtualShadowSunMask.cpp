@@ -196,14 +196,18 @@ RenderGraph::RGTexture VirtualShadowSunMask::Declare(RenderGraph::RGFrame& frame
                 writer.TryAddStorageBuffer("VirtualShadowPageTable", pageTable, 0, inputs.PageTableBytes) &&
                 writer.TryAddStorageBuffer("VirtualShadowProjections", inputs.Projections, inputs.ProjectionsOffset,
                                            inputs.ProjectionsBytes) &&
-                writer.TryAddCombinedImageSampler("ge_virtualShadowDepth", atlas, inputs.DepthSampler);
+                writer.TryAddTexture("ge_virtualShadowDepthTex", atlas) &&
+                writer.TryAddSampler("ge_pointClampSampler", inputs.DepthSampler);
             if (!bound)
             {
                 Logger::Log::Error("VirtualShadowSunMask: {} lost a set-0 binding; the pass is skipped", kShader);
                 return;
             }
-            if (writer.Has("ge_virtualShadowDepthCompare"))
-                writer.TryAddCombinedImageSampler("ge_virtualShadowDepthCompare", atlas, inputs.CompareSampler);
+            if (writer.Has("ge_virtualShadowDepthCompareTex"))
+            {
+                writer.TryAddTexture("ge_virtualShadowDepthCompareTex", atlas);
+                writer.TryAddSampler("ge_shadowCompareSampler", inputs.CompareSampler);
+            }
             writer.Flush();
             Pipeline::Nodes::Detail::BindStorageImageByName(device, set, *m_Meta, "uMask", maskTexture);
             command->SetMarker("VirtualShadowSunMask");

@@ -14,6 +14,8 @@
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "ScopedCompatShaderProfile.h"
@@ -85,4 +87,36 @@ TEST_F(OceanSurfaceCompose, CompatProfileVariantCompiles)
     ASSERT_TRUE(built.success) << (built.errors.empty() ? std::string{} : built.errors.front());
     EXPECT_FALSE(built.composedVertexSource.empty());
     EXPECT_FALSE(built.composedFragmentSource.empty());
+}
+
+// Vulkan counts the samplers (separate and combined) a stage can reach across a pipeline's sets
+// against maxPerStageDescriptorSamplers, which is 16 on MoltenVK and in WebGPU. Set 1 is the bindless
+// texture set, created update-after-bind, which the limit does not count.
+TEST_F(OceanSurfaceCompose, NativeProfileVariantFitsTheSamplerLimitOfEveryStage)
+{
+    constexpr uint32_t kSamplersPerStage = 16;
+    constexpr uint32_t kBindlessSet = 1;
+    const MaterialBuildResult built = BuildOceanSurface(false);
+    ASSERT_TRUE(built.success) << (built.errors.empty() ? std::string{} : built.errors.front());
+    ASSERT_NE(built.package, nullptr);
+    for (const uint32_t stageBit : {ShaderMetaStage::kVertex, ShaderMetaStage::kFragment})
+    {
+        uint32_t samplers = 0;
+        std::string names;
+        for (const DescriptorSetMeta& set : built.package->meta.Sets)
+        {
+            if (set.Set == kBindlessSet)
+                continue;
+            for (const DescriptorBindingMeta& binding : set.Bindings)
+            {
+                const bool sampler = binding.Type == ShaderMetaBindingType::kSampler ||
+                                     binding.Type == ShaderMetaBindingType::kCombinedImageSampler;
+                if (!sampler || (binding.StagesMask & stageBit) == 0u)
+                    continue;
+                samplers += binding.Count;
+                names += binding.Name + " ";
+            }
+        }
+        EXPECT_LE(samplers, kSamplersPerStage) << "stage bit " << stageBit << ": " << names;
+    }
 }
