@@ -14,13 +14,13 @@ enum class Look : int32_t
     Neutral = 0,      ///< Khronos PBR Neutral: colors drop by up to 4% of white, highlights soften; the default.
     Filmic = 1,       ///< ACES 2: film contrast, highlights roll off with little hue shift.
     Photographic = 2, ///< AgX: gentle contrast, highlights fade like film stock.
+    GT7 = 3,          ///< ICtCp tone mapping with highlight desaturation.
 };
 
-inline constexpr int32_t kLookCount = 3;
+inline constexpr int32_t kLookCount = 4;
 
-/// The one name table for the looks: the scene format, the inspector's list and the loader's
-/// message all read it.
-inline constexpr std::string_view kLookNames[kLookCount] = {"Neutral", "Filmic", "Photographic"};
+/// The names used by the scene format and loader.
+inline constexpr std::string_view kLookNames[kLookCount] = {"Neutral", "Filmic", "Photographic", "GT7"};
 
 constexpr std::string_view LookName(Look look)
 {
@@ -43,12 +43,14 @@ constexpr std::string_view LookDescription(Look look)
     case Look::Photographic:
         return "Gentle contrast; bright colors fade toward white like film, shifting slightly in hue. For natural "
                "daylight.";
+    case Look::GT7:
+        return "ICtCp tone mapping that preserves highlight color and fades bright highlights toward white.";
     }
     return {};
 }
 
-/// The published transform behind a look, named once for the expert; no label names it.
-constexpr std::string_view LookTechnique(Look look)
+/// The tonemapper name shown in the editor.
+constexpr std::string_view TonemapperName(Look look)
 {
     switch (look)
     {
@@ -58,6 +60,8 @@ constexpr std::string_view LookTechnique(Look look)
         return "ACES 2";
     case Look::Photographic:
         return "AgX";
+    case Look::GT7:
+        return "GT7 (ICtCp)";
     }
     return {};
 }

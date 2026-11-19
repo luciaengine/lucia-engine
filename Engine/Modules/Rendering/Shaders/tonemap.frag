@@ -1,6 +1,7 @@
 #version 450
 
 #include "Includes/tonemap_aces2.glsl"
+#include "Includes/tonemap_gt7.glsl"
 #include "Includes/tonemap_look.glsl"
 #include "Includes/cube_lut.glsl"
 #include "Includes/night_tint.glsl"
@@ -35,8 +36,7 @@ layout(set = 0, binding = 6) uniform sampler2D uDepth;
 
 layout(push_constant) uniform TonemapPC {
     float exposure;
-    int look;         // 0=Neutral, 1=Filmic (ACES 2), 2=Photographic (AgX); 3=no look, the
-                      // debug arm a view selects (Passes::kTonemapNoLookArm), never a volume value
+    int look;         // Transform selector (Includes/tonemap_look.glsl), including the debug bypass.
     int ditherMode;   // 98-99=debug views. This pass owns no dither at all — the terminal
                       // FinalSRGBEncode does — so no value here selects one.
     int outEncoding;  // 1=SDR display-referred linear (undithered — the terminal FinalSRGBEncode
@@ -149,6 +149,7 @@ vec3 ApplyTonemap(vec3 hdr)
     {
         case kLookFilmic:       return TonemapACES2(hdr, Aces2TargetOutputMax());
         case kLookPhotographic: return TonemapAgX(hdr);
+        case kLookGT7:         return TonemapGranTurismo7(hdr);
         case kNoLookArm:        return NoLook(hdr);
         default:                return TonemapNeutral(hdr);
     }

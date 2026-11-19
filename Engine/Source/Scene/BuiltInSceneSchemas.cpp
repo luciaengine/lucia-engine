@@ -5701,7 +5701,7 @@ static bool ParseLook(std::string_view value, Components::Look& out, std::string
         *outError = "'" + std::string(value) + "' is not a look; rendering " + std::string(LookName(Look::Neutral)) +
                     ". Valid looks: " + std::string(LookName(Look::Neutral)) + ", " +
                     std::string(LookName(Look::Filmic)) + " (ACES 2), " + std::string(LookName(Look::Photographic)) +
-                    " (AgX).";
+                    " (AgX), " + std::string(LookName(Look::GT7)) + " (ICtCp).";
     }
     return false;
 }

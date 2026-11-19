@@ -46,7 +46,7 @@ GE_VP_VEC4(ge_taaJitter)     // 464 xy=current, zw=previous frame sub-pixel NDC 
 GE_VP_VEC4(ge_exposureParams) // 480 the exposure the tonemap applies to this view: x = the
                              //     Fixed/Manual/Physical linear scale, y = 1 while auto exposure
                              //     meters the view (the metered scale is then in ExposureHistory),
-                             //     z = the tonemap's look (tonemap.frag's look values, 3 = no look).
+                             //     z = the tonemap's look (tonemap.frag's look values, 4 = no look).
                              //     w reserved. GE_ViewExposureScale (view_exposure.glsl) resolves xy.
 // The relative frame: positions relative to the origin of the render origin sector (RenderOrigin.h).
 // In sector (0,0,0) the relative view, inverse view and eye hold the bits of their absolute partners;
