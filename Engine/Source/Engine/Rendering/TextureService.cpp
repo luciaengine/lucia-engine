@@ -2145,7 +2145,7 @@ std::shared_ptr<const TextureService::PreparedTextureUpload> TextureService::Pre
     prepared->LoadMs = std::chrono::duration<double, std::milli>(Clock::now() - tLoad).count();
 
     // A material mip stream released the pixels of this instance (ReleaseLevelPixels).
-    if (!texAsset->GetPixelData() && texAsset->GetLevelFile() && !texAsset->RestoreLevelPixels())
+    if (texAsset->GetLevelFile() && !texAsset->RestoreLevelPixels())
     {
         prepared->Failure = "its cooked file changed after it loaded; reimport the texture";
         return prepared; // Failed

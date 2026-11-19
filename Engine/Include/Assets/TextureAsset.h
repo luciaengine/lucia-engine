@@ -259,7 +259,12 @@ public:
     /**
      * @brief Get raw pixel data
      */
-    const uint8* GetPixelData() const { return m_PixelData; }
+    const uint8* GetPixelData() const { return m_PixelData.get(); }
+
+    /// The pixels of GetPixelData(), valid while the caller holds them. After ReleaseLevelPixels,
+    /// a blocking read of GetLevelFile() gives them and the asset keeps them again. Null without both.
+    /// Any thread, but not during ReloadFromData, which loads into this instance in place.
+    std::shared_ptr<const uint8[]> AcquirePixels() const;
 
     /**
      * @brief Get data size in bytes
@@ -304,15 +309,14 @@ public:
     /// payload as it is in memory (TextureLevelFile::Parse).
     const TextureLevelFile* GetLevelFile() const { return m_LevelFile ? &*m_LevelFile : nullptr; }
 
-    /// Frees the pixels of this texture and of its companion when GetLevelFile() names where they
-    /// are. GetPixelData() is then null until RestoreLevelPixels. The mip chain and the
-    /// dimensions stay. Call on the thread that reads the pixels of this instance: for an instance
-    /// that the AssetManager shares, the main thread.
+    /// Frees the pixels of this texture and its companion when GetLevelFile() names where they are.
+    /// The mip chain and the dimensions stay. A holder of AcquirePixels() keeps its pixels.
+    /// A reader of GetPixelData() must be on the thread that calls this.
     void ReleaseLevelPixels();
 
     /// Reads the pixels that ReleaseLevelPixels freed from GetLevelFile(). False, with no pixels,
-    /// when a file does not read or holds another container. A blocking read of the whole file,
-    /// on the same thread as ReleaseLevelPixels.
+    /// when a file does not read or holds another container. A blocking read of the whole file
+    /// for this texture and for its companion.
     bool RestoreLevelPixels();
 
     /// The SVG text an asset loaded from, with its intrinsic size in CSS px
@@ -381,6 +385,10 @@ private:
      * the Image module (the file's own channels; float for .hdr).
      */
     bool DecodeSourceBytes(std::span<const uint8> data);
+
+    /// The pixels that GetLevelFile() names, read from the file. Null when it does not read or
+    /// holds another container. m_PixelMutex held.
+    std::shared_ptr<uint8[]> ReadLevelPixels() const;
 
     /**
      * @brief Load DDS texture
@@ -453,7 +461,11 @@ private:
 	    uint32 m_Channels;
 	    TextureFormat m_Format;
 	    TextureColorSpace m_ColorSpace;
-	    uint8* m_PixelData;
+	    // AcquirePixels fills it again after a release.
+	    mutable std::shared_ptr<uint8[]> m_PixelData;
+	    // After the load, guards m_PixelData, m_DataSize, m_MipChain and m_LevelFile for AcquirePixels
+	    // against a release, a reload and an unload.
+	    mutable std::mutex m_PixelMutex;
 	    uint64 m_DataSize;
 	    bool m_HasMipmaps;
 	    bool m_SwizzleBaked = false;

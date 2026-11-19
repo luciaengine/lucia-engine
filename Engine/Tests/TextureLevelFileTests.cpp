@@ -10,7 +10,10 @@
 
 #include <cstring>
 #include <filesystem>
+#include <atomic>
 #include <fstream>
+#include <memory>
+#include <thread>
 #include <vector>
 
 using namespace GameEngine;
@@ -167,6 +170,71 @@ TEST_F(TextureLevelFileTest, AnAssetReleasesItsPixelsAndReadsThemAgain)
     ASSERT_NO_FATAL_FAILURE(WriteFile(path, CookedContainer(32)));
     EXPECT_FALSE(asset.RestoreLevelPixels());
     EXPECT_EQ(asset.GetPixelData(), nullptr);
+}
+
+TEST_F(TextureLevelFileTest, AReaderKeepsThePixelsThatItAcquiredWhenTheAssetReleasesThem)
+{
+    const fs::path path = m_Directory / "held.ktx2";
+    ASSERT_NO_FATAL_FAILURE(WriteFile(path, CookedContainer(64)));
+    TextureAsset asset(GUID::Generate(), path);
+    ASSERT_TRUE(asset.Load());
+    const std::vector<uint8> pixels(asset.GetPixelData(), asset.GetPixelData() + asset.GetDataSize());
+
+    const std::shared_ptr<const uint8[]> held = asset.AcquirePixels();
+    ASSERT_EQ(held.get(), asset.GetPixelData());
+    asset.ReleaseLevelPixels();
+    ASSERT_EQ(asset.GetPixelData(), nullptr);
+    EXPECT_EQ(std::memcmp(held.get(), pixels.data(), pixels.size()), 0);
+}
+
+TEST_F(TextureLevelFileTest, AReaderAcquiresReleasedPixelsFromTheFileAndTheAssetKeepsThem)
+{
+    const fs::path path = m_Directory / "acquire.ktx2";
+    ASSERT_NO_FATAL_FAILURE(WriteFile(path, CookedContainer(64)));
+    TextureAsset asset(GUID::Generate(), path);
+    ASSERT_TRUE(asset.Load());
+    const std::vector<uint8> pixels(asset.GetPixelData(), asset.GetPixelData() + asset.GetDataSize());
+    asset.ReleaseLevelPixels();
+
+    const std::shared_ptr<const uint8[]> held = asset.AcquirePixels();
+    ASSERT_NE(held, nullptr);
+    EXPECT_EQ(std::memcmp(held.get(), pixels.data(), pixels.size()), 0);
+    // The asset has its pixels again: the next reader does not read the file.
+    EXPECT_EQ(asset.GetPixelData(), held.get());
+
+    // Another container replaced the file: the reader gets no pixels, not the wrong texture.
+    asset.ReleaseLevelPixels();
+    ASSERT_NO_FATAL_FAILURE(WriteFile(path, CookedContainer(32)));
+    EXPECT_EQ(asset.AcquirePixels(), nullptr);
+}
+
+TEST_F(TextureLevelFileTest, AReaderOnAnotherThreadGetsWholePixelsWhileTheOwnerReleasesThem)
+{
+    const fs::path path = m_Directory / "threads.ktx2";
+    ASSERT_NO_FATAL_FAILURE(WriteFile(path, CookedContainer(64)));
+    TextureAsset asset(GUID::Generate(), path);
+    ASSERT_TRUE(asset.Load());
+    const std::vector<uint8> pixels(asset.GetPixelData(), asset.GetPixelData() + asset.GetDataSize());
+
+    // The reader starts on released pixels, and the owner releases them again until it is done.
+    constexpr int kReads = 400;
+    std::atomic<int> wrongReads{0};
+    std::atomic<bool> done{false};
+    asset.ReleaseLevelPixels();
+    std::thread reader([&asset, &pixels, &wrongReads, &done]
+    {
+        for (int read = 0; read < kReads; ++read)
+        {
+            const std::shared_ptr<const uint8[]> held = asset.AcquirePixels();
+            if (!held || std::memcmp(held.get(), pixels.data(), pixels.size()) != 0)
+                wrongReads.fetch_add(1);
+        }
+        done.store(true);
+    });
+    while (!done.load())
+        asset.ReleaseLevelPixels();
+    reader.join();
+    EXPECT_EQ(wrongReads.load(), 0);
 }
 
 TEST_F(TextureLevelFileTest, BytesThatNoFileHoldsGiveNoLevelFile)

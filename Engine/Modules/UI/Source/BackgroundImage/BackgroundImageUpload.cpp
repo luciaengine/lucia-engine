@@ -62,7 +62,9 @@ Rendering::TextureHandle UploadBackgroundImageFromAsset(Rendering::IDevice* devi
     const auto fmt = texA->GetFormat();
     const uint32_t channels = texA->GetChannels();
     const uint64 dataSize = texA->GetDataSize();
-    const uint8* pixelsTyped = texA->GetPixelData();
+    // A material mip stream can release the pixels of this asset: the held pixels stay valid here.
+    const std::shared_ptr<const uint8[]> heldPixels = texA->AcquirePixels();
+    const uint8* pixelsTyped = heldPixels.get();
     if (!pixelsTyped || dataSize == 0)
         return Rendering::TextureHandle{};
 
