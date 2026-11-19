@@ -1132,7 +1132,12 @@ void SceneEditorController::OpenProjectStartupScene(const std::filesystem::path&
     candidates.StartupScene = ReadProjectStartupScene(settings);
     candidates.RecentScenes = GetRecentScenePaths();
 
-    const std::optional<std::filesystem::path> scene = ResolveProjectStartupScene(projectRoot, candidates);
+    auto scene = ResolveProjectStartupScene(projectRoot, candidates);
+#if defined(__EMSCRIPTEN__)
+    std::error_code configError;
+    if (!scene && std::filesystem::is_regular_file(projectRoot / "game.config", configError))
+        scene = ResolveNamedScene(projectRoot / "Assets", FindNewProjectStartupScene(projectRoot), "startup scene");
+#endif
     // Both requests below replace m_Pending with their own action, except a new scene under eager
     // persistence, which asks for a name first and queues nothing: the answer is stamped only on an
     // action this call queued, never on an unrelated one already pending.
