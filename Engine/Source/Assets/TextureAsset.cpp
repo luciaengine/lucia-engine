@@ -477,7 +477,7 @@ void TextureAsset::Unload() {
         m_LevelFile.reset();
         m_MipChain.clear();
         m_DataSize = 0;
-        m_PayloadGeneration.fetch_add(1, std::memory_order_release);
+        m_PayloadGeneration.store(NextPayloadGeneration(), std::memory_order_release);
     }
     m_NormalVarianceCompanion.reset();
 
@@ -496,6 +496,12 @@ void TextureAsset::Unload() {
 
     SetState(AssetState::Unloaded);
     Logger::Log::Debug("Unloaded texture: {}", GetName());
+}
+
+uint64 TextureAsset::NextPayloadGeneration()
+{
+    static std::atomic<uint64> s_Next{1};
+    return s_Next.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool TextureAsset::ReloadFromData(std::span<const uint8> data) {
@@ -537,7 +543,7 @@ bool TextureAsset::AdoptReloadedPayload(Asset& staged) {
         std::swap(m_MipChain, other->m_MipChain);
         std::swap(m_LevelFile, other->m_LevelFile);
         std::swap(m_NormalVarianceCompanion, other->m_NormalVarianceCompanion);
-        m_PayloadGeneration.fetch_add(1, std::memory_order_release);
+        m_PayloadGeneration.store(NextPayloadGeneration(), std::memory_order_release);
     }
     std::swap(m_HasMipmaps, other->m_HasMipmaps);
     std::swap(m_SwizzleBaked, other->m_SwizzleBaked);

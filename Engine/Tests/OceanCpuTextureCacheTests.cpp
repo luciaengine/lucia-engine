@@ -10,6 +10,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <vector>
 
 using namespace GameEngine;
@@ -85,19 +86,30 @@ class OceanCpuTextureCacheTest : public testing::Test
     OceanCpuTextureCache m_Cache;
 };
 
-TEST_F(OceanCpuTextureCacheTest, ASecondReadOfATextureTakesNoPixelsFromTheAsset)
+TEST_F(OceanCpuTextureCacheTest, TheCopyHoldsTheRedAndGreenOfTheTexels)
 {
     TextureAsset texture(m_Guid, m_File);
     ASSERT_TRUE(texture.Load());
-    const OceanCpuTextureRG first = m_Cache.Get(m_Guid, texture);
-    ASSERT_TRUE(first.IsValid());
-    EXPECT_EQ(first.Width, kSize);
-    EXPECT_EQ(first.Height, kSize);
+    const auto copy = m_Cache.Get(m_Guid, texture);
+    ASSERT_NE(copy, nullptr);
+    ASSERT_TRUE(copy->IsValid());
+    EXPECT_EQ(copy->Width, kSize);
+    EXPECT_EQ(copy->Height, kSize);
+    // The cook made a linear container: red 50 and green 80 of 255, as the sampler gives them.
+    EXPECT_NEAR(copy->RG[0], 50.0f / 255.0f, 0.0001f);
+    EXPECT_NEAR(copy->RG[1], 80.0f / 255.0f, 0.0001f);
+    EXPECT_EQ(copy->RG[(kSize * kSize - 1) * 2], copy->RG[0]);
+}
+
+TEST_F(OceanCpuTextureCacheTest, ASecondReadOfATextureSharesTheCopyAndTakesNoPixelsFromTheAsset)
+{
+    TextureAsset texture(m_Guid, m_File);
+    ASSERT_TRUE(texture.Load());
+    const auto first = m_Cache.Get(m_Guid, texture);
+    ASSERT_NE(first, nullptr);
 
     ASSERT_NO_FATAL_FAILURE(TakeThePixelsAway(texture));
-    const OceanCpuTextureRG& second = m_Cache.Get(m_Guid, texture);
-    ASSERT_TRUE(second.IsValid());
-    EXPECT_EQ(second.RG, first.RG);
+    EXPECT_EQ(m_Cache.Get(m_Guid, texture), first);
     // With no cache, the same texture gives no copy now.
     EXPECT_FALSE(OceanCpuTextureCache::Convert(texture).IsValid());
 }
@@ -106,43 +118,93 @@ TEST_F(OceanCpuTextureCacheTest, AReloadOfTheTextureGivesANewCopy)
 {
     ReloadableTexture texture(m_Guid, m_File);
     ASSERT_TRUE(texture.Load());
-    const OceanCpuTextureRG first = m_Cache.Get(m_Guid, texture);
-    ASSERT_TRUE(first.IsValid());
+    const auto first = m_Cache.Get(m_Guid, texture);
+    ASSERT_NE(first, nullptr);
 
     ASSERT_TRUE(texture.ReloadFromData(CookedContainer(200)));
-    const OceanCpuTextureRG& second = m_Cache.Get(m_Guid, texture);
-    ASSERT_TRUE(second.IsValid());
-    EXPECT_GT(second.RG[0], first.RG[0]);
-    EXPECT_EQ(second.RG[1], first.RG[1]);
+    const auto second = m_Cache.Get(m_Guid, texture);
+    ASSERT_NE(second, nullptr);
+    EXPECT_GT(second->RG[0], first->RG[0]);
+    EXPECT_EQ(second->RG[1], first->RG[1]);
+}
+
+TEST_F(OceanCpuTextureCacheTest, AnUnloadAndALoadOfTheTextureGiveANewCopy)
+{
+    TextureAsset texture(m_Guid, m_File);
+    ASSERT_TRUE(texture.Load());
+    const auto first = m_Cache.Get(m_Guid, texture);
+    ASSERT_NE(first, nullptr);
+
+    texture.Unload();
+    ASSERT_NO_FATAL_FAILURE(WriteMap(CookedContainer(200)));
+    ASSERT_TRUE(texture.Load());
+    const auto second = m_Cache.Get(m_Guid, texture);
+    ASSERT_NE(second, nullptr);
+    EXPECT_GT(second->RG[0], first->RG[0]);
 }
 
 TEST_F(OceanCpuTextureCacheTest, AnotherAssetWithTheSameGuidGivesANewCopy)
 {
-    TextureAsset texture(m_Guid, m_File);
-    ASSERT_TRUE(texture.Load());
-    const OceanCpuTextureRG first = m_Cache.Get(m_Guid, texture);
-    ASSERT_TRUE(first.IsValid());
-
+    std::shared_ptr<const OceanCpuTextureRG> first;
+    uint64 generation = 0;
+    {
+        TextureAsset texture(m_Guid, m_File);
+        ASSERT_TRUE(texture.Load());
+        first = m_Cache.Get(m_Guid, texture);
+        ASSERT_NE(first, nullptr);
+        generation = texture.GetPayloadGeneration();
+    }
     ASSERT_NO_FATAL_FAILURE(WriteMap(CookedContainer(200)));
+    // A new asset never has the generation of another one, also at the same address.
     TextureAsset other(m_Guid, m_File);
     ASSERT_TRUE(other.Load());
-    EXPECT_GT(m_Cache.Get(m_Guid, other).RG[0], first.RG[0]);
+    EXPECT_NE(other.GetPayloadGeneration(), generation);
+    const auto second = m_Cache.Get(m_Guid, other);
+    ASSERT_NE(second, nullptr);
+    EXPECT_GT(second->RG[0], first->RG[0]);
+}
+
+TEST_F(OceanCpuTextureCacheTest, ACopyThatEveryUpdateReadsStays)
+{
+    TextureAsset texture(m_Guid, m_File);
+    ASSERT_TRUE(texture.Load());
+    const auto first = m_Cache.Get(m_Guid, texture);
+    ASSERT_NE(first, nullptr);
+    ASSERT_NO_FATAL_FAILURE(TakeThePixelsAway(texture));
+    constexpr int kUpdates = 4;
+    for (int update = 0; update < kUpdates; ++update)
+    {
+        m_Cache.DropUnused();
+        EXPECT_EQ(m_Cache.Get(m_Guid, texture), first) << "update " << update;
+    }
 }
 
 TEST_F(OceanCpuTextureCacheTest, ACopyThatNoUpdateReadsIsDropped)
 {
     TextureAsset texture(m_Guid, m_File);
     ASSERT_TRUE(texture.Load());
-    ASSERT_TRUE(m_Cache.Get(m_Guid, texture).IsValid());
+    ASSERT_NE(m_Cache.Get(m_Guid, texture), nullptr);
     ASSERT_NO_FATAL_FAILURE(TakeThePixelsAway(texture));
 
-    // The update after the read keeps the copy.
-    m_Cache.DropUnused();
-    EXPECT_TRUE(m_Cache.Get(m_Guid, texture).IsValid());
     // 2 updates with no read drop it: the next read converts again and finds no pixels.
     m_Cache.DropUnused();
     m_Cache.DropUnused();
-    EXPECT_FALSE(m_Cache.Get(m_Guid, texture).IsValid());
+    EXPECT_EQ(m_Cache.Get(m_Guid, texture), nullptr);
+}
+
+TEST_F(OceanCpuTextureCacheTest, AConversionThatFailsIsTriedAgain)
+{
+    TextureAsset texture(m_Guid, m_File);
+    ASSERT_TRUE(texture.Load());
+    ASSERT_NE(texture.GetLevelFile(), nullptr);
+    const fs::path away = m_Directory / "away.ktx2";
+    texture.ReleaseLevelPixels();
+    fs::rename(m_File, away);
+    EXPECT_EQ(m_Cache.Get(m_Guid, texture), nullptr);
+
+    // The file is back and the payload is the same one: the next read gives the copy.
+    fs::rename(away, m_File);
+    EXPECT_NE(m_Cache.Get(m_Guid, texture), nullptr);
 }
 
 } // namespace

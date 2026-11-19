@@ -67,7 +67,7 @@ float32 ClampNonNegativeFinite(float32 value)
 
 // The RG copy of the texture asset `guid`. `cache` holds the copy of a texture that the
 // AssetManager has loaded, so the next update takes no pixels from the asset.
-OceanCpuTextureRG LoadOceanCpuTextureRG(const GUID& guid, OceanCpuTextureCache& cache)
+std::shared_ptr<const OceanCpuTextureRG> LoadOceanCpuTextureRG(const GUID& guid, OceanCpuTextureCache& cache)
 {
     if (guid.IsNull())
         return {};
@@ -88,7 +88,7 @@ OceanCpuTextureRG LoadOceanCpuTextureRG(const GUID& guid, OceanCpuTextureCache& 
     {
         TextureAsset texture(guid, metadata.Path);
         if (texture.Load())
-            return OceanCpuTextureCache::Convert(texture);
+            return std::make_shared<const OceanCpuTextureRG>(OceanCpuTextureCache::Convert(texture));
     }
 
     return {};
@@ -2054,7 +2054,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     auto& flowPolygons = inputs.FlowPolygons;
     auto& flowMapSources = inputs.FlowMapSources;
     std::vector<GUID> flowMapTextureGuids;
-    std::vector<OceanCpuTextureRG> flowMapCpuTextures;
+    std::vector<std::shared_ptr<const OceanCpuTextureRG>> flowMapCpuTextures;
     if (oceanFlowEnabled)
     {
         world.Query<ECS::Read<Components::OceanFlowSource>, ECS::Read<Components::WorldTransform>>()

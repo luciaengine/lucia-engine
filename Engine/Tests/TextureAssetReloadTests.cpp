@@ -104,8 +104,9 @@ TEST(TextureAssetReload, AReaderOnAnotherThreadAlwaysGetsAWholePayloadDuringRelo
     const std::vector<uint8> secondPixels = PixelsOf(asset);
     ASSERT_EQ(firstPixels.size(), secondPixels.size());
 
-    // The owner reloads until the reader has made kReads reads: the 2 threads then overlap on
-    // any machine load. The deadline ends a run where the reader does not start.
+    // The owner makes kReloads reloads and then more until the reader has made kReads reads, so
+    // reads and reloads overlap. The deadline ends a run where the reader does not start.
+    constexpr int kReloads = 200;
     constexpr int kReads = 200;
     std::atomic<bool> done{false};
     std::atomic<int> reads{0};
@@ -123,7 +124,8 @@ TEST(TextureAssetReload, AReaderOnAnotherThreadAlwaysGetsAWholePayloadDuringRelo
     });
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     int failedReloads = 0;
-    for (int reload = 0; reads.load() < kReads && std::chrono::steady_clock::now() < deadline; ++reload)
+    for (int reload = 0;
+         (reload < kReloads || reads.load() < kReads) && std::chrono::steady_clock::now() < deadline; ++reload)
         failedReloads += asset.ReloadFromData(containers[reload % 2]) ? 0 : 1;
     done.store(true);
     reader.join();

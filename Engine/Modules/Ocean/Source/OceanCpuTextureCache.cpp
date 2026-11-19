@@ -2,25 +2,18 @@
 
 #include "Assets/TextureAsset.h"
 #include "Mathematics/HalfFloat.h"
-#include "Mathematics/Interpolation.h"
+#include "Types/Color.h"
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <utility>
 
 namespace GameEngine::Ocean
 {
 
 namespace
 {
-float SrgbChannelToLinear(float value)
-{
-    value = Math::Clamp01(value);
-    if (value <= 0.04045f)
-        return value / 12.92f;
-    return std::pow((value + 0.055f) / 1.055f, 2.4f);
-}
-
 // One channel of one texel as the GPU sampler returns it: normalized, and linear for sRGB color.
 float ReadTextureChannel01(const uint8* pixels, uint32 channels, size_t pixelIndex, uint32 channel,
                            uint32 bytesPerChannel, bool decodeSrgb)
@@ -46,7 +39,7 @@ float ReadTextureChannel01(const uint8* pixels, uint32 channels, size_t pixelInd
     }
 
     if (decodeSrgb && channel < 3u)
-        value = SrgbChannelToLinear(value);
+        value = Detail::SRGBChannelToLinear(value);
     return value;
 }
 } // namespace
@@ -89,17 +82,25 @@ OceanCpuTextureRG OceanCpuTextureCache::Convert(const TextureAsset& texture)
     return out;
 }
 
-const OceanCpuTextureRG& OceanCpuTextureCache::Get(const GUID& guid, const TextureAsset& texture)
+std::shared_ptr<const OceanCpuTextureRG> OceanCpuTextureCache::Get(const GUID& guid, const TextureAsset& texture)
 {
-    const uint32 generation = texture.GetPayloadGeneration();
-    Entry* entry = m_Entries.Find(guid);
-    if (!entry || entry->Texture != &texture || entry->PayloadGeneration != generation)
+    // The generation is read before the pixels: a reload in between makes this copy old, and the
+    // next call converts again.
+    const uint64 generation = texture.GetPayloadGeneration();
+    if (Entry* entry = m_Entries.Find(guid); entry && entry->PayloadGeneration == generation)
     {
-        m_Entries.InsertOrAssign(guid, Entry{&texture, generation, false, Convert(texture)});
-        entry = m_Entries.Find(guid);
+        entry->Used = true;
+        return entry->Copy;
     }
-    entry->Used = true;
-    return entry->Copy;
+    OceanCpuTextureRG converted = Convert(texture);
+    if (!converted.IsValid())
+    {
+        m_Entries.Erase(guid);
+        return nullptr;
+    }
+    auto copy = std::make_shared<const OceanCpuTextureRG>(std::move(converted));
+    m_Entries.InsertOrAssign(guid, Entry{generation, true, copy});
+    return copy;
 }
 
 void OceanCpuTextureCache::DropUnused()
