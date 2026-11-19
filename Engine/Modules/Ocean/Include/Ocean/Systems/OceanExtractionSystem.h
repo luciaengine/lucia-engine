@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Ocean/OceanCpuTextureCache.h"
 #include "Ocean/OceanTypes.h"
 #include "Ocean/OceanPreset/OceanPresetCache.h"
 #include "Ocean/OceanPreset/OceanPresetOverrideValidator.h"
@@ -97,9 +98,8 @@ private:
     // (no physics dependency — works for kinematic and simulated bodies alike).
     FlatMap<uint32, Mathematics::Vector3> m_PrevInteractionXYZ;
 
-    // The pixels of the flow maps and wave masks that the last update read, by texture
-    // (LoadOceanCpuTextureRG). An update takes them over and holds the ones that it reads.
-    FlatMap<GUID, std::shared_ptr<const uint8[]>> m_HeldTexturePixels;
+    // The CPU copies of the flow maps and wave masks (LoadOceanCpuTextureRG).
+    OceanCpuTextureCache m_CpuTextures;
 
     GUID m_LastCollisionAssetGuid{};
     std::shared_ptr<const OceanFFTCollisionAsset> m_CollisionAsset;
