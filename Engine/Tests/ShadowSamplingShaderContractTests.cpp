@@ -262,6 +262,24 @@ TEST(PenumbraWorldClampContract, FloorRemainsOneTexel)
         << "the one-texel floor is a sampling limit and must stay";
 }
 
+TEST(PenumbraWorldClampContract, BlockerSearchOnlyRunsForVariableRadius)
+{
+    const std::string source = ShadowSamplingSource();
+    ASSERT_FALSE(source.empty());
+
+    const auto minimumRadius = source.find("float penumbraTexels = pcfCapTexels;");
+    ASSERT_NE(minimumRadius, std::string::npos);
+    const auto branch = source.find("if (effectiveCapWorld > worldPerTexel)", minimumRadius);
+    ASSERT_NE(branch, std::string::npos);
+    const auto branchEnd = source.find('}', branch);
+    ASSERT_NE(branchEnd, std::string::npos);
+    EXPECT_LT(source.find("GE_BlockerSearch(", branch), branchEnd);
+    EXPECT_LT(source.find("GE_PcssPenumbraTexels(", branch), branchEnd);
+    const auto filter = source.find("float filterRadius", branch);
+    ASSERT_NE(filter, std::string::npos);
+    EXPECT_GT(filter, branchEnd);
+}
+
 TEST(ShadowDitherBasisShaderContract, ScreenBasisExpressionIsPreserved)
 {
     const std::string src = ShadowSamplingSource();
