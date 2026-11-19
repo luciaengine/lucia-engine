@@ -3,9 +3,9 @@ import { dotnet } from './_framework/dotnet.js';
 const pageModule = globalThis.Module;
 const { canvas, print, printErr } = pageModule;
 try {
-    // Use the SDK's workers so Mono and native OPFS jobs share the same worker pool.
+    // Reserve loaded workers for Mono, the engine job pool, asset IO, and OPFS at startup.
     const { Module, getAssemblyExports, getConfig, runMain } = await dotnet
-        .withConfig({ pthreadPoolInitialSize: 12, pthreadPoolUnusedSize: 4 })
+        .withConfig({ pthreadPoolInitialSize: 16, pthreadPoolUnusedSize: 4 })
         .withModuleConfig({ canvas, print, printErr }).create();
     await runMain(getConfig().mainAssemblyName, []);
     const installEditorAssets = globalThis.geInstallEditorAssets;

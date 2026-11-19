@@ -159,6 +159,18 @@ def patch_glue(framework):
     def digest(value):
         return base64.b64encode(hashlib.sha256(value.encode()).digest()).decode()
 
+    boot = boot.replace(digest(source), digest(patched))
+
+    # The SDK sets info.isLoaded after a worker finishes loading. Its pool
+    # selector reads worker.loaded and can strand native jobs on a new worker.
+    runtime, = (path for path in framework.glob("dotnet.runtime.*.js") if path.name in boot)
+    source = runtime.read_text()
+    patched = replace_once(
+        source,
+        "if(n.loaded)return e.unusedWorkers.splice(t,1),n",
+        "if(n.info.isLoaded)return e.unusedWorkers.splice(t,1),n",
+    )
+    runtime.write_text(patched)
     write_file(loader, boot.replace(digest(source), digest(patched)))
 
 
