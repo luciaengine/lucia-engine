@@ -4,7 +4,7 @@
 // zw the cosine and sine of its yaw, which turn the object normal into world space. The card blends
 // the three frames around the view direction at the surface point that the baked depth gives.
 //
-// @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
+// @property vec4 impostorAtlas "Impostor Atlas" default=9,0,0,0 group=Impostor
 // impostorAtlas.z = 1 tints the cards red (GE_IMPOSTOR_DEBUG_TINT), to show which trees are cards.
 
 #include "Includes/impostor_frame.glsl"
@@ -46,16 +46,27 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     int dominant = weights.x >= weights.y ? (weights.x >= weights.z ? 0 : 2) : (weights.y >= weights.z ? 1 : 2);
     vec3 surface = GE_ImpostorSurfacePoint(frames[dominant], offset, Props.impostorAtlas);
 
+    // A frame that has a surface clearly in front of the surface point sees an occluder there (the
+    // leaves above a trunk, seen from a higher frame): it does not contribute.
+    const float kOccluderDepth = 0.05; // Window depth: 0.1 sphere radii.
     vec4 color = vec4(0.0);
     vec3 objectNormal = vec3(0.0);
+    float weightSum = 0.0;
     for (int i = 0; i < 3; ++i)
     {
         vec2 uv = GE_ImpostorFrameUv(frames[i], surface, Props.impostorAtlas);
         vec4 sampleColor = texture(albedoMap, uv);
         vec4 sampleNormalDepth = texture(normalMap, uv);
-        color += sampleColor * weights[i];
-        objectNormal += (sampleNormalDepth.xyz * 2.0 - sampleColor.a) * weights[i];
+        float expectedDepth = dot(surface, GE_ImpostorFrameDirection(frames[i], Props.impostorAtlas)) * 0.5 + 0.5;
+        bool occluded = i != dominant && sampleColor.a > 0.5 &&
+                        sampleNormalDepth.w / sampleColor.a > expectedDepth + kOccluderDepth;
+        float weight = occluded ? 0.0 : weights[i];
+        color += sampleColor * weight;
+        objectNormal += (sampleNormalDepth.xyz * 2.0 - sampleColor.a) * weight;
+        weightSum += weight;
     }
+    color /= weightSum;
+    objectNormal /= weightSum;
     o.baseColor = color.a > 0.0001 ? color.rgb / color.a : vec3(0.0);
     o.opacity = color.a;
     if (Props.impostorAtlas.z > 0.5)

@@ -16,7 +16,8 @@ struct ImpostorAtlasKey
     uint64 MeshHash = 0;      // Content hash of the meshes the atlas shows.
     uint64 MaterialHash = 0;  // Hash of the materials they draw with.
     Mathematics::OctahedralLayout Layout = Mathematics::OctahedralLayout::Hemisphere;
-    uint32 FramesPerSide = 8; // The atlas holds FramesPerSide^2 frames.
+    // The atlas holds FramesPerSide^2 frames. An odd count puts a hemisphere frame at the zenith.
+    uint32 FramesPerSide = 9;
     uint32 FrameSize = 128;   // Pixels per frame side.
 
     auto operator<=>(const ImpostorAtlasKey&) const = default;
