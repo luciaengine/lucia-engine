@@ -2,7 +2,7 @@ FROM docker.io/library/debian:trixie
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build pkg-config python3 autoconf autoconf-archive automake libtool \
-    git curl ca-certificates zip unzip tar libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev libwayland-dev \
+    nasm git curl ca-certificates zip unzip tar libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev libwayland-dev \
     mesa-vulkan-drivers vulkan-tools vulkan-validationlayers libvulkan1 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=mcr.microsoft.com/dotnet/sdk:10.0 /usr/share/dotnet /usr/share/dotnet
