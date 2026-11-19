@@ -18,6 +18,7 @@
 #include "UI/Controls/WeightedPane.h"
 #include "UI/EditorIcons.h"
 #include "UI/EditorSearchBars.h"
+#include "UI/Interaction/ContextMenuManipulator.h"
 #include "UI/PanelSearchBar.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
@@ -216,6 +217,8 @@ void LogPanel::BuildFromLayout()
         detailScroll->GetViewport()->AddChild(bodyParent->TakeChild(detailBody));
     m_DetailMessage->SetReadOnly(true);
     m_DetailTrace->SetReadOnly(true);
+    AttachDetailCopyMenu(*m_DetailMessage);
+    AttachDetailCopyMenu(*m_DetailTrace);
     m_DetailTrace->SetTooltip("Double-click a line to open its file in the Script Editor.");
     m_DetailTrace->RegisterEventHandler(kEventMouseUp, [this](UIEvent& e) { OnTraceMouseUp(e); });
 
@@ -514,6 +517,23 @@ void LogPanel::SyncDetailLayoutMode()
     }
     m_SplitBody->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
     m_SplitBody->RequestRelayout();
+}
+
+void LogPanel::AttachDetailCopyMenu(TextArea& field)
+{
+    const auto panel = MakeWeakRef(this);
+    const auto textArea = MakeWeakRef(&field);
+    field.AddManipulator(ContextMenuManipulator::Create({
+        {.Path = "Copy", .IconPath = EditorIcons::kCopy, .OnActivate = [panel, textArea]()
+         {
+             LogPanel* owner = panel.Get();
+             const TextArea* text = textArea.Get();
+             if (!owner || !text)
+                 return;
+             const std::string selection = text->GetSelectedText();
+             owner->CopyText(selection.empty() ? text->GetValue() : selection, "Copied", /*besideSelection=*/false);
+         }},
+    }));
 }
 
 void LogPanel::CopySelected()

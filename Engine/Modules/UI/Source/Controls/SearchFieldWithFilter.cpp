@@ -17,6 +17,7 @@ SearchFieldWithFilter::SearchFieldWithFilter()
     m_Field = field.get();
     m_Field->AddClass("search-field-with-filter-input");
     m_Field->SetFocusable(true);
+    m_Field->EnableClipboardContextMenu();
     m_Field->SetOnValueChanging([this](const std::string& value) {
         if (UIManager* owner = GetOwnerManager())
             owner->DismissActiveTooltip();

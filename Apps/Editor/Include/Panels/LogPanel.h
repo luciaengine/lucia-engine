@@ -71,6 +71,7 @@ private:
     void HideDetail();
     void SyncDetailLayoutMode();
 
+    void AttachDetailCopyMenu(TextArea& field);
     void CopySelected();
     void CopyAllVisible();
     /// Copies `text` and confirms it: on the selected row's right end when `besideSelection` and the

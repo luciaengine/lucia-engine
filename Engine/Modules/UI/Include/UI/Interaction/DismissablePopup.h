@@ -49,6 +49,10 @@ class DismissablePopup
     /// the popup would never dismiss.
     virtual UIElement* GetPopupRoot();
 
+    /// A detached overlay can name its anchor so a press inside it preserves
+    /// the containing popup that opened it.
+    virtual const UIElement* GetPopupAnchor() const { return nullptr; }
+
     /// A press inside a SIBLING surface of the same logical popup also counts
     /// as inside: a context menu is one popup made of several panels (root +
     /// submenus), and a press on a submenu row must not dismiss the root out

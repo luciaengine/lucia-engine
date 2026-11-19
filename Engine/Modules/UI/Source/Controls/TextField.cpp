@@ -8,6 +8,7 @@
 #include "Types/ColorUtils.h"
 #include "Types/Fnv1a.h"
 #include "UI/CaretBlink.h"
+#include "UI/Interaction/ContextMenuManipulator.h"
 #include "UI/Parsers/CSSParser.h"
 #include "UI/UIManager.h"
 #include "UI/UIStyle.h"
@@ -32,6 +33,29 @@ namespace GameEngine
 
 using namespace Rendering::Text;
 using namespace Rendering::Geometry;
+
+void TextField::EnableClipboardContextMenu()
+{
+    const auto field = MakeWeakRef(this);
+    const auto runClipboardAction = [field](int key)
+    {
+        if (TextField* target = field.Get())
+            if (UIManager* manager = target->GetOwnerManager())
+                target->OnKey(key, Input::kModControl, manager->GetPlatform());
+    };
+
+    AddManipulator(ContextMenuManipulator::Create({
+        {.Path = "Copy",
+         .OnActivate = [runClipboardAction]() { runClipboardAction(Input::kKeyCode_C); },
+         .State = [field]()
+         {
+             const TextField* target = field.Get();
+             const TextInput* input = target ? target->GetTextInput() : nullptr;
+             return ContextMenuManipulator::ItemState{.Enabled = input && input->HasSelection() && !input->IsMasked()};
+         }},
+        {.Path = "Paste", .OnActivate = [runClipboardAction]() { runClipboardAction(Input::kKeyCode_V); }},
+    }));
+}
 
 namespace
 {

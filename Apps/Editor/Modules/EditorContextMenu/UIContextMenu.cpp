@@ -50,7 +50,12 @@ constexpr const char* kMenuPathSeparator = " > ";
 class BoundedContextMenuPanel final : public UIElement, public DismissablePopup
 {
 public:
-    BoundedContextMenuPanel() : DismissablePopup(this) {}
+    explicit BoundedContextMenuPanel(UIElement* anchor)
+        : DismissablePopup(this), m_PopupAnchor(MakeWeakRef(anchor))
+    {
+    }
+
+    const UIElement* GetPopupAnchor() const override { return m_PopupAnchor.Get(); }
 
     void OnOwnerManagerChanged(UIManager* owner) override { UpdatePopupRegistration(owner); }
 
@@ -306,6 +311,7 @@ private:
 
     std::function<void()> m_OnDismiss;
     std::function<bool(const UIElement*)> m_GroupContainment;
+    UIElement::WeakRef<UIElement> m_PopupAnchor;
     bool m_Dismissed = false;
     bool m_Placed = false;
     float m_LastAnchorX = std::numeric_limits<float>::infinity();
@@ -623,8 +629,9 @@ UIContextMenu::UIContextMenu() = default;
             e.Stop();
         });
 
-        // Create the root menu panel
-        auto menuPanel = std::make_unique<BoundedContextMenuPanel>();
+        // Retain the focused control's containing popup while its context menu is open.
+        UIElement* anchor = m_SavedFocusId.empty() ? nullptr : root->FindById(HashStringId(m_SavedFocusId));
+        auto menuPanel = std::make_unique<BoundedContextMenuPanel>(anchor);
         menuPanel->SetOnDismiss([this, alive = m_Alive]()
         {
             if (*alive)
@@ -923,7 +930,7 @@ UIContextMenu::UIContextMenu() = default;
         auto* list = GetListForParent(parentId);
         if (!list || list->empty()) return;
 
-        auto menuPanel = std::make_unique<BoundedContextMenuPanel>();
+        auto menuPanel = std::make_unique<BoundedContextMenuPanel>(anchorElement);
         // Dismissing a submenu closes its level and deeper, not the whole
         // menu: a press inside the ROOT panel (the search field, say) is
         // outside every open submenu, so per-popup dismissal fires for the
