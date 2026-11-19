@@ -1853,7 +1853,12 @@ void TextureService::UpdateMaterialMipDemand(std::span<const float> coverageByMa
 {
     std::lock_guard lock(m_PendingTexturesMutex);
     m_MaterialCoverage.assign(coverageByMaterialIndex.begin(), coverageByMaterialIndex.end());
-    m_MaterialCoverageChanged = true;
+    InvalidateMaterialMipCoverageLocked();
+}
+
+void TextureService::InvalidateMaterialMipCoverageLocked()
+{
+    m_MaterialMipCoverageStale = true;
     m_MaterialMipStreamsSettled = false;
 }
 
@@ -1935,13 +1940,13 @@ void TextureService::AdvanceMaterialMipStreams()
         m_MaterialMipPlanInput.clear();
         for (auto& [guid, stream] : m_MaterialMipStreams)
         {
-            if (m_MaterialCoverageChanged)
+            if (m_MaterialMipCoverageStale)
                 stream.ScreenCoverage = MaterialMipCoverageLocked(guid);
             const MaterialMipData& data = *stream.Data;
             m_MaterialMipPlanInput.push_back(
                 {guid, data.SuffixBytes, stream.FirstMip, data.Tail, data.TopExtent, stream.ScreenCoverage});
         }
-        m_MaterialCoverageChanged = false;
+        m_MaterialMipCoverageStale = false;
         const auto step = m_MaterialMipPlanner.Plan(m_MaterialMipPlanInput, m_MaterialMipBudgetBytes);
         m_MaterialMipStreamsSettled = !step.has_value();
         if (!step)
@@ -3701,7 +3706,10 @@ void TextureService::TrackMaterialTextureRefLocked(const GUID& matGuid, StringId
                                   return p.first == matGuid && p.second == slotName;
                               });
     if (refIt == refs.end())
+    {
         refs.emplace_back(matGuid, slotName);
+        InvalidateMaterialMipCoverageLocked();
+    }
 }
 
 void TextureService::UntrackMaterialTextureRefLocked(const GUID& matGuid, StringId slotName)
@@ -3730,6 +3738,7 @@ void TextureService::UntrackMaterialTextureRefLocked(const GUID& matGuid, String
                refs.end());
     if (refs.empty())
         m_TextureToMaterialBindings.erase(reverseIt);
+    InvalidateMaterialMipCoverageLocked();
 }
 
 void TextureService::UntrackAllMaterialTextureRefsLocked(const GUID& matGuid)
@@ -3752,6 +3761,7 @@ void TextureService::UntrackAllMaterialTextureRefsLocked(const GUID& matGuid)
             m_TextureToMaterialBindings.erase(reverseIt);
     }
     m_MaterialTextureRefs.erase(matIt);
+    InvalidateMaterialMipCoverageLocked();
 }
 
 void TextureService::UntrackTextureFromAllMaterialsLocked(const GUID& texGuid)

@@ -527,6 +527,8 @@ class TextureService
     bool TryGetMaterialTextureLocked(const GUID& guid, TextureGPUCache::Entry& out) const;
     // The largest coverage in m_MaterialCoverage of the materials that bind `guid`. Render thread.
     float MaterialMipCoverageLocked(const GUID& guid) const;
+    // The demand table or a texture's material bindings changed: the streams take their coverage again.
+    void InvalidateMaterialMipCoverageLocked();
     std::shared_ptr<const MaterialMipData> PrepareMaterialMipStream(const GUID& guid,
                                                                   const PreparedTextureUpload& prepared);
     void AdvanceMaterialMipStreams();
@@ -761,7 +763,7 @@ class TextureService
     FlatMap<GUID, MaterialMipStream> m_MaterialMipStreams;
     // Screen coverage by GPUScene material index (UpdateMaterialMipDemand). Empty without demand data.
     std::vector<float> m_MaterialCoverage;
-    bool m_MaterialCoverageChanged = false;
+    bool m_MaterialMipCoverageStale = false;
     // True while no step improves the streams. A change to a stream, the demand or the budget clears it.
     bool m_MaterialMipStreamsSettled = false;
     MaterialMipStepPlanner m_MaterialMipPlanner;
