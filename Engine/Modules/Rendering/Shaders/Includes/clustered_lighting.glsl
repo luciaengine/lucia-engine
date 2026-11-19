@@ -536,7 +536,7 @@ vec3 GE_AccumulateClusteredLighting(
         {
             // Directional cascade shadow projects the render-origin-relative
             // position through the rebased ge_shadowVP (Earth-scale precision).
-            dirAtten *= GE_SampleShadow(posRel, so.normalWS, linearDepth, dirL, screenPos);
+            dirAtten *= GE_SurfaceSunShadow(posRel, so.normalWS, linearDepth, dirL, screenPos);
             dirTint = ge_lastShadowTint;
         }
 #endif
