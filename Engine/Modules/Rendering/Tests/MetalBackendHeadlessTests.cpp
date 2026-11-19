@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iterator>
 #include <span>
 #include <string>
@@ -1732,6 +1733,47 @@ TEST(MetalSpirvPipeline, OnlyPipelinesThatRunInIndirectCommandBuffersSupportThem
     EXPECT_FALSE(PipelineSupportsIndirectCommandBuffers(*device, true));
     EXPECT_EQ(PipelineSupportsIndirectCommandBuffers(*device, false),
               caps.supportsDrawIndirectCountNative && caps.supportsBindlessResources);
+    device->Shutdown();
+}
+
+namespace
+{
+// The MSL dumps of failed compiles that carry this pipeline name.
+std::vector<std::filesystem::path> FailedMslDumps(const std::string& pipelineName)
+{
+    std::vector<std::filesystem::path> dumps;
+    std::error_code error;
+    const std::string prefix = "ge_msl_fail_" + pipelineName + "_";
+    for (const auto& entry : std::filesystem::directory_iterator("/tmp", error))
+        if (entry.path().filename().string().starts_with(prefix))
+            dumps.push_back(entry.path());
+    return dumps;
+}
+} // namespace
+
+// Two variants of one pipeline that fail to compile leave two dumps: the file name carries the hash of
+// the source, so the second variant does not overwrite the first.
+TEST(MetalSpirvPipeline, EachFailedVariantOfAPipelineDumpsItsOwnMsl)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+        GTEST_SKIP() << "Metal backend unavailable";
+    const std::string name = "MslDumpVariantProbe";
+    for (const auto& dump : FailedMslDumps(name))
+        std::filesystem::remove(dump);
+    for (const char* source : {"not msl: variant a", "not msl: variant b"})
+    {
+        PipelineDesc desc{};
+        desc.type = PipelineType::Graphics;
+        desc.vertexShader.assign(source, source + std::strlen(source));
+        desc.colorAttachmentFormats = {static_cast<uint32_t>(TextureFormat::BGRA8_UNORM)};
+        desc.debugName = name.c_str();
+        EXPECT_FALSE(device->CreatePipeline(desc).IsValid());
+    }
+    const auto dumps = FailedMslDumps(name);
+    EXPECT_EQ(dumps.size(), 2u);
+    for (const auto& dump : dumps)
+        std::filesystem::remove(dump);
     device->Shutdown();
 }
 
