@@ -13,11 +13,8 @@ try {
     await installEditorAssets(Module);
     const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
     const scripts = exports.Lucia.Web.Editor.BrowserPlayMode;
-    Module.webScriptSession = {
-        start: scripts.Start,
-        tick: scripts.Tick,
-        stop: scripts.Stop,
-    };
+    const scriptSession = createScriptSession(Module, scripts);
+    Module.webScriptSession = scriptSession;
     globalThis.Module = Module;
     await prepareStorage(Module);
     const status = await Module.ccall('GeStartEditor', 'number', [], [], { async: true });
@@ -28,6 +25,7 @@ try {
     async function frame() {
         try {
             const keepRunning = await Module.ccall('GeTickEditor', 'boolean', [], [], { async: true });
+            await scriptSession.runPending();
             if (keepRunning)
                 scheduleFrame();
         } catch (error) {
@@ -44,6 +42,58 @@ try {
     scheduleFrame();
 } catch (error) {
     report(error);
+}
+
+function createScriptSession(module, scripts) {
+    let pending;
+    let running = false;
+    const reportScriptError = diagnostic =>
+        module.ccall('GeReportBrowserScriptError', null, ['string'], [diagnostic]);
+
+    // C++ copies requests into this slot while the native frame is on the
+    // stack. All managed calls run after that frame has returned to JavaScript.
+    return {
+        start(world, sources) {
+            pending = async () => {
+                const diagnostic = await scripts.Start(world, sources);
+                running = !diagnostic;
+                if (diagnostic)
+                    reportScriptError(diagnostic);
+            };
+        },
+        tick(delta) {
+            if (running && !pending)
+                pending = () => scripts.Tick(delta);
+        },
+        requestStop() {
+            if (!running && !pending)
+                return true;
+            pending = async () => {
+                running = false;
+                await scripts.Stop();
+            };
+            return false;
+        },
+        async runPending() {
+            const operation = pending;
+            pending = undefined;
+            if (!operation)
+                return;
+            try {
+                await operation();
+            } catch (error) {
+                reportScriptError(String(error));
+                if (running) {
+                    running = false;
+                    try {
+                        await scripts.Stop();
+                    } catch (stopError) {
+                        reportScriptError(String(stopError));
+                    }
+                }
+            }
+        },
+    };
 }
 
 async function prepareStorage(module) {

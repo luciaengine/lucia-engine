@@ -32,7 +32,6 @@
 #include "Types/PathUtils.h"
 
 #include <cstdint>
-#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -40,33 +39,18 @@
 #include <emscripten/emscripten.h>
 #include <nlohmann/json.hpp>
 
-EM_JS_DEPS(BrowserPlayScripts, "$UTF8ToString,$stringToNewUTF8");
+EM_JS_DEPS(BrowserPlayScripts, "$UTF8ToString");
 EM_JS(int, BrowserPlayScriptsAvailable, (), {
     return typeof Module.webScriptSession?.start === 'function';
 });
-EM_ASYNC_JS(char*, StartBrowserPlayScripts, (int world, const char* sources), {
-    try {
-        const diagnostic = await Module.webScriptSession.start(world, UTF8ToString(sources));
-        return diagnostic ? stringToNewUTF8(diagnostic) : 0;
-    } catch (error) {
-        return stringToNewUTF8(String(error));
-    }
+EM_JS(void, QueueBrowserPlayStart, (int world, const char* sources), {
+    Module.webScriptSession.start(world, UTF8ToString(sources));
 });
-EM_ASYNC_JS(char*, TickBrowserPlayScripts, (float delta), {
-    try {
-        await Module.webScriptSession.tick(delta);
-        return 0;
-    } catch (error) {
-        return stringToNewUTF8(String(error));
-    }
+EM_JS(void, QueueBrowserPlayTick, (float delta), {
+    Module.webScriptSession.tick(delta);
 });
-EM_ASYNC_JS(char*, StopBrowserPlayScripts, (), {
-    try {
-        await Module.webScriptSession.stop();
-        return 0;
-    } catch (error) {
-        return stringToNewUTF8(String(error));
-    }
+EM_JS(int, RequestBrowserPlayStop, (), {
+    return Module.webScriptSession.requestStop();
 });
 #endif
 
@@ -76,17 +60,6 @@ namespace GameEngine::Editor
 #if defined(__EMSCRIPTEN__)
 namespace
 {
-bool s_BrowserScriptsRunning = false;
-
-bool ReportBrowserScriptError(char* error)
-{
-    const std::unique_ptr<char, decltype(&std::free)> diagnostic(error, &std::free);
-    if (!diagnostic)
-        return false;
-    Logger::Log::Error("C# scripts: {}", diagnostic.get());
-    return true;
-}
-
 int32_t BrowserScriptsEnter()
 {
     auto& engine = EngineCore::GetInstance();
@@ -119,29 +92,21 @@ int32_t BrowserScriptsEnter()
         return 0;
     const auto world = reinterpret_cast<std::uintptr_t>(engine.GetPrimaryWorld());
     const auto request = sources.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-    s_BrowserScriptsRunning = !ReportBrowserScriptError(StartBrowserPlayScripts(static_cast<int>(world), request.c_str()));
-    return s_BrowserScriptsRunning ? 0 : 1;
+    QueueBrowserPlayStart(static_cast<int>(world), request.c_str());
+    return 0;
 }
 
 int32_t BrowserScriptsTick(float delta)
 {
-    if (s_BrowserScriptsRunning && ReportBrowserScriptError(TickBrowserPlayScripts(delta)))
-    {
-        s_BrowserScriptsRunning = false;
-        ReportBrowserScriptError(StopBrowserPlayScripts());
-        return 1;
-    }
+    QueueBrowserPlayTick(delta);
     return 0;
 }
-
-int32_t BrowserScriptsExit()
-{
-    if (!s_BrowserScriptsRunning)
-        return 0;
-    s_BrowserScriptsRunning = false;
-    return ReportBrowserScriptError(StopBrowserPlayScripts()) ? 1 : 0;
-}
 } // namespace
+
+extern "C" EMSCRIPTEN_KEEPALIVE void GeReportBrowserScriptError(const char* diagnostic)
+{
+    Logger::Log::Error("C# scripts: {}", diagnostic);
+}
 #endif
 
 static void SetRuntimeAudioSystemsEnabled(bool enabled)
@@ -246,7 +211,6 @@ void PlayModeManager::EnsureManagedPlayModeBindings()
     {
         m_ManagedPlayMode.enter = reinterpret_cast<void*>(BrowserScriptsEnter);
         m_ManagedPlayMode.tick = reinterpret_cast<void*>(BrowserScriptsTick);
-        m_ManagedPlayMode.exit = reinterpret_cast<void*>(BrowserScriptsExit);
     }
 #endif
 }
@@ -569,6 +533,16 @@ void PlayModeManager::ExitPlayMode()
     }
     if (m_State == PlayModeState::ChangeReview)
         return;
+
+#if defined(__EMSCRIPTEN__)
+    // Let the host finish OnDestroy between frames, while the play world is
+    // still live. Tick retries the exit before updating that world again.
+    if (BrowserPlayScriptsAvailable() && !RequestBrowserPlayStop())
+    {
+        m_ExitRequested = true;
+        return;
+    }
+#endif
 
     if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
         m_UndoRedo->DiscardPendingEdit();

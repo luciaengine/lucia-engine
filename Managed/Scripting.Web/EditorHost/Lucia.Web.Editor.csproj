@@ -20,7 +20,7 @@
     <EmccExportedRuntimeMethod Include="ccall" />
     <EmccExportedRuntimeMethod Include="FS" />
   </ItemGroup>
-  <Target Name="CollectScriptReferences" BeforeTargets="PrepareResourceNames"
+  <Target Name="CollectScriptReferences" BeforeTargets="AssignTargetPaths"
           DependsOnTargets="ResolveReferences">
     <PropertyGroup>
       <ScriptReferenceDirectory>$(IntermediateOutputPath)project-script-references/</ScriptReferenceDirectory>
