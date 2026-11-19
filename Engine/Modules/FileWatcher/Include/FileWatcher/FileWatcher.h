@@ -129,6 +129,9 @@ class FileWatcher
     }
 
   private:
+    // A path as the platform spells it, without a std::filesystem::path.
+    using PathText = std::basic_string_view<std::filesystem::path::value_type>;
+
     /**
      * @brief Platform-specific watching implementation
      */
@@ -223,8 +226,7 @@ class FileWatcher
      *        the extension and excluded-directory filters, with its last write time.
      * @return false when the watcher was asked to stop before the walk finished.
      */
-    bool ForEachWatchedFile(
-        FunctionRef<void(const std::filesystem::path&, std::filesystem::file_time_type)> visit);
+    bool ForEachWatchedFile(FunctionRef<void(PathText, std::filesystem::file_time_type)> visit);
 
     /**
      * @brief One polling scan: diffs the tree against the previous scan and
@@ -236,7 +238,7 @@ class FileWatcher
      * @brief Compare one file that the scan found with the snapshot. Record a change
      *        for ReportScanChanges and change no snapshot entry.
      */
-    void RecordScannedFile(const std::filesystem::path& path, std::filesystem::file_time_type lastWrite);
+    void RecordScannedFile(PathText path, std::filesystem::file_time_type lastWrite);
 
     /**
      * @brief Report the changes of a complete scan and apply them to the snapshot.
@@ -316,7 +318,33 @@ class FileWatcher
         // The number of the last scan that found the file.
         uint64 LastScan;
     };
-    using PolledFileMap = FastHashMap<std::filesystem::path, PolledFile>;
+    // Keyed by the native path text, so a scan finds an entry from the text it walked and builds no
+    // path for a file that did not change: libstdc++ allocates a component list for each path.
+    struct NativePathHash
+    {
+        using is_transparent = void;
+        using is_avalanching = void;
+        uint64 operator()(PathText path) const noexcept { return ankerl::unordered_dense::hash<PathText>{}(path); }
+        uint64 operator()(const std::filesystem::path& path) const noexcept { return (*this)(PathText(path.native())); }
+    };
+    struct NativePathEqual
+    {
+        using is_transparent = void;
+        bool operator()(PathText left, PathText right) const noexcept { return left == right; }
+        bool operator()(const std::filesystem::path& left, const std::filesystem::path& right) const noexcept
+        {
+            return left.native() == right.native();
+        }
+        bool operator()(PathText left, const std::filesystem::path& right) const noexcept
+        {
+            return left == right.native();
+        }
+        bool operator()(const std::filesystem::path& left, PathText right) const noexcept
+        {
+            return left.native() == right;
+        }
+    };
+    using PolledFileMap = FastHashMap<std::filesystem::path, PolledFile, NativePathHash, NativePathEqual>;
     PolledFileMap m_PolledFiles;
 
     // The state of one scan, kept from scan to scan so that a scan of a tree

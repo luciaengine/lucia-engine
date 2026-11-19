@@ -5,6 +5,7 @@
 #include "Types/StringUtils.h"
 
 #include <algorithm>
+#include <chrono>
 #include <string_view>
 #include <vector>
 
@@ -12,6 +13,10 @@
 #include <windows.h>
 #else
 #include "DirectoryTreeWalk.h"
+
+#include <sys/stat.h>
+
+#include <cerrno>
 #endif
 
 #ifdef PLATFORM_MACOS
@@ -55,6 +60,35 @@ constexpr std::string_view kExcludedDirectories[] = {
     "/Debug/",         // Debug build artifacts
     "/Release/"        // Release build artifacts
 };
+
+// The last write time of a file. Every snapshot entry takes its time from here, so a scan and an
+// event compare times from one source. On POSIX it reads stat and builds no std::filesystem::path.
+#ifdef PLATFORM_WINDOWS
+std::filesystem::file_time_type LastWriteTimeOf(const std::filesystem::path::value_type* path, std::error_code& error)
+{
+    return std::filesystem::last_write_time(std::filesystem::path(path), error);
+}
+#else
+std::filesystem::file_time_type LastWriteTimeOf(const char* path, std::error_code& error)
+{
+    struct stat status{};
+    if (stat(path, &status) != 0)
+    {
+        error = std::error_code(errno, std::generic_category());
+        return std::filesystem::file_time_type::min();
+    }
+    error.clear();
+#ifdef PLATFORM_MACOS
+    const timespec modified = status.st_mtimespec;
+#else
+    const timespec modified = status.st_mtim;
+#endif
+    const auto sinceEpoch = std::chrono::sys_seconds(std::chrono::seconds(modified.tv_sec)) +
+                            std::chrono::nanoseconds(modified.tv_nsec);
+    return std::chrono::time_point_cast<std::filesystem::file_time_type::duration>(
+        std::chrono::file_clock::from_sys(sinceEpoch));
+}
+#endif
 
 // The extension of a file name, as std::filesystem::path::extension finds it:
 // from the last '.', and none when that '.' starts the name.
@@ -761,8 +795,7 @@ void FileWatcher::ProcessWindowsFileChanges(uint8* buffer, uint32 bufferSize)
 #endif
 
 #ifdef PLATFORM_WINDOWS
-bool FileWatcher::ForEachWatchedFile(
-    FunctionRef<void(const std::filesystem::path&, std::filesystem::file_time_type)> visit)
+bool FileWatcher::ForEachWatchedFile(FunctionRef<void(PathText, std::filesystem::file_time_type)> visit)
 {
     // A stop is checked at every entry: a walk of a large tree takes hundreds of
     // milliseconds, and StopWatching waits for the walk.
@@ -781,7 +814,7 @@ bool FileWatcher::ForEachWatchedFile(
                 continue;
             }
             if (entry.is_regular_file() && ShouldWatchFile(entry.path()))
-                visit(entry.path(), entry.last_write_time());
+                visit(entry.path().native(), entry.last_write_time());
         }
         return true;
     }
@@ -791,13 +824,12 @@ bool FileWatcher::ForEachWatchedFile(
         if (m_ShouldStop.load(std::memory_order_relaxed))
             return false;
         if (entry.is_regular_file() && ShouldWatchFile(entry.path()))
-            visit(entry.path(), entry.last_write_time());
+            visit(entry.path().native(), entry.last_write_time());
     }
     return true;
 }
 #else
-bool FileWatcher::ForEachWatchedFile(
-    FunctionRef<void(const std::filesystem::path&, std::filesystem::file_time_type)> visit)
+bool FileWatcher::ForEachWatchedFile(FunctionRef<void(PathText, std::filesystem::file_time_type)> visit)
 {
     // A stop is checked at every entry: a walk of a large tree takes hundreds of
     // milliseconds, and StopWatching waits for the walk.
@@ -821,10 +853,15 @@ bool FileWatcher::ForEachWatchedFile(
         if (type == DirectoryTreeWalk::EntryType::Symlink)
         {
             // A link to a file is watched as that file. The walk does not follow a link to a directory.
-            const std::filesystem::file_status target = std::filesystem::status(walk.CurrentPath(), error);
-            if (error && target.type() != std::filesystem::file_type::not_found)
-                throw std::filesystem::filesystem_error("status", walk.CurrentPath(), error);
-            if (!std::filesystem::is_regular_file(target))
+            struct stat target{};
+            if (stat(walk.CurrentPath(), &target) != 0)
+            {
+                if (errno == ENOENT || errno == ENOTDIR)
+                    continue;
+                throw std::filesystem::filesystem_error("status", std::filesystem::path(walk.CurrentPath()),
+                                                        std::error_code(errno, std::generic_category()));
+            }
+            if (!S_ISREG(target.st_mode))
                 continue;
         }
         else if (type != DirectoryTreeWalk::EntryType::RegularFile)
@@ -835,9 +872,9 @@ bool FileWatcher::ForEachWatchedFile(
         if (!IsWatchedFileName(walk.CurrentName()) ||
             IsExcludedRelativePath(walk.CurrentRelativePath(), m_ExclusionScratch))
             continue;
-        const std::filesystem::file_time_type lastWrite = std::filesystem::last_write_time(walk.CurrentPath(), error);
+        const std::filesystem::file_time_type lastWrite = LastWriteTimeOf(walk.CurrentPath(), error);
         if (error)
-            throw std::filesystem::filesystem_error("last_write_time", walk.CurrentPath(), error);
+            throw std::filesystem::filesystem_error("last_write_time", std::filesystem::path(walk.CurrentPath()), error);
         visit(walk.CurrentPath(), lastWrite);
     }
     return true;
@@ -846,7 +883,8 @@ bool FileWatcher::ForEachWatchedFile(
 
 void FileWatcher::SnapshotWatchedFiles()
 {
-    ForEachWatchedFile([this](const std::filesystem::path& path, std::filesystem::file_time_type lastWrite) {
+    ForEachWatchedFile([this](PathText pathText, std::filesystem::file_time_type lastWrite) {
+        const std::filesystem::path path(pathText);
         m_PolledFiles[path] = PolledFile{lastWrite, ReadFileIdentity(path), 0};
     });
 }
@@ -878,7 +916,7 @@ void FileWatcher::NotifyReportedChange(const FileChangeEvent& event)
         }
         else if (std::filesystem::is_regular_file(status))
         {
-            const auto lastWrite = std::filesystem::last_write_time(event.Path, ec);
+            const auto lastWrite = LastWriteTimeOf(event.Path.c_str(), ec);
             m_PolledFiles[event.Path] =
                 PolledFile{ec ? std::filesystem::file_time_type::min() : lastWrite, ReadFileIdentity(event.Path), 0};
         }
@@ -1055,30 +1093,31 @@ void FileWatcher::PollOnce()
     m_ScanAppeared.clear();
     m_ScanAppearedByIdentity.clear();
     const bool walked = ForEachWatchedFile(
-        [this](const std::filesystem::path& path, std::filesystem::file_time_type lastWrite)
-        { RecordScannedFile(path, lastWrite); });
+        [this](PathText path, std::filesystem::file_time_type lastWrite) { RecordScannedFile(path, lastWrite); });
     if (!walked)
         return;
     ReportScanChanges();
 }
 
-void FileWatcher::RecordScannedFile(const std::filesystem::path& path, std::filesystem::file_time_type lastWrite)
+void FileWatcher::RecordScannedFile(PathText pathText, std::filesystem::file_time_type lastWrite)
 {
-    const auto previous = m_PolledFiles.find(path);
+    const auto previous = m_PolledFiles.find(pathText);
     if (previous == m_PolledFiles.end())
     {
+        std::filesystem::path path(pathText);
         const PolledFile scanned{lastWrite, ReadFileIdentity(path), m_ScanNumber};
         // The first file with an identity wins: hard links share one.
         if (scanned.Identity.Valid)
             m_ScanAppearedByIdentity.emplace(scanned.Identity, m_ScanAppeared.size());
-        m_ScanAppeared.push_back(AppearedFile{path, scanned, false});
+        m_ScanAppeared.push_back(AppearedFile{std::move(path), scanned, false});
         return;
     }
 
     previous->second.LastScan = m_ScanNumber;
     if (previous->second.LastWrite == lastWrite)
         return;
-    m_ScanModified.push_back(ModifiedFile{&*previous, PolledFile{lastWrite, ReadFileIdentity(path), m_ScanNumber}});
+    m_ScanModified.push_back(
+        ModifiedFile{&*previous, PolledFile{lastWrite, ReadFileIdentity(previous->first), m_ScanNumber}});
 }
 
 void FileWatcher::ReportScanChanges()
