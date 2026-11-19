@@ -219,7 +219,6 @@ TextureAsset::TextureAsset(const GUID& guid, const std::filesystem::path& path)
     , m_Channels(0)
 	    , m_Format(TextureFormat::Unknown)
 	    , m_ColorSpace(TextureColorSpace::Unknown)
-    , m_PixelData(nullptr)
     , m_DataSize(0)
     , m_HasMipmaps(false)
     , m_MipmapLevels(1)
@@ -428,13 +427,13 @@ bool TextureAsset::DecodeBlockPayloadForCpuReaders()
         if (ok && hdr)
         {
             std::vector<float> texels;
-            ok = DecodeBlockPayloadRGBA32F(m_Format, mip.Width, mip.Height, m_PixelData + mip.Offset, mip.Size,
+            ok = DecodeBlockPayloadRGBA32F(m_Format, mip.Width, mip.Height, m_PixelData.get() + mip.Offset, mip.Size,
                                            texels);
             const auto* bytes = reinterpret_cast<const uint8*>(texels.data());
             decoded[level].assign(bytes, bytes + texels.size() * sizeof(float));
         }
         else if (ok)
-            ok = DecodeBlockPayloadRGBA8(m_Format, mip.Width, mip.Height, m_PixelData + mip.Offset, mip.Size,
+            ok = DecodeBlockPayloadRGBA8(m_Format, mip.Width, mip.Height, m_PixelData.get() + mip.Offset, mip.Size,
                                          decoded[level]);
         if (!ok)
         {
@@ -444,15 +443,14 @@ bool TextureAsset::DecodeBlockPayloadForCpuReaders()
         }
         total += decoded[level].size();
     }
-    delete[] m_PixelData;
-    m_PixelData = new uint8[total];
+    m_PixelData = std::make_shared_for_overwrite<uint8[]>(total);
     m_DataSize = total;
     m_LevelFile.reset();
     m_MipChain.clear();
     uint64 offset = 0;
     for (size_t level = 0; level < levels.size(); ++level)
     {
-        std::memcpy(m_PixelData + offset, decoded[level].data(), decoded[level].size());
+        std::memcpy(m_PixelData.get() + offset, decoded[level].data(), decoded[level].size());
         m_MipChain.push_back({offset, decoded[level].size(), levels[level].Width, levels[level].Height});
         offset += decoded[level].size();
     }
@@ -462,23 +460,23 @@ bool TextureAsset::DecodeBlockPayloadForCpuReaders()
 }
 
 void TextureAsset::Unload() {
-    if (m_PixelData) {
-        delete[] m_PixelData;
-        m_PixelData = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_PixelMutex);
+        m_PixelData.reset();
+        m_LevelFile.reset();
+        m_MipChain.clear();
+        m_DataSize = 0;
     }
     m_NormalVarianceCompanion.reset();
-    m_LevelFile.reset();
 
     m_Width = 0;
     m_Height = 0;
     m_Channels = 0;
     m_Format = TextureFormat::Unknown;
 	    m_ColorSpace = TextureColorSpace::Unknown;
-    m_DataSize = 0;
     m_HasMipmaps = false;
     m_SwizzleBaked = false;
     m_MipmapLevels = 1;
-    m_MipChain.clear();
     {
         std::lock_guard<std::mutex> lock(m_SvgSourceMutex);
         m_SvgSource.reset();
@@ -503,14 +501,18 @@ bool TextureAsset::AdoptReloadedPayload(Asset& staged) {
     std::swap(m_Channels, other->m_Channels);
     std::swap(m_Format, other->m_Format);
     std::swap(m_ColorSpace, other->m_ColorSpace);
-    std::swap(m_PixelData, other->m_PixelData);
-    std::swap(m_DataSize, other->m_DataSize);
+    {
+        // AcquirePixels on another thread reads these 4 together. It keeps the pixels that it got.
+        std::scoped_lock lock(m_PixelMutex, other->m_PixelMutex);
+        std::swap(m_PixelData, other->m_PixelData);
+        std::swap(m_DataSize, other->m_DataSize);
+        std::swap(m_MipChain, other->m_MipChain);
+        std::swap(m_LevelFile, other->m_LevelFile);
+    }
     std::swap(m_HasMipmaps, other->m_HasMipmaps);
     std::swap(m_SwizzleBaked, other->m_SwizzleBaked);
     std::swap(m_MipmapLevels, other->m_MipmapLevels);
-    std::swap(m_MipChain, other->m_MipChain);
     std::swap(m_NormalVarianceCompanion, other->m_NormalVarianceCompanion);
-    std::swap(m_LevelFile, other->m_LevelFile);
     {
         std::scoped_lock lock(m_SvgSourceMutex, other->m_SvgSourceMutex);
         std::swap(m_SvgSource, other->m_SvgSource);
@@ -965,8 +967,7 @@ bool TextureAsset::TryLoadViaCook(std::span<const uint8> sourceBytes, const Stri
     {
         Logger::Log::Warning("TextureAsset[{}]: freshly cooked texture failed to load — using raw decode",
                              GetName());
-        delete[] m_PixelData;
-        m_PixelData = nullptr;
+        m_PixelData.reset();
         m_MipChain.clear();
         return false;
     }
@@ -1001,8 +1002,7 @@ bool TextureAsset::AdoptCookArtifact(const std::filesystem::path& artifact,
     {
         Logger::Log::Warning("TextureAsset[{}]: cooked texture rejected (corrupt): {}", GetName(),
                              artifact.generic_string());
-        delete[] m_PixelData;
-        m_PixelData = nullptr;
+        m_PixelData.reset();
         m_MipChain.clear();
         return false;
     }
@@ -1050,8 +1050,8 @@ bool TextureAsset::DecodeSourceFile() {
         m_Format = DetermineFormat(m_Channels, true);
         m_ColorSpace = GuessTextureColorSpace(extension);
         m_DataSize = static_cast<uint64>(decoded.Pixels.size()) * sizeof(float);
-        m_PixelData = new uint8[m_DataSize];
-        std::memcpy(m_PixelData, decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
+        m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+        std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
         return true;
     }
     Image::Image8 decoded = Image::Decode8(bytes, GetPath().string(), Image::DecodeChannels::FromFile);
@@ -1065,8 +1065,8 @@ bool TextureAsset::DecodeSourceFile() {
     m_Format = DetermineFormat(m_Channels, false);
     m_ColorSpace = GuessTextureColorSpace(extension);
     m_DataSize = static_cast<uint64>(decoded.Pixels.size());
-    m_PixelData = new uint8[m_DataSize];
-    std::memcpy(m_PixelData, decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
+    m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+    std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
     return true;
 }
 
@@ -1111,8 +1111,8 @@ bool TextureAsset::DecodeSourceBytes(std::span<const uint8> data) {
         m_Format = DetermineFormat(m_Channels, true);
         m_ColorSpace = TextureColorSpace::Linear;
         m_DataSize = static_cast<uint64>(decoded.Pixels.size()) * sizeof(float);
-        m_PixelData = new uint8[m_DataSize];
-        std::memcpy(m_PixelData, decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
+        m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+        std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
         return true;
     }
     Image::Image8 decoded = Image::Decode8(data, GetPath().string(), Image::DecodeChannels::FromFile);
@@ -1158,9 +1158,9 @@ bool TextureAsset::DecodeSourceBytes(std::span<const uint8> data) {
             m_Format = DetermineFormat(m_Channels, false);
             m_ColorSpace = TextureColorSpace::SRGB;
             m_DataSize = m_Width * m_Height * m_Channels;
-            m_PixelData = new uint8[m_DataSize];
+            m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
             const uint8 pattern[] = { 255,0,255,255, 0,0,0,255, 0,0,0,255, 255,0,255,255 };
-            std::memcpy(m_PixelData, pattern, sizeof(pattern));
+            std::memcpy(m_PixelData.get(), pattern, sizeof(pattern));
             return true;
         }
 
@@ -1173,8 +1173,8 @@ bool TextureAsset::DecodeSourceBytes(std::span<const uint8> data) {
     m_Format = DetermineFormat(m_Channels, false);
     m_ColorSpace = GuessTextureColorSpace(extension);
     m_DataSize = static_cast<uint64>(decoded.Pixels.size());
-    m_PixelData = new uint8[m_DataSize];
-    std::memcpy(m_PixelData, decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
+    m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
+    std::memcpy(m_PixelData.get(), decoded.Pixels.data(), static_cast<size_t>(m_DataSize));
     return true;
 }
 
@@ -1420,13 +1420,13 @@ bool TextureAsset::PopulateFromKtxTexture(void* ktxTexture2Ptr, const char* sour
         std::reverse(bytes, bytes + (srcData - bytes) + totalDataSize);
         for (const TextureMipDesc& mip : m_MipChain)
             std::reverse(bytes + mip.Offset, bytes + mip.Offset + mip.Size);
-        m_PixelData = file->Release().release();
+        m_PixelData = std::shared_ptr<uint8[]>(file->Release());
     } else {
-        m_PixelData = new uint8[m_DataSize];
+        m_PixelData = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
         for (uint32 level = 0; level < numLevels; ++level) {
             ktx_size_t levelOffset = 0;
             ktxTexture_GetImageOffset(base, level, 0, 0, &levelOffset);
-            std::memcpy(m_PixelData + m_MipChain[level].Offset, srcData + levelOffset,
+            std::memcpy(m_PixelData.get() + m_MipChain[level].Offset, srcData + levelOffset,
                         static_cast<size_t>(m_MipChain[level].Size));
         }
     }
@@ -1449,28 +1449,43 @@ void TextureAsset::ReleaseLevelPixels()
 {
     if (!m_LevelFile)
         return;
-    delete[] m_PixelData;
-    m_PixelData = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_PixelMutex);
+        m_PixelData.reset();
+    }
     if (m_NormalVarianceCompanion)
         m_NormalVarianceCompanion->ReleaseLevelPixels();
 }
 
-bool TextureAsset::RestoreLevelPixels()
+std::shared_ptr<uint8[]> TextureAsset::ReadLevelPixels() const
 {
-    if (m_PixelData)
-        return true;
     ByteBuffer file;
     if (!m_LevelFile || !ReadFileBytesShared(m_LevelFile->Path(), file) ||
         !m_LevelFile->Matches({file.Data(), file.Size()}) || file.Size() < m_LevelFile->PrefixBytes(0))
-        return false;
-    if (m_NormalVarianceCompanion && !m_NormalVarianceCompanion->RestoreLevelPixels())
-        return false;
-    m_PixelData = new uint8[m_DataSize];
+        return nullptr;
+    auto pixels = std::make_shared_for_overwrite<uint8[]>(m_DataSize);
     const auto levels = m_LevelFile->Levels();
     for (size_t level = 0; level < m_MipChain.size(); ++level)
-        std::memcpy(m_PixelData + m_MipChain[level].Offset, file.Data() + levels[level].Offset,
+        std::memcpy(pixels.get() + m_MipChain[level].Offset, file.Data() + levels[level].Offset,
                     static_cast<size_t>(m_MipChain[level].Size));
-    return true;
+    return pixels;
+}
+
+bool TextureAsset::RestoreLevelPixels()
+{
+    if (m_NormalVarianceCompanion && !m_NormalVarianceCompanion->RestoreLevelPixels())
+        return false;
+    return AcquirePixels() != nullptr;
+}
+
+std::shared_ptr<const uint8[]> TextureAsset::AcquirePixels() const
+{
+    // The file read is inside the lock: a second reader of the same asset waits for the first
+    // and then takes its pixels.
+    std::lock_guard<std::mutex> lock(m_PixelMutex);
+    if (!m_PixelData)
+        m_PixelData = ReadLevelPixels();
+    return m_PixelData;
 }
 
 bool TextureAsset::LoadFromSvgData(const std::string& svgText, const String& extensionLower)
@@ -1525,7 +1540,7 @@ bool TextureAsset::LoadFromSvgData(const std::string& svgText, const String& ext
     m_Format = TextureFormat::RGBA8;
     m_ColorSpace = GuessTextureColorSpace(extensionLower);
     m_DataSize = static_cast<uint64>(img.DataSize);
-    m_PixelData = img.Data.release();
+    m_PixelData = std::shared_ptr<uint8[]>(std::move(img.Data));
     return true;
 }
 

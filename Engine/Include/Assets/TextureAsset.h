@@ -259,7 +259,15 @@ public:
     /**
      * @brief Get raw pixel data
      */
-    const uint8* GetPixelData() const { return m_PixelData; }
+    const uint8* GetPixelData() const { return m_PixelData.get(); }
+
+    /// The pixels as GetPixelData() gives them, with shared ownership: they stay valid while the
+    /// caller holds the result, also when the asset releases or reloads its pixels. When
+    /// ReleaseLevelPixels freed them, this reads them from GetLevelFile() (a blocking read of the
+    /// whole file) and the asset keeps them again. Null when the asset has no pixels and no file
+    /// gives them. Any thread, for the pixels only: the dimensions and the mip chain that the
+    /// caller reads beside them can change in a reload. Use it for an asset that the AssetManager shares.
+    std::shared_ptr<const uint8[]> AcquirePixels() const;
 
     /**
      * @brief Get data size in bytes
@@ -306,13 +314,14 @@ public:
 
     /// Frees the pixels of this texture and of its companion when GetLevelFile() names where they
     /// are. GetPixelData() is then null until RestoreLevelPixels. The mip chain and the
-    /// dimensions stay. Call on the thread that reads the pixels of this instance: for an instance
-    /// that the AssetManager shares, the main thread.
+    /// dimensions stay. A reader that holds AcquirePixels() keeps its pixels. A reader that uses
+    /// GetPixelData() must be on the thread that calls this: for an instance that the
+    /// AssetManager shares, the main thread.
     void ReleaseLevelPixels();
 
     /// Reads the pixels that ReleaseLevelPixels freed from GetLevelFile(). False, with no pixels,
-    /// when a file does not read or holds another container. A blocking read of the whole file,
-    /// on the same thread as ReleaseLevelPixels.
+    /// when a file does not read or holds another container. A blocking read of the whole file
+    /// for this texture and for its companion.
     bool RestoreLevelPixels();
 
     /// The SVG text an asset loaded from, with its intrinsic size in CSS px
@@ -453,7 +462,15 @@ private:
 	    uint32 m_Channels;
 	    TextureFormat m_Format;
 	    TextureColorSpace m_ColorSpace;
-	    uint8* m_PixelData;
+	    /// The pixels that GetLevelFile() names, read from the file. Null when it does not read or
+	    /// holds another container. m_PixelMutex held.
+	    std::shared_ptr<uint8[]> ReadLevelPixels() const;
+
+	    // AcquirePixels fills it again after a release.
+	    mutable std::shared_ptr<uint8[]> m_PixelData;
+	    // After the load, guards m_PixelData, m_DataSize, m_MipChain and m_LevelFile for AcquirePixels
+	    // against a release, a reload and an unload.
+	    mutable std::mutex m_PixelMutex;
 	    uint64 m_DataSize;
 	    bool m_HasMipmaps;
 	    bool m_SwizzleBaked = false;

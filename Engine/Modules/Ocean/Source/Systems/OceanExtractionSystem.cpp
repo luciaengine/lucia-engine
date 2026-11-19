@@ -74,15 +74,10 @@ float32 ClampNonNegativeFinite(float32 value)
     return std::isfinite(value) ? std::max(value, 0.0f) : 0.0f;
 }
 
-float ReadTextureChannel01(const TextureAsset& texture, size_t pixelIndex, uint32 channel,
+float ReadTextureChannel01(const uint8* pixels, uint32 channels, size_t pixelIndex, uint32 channel,
                            uint32 bytesPerChannel, bool decodeSrgb)
 {
-    const uint32 channels = texture.GetChannels();
     if (channels == 0u || channel >= channels)
-        return 1.0f;
-
-    const uint8* pixels = texture.GetPixelData();
-    if (!pixels)
         return 1.0f;
 
     const size_t channelIndex = pixelIndex * channels + channel;
@@ -113,7 +108,10 @@ OceanCpuTextureRG MakeOceanCpuTextureRG(const TextureAsset& texture)
     const uint32 width = texture.GetWidth();
     const uint32 height = texture.GetHeight();
     const uint32 channels = texture.GetChannels();
-    const uint8* pixels = texture.GetPixelData();
+    // The asset can be the instance that the AssetManager shares: a material mip stream
+    // releases its pixels on the render thread. The held pixels stay valid for this read.
+    const std::shared_ptr<const uint8[]> heldPixels = texture.AcquirePixels();
+    const uint8* pixels = heldPixels.get();
     if (!pixels || width == 0u || height == 0u || channels == 0u)
         return out;
 
@@ -135,10 +133,10 @@ OceanCpuTextureRG MakeOceanCpuTextureRG(const TextureAsset& texture)
     for (uint64 i = 0u; i < texelCount; ++i)
     {
         out.RG[static_cast<size_t>(i) * 2u + 0u] =
-            ReadTextureChannel01(texture, static_cast<size_t>(i), 0u, bytesPerChannel,
+            ReadTextureChannel01(pixels, channels, static_cast<size_t>(i), 0u, bytesPerChannel,
                                  decodeSrgb);
         out.RG[static_cast<size_t>(i) * 2u + 1u] =
-            ReadTextureChannel01(texture, static_cast<size_t>(i), 1u, bytesPerChannel,
+            ReadTextureChannel01(pixels, channels, static_cast<size_t>(i), 1u, bytesPerChannel,
                                  decodeSrgb);
     }
     return out;

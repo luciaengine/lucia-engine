@@ -645,7 +645,12 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     const auto streamed = material->GetTexture(slot);
     EXPECT_EQ(WidthOf(streamed), 512u);
 
-    // A direct upload of the same asset reads the pixels again from the artifact.
+    // A CPU reader of the shared asset gets the pixels again from the artifact in the cook cache.
+    const std::shared_ptr<const uint8[]> held = loaded->AcquirePixels();
+    ASSERT_NE(held, nullptr);
+    EXPECT_EQ(loaded->GetPixelData(), held.get());
+
+    // A direct upload of the same asset uses those pixels.
     const auto direct = WaitForUpload(texture);
     ASSERT_TRUE(direct.IsValid());
     EXPECT_NE(direct, streamed);
