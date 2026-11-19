@@ -1,4 +1,3 @@
-#include "Core/ApplicationPaths.h"
 // C10 end-to-end integration test: generate → compile → load → register.
 //
 // Drives NativeScriptManager::BuildAndLoad on a freshly-written fixture component:
@@ -12,7 +11,7 @@
 // import lib, include dirs, compile defs, SDK paths, config) is supplied by CMake
 // via a generated `c10_config.txt` placed next to this test exe — see CMakeLists.
 
-#include "Core/Application.h" // ApplicationPaths::GetExecutableDirectory
+#include "Core/ApplicationPaths.h"
 #include "ECS/Component/ComponentFactory.h"
 #include "ECS/Component/ComponentFieldRegistry.h"
 #include "JobSystem/WorkStealingThreadPool.h" // drives the async build path (B9 deferral test)
@@ -86,6 +85,7 @@ ns::NativeBuildConfig MakeBaseConfig(const std::map<std::string, std::string>& k
     config.CMakeExe = kv.at("cmake");
     config.Config = kv.at("config");
     config.EngineImportLib = kv.at("importlib");
+    config.EngineBinary = kv.at("enginebinary");
     config.SdkEntrySource = kv.at("sdkentry");
     config.ModuleName = "UserScripts";
     for (const auto& d : SplitList(kv.at("includes"), ';'))
@@ -281,8 +281,7 @@ TEST(NativeUserModuleBuildLoad, CompilesAndRegistersAComponentViaMacro)
 TEST(NativeUserModuleBuildLoad, ScansAndRegistersInheritedComponent)
 {
     const auto kv = LoadConfigOrFail();
-    for (const char* required : {"dotnet", "scannerdll"})
-        ASSERT_TRUE(kv.count(required)) << "missing config key: " << required;
+    ASSERT_TRUE(kv.count("scanner")) << "missing config key: scanner";
 
     const fs::path root = fs::path(kv.at("workdir")) / "scanned";
     // Deliberately name the source dir "Components": this reproduces the include-root bug
