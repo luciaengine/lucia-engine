@@ -1957,8 +1957,9 @@ void TextureService::FinishMaterialMipStep()
 
     TextureGPUCache::Entry replacement;
     uint32_t index = 0;
+    const bool readFailed = step.Read->Failed.load(std::memory_order_acquire);
     const char* failure = "its file did not read or holds another texture now";
-    if (!step.Read->Failed.load(std::memory_order_acquire))
+    if (!readFailed)
     {
         std::vector<Rendering::StagedTextureUpload> batch;
         failure = kDeviceRefusal;
@@ -1996,10 +1997,15 @@ void TextureService::FinishMaterialMipStep()
         }
         if (!replacement.Texture.IsValid())
         {
-            entry->KeepsLevel = true;
-            Logger::Log::Warning("TextureService: material mip stream {} keeps mip {}: {}. The next reload or "
-                                 "reimport of the texture starts a new stream.",
-                                 step.Texture.ToString(), entry->FirstMip, failure);
+            // A refusal of the device can end, so the planner tries the step again. A file that
+            // does not read stays that way: the stream keeps its level.
+            if (readFailed)
+            {
+                entry->KeepsLevel = true;
+                Logger::Log::Warning("TextureService: material mip stream {} keeps mip {}: {}. The next reload or "
+                                     "reimport of the texture starts a new stream.",
+                                     step.Texture.ToString(), entry->FirstMip, failure);
+            }
             return;
         }
         for (const auto& [materialGuid, slotName] : refs->second)

@@ -523,7 +523,7 @@ class TextureService
         uint32_t FirstMip = 0;
         uint32_t Epoch = 0;
         float ScreenCoverage = 0.0f; // MaterialMipCoverageLocked at the last demand table
-        bool KeepsLevel = false;     // a step of it failed: no more steps until a reload replaces the stream
+        bool KeepsLevel = false;     // its file did not read: no more steps until a reload replaces the stream
     };
     // The step in flight: a read of the levels that it makes resident. Render thread.
     struct MaterialMipStep
@@ -541,7 +541,7 @@ class TextureService
                                                                           const PreparedTextureUpload& prepared);
     // Finishes the step in flight when its read is done, then plans the next step and starts its read.
     void AdvanceMaterialMipStreams();
-    // Uploads the levels that the step read and binds them. A step that fails sets KeepsLevel.
+    // Uploads the levels that the step read and binds them. A read that failed sets KeepsLevel.
     void FinishMaterialMipStep();
     void CancelMaterialMipStep();
     TextureGPUCache::Entry RemoveMaterialMipStreamLocked(const GUID& guid);

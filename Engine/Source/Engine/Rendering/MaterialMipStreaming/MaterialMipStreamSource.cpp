@@ -98,7 +98,9 @@ void MaterialMipStreamSource::SubmitFileRead(AssetManager& assets, const GUID& t
     const uint64 prefixBytes = file.PrefixBytes(firstLevel);
     AssetIOService::ReadRequest request;
     request.AssetGuid = texture;
-    request.Metadata = AssetMetadata(texture, AssetType::Texture, file.Path());
+    // Not AssetType::Texture: the read runs no cook, so it does not wait for a texture decode slot.
+    request.Metadata = AssetMetadata(texture, AssetType::Unknown, file.Path());
+    request.Priority = AssetLoadPriority::High;
     request.RangeBytes = prefixBytes;
     request.MaximumBytes = prefixBytes;
     request.CancelRequested = read->Cancel;

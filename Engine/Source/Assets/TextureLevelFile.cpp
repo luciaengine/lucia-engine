@@ -58,13 +58,16 @@ std::optional<TextureLevelFile> TextureLevelFile::Parse(std::span<const uint8> f
     TextureLevelFile result;
     if (!ReadLevelIndex(file, result.m_Levels))
         return std::nullopt;
+    // Each level is after the level index and before the next larger level.
+    const uint64 indexEnd = kLevelIndexOffset + result.m_Levels.size() * kLevelIndexEntryBytes;
     uint64 end = file.size();
     for (const Level& level : result.m_Levels)
     {
-        if (level.Bytes == 0 || level.Offset > end || level.Bytes > end - level.Offset)
+        if (level.Bytes == 0 || level.Offset < indexEnd || level.Offset > end || level.Bytes > end - level.Offset)
             return std::nullopt;
         end = level.Offset;
     }
+    std::copy_n(file.begin(), kHeaderBytes, result.m_Header.begin());
     result.m_Path = std::move(path);
     return result;
 }
@@ -72,7 +75,8 @@ std::optional<TextureLevelFile> TextureLevelFile::Parse(std::span<const uint8> f
 bool TextureLevelFile::Matches(std::span<const uint8> prefix) const
 {
     std::vector<Level> levels;
-    return ReadLevelIndex(prefix, levels) && std::ranges::equal(levels, m_Levels);
+    return ReadLevelIndex(prefix, levels) && std::equal(m_Header.begin(), m_Header.end(), prefix.begin()) &&
+           std::ranges::equal(levels, m_Levels);
 }
 
 } // namespace GameEngine

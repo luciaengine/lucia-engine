@@ -2,6 +2,7 @@
 
 #include "Types/Types.h"
 
+#include <array>
 #include <filesystem>
 #include <optional>
 #include <span>
@@ -36,12 +37,17 @@ class TextureLevelFile
     std::span<const Level> Levels() const { return m_Levels; }
     uint64 PrefixBytes(uint32 firstLevel) const { return m_Levels[firstLevel].Offset + m_Levels[firstLevel].Bytes; }
 
-    /// True when `prefix`, the first bytes of the file now, has this level index. False after
-    /// another container replaced the file.
+    /// True when `prefix`, the first bytes of the file now, has this header and this level index:
+    /// the same format, dimensions and level layout. False after a container with another of
+    /// these replaced the file. Texels that changed inside the same layout are not seen.
     bool Matches(std::span<const uint8> prefix) const;
 
   private:
+    // The KTX2 header: the format, the dimensions, the level count and the metadata ranges.
+    static constexpr size_t kHeaderBytes = 80;
+
     std::filesystem::path m_Path;
+    std::array<uint8, kHeaderBytes> m_Header{};
     std::vector<Level> m_Levels;
 };
 

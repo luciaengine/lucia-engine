@@ -29,6 +29,9 @@ namespace GameEngine::Engine::Renderer
 /// Where a material mip stream gets its levels: the cooked file of the texture and, for a normal
 /// map, the file of its variance companion. It holds no texels. A step reads the levels that it
 /// makes resident from the files.
+///
+/// A source does not change after Create: all threads can read it. ReadLevels and the level
+/// accessors of a read are for the thread that owns the stream, the render thread.
 class MaterialMipStreamSource
 {
   public:

@@ -306,11 +306,13 @@ public:
 
     /// Frees the pixels of this texture and of its companion when GetLevelFile() names where they
     /// are. GetPixelData() is then null until RestoreLevelPixels. The mip chain and the
-    /// dimensions stay.
+    /// dimensions stay. Call on the thread that reads the pixels of this instance: for an instance
+    /// that the AssetManager shares, the main thread.
     void ReleaseLevelPixels();
 
     /// Reads the pixels that ReleaseLevelPixels freed from GetLevelFile(). False, with no pixels,
-    /// when a file does not read or holds another container.
+    /// when a file does not read or holds another container. A blocking read of the whole file,
+    /// on the same thread as ReleaseLevelPixels.
     bool RestoreLevelPixels();
 
     /// The SVG text an asset loaded from, with its intrinsic size in CSS px

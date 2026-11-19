@@ -134,6 +134,10 @@ TEST_F(TextureLevelFileTest, AnotherContainerDoesNotMatch)
     ASSERT_TRUE(file.has_value());
     EXPECT_TRUE(file->Matches(cooked));
     EXPECT_FALSE(file->Matches(other));
+    // The same level layout with another format in the header.
+    std::vector<uint8> otherFormat = cooked;
+    otherFormat[kVkFormatOffset] ^= 1;
+    EXPECT_FALSE(file->Matches(otherFormat));
     EXPECT_FALSE(file->Matches(std::span(cooked).first(kLevelIndexOffset - 1)));
     EXPECT_FALSE(file->Matches({}));
 }
