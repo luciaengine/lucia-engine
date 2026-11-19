@@ -373,7 +373,13 @@ bool Window::Create(const WindowDesc& desc)
 
     // Create window hidden when StartHidden is requested (so the caller can
     // render a frame before showing) or on Windows for ToolWindow style fixup.
-    const bool createHidden = desc.StartHidden
+#if defined(__linux__)
+    // Wayland needs a configured window before swapchain presentation.
+    const bool startHidden = desc.StartHidden && glfwGetPlatform() != GLFW_PLATFORM_WAYLAND;
+#else
+    const bool startHidden = desc.StartHidden;
+#endif
+    const bool createHidden = startHidden
 #if defined(_WIN32)
         || desc.ToolWindow
 #endif
@@ -678,7 +684,7 @@ bool Window::Create(const WindowDesc& desc)
 
     // Show the window now unless the caller wants to defer visibility
     // (e.g. to render a frame first and avoid a gray flash).
-    if (createHidden && !desc.StartHidden)
+    if (createHidden && !startHidden)
     {
         glfwShowWindow(m_Handle);
     }

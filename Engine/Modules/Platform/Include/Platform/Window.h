@@ -31,9 +31,8 @@ struct WindowDesc
     // from intercepting it. No-op on non-Windows platforms.
     bool ToolWindow = false;
 
-    // When true, the window is created hidden and must be shown explicitly
-    // via Show(). Use this to render one frame before making the window
-    // visible, avoiding a flash of empty/gray content.
+    // Defer visibility until Show() to avoid a flash before the first frame.
+    // Wayland configures the window at creation and displays it on first presentation.
     bool StartHidden = false;
 
     // Request that the platform opens the window in its maximized state.

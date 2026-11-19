@@ -328,7 +328,9 @@ class DDGIProbeFeature final : public IRenderFeature
     // frame (GlossyResolveConsumeActive()) or the view cannot feed it (no
     // 1-sample depth, zero extent). Callers bind the outputs as
     // ge_ddgiResolveRough/ge_ddgiResolveGlossy (set 0, b41/b42) on the same
-    // view's DDGI-keyword world passes.
+    // view's DDGI-keyword world passes. outIrradiance (b43) stays at resolve
+    // extent; outGatherNormal (b59) holds the normal each of its texels was
+    // gathered for, the guide of the forward upsample (ddgi_resolve_upsample.glsl).
     //
     // The reflection direction takes the SHADING normal from the previous
     // frame's forward-MRT normal slice (Adapters/adapter_forward.glsl under
@@ -350,6 +352,7 @@ class DDGIProbeFeature final : public IRenderFeature
                                      Rendering::RenderGraph::RGTexture& outRough,
                                      Rendering::RenderGraph::RGTexture& outGlossy,
                                      Rendering::RenderGraph::RGTexture& outIrradiance,
+                                     Rendering::RenderGraph::RGTexture& outGatherNormal,
                                      Rendering::RenderGraph::RGTexture& outShadingNormal);
 
     // The view's world pass attached this frame's outShadingNormal as its

@@ -77,7 +77,13 @@ layout(set = 0, binding = 42) uniform sampler2D ge_ddgiResolveGlossy;
 // Diffuse irradiance from the same resolve pass, looked up along the same
 // normal as the reflection — a per-fragment 8-probe loop it removes entirely.
 layout(set = 0, binding = 43) uniform sampler2D ge_ddgiResolveIrradiance;
+// The world normal each irradiance texel was gathered for: the normal guide of the upsample below. The compat
+// profile has no texture slot for it and keeps the depth guide alone.
+layout(set = 0, binding = 59) uniform sampler2D ge_ddgiResolveGatherNormal;
+#define GE_DDGI_UPSAMPLE_GATHER_NORMAL ge_ddgiResolveGatherNormal
 #endif
+#define GE_DDGI_UPSAMPLE_IRRADIANCE ge_ddgiResolveIrradiance
+#include "ddgi_resolve_upsample.glsl"
 #endif
 
 // Global per-frame environment parameters (NOT per-material — the param block
@@ -371,29 +377,10 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
     // sample instead; every pipeline that resolves depth gets probe diffuse.
     if (DDGIVolume.uParams2.w != 0)
     {
-        // Bilateral upsample: four point taps around the fragment, each kept
-        // only if the depth it was resolved at agrees with this fragment's.
-        // A plain bilinear tap of a reduced-resolution term drags irradiance
-        // across silhouettes. Falls back to the nearest tap when every
-        // neighbour disagrees (a one-pixel sliver), which is still this
-        // surface's own value at worst one resolve texel away.
-        const float kUpsampleDepthTolerance = 0.02;
-        vec2 resolveUV = gl_FragCoord.xy * ge_screenSize.zw;
-        vec2 resolveTexel = 1.0 / vec2(textureSize(ge_ddgiResolveIrradiance, 0));
-        vec3 acc = vec3(0.0);
-        float wsum = 0.0;
-        for (int tap = 0; tap < 4; ++tap)
-        {
-            vec2 o = vec2((tap & 1) != 0 ? 0.5 : -0.5, (tap & 2) != 0 ? 0.5 : -0.5);
-            vec4 s = textureLod(ge_ddgiResolveIrradiance, resolveUV + o * resolveTexel, 0.0);
-            float rel = abs(s.a - gl_FragCoord.z) / max(gl_FragCoord.z, 1.0e-6);
-            if (s.a <= 0.0 || rel > kUpsampleDepthTolerance)
-                continue;
-            acc += s.rgb;
-            wsum += 1.0;
-        }
-        irr = wsum > 0.0 ? acc / wsum
-                         : textureLod(ge_ddgiResolveIrradiance, resolveUV, 0.0).rgb;
+        // The irradiance is at resolve extent. The upsample keeps the texels of this surface: a plain bilinear
+        // read drags irradiance across a silhouette, and across a crease where the depth has no step.
+        // The shading normal is the guide: the resolve gathered most texels for the shading normal of last frame.
+        irr = GE_DDGIUpsampleIrradiance(gl_FragCoord.xy * ge_screenSize.zw, gl_FragCoord.z, N);
     }
 #endif
     // Add the authored irradiance floor (AmbientLight) to the DIFFUSE budget only — irr stays the

@@ -83,4 +83,36 @@ vec3 GE_DDGINormalFromDepth(sampler2D depthTexture, vec2 uv, float rawDepth,
     return N;
 }
 
+// True where the depth at `uv` and its 4 neighbours are not on one plane: a crease or a silhouette is next to the
+// texel. On a plane, reverse-Z depth is affine in screen space, so its second difference is 0 on each axis.
+bool GE_DDGIDepthCreaseAt(sampler2D depthTexture, vec2 uv, float rawDepth)
+{
+    if (!(rawDepth > 0.0))
+        return false;
+    ivec2 size = textureSize(depthTexture, 0);
+    vec2 dtexel = 1.0 / vec2(size);
+    ivec2 pixel = ivec2(uv * vec2(size));
+    // The second difference relative to the slope. A curved surface stays far below this ratio.
+    const float kCreaseCurvatureRatio = 0.25;
+    // Depth noise of a plane that faces the camera, relative to its depth.
+    const float kCreaseNoiseFloor = 1.0e-5;
+    bool crease = false;
+    if (pixel.x > 0 && pixel.x + 1 < size.x)
+    {
+        float dR = GE_DDGI_DEPTH_TAP(depthTexture, uv + vec2(dtexel.x, 0.0));
+        float dL = GE_DDGI_DEPTH_TAP(depthTexture, uv - vec2(dtexel.x, 0.0));
+        float slope = abs(dR - rawDepth) + abs(dL - rawDepth);
+        crease = abs(dR + dL - 2.0 * rawDepth) > kCreaseCurvatureRatio * slope + kCreaseNoiseFloor * rawDepth;
+    }
+    if (pixel.y > 0 && pixel.y + 1 < size.y)
+    {
+        float dD = GE_DDGI_DEPTH_TAP(depthTexture, uv + vec2(0.0, dtexel.y));
+        float dU = GE_DDGI_DEPTH_TAP(depthTexture, uv - vec2(0.0, dtexel.y));
+        float slope = abs(dD - rawDepth) + abs(dU - rawDepth);
+        crease = crease ||
+            abs(dD + dU - 2.0 * rawDepth) > kCreaseCurvatureRatio * slope + kCreaseNoiseFloor * rawDepth;
+    }
+    return crease;
+}
+
 #endif
