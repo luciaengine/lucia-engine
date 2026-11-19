@@ -2,6 +2,7 @@
 
 #include "AssetCore/AssetIgnoreRules.h"
 #include "AssetCore/PathNormalization.h"
+#include "FileSystem/FileSystem.h"
 #include "AssetDatabase/AssetDbCache_Sqlite.h"
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
@@ -229,7 +230,8 @@ TEST(AssetRootSeparation, EditorMountIsNonPersistentWhenRootsDiffer_NoProjectDbP
 
         AssetDatabase::AssetRecord rec{};
         ASSERT_TRUE(store.TryGetAsset(editorGuid, rec));
-        EXPECT_EQ(rec.path, "ui/theme.css");
+        // The row keeps the spelling the registry was handed: folded on a case-insensitive host.
+        EXPECT_EQ(AssetPaths::FoldStorePathKey(rec.path), "ui/theme.css");
         EXPECT_EQ(store.LookupGuidByPath("ui/theme.css").value_or(GUID::Null()), editorGuid);
         auto it = rec.kv.find("testKey");
         ASSERT_TRUE(it != rec.kv.end());
@@ -1877,7 +1879,7 @@ TEST(AssetRootSeparation, RegisterAssetMetadata_RoutesNonProjectPathToOwningSour
         ASSERT_TRUE(store.LoadFromFile(editorDb, &err)) << err;
         AssetDatabase::AssetRecord rec{};
         ASSERT_TRUE(store.TryGetAsset(md.Guid, rec));
-        EXPECT_EQ(rec.path, "ui/panel.css");
+        EXPECT_EQ(AssetPaths::FoldStorePathKey(rec.path), "ui/panel.css");
     }
 
     // The project store contains neither record — and no absolute-path
@@ -2438,6 +2440,8 @@ TEST(AssetRootSeparation, RegisterSource_RootWhoseFoldChangesLengthMountsOnDiskA
 TEST(AssetRootSeparation, RegisterSource_CaseOnlyVariantRootResolvesToOneSource)
 {
     namespace fs = std::filesystem;
+    if (GameEngine::FileSystem::IsCaseSensitive())
+        GTEST_SKIP() << "the two spellings are two directories on a case-sensitive file system";
 
     const fs::path root = TestUtils::MakeUniqueTempDirectory("ge_case_variant_root");
     std::error_code ec;
