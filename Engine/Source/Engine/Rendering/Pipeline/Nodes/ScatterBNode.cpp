@@ -46,13 +46,12 @@ void ScatterBNode::DeclareForView(ViewDeclare& d)
     t.OccluderDepthResolved = d.ViewOccluderDepthResolved;
     t.GTAO = d.ResolveTexture(Names::View::GTAO);
     t.SkyBackdrop = d.ResolveTexture(Names::Res::SkyBackdrop);
-    // Same DDGI glossy-resolve outputs the phase-A pass bound (published by
-    // WorldRenderNode only on frames the resolve pass was declared), so
-    // recovered geometry reads the same scaled reflections. Invalid when the
-    // resolve is inactive — the binder then supplies the black fallback and
-    // the UBO flag keeps the shader on the inline gather.
+    // The DDGI resolve outputs that the phase-A pass bound, published by WorldRenderNode on frames that declare the
+    // resolve. The binder binds them only when all 4 are valid, so recovered geometry gets the same probe light.
     t.DDGIResolveRough = d.ResolveTexture(Names::View::DDGIResolveRough);
     t.DDGIResolveGlossy = d.ResolveTexture(Names::View::DDGIResolveGlossy);
+    t.DDGIResolveIrradiance = d.ResolveTexture(Names::View::DDGIResolveIrradiance);
+    t.DDGIResolveGatherNormal = d.ResolveTexture(Names::View::DDGIResolveGatherNormal);
     t.ResolveFromPipeline = d.ResolveFromPipeline;
 
     const auto scope =

@@ -138,7 +138,7 @@ node --version && python3 --version    # optional tools
 | Requirement | Notes | Where |
 |---|---|---|
 | **C++20 toolchain** (recent GCC or Clang), **CMake 3.25 or newer**, **Ninja**, **pkg-config**, **Git** | | your distribution's packages |
-| **Dependency build tools** | Required or recommended by [vcpkg](https://learn.microsoft.com/en-us/vcpkg/concepts/supported-hosts). | `sudo apt install build-essential cmake ninja-build pkg-config git curl zip unzip tar autoconf autoconf-archive automake libtool` |
+| **Dependency build tools** | Required or recommended by [vcpkg](https://learn.microsoft.com/en-us/vcpkg/concepts/supported-hosts). | `sudo apt install build-essential cmake ninja-build pkg-config git curl zip unzip tar autoconf autoconf-archive automake libtool nasm` (nasm builds openh264, the Linux H.264 video encoder) |
 | **Windowing packages** | X11 windowing and Vulkan surface headers. | `sudo apt install libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev libwayland-dev` |
 | **Vulkan driver and tools** | Runtime requirement, plus the validation layers. | `sudo apt install mesa-vulkan-drivers vulkan-tools vulkan-validationlayers` |
 | **.NET 10 SDK** | C# scripting host and managed assemblies. | [Linux installation guide](https://learn.microsoft.com/en-us/dotnet/core/install/linux) |
