@@ -379,7 +379,12 @@ TEST_F(HotReloadStressTest, FileWatcherDebouncingTest) {
     // Wait for file changes to complete
     fileChangeThread.join();
 
-    // Wait for debouncing to settle
+    // Wait for the debounced events. A platform backend reports them within milliseconds; the polling
+    // backend (Linux) compares against its first snapshot one poll interval (1 s) after that snapshot.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+    while (hotReloadTriggers.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Let the events of the same burst arrive, so the debounce count covers all of them.
     std::this_thread::sleep_for(std::chrono::milliseconds(800));
 
     // Stop watching before assertions to flush any pending events
