@@ -88,7 +88,7 @@ std::shared_ptr<const OceanCpuTextureRG> LoadOceanCpuTextureRG(const GUID& guid,
     {
         TextureAsset texture(guid, metadata.Path);
         if (texture.Load())
-            return std::make_shared<const OceanCpuTextureRG>(OceanCpuTextureCache::Convert(texture));
+            return std::make_shared<const OceanCpuTextureRG>(OceanCpuTextureCache::Convert(texture.AcquirePixels()));
     }
 
     return {};

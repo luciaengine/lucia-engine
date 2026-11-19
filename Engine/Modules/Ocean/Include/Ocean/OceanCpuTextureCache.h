@@ -11,6 +11,7 @@
 namespace GameEngine
 {
 class TextureAsset;
+struct TexturePixels;
 } // namespace GameEngine
 
 namespace GameEngine::Ocean
@@ -30,9 +31,9 @@ class OceanCpuTextureCache
     /// Drops the copies that no Get asked for since the last call. Call one time for each update.
     void DropUnused();
 
-    /// The RG copy of `texture`, with no cache. Not valid when the texture has no pixels or a
-    /// channel size that is not 8, 16 or 32 bits.
-    static OceanCpuTextureRG Convert(const TextureAsset& texture);
+    /// The RG copy of the pixels of a texture (TextureAsset::AcquirePixels), with no cache. Not
+    /// valid when the texture has no pixels or a channel size that is not 8, 16 or 32 bits.
+    static OceanCpuTextureRG Convert(const TexturePixels& texture);
 
   private:
     struct Entry

@@ -44,62 +44,54 @@ float ReadTextureChannel01(const uint8* pixels, uint32 channels, size_t pixelInd
 }
 } // namespace
 
-OceanCpuTextureRG OceanCpuTextureCache::Convert(const TextureAsset& texture)
+OceanCpuTextureRG OceanCpuTextureCache::Convert(const TexturePixels& texture)
 {
     OceanCpuTextureRG out{};
-    const uint32 width = texture.GetWidth();
-    const uint32 height = texture.GetHeight();
-    const uint32 channels = texture.GetChannels();
-    // The asset can be the instance that the AssetManager shares: a material mip stream releases
-    // its pixels. The held pixels stay valid for this read.
-    const std::shared_ptr<const uint8[]> heldPixels = texture.AcquirePixels();
-    const uint8* pixels = heldPixels.get();
-    if (!pixels || width == 0u || height == 0u || channels == 0u)
+    const uint8* pixels = texture.Pixels.get();
+    if (!pixels || texture.Width == 0u || texture.Height == 0u || texture.Channels == 0u)
         return out;
 
-    const uint64 texelCount = static_cast<uint64>(width) * height;
-    const uint64 minBytes = texelCount * channels;
-    if (texture.GetDataSize() < minBytes)
+    const uint64 texelCount = static_cast<uint64>(texture.Width) * texture.Height;
+    const uint64 minBytes = texelCount * texture.Channels;
+    if (texture.DataSize < minBytes)
         return out;
-    const uint32 bytesPerChannel =
-        static_cast<uint32>(std::max<uint64>(1u, texture.GetDataSize() / minBytes));
+    const uint32 bytesPerChannel = static_cast<uint32>(std::max<uint64>(1u, texture.DataSize / minBytes));
     if (bytesPerChannel != 1u && bytesPerChannel != 2u && bytesPerChannel != 4u)
         return out;
 
-    out.Width = width;
-    out.Height = height;
+    out.Width = texture.Width;
+    out.Height = texture.Height;
     out.RG.resize(static_cast<size_t>(texelCount) * 2u);
 
-    const bool decodeSrgb = texture.GetColorSpace() == TextureColorSpace::SRGB &&
-                            bytesPerChannel == 1u;
+    const bool decodeSrgb = texture.ColorSpace == TextureColorSpace::SRGB && bytesPerChannel == 1u;
     for (uint64 texel = 0u; texel < texelCount; ++texel)
     {
-        out.RG[static_cast<size_t>(texel) * 2u + 0u] =
-            ReadTextureChannel01(pixels, channels, static_cast<size_t>(texel), 0u, bytesPerChannel, decodeSrgb);
-        out.RG[static_cast<size_t>(texel) * 2u + 1u] =
-            ReadTextureChannel01(pixels, channels, static_cast<size_t>(texel), 1u, bytesPerChannel, decodeSrgb);
+        out.RG[static_cast<size_t>(texel) * 2u + 0u] = ReadTextureChannel01(
+            pixels, texture.Channels, static_cast<size_t>(texel), 0u, bytesPerChannel, decodeSrgb);
+        out.RG[static_cast<size_t>(texel) * 2u + 1u] = ReadTextureChannel01(
+            pixels, texture.Channels, static_cast<size_t>(texel), 1u, bytesPerChannel, decodeSrgb);
     }
     return out;
 }
 
 std::shared_ptr<const OceanCpuTextureRG> OceanCpuTextureCache::Get(const GUID& guid, const TextureAsset& texture)
 {
-    // The generation is read before the pixels: a reload in between makes this copy old, and the
-    // next call converts again.
-    const uint64 generation = texture.GetPayloadGeneration();
-    if (Entry* entry = m_Entries.Find(guid); entry && entry->PayloadGeneration == generation)
+    if (Entry* entry = m_Entries.Find(guid); entry && entry->PayloadGeneration == texture.GetPayloadGeneration())
     {
         entry->Used = true;
         return entry->Copy;
     }
-    OceanCpuTextureRG converted = Convert(texture);
+    // The pixels, the dimensions and the generation are of one payload: a reload during the
+    // conversion gives a copy of the old payload under the old generation.
+    const TexturePixels pixels = texture.AcquirePixels();
+    OceanCpuTextureRG converted = Convert(pixels);
     if (!converted.IsValid())
     {
         m_Entries.Erase(guid);
         return nullptr;
     }
     auto copy = std::make_shared<const OceanCpuTextureRG>(std::move(converted));
-    m_Entries.InsertOrAssign(guid, Entry{generation, true, copy});
+    m_Entries.InsertOrAssign(guid, Entry{pixels.PayloadGeneration, true, copy});
     return copy;
 }
 
