@@ -84,6 +84,7 @@ struct TextureCoverageUploadTestAccess
         const auto* stream = service.m_MaterialMipStreams.Find(guid);
         return !stream ? TextureHandle{} : stream->Resident.Texture;
     }
+    static void HotSwap(TextureService& service, const GUID& texture) { service.HotSwapTexture(texture); }
     static bool Uploaded(TextureService& service, const GUID& texture)
     {
         return service.m_TextureGPUCache.Contains(texture);
@@ -705,6 +706,40 @@ TEST_F(TextureCoverageGPU, AnEvictedStreamOfAReleasedTextureStartsAgainFromItsFi
     ASSERT_EQ(WidthOf(second), 256u);
     EXPECT_NE(second, first);
     EXPECT_EQ(loaded->GetPixelData(), nullptr);
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, AHotSwapOfAStreamedTextureBindsTheFullTextureFromItsFile)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    const GUID texture = Register(Image(false, 512), false);
+    ASSERT_FALSE(texture.IsNull());
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingHotSwap");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    const auto streamed = WaitForBoundTexture(*material, slot);
+    ASSERT_EQ(WidthOf(streamed), 256u);
+    const auto loaded =
+        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->GetPixelData(), nullptr);
+
+    // The swap gives a result at once: it reads the released pixels again and uploads all levels.
+    Access::HotSwap(m_Textures, texture);
+    const auto swapped = material->GetTexture(slot);
+    ASSERT_TRUE(swapped.IsValid());
+    EXPECT_NE(swapped, streamed);
+    EXPECT_EQ(WidthOf(swapped), 512u);
+    EXPECT_TRUE(Access::Uploaded(m_Textures, texture));
+    EXPECT_FALSE(Access::StreamedHandle(m_Textures, texture).IsValid());
 
     m_Textures.OnMaterialUnregistered(materialGuid);
     m_Materials.Unregister(materialGuid);

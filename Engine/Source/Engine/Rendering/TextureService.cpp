@@ -1944,6 +1944,12 @@ std::optional<TextureGPUCache::Entry> TextureService::StageReleasedUpload(
                                   batch, refusal);
 }
 
+bool TextureService::HoldsUploadOf(std::span<const PendingGpuUpload> uploads, const GUID& guid)
+{
+    return std::any_of(uploads.begin(), uploads.end(),
+                       [&guid](const PendingGpuUpload& upload) { return upload.TextureGuid == guid; });
+}
+
 void TextureService::CancelReleasedUploadRead(const GUID& guid)
 {
     if (const ReleasedUploadRead* parked = m_ReleasedUploadReads.Find(guid))
@@ -2843,6 +2849,16 @@ void TextureService::FlushPendingUploads()
                           streamSource, upload.Epoch});
     }
 
+    // A level read whose upload left the queue (a hot swap or another upload published the
+    // texture) has no taker: drop it with the file bytes that it holds.
+    m_ReleasedUploadReads.EraseIf([&waitingForLevels](const GUID& guid, const ReleasedUploadRead& parked)
+    {
+        if (HoldsUploadOf(waitingForLevels, guid))
+            return false;
+        parked.Read->Cancel->store(true, std::memory_order_relaxed);
+        return true;
+    });
+
     // One command list copies every texture of this flush, submitted once. Each texture is
     // published after the submit, before the bind pass below picks it up.
     if (SubmitOrDiscardStagedUploads(*m_Device, batch))
@@ -2913,10 +2929,7 @@ void TextureService::FlushPendingUploads()
         for (const auto& [guid, epoch] : uploadEpochs)
         {
             // An upload that waits for its levels keeps its admission and its full request.
-            const bool waitsForLevels =
-                std::any_of(waitingForLevels.begin(), waitingForLevels.end(),
-                            [&guid](const PendingGpuUpload& waiting) { return waiting.TextureGuid == guid; });
-            if (m_TextureEpochByGuid[guid] != epoch || waitsForLevels)
+            if (m_TextureEpochByGuid[guid] != epoch || HoldsUploadOf(waitingForLevels, guid))
                 continue;
             m_TextureLoadsKicked.erase(guid);
             m_FullTextureRequests.Erase(guid);

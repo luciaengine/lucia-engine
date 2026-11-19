@@ -1517,9 +1517,16 @@ bool TextureAsset::RestoreLevelPixels()
 {
     if (m_NormalVarianceCompanion && !m_NormalVarianceCompanion->RestoreLevelPixels())
         return false;
-    std::lock_guard<std::mutex> lock(m_PixelMutex);
-    m_PixelData = BorrowPixelsLocked();
-    return m_PixelData != nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_PixelMutex);
+        m_PixelData = BorrowPixelsLocked();
+        if (m_PixelData)
+            return true;
+    }
+    // No pixels for the texture: the companion does not keep the pixels that it got.
+    if (m_NormalVarianceCompanion)
+        m_NormalVarianceCompanion->ReleaseLevelPixels();
+    return false;
 }
 
 std::shared_ptr<const uint8[]> TextureAsset::AcquirePixels() const

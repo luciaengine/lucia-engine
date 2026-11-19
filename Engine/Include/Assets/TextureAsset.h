@@ -262,8 +262,8 @@ public:
     const uint8* GetPixelData() const { return m_PixelData.get(); }
 
     /// The pixels of GetPixelData(), valid while the caller holds them. After ReleaseLevelPixels,
-    /// a blocking read of GetLevelFile() gives them: they go when the last holder drops them, and
-    /// the asset keeps none. Null without both. Any thread.
+    /// they are the pixels of another holder, or a blocking read of GetLevelFile() gives them: they
+    /// go when the last holder drops them, and the asset keeps none. Null without both. Any thread.
     std::shared_ptr<const uint8[]> AcquirePixels() const;
 
     /**
@@ -315,8 +315,8 @@ public:
     void ReleaseLevelPixels();
 
     /// Makes GetPixelData() valid again after ReleaseLevelPixels, for this texture and its
-    /// companion: a blocking read of the whole file. False, with no pixels, when a file does not
-    /// read or holds another container.
+    /// companion: a blocking read of the whole file when no holder has the pixels. False, with no
+    /// pixels, when a file does not read or holds another container.
     bool RestoreLevelPixels();
 
     /// The SVG text an asset loaded from, with its intrinsic size in CSS px

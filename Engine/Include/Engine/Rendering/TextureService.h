@@ -577,6 +577,7 @@ class TextureService
         // Log the upload's timing (an assign's upload); an AssetManager load's stays quiet.
         bool LogTiming = false;
     };
+    static bool HoldsUploadOf(std::span<const PendingGpuUpload> uploads, const GUID& guid);
 
     // How a slot bind loads a texture that is not resident on the GPU.
     enum class TextureLoadRoute
