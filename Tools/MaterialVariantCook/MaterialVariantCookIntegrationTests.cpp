@@ -312,7 +312,7 @@ std::vector<GameEngine::Rendering::ShaderVariantKey> RuntimePrewarmKeys(const Ga
 // profile and SPIR-V 1.6. Restores the target on every exit.
 struct ScopedDesktopCompileInputs
 {
-    using Target = GameEngine::Rendering::ShaderCompileService::SpirvTarget;
+    using Target = GameEngine::Rendering::SpirvTarget;
     ScopedDesktopCompileInputs() : Previous(GameEngine::Rendering::ShaderCompileService::MaxSupportedSpirv())
     {
         GameEngine::Rendering::ApplyShaderCompileProfile(GameEngine::Rendering::RendererProfile{});
@@ -326,7 +326,7 @@ struct ScopedDesktopCompileInputs
 // the interpolation functions) on every exit, including a failed assertion.
 struct ScopedRestoredCompileInputs
 {
-    using Target = GameEngine::Rendering::ShaderCompileService::SpirvTarget;
+    using Target = GameEngine::Rendering::SpirvTarget;
     ScopedRestoredCompileInputs()
         : PreviousTarget(GameEngine::Rendering::ShaderCompileService::MaxSupportedSpirv()),
           PreviousCompat(GameEngine::Rendering::IsCompatShaderProfile()),
@@ -807,10 +807,10 @@ TEST(MaterialVariantCookIntegration, AnExportedProgramIndexNamesOnlyTheSourcesTh
 
     // The Player's inputs on a desktop device, which the desktop cook serves.
     const ScopedRestoredCompileInputs restoredInputs;
-    Rendering::ShaderCompileService::SetMaxSupportedSpirv(Rendering::ShaderCompileService::SpirvTarget::Spirv_1_6);
+    Rendering::ShaderCompileService::SetMaxSupportedSpirv(Rendering::SpirvTarget::Spirv_1_6);
     Rendering::RenderingDeviceCapabilities desktop{};
     desktop.supportsBindlessResources = true;
-    desktop.supportsInterpolationFunctions = true;
+    desktop.supportsShaderInterpolationFunctions = true;
     desktop.supportsShaderClipDistance = true;
     Rendering::ApplyShaderCompileProfile(Rendering::RendererProfile::FromCapabilities(desktop));
     Rendering::MaterialBuildContext context;
