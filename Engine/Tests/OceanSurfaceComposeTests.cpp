@@ -21,8 +21,12 @@
 #include "ScopedCompatShaderProfile.h"
 #include "StagedTestPaths.h"
 
+#include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <string>
+#include <string_view>
+#include <vector>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -119,4 +123,54 @@ TEST_F(OceanSurfaceCompose, NativeProfileVariantFitsTheSamplerLimitOfEveryStage)
         }
         EXPECT_LE(samplers, kSamplersPerStage) << "stage bit " << stageBit << ": " << names;
     }
+}
+
+namespace
+{
+// The call sites in a SPIR-V module of the functions whose debug name starts with `name` and an
+// opening parenthesis (glslang names a function by its mangled signature).
+uint32_t SpirvCallsOf(const std::vector<uint8_t>& bytes, const std::string& name)
+{
+    constexpr uint32_t kOpName = 5;
+    constexpr uint32_t kOpFunctionCall = 57;
+    constexpr size_t kHeaderWords = 5;
+    const size_t wordCount = bytes.size() / sizeof(uint32_t);
+    std::vector<uint32_t> words(wordCount);
+    std::memcpy(words.data(), bytes.data(), wordCount * sizeof(uint32_t));
+    std::vector<uint32_t> functions;
+    uint32_t calls = 0;
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        for (size_t at = kHeaderWords; at < wordCount;)
+        {
+            const uint32_t opcode = words[at] & 0xFFFFu;
+            const uint32_t length = words[at] >> 16;
+            if (length == 0)
+                break;
+            if (pass == 0 && opcode == kOpName && length >= 3)
+            {
+                const char* text = reinterpret_cast<const char*>(&words[at + 2]);
+                if (std::string_view(text).starts_with(name + "("))
+                    functions.push_back(words[at + 1]);
+            }
+            if (pass == 1 && opcode == kOpFunctionCall && length >= 4 &&
+                std::find(functions.begin(), functions.end(), words[at + 3]) != functions.end())
+                ++calls;
+            at += length;
+        }
+    }
+    return calls;
+}
+} // namespace
+
+// The ocean samples the sun's cascade shadow once per fragment: the scatter tint samples it and the
+// direct sun light reuses that value (GE_SurfaceSunShadow).
+TEST_F(OceanSurfaceCompose, NativeProfileVariantSamplesTheSunShadowOnce)
+{
+    const MaterialBuildResult built = BuildOceanSurface(false);
+    ASSERT_TRUE(built.success) << (built.errors.empty() ? std::string{} : built.errors.front());
+    ASSERT_NE(built.package, nullptr);
+    const auto fragment = built.package->stageBytes.find("fs");
+    ASSERT_NE(fragment, built.package->stageBytes.end());
+    EXPECT_EQ(SpirvCallsOf(fragment->second, "GE_SampleShadow"), 1u);
 }
