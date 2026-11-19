@@ -9,6 +9,7 @@
 #include "DayCycle/DayCycleSunNow.h"
 #include "DayCycle/DayCycleTrackRows.h"
 #include "UI/Controls/CurveField.h"
+#include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Toggle.h"
 #include "UI/UiContext.h"
 #include "UI/UiDispatcher.h"
@@ -27,12 +28,28 @@ using DayCycleEditorTesting::kEmptyProfile;
 
 namespace
 {
-Button* ClearDayPreset(UIElement& root)
+// Picks the shipped "Clear day" preset in the inspector's preset dropdown, as a user does. False when the
+// dropdown or the preset is missing.
+bool LoadClearDayPreset(UIElement& root)
 {
-    for (Button* button : All<Button>(root))
-        if (button->GetText() == "Clear day")
-            return button;
-    return nullptr;
+    for (Dropdown* presets : All<Dropdown>(root))
+    {
+        if (!presets->HasClass("day-cycle-preset"))
+            continue;
+        // Index 0 is the "Load preset..." prompt; an index past the last option selects nothing (-1).
+        for (int index = 1;; ++index)
+        {
+            presets->SetSelectedIndexWithoutNotify(index);
+            if (presets->GetSelectedIndex() != index)
+                break;
+            if (presets->GetSelectedLabel() != "Clear day")
+                continue;
+            presets->SetSelectedIndexWithoutNotify(0);
+            presets->SetSelectedIndex(index);
+            return true;
+        }
+    }
+    return false;
 }
 } // namespace
 
@@ -100,9 +117,7 @@ TEST_F(DayCycleEditorTests, TheInspectorFollowsAPresetLoad)
     ASSERT_TRUE(HasText(root, "Separate dusk"));
     ASSERT_EQ(All<Toggle>(root).size(), 1u);
     ASSERT_TRUE(All<Toggle>(root).front()->GetValue());
-    Button* preset = ClearDayPreset(root);
-    ASSERT_NE(preset, nullptr);
-    preset->TriggerClick();
+    ASSERT_TRUE(LoadClearDayPreset(root));
     dispatcher.Drain();
     ASSERT_EQ(All<Toggle>(root).size(), 1u);
     EXPECT_FALSE(All<Toggle>(root).front()->GetValue()) << "the inspector still shows the split dusk after the load";
@@ -135,10 +150,8 @@ TEST_F(DayCycleEditorTests, SaveIsEnabledOnlyWithUnsavedChanges)
                 save = button;
         }
         ASSERT_NE(save, nullptr);
-        Button* preset = ClearDayPreset(root);
-        ASSERT_NE(preset, nullptr);
         EXPECT_FALSE(save->IsEnabled()) << "nothing to save yet";
-        preset->TriggerClick();
+        ASSERT_TRUE(LoadClearDayPreset(root));
         dispatcher.Drain();
         EXPECT_TRUE(save->IsEnabled()) << "the preset load left unsaved changes";
     }
@@ -221,9 +234,7 @@ TEST_F(DayCycleEditorTests, AnUndoPastASaveMarksTheProfileUnsavedAgain)
         if (button->GetText() == "Save")
             save = button;
     ASSERT_NE(save, nullptr);
-    Button* preset = ClearDayPreset(root);
-    ASSERT_NE(preset, nullptr);
-    preset->TriggerClick();
+    ASSERT_TRUE(LoadClearDayPreset(root));
     dispatcher.Drain();
     save->TriggerClick();
     dispatcher.Drain();
