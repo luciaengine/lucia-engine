@@ -24,7 +24,7 @@ namespace fs = std::filesystem;
 constexpr uint32 kSize = 64;
 
 // A cooked RGBA8 container of kSize texels a side. Red is `red` in every texel.
-std::vector<uint8> CookedContainer(uint8 red)
+std::vector<uint8> CookedContainer(uint8 red, TextureColorSpace colorSpace = TextureColorSpace::Linear)
 {
     std::vector<uint8> tga(18, 0);
     tga[2] = 2; // uncompressed true color
@@ -36,8 +36,10 @@ std::vector<uint8> CookedContainer(uint8 red)
         tga.insert(tga.end(), {40, 80, red, 255}); // blue, green, red, alpha
     std::vector<uint8> cooked;
     std::string error;
-    EXPECT_TRUE(CookTexture(tga.data(), tga.size(), "map.tga", ".tga", TextureCookInputs{},
-                            TextureCookOutput::Uncompressed, cooked, error))
+    TextureCookInputs inputs;
+    inputs.ColorSpace = colorSpace;
+    EXPECT_TRUE(CookTexture(tga.data(), tga.size(), "map.tga", ".tga", inputs, TextureCookOutput::Uncompressed,
+                            cooked, error))
         << error;
     return cooked;
 }
@@ -77,7 +79,7 @@ class OceanCpuTextureCacheTest : public testing::Test
         ASSERT_NE(texture.GetLevelFile(), nullptr);
         texture.ReleaseLevelPixels();
         fs::remove(m_File);
-        ASSERT_EQ(texture.AcquirePixels(), nullptr);
+        ASSERT_EQ(texture.AcquirePixels().Pixels, nullptr);
     }
 
     fs::path m_Directory;
@@ -95,10 +97,23 @@ TEST_F(OceanCpuTextureCacheTest, TheCopyHoldsTheRedAndGreenOfTheTexels)
     ASSERT_TRUE(copy->IsValid());
     EXPECT_EQ(copy->Width, kSize);
     EXPECT_EQ(copy->Height, kSize);
-    // The cook made a linear container: red 50 and green 80 of 255, as the sampler gives them.
+    // A linear container: red 50 and green 80 of 255, as the sampler gives them.
     EXPECT_NEAR(copy->RG[0], 50.0f / 255.0f, 0.0001f);
     EXPECT_NEAR(copy->RG[1], 80.0f / 255.0f, 0.0001f);
     EXPECT_EQ(copy->RG[(kSize * kSize - 1) * 2], copy->RG[0]);
+}
+
+TEST_F(OceanCpuTextureCacheTest, TheCopyOfAnSrgbTextureIsLinear)
+{
+    ASSERT_NO_FATAL_FAILURE(WriteMap(CookedContainer(50, TextureColorSpace::SRGB)));
+    TextureAsset texture(m_Guid, m_File);
+    ASSERT_TRUE(texture.Load());
+    ASSERT_EQ(texture.GetColorSpace(), TextureColorSpace::SRGB);
+    const auto copy = m_Cache.Get(m_Guid, texture);
+    ASSERT_NE(copy, nullptr);
+    // The sRGB values 50 and 80 of 255, decoded as the sampler of an sRGB texture decodes them.
+    EXPECT_NEAR(copy->RG[0], 0.0319f, 0.0005f);
+    EXPECT_NEAR(copy->RG[1], 0.0802f, 0.0005f);
 }
 
 TEST_F(OceanCpuTextureCacheTest, ASecondReadOfATextureSharesTheCopyAndTakesNoPixelsFromTheAsset)
@@ -111,7 +126,7 @@ TEST_F(OceanCpuTextureCacheTest, ASecondReadOfATextureSharesTheCopyAndTakesNoPix
     ASSERT_NO_FATAL_FAILURE(TakeThePixelsAway(texture));
     EXPECT_EQ(m_Cache.Get(m_Guid, texture), first);
     // With no cache, the same texture gives no copy now.
-    EXPECT_FALSE(OceanCpuTextureCache::Convert(texture).IsValid());
+    EXPECT_FALSE(OceanCpuTextureCache::Convert(texture.AcquirePixels()).IsValid());
 }
 
 TEST_F(OceanCpuTextureCacheTest, AReloadOfTheTextureGivesANewCopy)

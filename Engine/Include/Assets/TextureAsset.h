@@ -169,6 +169,21 @@ struct TextureMipDesc {
     uint32 Height = 0;
 };
 
+/// The pixels of a texture with the values that describe them, all from one payload
+/// (TextureAsset::AcquirePixels). A reload does not change a value in it.
+struct TexturePixels
+{
+    std::shared_ptr<const uint8[]> Pixels; ///< Null when the texture has none.
+    uint64 DataSize = 0;                   ///< The bytes of all levels.
+    uint64 Level0Bytes = 0;                ///< The bytes of level 0, which starts at byte 0.
+    uint32 Width = 0;
+    uint32 Height = 0;
+    uint32 Channels = 0;
+    TextureFormat Format = TextureFormat::Unknown;
+    TextureColorSpace ColorSpace = TextureColorSpace::Unknown;
+    uint64 PayloadGeneration = 0; ///< TextureAsset::GetPayloadGeneration of this payload.
+};
+
 /**
  * @brief Texture asset implementation
  */
@@ -248,24 +263,16 @@ public:
 	     */
 	    TextureColorSpace GetColorSpace() const { return m_ColorSpace; }
 
-	    /**
-	     * @brief Override texture color space (for tools / user workflows).
-	     *
-	     * This only affects how the texture will be treated when uploaded
-	     * to the GPU (e.g. choice of *_SRGB vs *_UNORM formats). It does
-	     * not modify the stored pixel data.
-	     */
-	    void SetColorSpace(TextureColorSpace colorSpace) { m_ColorSpace = colorSpace; }
 
     /**
      * @brief Get raw pixel data
      */
     const uint8* GetPixelData() const { return m_PixelData.get(); }
 
-    /// The pixels of GetPixelData(), valid while the caller holds them. After ReleaseLevelPixels,
-    /// they are the pixels of another holder, or a blocking read of GetLevelFile() gives them: they
-    /// go when the last holder drops them, and the asset keeps none. Null without both. Any thread.
-    std::shared_ptr<const uint8[]> AcquirePixels() const;
+    /// The pixels of GetPixelData() with their dimensions and format, from one payload. The pixels
+    /// are valid while the caller holds them. After ReleaseLevelPixels, they are the pixels of
+    /// another holder, or a blocking read of GetLevelFile() gives them. Any thread.
+    TexturePixels AcquirePixels() const;
 
     /**
      * @brief Get data size in bytes
@@ -476,8 +483,8 @@ private:
 	    std::shared_ptr<uint8[]> m_PixelData;
 	    // The pixels that the holders of AcquirePixels() keep alive after a release.
 	    mutable std::weak_ptr<uint8[]> m_BorrowedPixels;
-	    // After the load, guards m_PixelData, m_BorrowedPixels, m_DataSize, m_MipChain and
-	    // m_LevelFile for AcquirePixels against a release, a reload and an unload.
+	    // After the load, guards the payload for AcquirePixels against a release, a reload and an
+	    // unload: the pixels, the dimensions, the format, the mip chain and the level file.
 	    mutable std::mutex m_PixelMutex;
 	    uint64 m_DataSize;
 	    bool m_HasMipmaps;
