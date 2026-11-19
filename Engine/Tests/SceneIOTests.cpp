@@ -3083,7 +3083,7 @@ TEST(SceneIO, SaveThenLoad_RoundTripExposureAdjustmentEffect)
 TEST(SceneIO, PostProcessVolumeLookIsSavedAndLoadedByName)
 {
     for (const Components::Look look : {Components::Look::Neutral, Components::Look::Filmic,
-                                        Components::Look::Photographic})
+                                        Components::Look::Photographic, Components::Look::GT7})
     {
         const std::string name(Components::LookName(look));
         const auto scenePath = MakeTempPath(("volume_look_" + name + ".scene").c_str());
@@ -3137,7 +3137,7 @@ TEST(SceneIO, PostProcessVolumeUnknownLookLoadsAsNeutralWithOneSkip)
     EXPECT_EQ(skip.component, "PostProcessVolume");
     EXPECT_EQ(skip.field, "look");
     EXPECT_EQ(skip.message,
-              "'Reinhard' is not a look; rendering Neutral. Valid looks: Neutral, Filmic (ACES 2), Photographic (AgX).");
+              "'Reinhard' is not a look; rendering Neutral. Valid looks: Neutral, Filmic (ACES 2), Photographic (AgX), GT7 (ICtCp).");
     EXPECT_TRUE(skip.preserved) << "the authored line must survive a save";
 
     const auto e = FindByTag(world, "ppv");

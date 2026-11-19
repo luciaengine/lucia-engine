@@ -6,6 +6,7 @@
 
 #include "tonemap_aces2_tables.glsl"
 #include "tonemap_look.glsl"
+#include "tonemap_gt7.glsl"
 
 // The largest y an inverse accepts, so that each inverse returns a finite x. Neutral reaches 1.0 only at
 // an infinite x; the tonescale curves reach 1.0 at a finite x.
@@ -56,6 +57,30 @@ vec4 Aces2SdrTonescale()
 // stays within 2.8 sRGB-encoded 8-bit levels of AgX over x in [1e-3, 1e3].
 const vec4 kAgxFitTonescale = vec4(1.05358, 0.70724, 0.91618, 0.04284);
 
+// GT7's ICtCp chroma step leaves a grey unchanged. Invert the compressed shoulder analytically
+// and solve the blended toe by bisection.
+float GE_GT7ResponseInverse(float y)
+{
+    float mapped = y * kGT7Peak;
+    if (mapped >= kGT7ShoulderStart)
+        return log((mapped - kGT7ShoulderLimit) / kGT7ShoulderAmplitude) / kGT7ShoulderExponent;
+    if (mapped >= kGT7Midpoint)
+        return mapped;
+
+    float lower = 0.0;
+    float upper = kGT7Midpoint;
+    const int kToeBisectionSteps = 16;
+    for (int iteration = 0; iteration < kToeBisectionSteps; ++iteration)
+    {
+        float midpoint = (lower + upper) * 0.5;
+        if (GT7Curve(midpoint) < mapped)
+            lower = midpoint;
+        else
+            upper = midpoint;
+    }
+    return (lower + upper) * 0.5;
+}
+
 // The look's display light for exposed scene luminance x >= 0. Neutral is the default look; the
 // no-look arm is the identity.
 float GE_DisplayResponse(int look, float x)
@@ -64,6 +89,7 @@ float GE_DisplayResponse(int look, float x)
     {
         case kLookFilmic: return GE_TonescaleResponse(x, Aces2SdrTonescale());
         case kLookPhotographic: return GE_TonescaleResponse(x, kAgxFitTonescale);
+        case kLookGT7: return min(GT7Curve(x) / kGT7Peak, 1.0);
         case kNoLookArm: return x;
         default: return GE_NeutralResponse(x);
     }
@@ -79,6 +105,7 @@ float GE_DisplayResponseInverse(int look, float y)
     {
         case kLookFilmic: return GE_TonescaleResponseInverse(y, Aces2SdrTonescale());
         case kLookPhotographic: return GE_TonescaleResponseInverse(y, kAgxFitTonescale);
+        case kLookGT7: return GE_GT7ResponseInverse(y);
         default: return GE_NeutralResponseInverse(y);
     }
 }

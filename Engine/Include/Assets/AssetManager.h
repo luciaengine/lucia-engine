@@ -772,29 +772,6 @@ public:
     Event<std::span<const GUID>> FilesChanged;
 
     /**
-     * @brief Memory usage statistics of the resident assets
-     */
-    struct MemoryStats {
-        uint64 TotalMemoryUsed;
-        uint64 LoadedAssetCount;
-        HashMap<AssetType, uint64> MemoryByType;
-        std::chrono::steady_clock::time_point LastUpdated;
-    };
-
-    /**
-     * @brief Get the cached memory statistics. RegisterLoadedAsset and
-     * UnregisterLoadedAsset update the cache incrementally; the per-type map is
-     * copied under m_StatsCacheMutex.
-     */
-    MemoryStats GetMemoryStats() const;
-
-    /**
-     * @brief Force recalculation of memory statistics (O(n), use sparingly)
-     * Only needed for debugging or when cache coherency is suspected
-     */
-    MemoryStats RecalculateMemoryStats() const;
-
-    /**
      * @brief Get the asset event dispatcher for advanced usage
      */
     AssetEventDispatcher& GetEventDispatcher() { return m_EventDispatcher; }
@@ -1063,16 +1040,6 @@ private:
      */
     AssetLoadHandle CreateLoadHandle(const GUID& assetGuid, AssetLoadResultCallback callback,
                                    std::shared_future<SharedPtr<Asset>> future);
-
-    /**
-     * @brief Update cached memory statistics (called when cache is stale)
-     */
-    void UpdateMemoryStatsCache() const;
-
-    /**
-     * @brief Incrementally update memory stats when assets are added/removed
-     */
-    void UpdateMemoryStatsIncremental(const SharedPtr<Asset>& asset, bool added) const;
 
     /**
      * @brief Get loaded asset by GUID (thread-safe, optimized for callbacks)
@@ -1355,13 +1322,6 @@ private:
     HashMap<GUID, SuppressedLoadInfo> m_SuppressedLoads;
 
 
-    // Cached memory statistics: the totals are atomics, the per-type map is
-    // read and written under m_StatsCacheMutex.
-    mutable std::atomic<uint64> m_CachedTotalMemory{0};
-    mutable std::atomic<uint64> m_CachedAssetCount{0};
-    mutable std::atomic<bool> m_StatsNeedUpdate{true};
-    mutable HashMap<AssetType, std::atomic<uint64>> m_CachedMemoryByType;
-    mutable std::mutex m_StatsCacheMutex;
 
     // Async task tracking
     Vector<std::future<void>> m_PendingTasks;

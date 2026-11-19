@@ -45,10 +45,11 @@ namespace
 using Components::Look;
 using Components::PostProcessVolumeShape;
 
-static constexpr EnumEntry<Look> kLooks[] = {
-    {Look::Neutral,      Components::LookName(Look::Neutral).data()},
-    {Look::Filmic,       Components::LookName(Look::Filmic).data()},
-    {Look::Photographic, Components::LookName(Look::Photographic).data()},
+static constexpr EnumEntry<Look> kTonemappers[] = {
+    {Look::Neutral,      Components::TonemapperName(Look::Neutral).data()},
+    {Look::Filmic,       Components::TonemapperName(Look::Filmic).data()},
+    {Look::Photographic, Components::TonemapperName(Look::Photographic).data()},
+    {Look::GT7,          Components::TonemapperName(Look::GT7).data()},
 };
 
 static constexpr EnumEntry<PostProcessVolumeShape> kVolumeShapes[] = {
@@ -420,19 +421,15 @@ void RegisterPostProcessVolumeInspector()
         // --- Image ---
         InspectorUI::AddTextBlock(ctx.Parent, "Image", "inspector-section-subheader");
 
-        auto* lookField = InspectorUI::AddEnumRow(ctx.Parent, "Look", kLooks, vol->Look,
+        auto* tonemapperField = InspectorUI::AddEnumRow(ctx.Parent, "Tonemapper", kTonemappers, vol->Look,
             "The display transform the image is rendered with.");
-        lookField->SetOnValueChanged([w, e, n, undo](Look v) {
-            CommitComponentWithUndo<PP>(w, e, n, undo, "Change Look",
+        tonemapperField->SetOnValueChanged([w, e, n, undo](Look v) {
+            CommitComponentWithUndo<PP>(w, e, n, undo, "Change Tonemapper",
                 [v](PP& u) { u.Look = v; });
         });
-        // What the chosen look does, then the technique for the expert; the inspector rebuilds on
-        // commit, so the caption follows the list.
-        UIElement* lookCaption = InspectorUI::AddActionRow(ctx.Parent, "inspector-caption-row");
-        InspectorUI::AddTextBlock(lookCaption, std::string(Components::LookDescription(vol->Look)),
+        UIElement* tonemapperCaption = InspectorUI::AddActionRow(ctx.Parent, "inspector-caption-row");
+        InspectorUI::AddTextBlock(tonemapperCaption, std::string(Components::LookDescription(vol->Look)),
                                   "inspector-field-caption");
-        InspectorUI::AddTextBlock(lookCaption, "Technique: " + std::string(Components::LookTechnique(vol->Look)),
-                                  "inspector-field-caption-technique");
 
         // --- Night tint (artistic) ---
         InspectorUI::AddTextBlock(ctx.Parent, "Night tint (artistic)", "inspector-section-subheader");
