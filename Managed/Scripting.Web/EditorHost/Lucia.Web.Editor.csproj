@@ -28,7 +28,9 @@
     </PropertyGroup>
     <ItemGroup>
       <ScriptReference Include="@(ReferencePath)"
-        Condition="'%(ReferencePath.FrameworkReferenceName)' == 'Microsoft.NETCore.App' Or $([System.String]::Copy('%(ReferencePath.Filename)').StartsWith('GameEngine.'))" />
+        Condition="'%(ReferencePath.FrameworkReferenceName)' == 'Microsoft.NETCore.App' Or
+          ($([System.String]::Copy('%(ReferencePath.Filename)').StartsWith('GameEngine.')) And
+           '%(ReferencePath.Filename)' != 'GameEngine.Scripting.Web')" />
       <EmbeddedResource Include="$(ScriptReferenceArchive)" LogicalName="Lucia.ScriptReferences" />
     </ItemGroup>
     <RemoveDir Directories="$(ScriptReferenceDirectory)" />

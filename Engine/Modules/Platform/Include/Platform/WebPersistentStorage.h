@@ -31,9 +31,10 @@ inline constexpr const char* kProjectsMount = "/project";
 inline constexpr const char* kUserDataDir = "/project/.user-data";
 inline constexpr const char* kUserCacheDir = "/project/.cache";
 
-// The managed browser host can start the workers before entering the native
-// editor. It polls readiness while the browser remains free to service messages.
+/// Start mounting on a worker. Call from the browser main thread before loading a project.
 void PreparePersistentStorage(const std::filesystem::path& mountPoint);
+
+/// Poll on the browser main thread before calling MountPersistentStorage for the same path.
 bool IsPersistentStoragePrepared();
 
 /**

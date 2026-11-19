@@ -437,7 +437,7 @@ namespace GameEngine.Scripting.Runtime
         public static void Initialize(ulong worldHandle) => Initialize(worldHandle, null);
 
         /// <summary>Limit reflection fallback to the assembly for this play session.</summary>
-        public static void Initialize(ulong worldHandle, Assembly? scriptAssembly)
+        internal static void Initialize(ulong worldHandle, Assembly? scriptAssembly)
         {
             ISystemEntry[] created;
             lock (s_lock)

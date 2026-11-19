@@ -76,7 +76,7 @@ namespace GameEngine::Editor
 #if defined(__EMSCRIPTEN__)
 namespace
 {
-bool g_BrowserScriptsRunning = false;
+bool s_BrowserScriptsRunning = false;
 
 bool ReportBrowserScriptError(char* error)
 {
@@ -119,15 +119,15 @@ int32_t BrowserScriptsEnter()
         return 0;
     const auto world = reinterpret_cast<std::uintptr_t>(engine.GetPrimaryWorld());
     const auto request = sources.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-    g_BrowserScriptsRunning = !ReportBrowserScriptError(StartBrowserPlayScripts(static_cast<int>(world), request.c_str()));
-    return g_BrowserScriptsRunning ? 0 : 1;
+    s_BrowserScriptsRunning = !ReportBrowserScriptError(StartBrowserPlayScripts(static_cast<int>(world), request.c_str()));
+    return s_BrowserScriptsRunning ? 0 : 1;
 }
 
 int32_t BrowserScriptsTick(float delta)
 {
-    if (g_BrowserScriptsRunning && ReportBrowserScriptError(TickBrowserPlayScripts(delta)))
+    if (s_BrowserScriptsRunning && ReportBrowserScriptError(TickBrowserPlayScripts(delta)))
     {
-        g_BrowserScriptsRunning = false;
+        s_BrowserScriptsRunning = false;
         ReportBrowserScriptError(StopBrowserPlayScripts());
         return 1;
     }
@@ -136,9 +136,9 @@ int32_t BrowserScriptsTick(float delta)
 
 int32_t BrowserScriptsExit()
 {
-    if (!g_BrowserScriptsRunning)
+    if (!s_BrowserScriptsRunning)
         return 0;
-    g_BrowserScriptsRunning = false;
+    s_BrowserScriptsRunning = false;
     return ReportBrowserScriptError(StopBrowserPlayScripts()) ? 1 : 0;
 }
 } // namespace

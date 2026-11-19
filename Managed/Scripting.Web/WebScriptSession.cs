@@ -8,7 +8,7 @@ using Microsoft.CodeAnalysis.CSharp;
 namespace GameEngine.Scripting.Web;
 
 /// <summary>Compiles a project's C# sources and runs its systems for a browser play session.</summary>
-public sealed class WebScriptSession : IDisposable
+internal sealed class WebScriptSession : IDisposable
 {
     private readonly MetadataReference[] m_References;
     private AssemblyLoadContext? m_Context;
