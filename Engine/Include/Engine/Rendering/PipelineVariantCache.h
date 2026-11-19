@@ -522,8 +522,8 @@ class PipelineVariantCache
     // throw mid-compile — so a key is never wedged.
     void RunColorVariantCompile(const VariantCompileRequest& req);
     void RunDepthVariantCompile(const VariantCompileRequest& req);
-    // Clear a key's in-flight marker and decrement the running counter. Called by
-    // the Run* scope guard on failure exits and by the submit-failure path.
+    // Clear a key's in-flight marker. Called by the Run* scope guard on failure exits
+    // and by the submit-failure path.
     void ReleaseVariantCompile(const InstancedVariantKey& key, bool isDepth);
 
     // A compiled variant unit handed back by a worker (or the inline headless
@@ -631,12 +631,6 @@ class PipelineVariantCache
     // work that used to block the record thread on a cold miss). Bumped on the
     // worker/inline compile path; read for diagnostics like the cache-size getters.
     std::atomic<uint64_t> m_AsyncVariantCompilesTotal{0};
-
-    // Variant compiles currently dispatched-but-not-finished. Incremented before
-    // each submit, decremented on every Run* exit (via ReleaseVariantCompile). The
-    // drain submits only while this is below a worker-count-derived cap so the cold
-    // burst can't oversubscribe the pool (the compiles also ride the Background lane).
-    std::atomic<uint32_t> m_VariantCompilesRunning{0};
 
     // The materials whose draws found a backend pipeline cold, keyed by the
     // device's combined (pipeline id, format key) (materials share interned
