@@ -263,7 +263,7 @@ public:
 
     /// The pixels of GetPixelData(), valid while the caller holds them. After ReleaseLevelPixels,
     /// a blocking read of GetLevelFile() gives them and the asset keeps them again. Null without both.
-    /// Any thread, but not during ReloadFromData, which loads into this instance in place.
+    /// Any thread.
     std::shared_ptr<const uint8[]> AcquirePixels() const;
 
     /**
@@ -349,6 +349,9 @@ public:
     void SetWrap(TextureWrap wrapS, TextureWrap wrapT);
 
 protected:
+    /// Decodes `data` into a staged texture and adopts its payload. A decode that fails keeps the
+    /// payload of this texture, and no other thread sees the texture without one.
+    bool ReloadFromData(std::span<const uint8> data) override;
     bool AdoptReloadedPayload(Asset& staged) override;
 
 private:
