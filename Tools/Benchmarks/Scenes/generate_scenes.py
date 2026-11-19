@@ -22,6 +22,10 @@ DEFAULT_PROJECT = REPO_ROOT / "Tests" / "Projects" / "PerformanceBenchmark"
 RUN = {"warmupFrames": 300, "timingFrames": 600, "profiledFrames": 120}
 RESOLUTION = [1920, 1080]
 
+# A clear noon sun in lux, and the manual exposure in EV100 that an outdoor camera uses under it.
+SUN_LUX = 100000.0
+OUTDOOR_EV = 15
+
 CITY_UNIQUE_BUILDINGS = 32
 CITY_GRID = 16
 
@@ -68,10 +72,11 @@ class Scene:
             fields.append(f"Camera.orthographicSize = {fmt(ortho_size)}")
         self.entity("e_cam", "Main Camera", fields, position)
 
-    def sun(self, pitch_deg, yaw_deg, intensity=3.0, shadows=True):
+    def sun(self, pitch_deg, yaw_deg, shadows=True):
         rotation = quat_mul(yaw_quat(yaw_deg), axis_quat((1, 0, 0), pitch_deg))
         self.entity("e_sun", "Sun", ["Light.enabled = true", "Light.type = 0", "Light.color = (1, 0.96, 0.9)",
-                                     f"Light.intensity = {fmt(intensity)}", "Light.castsLight = true",
+                                     f"Light.intensity = {fmt(SUN_LUX)}", "Light.intensityUnit = Lux",
+                                     "Light.castsLight = true",
                                      f"Light.castsShadows = {'true' if shadows else 'false'}",
                                      "Light.cascadeCount = 4"], rotation=rotation)
 
@@ -107,7 +112,7 @@ def ground(scene, size, material="Ground"):
 
 def forest():
     s = Scene("Forest", "Dense forest: wind-animated procedural trees, a sun with virtual shadow maps.")
-    s.camera(far=600, ev=13)
+    s.camera(far=600, ev=OUTDOOR_EV)
     s.sky()
     s.sun(pitch_deg=50, yaw_deg=30)
     s.entity("e_wind", "Wind", ["WindVolume.isGlobal = true", "WindVolume.shape = 0", "WindVolume.weight = 1",
@@ -137,9 +142,9 @@ def forest():
 
 def open_world():
     s = Scene("OpenWorld", "Open world: generated terrain, an ocean, scattered rocks under an HLOD volume, long view.")
-    s.camera(far=12000, ev=14)
+    s.camera(far=12000, ev=OUTDOOR_EV)
     s.sky()
-    s.sun(pitch_deg=35, yaw_deg=-40, intensity=4)
+    s.sun(pitch_deg=35, yaw_deg=-40)
     s.entity("e_terrain", "Terrain", ["Terrain.terrainAssetType = 0", "Terrain.baseSource = 2", "Terrain.enabled = true",
                                       "Terrain.sizeX = 4096", "Terrain.sizeZ = 4096", "Terrain.heightScale = 400",
                                       "Terrain.samplesPerMeter = 1", "Terrain.domain = 0",
@@ -169,7 +174,7 @@ def open_world():
 
 def crowd():
     s = Scene("Crowd", "Crowd: 400 animated skinned characters with bone LOD.")
-    s.camera(far=500, ev=13)
+    s.camera(far=500, ev=OUTDOOR_EV)
     s.sky()
     s.sun(pitch_deg=45, yaw_deg=60)
     ground(s, 300)
@@ -197,9 +202,9 @@ def crowd():
 
 def city():
     s = Scene("City", "City: unique procedural buildings drawn through cluster LOD.")
-    s.camera(far=3000, ev=14)
+    s.camera(far=3000, ev=OUTDOOR_EV)
     s.sky()
-    s.sun(pitch_deg=40, yaw_deg=20, intensity=4)
+    s.sun(pitch_deg=40, yaw_deg=20)
     ground(s, 1200, "Asphalt")
     rng = random.Random(4004)
     block = 36.0
@@ -217,6 +222,7 @@ def city():
         "description": f"City: {CITY_GRID * CITY_GRID} buildings from {CITY_UNIQUE_BUILDINGS} unique procedural meshes, cooked to cluster LOD.",
         "content": ["city"],
         "environment": {"GE_CLUSTER_LOD": "1"},
+        "requiredActiveMonitors": ["ClusterLOD.SplitInstances"],
         "requiredPasses": [],
         "poses": [pose("street", (18, 1.7, -270), 0, 2), pose("rooftop", (-300, 120, -300), 45, -15),
                   pose("aerial", (0, 600, -700), 0, -38)],
