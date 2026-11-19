@@ -15,13 +15,13 @@
 // direction. The atlas holds depth premultiplied by coverage; a texel with no surface keeps `offset`.
 vec3 GE_ImpostorSurfacePoint(vec2 frame, vec3 offset, vec4 impostorAtlas)
 {
-    vec4 sampleColor = texture(albedoMap, GE_ImpostorFrameUv(frame, offset, impostorAtlas));
-    float coverage = sampleColor.a;
-    if (coverage < 0.5)
-        return offset;
+    vec2 uv = GE_ImpostorFrameUv(frame, offset, impostorAtlas);
+    float coverage = texture(albedoMap, uv).a;
     vec3 direction = GE_ImpostorFrameDirection(frame, impostorAtlas);
-    float depth = texture(normalMap, GE_ImpostorFrameUv(frame, offset, impostorAtlas)).w / coverage;
-    return offset - direction * dot(offset, direction) + direction * (2.0 * depth - 1.0);
+    float depth = texture(normalMap, uv).w / max(coverage, 0.0001);
+    vec3 surface = offset - direction * dot(offset, direction) + direction * (2.0 * depth - 1.0);
+    // An edge texel blends toward the card point, so the point does not jump at a silhouette.
+    return mix(offset, surface, smoothstep(0.25, 0.75, coverage));
 }
 
 SurfaceOutput EvaluateSurface(SurfaceInput sIn)
@@ -41,14 +41,19 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 
     // Atlas texels outside the tree hold 0 in every channel, so a filtered sample at a leaf edge is
     // already premultiplied by its coverage. Divide by the summed coverage; never multiply by it.
-    // The surface point: the depth of the dominant frame under this card point. The other frames
-    // sample that point, so their texels line up with the dominant frame instead of the card plane.
-    int dominant = weights.x >= weights.y ? (weights.x >= weights.z ? 0 : 2) : (weights.y >= weights.z ? 1 : 2);
-    vec3 surface = GE_ImpostorSurfacePoint(frames[dominant], offset, Props.impostorAtlas);
+    // The surface point: each frame's depth under this card point, blended by the frame weights, so
+    // the point moves smoothly when the view crosses from one frame to the next. The frames then
+    // sample that point, so their texels line up instead of each showing the card plane.
+    vec3 surface = vec3(0.0);
+    for (int i = 0; i < 3; ++i)
+        surface += GE_ImpostorSurfacePoint(frames[i], offset, Props.impostorAtlas) * weights[i];
 
-    // A frame that has a surface clearly in front of the surface point sees an occluder there (the
-    // leaves above a trunk, seen from a higher frame): it does not contribute.
-    const float kOccluderDepth = 0.05; // Window depth: 0.1 sphere radii.
+    // A frame that has a surface in front of the surface point sees an occluder there (the leaves
+    // above a trunk, seen from a higher frame). Its weight fades out over kOccluderFade, down to
+    // kOccludedWeight, so no frame drops out in one step and the weights never sum to 0.
+    const float kOccluderDepth = 0.05;  // Window depth: 0.1 sphere radii.
+    const float kOccluderFade = 0.05;
+    const float kOccludedWeight = 0.02;
     vec4 color = vec4(0.0);
     vec3 objectNormal = vec3(0.0);
     float weightSum = 0.0;
@@ -58,9 +63,10 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         vec4 sampleColor = texture(albedoMap, uv);
         vec4 sampleNormalDepth = texture(normalMap, uv);
         float expectedDepth = dot(surface, GE_ImpostorFrameDirection(frames[i], Props.impostorAtlas)) * 0.5 + 0.5;
-        bool occluded = i != dominant && sampleColor.a > 0.5 &&
-                        sampleNormalDepth.w / sampleColor.a > expectedDepth + kOccluderDepth;
-        float weight = occluded ? 0.0 : weights[i];
+        float storedDepth = sampleNormalDepth.w / max(sampleColor.a, 0.0001);
+        float occluded = smoothstep(kOccluderDepth, kOccluderDepth + kOccluderFade, storedDepth - expectedDepth) *
+                         smoothstep(0.25, 0.75, sampleColor.a);
+        float weight = weights[i] * max(1.0 - occluded, kOccludedWeight);
         color += sampleColor * weight;
         objectNormal += (sampleNormalDepth.xyz * 2.0 - sampleColor.a) * weight;
         weightSum += weight;
