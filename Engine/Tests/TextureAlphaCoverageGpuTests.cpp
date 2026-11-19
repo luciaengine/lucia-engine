@@ -635,6 +635,10 @@ TEST_F(TextureCoverageGPU, TheMemoryStatsReportTheBytesThatTheMaterialMipStreams
     ASSERT_EQ(WidthOf(material->GetTexture(slot)), 512u);
     EXPECT_EQ(StreamedBytesInMemoryStats() - before, kFullBytes);
 
+    // An evict ends the stream at once.
+    m_Textures.Evict(texture);
+    EXPECT_EQ(StreamedBytesInMemoryStats(), before);
+
     m_Textures.OnMaterialUnregistered(materialGuid);
     m_Materials.Unregister(materialGuid);
     m_Textures.FlushPendingUploads();
