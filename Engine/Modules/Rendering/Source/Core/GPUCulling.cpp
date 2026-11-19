@@ -965,7 +965,10 @@ void GPUCullingPipeline::BeginFrame(RenderGraph::RGFrame* frame, GPUScene* scene
     m_FrameVisTotalBytes = 0;
     m_FrameDeformationMargins = {};
     m_LastPublishArm = PublishArm::None;
-    m_FrameRGOwner = frame;
+    if (frame)
+        m_VisibilityFrame.Stamp(*frame);
+    else
+        m_VisibilityFrame = {};
     m_FrameVisRG = {};
     m_FrameAnyVisRG = {};
     m_FrameRuntimeVisRG = {};
@@ -1006,7 +1009,7 @@ bool GPUCullingPipeline::ScheduleCascadeGroupInto(RenderGraph::RGFrame& frame, G
     const GPUScene::GPUSceneFrameRG sceneRG = scene.ImportFrameResources(frame);
     // The owner frame shares the upload that EndFrame bound. Another frame stream needs its own.
     const CullDeformationMargins margins =
-        m_FrameRGOwner == &frame ? FrameDeformationMargins(frame) : UploadDeformationMargins(frame);
+        m_VisibilityFrame.IsFor(frame) ? FrameDeformationMargins(frame) : UploadDeformationMargins(frame);
     if (!sceneRG.Instances.IsValid() || !margins.Valid())
         return false;
     GPUCullingData cd = MakeCascadeGroupCullingData(group);
@@ -1402,35 +1405,6 @@ void GPUCullingPipeline::EndFrameRG()
                                            cd, margins, key);
     }
 
-    // Fused cascade-group dispatches.
-    for (size_t gi = 0; !elide.Skip && gi < m_PendingCascadeGroups.size(); ++gi)
-    {
-        const CascadeCullingGroup& g = m_PendingCascadeGroups[gi];
-        if (g.instanceCount == 0u || g.cascadeCount == 0u)
-            continue;
-
-        const GPUCullingData cd = MakeCascadeGroupCullingData(g);
-
-        // Pass-name key: the directional cascades keep the 0xFE tag; a based
-        // fan-out names itself by its first slice so two groups of one view
-        // (probe faces 0-3 and 4-5) stay distinguishable in a capture.
-        const uint64_t groupTag = g.cascadeIndexBase != 0 ? g.cascadeIndexBase : 0xFEull;
-        const uint64_t key = (static_cast<uint64_t>(g.viewId) << 16) | groupTag;
-        const uint32_t firstIdx = groupFirstLayoutIdx[gi];
-        uint32_t sliceOffsets[kMaxCullingViewsPerDispatch] = {};
-        for (uint32_t c = 0; c < g.cascadeCount; ++c)
-            sliceOffsets[c] = m_ViewVisibilityLayout[firstIdx + c].offset;
-
-        scene->ScheduleCullingPassForCascadeGroup(*frame, sceneRG, m_FrameVisRG, visTotalBytes,
-                                                  sliceOffsets, g.cascadeCount, g.firstInstance,
-                                                  g.instanceCount, cd, margins, key);
-    }
-
-    // Dispatches were declared: the visibility content generation advances so
-    // downstream scatter gates recompute against the fresh bits.
-    if (!elide.Skip)
-        ++m_VisibilityWriteEpoch;
-
     // Per-view ranges — the (viewId, cascadeIndex) → buffer-slice table the
     // bucketer and depth passes consume.
     m_ViewVisibilityRanges.clear();
@@ -1445,18 +1419,34 @@ void GPUCullingPipeline::EndFrameRG()
         range.visibilityCount = std::min(view.instanceCount, layout.capacity);
         m_ViewVisibilityRanges.push_back(range);
     }
-    for (size_t gi = 0; gi < m_PendingCascadeGroups.size(); ++gi)
+    for (size_t groupIndex = 0; groupIndex < m_PendingCascadeGroups.size(); ++groupIndex)
     {
-        const CascadeCullingGroup& g = m_PendingCascadeGroups[gi];
-        const uint32_t firstIdx = groupFirstLayoutIdx[gi];
-        for (uint32_t c = 0; c < g.cascadeCount; ++c)
+        const CascadeCullingGroup& group = m_PendingCascadeGroups[groupIndex];
+        const uint32_t firstIndex = groupFirstLayoutIdx[groupIndex];
+        bool scheduled = false;
+        if (!elide.Skip && group.instanceCount != 0u && group.cascadeCount != 0u)
         {
-            const PerViewVisibilityInfo& layout = m_ViewVisibilityLayout[firstIdx + c];
+            const GPUCullingData cullingData = MakeCascadeGroupCullingData(group);
+            // Directional groups retain the 0xFE scope tag. Based fan-outs
+            // use their first slice to distinguish multiple groups per view.
+            const uint64_t groupTag = group.cascadeIndexBase != 0 ? group.cascadeIndexBase : 0xFEull;
+            const uint64_t key = (static_cast<uint64_t>(group.viewId) << 16) | groupTag;
+            uint32_t sliceOffsets[kMaxCullingViewsPerDispatch] = {};
+            for (uint32_t cascade = 0; cascade < group.cascadeCount; ++cascade)
+                sliceOffsets[cascade] = m_ViewVisibilityLayout[firstIndex + cascade].offset;
+            scheduled = scene->ScheduleCullingPassForCascadeGroup(
+                *frame, sceneRG, m_FrameVisRG, visTotalBytes, sliceOffsets, group.cascadeCount,
+                group.firstInstance, group.instanceCount, cullingData, margins, key);
+        }
+        for (uint32_t cascade = 0; cascade < group.cascadeCount; ++cascade)
+        {
+            const PerViewVisibilityInfo& layout = m_ViewVisibilityLayout[firstIndex + cascade];
             ViewVisibilityRange range;
-            range.viewId = g.viewId;
-            range.cascadeIndex = static_cast<uint8_t>(g.cascadeIndexBase + c);
+            range.viewId = group.viewId;
+            range.cascadeIndex = static_cast<uint8_t>(group.cascadeIndexBase + cascade);
             range.visibilityOffset = layout.offset;
-            range.visibilityCount = std::min(g.instanceCount, layout.capacity);
+            range.visibilityCount = std::min(group.instanceCount, layout.capacity);
+            range.cascadeCullScheduled = scheduled && range.visibilityCount == group.instanceCount;
             m_ViewVisibilityRanges.push_back(range);
         }
     }
@@ -1471,7 +1461,24 @@ void GPUCullingPipeline::EndFrameRG()
         m_ViewVisibilityRanges.push_back(range);
     }
 
+    // Advance the generation after declaring fresh visibility writes so
+    // the downstream scatter can distinguish them from retained bits.
+    if (!elide.Skip)
+        ++m_VisibilityWriteEpoch;
     m_LastPublishArm = PublishArm::RenderGraph;
+}
+
+bool GPUCullingPipeline::HasScheduledCascadeCull(const RenderGraph::RGFrame& frame, ViewId viewId,
+                                                 uint8_t cascadeIndex) const
+{
+    if (!m_VisibilityFrame.IsFor(frame) ||
+        m_LastPublishArm != PublishArm::RenderGraph || !m_FrameVisRG.IsValid())
+        return false;
+    // Match the first phase-A range, the same slice the scatter consumes.
+    for (const auto& range : m_ViewVisibilityRanges)
+        if (range.viewId == viewId && range.cascadeIndex == cascadeIndex && range.slicePhase == 0)
+            return range.cascadeCullScheduled;
+    return false;
 }
 
 void GPUCullingPipeline::ScheduleOcclusionCullPass(RenderGraph::RGFrame& frame, GPUScene* scene,
@@ -1481,7 +1488,7 @@ void GPUCullingPipeline::ScheduleOcclusionCullPass(RenderGraph::RGFrame& frame, 
     // Same owner-frame rule as the union/aggregate epilogue passes: dense
     // RGBuffer ids from frame A are usually in-range (and silently wrong) in
     // frame B.
-    if (!m_Device || !scene || m_FrameRGOwner != &frame || !m_FrameVisRG.IsValid())
+    if (!m_Device || !scene || !m_VisibilityFrame.IsFor(frame) || !m_FrameVisRG.IsValid())
         return;
     // No HZB pyramid (node unwired / no prior HZBBuild) or no HZB cull pipeline:
     // leave the reservation UNCONSUMED and no-op. Phase B's slice stays as phase
@@ -1584,7 +1591,7 @@ void GPUCullingPipeline::ScheduleVisibilityUnion(RenderGraph::RGFrame& frame, GP
 {
     if (!scene || !m_Device || m_ViewVisibilityRanges.empty() || !m_FrameVisRG.IsValid())
         return;
-    if (&frame != m_FrameRGOwner)
+    if (!m_VisibilityFrame.IsFor(frame))
         return; // frame-local ids belong to another RGFrame — never declare with them
     // Idle elision: the visibility content is retained this frame, so the
     // union it feeds is retained too (anyViewVisible is a pure function of
@@ -1688,7 +1695,7 @@ void GPUCullingPipeline::ScheduleRuntimeVisibilityAggregate(RenderGraph::RGFrame
 {
     if (!scene || !m_Device || !m_FrameAnyVisRG.IsValid())
         return;
-    if (&frame != m_FrameRGOwner)
+    if (!m_VisibilityFrame.IsFor(frame))
         return; // frame-local ids belong to another RGFrame — never declare with them
     // Idle elision: retained visibility ⇒ retained aggregate (runtimeVisible
     // is a pure function of anyViewVisible + the instance table, both keyed

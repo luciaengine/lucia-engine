@@ -2454,6 +2454,12 @@ void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
             continue;
 
         ctx.CullingPipeline->SubmitCascadeGroup(group);
+        if (ctx.Services && ctx.Frame)
+        {
+            const auto fit = m_ViewFits.find(view.id);
+            if (fit != m_ViewFits.end())
+                fit->second.CullSubmission.Stamp(*ctx.Frame);
+        }
     }
 }
 

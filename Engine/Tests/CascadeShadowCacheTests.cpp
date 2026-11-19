@@ -102,6 +102,30 @@ TEST(CascadeShadowCache, FirstRenderThenSettleThenSkip)
     EXPECT_TRUE(d.Skip);
 }
 
+TEST(CascadeShadowCache, VerifiedCurrentCullSettlesWithoutAnExtraRaster)
+{
+    CascadeShadowCache cache;
+    const auto in = BaseInputs();
+
+    EXPECT_EQ(cache.Evaluate(kView, kSlot, 1, in, true, true).Cause,
+              CascadeCacheDirtyCause::FirstRender);
+    cache.OnRendered(kView, kSlot, in, true);
+
+    EXPECT_TRUE(cache.Evaluate(kView, kSlot, 2, in, true, true).Skip);
+
+    auto changed = in;
+    changed.LightVP[0] += 1.0f;
+    EXPECT_EQ(cache.Evaluate(kView, kSlot, 3, changed, true, true).Cause,
+              CascadeCacheDirtyCause::CascadeFitChanged);
+    cache.OnRendered(kView, kSlot, changed, true);
+    EXPECT_TRUE(cache.Evaluate(kView, kSlot, 4, changed, true, true).Skip);
+
+    cache.MarkUnderDrew(kView, kSlot);
+    const auto retry = cache.Evaluate(kView, kSlot, 5, changed, true, true);
+    EXPECT_FALSE(retry.Skip);
+    EXPECT_EQ(retry.Cause, CascadeCacheDirtyCause::ExecUnderDraw);
+}
+
 TEST(CascadeShadowCache, EachInputChangeMissesWithItsCause)
 {
     struct Case
