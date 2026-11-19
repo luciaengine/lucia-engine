@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Assets/RuntimeAssetMetadata.h"
+#include "Assets/TextureLevelFile.h"
 #include "AssetCore/Asset.h"
 #include "AssetCore/NineSlice.h"
 
@@ -299,6 +300,19 @@ public:
      */
     const TextureAsset* GetNormalVarianceCompanion() const { return m_NormalVarianceCompanion.get(); }
 
+    /// Where each level of GetMipChain() is in a file, byte for byte. Null when no file holds the
+    /// payload as it is in memory (TextureLevelFile::Parse).
+    const TextureLevelFile* GetLevelFile() const { return m_LevelFile ? &*m_LevelFile : nullptr; }
+
+    /// Frees the pixels of this texture and of its companion when GetLevelFile() names where they
+    /// are. GetPixelData() is then null until RestoreLevelPixels. The mip chain and the
+    /// dimensions stay.
+    void ReleaseLevelPixels();
+
+    /// Reads the pixels that ReleaseLevelPixels freed from GetLevelFile(). False, with no pixels,
+    /// when a file does not read or holds another container.
+    bool RestoreLevelPixels();
+
     /// The SVG text an asset loaded from, with its intrinsic size in CSS px
     /// (its width/height or viewBox). Immutable once built; a reload swaps the
     /// asset's pointer to a new one. Rasterize it at any size with
@@ -383,14 +397,19 @@ private:
     bool LoadWithKTX();
 
     /**
-     * @brief Load KTX/KTX2 texture from memory data
+     * @brief Load KTX/KTX2 texture from memory data. `file` names the file that holds `data`,
+     * for GetLevelFile(); empty when no file does.
      */
-    bool LoadWithKTXFromData(std::span<const uint8> data);
+    bool LoadWithKTXFromData(std::span<const uint8> data, const std::filesystem::path& file);
 
     /// Loads the KTX2 file in `data`. A container with no Basis payload, no supercompression and no
     /// gaps between its levels puts them in place inside `data`, which becomes the payload with no
     /// copy. Any other container copies its levels into a new payload.
-    bool LoadWithKTXFromOwnedData(ByteBuffer data);
+    bool LoadWithKTXFromOwnedData(ByteBuffer data, const std::filesystem::path& file);
+
+    /// Keeps `levelFile` as GetLevelFile() when its levels are the levels of the mip chain and its
+    /// file has `fileBytes` bytes on the disk. Clears GetLevelFile() otherwise.
+    void AdoptLevelFile(std::optional<TextureLevelFile> levelFile, uint64 fileBytes);
 
     /// Read (ReadAssetDecodeInputFile) and load a cooked normal-variance companion; null when it
     /// is absent or not BC4.
@@ -439,6 +458,7 @@ private:
 	    uint32 m_MipmapLevels;
 	    std::vector<TextureMipDesc> m_MipChain;
 	    std::unique_ptr<TextureAsset> m_NormalVarianceCompanion;
+	    std::optional<TextureLevelFile> m_LevelFile;
 	    TextureFilter m_MinFilter;
 	    TextureFilter m_MagFilter;
 	    TextureWrap m_WrapS;

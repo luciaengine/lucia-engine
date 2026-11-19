@@ -13,6 +13,7 @@
 #include "Engine/Rendering/CpuTextureSource.h"
 #include "Engine/Rendering/MaterialBindingCache.h"
 #include "Engine/Rendering/MaterialMipStreaming/MaterialMipStepPlanner.h"
+#include "Engine/Rendering/MaterialMipStreaming/MaterialMipStreamSource.h"
 #include "Engine/Rendering/TextureGPUCache.h"
 #include "JobSystem/JobCounter.h"
 #include "Rendering/Core/BindlessResourceManager.h"
@@ -515,23 +516,34 @@ class TextureService
     // The CPU half of a texture upload (TextureService.cpp): an adopted cooked container, or a
     // raw decode with its mip chain built. Built off the render thread for the async paths.
     struct PreparedTextureUpload;
-    struct MaterialMipData;
     struct MaterialMipStream
     {
-        std::shared_ptr<const MaterialMipData> Data;
+        std::shared_ptr<const MaterialMipStreamSource> Source;
         TextureGPUCache::Entry Resident;
         uint32_t FirstMip = 0;
         uint32_t Epoch = 0;
         float ScreenCoverage = 0.0f; // MaterialMipCoverageLocked at the last demand table
+        bool KeepsLevel = false;     // a step of it failed: no more steps until a reload replaces the stream
+    };
+    // The step in flight: a read of the levels that it makes resident. Render thread.
+    struct MaterialMipStep
+    {
+        GUID Texture;
+        MaterialMipStream Candidate; // the stream as the planner saw it
+        std::shared_ptr<MaterialMipStreamSource::LevelRead> Read; // null when no step is in flight
     };
     bool TryGetMaterialTextureLocked(const GUID& guid, TextureGPUCache::Entry& out) const;
     // The largest coverage in m_MaterialCoverage of the materials that bind `guid`. Render thread.
     float MaterialMipCoverageLocked(const GUID& guid) const;
     // The demand table or a texture's material bindings changed: the streams take their coverage again.
     void InvalidateMaterialMipCoverageLocked();
-    std::shared_ptr<const MaterialMipData> PrepareMaterialMipStream(const GUID& guid,
-                                                                  const PreparedTextureUpload& prepared);
+    std::shared_ptr<const MaterialMipStreamSource> PrepareMaterialMipStream(const GUID& guid,
+                                                                          const PreparedTextureUpload& prepared);
+    // Finishes the step in flight when its read is done, then plans the next step and starts its read.
     void AdvanceMaterialMipStreams();
+    // Uploads the levels that the step read and binds them. A step that fails sets KeepsLevel.
+    void FinishMaterialMipStep();
+    void CancelMaterialMipStep();
     TextureGPUCache::Entry RemoveMaterialMipStreamLocked(const GUID& guid);
 
     struct PendingGpuUpload
@@ -761,6 +773,7 @@ class TextureService
     // Material images have a separate lifetime from full-resolution handles returned to callers.
     uint64_t m_MaterialMipBudgetBytes = 0;
     FlatMap<GUID, MaterialMipStream> m_MaterialMipStreams;
+    MaterialMipStep m_MaterialMipStep;
     // Screen coverage by GPUScene material index (UpdateMaterialMipDemand). Empty without demand data.
     std::vector<float> m_MaterialCoverage;
     bool m_MaterialMipCoverageStale = false;
