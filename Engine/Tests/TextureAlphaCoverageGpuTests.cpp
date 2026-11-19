@@ -692,6 +692,12 @@ TEST_F(TextureCoverageGPU, AnEvictedStreamOfAReleasedTextureStartsAgainFromItsFi
     ASSERT_NE(loaded, nullptr);
     ASSERT_EQ(loaded->GetPixelData(), nullptr);
 
+    // The file keeps its header and its tail only: a read of the whole file fails.
+    const TextureLevelFile* file = loaded->GetLevelFile();
+    ASSERT_NE(file, nullptr);
+    constexpr uint32 kTailLevel = 1; // 256 texels a side
+    std::filesystem::resize_file(file->Path(), file->PrefixBytes(kTailLevel));
+
     // The evict ends the stream. The asset stays loaded with no pixels: the new stream reads its
     // tail from the file, and the asset gets no pixels back.
     m_Textures.Evict(texture);
@@ -700,7 +706,30 @@ TEST_F(TextureCoverageGPU, AnEvictedStreamOfAReleasedTextureStartsAgainFromItsFi
     EXPECT_NE(second, first);
     EXPECT_EQ(loaded->GetPixelData(), nullptr);
 
-    // An evict while a step reads its levels: the read is dropped, and the next stream settles.
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, AnEvictDuringAStepReadDropsTheReadAndTheNextStreamSettles)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    const GUID texture = Register(Image(false, 512), false);
+    ASSERT_FALSE(texture.IsNull());
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingEvictedInAStep");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    ASSERT_EQ(WidthOf(WaitForBoundTexture(*material, slot)), 256u);
+    const auto loaded =
+        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+
+    // The flush starts the read of level 0. The evict comes before the flush that finishes it.
     Access::SetMipBudget(m_Textures, 2 * kMiB);
     m_Textures.FlushPendingUploads();
     ASSERT_FALSE(Access::MipStreamsSettled(m_Textures));
