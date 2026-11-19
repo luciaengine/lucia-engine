@@ -187,7 +187,7 @@ TEST_F(TextureLevelFileTest, AReaderKeepsThePixelsThatItAcquiredWhenTheAssetRele
     EXPECT_EQ(std::memcmp(held.get(), pixels.data(), pixels.size()), 0);
 }
 
-TEST_F(TextureLevelFileTest, AReaderAcquiresReleasedPixelsFromTheFileAndTheAssetKeepsNoCopy)
+TEST_F(TextureLevelFileTest, AReaderAcquiresReleasedPixelsFromTheFileAndTheAssetKeepsThem)
 {
     const fs::path path = m_Directory / "acquire.ktx2";
     ASSERT_NO_FATAL_FAILURE(WriteFile(path, CookedContainer(64)));
