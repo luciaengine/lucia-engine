@@ -565,6 +565,14 @@ class OneConnectionTransport : public IHotReloadTransport
             m_Host->FirstCompileEntered.store(true);
             std::this_thread::sleep_for(kFirstCompileHold);
         }
+        // The editor scripts compile writes its assembly beside the executable, which every suite shares.
+        // A stub there makes every later compile that references it fail (CS0009), so the editor project's
+        // compile is refused; the scripts compile goes on without it.
+        if (requestJson.find("\"AssemblyName\":\"GameEngine.Editor\"") != std::string::npos)
+        {
+            outResponse = "{\"Success\":false,\"Errors\":[]}";
+            return true;
+        }
         // "MZ", base64.
         outResponse = "{\"Success\":true,\"AssemblyBytes\":\"TVo=\"}";
         return true;
