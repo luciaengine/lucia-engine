@@ -59,6 +59,7 @@ class DayCycleWindow final : public AssetBoundDockPanel
     void OnLayoutReconciled() override;
     void BindElements();
     void Build();
+    void ShowProfileName();
     void RequestBuild();
     void OpenScrub();
     std::string VolumeName(ECS::EntityHandle volume) const;
