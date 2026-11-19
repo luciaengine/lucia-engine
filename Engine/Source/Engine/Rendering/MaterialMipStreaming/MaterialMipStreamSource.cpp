@@ -35,8 +35,8 @@ std::shared_ptr<const MaterialMipStreamSource> MaterialMipStreamSource::Create(
     std::optional<Chain> chain = ChainOf(texture, format);
     if (!chain)
         return nullptr;
-    const auto isTail = [](const LevelExtent& level) { return std::max(level.Width, level.Height) <= kTailExtent; };
-    const auto tail = std::find_if(chain->Extents.begin(), chain->Extents.end(), isTail);
+    const auto tail = std::find_if(chain->Extents.begin(), chain->Extents.end(), [](const LevelExtent& level)
+                                   { return std::max(level.Width, level.Height) <= kTailExtent; });
     if (tail == chain->Extents.begin() || tail == chain->Extents.end())
         return nullptr;
 

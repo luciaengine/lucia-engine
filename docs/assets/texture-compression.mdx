@@ -60,8 +60,8 @@ chain. The value is in MiB. Leave it unset or set it to zero to use full
 resolution at first upload.
 
 Eligible textures start with the first mip whose longest edge is at most
-256 pixels and the coarser mips below it. The service can change one texture by
-one mip level per frame. It adds detail while the resident payload fits the
+256 pixels and the coarser mips below it. The service changes one texture by
+one mip level at a time. It adds detail while the resident payload fits the
 budget and removes detail when new textures push it over. If the tails alone
 exceed the budget, the tails stay available.
 

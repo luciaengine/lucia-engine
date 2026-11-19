@@ -642,7 +642,15 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
 
     Access::SetMipBudget(m_Textures, 2 * kMiB);
     SettleMipStreams();
-    EXPECT_EQ(WidthOf(material->GetTexture(slot)), 512u);
+    const auto streamed = material->GetTexture(slot);
+    EXPECT_EQ(WidthOf(streamed), 512u);
+
+    // A direct upload of the same asset reads the pixels again from the artifact.
+    const auto direct = WaitForUpload(texture);
+    ASSERT_TRUE(direct.IsValid());
+    EXPECT_NE(direct, streamed);
+    EXPECT_EQ(WidthOf(direct), 512u);
+    EXPECT_NE(loaded->GetPixelData(), nullptr);
 
     m_Textures.OnMaterialUnregistered(materialGuid);
     m_Materials.Unregister(materialGuid);
