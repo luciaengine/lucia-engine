@@ -581,6 +581,7 @@ void WebGpuDevice::PopulateCapabilities()
     caps.maxPerStageStorageBuffers = m_DeviceLimits.maxStorageBuffersPerShaderStage;
     caps.maxComputeWorkGroupSize = m_DeviceLimits.maxComputeInvocationsPerWorkgroup;
     caps.maxComputeSharedMemorySize = m_DeviceLimits.maxComputeWorkgroupStorageSize;
+    caps.maxTextureArrayLayers = m_DeviceLimits.maxTextureArrayLayers;
     // WebGPU core guarantees 4x MSAA only.
     caps.maxMSAASamples = 4;
     // WebGPU exposes no anisotropy limit: a trilinear sampler may request up to

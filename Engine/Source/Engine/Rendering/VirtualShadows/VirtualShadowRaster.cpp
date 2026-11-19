@@ -8,6 +8,7 @@
 #include "Rendering/Core/ReverseZ.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -82,13 +83,26 @@ bool VirtualShadowRenderFeature::PreparePageTable(RenderGraph::RGPrepareContext&
     if (!depth.IsFor(plan.For) || !depth.UseDepthTarget(plan.Atlas, 1u))
         return false;
     const auto inputs = services.MakeDepthDrawServices();
+    // A cached page does not draw. Its producer is the same for every cached page of its pass type,
+    // so one preparation of each pass type serves them all.
+    std::array<std::optional<DepthProducerState>, kVirtualShadowLightFamilies> cachedProducers;
     for (auto& page : pages)
     {
         if (page.Render && !IsCurrentPage(view, plan, page.Work))
             return false;
-        if (!PrepareDepthOnlyPass(depth, *page.Prepared, inputs))
-            return false;
-        page.Producer = GetPreparedDepthProducerState(*page.Prepared, CascadeCasters::All);
+        auto& shared = cachedProducers[static_cast<size_t>(page.Work.Page.Family)];
+        if (!page.Render && shared)
+        {
+            page.Producer = *shared;
+        }
+        else
+        {
+            if (!PrepareDepthOnlyPass(depth, *page.Prepared, inputs))
+                return false;
+            page.Producer = GetPreparedDepthProducerState(*page.Prepared, CascadeCasters::All);
+            if (!page.Render)
+                shared = page.Producer;
+        }
         if (!page.Render && ValidatePage(view, plan, page.Work, page.Producer))
             words[page.TableIndex] = page.Work.Tile;
     }

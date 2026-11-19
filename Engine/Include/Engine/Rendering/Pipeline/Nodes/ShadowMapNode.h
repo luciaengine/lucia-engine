@@ -130,7 +130,8 @@ class ShadowMapNode final : public IRenderPipelineNode
     // SDSM measurement of the cascades' receivers, declared after the node loop.
     ShadowReceiverReduce m_ReceiverReduce;
 
-    // Authored by "virtualShadows", "virtualDirectionalResolution" and "virtualLocalResolution".
+    // Authored by "virtualShadows", "virtualDirectionalResolution", "virtualLocalResolution" and
+    // "virtualPhysicalPages".
     Engine::Renderer::VirtualShadowOptions m_VirtualShadows;
     Engine::Renderer::VirtualShadowPageRequests m_VirtualPageRequests;
 

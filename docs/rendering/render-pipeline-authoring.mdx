@@ -206,12 +206,13 @@ The `ShadowMap` node can keep shadow depth in pages of 128 x 128 texels and rend
 | `virtualShadows` | `false` | Turns the pages on for this pipeline. |
 | `virtualDirectionalResolution` | `8192` | Size in texels of each sun level. A power of two from 128 to 16384. |
 | `virtualLocalResolution` | `4096` | Size in texels of each spot light and of each point light face. A power of two from 128 to 16384. |
+| `virtualPhysicalPages` | `2048` | Pages that each view keeps in GPU memory, from 64 to 4096. Each page uses 64 KB, so 2048 pages use 128 MB. More pages keep the sharp levels over a wider area. The GPU's array texture limit can lower the value; the log then says so. |
 
 ```json title="A ShadowMap node with virtual shadow pages"
 { "id": "ShadowMap", "type": "ShadowMap", "virtualShadows": true, "virtualDirectionalResolution": 8192 }
 ```
 
-The sun uses the pages only with the Poisson filter. With another filter the sun keeps the usual cascades, and the spot and point lights still use the pages. A pipeline with a resolution outside the range does not load, and the message names the two fields.
+The sun uses the pages only with the Poisson filter. With another filter the sun keeps the usual cascades, and the spot and point lights still use the pages. A pipeline with a resolution or a page count outside its range does not load, and the message names the fields.
 
 
 ### Resource reference grammar

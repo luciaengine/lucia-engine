@@ -7,15 +7,16 @@
 #include "Engine/Rendering/ShadowFrameInfo.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowFeedback.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowSunMask.h"
+#include "Logger/Logger.h"
 #include "Rendering/Camera/CameraDerivation.h"
 #include "Rendering/Core/GPUCulling.h"
 #include "Rendering/Core/RenderGraph/RGReadbackRing.h"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -49,7 +50,10 @@ struct VirtualShadowRenderFeature::ViewState
         uint64_t Sequence = 0;
     };
 
-    explicit ViewState(uint64_t generation) : Generation(generation) {}
+    ViewState(uint64_t generation, uint32_t physicalPages)
+        : Generation(generation), PhysicalPages(physicalPages), Cache(physicalPages), Certificates(physicalPages)
+    {
+    }
 
     uint64_t TrackUse(const RenderGraph::RGFrame& frame)
     {
@@ -117,6 +121,7 @@ struct VirtualShadowRenderFeature::ViewState
     }
 
     uint64_t Generation;
+    uint32_t PhysicalPages;
     uint64_t AtlasGeneration = 0;
     uint64_t Sequence = 0;
     uint64_t CasterVersion = 0;
@@ -124,12 +129,12 @@ struct VirtualShadowRenderFeature::ViewState
     uint64_t CapturedSequence = 0;
     Rendering::TextureHandle PhysicalAtlas{};
     RenderGraph::RGReadbackRing<FeedbackSnapshot> Feedback;
-    VirtualShadowPageCache Cache{kVirtualShadowPhysicalTiles};
+    VirtualShadowPageCache Cache;
     VirtualShadowFeedbackLayout Previous;
     VirtualShadowFeedbackLayout Captured;
     std::vector<uint32_t> Words;
     std::vector<Use> Uses;
-    std::array<std::optional<Certificate>, kVirtualShadowPhysicalTiles> Certificates;
+    std::vector<std::optional<Certificate>> Certificates;
     const RenderGraph::RGFrame* PlanFrame = nullptr;
     uint64_t PlanFrameIndex = 0;
     RasterPlan Plan;
@@ -157,10 +162,32 @@ bool VirtualShadowRenderFeature::Configure(const VirtualShadowOptions& options)
         return false;
     if (options == m_Options)
         return true;
+    const bool resized = options.PhysicalPages != m_Options.PhysicalPages;
     m_Options = options;
     for (auto& [view, state] : m_Views)
+    {
         state->Cache.InvalidateAll();
+        // A new pool size needs a new view state. Recorded work of the old one still gets frame hooks.
+        if (resized)
+            m_RetiredViews.push_back(std::move(state));
+    }
+    if (resized)
+        m_Views.Clear();
     return true;
+}
+
+uint32_t VirtualShadowRenderFeature::PhysicalPages()
+{
+    const uint32_t limit = m_Device ? m_Device->GetCapabilities().maxTextureArrayLayers : m_Options.PhysicalPages;
+    const uint32_t pages = std::min(m_Options.PhysicalPages, limit);
+    if (pages < m_Options.PhysicalPages && m_LoggedPoolLimit != pages)
+    {
+        m_LoggedPoolLimit = pages;
+        Logger::Log::Warning("Virtual shadows: the render pipeline asks for {} physical pages, but the GPU allows "
+                             "{} array layers, so each view's pool holds {} pages. Lower virtualPhysicalPages to "
+                             "{} or less to remove this warning.", m_Options.PhysicalPages, limit, pages, pages);
+    }
+    return pages;
 }
 
 bool VirtualShadowRenderFeature::IsEnabled() const
@@ -378,7 +405,7 @@ VirtualShadowRenderFeature::RasterPlan VirtualShadowRenderFeature::DeclareFeedba
     CollectRetiredViews();
     auto& entry = m_Views.GetOrInsert(view);
     if (!entry)
-        entry = std::make_unique<ViewState>(m_NextViewGeneration++);
+        entry = std::make_unique<ViewState>(m_NextViewGeneration++, PhysicalPages());
     auto& state = *entry;
     if (state.PlanFrame == &frame && state.PlanFrameIndex == frame.FrameIndex())
         return state.Plan;
@@ -456,7 +483,7 @@ VirtualShadowRenderFeature::RasterPlan VirtualShadowRenderFeature::DeclareFeedba
     {
         Rendering::TextureDesc descriptor{};
         descriptor.width = descriptor.height = kVirtualShadowPageTexels;
-        descriptor.arrayLayers = kVirtualShadowPhysicalTiles;
+        descriptor.arrayLayers = state.PhysicalPages;
         descriptor.depth = descriptor.mipLevels = descriptor.sampleCount = 1;
         descriptor.format = static_cast<uint32_t>(Rendering::TextureFormat::D32_FLOAT);
         descriptor.usage = static_cast<uint32_t>(Rendering::TextureUsage::DepthStencil |
@@ -473,12 +500,12 @@ VirtualShadowRenderFeature::RasterPlan VirtualShadowRenderFeature::DeclareFeedba
                 state.Cache.InvalidateAll();
                 state.PhysicalAtlas = physical;
                 ++state.AtlasGeneration;
-                state.Certificates = {};
+                std::ranges::fill(state.Certificates, std::nullopt);
             }
             const auto* work = frame.AllocatePassData<std::vector<VirtualShadowPageWork>>(
                 state.Cache.Plan(demand, sequence, completed));
             frame.MarkOutput(atlas, RenderGraph::RGImageLayout::ShaderReadOnly);
-            state.Plan = {*work, atlas, physical, state.Generation, state.AtlasGeneration, {}};
+            state.Plan = {*work, state.PhysicalPages, atlas, physical, state.Generation, state.AtlasGeneration, {}};
             state.Plan.For.Stamp(frame);
         }
     }
