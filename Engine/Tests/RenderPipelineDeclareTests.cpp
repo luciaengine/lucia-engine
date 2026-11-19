@@ -4844,7 +4844,7 @@ TEST(RenderPipelineDeclareTests, ShadowVolumeFiltersRestoreBaseAndFollowViewWorl
         shadows.id = "Shadows";
         shadows.type = "ShadowMap";
         shadows.enabled = shadows.perView = true;
-        shadows.passJson = R"({"id":"Shadows","type":"ShadowMap","cascades":2,"resolution":128,"momentsResolution":512,"buffer":"ShadowData"})";
+        shadows.passJson = R"({"id":"Shadows","type":"ShadowMap","cascades":2,"resolution":256,"momentsResolution":512,"buffer":"ShadowData"})";
         blueprint.passes.push_back(shadows);
         RenderPipelineBlueprint::Pass worldPass;
         worldPass.id = "World";
