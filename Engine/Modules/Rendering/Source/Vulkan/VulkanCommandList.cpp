@@ -3425,10 +3425,7 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
         {
             return VulkanMappings::TranslateResourceStateToStage(s);
         }
-        // An all-stage graph barrier can name mesh shading on a device without VK_EXT_mesh_shader.
-        if (!m_Device->SupportsMeshShadersEXT())
-            explicitMask &= ~static_cast<uint64_t>(PipelineStageMask::GraphicsMesh);
-        return VulkanMappings::TranslatePipelineStageMask(explicitMask);
+        return VulkanMappings::TranslatePipelineStageMask(explicitMask, m_Device->SupportsMeshShadersEXT());
     };
     auto resolveAccess = [&](ResourceState s, uint64_t explicitMask) -> VkAccessFlags
     {

@@ -79,6 +79,7 @@ bool ApplyForceCompatOverride(RenderingDeviceCapabilities& caps)
     // Clip distances are an optional WebGPU feature.
     caps.supportsShaderClipDistance = false;
     caps.supportsMeshShaders = false;
+    caps.supportsIndirectMeshTasks = false;
     caps.supportsRayTracing = false;
     caps.supportsRayQuery = false;
     caps.supportsWorkGraphs = false;
