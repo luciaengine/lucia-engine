@@ -370,6 +370,30 @@ TEST_F(RenderPipelineInspectorTest, OnlyAReloadOfOtherTextRebuildsTheTree)
     EXPECT_FALSE(inspector.KeepsTreeAfterReload()) << "the tree keeps showing a document that is not loaded";
 }
 
+// A save that cannot write the file keeps the fields of the loaded pass. The tree does not show an
+// edit that the file does not hold, and the next reload keeps the tree.
+TEST_F(RenderPipelineInspectorTest, AFailedSaveKeepsTheLoadedPassFields)
+{
+    const TestUtils::ScopedTempDir tmpDir{TestUtils::MakeUniqueTempDirectory("ge_editor_tests")};
+    const std::filesystem::path pipePath = tmpDir.Path() / "ShadowPipe.rendergraph";
+    WriteTextFile(pipePath, MakeShadowMapPipeline(R"(, "resolution": 2048)"));
+    RenderPipelineAsset pipe(GUID::Generate(), pipePath);
+    ASSERT_TRUE(pipe.Load());
+    MountedPipelineInspector inspector(pipe);
+
+    // A directory at the file path makes the write fail.
+    std::filesystem::rename(pipePath, tmpDir.Path() / "before.rendergraph");
+    ASSERT_TRUE(std::filesystem::create_directory(pipePath));
+    auto* resolution = dynamic_cast<Dropdown*>(inspector.Root->FindById("rp-pass-0-resolution"_sid));
+    ASSERT_NE(resolution, nullptr);
+    inspector.EditAsUser([resolution] { resolution->SetSelectedValue("4096"); });
+
+    resolution = dynamic_cast<Dropdown*>(inspector.Root->FindById("rp-pass-0-resolution"_sid));
+    ASSERT_NE(resolution, nullptr);
+    EXPECT_EQ(resolution->GetSelectedValue(), "2048");
+    EXPECT_TRUE(inspector.KeepsTreeAfterReload());
+}
+
 // A resolution the node refuses stays selected and marked, so opening the inspector does not
 // change the file.
 TEST_F(RenderPipelineInspectorTest, ShadowMapPassKeepsAnUnsupportedResolutionSelectedAndMarked)
