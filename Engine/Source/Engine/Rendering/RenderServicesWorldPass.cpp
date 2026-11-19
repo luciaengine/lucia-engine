@@ -1248,7 +1248,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             addTexture(HashStringId("ge_ddgiResolveRoughTex"), resolveRough, reflectionFallbackSampler);
             addTexture(HashStringId("ge_ddgiResolveGlossyTex"), resolveGlossy, reflectionFallbackSampler);
             addTexture(HashStringId("ge_ddgiResolveIrradianceTex"), resolveIrradiance, reflectionFallbackSampler);
-            // b59, the upsample's normal guide; the compat profile does not declare it.
+            // b67, the upsample's normal guide; the compat profile does not declare it.
             addTexture(HashStringId("ge_ddgiResolveGatherNormalTex"), resolveGatherNormal, reflectionFallbackSampler);
         }
     }
