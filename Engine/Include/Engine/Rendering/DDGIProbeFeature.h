@@ -329,7 +329,7 @@ class DDGIProbeFeature final : public IRenderFeature
     // 1-sample depth, zero extent). Callers bind the outputs as
     // ge_ddgiResolveRough/ge_ddgiResolveGlossy (set 0, b41/b42) on the same
     // view's DDGI-keyword world passes. outIrradiance (b43) stays at resolve
-    // extent; outGatherNormal (b59) holds the normal each of its texels was
+    // extent; outGatherNormal (b67) holds the normal each of its texels was
     // gathered for, the guide of the forward upsample (ddgi_resolve_upsample.glsl).
     //
     // The reflection direction takes the SHADING normal from the previous

@@ -1025,6 +1025,16 @@ TEST(ForwardAdapterVariantCompile, LocalProbesCoexistWithDdgiAndMeteredExposure)
     ExpectBuildSucceeded(result);
 }
 
+// The DDGI resolve and the virtual shadow lookup each own set 0 bindings; a sunlit view with probes uses both.
+TEST(ForwardAdapterVariantCompile, VirtualShadowMapsCoexistWithTheDdgiResolve)
+{
+    const auto result = BuildStockMaterial("StandardPBR", kWorldDrawBase | MaterialKeyword::ForwardPlus |
+        MaterialKeyword::Shadows | MaterialKeyword::IBL | MaterialKeyword::DDGI | MaterialKeyword::VirtualShadowMaps,
+        "Surfaces/standard_pbr.glsl");
+    SKIP_WITHOUT_SHADERC(result);
+    ExpectBuildSucceeded(result);
+}
+
 TEST(ForwardAdapterLodCrossfadeReadback, FlagBitsDoNotFadeARecordAndAPhasePairKeepsComplementaryPixels)
 {
     const fs::path shaders = GameEngine::Rendering::Tests::GetAdapterShaderDir();

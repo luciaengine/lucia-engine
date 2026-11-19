@@ -75,7 +75,7 @@ layout(set = 0, binding = 43) uniform texture2D ge_ddgiResolveIrradianceTex;
 #if !defined(GE_COMPAT_PROFILE)
 // The world normal each irradiance texel was gathered for: the normal guide of the upsample below. The compat
 // profile has no sampled-texture slot for it and keeps the depth guide alone.
-layout(set = 0, binding = 59) uniform texture2D ge_ddgiResolveGatherNormalTex;
+layout(set = 0, binding = 67) uniform texture2D ge_ddgiResolveGatherNormalTex;
 #define ge_ddgiResolveGatherNormal sampler2D(ge_ddgiResolveGatherNormalTex, ge_linearClampSampler)
 #define GE_DDGI_UPSAMPLE_GATHER_NORMAL ge_ddgiResolveGatherNormal
 #endif

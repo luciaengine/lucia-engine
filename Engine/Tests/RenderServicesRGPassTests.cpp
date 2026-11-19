@@ -2675,11 +2675,12 @@ TEST(RenderServicesRGPassTests, GlossyResolveDeclaresTheLobeTargetsItBindsWithLo
         RenderGraph::RGTexture rough{};
         RenderGraph::RGTexture glossy{};
         RenderGraph::RGTexture irradiance{};
+        RenderGraph::RGTexture gatherNormal{};
         RenderGraph::RGTexture shadingNormal{};
         ASSERT_TRUE(ddgi.DeclareGlossyResolveForView(
             frame, f.Rs, viewParams, 0, viewParamsDesc.size, viewDepth, kRenderWidth, kRenderHeight,
             kViewId, /*viewExposureScale=*/1.0f, "DDGIGlossyResolve", rough, glossy, irradiance,
-            shadingNormal))
+            gatherNormal, shadingNormal))
             << "the resolve declares unconditionally on a 1-sample depth; a decline here means "
                "a shaderpkg did not stage next to the test binary, not that lobes are off";
 
