@@ -26,7 +26,6 @@
 #include "Core/Engine.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "AssetCore/GUID.h"
-#include "Mathematics/HalfFloat.h"
 #include "Spline/SplineData.h"
 #include "Spline/SplineEvaluator.h"
 #include "Spline/SplineTypes.h"
@@ -61,91 +60,14 @@ float OceanDepthBandSaturation(const OceanParamsGPU& params)
     return std::max(params.SubSurfaceDepthMax, params.ShorelineFoamMaxDepth);
 }
 
-float SrgbChannelToLinear(float value)
-{
-    value = Math::Clamp01(value);
-    if (value <= 0.04045f)
-        return value / 12.92f;
-    return std::pow((value + 0.055f) / 1.055f, 2.4f);
-}
-
 float32 ClampNonNegativeFinite(float32 value)
 {
     return std::isfinite(value) ? std::max(value, 0.0f) : 0.0f;
 }
 
-float ReadTextureChannel01(const uint8* pixels, uint32 channels, size_t pixelIndex, uint32 channel,
-                           uint32 bytesPerChannel, bool decodeSrgb)
-{
-    if (channels == 0u || channel >= channels)
-        return 1.0f;
-
-    const size_t channelIndex = pixelIndex * channels + channel;
-    float value = 1.0f;
-    if (bytesPerChannel == 1u)
-    {
-        value = static_cast<float>(pixels[channelIndex]) / 255.0f;
-    }
-    else if (bytesPerChannel == 2u)
-    {
-        const auto* halfs = reinterpret_cast<const uint16*>(pixels);
-        value = Mathematics::HalfToFloat(halfs[channelIndex]);
-    }
-    else if (bytesPerChannel == 4u)
-    {
-        const auto* floats = reinterpret_cast<const float*>(pixels);
-        value = floats[channelIndex];
-    }
-
-    if (decodeSrgb && channel < 3u)
-        value = SrgbChannelToLinear(value);
-    return value;
-}
-
-// `heldPixels` are the pixels of `texture` (TextureAsset::AcquirePixels).
-OceanCpuTextureRG MakeOceanCpuTextureRG(const TextureAsset& texture,
-                                        const std::shared_ptr<const uint8[]>& heldPixels)
-{
-    OceanCpuTextureRG out{};
-    const uint32 width = texture.GetWidth();
-    const uint32 height = texture.GetHeight();
-    const uint32 channels = texture.GetChannels();
-    const uint8* pixels = heldPixels.get();
-    if (!pixels || width == 0u || height == 0u || channels == 0u)
-        return out;
-
-    const uint64 texelCount = static_cast<uint64>(width) * height;
-    const uint64 minBytes = texelCount * channels;
-    if (texture.GetDataSize() < minBytes)
-        return out;
-    const uint32 bytesPerChannel =
-        static_cast<uint32>(std::max<uint64>(1u, texture.GetDataSize() / minBytes));
-    if (bytesPerChannel != 1u && bytesPerChannel != 2u && bytesPerChannel != 4u)
-        return out;
-
-    out.Width = width;
-    out.Height = height;
-    out.RG.resize(static_cast<size_t>(texelCount) * 2u);
-
-    const bool decodeSrgb = texture.GetColorSpace() == TextureColorSpace::SRGB &&
-                            bytesPerChannel == 1u;
-    for (uint64 i = 0u; i < texelCount; ++i)
-    {
-        out.RG[static_cast<size_t>(i) * 2u + 0u] =
-            ReadTextureChannel01(pixels, channels, static_cast<size_t>(i), 0u, bytesPerChannel,
-                                 decodeSrgb);
-        out.RG[static_cast<size_t>(i) * 2u + 1u] =
-            ReadTextureChannel01(pixels, channels, static_cast<size_t>(i), 1u, bytesPerChannel,
-                                 decodeSrgb);
-    }
-    return out;
-}
-
-// `heldPixels` keeps the pixels that the read acquired from a shared asset, by texture. The
-// caller holds them for as long as it reads the texture again: a material mip stream releases
-// the pixels of a shared asset, and a held texture is not read again from its file.
-OceanCpuTextureRG LoadOceanCpuTextureRG(const GUID& guid,
-                                        FlatMap<GUID, std::shared_ptr<const uint8[]>>& heldPixels)
+// The RG copy of the texture asset `guid`. `cache` holds the copy of a texture that the
+// AssetManager has loaded, so the next update takes no pixels from the asset.
+std::shared_ptr<const OceanCpuTextureRG> LoadOceanCpuTextureRG(const GUID& guid, OceanCpuTextureCache& cache)
 {
     if (guid.IsNull())
         return {};
@@ -157,11 +79,7 @@ OceanCpuTextureRG LoadOceanCpuTextureRG(const GUID& guid,
     if (auto* texture = dynamic_cast<TextureAsset*>(asset.get()))
     {
         if (texture->IsLoaded())
-        {
-            std::shared_ptr<const uint8[]> pixels = texture->AcquirePixels();
-            heldPixels.InsertOrAssign(guid, pixels);
-            return MakeOceanCpuTextureRG(*texture, pixels);
-        }
+            return cache.Get(guid, *texture);
     }
 
     AssetMetadata metadata{};
@@ -170,7 +88,7 @@ OceanCpuTextureRG LoadOceanCpuTextureRG(const GUID& guid,
     {
         TextureAsset texture(guid, metadata.Path);
         if (texture.Load())
-            return MakeOceanCpuTextureRG(texture, texture.AcquirePixels());
+            return std::make_shared<const OceanCpuTextureRG>(OceanCpuTextureCache::Convert(texture));
     }
 
     return {};
@@ -607,9 +525,8 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
 {
     if (!m_RenderServices)
         return;
-    // The pixels of the last update stay alive until this one ends: a texture that this update
-    // reads again is not read from its file.
-    const auto previousHeldPixels = std::exchange(m_HeldTexturePixels, {});
+    // The copies that the last update did not read go: their inputs left the scene.
+    m_CpuTextures.DropUnused();
 
     // The texture service lives between RenderServices::Initialize and Shutdown. Without it the
     // texture slots stay empty and the shader uses its procedural fallbacks.
@@ -2137,7 +2054,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     auto& flowPolygons = inputs.FlowPolygons;
     auto& flowMapSources = inputs.FlowMapSources;
     std::vector<GUID> flowMapTextureGuids;
-    std::vector<OceanCpuTextureRG> flowMapCpuTextures;
+    std::vector<std::shared_ptr<const OceanCpuTextureRG>> flowMapCpuTextures;
     if (oceanFlowEnabled)
     {
         world.Query<ECS::Read<Components::OceanFlowSource>, ECS::Read<Components::WorldTransform>>()
@@ -2184,7 +2101,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                     if (inputs.AddFlowMapSource(g))
                     {
                         flowMapTextureGuids.push_back(flowMapGuid);
-                        flowMapCpuTextures.push_back(LoadOceanCpuTextureRG(flowMapGuid, m_HeldTexturePixels));
+                        flowMapCpuTextures.push_back(LoadOceanCpuTextureRG(flowMapGuid, m_CpuTextures));
                     }
                 });
 
@@ -2276,7 +2193,7 @@ void OceanExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 box.ChopBias = g.ScaleBias[3];
                 box.Coverage = g.FeatherCoverage[1];
                 box.Feather = g.FeatherCoverage[0];
-                box.Texture = LoadOceanCpuTextureRG(maskGuid, m_HeldTexturePixels);
+                box.Texture = LoadOceanCpuTextureRG(maskGuid, m_CpuTextures);
                 waveWeightTextureBoxes.push_back(box);
             });
 

@@ -1670,7 +1670,8 @@ OceanRenderFeature::WaterBodyWaveOverrideSample OceanRenderFeature::SampleWaterB
         const float32 v = (z - (t.CenterZ - halfZ)) / (2.0f * halfZ);
         float32 rgX = 1.0f;
         float32 rgY = 1.0f;
-        t.Texture.SampleLinear(u, v, rgX, rgY);
+        if (t.Texture)
+            t.Texture->SampleLinear(u, v, rgX, rgY);
         const float32 targetWeight = std::max(rgX * t.WeightScale + t.WeightBias, 0.0f);
         const float32 targetChop = std::max(rgY * t.ChopScale + t.ChopBias, 0.0f);
         sample.Weight = Math::Lerp(sample.Weight, targetWeight, blend);

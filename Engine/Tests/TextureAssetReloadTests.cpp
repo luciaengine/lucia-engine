@@ -8,6 +8,7 @@
 #include "Assets/TextureCook.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <thread>
@@ -103,7 +104,10 @@ TEST(TextureAssetReload, AReaderOnAnotherThreadAlwaysGetsAWholePayloadDuringRelo
     const std::vector<uint8> secondPixels = PixelsOf(asset);
     ASSERT_EQ(firstPixels.size(), secondPixels.size());
 
+    // The owner makes kReloads reloads and then more until the reader has made kReads reads, so
+    // reads and reloads overlap. The deadline ends a run where the reader does not start.
     constexpr int kReloads = 200;
+    constexpr int kReads = 200;
     std::atomic<bool> done{false};
     std::atomic<int> reads{0};
     std::atomic<int> wrongReads{0};
@@ -118,13 +122,15 @@ TEST(TextureAssetReload, AReaderOnAnotherThreadAlwaysGetsAWholePayloadDuringRelo
             reads.fetch_add(1);
         }
     });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     int failedReloads = 0;
-    for (int reload = 0; reload < kReloads; ++reload)
+    for (int reload = 0;
+         (reload < kReloads || reads.load() < kReads) && std::chrono::steady_clock::now() < deadline; ++reload)
         failedReloads += asset.ReloadFromData(containers[reload % 2]) ? 0 : 1;
     done.store(true);
     reader.join();
     EXPECT_EQ(failedReloads, 0);
-    EXPECT_GT(reads.load(), 0);
+    EXPECT_GE(reads.load(), kReads);
     EXPECT_EQ(wrongReads.load(), 0);
 }
 

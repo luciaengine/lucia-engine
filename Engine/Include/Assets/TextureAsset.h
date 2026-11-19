@@ -5,6 +5,7 @@
 #include "AssetCore/Asset.h"
 #include "AssetCore/NineSlice.h"
 
+#include <atomic>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -305,6 +306,11 @@ public:
      */
     const TextureAsset* GetNormalVarianceCompanion() const { return m_NormalVarianceCompanion.get(); }
 
+    /// A number that names the payload: no other texture and no other payload of this texture has
+    /// it. A reload or an unload gives a new one. A reader that keeps data that it made from the
+    /// pixels compares it to know when that data is old.
+    uint64 GetPayloadGeneration() const { return m_PayloadGeneration.load(std::memory_order_acquire); }
+
     /// Where each level of GetMipChain() is in a file, byte for byte. Null when no file holds the
     /// payload as it is in memory (TextureLevelFile::Parse).
     const TextureLevelFile* GetLevelFile() const { return m_LevelFile ? &*m_LevelFile : nullptr; }
@@ -480,6 +486,8 @@ private:
 	    std::vector<TextureMipDesc> m_MipChain;
 	    std::unique_ptr<TextureAsset> m_NormalVarianceCompanion;
 	    std::optional<TextureLevelFile> m_LevelFile;
+	    static uint64 NextPayloadGeneration();
+	    std::atomic<uint64> m_PayloadGeneration{NextPayloadGeneration()};
 	    TextureFilter m_MinFilter;
 	    TextureFilter m_MagFilter;
 	    TextureWrap m_WrapS;
