@@ -564,9 +564,8 @@ void UIHotReload::UninstallAssetEventCallback()
 
 void UIHotReload::ReleaseDestroyedSubtreeBindings()
 {
-    m_StyleBindings.erase(std::remove_if(m_StyleBindings.begin(), m_StyleBindings.end(),
-        [](const StyleBinding& binding)
-        { return binding.mode == StyleBindMode::Subtree && !binding.target.Get(); }), m_StyleBindings.end());
+    m_SubtreeStyleTargets.EraseIf([](uint64, const SubtreeStyleTarget& entry) { return !entry.target.Get(); });
+    m_SubtreeBindingAdded = false;
 }
 
 void UIHotReload::Pump()
@@ -596,11 +595,11 @@ void UIHotReload::Pump()
         std::sort(v.begin(), v.end());
         v.erase(std::unique(v.begin(), v.end()), v.end());
     };
-    // A destroyed panel's binding still holds its prior snapshots. Bindings are
-    // only read when a style event arrives, so release them then (and on
-    // registration) rather than scanning every frame: a closed panel's rules
-    // outlive it until the next style event, and no longer.
-    if (!stylesReady.empty() || !stylesReloaded.empty() || !stylesFailed.empty() || !stylesModified.empty())
+    // A destroyed panel's binding still holds its prior snapshots. Release them on a
+    // style event, and on the first pump after a new subtree binding. A closed panel's
+    // rules stay alive until the next style event or attach.
+    if (m_SubtreeBindingAdded || !stylesReady.empty() || !stylesReloaded.empty() || !stylesFailed.empty() ||
+        !stylesModified.empty())
         ReleaseDestroyedSubtreeBindings();
     dedupe(layouts);
     dedupe(stylesReady);
@@ -978,29 +977,40 @@ void UIHotReload::ApplyLayoutReload(const GUID& layoutGuid)
 
 void UIHotReload::UnregisterStyleBinding(const GUID& styleGuid, UIElement* target)
 {
-    m_StyleBindings.erase(
-        std::remove_if(m_StyleBindings.begin(), m_StyleBindings.end(),
-                       [&](const StyleBinding& b) { return b.styleGuid == styleGuid && b.target.Get() == target; }),
-        m_StyleBindings.end());
+    const auto bindsGuid = [&styleGuid](const StyleBinding& binding) { return binding.styleGuid == styleGuid; };
+    if (!target)
+    {
+        std::erase_if(m_GlobalStyleBindings, bindsGuid);
+        return;
+    }
+    SubtreeStyleTarget* entry = m_SubtreeStyleTargets.Find(target->GetInstanceId());
+    if (!entry)
+        return;
+    std::erase_if(entry->bindings, bindsGuid);
+    if (entry->bindings.empty())
+        m_SubtreeStyleTargets.Erase(target->GetInstanceId());
 }
 
 void UIHotReload::RegisterStyleBinding(const GUID& styleGuid, UIElement* target, StyleBindMode mode)
 {
-    ReleaseDestroyedSubtreeBindings();
-    // Idempotent registration: keep a single entry per (guid,target,mode).
-    for (const auto& existing : m_StyleBindings)
+    std::vector<StyleBinding>* bindings = &m_GlobalStyleBindings;
+    if (mode == StyleBindMode::Subtree)
     {
-        if (existing.styleGuid == styleGuid && existing.target.Get() == target && existing.mode == mode)
-        {
+        if (!target)
             return;
-        }
+        SubtreeStyleTarget& entry = m_SubtreeStyleTargets.GetOrInsert(target->GetInstanceId());
+        if (entry.bindings.empty())
+            entry.target = UIElement::MakeWeakRef(target);
+        bindings = &entry.bindings;
     }
+    // Idempotent registration: keep a single entry per (guid, target).
+    if (std::any_of(bindings->begin(), bindings->end(),
+                    [&styleGuid](const StyleBinding& existing) { return existing.styleGuid == styleGuid; }))
+        return;
 
-    StyleBinding b{};
-    b.styleGuid = styleGuid;
-    b.target = UIElement::MakeWeakRef(target);
-    b.mode = mode;
-    m_StyleBindings.push_back(b);
+    StyleBinding& binding = bindings->emplace_back();
+    binding.styleGuid = styleGuid;
+    m_SubtreeBindingAdded |= mode == StyleBindMode::Subtree;
 
     RefreshStyleImportGraphFor(styleGuid);
 
@@ -1017,10 +1027,25 @@ void UIHotReload::RegisterStyleBinding(const GUID& styleGuid, UIElement* target,
                 auto cascade = style->GetCascadeHandles(*m_Assets);
                 if (cascade.empty())
                     cascade.push_back(style->GetStylesheetHandle());
-                m_StyleBindings.back().attachedCascade = std::move(cascade);
+                binding.attachedCascade = std::move(cascade);
             }
         }
     }
+}
+
+void UIHotReload::ApplySubtreeStylesNow(UIElement& target)
+{
+    if (!m_Owner || !m_Assets)
+        return;
+    SubtreeStyleTarget* entry = m_SubtreeStyleTargets.Find(target.GetInstanceId());
+    if (entry && AdoptCurrentCascades(&target, entry->bindings))
+        m_Owner->NotifyStylesheetContentChanged();
+}
+
+bool UIHotReload::BindsAnyStyle(const std::vector<StyleBinding>& bindings, const std::unordered_set<GUID>& styles)
+{
+    return std::any_of(bindings.begin(), bindings.end(),
+                       [&styles](const StyleBinding& binding) { return styles.contains(binding.styleGuid); });
 }
 
 void UIHotReload::RefreshStyleImportGraphFor(const GUID& styleGuid)
@@ -1081,15 +1106,13 @@ void UIHotReload::ApplyStyleReload(const GUID& styleGuid)
         return;
 
     // Find any relevant bindings for this style guid.
-    bool anyDirect = false;
-    for (const auto& b : m_StyleBindings)
-    {
-        if (b.styleGuid == styleGuid)
-        {
-            anyDirect = true;
-            break;
-        }
-    }
+    std::unordered_set<GUID> boundStyles;
+    for (const auto& binding : m_GlobalStyleBindings)
+        boundStyles.insert(binding.styleGuid);
+    for (const auto& [instanceId, entry] : m_SubtreeStyleTargets)
+        for (const auto& binding : entry.bindings)
+            boundStyles.insert(binding.styleGuid);
+    const bool anyDirect = boundStyles.contains(styleGuid);
 
     // Even if this style isn't directly bound, it may be imported by bound themes.
     bool anyImporters = (m_StyleImportedBy.find(styleGuid) != m_StyleImportedBy.end());
@@ -1098,11 +1121,10 @@ void UIHotReload::ApplyStyleReload(const GUID& styleGuid)
         // Defensive self-heal: dependency GUIDs may have changed (source rebind/remap)
         // while this graph was built from older GUIDs. Refresh all bound style graphs
         // and retry importer lookup once before giving up.
-        for (const auto& b : m_StyleBindings)
+        for (const GUID& bound : boundStyles)
         {
-            if (b.styleGuid.IsNull())
-                continue;
-            RefreshStyleImportGraphFor(b.styleGuid);
+            if (!bound.IsNull())
+                RefreshStyleImportGraphFor(bound);
         }
         anyImporters = (m_StyleImportedBy.find(styleGuid) != m_StyleImportedBy.end());
         if (!anyImporters)
@@ -1141,105 +1163,94 @@ void UIHotReload::ApplyStyleReload(const GUID& styleGuid)
     RefreshStyleImportGraphFor(styleGuid);
     // Rebuild once per attachment target. Different bindings can share an
     // imported sheet, whose established position must survive every reload.
-    std::vector<UIElement*> targets;
-    bool includeGlobal = false;
-    for (const auto& binding : m_StyleBindings)
-    {
-        if (visited.find(binding.styleGuid) == visited.end())
-            continue;
-        if (binding.mode == StyleBindMode::Global)
-        {
-            includeGlobal = true;
-            continue;
-        }
-        UIElement* target = binding.target.Get();
-        if (target && (!target->GetOwnerManager() || target->GetOwnerManager() == m_Owner) &&
-            std::find(targets.begin(), targets.end(), target) == targets.end())
-            targets.push_back(target);
-    }
-    if (includeGlobal)
-        targets.push_back(nullptr);
-
     bool changed = false;
-    for (UIElement* target : targets)
+    for (auto& [instanceId, entry] : m_SubtreeStyleTargets)
     {
-        const auto& attached = target ? target->GetStylesheets() : m_Owner->GetStylesheets();
-        struct Adoption
-        {
-            StyleBinding* binding;
-            std::vector<StylesheetHandle> cascade;
-            size_t anchor;
-        };
-        std::vector<Adoption> adoptions;
-        std::vector<int> slotOwners(attached.size(), -1);
-        bool hasNewSnapshot = false;
-        for (auto& binding : m_StyleBindings)
-        {
-            if (target ? binding.mode != StyleBindMode::Subtree || binding.target.Get() != target
-                       : binding.mode != StyleBindMode::Global)
-                continue;
-            auto cascade = binding.attachedCascade;
-            auto asset = m_Assets->GetAsset(binding.styleGuid);
-            if (asset && asset->GetType() == AssetType::UIStyle && asset->IsLoaded() && !asset->HasFailed())
-            {
-                auto* style = static_cast<UIStyleAsset*>(asset.get());
-                cascade = style->GetCascadeHandles(*m_Assets);
-                if (cascade.empty())
-                    cascade.push_back(style->GetStylesheetHandle());
-            }
-            hasNewSnapshot |= cascade != binding.attachedCascade;
-            const int owner = static_cast<int>(adoptions.size());
-            size_t anchor = attached.size();
-            for (size_t i = 0; i < attached.size(); ++i)
-            {
-                if (slotOwners[i] == -1 &&
-                    std::find(binding.attachedCascade.begin(), binding.attachedCascade.end(), attached[i]) !=
-                        binding.attachedCascade.end())
-                {
-                    slotOwners[i] = owner;
-                    anchor = std::min(anchor, i);
-                }
-            }
-            adoptions.push_back({&binding, std::move(cascade), anchor});
-        }
-        if (!hasNewSnapshot)
+        UIElement* target = entry.target.Get();
+        if (!target || (target->GetOwnerManager() && target->GetOwnerManager() != m_Owner) ||
+            !BindsAnyStyle(entry.bindings, visited))
             continue;
-
-        std::vector<StylesheetHandle> replacement;
-        std::unordered_set<const Stylesheet*> seen;
-        const auto append = [&](const StylesheetHandle& sheet)
-        {
-            if (sheet && seen.insert(sheet.get()).second)
-                replacement.push_back(sheet);
-        };
-        for (size_t i = 0; i < attached.size(); ++i)
-        {
-            const int owner = slotOwners[i];
-            if (owner == -1)
-                append(attached[i]); // Preserve unrelated runtime overrides in place.
-            else if (adoptions[owner].anchor == i)
-                for (const auto& sheet : adoptions[owner].cascade)
-                    append(sheet);
-        }
-        for (const auto& adoption : adoptions)
-            if (adoption.anchor == attached.size())
-                for (const auto& sheet : adoption.cascade)
-                    append(sheet);
-
-        std::vector<const Stylesheet*> oldBlock;
-        oldBlock.reserve(attached.size());
-        for (const auto& sheet : attached)
-            oldBlock.push_back(sheet.get());
-        if (target)
-            target->ReplaceStylesheetBlock(oldBlock, replacement);
-        else
-            m_Owner->ReplaceGlobalStylesheetBlock(oldBlock, replacement);
-        for (auto& adoption : adoptions)
-            adoption.binding->attachedCascade = std::move(adoption.cascade);
-        changed = true;
+        changed |= AdoptCurrentCascades(target, entry.bindings);
     }
+    if (BindsAnyStyle(m_GlobalStyleBindings, visited))
+        changed |= AdoptCurrentCascades(nullptr, m_GlobalStyleBindings);
     if (changed)
         m_Owner->NotifyStylesheetContentChanged();
+}
+
+bool UIHotReload::AdoptCurrentCascades(UIElement* target, std::vector<StyleBinding>& bindings)
+{
+    const auto& attached = target ? target->GetStylesheets() : m_Owner->GetStylesheets();
+    struct Adoption
+    {
+        StyleBinding* binding;
+        std::vector<StylesheetHandle> cascade;
+        size_t anchor;
+    };
+    std::vector<Adoption> adoptions;
+    std::vector<int> slotOwners(attached.size(), -1);
+    bool hasNewSnapshot = false;
+    for (auto& binding : bindings)
+    {
+        auto cascade = binding.attachedCascade;
+        auto asset = m_Assets->GetAsset(binding.styleGuid);
+        if (asset && asset->GetType() == AssetType::UIStyle && asset->IsLoaded() && !asset->HasFailed())
+        {
+            auto* style = static_cast<UIStyleAsset*>(asset.get());
+            cascade = style->GetCascadeHandles(*m_Assets);
+            if (cascade.empty())
+                cascade.push_back(style->GetStylesheetHandle());
+        }
+        hasNewSnapshot |= cascade != binding.attachedCascade;
+        const int owner = static_cast<int>(adoptions.size());
+        size_t anchor = attached.size();
+        for (size_t slot = 0; slot < attached.size(); ++slot)
+        {
+            if (slotOwners[slot] == -1 &&
+                std::find(binding.attachedCascade.begin(), binding.attachedCascade.end(), attached[slot]) !=
+                    binding.attachedCascade.end())
+            {
+                slotOwners[slot] = owner;
+                anchor = std::min(anchor, slot);
+            }
+        }
+        adoptions.push_back({&binding, std::move(cascade), anchor});
+    }
+    if (!hasNewSnapshot)
+        return false;
+
+    std::vector<StylesheetHandle> replacement;
+    std::unordered_set<const Stylesheet*> seen;
+    const auto append = [&seen, &replacement](const StylesheetHandle& sheet)
+    {
+        if (sheet && seen.insert(sheet.get()).second)
+            replacement.push_back(sheet);
+    };
+    for (size_t slot = 0; slot < attached.size(); ++slot)
+    {
+        const int owner = slotOwners[slot];
+        if (owner == -1)
+            append(attached[slot]); // Preserve unrelated runtime overrides in place.
+        else if (adoptions[owner].anchor == slot)
+            for (const auto& sheet : adoptions[owner].cascade)
+                append(sheet);
+    }
+    for (const auto& adoption : adoptions)
+        if (adoption.anchor == attached.size())
+            for (const auto& sheet : adoption.cascade)
+                append(sheet);
+
+    std::vector<const Stylesheet*> oldBlock;
+    oldBlock.reserve(attached.size());
+    for (const auto& sheet : attached)
+        oldBlock.push_back(sheet.get());
+    if (target)
+        target->ReplaceStylesheetBlock(oldBlock, replacement);
+    else
+        m_Owner->ReplaceGlobalStylesheetBlock(oldBlock, replacement);
+    for (auto& adoption : adoptions)
+        adoption.binding->attachedCascade = std::move(adoption.cascade);
+    return true;
 }
 
 } // namespace GameEngine

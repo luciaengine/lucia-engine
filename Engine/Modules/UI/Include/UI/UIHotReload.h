@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "AssetCore/GUID.h"
+#include "Types/FlatMap.h"
 #include "Types/Types.h"
 #include "UI/UIElement.h"
 
@@ -57,6 +58,10 @@ class UIHotReload final
     // for initial binding/application after registering a binding.
     void ApplyLayoutNow(const GUID& layoutGuid) { ApplyLayoutReload(layoutGuid); }
     void ApplyStyleNow(const GUID& styleGuid) { ApplyStyleReload(styleGuid); }
+    // Give the styles bound to `target` their current cascades. Other targets do not change.
+    // A subtree attach calls this before it adds sheets, so that a new snapshot replaces the
+    // old sheets of the target in place.
+    void ApplySubtreeStylesNow(UIElement& target);
 
     // Give the target of a ReconcileChildren binding the layout root's classes and id. This
     // removes the classes and id that the previous layout of the binding gave it.
@@ -145,15 +150,31 @@ class UIHotReload final
     struct StyleBinding
     {
         GUID styleGuid;
-        // Detached dock/pool panels still adopt snapshots; destruction expires the target.
-        UIElement::WeakRef<> target; // empty for Global
-        StyleBindMode mode = StyleBindMode::Global;
         // Prior snapshots define this binding's slots in the flat attached list
         // and retain their rules until the target has adopted a new cascade.
         std::vector<StylesheetHandle> attachedCascade;
     };
 
-    std::vector<StyleBinding> m_StyleBindings;
+    // The style bindings of one subtree target, in registration order. This order sets the
+    // order of the slots in the attached list of the target.
+    struct SubtreeStyleTarget
+    {
+        // Detached dock/pool panels still adopt snapshots; destruction expires the target.
+        UIElement::WeakRef<> target;
+        std::vector<StyleBinding> bindings;
+    };
+
+    // Give each binding its current cascade and rebuild the attached list of `target` (null:
+    // the global list) in place. Return true when the list changed.
+    bool AdoptCurrentCascades(UIElement* target, std::vector<StyleBinding>& bindings);
+    static bool BindsAnyStyle(const std::vector<StyleBinding>& bindings, const std::unordered_set<GUID>& styles);
+
+    std::vector<StyleBinding> m_GlobalStyleBindings;
+    // Key: the instance id of the target. Ids increase with construction, so most inserts
+    // append. An attach finds its own target without a scan of the other targets.
+    FlatMap<uint64, SubtreeStyleTarget> m_SubtreeStyleTargets;
+    // True when a subtree binding was added after the last release of destroyed targets.
+    bool m_SubtreeBindingAdded = false;
 
     // importer -> transitive imported guids
     std::unordered_map<GUID, std::vector<GUID>> m_StyleImports;
