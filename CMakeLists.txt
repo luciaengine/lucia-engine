@@ -1223,9 +1223,7 @@ if(EMSCRIPTEN)
     # added there but not added here fails at generate time with only
     # "no such target exists" to go on.
     add_subdirectory(Engine)
-    # Phase 7 (web Editor): the two modules the Editor splices as objects
-    # rather than reaching through Engine's link interface.
-    add_subdirectory(Engine/Modules/MeshPicking)
+    # The web editor links VCSIntegration objects directly.
     add_subdirectory(Engine/Modules/VCSIntegration)
     # Apps consume the engine-package helpers (ge_add_engine_package_module,
     # ge_stage_packages); the desktop path includes this after its

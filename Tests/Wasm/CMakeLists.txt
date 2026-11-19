@@ -43,6 +43,19 @@ if(NOT EMSCRIPTEN)
     return()
 endif()
 
+if(GE_WEB_SHADER_COMPILER_DIR)
+    include("${CMAKE_SOURCE_DIR}/cmake/BrowserShaderCompiler.cmake")
+    add_executable(WebShaderCompilerSmoke WebShaderCompilerSmoke.cpp)
+    target_link_libraries(WebShaderCompilerSmoke PRIVATE GameEngineRendering FileSystemObjects Platform Logger AssetCore)
+    set_target_properties(WebShaderCompilerSmoke PROPERTIES SUFFIX ".js")
+    target_link_options(WebShaderCompilerSmoke PRIVATE
+        "SHELL:-s ENVIRONMENT=web,worker"
+        "SHELL:-s WASMFS"
+        "SHELL:-s FORCE_FILESYSTEM"
+        "SHELL:-s INITIAL_MEMORY=128MB")
+    ge_stage_browser_shader_compiler(WebShaderCompilerSmoke)
+endif()
+
 # Headless engine-core smoke for the wasm target (web platform plan, Phase 4).
 # Boots Foundation + Platform capabilities + JobSystem + ECS — no renderer, no
 # scripting — and prints PASS lines. The phase gate runs the .js output under

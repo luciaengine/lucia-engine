@@ -1721,6 +1721,10 @@ if(EMSCRIPTEN)
 	set_property(TARGET WebEditor APPEND PROPERTY
 		LINK_DEPENDS "${_ge_webeditor_cook_stamp}")
 
+	if(GE_WEB_SHADER_COMPILER_DIR)
+		include("${CMAKE_SOURCE_DIR}/cmake/BrowserShaderCompiler.cmake")
+		ge_stage_browser_shader_compiler(WebEditor)
+	endif()
 	target_link_options(WebEditor PRIVATE
 		${_ge_webeditor_env}
 		${_ge_webeditor_preload}
