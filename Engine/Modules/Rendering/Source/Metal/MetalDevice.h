@@ -191,6 +191,7 @@ struct MetalPipeline
     bool isMeshPipeline = false;
     // Fragment texture reads use native indirect draws: ICB execution can
     // return zero from otherwise valid scene-color textures on Apple GPUs.
+    // Such a pipeline is built without indirect command buffer support.
     bool fragmentSamplesTextures = false;
 
     // Attachment formats the PSO was specialized for. Vulkan tolerates a

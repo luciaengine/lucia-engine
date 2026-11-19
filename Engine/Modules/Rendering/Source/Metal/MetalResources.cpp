@@ -105,6 +105,17 @@ std::vector<MetalArgumentBufferLayout> MakeDirectSetLayouts(const std::vector<De
     return ComputeMetalDirectBindings(layouts);
 }
 
+// Whether a fragment stage reads a texture through any of the pipeline's sets.
+bool FragmentSamplesTextures(const std::vector<DescriptorSetLayoutDesc>& layouts)
+{
+    for (const DescriptorSetLayoutDesc& layout : layouts)
+        for (const DescriptorBinding& binding : layout.bindings)
+            if ((binding.shaderStages & kShaderStageFragment) != 0 &&
+                (binding.type == DescriptorType::CombinedImageSampler || binding.type == DescriptorType::Texture))
+                return true;
+    return false;
+}
+
 // A pass binds a combined depth-stencil target as its stencil attachment too,
 // so the pipeline names the same format there. A stencil format in the key wins.
 MTL::PixelFormat StencilPixelFormat(const PipelineFormatKey& fk)
@@ -897,6 +908,7 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     }
     const SpecializationConstants* specialization =
         gd.Specialization.has_value() ? &gd.Specialization.value() : nullptr;
+    const bool fragmentSamplesTextures = FragmentSamplesTextures(layoutValues);
 
     // GE_METAL_DUMP_PIPELINE_TIMING=1: per-pipeline stage costs (translate /
     // newLibrary / PSO) for attributing first-frame creation hitches.
@@ -1041,10 +1053,11 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     }
     pd->setRasterSampleCount(std::max<uint8_t>(1, fk.RasterizationSamples));
     pd->setAlphaToCoverageEnabled(gd.ColorBlend.alphaToCoverageEnable);
-    // DrawIndexedIndirectCount runs indirect command buffer commands that
-    // inherit this pipeline from the render encoder; Metal requires the
-    // pipeline to opt in, and any graphics pipeline may issue such a draw.
-    pd->setSupportIndirectCommandBuffers(m_Capabilities.supportsDrawIndirectCountNative &&
+    // DrawIndexedIndirectCount runs indirect command buffer commands that inherit this pipeline
+    // from the render encoder, and Metal requires the pipeline to opt in. A pipeline whose fragment
+    // stage samples textures draws natively instead (MetalPipeline::fragmentSamplesTextures), so
+    // it does not opt in: the GPU compiler fails on large fragment stages built for ICBs.
+    pd->setSupportIndirectCommandBuffers(!fragmentSamplesTextures && m_Capabilities.supportsDrawIndirectCountNative &&
                                         m_Capabilities.supportsBindlessResources);
 
     for (uint8_t i = 0; i < fk.ColorCount && i < PipelineFormatKey::kMaxColors; ++i)
@@ -1131,18 +1144,7 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     wrapper.renderPipeline = pso;
     wrapper.type = PipelineType::Graphics;
     wrapper.isMeshPipeline = isMesh;
-    for (const DescriptorSetLayoutDesc& layout : layoutValues)
-    {
-        for (const DescriptorBinding& binding : layout.bindings)
-        {
-            if ((binding.shaderStages & kShaderStageFragment) != 0 &&
-                (binding.type == DescriptorType::CombinedImageSampler ||
-                 binding.type == DescriptorType::Texture))
-            {
-                wrapper.fragmentSamplesTextures = true;
-            }
-        }
-    }
+    wrapper.fragmentSamplesTextures = fragmentSamplesTextures;
     if (isMesh)
     {
         wrapper.localSizeX = meshThreadsX;
