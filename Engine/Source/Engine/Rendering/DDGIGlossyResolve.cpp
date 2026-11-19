@@ -165,7 +165,8 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
     bool irradianceBlurBFresh = false;
     const RG::RGTexture irradianceBlurB =
         frame.ImportPersistentTexture(irrBlurBPool.c_str(), td, &irradianceBlurBFresh);
-    // The normal each irradiance texel was gathered for: the guide of the forward upsample. Written in full every frame.
+    // The normal each irradiance texel was gathered for: the guide of the forward upsample.
+    // The resolve writes every texel each frame.
     const std::string gatherNormalPool = "DDGIGlossyResolve.GatherNormal." + std::to_string(viewId);
     td.debugName = gatherNormalPool.c_str();
     const RG::RGTexture gatherNormal = frame.ImportPersistentTexture(gatherNormalPool.c_str(), td);

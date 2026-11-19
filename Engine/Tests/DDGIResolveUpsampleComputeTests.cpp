@@ -179,7 +179,8 @@ class DDGIResolveUpsampleComputeTest : public ::testing::Test
         m_Device->UnmapBuffer(upload);
         cl.Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::Undefined, ResourceState::CopyDest));
         cl.CopyBufferToTextureSubresource(upload, texture, 0, 0, size, size);
-        cl.Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::CopyDest, ResourceState::ShaderResource));
+        cl.Barrier(
+            ResourceBarrier::CreateTextureBarrier(texture, ResourceState::CopyDest, ResourceState::ShaderResource));
         return texture;
     }
 

@@ -22881,8 +22881,8 @@ TEST(RenderPipelineDeclareTests, DdgiResolveFirstFrameNeverBlendsUndefinedHistor
             RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance, gatherNormal,
-                                                            normal));
+                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            gatherNormal, normal));
             const auto& irradianceDesc = frame.Graph().ResourceDesc(irradiance.Id);
             const uint32_t w = irradianceDesc.Width;
             const uint32_t h = irradianceDesc.Height;
@@ -23415,8 +23415,8 @@ TEST(RenderPipelineDeclareTests, DdgiResolveDeclaresItsProbeStateReads)
             RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance, gatherNormal,
-                                                            normal));
+                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            gatherNormal, normal));
             // Imports dedup by physical, so these return the resources the clears wrote.
             const auto probeStateRG = frame.ImportExternalBuffer("DDGI.Test.ProbeState", probeState.Buffer);
             const auto probeStateFineRG =
@@ -23493,8 +23493,8 @@ TEST(RenderPipelineDeclareTests, DdgiResolveDeclaresItsAtlasReads)
             RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance, gatherNormal,
-                                                            normal));
+                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            gatherNormal, normal));
             const auto& graph = frame.Graph();
             const auto resolve = RGQuery::FindDeclared(graph, RGQuery::Exact{"DDGI.Test.Resolve"});
             ASSERT_NE(resolve, RenderGraph::kInvalidId);
