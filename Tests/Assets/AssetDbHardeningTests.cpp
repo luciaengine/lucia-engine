@@ -8,6 +8,7 @@
 #include "AssetDatabase/AssetDbCache_Sqlite.h"
 #include "AssetDatabase/AssetStoreReconciler.h"
 #include "AssetDatabase/AssetStore_TextJsonl.h"
+#include "FileSystem/FileSystem.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "TestTempDir.h"
 
@@ -570,18 +571,18 @@ TEST(AssetDbHardening, ReconcileSuggestsRenameAndEditViaDirExtUniqueness)
         reg.Shutdown();
     }
 
-    // Simulate rename + edit: delete the original, create a new file in the
-    // SAME subdir with the SAME extension but DIFFERENT name AND content.
-    // This breaks file_id (delete+create gets a fresh inode/index) and
-    // content hash (different bytes). Only the dir-ext uniqueness signal
-    // remains.
-    fs::remove(original, ec);
+    // Simulate rename + edit: create a new file in the SAME subdir with the SAME
+    // extension but DIFFERENT name AND content, then delete the original. The new
+    // file exists before the delete, so it cannot take the original's inode (ext4
+    // reuses a freed inode at once): file_id and content hash both differ. Only the
+    // dir-ext uniqueness signal remains.
     const fs::path renamed = tmpRoot / "subdir" / "renamed.txt";
     {
         std::ofstream out(renamed, std::ios::binary | std::ios::trunc);
         ASSERT_TRUE(out.is_open());
         out << "edited content with substantially different bytes";
     }
+    fs::remove(original, ec);
 
     // Session 2: the tier fires but must not rebind. The new file registers
     // under its own identity; the original stays a missing record.
@@ -3425,13 +3426,14 @@ TEST(AssetDbHardening, ResolvePathTargetReturnsRegisteredGuid)
     ASSERT_FALSE(texGuid.IsNull());
 
     EXPECT_EQ(reg.ResolvePathTarget("textures/grass.png"), texGuid);
-    // Path resolution is Unicode-case-folded across platforms (see
-    // PathNormalization), so mixed case authored in source files still
-    // resolves correctly.
-    EXPECT_EQ(reg.ResolvePathTarget("Textures/Grass.PNG"), texGuid);
-    // Backslashes get normalized to forward slashes by NormalizePathForMap,
-    // so a Windows-authored path also resolves.
-    EXPECT_EQ(reg.ResolvePathTarget("textures\\grass.png"), texGuid);
+    // On a case-insensitive host NormalizePathForMap folds the case and the separators, so
+    // mixed case and a Windows-authored path resolve. A case-sensitive host keys the path as
+    // spelled, because only that spelling opens the file.
+    if (!GameEngine::FileSystem::IsCaseSensitive())
+    {
+        EXPECT_EQ(reg.ResolvePathTarget("Textures/Grass.PNG"), texGuid);
+        EXPECT_EQ(reg.ResolvePathTarget("textures\\grass.png"), texGuid);
+    }
     EXPECT_TRUE(reg.ResolvePathTarget("textures/does-not-exist.png").IsNull());
     EXPECT_TRUE(reg.ResolvePathTarget("").IsNull());
 
