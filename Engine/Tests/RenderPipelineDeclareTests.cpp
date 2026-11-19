@@ -14123,11 +14123,16 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
     upload.DeclareForView(uploadDeclaration);
     frame.Execute();
     fixture.Device->WaitForIdle();
+    // Readers see the cache from the latch after the frame whose upload cleared it.
+    frame.BeginFrame(1);
+    upload.DeclareForView(uploadDeclaration);
+    frame.Execute();
+    fixture.Device->WaitForIdle();
     ASSERT_TRUE(publication.CacheTexture().IsValid());
     fixture.Rs->BeginWorldDrawFrame();
     fixture.Rs->BuildWorldBatchKeys();
     UploadCbtTerrainParams(terrain, 1);
-    frame.BeginFrame(1);
+    frame.BeginFrame(2);
     DeclareCbtPublicationView(fixture, instance, frame, first);
     const uint32 ownerRenderHeight = cbt.GetAppliedRenderHeightPx();
     ASSERT_NE(ownerRenderHeight, 29u);
@@ -14146,7 +14151,7 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
     cbt.RequestForceVertexEval();
     const uint64 abandonedTicket = cbt.PendingForceVertexEval();
     ASSERT_NE(abandonedTicket, 0u);
-    frame.BeginFrame(2);
+    frame.BeginFrame(3);
     DeclareCbtPublicationView(fixture, instance, frame, first);
     ASSERT_TRUE(cbt.HasUnconsumedHeightPages());
     frame.AddPass("AbandonCbtPublication", 0,
@@ -14160,7 +14165,7 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
     EXPECT_EQ(cbt.GetUpdateSubmissionCount(), beforeAbort);
     EXPECT_TRUE(cbt.HasUnconsumedHeightPages());
     EXPECT_EQ(cbt.PendingForceVertexEval(), abandonedTicket);
-    frame.BeginFrame(3);
+    frame.BeginFrame(4);
     DeclareCbtPublicationView(fixture, instance, frame, first);
     cbt.RequestForceVertexEval();
     const uint64 newerTicket = cbt.PendingForceVertexEval();
@@ -14172,7 +14177,7 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
     EXPECT_FALSE(cbt.HasUnconsumedHeightPages());
     EXPECT_EQ(cbt.PendingForceVertexEval(), newerTicket) << "an older submission consumed a newer request";
     ExpectCbtRootHeight(cbt, 48.0f);
-    uint32 frameIndex = 4;
+    uint32 frameIndex = 5;
     for (; frameIndex < 120 && cbt.WritesDynamicDepth(); ++frameIndex)
     {
         frame.BeginFrame(frameIndex);
