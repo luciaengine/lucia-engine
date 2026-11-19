@@ -181,6 +181,7 @@ void DayCycleWindow::Refresh()
         m_Scrub->CheckScene();
     if (m_NeedsBuild)
         Build();
+    ShowProfileName();
 
     const ECS::EntityHandle volume = ContextVolume();
     if (Label* label = m_VolumeLabel.Get(); label && volume != m_ShownVolume)
@@ -231,6 +232,18 @@ void DayCycleWindow::ScrubTo(float hours)
     Refresh();
 }
 
+void DayCycleWindow::ShowProfileName()
+{
+    Label* name = m_ProfileName.Get();
+    if (!name)
+        return;
+    // The profile's own name, read each refresh so a rename or its undo shows at once. The asset path
+    // comes back case-folded from the registry.
+    const std::string profileName = m_Profile ? m_Profile->GetData().Name : std::string();
+    name->SetText(!m_Profile ? std::string("none: select one in the asset browser")
+                             : profileName.empty() ? m_Profile->GetPath().stem().string() : profileName);
+}
+
 void DayCycleWindow::Build()
 {
     // The layout binds once a UI manager owns the window; until then there is nothing to fill.
@@ -241,13 +254,6 @@ void DayCycleWindow::Build()
     m_ShownVolume = ECS::EntityHandle{};
     const bool elevationView = DayCycleSessionAxisView() == DayCycleAxisView::Elevation;
 
-    if (Label* name = m_ProfileName.Get())
-    {
-        // The profile's own name: the asset path comes back case-folded from the registry.
-        const std::string profileName = m_Profile ? m_Profile->GetData().Name : std::string();
-        name->SetText(!m_Profile ? std::string("none: select one in the asset browser")
-                                 : profileName.empty() ? m_Profile->GetPath().stem().string() : profileName);
-    }
     if (UIElement* host = m_AxisHost.Get())
     {
         host->RemoveAllChildren();
