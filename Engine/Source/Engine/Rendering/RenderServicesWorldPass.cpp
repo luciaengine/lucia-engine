@@ -1812,7 +1812,8 @@ class RenderServices::WorldPassPreparation
                     ++m_Data->IndexedReplayMatches;
                     const auto replay = MatchIndexedOwnerCompaction(*m_Data->IndexedReplayProducer, *source);
                     const auto equal = m_Services.Materials().Variants().PrepareIndexedDepthEqual(
-                        *batch.Material, *meta, concreteId, color, m_Context.BuildCurrentFormatKey());
+                        *batch.Material, *meta, concreteId, color, m_Context.BuildCurrentFormatKey(),
+                        CanSpecializeWhiteMaps(*batch.Material, m_Services.Textures(), color));
                     if (equal.Pipeline.IsValid())
                     {
                         prepared.Bindings.Pipeline = equal.Pipeline;

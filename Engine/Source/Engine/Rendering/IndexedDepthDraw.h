@@ -241,6 +241,42 @@ inline bool HasPublishedReplayAlbedo(const Material& material, const TextureServ
            !context.HasDeclaredTextureWrite(albedo);
 }
 
+inline bool HasDefaultWhiteSurfaceSlots(const Material& material, uint32_t whiteIndex)
+{
+    if (whiteIndex == 0u || material.GetBindlessTextureIndex(TextureSlot::kAO) != whiteIndex ||
+        material.GetBindlessTextureIndex(TextureSlot::kEmissive) != whiteIndex)
+        return false;
+
+    const uint32_t samplers = material.GetPackedSamplerIndices();
+    constexpr auto kWhiteSampler = static_cast<uint32_t>(Rendering::SamplerPreset::LinearRepeat);
+    const auto usesRepeat = [samplers](TextureSlot slot) {
+        return ((samplers >> (static_cast<uint32_t>(slot) * 4u)) & 0xfu) == kWhiteSampler;
+    };
+    return usesRepeat(TextureSlot::kAO) && usesRepeat(TextureSlot::kEmissive);
+}
+
+inline bool CanSpecializeWhiteMaps(const Material& material, const TextureService& textures,
+                                   const Rendering::GraphicsPipelineDesc& color)
+{
+    // The caller has verified that the bound buffer holds this material revision.
+    if (!HasDefaultWhiteSurfaceSlots(material, textures.DefaultWhiteBindlessIndex()) ||
+        !textures.HasPublishedBindlessSampler(static_cast<uint32_t>(Rendering::SamplerPreset::LinearRepeat)))
+        return false;
+
+    const auto hexSpec = IndexedDepthHexSpecialization(color);
+    if (hexSpec == false)
+        return true;
+    const auto* hexLane = Rendering::FindLegacyMaterialLane("hexTiling");
+    if (!hexSpec || !hexLane)
+        return false;
+    const auto offset = Rendering::LegacyLaneByteOffset(*hexLane);
+    if (material.GetCacheSize() < offset + sizeof(float))
+        return false;
+    float hexTiling;
+    std::memcpy(&hexTiling, material.GetCacheData() + offset, sizeof(hexTiling));
+    return hexTiling < 0.5f;
+}
+
 // Identity of the indexed GPU draw source. The caller must validate same-frame
 // publication, depth attachment lineage, and raster and material coverage.
 struct IndexedDepthDraw
