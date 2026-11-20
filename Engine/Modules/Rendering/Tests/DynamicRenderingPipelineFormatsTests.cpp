@@ -1,7 +1,6 @@
-#include <gtest/gtest.h>
-#include <Rendering/Core/Device.h>
-#include <Rendering/Core/CommandList.h>
 #include "Rendering/Common/Utils.h"
+#include "Rendering/Core/CommandList.h"
+#include "Rendering/Core/Device.h"
 #include "Rendering/Core/PassPhase.h"
 #include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
@@ -9,11 +8,13 @@
 #include "Rendering/Core/RenderGraph/RGTransientPool.h"
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
 
-#include "TestUtils.h"
-#include "TestGlslCompile.h"
 #include "ScopedEnvVar.h"
+#include "TestGlslCompile.h"
+#include "TestUtils.h"
 
 #include <algorithm>
+
+#include <gtest/gtest.h>
 
 
 using namespace GameEngine::Rendering;
@@ -90,15 +91,13 @@ layout(local_size_x = 1) in;
 layout(std430, set = 0, binding = 0) writeonly buffer Arguments { uint words[]; } args;
 void main()
 {
-    const float candidates[3] = float[3](-0.5, 1.5, 0.5);
-    uint visible = 0;
-    for (uint i = 0; i < 3; ++i)
-        if (abs(candidates[i]) < 1.0)
-            ++visible;
+    const vec3 candidates = vec3(-0.5, 1.5, 0.5);
+    const bvec3 inside = lessThan(abs(candidates), vec3(1.0));
+    const uvec3 visible = uvec3(inside);
     args.words[0] = 0;
     args.words[1] = 1;
     args.words[2] = 1;
-    args.words[4] = visible;
+    args.words[4] = visible.x + visible.y + visible.z;
     args.words[5] = 1;
     args.words[6] = 1;
 }
@@ -301,18 +300,18 @@ void main()
     const auto depth = frame.CreateTexture("MeshDepth.Depth", depthDesc);
 
     frame.AddPass("MeshDepth.Produce", PassPhase::kWorldRender,
-        [&](RG::RGPassBuilder& pass)
+        [positions, arguments, device = device.get(), computeSet](RG::RGPassBuilder& pass)
         {
             pass.Write(positions);
             pass.Write(arguments);
-            pass.Prepare([&](RG::RGPrepareContext& context)
+            pass.Prepare([device, computeSet, positions, arguments](RG::RGPrepareContext& context)
             {
                 device->UpdateStorageBufferBinding(computeSet, 0, context.GetBuffer(positions), 0, kPositionBytes);
                 device->UpdateStorageBufferBinding(computeSet, 1, context.GetBuffer(arguments), 0, kArgumentBytes);
                 return true;
             });
         },
-        [&](RG::RGContext& context)
+        [compute, computeSet](RG::RGContext& context)
         {
             context.Cmd->SetPipeline(compute);
             context.Cmd->BindDescriptorSet(0, computeSet, compute);
@@ -321,12 +320,12 @@ void main()
 
     PipelineHandle mesh{};
     frame.AddPass("MeshDepth.Draw", PassPhase::kWorldRender,
-        [&](RG::RGPassBuilder& pass)
+        [positions, arguments, depth, meshId, meshSet, device = device.get(), &mesh](RG::RGPassBuilder& pass)
         {
             pass.Read(positions, RG::RGBufferRead::MeshStorage);
             pass.Read(arguments, RG::RGBufferRead::Indirect);
             pass.AttachDepth(depth, {.Load = RG::RGLoadOp::Clear, .Clear = {.Depth = ReverseZ::kClearFar}});
-            pass.Prepare([&](RG::RGPrepareContext& context)
+            pass.Prepare([&mesh, meshId, meshSet, device, positions](RG::RGPrepareContext& context)
             {
                 mesh = context.PreparePipeline(meshId);
                 if (!mesh.IsValid())
@@ -335,7 +334,7 @@ void main()
                 return true;
             });
         },
-        [&](RG::RGContext& context)
+        [&mesh, meshSet, arguments](RG::RGContext& context)
         {
             context.Cmd->SetPipeline(mesh);
             context.Cmd->BindDescriptorSet(0, meshSet, mesh);
@@ -345,12 +344,12 @@ void main()
         });
 
     frame.AddPass("MeshDepth.Copy", PassPhase::kFinalize,
-        [&](RG::RGPassBuilder& pass)
+        [depth](RG::RGPassBuilder& pass)
         {
             pass.Read(depth, RG::RGTextureRead::CopySrc);
             pass.PreventCulling();
         },
-        [&](RG::RGContext& context)
+        [depth, readback](RG::RGContext& context)
         {
             context.Cmd->CopyTextureToBuffer(context.GetTexture(depth), readback, kExtent, kExtent);
         });
@@ -359,9 +358,9 @@ void main()
     device->WaitForIdle();
     ASSERT_TRUE(mesh.IsValid());
     const auto& barriers = frame.Graph().Barriers();
-    const auto hasScope = [&](RG::RGBuffer buffer, uint32_t dstStage, uint32_t dstAccess)
+    const auto hasScope = [&barriers](RG::RGBuffer buffer, uint32_t dstStage, uint32_t dstAccess)
     {
-        return std::any_of(barriers.begin(), barriers.end(), [&](const RG::RGBarrier& barrier)
+        return std::any_of(barriers.begin(), barriers.end(), [buffer, dstStage, dstAccess](const RG::RGBarrier& barrier)
         {
             return barrier.Resource == buffer.Id && barrier.SrcStage == RG::RGStage::ComputeShader &&
                    barrier.SrcAccess == RG::RGAccessMask::ShaderWrite && barrier.DstStage == dstStage &&
