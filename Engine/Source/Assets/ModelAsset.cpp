@@ -891,6 +891,7 @@ void ModelAsset::PostLoad()
     // runs on a Background job on both initial load and hot-reload); a null
     // manager (raw test harness) resolves the global tier alone.
     AssetManager* assetMgr = AssetManager::GetThreadCurrent();
+    m_ImpostorEnabled = LoadModelAssetSettings(assetMgr, GetPath()).Impostor;
 
     // Explicit per-asset LOD slots resolve BEFORE generation so authored-wins
     // skips the slot-authored submeshes, and BEFORE the cache key is built so the
@@ -1069,6 +1070,7 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     std::swap(m_ParseOptionsHash, other->m_ParseOptionsHash);
     std::swap(m_AuthoredSlotSourceHash, other->m_AuthoredSlotSourceHash);
     std::swap(m_HasAnimations, other->m_HasAnimations);
+    std::swap(m_ImpostorEnabled, other->m_ImpostorEnabled);
     std::swap(m_AnimationNames, other->m_AnimationNames);
     std::swap(m_EmbeddedClipGuids, other->m_EmbeddedClipGuids);
     std::swap(m_PendingRuntimeClips, other->m_PendingRuntimeClips);

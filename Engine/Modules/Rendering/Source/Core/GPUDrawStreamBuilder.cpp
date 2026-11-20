@@ -1017,7 +1017,7 @@ ComputePipelineId GPUDrawStreamBuilder::InternScatterPipelineFromBytes(std::vect
     cd.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(shaderBytes));
     cd.DescriptorSetLayouts.push_back(
         m_Device->InternDescriptorSetLayout(MakeScatterDescriptorSetLayout()));
-    static_assert(sizeof(ScatterPushConstants) == 112,
+    static_assert(sizeof(ScatterPushConstants) == 124,
                   "ScatterPushConstants must match draw_command_scatter.comp's block");
     static_assert(offsetof(ScatterPushConstants, originSectorX) == 100,
                   "ScatterPushConstants.originSectorX must match the originSectorX offset of the shader's block");
@@ -1868,8 +1868,9 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     // Writes bindings 10 to 13 of the scatter set: the slice's LOD history or its stand-ins.
     void WriteHistory(std::array<DescriptorWrite, kScatterBindingCount>& writes, uint32_t sliceIndex) const
     {
-        // prevLod (dwell band). Either this view's persistent history or
-        // the never-read stand-in; SliceBand[sliceIndex] is 0 in the latter case,
+        // prevLod (dwell band and impostor switch). Either this view's persistent
+        // history or the never-read stand-in; SliceBand[sliceIndex] is 0 and the
+        // impostor exit coverage equals the enter coverage in the latter case,
         // which is what stops the shader touching it.
         const PrevLodBinding& previousLodBinding = SlicePrevLod[sliceIndex];
         if (previousLodBinding.handle.IsValid())
@@ -1948,6 +1949,13 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         }
         pushConstants.lodHysteresisBand = SliceBand[sliceIndex];
         pushConstants.renderedHistoryEnabled = historyBound ? 1u : 0u;
+        pushConstants.impostorCardMesh = slice.lod.impostorCardMesh;
+        pushConstants.impostorEnterCoverage = slice.lod.impostorSwitchCoverage;
+        // The hysteresis band needs the per-view history: without it the switch is stateless.
+        pushConstants.impostorExitCoverage =
+            SlicePrevLod[sliceIndex].handle.IsValid()
+                ? slice.lod.impostorSwitchCoverage * (1.0f + std::max(slice.lod.impostorSwitchHysteresis, 0.0f))
+                : slice.lod.impostorSwitchCoverage;
         return pushConstants;
     }
 
@@ -2631,6 +2639,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
             // SetFrameTimeSeconds.
             b.Append(s.lod.crossfadeDuration);
             b.Append(s.lod.lodHysteresisBand);
+            b.Append(s.lod.impostorCardMesh);
+            b.Append(s.lod.impostorSwitchCoverage);
+            b.Append(s.lod.impostorSwitchHysteresis);
         }
         // Both batch tables + the run maps + the routing maps — the exact
         // bytes the dispatches would consume (BatchTableEntry is 4×uint32,
@@ -3020,8 +3031,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     // the lazy create/grow and the pending-reset take stay on the CPU timeline
     // (the exec closure only fills and binds; an elided call never takes, so
     // its views' pending resets survive to the next dispatching call). A slice
-    // gets real history only when it asked for a band, the env kill-switch is
-    // off, and it is a CAMERA slice that actually auto-selects; everything else
+    // gets real history only when it is a CAMERA slice that actually
+    // auto-selects and it asked for a band (env kill-switch off) or for the
+    // impostor switch's hysteresis; everything else
     // binds the never-read stand-in so binding 10 is always valid. Bands are
     // zeroed in lockstep with the binding choice, so the shader can never read
     // the stand-in as if it were history.
@@ -3030,18 +3042,21 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     for (size_t s = 0; s < slices.size(); ++s)
     {
         const SliceRegistration& slice = slices[s];
-        const bool wantsBand = m_LodHysteresisEnabled && slice.lod.lodHysteresisBand > 0.0f
-                              && slice.table == SliceTable::Color
-                              && slice.cascadeIndex == kCascadeIndexNone
-                              && slice.lod.projScaleY > 0.0f
-                              && slice.lod.forceLod == 0xFFFFFFFFu;
-        if (wantsBand)
+        const bool cameraSlice = slice.table == SliceTable::Color
+                                 && slice.cascadeIndex == kCascadeIndexNone
+                                 && slice.lod.projScaleY > 0.0f
+                                 && slice.lod.forceLod == 0xFFFFFFFFu;
+        const bool wantsBand = cameraSlice && m_LodHysteresisEnabled && slice.lod.lodHysteresisBand > 0.0f;
+        // The impostor switch keeps its hysteresis state in the same history.
+        const bool wantsImpostorHistory = cameraSlice && slice.lod.impostorCardMesh != 0xFFFFFFFFu
+                                          && slice.lod.impostorSwitchHysteresis > 0.0f;
+        if (wantsBand || wantsImpostorHistory)
         {
             PrevLodBinding binding = EnsurePrevLodBuffer(slice.viewId, instanceCount);
             if (binding.handle.IsValid())
             {
                 slicePrevLod[s] = std::move(binding);
-                sliceBand[s]    = slice.lod.lodHysteresisBand;
+                sliceBand[s]    = wantsBand ? slice.lod.lodHysteresisBand : 0.0f;
             }
         }
     }

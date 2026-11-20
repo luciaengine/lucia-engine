@@ -1,8 +1,12 @@
 #include "Engine/Rendering/MeshReloadBoundsRefresh.h"
 
+#include "Assets/AssetManager.h"
+#include "Assets/ModelAsset.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshRenderer.h"
+#include "Core/Engine.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
+#include "Engine/Rendering/ModelRenderSetup.h"
 #include "Engine/Rendering/RenderServices.h"
 
 #include "ECS/ECSTemplates.h"
@@ -27,6 +31,13 @@ MeshReloadBoundsRefreshReport RefreshLocalBoundsAfterMeshReload(
 
     const auto& registry = renderServices.GetMeshGPURegistry();
 
+    // The reloaded models, parallel to reloadedModelGuids: a part of a model with its impostor
+    // stage on takes the whole model's box (ModelPartBounds).
+    std::vector<SharedPtr<Asset>> reloadedModels;
+    reloadedModels.reserve(reloadedModelGuids.size());
+    for (const GUID& guid : reloadedModelGuids)
+        reloadedModels.push_back(EngineCore::GetInstance().GetAssetManager().GetLoadedAsset(guid));
+
     // LocalBounds is bound Read and written through the value gate below: a
     // Write binding would stamp every visited chunk whether or not the geometry
     // moved, and extraction probes this column.
@@ -43,9 +54,11 @@ MeshReloadBoundsRefreshReport RefreshLocalBoundsAfterMeshReload(
             // which is one entry in every observed case and is driven by a
             // human saving a file.
             const GUID modelGuid = meshRenderer.modelAssetGuid.ToGuid();
-            if (std::find(reloadedModelGuids.begin(), reloadedModelGuids.end(), modelGuid)
-                == reloadedModelGuids.end())
+            const auto reloaded = std::find(reloadedModelGuids.begin(), reloadedModelGuids.end(), modelGuid);
+            if (reloaded == reloadedModelGuids.end())
                 return;
+            const auto* model = dynamic_cast<const ModelAsset*>(
+                reloadedModels[static_cast<size_t>(reloaded - reloadedModelGuids.begin())].get());
 
             ++report.EntitiesVisited;
 
@@ -61,12 +74,13 @@ MeshReloadBoundsRefreshReport RefreshLocalBoundsAfterMeshReload(
                 return;
             }
 
-            if (std::memcmp(&localBounds.Box, &entry->bounds, sizeof(localBounds.Box)) == 0)
+            const Mathematics::BoundingBox bounds = model ? ModelPartBounds(*model, entry->bounds) : entry->bounds;
+            if (std::memcmp(&localBounds.Box, &bounds, sizeof(localBounds.Box)) == 0)
                 return;
 
             if (auto* writable = world.GetComponentForWrite<Components::LocalBounds>(entity))
             {
-                writable->Box = entry->bounds;
+                writable->Box = bounds;
                 ++report.BoundsRefreshed;
             }
         });
