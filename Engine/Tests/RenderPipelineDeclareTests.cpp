@@ -12199,9 +12199,8 @@ std::optional<PausedViewBuilds> RunPausedOcclusionView(std::vector<std::string> 
     setup.EmptyScene = emptyScene;
     setup.Width = width;
     setup.ProbedComputePipelines = std::move(probed);
-    setup.Resources.push_back(
-        {"View.DepthResolved",
-         R"({"kind":"texture","scope":"perView","format":"R32_FLOAT","extent":{"scale":[1,1]},"usage":["shaderResource","unorderedAccess"]})"});
+    if (!frustumStrategy && !emptyScene)
+        setup.Passes.push_back({"DepthResolve", "DepthResolve", R"({"id":"DepthResolve","type":"DepthResolve"})"});
     setup.Passes.push_back({"HZBBuild", "HZBBuild", R"({"id":"HZBBuild","type":"HZBBuild"})"});
     setup.Passes.push_back({"OcclusionCullP2", "OcclusionCullP2", R"({"id":"OcclusionCullP2","type":"OcclusionCullP2"})"});
     setup.Passes.push_back({"ScatterB", "ScatterB", R"({"id":"ScatterB","type":"ScatterB"})"});

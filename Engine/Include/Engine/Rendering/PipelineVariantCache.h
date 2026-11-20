@@ -211,7 +211,7 @@ class PipelineVariantCache
     PreparedVariant PrepareIndexedDepthEqual(const Material& material, const Rendering::ShaderMeta& shader,
                                             Rendering::GraphicsPipelineId base,
                                             const Rendering::GraphicsPipelineDesc& desc,
-                                            const Rendering::PipelineFormatKey& formatKey);
+                                            const Rendering::PipelineFormatKey& formatKey, bool useWhiteMaps);
 
     /// Select a warm unit during graph preparation; cold builds are queued for frame begin.
     /// The returned unit is borrowed until the next serial material-frame begin.
