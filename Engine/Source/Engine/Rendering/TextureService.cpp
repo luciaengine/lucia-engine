@@ -1919,12 +1919,24 @@ std::shared_ptr<const MaterialMipStreamSource> TextureService::CreateMaterialMip
     return MaterialMipStreamSource::Create(texture, *format, companionFormat);
 }
 
-uint32_t TextureService::FirstMaterialMipLevel(const MaterialMipStreamSource& source, uint64_t stagedBytes) const
+uint64_t TextureService::ParkedMaterialMipBytes() const
 {
-    uint64_t usedBytes = m_ReportedMaterialMipBytes + stagedBytes;
+    uint64_t bytes = 0;
     for (const auto& [guid, parked] : m_ReleasedUploadReads)
         if (parked.ForStream)
-            usedBytes += parked.Source->SuffixBytes()[parked.Read->FirstMip];
+            bytes += parked.Source->SuffixBytes()[parked.Read->FirstMip];
+    return bytes;
+}
+
+uint32_t TextureService::FirstMaterialMipLevel(const MaterialMipStreamSource& source, uint64_t stagedBytes) const
+{
+    uint64_t usedBytes = m_ReportedMaterialMipBytes + stagedBytes + ParkedMaterialMipBytes();
+    // A gain step in flight takes its bytes when its read is done.
+    if (m_MaterialMipStep.Read && m_MaterialMipStep.Read->FirstMip < m_MaterialMipStep.Candidate.FirstMip)
+    {
+        const auto stepBytes = m_MaterialMipStep.Candidate.Source->SuffixBytes();
+        usedBytes += stepBytes[m_MaterialMipStep.Read->FirstMip] - stepBytes[m_MaterialMipStep.Candidate.FirstMip];
+    }
     const uint64_t freeBytes = m_MaterialMipBudgetBytes > usedBytes ? m_MaterialMipBudgetBytes - usedBytes : 0;
     const auto suffixBytes = source.SuffixBytes();
     uint32_t firstMip = 0;
@@ -1935,8 +1947,8 @@ uint32_t TextureService::FirstMaterialMipLevel(const MaterialMipStreamSource& so
 
 std::optional<TextureGPUCache::Entry> TextureService::StageReleasedUpload(
     const GUID& guid, uint32_t epoch, const PreparedTextureUpload& prepared,
-    std::shared_ptr<const MaterialMipStreamSource>& streamSource, uint32_t& streamFirstMip,
-    std::vector<Rendering::StagedTextureUpload>& batch, const char*& refusal)
+    std::shared_ptr<const MaterialMipStreamSource>& streamSource, uint64_t stagedStreamBytes,
+    uint32_t& streamFirstMip, std::vector<Rendering::StagedTextureUpload>& batch, const char*& refusal)
 {
     const bool forStream = streamSource != nullptr;
     ReleasedUploadRead* parked = m_ReleasedUploadReads.Find(guid);
@@ -1955,7 +1967,7 @@ std::optional<TextureGPUCache::Entry> TextureService::StageReleasedUpload(
             refusal = "its pixels were released and its file gives no levels";
             return TextureGPUCache::Entry{};
         }
-        const uint32_t firstMip = forStream ? streamFirstMip : 0u;
+        const uint32_t firstMip = forStream ? FirstMaterialMipLevel(*source, stagedStreamBytes) : 0u;
         m_ReleasedUploadReads.InsertOrAssign(
             guid, ReleasedUploadRead{source, MaterialMipStreamSource::ReadLevels(source, *assets, guid, firstMip),
                                      epoch, forStream});
@@ -2054,7 +2066,10 @@ void TextureService::AdvanceMaterialMipStreams()
                                                   source.TopExtent(), stream.ScreenCoverage});
         }
         m_MaterialMipCoverageStale = false;
-        const auto planned = m_MaterialMipPlanner.Plan(m_MaterialMipPlanInput, m_MaterialMipBudgetBytes);
+        // A new stream whose first levels are in a read holds its part of the budget.
+        const uint64_t parkedBytes = ParkedMaterialMipBytes();
+        const auto planned = m_MaterialMipPlanner.Plan(
+            m_MaterialMipPlanInput, m_MaterialMipBudgetBytes > parkedBytes ? m_MaterialMipBudgetBytes - parkedBytes : 0);
         m_MaterialMipStreamsSettled = !planned.has_value();
         if (!planned)
             return;
@@ -2865,14 +2880,14 @@ void TextureService::FlushPendingUploads()
         const auto tStage = Clock::now();
         const char* refusal = kDeviceRefusal;
         auto streamSource = PrepareMaterialMipStream(upload.TextureGuid, *prepared);
-        uint32_t streamFirstMip = streamSource ? FirstMaterialMipLevel(*streamSource, stagedStreamBytes) : 0u;
+        uint32_t streamFirstMip = 0;
         TextureGPUCache::Entry uploaded;
         if (prepared->Container && !prepared->Container->GetPixelData())
         {
             // The levels come from the file, through the I/O service: this thread reads no file.
             const std::optional<TextureGPUCache::Entry> fromFile =
-                StageReleasedUpload(upload.TextureGuid, upload.Epoch, *prepared, streamSource, streamFirstMip, batch,
-                                    refusal);
+                StageReleasedUpload(upload.TextureGuid, upload.Epoch, *prepared, streamSource, stagedStreamBytes,
+                                    streamFirstMip, batch, refusal);
             if (!fromFile)
             {
                 waitingForLevels.push_back(std::move(upload));
@@ -2882,6 +2897,8 @@ void TextureService::FlushPendingUploads()
         }
         else
         {
+            if (streamSource)
+                streamFirstMip = FirstMaterialMipLevel(*streamSource, stagedStreamBytes);
             uploaded = streamSource
                 ? StageMaterialMipStart(*m_Device, *streamSource, *prepared->Container, streamFirstMip, batch, refusal)
                 : StagePreparedUpload(*prepared, batch, refusal);
