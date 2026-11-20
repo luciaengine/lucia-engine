@@ -266,11 +266,16 @@ uint64_t UploadedCompatInstanceListBytes(const ResolvedPassResources& resources)
 // InstancedPC block. See audit §7.1.7.
 struct ComposedPCInstanced
 {
+    static constexpr uint32_t kNoMaterialOverride = 0xFFFFFFFFu;
+
     uint64_t indirectionAddr;   // BDA of GPUDrawStreamBuilder's shared indirection, or a sorted pass's own (offset included)
     uint64_t gpuInstancesAddr;  // BDA of GPUScene per-frame instance buffer (offset 0)
+    // The material of every record in the draw (DrawStreamRangeMaterial), or kNoMaterialOverride.
+    uint32_t materialOverride = kNoMaterialOverride;
+    uint32_t pad = 0;
 };
 static_assert(std::is_trivially_copyable_v<ComposedPCInstanced>, "ComposedPCInstanced must be trivially copyable");
-static_assert(sizeof(ComposedPCInstanced) == 16, "ComposedPCInstanced must be 16 bytes to match GLSL InstancedPC layout");
+static_assert(sizeof(ComposedPCInstanced) == 24, "ComposedPCInstanced must be 24 bytes to match GLSL InstancedPC layout");
 
 // Maximum number of textures in the global bindless descriptor array.
 // Must match the descriptor set created in Initialize() and the pipeline

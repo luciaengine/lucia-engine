@@ -15,6 +15,7 @@ namespace GameEngine::Engine::Renderer
 {
 
 class ImpostorBaker;
+class Material;
 class ImpostorStage;
 class RenderServices;
 
@@ -31,6 +32,8 @@ public:
 
     const char* GetName() const override { return "MeshImpostor"; }
     void Update(ECS::World& world, float32 deltaTime) override;
+    // It writes GPUScene mesh rows and batch counts, which have one writer at a time.
+    bool RequiresExclusiveUpdate() const override { return true; }
 
     /// One part of a model: a submesh with the material it bakes with.
     struct Part
@@ -48,13 +51,16 @@ private:
         Mathematics::Vector3 Center;
         float Radius = 0.0f;
         uint64 MeshHash = 0;
-        // The card material index the parts are linked to; 0xFFFFFFFF while they are not linked.
+        // The card material index and the part mesh indices the link holds; empty while not linked.
         uint32 LinkedMaterial = 0xFFFFFFFFu;
+        std::vector<uint32> LinkedMeshes;
     };
 
     // Rebuilds the parts of the opted-in models from the world's mesh renderers.
     void Scan(ECS::World& world);
-    void UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker, ImpostorStage& stage);
+    // Returns the card material once the parts are linked to it, else null.
+    const Material* UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
+                                ImpostorStage& stage);
     void UnlinkModel(ModelImpostor& impostor);
 
     RenderServices* m_RenderServices = nullptr;

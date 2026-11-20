@@ -10,6 +10,7 @@
 #include <atomic>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -47,13 +48,22 @@ public:
                                                 const ImpostorAtlas& atlas, const Mathematics::Vector3& center,
                                                 float radius, uint32 framesPerSide, Mathematics::OctahedralLayout layout);
 
-    /// Links the parts of one object to `card`. parts[0] is the primary part, which draws the card;
-    /// the others draw nothing past the switch. Every part must have the same instance sphere, so
-    /// all parts switch in the same frame. Returns false and links nothing when the card cannot draw.
-    bool Link(RenderServices& services, std::span<const Rendering::MeshGPUHandle> parts, const Material& card) const;
+    /// The GPU-scene mesh indices of `parts`, in order; empty when a part is not resident yet.
+    static std::vector<uint32> PartMeshIndices(const RenderServices& services,
+                                               std::span<const Rendering::MeshGPUHandle> parts);
+
+    /// Links the parts of one object (their GPU-scene mesh indices, PartMeshIndices) to `card`.
+    /// parts[0] is the primary part, which draws the card; the others draw nothing past the switch.
+    /// Every part must have the same instance sphere, so all parts switch in the same frame. Links
+    /// all parts or none: returns false when the card cannot draw.
+    bool Link(RenderServices& services, std::span<const uint32> partMeshes, const Material& card) const;
 
     /// Removes the links of the parts; they draw their meshes at every distance.
-    static void Unlink(RenderServices& services, std::span<const Rendering::MeshGPUHandle> parts);
+    static void Unlink(RenderServices& services, std::span<const uint32> partMeshes);
+
+    /// Names each card to the views of `worldId`, so the world passes draw the card rows that the
+    /// scatter fills. Call once per frame with every card the caller has linked.
+    void SubmitCards(RenderServices& services, uint64 worldId, std::span<const Material* const> cards) const;
 
     void OnDeviceRebuilt(Rendering::IDevice* device) override;
 
@@ -61,6 +71,7 @@ private:
     static constexpr uint32 kNoCardMesh = 0xFFFFFFFFu;
     // Read by the slice registration, written by the system that ensures the quad.
     std::atomic<uint32> m_CardMeshIndex{kNoCardMesh};
+    Rendering::MeshGPUHandle m_CardMesh;
 };
 
 } // namespace GameEngine::Engine::Renderer

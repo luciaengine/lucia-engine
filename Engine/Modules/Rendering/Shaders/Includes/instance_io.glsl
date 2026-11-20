@@ -262,6 +262,10 @@ layout(push_constant) uniform InstancedPC
 {
     uint64_t ge_indirectionAddr;   // instance-indirection buffer (any offset already folded in)
     uint64_t ge_gpuInstancesAddr;  // GPUScene per-frame instance buffer base
+    // The material of every record in the draw, or 0xFFFFFFFF to use each instance's own. An
+    // impostor card record names the mesh instance, whose material is the mesh part's.
+    uint     ge_materialOverride;
+    uint     ge_pad;
 } pc_inst;
 
 // Instance indirection buffer: maps gl_InstanceIndex to GPUScene instance
@@ -317,7 +321,8 @@ InstanceData ge_FetchInstanceData()
                              gpuInst.normalMatrixCol1.xyz,
                              gpuInst.normalMatrixCol2.xyz);
     inst.instanceIndex = sceneIdx;
-    inst.materialIndex = gpuInst.materialIndex;
+    inst.materialIndex = pc_inst.ge_materialOverride != 0xFFFFFFFFu ? pc_inst.ge_materialOverride
+                                                                    : gpuInst.materialIndex;
     inst.skinPaletteOffset = gpuInst.skinPaletteOffset;
     inst.flags = gpuInst.flags;
     inst.custom0 = gpuInst.custom0;

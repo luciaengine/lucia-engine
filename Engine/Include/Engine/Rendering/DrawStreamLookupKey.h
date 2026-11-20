@@ -76,6 +76,14 @@ inline DrawStreamLookupKey ResolveDrawStreamLookupKey(
     return out;
 }
 
+// The material of every record in the draw range of `key`, or 0xFFFFFFFF. A range whose class is
+// the key's own material holds that material only, so the draw names it for all its records: an
+// impostor card record points at the mesh instance, whose own material is the mesh part's.
+inline uint32_t DrawStreamRangeMaterial(const WorldDrawBuilder::BatchKey& key, const DrawStreamLookupKey& lookup)
+{
+    return lookup.classKey == key.materialIndex ? key.materialIndex : 0xFFFFFFFFu;
+}
+
 } // namespace Renderer
 } // namespace Engine
 } // namespace GameEngine

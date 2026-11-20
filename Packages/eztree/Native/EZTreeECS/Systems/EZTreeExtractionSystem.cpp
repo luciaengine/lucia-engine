@@ -292,9 +292,13 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 
     ++m_UpdateStamp;
     FrameContext frame{world, *service, world.GetWorldId(), WindVolumeSpeedBound(world), deviceRebuilt, {}};
-    // The rebuild freed the variant meshes with their impostor links.
+    // The rebuild freed the variant meshes and the atlases: unlink, and link again below.
     if (deviceRebuilt)
+    {
+        for (const auto& [hash, link] : m_ImpostorLinks)
+            Engine::Renderer::ImpostorStage::Unlink(*m_RenderServices, link.Meshes);
         m_ImpostorLinks.Clear();
+    }
 
     // Every tree is visited whatever its enable state: one that is switched off,
     // or whose entity is, releases the GPU instances this system gave it.
@@ -316,12 +320,13 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 void EZTreeExtractionSystem::RequestImpostors(FrameContext& frame)
 {
     // A variant this pass did not read is released: its meshes, and their links, are gone.
-    m_ImpostorLinks.EraseIf([&frame](uint64 hash, uint32) { return frame.Variants.Find(hash) == nullptr; });
+    m_ImpostorLinks.EraseIf([&frame](uint64 hash, const ImpostorLink&) { return frame.Variants.Find(hash) == nullptr; });
     if (frame.Variants.Empty())
         return;
     auto& stage = m_RenderServices->EnsureFeature<Engine::Renderer::ImpostorStage>();
     stage.EnsureCardMesh(*m_RenderServices);
     auto& baker = m_RenderServices->EnsureFeature<Engine::Renderer::ImpostorBaker>();
+    std::vector<const Engine::Renderer::Material*> cards;
     for (const auto& [hash, variant] : frame.Variants)
     {
         // A request each frame keeps the atlas in the baker's least-recently-used budget.
@@ -330,21 +335,26 @@ void EZTreeExtractionSystem::RequestImpostors(FrameContext& frame)
             *m_RenderServices, variant.Materials.Impostor, "Tree Generator Impostor", atlas, variant.Bounds.center,
             variant.ImpostorRadius, Engine::Renderer::ImpostorAtlasKey{}.FramesPerSide,
             Mathematics::OctahedralLayout::Hemisphere);
-        const std::vector<Rendering::MeshGPUHandle> parts = ImpostorParts(variant);
-        uint32& linked = m_ImpostorLinks.GetOrInsert(hash);
-        if (!card)
+        ImpostorLink& link = m_ImpostorLinks.GetOrInsert(hash);
+        const std::vector<uint32> meshes =
+            card ? Engine::Renderer::ImpostorStage::PartMeshIndices(*m_RenderServices, ImpostorParts(variant))
+                 : std::vector<uint32>{};
+        if (!meshes.empty() && card->GetGpuSceneMaterialIndex() == link.CardMaterial && meshes == link.Meshes)
         {
-            // Not baked, evicted, or the card pipeline is still building: the trees draw their meshes.
-            if (linked != 0u)
-                Engine::Renderer::ImpostorStage::Unlink(*m_RenderServices, parts);
-            linked = 0u;
+            cards.push_back(card);
             continue;
         }
-        // The link holds the card material index + 1, so 0 means not linked.
-        const uint32 cardKey = card->GetGpuSceneMaterialIndex() + 1u;
-        if (linked != cardKey)
-            linked = stage.Link(*m_RenderServices, parts, *card) ? cardKey : 0u;
+        // Not baked, evicted, the card pipeline is still building, or the parts changed.
+        if (!link.Meshes.empty())
+            Engine::Renderer::ImpostorStage::Unlink(*m_RenderServices, link.Meshes);
+        link = ImpostorLink{};
+        if (meshes.empty() || !stage.Link(*m_RenderServices, meshes, *card))
+            continue;
+        link.CardMaterial = card->GetGpuSceneMaterialIndex();
+        link.Meshes = meshes;
+        cards.push_back(card);
     }
+    stage.SubmitCards(*m_RenderServices, frame.WorldId, cards);
 }
 
 void EZTreeExtractionSystem::ExtractTree(FrameContext& frame,
