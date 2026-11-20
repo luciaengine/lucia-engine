@@ -82,4 +82,5 @@ TEST(ShadowMinMaxPyramid, PushConstantsMatchTheShaderBlockOnEveryBackend)
     EXPECT_EQ(MemberOffset(block, "layerCount"), offsetof(PushConstants, LayerCount));
     EXPECT_EQ(MemberOffset(block, "srcLevel"), offsetof(PushConstants, SrcLevel));
     EXPECT_EQ(MemberOffset(block, "mode"), offsetof(PushConstants, Mode));
+    EXPECT_EQ(MemberOffset(block, "layerMask"), offsetof(PushConstants, LayerMask));
 }
