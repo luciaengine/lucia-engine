@@ -32,7 +32,9 @@
 
 #include "TestTempDir.h"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -167,6 +169,27 @@ std::filesystem::path MakeAttachTestUxml(const char* name, const char* contents)
     std::ofstream f(path);
     f << contents;
     return path;
+}
+
+// Builds root -> container -> `count` leaves, settles it, queues every leaf for the primitive
+// drain, then returns the time that one RemoveChild of the container takes.
+std::chrono::nanoseconds TimeDetachOfQueuedSubtree(IDevice* dev, std::size_t count)
+{
+    UIManager ui(dev);
+    auto root = MakeElement("root");
+    UIElement* rootRaw = root.get();
+    auto container = MakeElement("container");
+    UIElement* containerRaw = container.get();
+    for (std::size_t i = 0; i < count; ++i)
+        container->AddChild(std::make_unique<UIElement>());
+    root->AddChild(std::move(container));
+    ui.SetRoot(std::move(root));
+    ui.Update(0.0f, /*interactive=*/false);
+
+    containerRaw->MarkDirtySubtree(UIElement::VisualDirty);
+    const auto start = std::chrono::steady_clock::now();
+    rootRaw->RemoveChild(containerRaw);
+    return std::chrono::steady_clock::now() - start;
 }
 
 } // namespace
@@ -1649,4 +1672,31 @@ TEST(AttachDetachEventTests, ControlDetachHandlerAddingToAnUnrelatedParentIsSafe
     ui.Update(0.0f, false);
     EXPECT_EQ(rootRaw->FindById("doomed"_sid), nullptr);
     SUCCEED();
+}
+
+// A detach takes each element of the subtree out of the manager's dirty queues. That cost must
+// be constant per element: a scan of the queue per element makes the detach of a large
+// subtree whose elements are all queued quadratic.
+TEST(AttachDetachEventTests, DetachCostDoesNotGrowWithQueuedElements)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "No device";
+
+    constexpr std::size_t kSmall = 2000;
+    constexpr std::size_t kLarge = 4 * kSmall;
+    constexpr int kRepeats = 3;
+    std::chrono::nanoseconds bestSmall = std::chrono::nanoseconds::max();
+    std::chrono::nanoseconds bestLarge = std::chrono::nanoseconds::max();
+    for (int repeat = 0; repeat < kRepeats; ++repeat)
+    {
+        bestSmall = std::min(bestSmall, TimeDetachOfQueuedSubtree(dev, kSmall));
+        bestLarge = std::min(bestLarge, TimeDetachOfQueuedSubtree(dev, kLarge));
+    }
+    // Constant cost per element gives a ratio near 4. A queue scan per element gives 16.
+    const double ratio = static_cast<double>(bestLarge.count()) / static_cast<double>(bestSmall.count());
+    RecordProperty("SmallDetachMicroseconds", std::to_string(bestSmall.count() / 1000));
+    RecordProperty("LargeDetachMicroseconds", std::to_string(bestLarge.count() / 1000));
+    EXPECT_LT(ratio, 10.0) << "the detach of " << kLarge << " queued elements took " << bestLarge.count() / 1000
+                           << " us, of " << kSmall << " took " << bestSmall.count() / 1000 << " us";
 }

@@ -402,6 +402,7 @@ void UIManager::PushPrimitiveDataDirty(UIElement* el)
     if (!el || (el->m_InQueueFlags & UIElement::InPrimitiveDataDirty))
         return;
     el->m_InQueueFlags |= UIElement::InPrimitiveDataDirty;
+    el->m_PrimitiveDataDirtySlot = static_cast<uint32_t>(m_PrimitiveDataDirty.size());
     m_PrimitiveDataDirty.push_back(el);
 }
 
@@ -421,13 +422,14 @@ void UIManager::RemoveFromDirtyQueues(UIElement* el)
             UIElement::InFocusLeaf | UIElement::InFocusVisibleLeaf);
     }
 
-    // Tombstone the element's entry in the primitive-data queue (the drain
-    // skips nullptr).
+    // Tombstone the element's entry in the primitive-data queue by its slot, in
+    // constant time (the drain skips nullptr). The check skips a set flag whose
+    // entry the drain already cleared.
     if (el->m_InQueueFlags & UIElement::InPrimitiveDataDirty)
     {
-        for (auto& e : m_PrimitiveDataDirty)
-            if (e == el)
-                e = nullptr;
+        const uint32_t slot = el->m_PrimitiveDataDirtySlot;
+        if (slot < m_PrimitiveDataDirty.size() && m_PrimitiveDataDirty[slot] == el)
+            m_PrimitiveDataDirty[slot] = nullptr;
     }
 
     el->m_InQueueFlags = 0;

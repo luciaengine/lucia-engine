@@ -408,10 +408,8 @@ public:
             // managers (modal popups, floating panels) would otherwise
             // leave dangling references in the old manager — which the
             // next RebuildFocusWithinChain or drain would dereference.
-            // RemoveFromDirtyQueues early-outs the queue scan when
-            // m_InQueueFlags == 0, so the only added cost is one chain
-            // map probe (skipped via the InFocusChain bit guard inside
-            // RemoveFromDirtyQueues).
+            // RemoveFromDirtyQueues costs constant time per element and is
+            // skipped when m_InQueueFlags == 0.
             if (m_OwnerManager && m_InQueueFlags != 0)
             {
                 UIManagerRemoveFromDirtyQueues(m_OwnerManager, this);
@@ -1611,6 +1609,14 @@ protected:
   private:
     // Set while a UIManager holds this element as its root (UIManager::AdoptRoot).
     bool m_IsManagerRoot = false;
+
+  public:
+    // Index in UIManager::m_PrimitiveDataDirty, valid while m_InQueueFlags has
+    // InPrimitiveDataDirty. It fills the padding after m_IsManagerRoot because
+    // the size pin in UIElement.cpp forbids growth.
+    uint32_t m_PrimitiveDataDirtySlot = 0;
+
+  private:
     // The manager root this element's DFS-parent chain (GetDfsParent) ends at, or nullptr
     // when the chain ends at an element no UIManager holds as its root. Every element of a
     // DFS subtree carries the same value, so a change at one DFS edge rewrites the subtree
@@ -2177,9 +2183,9 @@ protected:
     // element is actually referenced.
     enum InQueueFlag : uint8_t
     {
-        // Enqueued in UIManager::m_PrimitiveDataDirty (render-side drain).
-        // PushPrimitiveDataDirty consults this to avoid duplicate entries;
-        // the drain clears it on dequeue.
+        // Enqueued in UIManager::m_PrimitiveDataDirty (render-side drain) at
+        // m_PrimitiveDataDirtySlot. PushPrimitiveDataDirty consults this to
+        // avoid duplicate entries; the drain clears it on dequeue.
         InPrimitiveDataDirty = 1u << 0,
         // Member of UIManager::m_FocusWithinChain (the focused element and all
         // its ancestors) — the :focus-within predicate for this element.
