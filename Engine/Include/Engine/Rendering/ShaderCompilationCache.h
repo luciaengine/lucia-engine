@@ -44,6 +44,7 @@ struct SharedShaderVariant
 {
     std::vector<uint8_t> vertexBytes;
     std::vector<uint8_t> fragmentBytes;
+    bool usesBuiltInStandardPbr = false;
     std::shared_ptr<Rendering::ShaderMeta> meta;
     std::vector<Rendering::DescriptorSetLayoutDesc> setLayouts;
 };

@@ -4,6 +4,7 @@
 #include "Rendering/Core/Device.h"
 #include "Types/StringUtils.h"
 
+#include <algorithm>
 #include <fstream>
 #include <optional>
 #include <sstream>
@@ -355,6 +356,11 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
         }
 
         recordClosure(cres);
+        const auto stockSurface =
+            std::filesystem::absolute(adapterDir / "Surfaces/standard_pbr.glsl").lexically_normal();
+        out.usesBuiltInStandardPbr = composed.resolvedSurfacePath == stockSurface &&
+            std::find(cres.includeClosurePaths.begin(), cres.includeClosurePaths.end(), stockSurface.string()) !=
+                cres.includeClosurePaths.end();
         out.generatedShaderPkgPath = cres.shaderPkgPath.string();
         auto pkg = std::unique_ptr<ShaderPackage, ShaderPackageDeleter>(new ShaderPackage());
         pkg->version = 1;

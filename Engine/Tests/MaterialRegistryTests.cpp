@@ -1679,6 +1679,56 @@ TEST_F(MaterialShaderIdentityTest, InFlightDepthPublicationKeepsTheCapturedMetad
     std::filesystem::remove_all(context.CacheRoot, error);
 }
 
+TEST_F(MaterialShaderIdentityTest, DepthHexSpecializationFollowsTheCompiledSurface)
+{
+    namespace fs = std::filesystem;
+    using K = Rendering::MaterialKeyword;
+    const fs::path root = fs::temp_directory_path() / ("ge-depth-hex-" + GUID::Generate().ToString());
+    for (const bool projectOverride : {false, true})
+    {
+        RenderServices services;
+        ASSERT_TRUE(services.Initialize(m_device.get()));
+        Rendering::MaterialBuildContext context{};
+        context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();
+        context.IncludeDirs = {context.AdapterShaderDir};
+        context.CacheRoot = root / (projectOverride ? "override-cache" : "stock-cache");
+        const fs::path ref = "Surfaces/standard_pbr.glsl";
+        if (projectOverride)
+        {
+            const fs::path project = root / "project";
+            fs::create_directories((project / ref).parent_path());
+            ASSERT_TRUE(fs::copy_file(context.AdapterShaderDir / ref, project / ref));
+            context.ProjectRoots = {project};
+        }
+        services.Materials().SetMaterialBuildContext(context);
+        auto document = MakeTestPBRDocument("CapturedDepthHexSource");
+        document.surfaceShader = ref.generic_string();
+        document.alphaMode = MaterialAlphaMode::Mask;
+        auto* material = services.Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+        ASSERT_NE(material, nullptr);
+        ASSERT_EQ(material->GetAlphaMode(), MaterialAlphaMode::Mask);
+        auto& variants = services.Materials().Variants();
+        const auto flags = Rendering::VertexAttributeFlags::StandardMesh;
+        const auto topology = Rendering::PrimitiveTopology::TriangleList;
+        const auto winding = Rendering::FrontFace::CounterClockwise;
+        for (const auto tail : {K::None, K::LodCrossfade})
+        {
+            const auto keywords = K::Instanced | K::DepthOnlyFragment | tail;
+            variants.EnqueueDepthVariantCompileForTesting(
+                *material, flags, topology, keywords, 0u, false, false, winding);
+            variants.SubmitPendingVariantCompiles();
+            services.Materials().FlushAsyncMaterialCompiles();
+            variants.ApplyPendingVariantPublishes();
+            const auto* unit = variants.FindOrRequestPrepassVariant(*material, flags, topology, keywords, winding);
+            ASSERT_NE(unit, nullptr);
+            EXPECT_EQ(unit->CanSkipHexTiling, !projectOverride);
+        }
+        services.Shutdown();
+    }
+    std::error_code error;
+    fs::remove_all(root, error);
+}
+
 TEST_F(MaterialShaderIdentityTest, FailedInlineRecompileCannotRestoreAnotherTarget)
 {
     TestSupport::ScopedShaderCompileTarget restore{Rendering::CurrentShaderCompileTarget()};

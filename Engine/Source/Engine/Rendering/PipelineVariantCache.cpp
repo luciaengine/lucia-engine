@@ -47,6 +47,7 @@
 #include "Engine/Rendering/Pipeline/Nodes/LensFlareRenderNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/VolumetricFogNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/TransmissivePassNode.h"
+#include "Engine/Rendering/Pipeline/Nodes/ForwardShaderSpecialization.h"
 #include "Engine/Rendering/Pipeline/Nodes/WorldRenderNode.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
@@ -484,10 +485,38 @@ PipelineVariantCache::PrepareDepthInstancedVariant(
     bool depthBiasEnable,
     bool depthClampEnable,
     Rendering::FrontFace frontFace,
-    const Rendering::RenderGraph::RGPrepareContext& context)
+    const Rendering::RenderGraph::RGPrepareContext& context,
+    bool withoutHexTiling)
 {
-    return ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
-                               depthClampEnable, frontFace, context);
+    auto resolved = ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
+                                        depthClampEnable, frontFace, context);
+    const auto* unit = resolved.second;
+    if (!withoutHexTiling || !resolved.first.IsValid() || !unit || !unit->CanSkipHexTiling ||
+        unit->MaterialVersion != material.GetVersion())
+        return resolved;
+
+    auto* device = m_Materials->GetDevice();
+    const auto format = context.BuildCurrentFormatKey();
+    if (context.ResolveGraphicsPipelineId(unit->PipelineId) != unit->PipelineId ||
+        device->TryGetWarmGraphicsPipeline(unit->PipelineId, format) != resolved.first)
+        return resolved;
+
+    static const auto constants = []
+    {
+        Rendering::SpecializationConstants overrides;
+        overrides.AddConstant(kHexTilingShaderConstant, uint32_t{0});
+        return overrides;
+    }();
+    const auto specialized = device->GetMutablePipelineCache().SpecializeGraphicsPipeline(unit->PipelineId, constants);
+    if (specialized.IsValid())
+    {
+        const auto pipeline = device->TryGetWarmGraphicsPipeline(specialized, format);
+        if (pipeline.IsValid())
+            resolved.first = pipeline;
+        else
+            QueueConcreteWarm(material, specialized, format);
+    }
+    return resolved;
 }
 
 const PipelineVariantCache::VariantServeUnit* PipelineVariantCache::FindOrRequestPrepassVariant(
@@ -853,7 +882,7 @@ void PipelineVariantCache::InsertVariantEntry(
     VariantCacheMap& cache, const InstancedVariantKey& key,
     Rendering::GraphicsPipelineId pipelineId, uint32_t materialVersion,
     std::vector<Rendering::DescriptorSetLayoutId> setLayouts,
-    std::shared_ptr<Rendering::ShaderMeta> meta)
+    std::shared_ptr<Rendering::ShaderMeta> meta, bool canSkipHexTiling)
 {
     std::unique_lock lock(m_CacheMutex);
 #if GE_DEBUG_INSTRUMENTATION
@@ -884,6 +913,7 @@ void PipelineVariantCache::InsertVariantEntry(
         cached.Current.SetLayouts  = std::move(setLayouts);
         cached.Current.VariantMeta = std::move(meta);
         cached.Current.MaterialVersion = materialVersion;
+        cached.Current.CanSkipHexTiling = canSkipHexTiling;
         // Retire L1 slots stamped against the previous publication so their next
         // probe re-finds the node under the lock. This runs in the serial window
         // (phase-separated from record), so the bump is slot hygiene, not a
@@ -940,7 +970,7 @@ void PipelineVariantCache::ApplyPendingVariantPublishes()
             continue;
         InsertVariantEntry(rec.IsDepth ? m_DepthInstancedVariantCache : m_InstancedVariantCache,
                            rec.Key, rec.PipelineId, rec.MaterialVersion,
-                           std::move(rec.SetLayouts), std::move(rec.VariantMeta));
+                           std::move(rec.SetLayouts), std::move(rec.VariantMeta), rec.CanSkipHexTiling);
         // Marker erase strictly AFTER the insert: preparation that misses the
         // cache must always find the marker set, or it would re-enqueue a variant
         // that is already compiled.
@@ -1127,9 +1157,12 @@ void PipelineVariantCache::RunDepthVariantCompile(const VariantCompileRequest& r
         setLayouts = std::move(dsDesc.DescriptorSetLayouts);
 
     // Hand the compiled unit to the serial apply (see RunColorVariantCompile).
+    const bool canSkipHexTiling = fragmentMode == DepthFragmentMode::CoverageDiscard &&
+        variant->usesBuiltInStandardPbr && req.Spec.alphaTest && !req.Spec.parallax &&
+        !req.Spec.customVertexShader && req.Spec.vertexModifierPath.empty() && req.Spec.userKeywords.empty();
     QueueVariantPublish({req.Key, pipelineId, req.MaterialVersion,
                          std::move(setLayouts), compatMeta ? std::move(compatMeta) : variant->meta,
-                         req.MaterialGuid, req.RegistrationGeneration, /*IsDepth=*/true});
+                         req.MaterialGuid, req.RegistrationGeneration, /*IsDepth=*/true, canSkipHexTiling});
     releaseScope.PublishQueued = true;
 
     m_AsyncVariantCompilesTotal.fetch_add(1, std::memory_order_relaxed);

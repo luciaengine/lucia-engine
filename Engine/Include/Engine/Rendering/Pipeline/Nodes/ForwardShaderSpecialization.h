@@ -15,6 +15,9 @@ namespace GameEngine::Engine::Renderer
 {
 class RenderServices;
 
+// Matches GE_FORWARD_HEX_TILING in forward_shader_specialization.glsl.
+inline constexpr uint32_t kHexTilingShaderConstant = 302;
+
 /// Derives forward pipeline constants from live scene and material state.
 class ForwardShaderSpecialization
 {

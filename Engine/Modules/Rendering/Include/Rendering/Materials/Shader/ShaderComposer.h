@@ -70,6 +70,7 @@ struct ComposedShaderSource
     // Diagnostic: which adapter templates were used.
     std::string vertexAdapterName;
     std::string fragmentAdapterName;
+    std::filesystem::path resolvedSurfacePath;
 
     // The preprocessor defines that were injected.
     std::vector<std::string> defines;

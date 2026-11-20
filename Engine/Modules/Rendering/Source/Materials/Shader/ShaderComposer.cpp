@@ -1023,6 +1023,7 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         }
     }
 
+    result.resolvedSurfacePath = resolvedSurfacePath;
     result.vertexSource = std::move(vsSrc);
     result.fragmentSource = std::move(fsSrc);
     return result;

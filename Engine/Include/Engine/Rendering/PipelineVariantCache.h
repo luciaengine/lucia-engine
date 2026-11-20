@@ -158,6 +158,7 @@ class PipelineVariantCache
         // with the unit so a Previous unit served through a recompile window
         // still names its own generation, not the replacement's.
         uint32_t MaterialVersion = 0;
+        bool CanSkipHexTiling = false;
     };
     struct InstancedVariantEntry
     {
@@ -212,7 +213,8 @@ class PipelineVariantCache
         bool depthBiasEnable,
         bool depthClampEnable,
         FrontFace frontFace,
-        const RenderGraph::RGPrepareContext& context);
+        const RenderGraph::RGPrepareContext& context,
+        bool withoutHexTiling = false);
 
     // The published camera-prepass variant a draw producer pins on a head it
     // emits while the frame is declared (DrawCommand::InternedPipeline and
@@ -548,6 +550,7 @@ class PipelineVariantCache
         GUID MaterialGuid;
         uint64_t RegistrationGeneration = 0;
         bool IsDepth = false;
+        bool CanSkipHexTiling = false;
     };
     void QueueVariantPublish(PendingVariantPublish&& publish);
 
@@ -558,7 +561,7 @@ class PipelineVariantCache
     void InsertVariantEntry(VariantCacheMap& cache, const InstancedVariantKey& key,
                             GraphicsPipelineId pipelineId, uint32_t materialVersion,
                             std::vector<DescriptorSetLayoutId> setLayouts,
-                            std::shared_ptr<ShaderMeta> meta);
+                            std::shared_ptr<ShaderMeta> meta, bool canSkipHexTiling);
 
     // Debug-only ownership check: a cold insert must hold the exclusive lock.
     // Replaces the old single-writer tripwire — A2.4-D6 makes multi-thread

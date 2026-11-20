@@ -759,16 +759,36 @@ class DepthPassPreparation
         // only the pipeline (front face) and the indirect offsets differ.
 
         const Rendering::FrontFace baseWinding = m_Services.FrontFace;
+        const bool withoutHexTiling = CanSkipDepthHexTiling(batch, lookup);
         for (const auto& drawSegment : drawRange.Segments())
         {
             assert(!drawSegment.crossfading || DepthPassDrawsCrossfadeTails(m_Data.Params.PassType));
             PrepareSegment(batch, drawRange, drawBindings, slotIndirectionBda, drawSegment.mirrored ? Rendering::FlipWinding(baseWinding) : baseWinding,
-                           drawSegment.crossfading, drawSegment.segment);
+                           drawSegment.crossfading, withoutHexTiling, drawSegment.segment);
         }
     }
 
-    ResolvedDepthPipeline ResolvePipeline(const DepthBatchPreparation& batch,
-                                          Rendering::FrontFace winding, bool crossfading)
+    bool CanSkipDepthHexTiling(const DepthBatchPreparation& batch, const DrawStreamLookupKey& lookup) const
+    {
+        const auto pass = m_Data.Params.PassType;
+        const auto& material = *batch.Material;
+        const auto& spec = material.GetCompileSpec();
+        const uint32_t row = material.GetGpuSceneMaterialIndex();
+        if ((pass != DepthPassType::Prepass && pass != DepthPassType::ShadowCascade) ||
+            m_Data.Params.VirtualPageTile ||
+            m_Services.Device->GetAPI() != Rendering::GraphicsAPI::Vulkan ||
+            material.GetAlphaMode() != MaterialAlphaMode::Mask ||
+            spec.surfaceShaderPath != "Surfaces/standard_pbr.glsl" || spec.parallax ||
+            spec.customVertexShader || !spec.vertexModifierPath.empty() || !spec.userKeywords.empty() ||
+            row != batch.Key.materialIndex)
+            return false;
+
+        return lookup.classKey == row && m_Services.Materials.IsMaterialRowCurrent(material, row) &&
+               material.GetFloat("hexTiling"_sid, 1.0f) < 0.5f;
+    }
+
+    ResolvedDepthPipeline ResolvePipeline(const DepthBatchPreparation& batch, Rendering::FrontFace winding,
+                                          bool crossfading, bool withoutHexTiling = false)
     {
         ResolvedDepthPipeline resolved{};
         const DepthSegmentPipelineChoice choice = ChooseDepthSegmentPipeline(
@@ -789,7 +809,7 @@ class DepthPassPreparation
         auto [pipeline, variantEntry] = m_Services.Materials.Variants().PrepareDepthInstancedVariant(
             *batch.Material, batch.DrawVertexFlags, batch.Mesh->topology, choice.Keywords,
             m_Data.Params.RasterizationSamples, m_Data.Params.DepthBiasEnable, m_Data.Params.DepthClampEnable,
-            winding, m_Context);
+            winding, m_Context, withoutHexTiling);
         resolved.Pipeline = pipeline;
         if (variantEntry)
         {
@@ -806,13 +826,13 @@ class DepthPassPreparation
     void PrepareSegment(const DepthBatchPreparation& batch,
                         const Rendering::GPUDrawStreamBuilder::BatchDrawRange& drawRange,
                         const DrawBindings& drawBindings, uint64_t slotIndirectionBda,
-                        Rendering::FrontFace winding, bool crossfading,
+                        Rendering::FrontFace winding, bool crossfading, bool withoutHexTiling,
                         const Rendering::GPUDrawStreamBuilder::BatchDrawSegment& segment)
     {
         const size_t commandOffset = segment.cmdByteOffset;
         const size_t countOffset = segment.countByteOffset;
         const uint32_t maxDrawCount = segment.maxDrawCount;
-        const ResolvedDepthPipeline resolved = ResolvePipeline(batch, winding, crossfading);
+        const ResolvedDepthPipeline resolved = ResolvePipeline(batch, winding, crossfading, withoutHexTiling);
         if (!resolved.Pipeline.IsValid())
         {
             LogMeshDrawSkipDiagnostic(

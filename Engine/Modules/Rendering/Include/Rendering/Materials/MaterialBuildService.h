@@ -23,6 +23,9 @@ struct ShaderPackageDeleter
 struct MaterialBuildResult
 {
     bool success = false;
+    // True only when composition and the recorded compile dependency agree
+    // that the program uses the engine's StandardPBR surface.
+    bool usesBuiltInStandardPbr = false;
     std::vector<std::string> errors;
 
     // Cached output location (typically under <workspace>/.Cache/Shaders/...).

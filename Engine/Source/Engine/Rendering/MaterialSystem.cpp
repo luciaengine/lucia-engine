@@ -1079,6 +1079,20 @@ void MaterialSystem::PackMaterialSSBO()
     packedSlot.Offset = alloc.offset;
     packedSlot.Stamp = stamp;
     packedSlot.ContentEpoch = contentEpoch;
+    packedSlot.MappingGeneration = m_MaterialSSBOGeneration;
+}
+
+bool MaterialSystem::IsMaterialRowCurrent(const Material& material, uint32_t row) const
+{
+    if (!m_FramePool || !m_MaterialParamsSSBOBuffer.IsValid() ||
+        m_MaterialParamsSSBOBuffer == m_MaterialParamsSSBOFallback ||
+        row >= m_MaterialsBySSBOIndex.size() || m_MaterialsBySSBOIndex[row] != &material)
+        return false;
+    const auto& slot = m_PackedMaterialSlots[m_FramePool->GetCurrentSlot(FrameWriteUsage::MaterialParams)];
+    return slot.Buffer == m_MaterialParamsSSBOBuffer && slot.Offset == m_MaterialParamsSSBOOffset &&
+           slot.MappingGeneration == m_MaterialSSBOGeneration &&
+           row < slot.RowRevisions.size() && row < m_MaterialParamsSSBOSize / kMaterialEntryStride &&
+           slot.RowRevisions[row] == material.GetContentRevision();
 }
 
 Material* MaterialSystem::RegisterMaterialFromDocument(
