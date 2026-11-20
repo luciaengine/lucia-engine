@@ -381,10 +381,9 @@ void PrepareOrderedOwnerMesh(PreparedForwardDraw& prepared, const IndexedOwnerRe
 
     for (auto& id : pipeline.DescriptorSetLayouts)
     {
-        const auto* sourceLayout = device.LookupDescriptorSetLayout(id);
-        if (!sourceLayout)
+        Rendering::DescriptorSetLayoutDesc layout;
+        if (!device.CopyDescriptorSetLayout(id, layout))
             return;
-        auto layout = *sourceLayout;
         for (auto& binding : layout.bindings)
             if (binding.shaderStages & kShaderStageVertex)
                 binding.shaderStages = (binding.shaderStages & ~kShaderStageVertex) | kShaderStageMesh;
