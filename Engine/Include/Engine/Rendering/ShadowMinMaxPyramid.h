@@ -6,8 +6,10 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Materials/Shader/ShaderMeta.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 
 // Explicit imports from the Rendering module (CodingStyle: no namespace-scope
@@ -64,7 +66,7 @@ class ShadowMinMaxPyramid
         int32_t LayerCount;
         int32_t SrcLevel;
         int32_t Mode;
-        int32_t Pad0;
+        uint32_t LayerMask;
     };
 
     // Levels a pyramid over a `baseExtent`-texel base level needs so its top
@@ -85,12 +87,15 @@ class ShadowMinMaxPyramid
     // cascade can pick, in that cascade's texels: the levels follow it
     // (LevelsForQuery), so the PCSS lit proof always finds a level covering its
     // query. The render graph derives the level-to-level ordering from the
-    // declared read/write ranges — no manual barriers.
+    // declared read/write ranges. For imported depth, a supplied mask
+    // identifies cascades that may be written in this frame. Transient depth
+    // and calls without a mask reduce all layers and invalidate retained contents.
     Rendering::RenderGraph::RGTexture Declare(Rendering::RenderGraph::RGFrame& frame,
                                               RenderServices& rs, Rendering::ViewId viewId,
                                               Rendering::RenderGraph::RGTexture cascadeDepth,
                                               uint32_t shadowResolution, uint32_t cascadeCount,
-                                              float widestKernelTexels, bool enabled);
+                                              float widestKernelTexels, bool enabled,
+                                              std::optional<uint32_t> scheduledDepthMask = {});
 
     // The pyramid `viewId` has THIS frame. Everything a later phase needs to
     // publish it, answered through one lookup so the three facts can never come
@@ -142,12 +147,18 @@ class ShadowMinMaxPyramid
   private:
     void LoadShader(IDevice* device);
 
-    // One dispatch: reduce all `layers` into mip `level` of `pyramid`.
+    struct ReductionOutcome
+    {
+        std::array<bool, 32> Dispatched{};
+    };
+
+    // One dispatch reduces the selected layers into mip `level` of `pyramid`.
     // Level 0 reads `cascadeDepth`, later levels read `pyramid` at level - 1.
     void DeclareLevelPass(Rendering::RenderGraph::RGFrame& frame,
                           Rendering::RenderGraph::RGTexture cascadeDepth,
                           Rendering::RenderGraph::RGTexture pyramid, Rendering::ViewId viewId,
-                          uint32_t layers, uint32_t level, uint32_t dstWidth, uint32_t dstHeight);
+                          uint32_t layers, uint32_t layerMask, uint32_t level,
+                          uint32_t dstExtent, uint32_t levels, ReductionOutcome* outcome);
 
     bool m_LoadAttempted = false;
     ComputePipelineId m_PipelineId{};
@@ -167,5 +178,18 @@ class ShadowMinMaxPyramid
         FrameState State;
     };
     std::unordered_map<Rendering::ViewId, ViewPyramid> m_PyramidByView;
+
+    struct RetainedPyramid
+    {
+        Rendering::RenderGraph::RGFrameStamp Stamp;
+        Rendering::TextureHandle Depth;
+        Rendering::TextureHandle Pyramid;
+        uint32_t Extent = 0;
+        uint32_t Layers = 0;
+        uint32_t Levels = 0;
+        ReductionOutcome* Pending = nullptr;
+        bool Complete = false;
+    };
+    std::unordered_map<Rendering::ViewId, RetainedPyramid> m_RetainedByView;
 };
 } // namespace GameEngine::Engine::Renderer

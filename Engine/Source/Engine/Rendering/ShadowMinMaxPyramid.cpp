@@ -9,6 +9,7 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <algorithm>
+#include <bit>
 #include <memory>
 #include <string>
 #include <vector>
@@ -57,7 +58,8 @@ uint32_t ShadowMinMaxPyramid::LevelsForQuery(uint32_t baseExtent, float queryTex
 Rendering::RenderGraph::RGTexture ShadowMinMaxPyramid::Declare(
     Rendering::RenderGraph::RGFrame& frame, RenderServices& rs, Rendering::ViewId viewId,
     Rendering::RenderGraph::RGTexture cascadeDepth, uint32_t shadowResolution,
-    uint32_t cascadeCount, float widestKernelTexels, bool enabled)
+    uint32_t cascadeCount, float widestKernelTexels, bool enabled,
+    std::optional<uint32_t> scheduledDepthMask)
 {
     namespace RG = Rendering::RenderGraph;
 
@@ -68,6 +70,7 @@ Rendering::RenderGraph::RGTexture ShadowMinMaxPyramid::Declare(
     // directional light stops casting is not declared here, so it cannot clear
     // itself, and only the stamp makes that entry read as absent.
     m_PyramidByView.erase(viewId);
+    const auto retained = m_RetainedByView.extract(viewId);
 
     // Structural gate: nothing declared, no resource, no dispatch. The A/B this
     // pyramid exists to win is only meaningful if its "off" arm is free.
@@ -126,19 +129,58 @@ Rendering::RenderGraph::RGTexture ShadowMinMaxPyramid::Declare(
     if (!pyramid.IsValid())
         return {};
 
-    // All cascades share the same mip dimensions and descriptors. Dispatch
-    // their independent layers in Z so each level needs one pass and one set
-    // of barriers/descriptors instead of serializing a pass per cascade.
-    for (uint32_t level = 0u; level < levels; ++level)
+    // Transient depth is materialized at Execute. Only the retained path
+    // needs the imported depth handle during graph declaration.
+    const bool mayReuse = scheduledDepthMask && layers <= 32u &&
+                          frame.Graph().IsImported(cascadeDepth.Id);
+    const auto depthPhysical = mayReuse ? frame.PhysicalTexture(cascadeDepth) : Rendering::TextureHandle{};
+    const auto pyramidPhysical = frame.PhysicalTexture(pyramid);
+    ReductionOutcome* outcome = nullptr;
+    uint32_t layerMask = 0;
+    bool reduce = true;
+    if (depthPhysical.IsValid() && pyramidPhysical.IsValid())
     {
-        const uint32_t dstExtent = std::max(1u, baseExtent >> level);
-        DeclareLevelPass(frame, cascadeDepth, pyramid, viewId, layers, level, dstExtent,
-                         dstExtent);
+        const uint32_t allLayers = ~0u >> (32u - layers);
+        if (!retained.empty())
+        {
+            const RetainedPyramid& previous = retained.mapped();
+            if (previous.Complete && previous.Stamp.Frame == &frame && frame.FrameIndex() > 0 &&
+                previous.Stamp.FrameIndex == frame.FrameIndex() - 1 &&
+                previous.Depth == depthPhysical && previous.Pyramid == pyramidPhysical &&
+                previous.Extent == baseExtent && previous.Layers == layers && previous.Levels == levels)
+            {
+                const uint32_t dirtyLayers = *scheduledDepthMask & allLayers;
+                reduce = dirtyLayers != 0u;
+                layerMask = dirtyLayers == allLayers ? 0u : dirtyLayers;
+            }
+        }
+
+        auto& pending = m_RetainedByView[viewId];
+        pending.Stamp.Stamp(frame);
+        pending.Depth = depthPhysical;
+        pending.Pyramid = pyramidPhysical;
+        pending.Extent = baseExtent;
+        pending.Layers = layers;
+        pending.Levels = levels;
+        pending.Complete = !reduce;
+        if (reduce)
+            outcome = frame.AllocatePassData<ReductionOutcome>();
+        pending.Pending = outcome;
+    }
+
+    if (reduce)
+    {
+        for (uint32_t level = 0u; level < levels; ++level)
+        {
+            const uint32_t dstExtent = std::max(1u, baseExtent >> level);
+            DeclareLevelPass(frame, cascadeDepth, pyramid, viewId, layers, layerMask, level,
+                             dstExtent, levels, outcome);
+        }
     }
 
     ViewPyramid& entry = m_PyramidByView[viewId];
     entry.Stamp.Stamp(frame);
-    entry.State.Physical = frame.PhysicalTexture(pyramid);
+    entry.State.Physical = pyramidPhysical;
     entry.State.Levels = static_cast<int>(levels);
     entry.State.Layers = layers;
     return pyramid;
@@ -156,6 +198,7 @@ ShadowMinMaxPyramid::FrameState ShadowMinMaxPyramid::StateFor(
 void ShadowMinMaxPyramid::OnDeviceRebuilt()
 {
     m_PyramidByView.clear();
+    m_RetainedByView.clear();
     // The load is one-shot, so clearing the attempt flag is what lets the next
     // Declare rebuild the pipeline, the reflected layout and the sampler against
     // the new device. Nothing is destroyed here: the rebuild already freed them
@@ -172,7 +215,8 @@ void ShadowMinMaxPyramid::DeclareLevelPass(Rendering::RenderGraph::RGFrame& fram
                                            Rendering::RenderGraph::RGTexture cascadeDepth,
                                            Rendering::RenderGraph::RGTexture pyramid,
                                            Rendering::ViewId viewId, uint32_t layers,
-                                           uint32_t level, uint32_t dstWidth, uint32_t dstHeight)
+                                           uint32_t layerMask, uint32_t level, uint32_t dstExtent,
+                                           uint32_t levels, ReductionOutcome* outcome)
 {
     namespace RG = Rendering::RenderGraph;
 
@@ -180,14 +224,15 @@ void ShadowMinMaxPyramid::DeclareLevelPass(Rendering::RenderGraph::RGFrame& fram
     const uint32_t srcLevel = fromDepth ? 0u : level - 1u;
 
     PushConstants pc{};
-    pc.DstSize[0] = static_cast<int32_t>(dstWidth);
-    pc.DstSize[1] = static_cast<int32_t>(dstHeight);
+    pc.DstSize[0] = static_cast<int32_t>(dstExtent);
+    pc.DstSize[1] = static_cast<int32_t>(dstExtent);
     pc.LayerCount = static_cast<int32_t>(layers);
     pc.SrcLevel = static_cast<int32_t>(srcLevel);
     pc.Mode = fromDepth ? kModeDepthToLevel0 : kModeLevelToLevel;
 
-    const uint32_t gx = (dstWidth + kWorkgroupSize - 1u) / kWorkgroupSize;
-    const uint32_t gy = (dstHeight + kWorkgroupSize - 1u) / kWorkgroupSize;
+    pc.LayerMask = layerMask;
+    const uint32_t groups = (dstExtent + kWorkgroupSize - 1u) / kWorkgroupSize;
+    const uint32_t activeLayers = layerMask == 0u ? layers : static_cast<uint32_t>(std::popcount(layerMask));
 
     const std::string passName = "ShadowMinMaxPyramid.Level" + std::to_string(level) + "[View#" +
                                  std::to_string(static_cast<uint32_t>(viewId)) + "]";
@@ -197,11 +242,24 @@ void ShadowMinMaxPyramid::DeclareLevelPass(Rendering::RenderGraph::RGFrame& fram
         [&](RG::RGPassBuilder& p)
         {
             p.UsePipeline(m_PipelineId);
+            if (outcome && level + 1u == levels)
+            {
+                p.OnSubmitted([this, viewId, levels, outcome, forFrame = &frame]
+                {
+                    const auto current = m_RetainedByView.find(viewId);
+                    if (current == m_RetainedByView.end() || !current->second.Stamp.IsFor(*forFrame) ||
+                        current->second.Pending != outcome)
+                        return;
+                    current->second.Pending = nullptr;
+                    current->second.Complete = std::all_of(outcome->Dispatched.begin(),
+                                                           outcome->Dispatched.begin() + levels,
+                                                           [](bool dispatched) { return dispatched; });
+                });
+            }
             // Declared ranges match what the pass's DESCRIPTORS reach, not just
             // the texels one dispatch stores: uSrcDepth binds the whole cascade
-            // array and uDst a whole mip level. Z workgroups reduce all active
-            // layers together, so the array-wide barriers order only the real
-            // level-to-level dependency.
+            // array and uDst a whole mip level even when the dispatch updates
+            // only some layers.
             if (fromDepth)
                 p.Read(cascadeDepth, RG::RGTextureRead::Sampled);
             else
@@ -210,7 +268,7 @@ void ShadowMinMaxPyramid::DeclareLevelPass(Rendering::RenderGraph::RGFrame& fram
             p.Write(pyramid, RG::RGTextureWrite::Storage,
                     RG::RGRange{.BaseMip = level, .MipCount = 1u});
         },
-        [this, cascadeDepth, pyramid, level, layers, fromDepth, pc, gx, gy](RG::RGContext& ctx)
+        [this, cascadeDepth, pyramid, level, activeLayers, fromDepth, pc, groups, outcome](RG::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice();
             auto* cl = ctx.Cmd;
@@ -261,7 +319,9 @@ void ShadowMinMaxPyramid::DeclareLevelPass(Rendering::RenderGraph::RGFrame& fram
             cl->SetPipeline(pipe);
             cl->BindDescriptorSet(0, ds, pipe);
             cl->SetPushConstants(pc);
-            cl->Dispatch(gx, gy, layers);
+            cl->Dispatch(groups, groups, activeLayers);
+            if (outcome)
+                outcome->Dispatched[level] = true;
         });
 }
 

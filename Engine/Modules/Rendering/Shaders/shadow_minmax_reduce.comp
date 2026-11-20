@@ -46,22 +46,28 @@ layout(set = 0, binding = 2, rg32f) uniform writeonly image2DArray uDst;
 
 // The block ends on a multiple of its largest member's alignment (ivec2: 8), so
 // it is the same 24 bytes in SPIR-V and in the MSL struct SPIRV-Cross emits,
-// which rounds a struct's size up to that alignment. Without `pad0` the MSL
-// struct is 24 bytes against a 20-byte push and the Metal API validation
-// layer aborts the dispatch.
+// which rounds a struct's size up to that alignment. The layer mask fills the
+// last four bytes and zero selects every active cascade.
 layout(push_constant) uniform Push {
     ivec2 dstSize;
     int   layerCount;
     int   srcLevel;
     int   mode;      // 0 = depth -> level 0 (4x4), 1 = level N -> N+1 (2x2)
-    int   pad0;
+    uint  layerMask;
 } pc;
 
 void main()
 {
     const ivec2 dst = ivec2(gl_GlobalInvocationID.xy);
-    const int layer = int(gl_GlobalInvocationID.z);
-    if (dst.x >= pc.dstSize.x || dst.y >= pc.dstSize.y || layer >= pc.layerCount)
+    int layer = int(gl_WorkGroupID.z);
+    if (pc.layerMask != 0u)
+    {
+        uint remaining = pc.layerMask;
+        for (int i = 0; i < layer; ++i)
+            remaining &= remaining - 1u;
+        layer = findLSB(remaining);
+    }
+    if (dst.x >= pc.dstSize.x || dst.y >= pc.dstSize.y || layer < 0 || layer >= pc.layerCount)
         return;
 
     float lo =  1.0e30;
