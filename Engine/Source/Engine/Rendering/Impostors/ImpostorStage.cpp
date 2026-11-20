@@ -7,11 +7,14 @@
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/TextureService.h"
+#include "Engine/Rendering/ViewRegistry.h"
+#include "Engine/Rendering/WorldDrawTypes.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
 #include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "Types/Fnv1a.h"
 
 #include <string>
 #include <vector>
@@ -26,6 +29,7 @@ void ImpostorStage::EnsureCardMesh(RenderServices& services)
         registry.RegisterSubmesh(Rendering::MeshGPUKey{PrimitiveGenerator::PlaneSpriteUvGuid(), 0u},
                                  PrimitiveGenerator::GeneratePlaneSpriteUv());
     const Rendering::MeshGPUEntry* entry = registry.Find(card);
+    m_CardMesh = card;
     m_CardMeshIndex.store(entry ? entry->gpuMeshIndex : kNoCardMesh, std::memory_order_relaxed);
 }
 
@@ -78,13 +82,30 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
     return registered->GetGraphicsPipelineId().IsValid() ? registered : nullptr;
 }
 
-bool ImpostorStage::Link(RenderServices& services, std::span<const Rendering::MeshGPUHandle> parts,
-                         const Material& card) const
+std::vector<uint32> ImpostorStage::PartMeshIndices(const RenderServices& services,
+                                                   std::span<const Rendering::MeshGPUHandle> parts)
+{
+    std::vector<uint32> indices;
+    indices.reserve(parts.size());
+    const Rendering::MeshGPURegistry& registry = services.GetMeshGPURegistry();
+    for (const Rendering::MeshGPUHandle part : parts)
+    {
+        const Rendering::MeshGPUEntry* entry = registry.Find(part);
+        if (!entry || entry->gpuMeshIndex == 0xFFFFFFFFu)
+            return {};
+        indices.push_back(entry->gpuMeshIndex);
+    }
+    return indices;
+}
+
+bool ImpostorStage::Link(RenderServices& services, std::span<const uint32> partMeshes, const Material& card) const
 {
     Rendering::GPUScene* scene = services.GetGPUScene();
     const uint32 cardMesh = m_CardMeshIndex.load(std::memory_order_relaxed);
     const uint32 cardMaterial = card.GetGpuSceneMaterialIndex();
-    if (!scene || parts.empty() || cardMesh == kNoCardMesh || cardMaterial == 0xFFFFFFFFu)
+    // The CPU draw path of the compatibility profile has no scatter to select the card.
+    if (!scene || partMeshes.empty() || cardMesh == kNoCardMesh || cardMaterial == 0xFFFFFFFFu
+        || !services.GetProfile().UseGpuDrivenDraws)
         return false;
     // The scatter routes a card through the material-dependent shadow rows, as an alpha-masked
     // material with a vertex modifier always is.
@@ -94,28 +115,56 @@ bool ImpostorStage::Link(RenderServices& services, std::span<const Rendering::Me
                            cardMaterial);
         return false;
     }
-    const Rendering::MeshGPURegistry& registry = services.GetMeshGPURegistry();
-    for (size_t i = 0; i < parts.size(); ++i)
+    for (size_t i = 0; i < partMeshes.size(); ++i)
     {
-        const Rendering::MeshGPUEntry* entry = registry.Find(parts[i]);
-        if (!entry || entry->gpuMeshIndex == 0xFFFFFFFFu)
-            continue;
-        scene->SetMeshImpostorCard(entry->gpuMeshIndex, cardMaterial, cardMesh, i == 0);
+        if (!scene->SetMeshImpostorCard(partMeshes[i], cardMaterial, cardMesh, i == 0))
+        {
+            Unlink(services, partMeshes.first(i));
+            return false;
+        }
     }
     return true;
 }
 
-void ImpostorStage::Unlink(RenderServices& services, std::span<const Rendering::MeshGPUHandle> parts)
+void ImpostorStage::Unlink(RenderServices& services, std::span<const uint32> partMeshes)
 {
     Rendering::GPUScene* scene = services.GetGPUScene();
     if (!scene)
         return;
-    const Rendering::MeshGPURegistry& registry = services.GetMeshGPURegistry();
-    for (const Rendering::MeshGPUHandle part : parts)
+    for (const uint32 mesh : partMeshes)
+        scene->ClearMeshImpostorCard(mesh);
+}
+
+void ImpostorStage::SubmitCards(RenderServices& services, uint64 worldId, std::span<const Material* const> cards) const
+{
+    if (cards.empty() || !m_CardMesh.IsValid())
+        return;
+    // A card is alpha-masked and casts a shadow; the scatter, not this record, decides which
+    // instances draw it, so the record names no instance of its own and every layer.
+    const uint32 flags = kSubmissionFlagCastShadows | 2u
+                         | Rendering::DepthClassInstanceFlagBits(Rendering::MaterialDepthClass::MaterialDependent);
+    std::vector<WorldSubmissionRecord> records;
+    uint64 revision = Hashing::kFnv1a64OffsetBasis;
+    for (const auto& view : services.Views().GetViews())
     {
-        if (const Rendering::MeshGPUEntry* entry = registry.Find(part); entry && entry->gpuMeshIndex != 0xFFFFFFFFu)
-            scene->ClearMeshImpostorCard(entry->gpuMeshIndex);
+        if (view.worldId != 0 && view.worldId != worldId)
+            continue;
+        for (const Material* card : cards)
+        {
+            WorldSubmissionRecord record{};
+            record.viewId = view.id;
+            record.meshHandle = m_CardMesh;
+            record.material = card;
+            record.renderLayerMask = Rendering::RenderLayerMask::All();
+            record.flags = flags;
+            records.push_back(record);
+            revision = Hashing::HashCombine(revision, Hashing::HashPointer(card));
+            revision = Hashing::HashCombine(revision, static_cast<uint64>(view.id));
+        }
     }
+    // A nonzero revision names an unchanged record set, so equal frames keep their batch keys.
+    if (!records.empty())
+        services.SubmitWorldSubmissions(records, revision | 1u);
 }
 
 void ImpostorStage::OnDeviceRebuilt(Rendering::IDevice* /*device*/)

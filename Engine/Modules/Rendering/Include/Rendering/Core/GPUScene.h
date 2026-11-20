@@ -545,7 +545,8 @@ class GPUScene
      * for the other parts of the model. The primary part's instances also count in the card's
      * batch row, so the row has room for every instance that can switch.
      */
-    void SetMeshImpostorCard(uint32_t meshIndex, uint32_t cardMaterialIndex, uint32_t cardMeshIndex,
+    /// Returns false, and links nothing, for a mesh, card material or card mesh that does not exist.
+    bool SetMeshImpostorCard(uint32_t meshIndex, uint32_t cardMaterialIndex, uint32_t cardMeshIndex,
                              bool primary);
     /// Remove the impostor link of the mesh; its instances draw the mesh at every distance.
     void ClearMeshImpostorCard(uint32_t meshIndex);

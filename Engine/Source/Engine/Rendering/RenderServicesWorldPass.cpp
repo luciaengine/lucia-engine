@@ -1578,6 +1578,7 @@ class RenderServices::WorldPassPreparation
 
         instanceConstants.indirectionAddr = slotIndirectionBda;
         instanceConstants.gpuInstancesAddr = m_InstanceAddress;
+        instanceConstants.materialOverride = DrawStreamRangeMaterial(key, lookup);
         std::span<const std::byte> constantBytes(
             reinterpret_cast<const std::byte*>(&instanceConstants), sizeof(instanceConstants));
 

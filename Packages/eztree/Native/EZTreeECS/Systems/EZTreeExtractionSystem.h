@@ -7,6 +7,7 @@
 
 #include <array>
 #include <utility>
+#include <vector>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -62,8 +63,13 @@ private:
 
     Engine::Renderer::RenderServices* m_RenderServices = nullptr;
     FlatMap<BindingKey, TreeBinding> m_Bindings;
-    // By variant options hash: the card material index + 1 its parts are linked to; 0 = not linked.
-    FlatMap<uint64, uint32> m_ImpostorLinks;
+    // The impostor link of a variant's parts: the card material index and the part mesh indices.
+    struct ImpostorLink
+    {
+        uint32 CardMaterial = 0xFFFFFFFFu;
+        std::vector<uint32> Meshes; // Empty while not linked.
+    };
+    FlatMap<uint64, ImpostorLink> m_ImpostorLinks; // By variant options hash.
     uint64 m_UpdateStamp = 0;
     // A device rebuild frees the GPU meshes; when the generation moves, the trees add
     // their instances again over the regenerated variants.

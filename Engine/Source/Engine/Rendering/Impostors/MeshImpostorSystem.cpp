@@ -65,13 +65,17 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     // the registry's table lock for the whole pass.
     Rendering::MeshGPURegistry::TableScope registryScope(m_RenderServices->GetMeshGPURegistry());
 
-    // A device rebuild freed the meshes and cleared the GPU scene with its links: scan and link again.
+    // A device rebuild freed the meshes and the atlases: unlink, then scan and link again.
     const uint64 deviceGeneration =
         m_RenderServices->GetDevice() ? m_RenderServices->GetDevice()->GetDeviceRebuildGeneration() : 0u;
     const bool deviceRebuilt = deviceGeneration != m_DeviceGeneration;
     m_DeviceGeneration = deviceGeneration;
     if (deviceRebuilt)
+    {
+        for (auto& [model, impostor] : m_Models)
+            UnlinkModel(impostor);
         m_Models.Clear();
+    }
 
     const uint64 probeVersion = world.GetGlobalSystemVersion();
     const std::size_t structuralVersion = world.GetStructuralChangeVersion();
@@ -92,8 +96,13 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     auto& stage = m_RenderServices->EnsureFeature<ImpostorStage>();
     stage.EnsureCardMesh(*m_RenderServices);
     auto& baker = m_RenderServices->EnsureFeature<ImpostorBaker>();
+    std::vector<const Material*> cards;
     for (auto& [model, impostor] : m_Models)
-        UpdateModel(model, impostor, baker, stage);
+    {
+        if (const Material* card = UpdateModel(model, impostor, baker, stage))
+            cards.push_back(card);
+    }
+    stage.SubmitCards(*m_RenderServices, world.GetWorldId(), cards);
 }
 
 void MeshImpostorSystem::Scan(ECS::World& world)
@@ -148,15 +157,20 @@ void MeshImpostorSystem::Scan(ECS::World& world)
                                              [](const Part& a, const Part& b)
                                              { return a.Mesh == b.Mesh && a.Material == b.Material; });
         if (sameParts)
+        {
             next->LinkedMaterial = previous.LinkedMaterial;
+            next->LinkedMeshes = std::move(previous.LinkedMeshes);
+        }
         else
+        {
             UnlinkModel(previous);
+        }
     }
     m_Models = std::move(models);
 }
 
-void MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
-                                     ImpostorStage& stage)
+const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
+                                                ImpostorStage& stage)
 {
     ImpostorBakeRequest request{};
     request.Key.MeshHash = impostor.MeshHash;
@@ -172,25 +186,33 @@ void MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor& impostor,
     const Material* card = ImpostorStage::RegisterCardMaterial(*m_RenderServices, cardGuid, "Impostor", atlas,
                                                                impostor.Center, impostor.Radius,
                                                                request.Key.FramesPerSide, kLayout);
-    if (!card)
+    // Every part must be resident: a part that is not would draw its mesh beside the card.
+    const std::vector<uint32> meshes = card ? ImpostorStage::PartMeshIndices(*m_RenderServices, PartMeshes(impostor.Parts))
+                                            : std::vector<uint32>{};
+    if (meshes.empty())
     {
-        // Not baked, evicted, or the card pipeline is still building: the parts draw their meshes.
+        // Not baked, evicted, the card pipeline is still building, or a part is not resident: the
+        // parts draw their meshes.
         UnlinkModel(impostor);
-        return;
+        return nullptr;
     }
-    if (card->GetGpuSceneMaterialIndex() == impostor.LinkedMaterial)
-        return;
-    const std::vector<Rendering::MeshGPUHandle> meshes = PartMeshes(impostor.Parts);
-    impostor.LinkedMaterial = stage.Link(*m_RenderServices, meshes, *card) ? card->GetGpuSceneMaterialIndex()
-                                                                            : 0xFFFFFFFFu;
+    if (card->GetGpuSceneMaterialIndex() == impostor.LinkedMaterial && meshes == impostor.LinkedMeshes)
+        return card;
+    UnlinkModel(impostor);
+    if (!stage.Link(*m_RenderServices, meshes, *card))
+        return nullptr;
+    impostor.LinkedMaterial = card->GetGpuSceneMaterialIndex();
+    impostor.LinkedMeshes = meshes;
+    return card;
 }
 
 void MeshImpostorSystem::UnlinkModel(ModelImpostor& impostor)
 {
-    if (impostor.LinkedMaterial == 0xFFFFFFFFu)
+    if (impostor.LinkedMeshes.empty())
         return;
-    ImpostorStage::Unlink(*m_RenderServices, PartMeshes(impostor.Parts));
+    ImpostorStage::Unlink(*m_RenderServices, impostor.LinkedMeshes);
     impostor.LinkedMaterial = 0xFFFFFFFFu;
+    impostor.LinkedMeshes.clear();
 }
 
 } // namespace GameEngine::Engine::Renderer
