@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include "../Source/Engine/Rendering/DepthPrepassLineage.h"
 #include "AssetCore/GUID.h"
 #include "Assets/ModelAsset.h"
 #include "Core/Application.h"
@@ -861,6 +862,43 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
 }
 
 } // namespace
+
+TEST(IndexedDepthReuse, AnInterveningDepthWriterInvalidatesThePrepass)
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    for (const bool rewritesDepth : {false, true})
+    {
+        RG::RGGraph graph;
+        graph.BeginFrame();
+        RG::RGResourceDesc desc;
+        desc.Kind = RG::RGResourceKind::Texture;
+        desc.Name = "CameraDepth";
+        desc.Format = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
+        const auto depth = graph.CreateResource(desc);
+        const auto prepass = graph.AddPass({"CameraPrepass"});
+        const auto inBetween = graph.AddPass({"InterveningPass"});
+        const auto forward = graph.AddPass({"Forward"});
+        graph.Write(prepass, depth, RG::RGAccess::DepthWrite);
+        graph.Read(inBetween, depth, RG::RGAccess::DepthRead);
+        if (rewritesDepth)
+            graph.Write(inBetween, depth, RG::RGAccess::DepthWrite);
+        graph.Read(forward, depth, RG::RGAccess::DepthRead);
+        graph.PreventCulling(inBetween);
+        graph.PreventCulling(forward);
+        graph.AddOrderingEdge(inBetween, forward);
+        graph.Compile();
+        graph.Schedule();
+
+        const RG::RGAttachmentRec producer{
+            .Pass = prepass, .Tex = depth, .Ops = {.Load = RG::RGLoadOp::Clear}, .IsDepth = true};
+        const RG::RGAttachmentRec consumer{
+            .Pass = forward, .Tex = depth, .Ops = {.Store = RG::RGStoreOp::None},
+            .IsDepth = true, .ReadOnly = true};
+        const auto lineage = RG::CheckDepthPrepassLineage(graph, producer, consumer, false);
+        EXPECT_EQ(static_cast<bool>(lineage), !rewritesDepth);
+        EXPECT_EQ(lineage.BlockingPass, rewritesDepth ? inBetween : RG::kInvalidId);
+    }
+}
 
 // The card's left half is cut away by its vertex alpha, so the prepass depth
 // there must be the floor's: the colour pass discards those fragments, and a

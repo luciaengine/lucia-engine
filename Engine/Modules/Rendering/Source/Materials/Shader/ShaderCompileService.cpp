@@ -10,6 +10,7 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "ShaderIncludeClosure.h"
 #include "ShaderSourceCache.h"
+#include "StockShaderSources.h"
 #include "../SlangCompileLane.h"
 
 #include <algorithm>
@@ -804,6 +805,25 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
             h = HashShaderBytes(&closure.hashes[i], sizeof(uint64_t), h);
     }
 
+    const std::string stockMaskPath = req.stockMaskSurface.empty()
+        ? std::string{} : ShaderSourceCache::NormalizedKey(req.stockMaskSurface);
+    const auto stockShaderRoot = std::filesystem::path(stockMaskPath).parent_path().parent_path();
+    const auto isStockInclude = [&stockShaderRoot](const std::string& include, uint64_t hash) {
+        return MatchesStockShaderSource(std::filesystem::path(include).lexically_relative(stockShaderRoot), hash);
+    };
+    bool canRecordStockMask = false;
+#if !defined(__EMSCRIPTEN__)
+    canRecordStockMask = !stockMaskPath.empty() && closure.covered.contains(stockMaskPath);
+    if (canRecordStockMask)
+        for (size_t index = 0; index < closure.paths.size(); ++index)
+            canRecordStockMask &= isStockInclude(closure.paths[index], closure.hashes[index]);
+#endif
+    if (canRecordStockMask)
+    {
+        h = HashShaderString(h, kStockMaskCoverageDefine);
+        h = HashShaderBytes(&req.stockMaskSurfaceHash, sizeof(req.stockMaskSurfaceHash), h);
+    }
+
     // Expose the scanned closure BEFORE any hit/compile/failure exit: every
     // path below (hit, fresh compile, failed compile) leaves the attempted
     // dependency set on the result for the shader-edit invalidation trigger.
@@ -867,6 +887,8 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
     std::vector<StageReflectionResult> reflectedStages;
     reflectedStages.reserve(req.stages.size());
     std::unordered_map<std::string, uint64_t> includeHashes;
+    std::unordered_map<std::string, uint64_t> stockMaskFragmentIncludes;
+    const ShaderStageCompileSpec* stockMaskFragment = nullptr;
 
     for (const auto& stageSpec : req.stages)
     {
@@ -884,7 +906,11 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
 #if defined(__EMSCRIPTEN__)
         if (!CompileBrowserStage(stageSpec, req, out.includeClosurePaths, words, wgslBytes[stageKey], diag))
 #else
-        if (!CompileOneStage(stageSpec, req, stageKind, words, diag, &includeHashes))
+        const bool checkMask = canRecordStockMask && stageKey == "fs";
+        if (checkMask)
+            stockMaskFragment = &stageSpec;
+        auto& trace = checkMask ? stockMaskFragmentIncludes : includeHashes;
+        if (!CompileOneStage(stageSpec, req, stageKind, words, diag, &trace))
 #endif
         {
             setErr("Compile failed (" + stageKey + "):\n" + diag);
@@ -918,6 +944,17 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
                           req.stages.size(), DescribeStages(req));
     }
 
+    const auto stockSurface = stockMaskFragmentIncludes.find(stockMaskPath);
+    const bool stockMaskMatched =
+        stockMaskFragment && stockSurface != stockMaskFragmentIncludes.end() &&
+        stockSurface->second == req.stockMaskSurfaceHash &&
+        std::all_of(stockMaskFragmentIncludes.begin(), stockMaskFragmentIncludes.end(),
+                    [&](const auto& include) { return isStockInclude(include.first, include.second); }) &&
+        std::all_of(includeHashes.begin(), includeHashes.end(),
+                    [&](const auto& include) { return isStockInclude(include.first, include.second); }) &&
+        ShaderSourceCache::Get().Generation() == sourceGeneration;
+    includeHashes.merge(stockMaskFragmentIncludes);
+
     // Merge compiler-recorded dependencies the textual scan cannot resolve
     // (Slang module imports, macro-form includes) into the exposed closure.
     for (const auto& kv : includeHashes)
@@ -928,6 +965,8 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
 
     // Merge and validate metadata
     ShaderMeta meta = MergeStages(reflectedStages);
+    if (stockMaskMatched)
+        meta.RequiredDefines = stockMaskFragment->defines;
     {
         auto report = ValidateShaderMeta(meta, 128);
         if (report.HasErrors())

@@ -160,6 +160,7 @@ class SceneAccelerationStructureService;
 class RTShadowMaskService;
 class ScreenSpaceShadowPasses;
 struct DepthDrawServices;
+struct PreparedDepthOnlyPass;
 class DepthUnderDrawTracker;
 namespace Pipeline
 {
@@ -2367,6 +2368,11 @@ class RenderServices
         // own depth unwritten, and suppressing the clear there would render
         // against stale depth.
         Rendering::RenderGraph::RGTexture DepthPrepassDepth{};
+        Rendering::RenderGraph::RGPass IndexedReplayPrepass{};
+        const PreparedDepthOnlyPass* IndexedReplayProducer = nullptr;
+        const Rendering::CameraData* IndexedReplayCamera = nullptr;
+        uint32_t IndexedReplayViewportWidth = 0;
+        uint32_t IndexedReplayViewportHeight = 0;
         // Misorder tripwire: producer arms (prepass/cascade/area) declared
         // AFTER this view's world pass would derive WAR edges — the world
         // would sample frame N−1 content, silently. The arms error loudly.

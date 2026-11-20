@@ -632,6 +632,12 @@ TEST(RGFrame, ExternalImportsDedupByPhysicalHandle)
                   {
                       p.Read(b2);
                       p.AttachColor(0, t1, {.Load = RGLoadOp::Clear});
+                      p.Prepare([tex](RGPrepareContext& context)
+                      {
+                          EXPECT_TRUE(context.HasDeclaredTextureWrite(tex));
+                          EXPECT_FALSE(context.HasDeclaredTextureWrite({}));
+                          return true;
+                      });
                   },
                   [](RGContext&) {});
     frame.MarkOutput(t2);
