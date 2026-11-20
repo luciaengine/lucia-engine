@@ -4,6 +4,7 @@
 import argparse
 import base64
 import hashlib
+import json
 from pathlib import Path
 import re
 import shlex
@@ -101,14 +102,51 @@ def use_native_opfs_callbacks(source):
     return source
 
 
-def patch_glue(framework):
+def split_editor_data(source, archive, framework):
+    """Keep only picker assets in the preload that blocks editor startup."""
+    package_call = re.search(r"^  loadPackage\(", source, re.MULTILINE)
+    if package_call is None:
+        raise ValueError("The pinned .NET editor preload manifest is missing")
+    start = package_call.end()
+    metadata, length = json.JSONDecoder().raw_decode(source[start:])
+    end = start + length
+    if not source.startswith(");", end) or metadata["remote_package_size"] != archive.stat().st_size:
+        raise ValueError("The .NET preload manifest does not match the data file")
+
+    startup_files = []
+    shader_files = []
+    startup_name = framework / "dotnet.native.data"
+    shader_name = framework / "dotnet.native.shaders.data"
+    with archive.open("rb") as data, startup_name.open("wb") as startup, shader_name.open("wb") as shaders:
+        for entry in metadata["files"]:
+            begin = int(entry["start"])
+            finish = int(entry["end"])
+            if (begin != entry["start"] or finish != entry["end"] or
+                    begin != data.tell() or not begin <= finish <= metadata["remote_package_size"]):
+                raise ValueError("Invalid .NET preload entry: " + entry["filename"])
+            deferred = entry["filename"].startswith("/.Cache/Shaders/")
+            output, entries = (shaders, shader_files) if deferred else (startup, startup_files)
+            output_start = output.tell()
+            output.write(data.read(finish - begin))
+            entries.append({**entry, "start": output_start, "end": output.tell()})
+        if data.tell() != metadata["remote_package_size"] or not startup_files or not shader_files:
+            raise ValueError("The .NET editor preload is incomplete")
+        startup_metadata = {"files": startup_files, "remote_package_size": startup.tell()}
+        shader_metadata = {"files": shader_files, "remote_package_size": shaders.tell()}
+
+    shader_call = f'\n  loadPackage({json.dumps(shader_metadata)}, "{shader_name.name}");'
+    return source[:start] + json.dumps(startup_metadata) + source[end:end + 2] + shader_call + source[end + 2:]
+
+
+def patch_glue(framework, archive):
     loader = framework / "dotnet.js"
     boot = loader.read_text()
     native, = (path for path in framework.glob("dotnet.native.*.js") if path.name in boot)
     source = native.read_text()
+    patched = split_editor_data(source, archive, framework)
     # Leave Mono exports as actual Wasm functions because Mono puts them into its table.
     patched = replace_once(
-        source,
+        patched,
         'for (let [x, original] of Object.entries(exports)) {\n'
         '      if (typeof original == "function") {\n        var wrapper = Asyncify.instrumentFunction(original);',
         'for (let [x, original] of Object.entries(exports)) {\n'
@@ -126,15 +164,30 @@ def patch_glue(framework):
       return await response.arrayBuffer();
     }
 """ + patched[end:]
-    # Mono installs its own preRun callbacks. Install the editor pack explicitly
-    # after the runtime has published its final Module and its WasmFS bindings.
+    # Both packs use the SDK's WasmFS installer. Start the deferred fetch only
+    # when the editor requests a project, and retry a failed download on demand.
+    patched = replace_once(patched, "async function loadPackage(metadata) {",
+                           "async function loadPackage(metadata, deferredPackage) {")
+    patched = replace_once(patched, 'var REMOTE_PACKAGE_BASE = "dotnet.native.data";',
+                           'var REMOTE_PACKAGE_BASE = deferredPackage ?? "dotnet.native.data";')
+    patched = replace_once(patched, "if (!fetched) {\n      // Note that",
+                           "if (!fetched && !deferredPackage) {\n      // Note that")
+    patched = replace_once(patched, "        fetched = await fetchPromise;", """        fetched = await (fetchPromise ?? fetchRemotePackage(REMOTE_PACKAGE_NAME));
+      }
+      if (fetched.byteLength !== REMOTE_PACKAGE_SIZE) {
+        throw new Error("Editor data size does not match this build.");""")
+    patched = re.sub(
+        r'(?m)^      (Module\["FS_createPath"\]\("/\.Cache/Shaders.*)$',
+        r'      if (deferredPackage) \1',
+        patched,
+    )
+    # Mono installs preRun itself. Install only with the final runtime Module.
     start = patched.index("    // Detect whether the module JS file has already been loaded.")
     end = patched.index("\n  }\n  loadPackage", start)
-    patched = (
-        patched[:start]
-        + "    globalThis.geInstallEditorAssets = activeModule => runWithFS(activeModule);"
-        + patched[end:]
-    )
+    patched = patched[:start] + """    if (deferredPackage)
+      globalThis.geInstallEditorShaders = activeModule => runWithFS(activeModule);
+    else
+      globalThis.geInstallEditorAssets = activeModule => runWithFS(activeModule);""" + patched[end:]
     patched, count = re.subn(
         r'(?m)^\s*Module\["(?:add|remove)RunDependency"\]\("datafile_[^\n]+\n', "\n", patched
     )
@@ -178,6 +231,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dotnet", required=True)
     parser.add_argument("--project", required=True, type=Path)
+    parser.add_argument("--shaderpkg-dir", required=True, type=Path)
+    parser.add_argument("--material-cache", required=True, type=Path)
     parser.add_argument("link", nargs=argparse.REMAINDER)
     config = parser.parse_args()
     if len(config.link) < 2 or config.link[0] != "--":
@@ -193,6 +248,11 @@ def main():
     build = Path.cwd() / "WebEditorManaged"
     build.mkdir(exist_ok=True)
     project = config.project.resolve()
+    from builtin_shader_cook import FindShaderReflect, StripShaderPkgSpirv
+
+    # The web backend only needs the WGSL of a cooked material stage.
+    reflector = FindShaderReflect(config.shaderpkg_dir)
+    StripShaderPkgSpirv(reflector, sorted(config.material_cache.rglob("*.shaderpkg")))
     references = write_link_inputs(build, objects, options)
     publish = build / "publish"
     subprocess.run(
@@ -215,11 +275,10 @@ def stage_editor(build, output, shell, project):
     framework = build / "publish" / "wwwroot" / "_framework"
     staged_framework = output.parent / "_framework"
     shutil.copytree(framework, staged_framework, dirs_exist_ok=True)
-    patch_glue(staged_framework)
     native_packages = sorted((build / "artifacts" / "obj").glob("**/for-publish/dotnet.native.data"))
     if len(native_packages) != 1:
         raise ValueError("Expected one .NET native editor data package")
-    shutil.copy2(native_packages[0], staged_framework)
+    patch_glue(staged_framework, native_packages[0])
     shutil.copy2(project.with_name("main.mjs"), output.with_name("WebEditorManaged.mjs"))
     html = replace_once(shell.read_text(), "{{{ SCRIPT }}}",
                         '<script type="module" src="WebEditorManaged.mjs"></script>')

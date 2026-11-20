@@ -11,6 +11,11 @@ try {
     const installEditorAssets = globalThis.geInstallEditorAssets;
     delete globalThis.geInstallEditorAssets;
     await installEditorAssets(Module);
+    const installEditorShaders = globalThis.geInstallEditorShaders;
+    delete globalThis.geInstallEditorShaders;
+    Module.webEditorShaders = createShaderDownload(() => installEditorShaders(Module));
+    if (new URLSearchParams(location.search).get('project'))
+        await Module.webEditorShaders.install();
     const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
     const scripts = exports.Lucia.Web.Editor.BrowserPlayMode;
     const scriptSession = createScriptSession(Module, scripts);
@@ -42,6 +47,39 @@ try {
     scheduleFrame();
 } catch (error) {
     report(error);
+}
+
+function createShaderDownload(load) {
+    let downloaded = false;
+    let pending;
+    let failed = false;
+    function install() {
+        pending ??= load().then(() => {
+            downloaded = true;
+        }).catch(error => {
+            pending = undefined;
+            throw error;
+        });
+        return pending;
+    }
+
+    return {
+        install,
+        poll() {
+            if (downloaded)
+                return 1;
+            if (failed) {
+                failed = false;
+                return -1;
+            }
+            if (!pending)
+                void install().catch(error => {
+                    console.error('Could not download the editor shader cache', error);
+                    failed = true;
+                });
+            return 0;
+        },
+    };
 }
 
 function createScriptSession(module, scripts) {
