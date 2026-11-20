@@ -2,12 +2,27 @@
 // albedoMap holds base colour and opacity, normalMap the object normal * 0.5 + 0.5 and the depth
 // along the frame axis. custom0 of the instance: xy the octahedral code of its view direction,
 // zw the cosine and sine of its yaw, which turn the object normal into world space. The card blends
-// the three frames around the view direction, each reprojected onto the card.
+// the three frames around the view direction at the surface point that the baked depth gives.
 //
 // @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
 // impostorAtlas.z = 1 tints the cards red (GE_IMPOSTOR_DEBUG_TINT), to show which trees are cards.
 
 #include "Includes/impostor_frame.glsl"
+
+// The object-space surface point (in sphere radii from the center) that `frame` sees through card
+// point `offset`. The bake camera is orthographic and reverse-Z, with near at 1 radius in front of
+// the center and far at 1 radius behind it, so window depth d is at 2d - 1 radii along the frame
+// direction. The atlas holds depth premultiplied by coverage; a texel with no surface keeps `offset`.
+vec3 GE_ImpostorSurfacePoint(vec2 frame, vec3 offset, vec4 impostorAtlas)
+{
+    vec2 uv = GE_ImpostorFrameUv(frame, offset, impostorAtlas);
+    float coverage = texture(albedoMap, uv).a;
+    vec3 direction = GE_ImpostorFrameDirection(frame, impostorAtlas);
+    float depth = texture(normalMap, uv).w / max(coverage, 0.0001);
+    vec3 surface = offset - direction * dot(offset, direction) + direction * (2.0 * depth - 1.0);
+    // An edge texel blends toward the card point, so the point does not jump at a silhouette.
+    return mix(offset, surface, smoothstep(0.25, 0.75, coverage));
+}
 
 SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 {
@@ -23,17 +38,41 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec2 frames[3];
     vec3 weights;
     GE_ImpostorBlendFrames(sIn.custom0.xy, Props.impostorAtlas, frames, weights);
+
+    // Atlas texels outside the tree hold 0 in every channel, so a filtered sample at a leaf edge is
+    // already premultiplied by its coverage. Divide by the summed coverage; never multiply by it.
+    // The surface point: each frame's depth under this card point, blended by the frame weights, so
+    // the point moves smoothly when the view crosses from one frame to the next. The frames then
+    // sample that point, so their texels line up instead of each showing the card plane.
+    vec3 surface = vec3(0.0);
+    for (int i = 0; i < 3; ++i)
+        surface += GE_ImpostorSurfacePoint(frames[i], offset, Props.impostorAtlas) * weights[i];
+
+    // A frame that has a surface in front of the surface point sees an occluder there (the leaves
+    // above a trunk, seen from a higher frame). Its weight fades out over kOccluderFade, down to
+    // kOccludedWeight, so no frame drops out in one step and the weights never sum to 0.
+    const float kOccluderDepth = 0.05;  // Window depth: 0.1 sphere radii.
+    const float kOccluderFade = 0.05;
+    const float kOccludedWeight = 0.02;
     vec4 color = vec4(0.0);
     vec3 objectNormal = vec3(0.0);
+    float weightSum = 0.0;
     for (int i = 0; i < 3; ++i)
     {
-        vec2 uv = GE_ImpostorFrameUv(frames[i], offset, Props.impostorAtlas);
+        vec2 uv = GE_ImpostorFrameUv(frames[i], surface, Props.impostorAtlas);
         vec4 sampleColor = texture(albedoMap, uv);
-        // Colour weighted by opacity, so a frame's empty texels do not darken the others.
-        color.rgb += sampleColor.rgb * sampleColor.a * weights[i];
-        color.a += sampleColor.a * weights[i];
-        objectNormal += (texture(normalMap, uv).xyz * 2.0 - 1.0) * sampleColor.a * weights[i];
+        vec4 sampleNormalDepth = texture(normalMap, uv);
+        float expectedDepth = dot(surface, GE_ImpostorFrameDirection(frames[i], Props.impostorAtlas)) * 0.5 + 0.5;
+        float storedDepth = sampleNormalDepth.w / max(sampleColor.a, 0.0001);
+        float occluded = smoothstep(kOccluderDepth, kOccluderDepth + kOccluderFade, storedDepth - expectedDepth) *
+                         smoothstep(0.25, 0.75, sampleColor.a);
+        float weight = weights[i] * max(1.0 - occluded, kOccludedWeight);
+        color += sampleColor * weight;
+        objectNormal += (sampleNormalDepth.xyz * 2.0 - sampleColor.a) * weight;
+        weightSum += weight;
     }
+    color /= weightSum;
+    objectNormal /= weightSum;
     o.baseColor = color.a > 0.0001 ? color.rgb / color.a : vec3(0.0);
     o.opacity = color.a;
     if (Props.impostorAtlas.z > 0.5)
