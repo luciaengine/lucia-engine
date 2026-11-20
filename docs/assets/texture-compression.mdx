@@ -59,8 +59,10 @@ mip streaming for asynchronously loaded material textures with a cooked or conta
 chain. The value is in MiB. Leave it unset or set it to zero to use full
 resolution at first upload.
 
-Eligible textures start with the first mip whose longest edge is at most
-256 pixels and the coarser mips below it. The service changes one texture by
+A texture with a level larger than 256 pixels on its longest edge is eligible.
+It starts at the largest level that fits the free budget. When no larger level
+fits, it starts with the first mip whose longest edge is at most 256 pixels and
+the coarser mips below it. The service then changes one texture by
 one mip level at a time. It adds detail while the resident payload fits the
 budget and removes detail when new textures push it over. If the tails alone
 exceed the budget, the tails stay available.
@@ -84,7 +86,7 @@ with their predecessors until GPU work finishes. Staging memory and other textur
 are separate costs. This mode uses a shared budget across material textures.
 
 A streamed texture keeps no copy of its mip chain in memory. The first load reads
-the whole cooked file and uploads the tail. Each later change of level reads the
+the whole cooked file and uploads the first levels. Each later change of level reads the
 levels that become resident from the cooked file, on an I/O thread, and one change
 is in progress at a time. A texture streams only when its cooked file stores the
 texels as they are. A file with a Basis payload or a supercompression scheme loads
