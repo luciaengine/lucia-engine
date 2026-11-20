@@ -134,10 +134,12 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 
 void MeshImpostorSystem::Scan(ECS::World& world)
 {
+    const auto* assets = EngineCore::GetInstance().TryGetAssetManager();
+    if (!assets)
+        return;
     // A null entry records a model checked but ineligible for a static bake.
     FlatMap<GUID, SharedPtr<Asset>> sources;
     FlatMap<GUID, ModelImpostor> models;
-    AssetManager& assets = EngineCore::GetInstance().GetAssetManager();
     world.Query<ECS::Read<Components::MeshRenderer>>().Each(
         [&](ECS::EntityHandle, const Components::MeshRenderer& renderer)
         {
@@ -147,7 +149,7 @@ void MeshImpostorSystem::Scan(ECS::World& world)
             const SharedPtr<Asset>* source = sources.Find(modelGuid);
             if (!source)
             {
-                SharedPtr<Asset> asset = assets.GetAsset(modelGuid);
+                SharedPtr<Asset> asset = assets->GetAsset(modelGuid);
                 const auto* model = dynamic_cast<const ModelAsset*>(asset.get());
                 if (model && model->IsImpostorEnabled() && model->GetMeshCount() > 0
                     && !model->GetClusterLODManifest()
