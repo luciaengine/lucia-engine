@@ -63,14 +63,8 @@ Rendering::RenderGraph::RGTexture ShadowMinMaxPyramid::Declare(
 {
     namespace RG = Rendering::RenderGraph;
 
-    // Drop this view's entry up front so EVERY decline path below leaves it at
-    // 0 — a stale count outlives a switch away from PCSS and would be published
-    // into the UBO as a pyramid that is not there. The frame stamp written on
-    // success covers the declines this function never sees at all: a view whose
-    // directional light stops casting is not declared here, so it cannot clear
-    // itself, and only the stamp makes that entry read as absent.
-    m_PyramidByView.erase(viewId);
-    const auto retained = m_RetainedByView.extract(viewId);
+    // A declined declaration clears the prior view state. A valid declaration reuses its allocation.
+    auto previousEntry = m_PyramidByView.extract(viewId);
 
     // Structural gate: nothing declared, no resource, no dispatch. The A/B this
     // pyramid exists to win is only meaningful if its "off" arm is free.
@@ -135,19 +129,22 @@ Rendering::RenderGraph::RGTexture ShadowMinMaxPyramid::Declare(
                           frame.Graph().IsImported(cascadeDepth.Id);
     const auto depthPhysical = mayReuse ? frame.PhysicalTexture(cascadeDepth) : Rendering::TextureHandle{};
     const auto pyramidPhysical = frame.PhysicalTexture(pyramid);
-    ReductionOutcome* outcome = nullptr;
+    ViewPyramid entry;
+    entry.Stamp.Stamp(frame);
+    entry.State = {pyramidPhysical, static_cast<int>(levels), layers};
     uint32_t layerMask = 0;
     bool reduce = true;
     if (depthPhysical.IsValid() && pyramidPhysical.IsValid())
     {
         const uint32_t allLayers = ~0u >> (32u - layers);
-        if (!retained.empty())
+        if (!previousEntry.empty())
         {
-            const RetainedPyramid& previous = retained.mapped();
+            const ViewPyramid& previous = previousEntry.mapped();
             if (previous.Complete && previous.Stamp.Frame == &frame && frame.FrameIndex() > 0 &&
                 previous.Stamp.FrameIndex == frame.FrameIndex() - 1 &&
-                previous.Depth == depthPhysical && previous.Pyramid == pyramidPhysical &&
-                previous.Extent == baseExtent && previous.Layers == layers && previous.Levels == levels)
+                previous.Depth == depthPhysical && previous.State.Physical == pyramidPhysical &&
+                previous.Extent == baseExtent && previous.State.Layers == layers &&
+                previous.State.Levels == static_cast<int>(levels))
             {
                 const uint32_t dirtyLayers = *scheduledDepthMask & allLayers;
                 reduce = dirtyLayers != 0u;
@@ -155,17 +152,11 @@ Rendering::RenderGraph::RGTexture ShadowMinMaxPyramid::Declare(
             }
         }
 
-        auto& pending = m_RetainedByView[viewId];
-        pending.Stamp.Stamp(frame);
-        pending.Depth = depthPhysical;
-        pending.Pyramid = pyramidPhysical;
-        pending.Extent = baseExtent;
-        pending.Layers = layers;
-        pending.Levels = levels;
-        pending.Complete = !reduce;
+        entry.Depth = depthPhysical;
+        entry.Extent = baseExtent;
+        entry.Complete = !reduce;
         if (reduce)
-            outcome = frame.AllocatePassData<ReductionOutcome>();
-        pending.Pending = outcome;
+            entry.Pending = frame.AllocatePassData<ReductionOutcome>();
     }
 
     if (reduce)
@@ -174,15 +165,17 @@ Rendering::RenderGraph::RGTexture ShadowMinMaxPyramid::Declare(
         {
             const uint32_t dstExtent = std::max(1u, baseExtent >> level);
             DeclareLevelPass(frame, cascadeDepth, pyramid, viewId, layers, layerMask, level,
-                             dstExtent, levels, outcome);
+                             dstExtent, levels, entry.Pending);
         }
     }
 
-    ViewPyramid& entry = m_PyramidByView[viewId];
-    entry.Stamp.Stamp(frame);
-    entry.State.Physical = pyramidPhysical;
-    entry.State.Levels = static_cast<int>(levels);
-    entry.State.Layers = layers;
+    if (previousEntry.empty())
+        m_PyramidByView.emplace(viewId, entry);
+    else
+    {
+        previousEntry.mapped() = entry;
+        m_PyramidByView.insert(std::move(previousEntry));
+    }
     return pyramid;
 }
 
@@ -198,7 +191,6 @@ ShadowMinMaxPyramid::FrameState ShadowMinMaxPyramid::StateFor(
 void ShadowMinMaxPyramid::OnDeviceRebuilt()
 {
     m_PyramidByView.clear();
-    m_RetainedByView.clear();
     // The load is one-shot, so clearing the attempt flag is what lets the next
     // Declare rebuild the pipeline, the reflected layout and the sampler against
     // the new device. Nothing is destroyed here: the rebuild already freed them
@@ -246,8 +238,8 @@ void ShadowMinMaxPyramid::DeclareLevelPass(Rendering::RenderGraph::RGFrame& fram
             {
                 p.OnSubmitted([this, viewId, levels, outcome, forFrame = &frame]
                 {
-                    const auto current = m_RetainedByView.find(viewId);
-                    if (current == m_RetainedByView.end() || !current->second.Stamp.IsFor(*forFrame) ||
+                    const auto current = m_PyramidByView.find(viewId);
+                    if (current == m_PyramidByView.end() || !current->second.Stamp.IsFor(*forFrame) ||
                         current->second.Pending != outcome)
                         return;
                     current->second.Pending = nullptr;

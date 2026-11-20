@@ -170,26 +170,15 @@ class ShadowMinMaxPyramid
     uint32_t m_DstBinding = 0;
     SamplerHandle m_Sampler{};
 
-    // A view's pyramid as of one frame. The stamp is what makes a stale entry
-    // detectable: an entry only answers for the frame incarnation that wrote it.
     struct ViewPyramid
     {
         Rendering::RenderGraph::RGFrameStamp Stamp;
         FrameState State;
-    };
-    std::unordered_map<Rendering::ViewId, ViewPyramid> m_PyramidByView;
-
-    struct RetainedPyramid
-    {
-        Rendering::RenderGraph::RGFrameStamp Stamp;
         Rendering::TextureHandle Depth;
-        Rendering::TextureHandle Pyramid;
         uint32_t Extent = 0;
-        uint32_t Layers = 0;
-        uint32_t Levels = 0;
         ReductionOutcome* Pending = nullptr;
         bool Complete = false;
     };
-    std::unordered_map<Rendering::ViewId, RetainedPyramid> m_RetainedByView;
+    std::unordered_map<Rendering::ViewId, ViewPyramid> m_PyramidByView;
 };
 } // namespace GameEngine::Engine::Renderer
