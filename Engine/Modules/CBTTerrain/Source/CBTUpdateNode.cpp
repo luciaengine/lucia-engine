@@ -51,9 +51,12 @@ CBTUpdateOutputs CBTUpdateNode::ImportOutputs(RGFrame& frame, CBTInstance& insta
         "CBT.HeightChain", res.GetHeightChainBuffer(),
         static_cast<uint64_t>(res.GetHeightChainWords()) * sizeof(uint32_t));
     // Storage and sampled descriptors share GENERAL throughout the chain's lifetime.
-    out.NormalChain = frame.ImportExternalTexture("CBT.NormalChain", res.GetNormalChainTexture(),
-                                                  ResourceState::UnorderedAccess, TextureFormat::R16G16_FLOAT,
-                                                  std::max(res.GetNormalChainMips(), 1u));
+    if (const auto normalChain = res.GetNormalChainTexture(); normalChain.IsValid())
+    {
+        out.NormalChain = frame.ImportExternalTexture("CBT.NormalChain", normalChain,
+                                                      ResourceState::UnorderedAccess, TextureFormat::R16G16_FLOAT,
+                                                      res.GetNormalChainMips());
+    }
     return out;
 }
 
@@ -101,7 +104,8 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
             p.Write(out.IndicesVisible, RGBufferWrite::Storage);
             p.Write(out.CurrentVertex, RGBufferWrite::Storage);
             p.Write(out.HeightChain, RGBufferWrite::Storage);
-            p.Write(out.NormalChain, RGTextureWrite::Storage);
+            if (out.NormalChain.IsValid())
+                p.Write(out.NormalChain, RGTextureWrite::Storage);
             if (haveHeight)
                 p.Read(heightRG, RGTextureRead::SampledCompute);
             if (onSubmitted)

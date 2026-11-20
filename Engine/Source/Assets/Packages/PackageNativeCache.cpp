@@ -274,8 +274,11 @@ std::unique_ptr<FileSystem::ScopedFileLock> AcquireLease(const fs::path& entry, 
             return {};
         // Lease first: an evictor holds this same sidecar exclusively through
         // remove_all, so a cache entry is safe even when maintenance is busy.
+        // Waits: another build's maintenance can evict this generation while
+        // this process starts. The evictor never waits, so it finishes, and the
+        // entry is created again below.
         lease = std::make_unique<ScopedFileLock>(lockRoot / entry.filename(),
-                                                 ScopedFileLock::Mode::Shared, false);
+                                                 ScopedFileLock::Mode::Shared, true);
         if (!lease->IsLocked())
             return {};
         fs::create_directories(entry, error);

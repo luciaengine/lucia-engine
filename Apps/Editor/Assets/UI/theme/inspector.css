@@ -177,6 +177,13 @@
 	flex-shrink: 0;
 }
 
+.inspector-bottom-add-component-button {
+	width: 100%;
+	max-width: 360px;
+	align-self: center;
+	box-sizing: border-box;
+}
+
 /* When the dropdown lives in the bottom bar, open the popup upward so it stays on-screen. */
 .inspector-add-component-row .dropdown-items {
 	top: auto;

@@ -692,28 +692,6 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
             rpBias = GE_ShadowReceiverPlaneGradient(dx * uvDepthScale, dy * uvDepthScale);
         }
 
-        // Blocker search radius: the light's angular extent projected over the
-        // depth range we are willing to search. No divide by blocker distance —
-        // a directional light is at infinity. The bound stays in TEXELS because
-        // what it governs is tap density — bounding it in metres would make the
-        // authored angular diameter unreachable, which is a defect this file has
-        // already shipped once.
-        //
-        // What changed is where the bound comes from. It used to be
-        // 4*sqrt(AUTHORED taps), a constant that cannot know the cascade's texel
-        // size, so when it bound it did so at a fixed texel count and therefore
-        // a resolution-dependent WORLD radius — moving avgBlocker, and the
-        // penumbra estimate with it. Deriving it from the ADAPTIVE tap count
-        // makes the budget track the width actually requested, so the clamp
-        // rarely binds and the searched world area comes out the same at 1024
-        // and 2048.
-        float searchDepthWorld = depthSpanWorld * kPcssSearchDepthFraction;
-        float searchWorld = tanHalfAngle * searchDepthWorld;
-        int searchTaps = GE_PcssTapsForRadius(searchWorld / max(worldPerTexel, 1e-6));
-        float maxSearchTexels = kPcssSearchTexelsPerRootTap * sqrt(float(searchTaps));
-        float searchTexels = clamp(searchWorld / max(worldPerTexel, 1e-6),
-                                   kPcssMinSearchTexels, maxSearchTexels);
-
         // Kernel bound, in WORLD units. It has to be: a bound expressed in
         // texels makes the penumbra's physical size a function of shadow-map
         // resolution, which is exactly the defect this slice removes. Tap
@@ -729,15 +707,6 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
         // The widest kernel the PCF loop below can pick, in texels and in UV.
         float pcfCapTexels = max(effectiveCapWorld, worldPerTexel) / max(worldPerTexel, 1e-6);
         float pcfCapUV = pcfCapTexels * texelSize;
-
-        // The search only sizes the kernel, and the kernel is clamped to the cap,
-        // so it is bounded by the cap too. A blocker beyond the cap still entered
-        // the average blocker depth of the wider disk and so moved the kernel of
-        // fragments with nearer blockers too; bounded, the kernel depends only on
-        // blockers within the cap, and every fragment stops paying for the taps
-        // of the wider disk. Its taps follow the bounded width.
-        searchTexels = GE_PcssBoundedSearchTexels(searchTexels, pcfCapTexels, kPcssMinSearchTexels);
-        searchTaps = GE_PcssTapsForRadius(searchTexels);
 
         // Early-outs from the min/max pyramid (ShadowMinMaxPyramid). A NEGATIVE
         // index is the "no pyramid" sentinel, and zero levels means the same
@@ -786,13 +755,31 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
             return 0.0;
         }
 
-        // Committed to the filter: the search sizes the kernel (the minimum one
-        // when it finds no blocker) and the PCF loop below decides the result.
         ge_lastPcssBranch = kPcssBranchFullPath;
-        float avgBlocker = GE_BlockerSearch(shadowUV, refDepth, rpBias, rawSource, screenPos,
-                                            searchTexels, searchTaps);
-        float penumbraTexels = GE_PcssPenumbraTexels(avgBlocker, refDepth, depthSpanWorld, tanHalfAngle,
-                                                     worldPerTexel, effectiveCapWorld);
+        // If the cap is one texel or less, both filter bounds are equal.
+        // Blocker depth cannot change the filter radius.
+        float penumbraTexels = pcfCapTexels;
+        if (effectiveCapWorld > worldPerTexel)
+        {
+            // The angular diameter sets the search width in world units.
+            // Bound the tap density in texels.
+            float searchDepthWorld = depthSpanWorld * kPcssSearchDepthFraction;
+            float searchWorld = tanHalfAngle * searchDepthWorld;
+            int searchTaps = GE_PcssTapsForRadius(searchWorld / max(worldPerTexel, 1e-6));
+            float maxSearchTexels = kPcssSearchTexelsPerRootTap * sqrt(float(searchTaps));
+            float searchTexels = clamp(searchWorld / max(worldPerTexel, 1e-6),
+                                       kPcssMinSearchTexels, maxSearchTexels);
+
+            // Bound the search by the largest filter radius.
+            // Choose the tap count for the bounded search width.
+            searchTexels = GE_PcssBoundedSearchTexels(searchTexels, pcfCapTexels, kPcssMinSearchTexels);
+            searchTaps = GE_PcssTapsForRadius(searchTexels);
+
+            float averageBlocker = GE_BlockerSearch(
+                shadowUV, refDepth, rpBias, rawSource, screenPos, searchTexels, searchTaps);
+            penumbraTexels = GE_PcssPenumbraTexels(
+                averageBlocker, refDepth, depthSpanWorld, tanHalfAngle, worldPerTexel, effectiveCapWorld);
+        }
 
         float filterRadius = penumbraTexels * texelSize;
         float shadow = 0.0;
