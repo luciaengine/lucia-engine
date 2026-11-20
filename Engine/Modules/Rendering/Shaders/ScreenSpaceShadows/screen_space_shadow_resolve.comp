@@ -11,6 +11,8 @@ layout(set = 0, binding = 1, r32ui) uniform writeonly uimage2D uMask;
 layout(set = 0, binding = 2, std430) readonly buffer Visibility { uint visibility[]; };
 shared float tileDepth[196];
 shared float tileVisibility[196];
+// One five-tap row for each output column and each row its 5x5 window reads.
+shared bool uniformRows[12 * 8];
 
 float ReceiverSlope(float before, float center, float after)
 {
@@ -37,6 +39,16 @@ void main()
         tileVisibility[i] = valid ? float(min(visibility[p.y * size.x + p.x], 255u)) : 255.0;
     }
     barrier();
+    for (uint row = gl_LocalInvocationIndex; row < 12u * 8u; row += 64u)
+    {
+        uint tap = (row / 8u + 1u) * 14u + row % 8u + 3u;
+        float visibility = tileVisibility[tap];
+        uniformRows[row] = tileVisibility[tap - 2u] == visibility &&
+                           tileVisibility[tap - 1u] == visibility &&
+                           tileVisibility[tap + 1u] == visibility &&
+                           tileVisibility[tap + 2u] == visibility;
+    }
+    barrier();
     if (any(greaterThanEqual(pixel, size)))
         return;
     int center = (int(gl_LocalInvocationID.y) + 3) * 14 + int(gl_LocalInvocationID.x) + 3;
@@ -49,9 +61,10 @@ void main()
     // without filtering. Fully lit or fully shadowed ground is most pixels.
     bool uniformWindow = true;
     float windowVisibility = tileVisibility[center];
-    for (int y = -2; y <= 2; ++y)
-        for (int x = -2; x <= 2; ++x)
-            uniformWindow = uniformWindow && tileVisibility[center + y * 14 + x] == windowVisibility;
+    uint firstRow = gl_LocalInvocationID.y * 8u + gl_LocalInvocationID.x;
+    for (uint row = 0u; row < 5u; ++row)
+        uniformWindow = uniformWindow && uniformRows[firstRow + row * 8u] &&
+                        tileVisibility[center + (int(row) - 2) * 14] == windowVisibility;
     if (depth > 0.0 && uniformWindow)
         filtered = windowVisibility;
     else if (depth > 0.0)
