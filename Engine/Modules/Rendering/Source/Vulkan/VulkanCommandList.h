@@ -124,6 +124,7 @@ namespace Rendering {
         void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1) override;
         void DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance = 0) override;
         void DrawMeshTasks(uint32_t taskCount) override;
+        void DrawMeshTasksIndirect(BufferHandle argsBuffer, size_t argsOffsetBytes = 0) override;
 
         // Indirect drawing (GPU-driven rendering)
         void DrawIndirect(BufferHandle commandBuffer, uint32_t drawCount, uint32_t stride) override;

@@ -410,6 +410,7 @@ class VulkanDevice : public IDevice
     PFN_vkCmdEndRendering GetCmdEndRendering() const { return m_FpCmdEndRendering; }
     PFN_vkCmdSetDepthWriteEnable GetCmdSetDepthWriteEnable() const { return m_FpCmdSetDepthWriteEnable; }
     PFN_vkCmdDrawMeshTasksEXT GetCmdDrawMeshTasksEXT() const { return m_FpCmdDrawMeshTasksEXT; }
+    PFN_vkCmdDrawMeshTasksIndirectEXT GetCmdDrawMeshTasksIndirectEXT() const { return m_FpCmdDrawMeshTasksIndirectEXT; }
     bool SupportsMeshShadersEXT() const { return m_SupportsMeshShaderEXT; }
     bool SupportsNegativeViewportHeight() const { return m_SupportsNegativeViewportHeight; }
 #if GE_ENABLE_DEBUG_BARRIERS
@@ -2107,6 +2108,7 @@ class VulkanDevice : public IDevice
 
     // Mesh shader function pointer (EXT)
     PFN_vkCmdDrawMeshTasksEXT m_FpCmdDrawMeshTasksEXT = nullptr;
+    PFN_vkCmdDrawMeshTasksIndirectEXT m_FpCmdDrawMeshTasksIndirectEXT = nullptr;
     bool m_SupportsMeshShaderEXT = false;
 
     // VK_EXT_descriptor_buffer function pointers. Populated iff

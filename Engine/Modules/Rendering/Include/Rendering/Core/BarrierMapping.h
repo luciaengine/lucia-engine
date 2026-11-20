@@ -17,6 +17,7 @@ enum class PipelineStageMask : uint64_t {
     DrawIndirect      = 1ull << 6,
     /// CPU access scope; wait for submission completion before mapped reads.
     Host              = 1ull << 7,
+    GraphicsMesh      = 1ull << 8,
 };
 
 inline PipelineStageMask operator|(PipelineStageMask a, PipelineStageMask b) {

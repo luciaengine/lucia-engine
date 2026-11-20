@@ -2631,13 +2631,21 @@ bool VulkanDevice::CreateLogicalDevice()
                                                      : "both transfer bits regardless");
     VkPhysicalDeviceVulkan13Features enabled13{};
     enabled13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    // Chain mesh shader features only when extension is supported
     VkPhysicalDeviceMeshShaderFeaturesEXT meshFeatures{};
+    meshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
     if (CheckExtensionSupport(VK_EXT_MESH_SHADER_EXTENSION_NAME))
     {
+        VkPhysicalDeviceFeatures2 meshQuery{};
+        meshQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        meshQuery.pNext = &meshFeatures;
+        vkGetPhysicalDeviceFeatures2(m_PhysicalDevice, &meshQuery);
+    }
+    bool meshShaderEnabled = meshFeatures.meshShader == VK_TRUE;
+    if (meshShaderEnabled)
+    {
+        meshFeatures = {};
         meshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
         meshFeatures.meshShader = VK_TRUE;
-        meshFeatures.taskShader = VK_FALSE;
         enabled13.pNext = &meshFeatures;
     }
 
@@ -2945,7 +2953,7 @@ bool VulkanDevice::CreateLogicalDevice()
     {
         deviceExtensions.push_back(VK_KHR_SEPARATE_DEPTH_STENCIL_LAYOUTS_EXTENSION_NAME);
     }
-    if (m_Capabilities.supportsMeshShaders)
+    if (meshShaderEnabled)
     {
         deviceExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
     }
@@ -3014,6 +3022,7 @@ bool VulkanDevice::CreateLogicalDevice()
     VkResult result = vkCreateDevice(m_PhysicalDevice, &createInfo, nullptr, &m_Device);
     if (result != VK_SUCCESS)
     {
+        meshShaderEnabled = false;
         Logger::Log::Error("Failed to create logical device: {} ({})", VkResultToString(result), (int)result);
         Logger::Log::Error("API version: {}.{}.{}",
                            (int)VK_VERSION_MAJOR(m_DeviceProperties.apiVersion),
@@ -3222,11 +3231,13 @@ bool VulkanDevice::CreateLogicalDevice()
     if (const char* value = std::getenv("GE_VK_NO_DYNAMIC_DEPTH_WRITE"); value && value[0] == '1')
         m_FpCmdSetDepthWriteEnable = nullptr;
 
-    if (m_Capabilities.supportsMeshShaders)
-    {
-        m_FpCmdDrawMeshTasksEXT = reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(m_Device, "vkCmdDrawMeshTasksEXT"));
-        m_SupportsMeshShaderEXT = (m_FpCmdDrawMeshTasksEXT != nullptr);
-    }
+    m_FpCmdDrawMeshTasksEXT = meshShaderEnabled
+        ? reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(m_Device, "vkCmdDrawMeshTasksEXT"))
+        : nullptr;
+    m_SupportsMeshShaderEXT = (m_FpCmdDrawMeshTasksEXT != nullptr);
+    m_FpCmdDrawMeshTasksIndirectEXT = m_SupportsMeshShaderEXT
+        ? reinterpret_cast<PFN_vkCmdDrawMeshTasksIndirectEXT>(vkGetDeviceProcAddr(m_Device, "vkCmdDrawMeshTasksIndirectEXT"))
+        : nullptr;
 #ifdef VK_EXT_HDR_METADATA_EXTENSION_NAME
     m_FpSetHdrMetadataEXT = m_HdrMetadataExtEnabled
         ? reinterpret_cast<PFN_vkSetHdrMetadataEXT>(vkGetDeviceProcAddr(m_Device, "vkSetHdrMetadataEXT"))
@@ -3593,7 +3604,8 @@ void VulkanDevice::QueryDeviceCapabilities()
     }
 
     // Basic capabilities - check for extensions
-    m_Capabilities.supportsMeshShaders = CheckExtensionSupport("VK_EXT_mesh_shader");
+    m_Capabilities.supportsMeshShaders = m_SupportsMeshShaderEXT;
+    m_Capabilities.supportsIndirectMeshTasks = m_FpCmdDrawMeshTasksIndirectEXT != nullptr;
     m_Capabilities.supportsRayTracing = CheckExtensionSupport("VK_KHR_ray_tracing_pipeline");
     // Enabled-at-init stash, not detection: true only when acceleration
     // structures + ray query were actually enabled on the logical device
@@ -5174,7 +5186,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         }
         if (colorBlendAttachments.empty())
         {
-            uint32_t colorCountHint = desc.colorAttachmentFormats.empty() ? 1u : static_cast<uint32_t>(desc.colorAttachmentFormats.size());
+            const uint32_t colorCountHint = static_cast<uint32_t>(desc.colorAttachmentFormats.size());
             for (uint32_t i = 0; i < colorCountHint; ++i)
             {
                 VkPipelineColorBlendAttachmentState a{};
@@ -5207,17 +5219,19 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         // Dynamic rendering
         VkPipelineRenderingCreateInfo renderingInfo{};
         renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-        std::vector<VkFormat> safeColorFormats; // Temp storage to avoid strict aliasing violation
-        if (!desc.colorAttachmentFormats.empty())
+        const auto mapFormat = [](uint32_t format)
         {
-            safeColorFormats.reserve(desc.colorAttachmentFormats.size());
-            for (uint32_t fmt : desc.colorAttachmentFormats)
-                safeColorFormats.push_back(static_cast<VkFormat>(fmt));
-            renderingInfo.colorAttachmentCount = static_cast<uint32_t>(safeColorFormats.size());
-            renderingInfo.pColorAttachmentFormats = safeColorFormats.data();
-        }
-        if (desc.depthAttachmentFormat)
-            renderingInfo.depthAttachmentFormat = static_cast<VkFormat>(desc.depthAttachmentFormat);
+            const auto mapped = VulkanResourceUtils::GetVulkanFormat(static_cast<TextureFormat>(format));
+            return mapped == VK_FORMAT_UNDEFINED ? static_cast<VkFormat>(format) : mapped;
+        };
+        auto& colorFormats = vulkanPipeline.colorAttachmentFormats;
+        colorFormats.reserve(desc.colorAttachmentFormats.size());
+        for (uint32_t format : desc.colorAttachmentFormats)
+            colorFormats.push_back(mapFormat(format));
+        renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorFormats.size());
+        renderingInfo.pColorAttachmentFormats = colorFormats.data();
+        renderingInfo.depthAttachmentFormat = mapFormat(desc.depthAttachmentFormat);
+        renderingInfo.stencilAttachmentFormat = mapFormat(desc.stencilAttachmentFormat);
 
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -5282,6 +5296,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         vulkanPipeline.layout = pipelineLayout;
         vulkanPipeline.renderPass = m_SwapchainRenderPass; // may be null when dynamic rendering used
         vulkanPipeline.type = PipelineType::Mesh;
+        vulkanPipeline.rasterizationSamples = resolvedRasterSamples;
         vulkanPipeline.depthWriteEnable = desc.depthStencilState.depthWriteEnable;
         vulkanPipeline.pushConstantSize = desc.pushConstantSize;
         vulkanPipeline.pushConstantStagesMask = desc.pushConstantStagesMask

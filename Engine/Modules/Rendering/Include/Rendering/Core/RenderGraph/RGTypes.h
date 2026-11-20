@@ -82,6 +82,7 @@ enum class RGAccess : uint8_t
                     // ocean cascades). Scope covers vertex AND fragment consumers.
     UniformRead,
     StorageRead,
+    MeshStorageRead, // storage buffer read by a graphics mesh shader
     IndirectRead,
     IndexRead,
     VertexRead,

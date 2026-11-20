@@ -27,6 +27,7 @@ constexpr uint32_t ColorAttachmentOutput = 1u << 7;
 constexpr uint32_t ComputeShader = 1u << 8;
 constexpr uint32_t Transfer = 1u << 9;
 constexpr uint32_t BottomOfPipe = 1u << 10;
+constexpr uint32_t MeshShader = 1u << 11;
 } // namespace RGStage
 
 namespace RGAccessMask
@@ -160,6 +161,9 @@ inline RGAccessInfo MapAccess(RGAccess a, RGQueue queue)
             // palettes. (Compute queue narrows to ComputeShader below.)
             info = {RGStage::VertexShader | RGStage::ComputeShader | RGStage::FragmentShader,
                     RGAccessMask::ShaderRead, RGImageLayout::General, false};
+            break;
+        case RGAccess::MeshStorageRead:
+            info = {RGStage::MeshShader, RGAccessMask::ShaderRead, RGImageLayout::General, false};
             break;
         case RGAccess::IndirectRead:
             info = {RGStage::DrawIndirect, RGAccessMask::IndirectRead, RGImageLayout::Undefined, false};

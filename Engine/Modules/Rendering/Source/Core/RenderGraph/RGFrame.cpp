@@ -34,6 +34,7 @@ RGAccess MapRead(RGBufferRead a)
     switch (a)
     {
         case RGBufferRead::Storage: return RGAccess::StorageRead;
+        case RGBufferRead::MeshStorage: return RGAccess::MeshStorageRead;
         case RGBufferRead::Uniform: return RGAccess::UniformRead;
         case RGBufferRead::Indirect: return RGAccess::IndirectRead;
         case RGBufferRead::Index: return RGAccess::IndexRead;
