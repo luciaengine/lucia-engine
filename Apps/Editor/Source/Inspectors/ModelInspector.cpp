@@ -1116,6 +1116,27 @@ void BuildRigTab(UIElement* root,
         });
 }
 
+// The impostor stage of the model: one baked card for all its parts, far away.
+void BuildImpostorSection(UIElement* root, const std::filesystem::path& assetPath,
+                          std::function<void()> requestInspectorRefresh)
+{
+    InspectorUI::AddTextBlock(root, "Impostor", "inspector-section-subheader");
+    auto& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
+    const ModelAssetSettings settings = ModelAssetSettings::Load(registry, assetPath);
+    InspectorDrag::AddToggleRow(root, "Far impostor", settings.Impostor,
+        [assetPath, requestInspectorRefresh](bool enabled) {
+            auto& assets = EngineCore::GetInstance().GetAssetManager();
+            ModelAssetSettings edited = ModelAssetSettings::Load(assets.GetRegistry(), assetPath);
+            edited.Impostor = enabled;
+            edited.Save(assets.GetRegistry(), assetPath);
+            ReloadModel(assetPath);
+            if (requestInspectorRefresh)
+                requestInspectorRefresh();
+        },
+        "Far away, draw one baked card for all parts of this model. Use it for trees, large plants "
+        "and props seen from far. A small model with few triangles draws faster without it.");
+}
+
 void BuildModelInspector(UIElement* root,
                          ModelAsset* model,
                          Editor::UndoRedoService* undo,
@@ -1133,6 +1154,7 @@ void BuildModelInspector(UIElement* root,
     {
     case ModelInspectorTab::Lod:
         BuildLodSection(root, model, undo, requestInspectorRefresh);
+        BuildImpostorSection(root, assetPath, requestInspectorRefresh);
         break;
     case ModelInspectorTab::Rig:
         BuildRigTab(root, model, assetPath, requestInspectorRefresh);

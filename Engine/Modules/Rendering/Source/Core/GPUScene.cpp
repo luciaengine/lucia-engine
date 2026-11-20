@@ -294,6 +294,7 @@ void GPUScene::Shutdown()
     m_ScatterHot.clear();
     m_InstanceSlotFree.clear();
     m_Meshes.clear();
+    m_MeshImpostorCard.clear();
     m_BatchRegistry.Clear();
     m_FreeInstanceSlots.clear();
     m_FreeMeshSlots.clear();
@@ -781,6 +782,7 @@ uint32_t GPUScene::AddMesh(const GPUMesh& mesh)
     {
         m_Meshes.push_back(mesh);
     }
+    m_Meshes[index].impostorCard = index < m_MeshImpostorCard.size() ? m_MeshImpostorCard[index] : 0u;
 
     m_MeshCount++;
     m_MeshesDirty = true;
@@ -798,6 +800,44 @@ void GPUScene::UpdateMesh(uint32_t meshIndex, const GPUMesh& mesh)
     }
 
     m_Meshes[meshIndex] = mesh;
+    m_Meshes[meshIndex].impostorCard =
+        meshIndex < m_MeshImpostorCard.size() ? m_MeshImpostorCard[meshIndex] : 0u;
+    m_MeshesDirty = true;
+    for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
+}
+
+void GPUScene::SetMeshImpostorCard(uint32_t meshIndex, uint32_t cardMaterialIndex, uint32_t cardMeshIndex,
+                                   bool primary)
+{
+    if (meshIndex >= m_Meshes.size() || cardMaterialIndex >= kGPUMeshImpostorMaterialMask)
+    {
+        Logger::Log::Warning("GPUScene: Invalid impostor link (mesh {}, card material {})", meshIndex,
+                             cardMaterialIndex);
+        return;
+    }
+    if (m_MeshImpostorCard.size() <= meshIndex)
+        m_MeshImpostorCard.resize(meshIndex + 1u, 0u);
+    const uint32_t word = (cardMaterialIndex + 1u) | (primary ? kGPUMeshImpostorPrimaryBit : 0u);
+    if (primary)
+        m_BatchRegistry.SetMeshCardRow(meshIndex, cardMaterialIndex, cardMeshIndex);
+    else
+        m_BatchRegistry.ClearMeshCardRow(meshIndex);
+    if (m_MeshImpostorCard[meshIndex] == word && m_Meshes[meshIndex].impostorCard == word)
+        return;
+    m_MeshImpostorCard[meshIndex] = word;
+    m_Meshes[meshIndex].impostorCard = word;
+    m_MeshesDirty = true;
+    for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
+}
+
+void GPUScene::ClearMeshImpostorCard(uint32_t meshIndex)
+{
+    m_BatchRegistry.ClearMeshCardRow(meshIndex);
+    if (meshIndex >= m_MeshImpostorCard.size() || m_MeshImpostorCard[meshIndex] == 0u)
+        return;
+    m_MeshImpostorCard[meshIndex] = 0u;
+    if (meshIndex < m_Meshes.size())
+        m_Meshes[meshIndex].impostorCard = 0u;
     m_MeshesDirty = true;
     for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
 }
@@ -816,6 +856,10 @@ void GPUScene::RemoveMesh(uint32_t meshIndex)
     if (m_Meshes[meshIndex].indexCount == 0 && m_Meshes[meshIndex].vertexCount == 0)
         return;
     m_Meshes[meshIndex] = GPUMesh{};
+    // A freed slot is reused by another mesh, which starts with no impostor link.
+    m_BatchRegistry.ClearMeshCardRow(meshIndex);
+    if (meshIndex < m_MeshImpostorCard.size())
+        m_MeshImpostorCard[meshIndex] = 0u;
 
     FreeMeshSlot(meshIndex);
     if (m_MeshCount > 0)

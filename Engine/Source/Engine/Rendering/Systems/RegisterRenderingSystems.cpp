@@ -15,6 +15,7 @@
 #include "ECSModules/Rendering/Systems/MorphTargetSystem.h"
 #include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
 #include "ECSModules/Rendering/Systems/HLODSelectSystem.h"
+#include "Engine/Rendering/Impostors/MeshImpostorSystem.h"
 #include "ECSModules/Rendering/Systems/MaterialMipDemandSystem.h"
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "Particles/Systems/ParticleSimulationSystem.h"
@@ -61,6 +62,7 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     constexpr const char* kMorph = "MorphTarget";
     constexpr const char* kHierarchy = "TransformHierarchy";
     constexpr const char* kHlodSelect = "HLODSelect";
+    constexpr const char* kMeshImpostor = "MeshImpostor";
     constexpr const char* kExtract = "RenderExtraction";
     constexpr const char* kClusterPrepare = "ClusterLODPrepare";
     constexpr const char* kNativePostSimulation = "NativePostSimulation";
@@ -114,6 +116,11 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     // extraction (kExtract depends on it).
     schedule.Add<HLODSelectSystem>(kHlodSelect, SystemPhase::Extraction, 5, {kHierarchy}, renderServices);
 
+    // Impostor links of the opted-in models. It writes GPUScene mesh rows and batch counts, so it
+    // runs apart from every other GPUScene writer and before extraction.
+    schedule.Add<MeshImpostorSystem>(kMeshImpostor, SystemPhase::Extraction, 5,
+                                     {kMorph, kHlodSelect, OptionalDependency("EZTreeExtraction")}, renderServices);
+
     // The systems that write WorldTransform after the hierarchy. The wave
     // solver orders by declared edges only (phase and order sort within a
     // wave), so anything that must see this frame's movement names them.
@@ -164,7 +171,7 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     schedule.Add<ParticleSimulationSystem>("ParticleSimulation", SystemPhase::Extraction, 6,
         afterMovementWriters({kHierarchy, kNativePostSimulation}), particles);
     schedule.Add<RenderExtractionSystem>(kExtract, SystemPhase::Extraction, 6,
-        afterMovementWriters({kHierarchy, kMorph, kHlodSelect, kNativePostSimulation,
+        afterMovementWriters({kHierarchy, kMorph, kHlodSelect, kMeshImpostor, kNativePostSimulation,
                               "ParticleSimulation", kSkyEnv, OptionalDependency(kClusterPrepare)}), renderServices, particles);
 
     // Material mip streaming orders its steps by the instance rows that extraction wrote this frame.

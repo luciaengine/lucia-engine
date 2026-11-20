@@ -28,6 +28,7 @@
 #include "Assets/TextureAsset.h"
 #include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
+#include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
@@ -666,6 +667,8 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
         // cascade.
         if (!isShadowBucket)
             s.lod.renderedLevelHistoryRequested = true;
+        if (const auto* impostors = GetFeature<ImpostorStage>())
+            impostors->ApplyToSlice(s.lod);
         // Fit-freeze lane: a directional cascade slice selects LODs with the
         // FROZEN camera captured at that cascade's last refit (the value the
         // static-cache key holds via CullCameraViewProj), so a retained layer
@@ -875,9 +878,11 @@ bool RenderServices::ScheduleBucketerDispatchesForViewSlices(
     // fan-out (probe faces at their own indices) never collides with it.
     // Keeping these band-less means the utility path adds no history of its
     // own, but it does not by itself guarantee a stateless pick for these views.
-    const Rendering::GPUDrawStreamBuilder::ViewLODParams lod = MakeViewLODParams(
+    Rendering::GPUDrawStreamBuilder::ViewLODParams lod = MakeViewLODParams(
         m_ViewRegistry.ResolveCameraData(viewId), m_LODGlobalBias, ResolveViewForceLOD(viewId),
         m_SmallObjectCullCoverage, ComputeViewSseScales(viewId), m_LODCrossfadeDuration, 0.0f);
+    if (const auto* impostors = GetFeature<ImpostorStage>())
+        impostors->ApplyToSlice(lod);
     const uint32_t viewWorldKey = WorldKeyForView(viewId);
     for (const uint8_t cascadeIdx : cascadeIndices)
     {
@@ -994,6 +999,9 @@ bool RenderServices::ScheduleWorldOcclusionRecoverScatterForView(
                               ResolveViewForceLOD(viewId), m_SmallObjectCullCoverage,
                               ComputeViewSseScales(viewId), m_LODCrossfadeDuration,
                               m_LODHysteresisBand);
+    // Phase B selects cards exactly as phase A does.
+    if (const auto* impostors = GetFeature<ImpostorStage>())
+        impostors->ApplyToSlice(s.lod);
     // Phase B shares this view's history buffer with phase A (the comment
     // above), so it asks for it too.
     s.lod.renderedLevelHistoryRequested = true;

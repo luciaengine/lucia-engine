@@ -31,6 +31,7 @@ namespace GameEngine
     ENTRY(kLodSlot3MetaKey, Model, "assets.lod.slot3") \
     ENTRY(kLodUseGlobalMetaKey, Model, "assets.lod.useGlobal") \
     ENTRY(kBoneLODSettingsMetaKey, Model, "assets.model.boneLOD") \
+    ENTRY(kModelImpostorMetaKey, Model, "assets.model.impostor") \
     ENTRY(kModelRigKindMetaKey, Model, "assets.model.rigKind") \
     ENTRY(kTextureAlphaCoverageMetaKey, Texture, "assets.texture.alphaCoverage") \
     ENTRY(kTextureAlphaCutoffMetaKey, Texture, "assets.texture.alphaCutoff") \

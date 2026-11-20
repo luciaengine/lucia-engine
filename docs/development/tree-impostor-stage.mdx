@@ -91,9 +91,33 @@ The first runtime slice is built in the tree package, which owns the trees:
 - The card material uses the engine's `Surfaces/impostor.glsl` and `VertexModifiers/impostor_card.glsl`. The CPU writes the instance's `custom0`: the hemi-octahedral code of the view direction in the tree's frame, and the tree's yaw for the normals. The card faces the view direction and blends the 3 frames around it. The depth of the dominant frame gives the surface point under each card pixel, and the other frames sample that point; a frame that has a surface clearly in front of it sees an occluder there and does not contribute. The atlas texels outside the tree are 0, so a filtered texel is premultiplied by its coverage. The frames sit on the grid points from edge to edge, so the outer frames look from the horizon.
 - Cards cast cascade shadows, but in shadow passes they face the camera, not the light.
 
-Not in this slice, and the next steps for the stage:
+### Step 4: general mesh stage
 
-- A `GPUMesh` impostor link selected in `draw_command_scatter.comp`, so any mesh with a bake gets the stage and the selection runs on the GPU.
+Any static mesh gets the stage, and the selection runs on the GPU. The tree package uses the same path, so the engine has one implementation.
+
+**The group.** A `MeshRenderer` holds one submesh and one material, so a model with bark and leaves is two entities and two instances. A card must replace all parts of one object. The group is one model asset:
+
+- The opt-in is the model setting `assets.model.impostor` (default off), shown in the model inspector. It is for trees, large foliage and props that are seen from far away. A small mesh with few triangles (grass, a fern) does not pay: its card costs three atlas samples per pixel.
+- The bake draws all submeshes of the model, each with the material of the first entity that draws it. An entity that overrides the material of a linked part still gets that card.
+- Each part of a linked model uses the whole model's box as its `LocalBounds`. So every part has the same culling sphere and the same coverage, and every part makes the same switch decision in the same frame. No frame shows a card with a mesh part, or a hole. The mesh LOD of a part then reads a slightly larger sphere and keeps detail a little longer.
+
+**The link.** `GPUMesh` word 20 (`impostorCard`) holds the link of a submesh: 0 for none, otherwise the card material's GPU-scene index plus 1 in bits 0 to 23, and bit 31 for the primary part. Submesh 0 is the primary part and draws the card. The other parts draw nothing past the switch. `GPUScene` owns the word, so a mesh row update from the mesh registry keeps it.
+
+**The card row.** `BatchRegistry` counts each instance of a primary linked mesh in the card row (card material, card quad mesh) as well as in its own row. Every table builder reads the registry, so the plain, shadow-class, color-class and pool-group tables all hold the card row, with a capacity for every instance that can switch.
+
+**The selection.** In `draw_command_scatter.comp`, before the batch search, a linked instance measures its coverage on its instance sphere, with the HLOD metric of the tree package (radius * proj[1][1] / distance, the LOD bias folded in). It draws the card below the enter coverage (0.12, about one atlas texel per pixel at 1080 lines) and keeps it until the exit coverage (0.12 * 1.15). The switch coverage is a global constant, sent in the push constants with the card quad's mesh index:
+
+- Camera slices keep the hysteresis state in the per-view LOD history buffer (`prevLod`): a card frame stores `kImpostorHistory`, which the mesh LOD pick reads as "no history". The history buffer is bound for a camera slice when the dwell band is on or the stage is on. The rule is a fixed point, so phase A and phase B of one view and the idle elision cannot ratchet it.
+- Cascade slices select with the view camera (they already do for mesh LOD) and have no history. They switch at the enter coverage, so inside the hysteresis band a far tree can cast the mesh shadow while it draws the card, or the reverse.
+- Slices that force a level (virtual shadow pages, editor 2D views) never draw cards.
+- A card frame writes no crossfade pair and records level 255 in the rendered history, so a motion consumer sees the switch as a break.
+
+**The card vertex stage.** The card draws with the mesh instance's own `GPUInstance`. A vertex modifier may define `ModifyInstance`, which the adapter runs before `ModifyVertex`. The impostor card modifier computes `custom0` there from the camera and the instance transform: the octahedral code of the view direction in the object's frame and the cosine and sine of its yaw. The surface shader reads `custom0` as before. A tilted instance gets card normals that turn with the yaw only.
+
+**The bake.** An engine system finds the opted-in models in the world, requests their atlas from `ImpostorBaker` every frame (which keeps the atlas in the least-recently-used budget), registers the card material, and sets the links once the card pipeline is built. An evicted atlas clears the links, and the parts draw their meshes again.
+
+Not in this step, and the next steps for the stage:
+
 - The dither crossfade between mesh and card (`Includes/lod_crossfade.glsl`).
 - Depth from the atlas.
 - Light-facing shadow cards.

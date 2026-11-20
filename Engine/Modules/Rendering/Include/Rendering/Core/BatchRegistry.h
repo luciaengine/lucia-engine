@@ -9,11 +9,17 @@
  * counts become exact per-batch output-region capacities, which is what lets
  * draw offsets be CPU-known while draw counts stay GPU-written.
  *
+ * A mesh linked to an impostor card (SetMeshCardRow) also counts each of its
+ * instances in the card's row, so the scatter can move an instance to its card.
+ *
  * Not a hot path: entries mutate only when an instance's batch membership
  * changes (spawn/despawn/mesh-or-material swap), not per frame.
  */
 #pragma once
 
+#include "Types/FlatMap.h"
+
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <unordered_map>
@@ -72,29 +78,18 @@ class BatchRegistry
     {
         if (!IsTracked(materialIndex, meshIndex))
             return;
-        ParityCounts& c = m_Counts[MakeKey(materialIndex, meshIndex)];
-        if (mirrored)
-            ++c.Odd;
-        else
-            ++c.Even;
+        AddCount(MakeKey(materialIndex, meshIndex), mirrored);
+        if (const uint64_t* cardKey = m_CardRows.Find(meshIndex))
+            AddCount(*cardKey, mirrored);
     }
 
     void OnInstanceRemoved(uint32_t materialIndex, uint32_t meshIndex, bool mirrored)
     {
         if (!IsTracked(materialIndex, meshIndex))
             return;
-        auto it = m_Counts.find(MakeKey(materialIndex, meshIndex));
-        // A miss (or an empty parity bucket) here means a count-drift bug
-        // upstream; tolerate in Release (skip) so the failure mode is a
-        // conservative over-allocation, never an underflow.
-        assert(it != m_Counts.end() && (mirrored ? it->second.Odd : it->second.Even) > 0u);
-        if (it == m_Counts.end())
-            return;
-        uint32_t& lane = mirrored ? it->second.Odd : it->second.Even;
-        if (lane > 0u)
-            --lane;
-        if (it->second.Total() == 0u)
-            m_Counts.erase(it);
+        RemoveCount(MakeKey(materialIndex, meshIndex), mirrored);
+        if (const uint64_t* cardKey = m_CardRows.Find(meshIndex))
+            RemoveCount(*cardKey, mirrored);
     }
 
     void OnInstanceUpdated(uint32_t oldMaterialIndex, uint32_t oldMeshIndex, bool oldMirrored,
@@ -114,10 +109,103 @@ class BatchRegistry
 
     size_t BatchCount() const { return m_Counts.size(); }
 
-    void Clear() { m_Counts.clear(); }
+    /// Links the mesh to an impostor card row: each instance of the mesh also counts in the row
+    /// (cardMaterialIndex, cardMeshIndex), so the row has room for every instance that can switch
+    /// to its card. Only the primary part of a linked model has a card row. A second call moves
+    /// the counts to the new row.
+    void SetMeshCardRow(uint32_t meshIndex, uint32_t cardMaterialIndex, uint32_t cardMeshIndex)
+    {
+        ClearMeshCardRow(meshIndex);
+        if (!IsTracked(cardMaterialIndex, cardMeshIndex))
+            return;
+        const uint64_t cardKey = MakeKey(cardMaterialIndex, cardMeshIndex);
+        const ParityCounts counts = MeshCounts(meshIndex);
+        AddCounts(cardKey, counts);
+        m_CardRows.InsertOrAssign(meshIndex, cardKey);
+    }
+
+    /// Removes the card row of the mesh and its counts.
+    void ClearMeshCardRow(uint32_t meshIndex)
+    {
+        const uint64_t* cardKey = m_CardRows.Find(meshIndex);
+        if (!cardKey)
+            return;
+        RemoveCounts(*cardKey, MeshCounts(meshIndex));
+        m_CardRows.Erase(meshIndex);
+    }
+
+    void Clear()
+    {
+        m_Counts.clear();
+        m_CardRows.Clear();
+    }
 
   private:
+    void AddCount(uint64_t key, bool mirrored)
+    {
+        ParityCounts& c = m_Counts[key];
+        if (mirrored)
+            ++c.Odd;
+        else
+            ++c.Even;
+    }
+
+    void AddCounts(uint64_t key, const ParityCounts& counts)
+    {
+        if (counts.Total() == 0u)
+            return;
+        ParityCounts& c = m_Counts[key];
+        c.Even += counts.Even;
+        c.Odd += counts.Odd;
+    }
+
+    void RemoveCount(uint64_t key, bool mirrored)
+    {
+        auto it = m_Counts.find(key);
+        // A miss (or an empty parity bucket) here means a count-drift bug
+        // upstream; tolerate in Release (skip) so the failure mode is a
+        // conservative over-allocation, never an underflow.
+        assert(it != m_Counts.end() && (mirrored ? it->second.Odd : it->second.Even) > 0u);
+        if (it == m_Counts.end())
+            return;
+        uint32_t& lane = mirrored ? it->second.Odd : it->second.Even;
+        if (lane > 0u)
+            --lane;
+        if (it->second.Total() == 0u)
+            m_Counts.erase(it);
+    }
+
+    void RemoveCounts(uint64_t key, const ParityCounts& counts)
+    {
+        auto it = m_Counts.find(key);
+        assert(counts.Total() == 0u || (it != m_Counts.end() && it->second.Even >= counts.Even
+                                        && it->second.Odd >= counts.Odd));
+        if (it == m_Counts.end())
+            return;
+        it->second.Even -= std::min(it->second.Even, counts.Even);
+        it->second.Odd -= std::min(it->second.Odd, counts.Odd);
+        if (it->second.Total() == 0u)
+            m_Counts.erase(it);
+    }
+
+    /// The live instance counts of the mesh over all its materials. Linear in the batch count:
+    /// it runs only when a link changes.
+    ParityCounts MeshCounts(uint32_t meshIndex) const
+    {
+        ParityCounts sum{};
+        for (const auto& [key, counts] : m_Counts)
+        {
+            if (MeshIndexFromKey(key) != (meshIndex & 0xFFFFFFu))
+                continue;
+            sum.Even += counts.Even;
+            sum.Odd += counts.Odd;
+        }
+        return sum;
+    }
+
     std::unordered_map<uint64_t, ParityCounts> m_Counts;
+    // Mesh index -> card row key of the primary part of a linked model.
+    FlatMap<uint32_t, uint64_t> m_CardRows;
 };
 
 } // namespace Rendering

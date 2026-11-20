@@ -44,6 +44,8 @@ ModelAssetSettings ModelAssetSettings::Load(const AssetRegistry& registry,
     std::string value;
     if (registry.TryGetMetaValue(assetPath, kRigKindKey, value))
         ParseRigKindMeta(value, settings.RigKind);
+    if (registry.TryGetMetaValue(assetPath, kImpostorKey, value))
+        settings.Impostor = value == "true";
     return settings;
 }
 
@@ -52,7 +54,8 @@ bool ModelAssetSettings::Save(AssetRegistry& registry,
 {
     if (assetPath.empty())
         return false;
-    return registry.SetMetaValue(assetPath, kRigKindKey, RigKindToMeta(RigKind));
+    return registry.SetMetaValue(assetPath, kRigKindKey, RigKindToMeta(RigKind))
+        && registry.SetMetaValue(assetPath, kImpostorKey, Impostor ? "true" : "false");
 }
 
 ModelAssetSettings LoadModelAssetSettings(AssetManager* assetManager,
