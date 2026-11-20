@@ -209,7 +209,8 @@ class PipelineVariantCache
     /// Prepare an Equal-depth pipeline for a certified masked draw from its served shader metadata.
     /// Cold pipelines join the frame-begin warm queue. A warm per-instance row remains usable.
     PreparedVariant PrepareIndexedDepthEqual(const Material& material, const Rendering::ShaderMeta& shader,
-                                            Rendering::GraphicsPipelineDesc desc,
+                                            Rendering::GraphicsPipelineId base,
+                                            const Rendering::GraphicsPipelineDesc& desc,
                                             const Rendering::PipelineFormatKey& formatKey);
 
     /// Select a warm unit during graph preparation; cold builds are queued for frame begin.
