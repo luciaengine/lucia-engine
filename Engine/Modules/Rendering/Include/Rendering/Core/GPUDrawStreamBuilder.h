@@ -306,6 +306,9 @@ class GPUDrawStreamBuilder
     /// state in both buffers (level 0 / displaying LOD0).
     /// MUST match draw_command_scatter.comp's kLodNoHistory.
     static constexpr uint32_t kLodNoHistory = 0xFFFFFFFFu;
+    /// prevLod entry of an instance that drew its impostor card. Above every level count, so the
+    /// mesh LOD pick reads it as no history. MUST match draw_command_scatter.comp's kImpostorHistory.
+    static constexpr uint32_t kImpostorHistory = 0xFFFFFFFEu;
 
     /// One row of the GPU batch table consumed by draw_command_scatter.comp.
     /// 16 B, std430-compatible; MUST match the shader's BatchTableEntry.

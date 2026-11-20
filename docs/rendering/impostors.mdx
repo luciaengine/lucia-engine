@@ -1,33 +1,45 @@
 ---
 title: Impostors
-description: How far trees draw as baked impostor cards, and what the bake costs.
+description: How far trees, plants and props draw as baked impostor cards, how to turn them on for a model, and what the bake costs.
 ---
 
 # Impostors
 
-An impostor is a flat card that shows a picture of an object, baked from the object itself. Far away, the card looks like the object and costs much less to draw. Generated trees (the Tree Generator package) use impostors automatically.
+An impostor is a flat card that shows a picture of an object, baked from the object itself. Far away, the card looks like the object and costs much less to draw. Generated trees (the Tree Generator package) use impostors automatically. Any other model uses them when its impostor setting is on.
 
-## How trees switch to impostors
+## Turn impostors on for a model
 
-Each tree measures how much of the screen it covers, from the camera. When the tree's sphere is under about 128 pixels across at 1080p, it draws its impostor card instead of its bark and leaf meshes. At that size the card shows about one atlas pixel per screen pixel. A margin above that point stops the tree from switching back and forth. A tree switches only when its atlas is baked and its card material is ready. Until then it draws its mesh.
+Select the model asset, open the **LOD** tab of the inspector, and turn on **Far impostor**. The setting is saved with the asset (`assets.model.impostor`), and every entity that draws a part of the model gets the impostor.
 
-Trees with equal options share one tree variant, and a variant has one atlas. A forest that reuses a few variants therefore bakes a few atlases.
+Use it for trees, large plants, and props that the camera sees from far away. Do not use it for a small model with few triangles, such as a grass blade or a fern: its card costs three atlas samples for each pixel and is not faster than the mesh.
+
+All parts of the model switch together. A model with a bark part and a leaf part draws one card in place of both. Each part uses the box of the whole model for culling, so all parts make the same decision in the same frame.
+
+## How objects switch to impostors
+
+Each object measures how much of the screen its sphere covers, from the camera, on the GPU. When the sphere is under about 128 pixels across at 1080p, the object draws its impostor card instead of its meshes. At that size the card shows about one atlas pixel per screen pixel. A margin above that point stops the object from switching back and forth. An object switches only when its atlas is baked and its card material is ready. Until then it draws its meshes.
+
+Trees with equal options share one tree variant, and a variant has one atlas. A model has one atlas. A forest that reuses a few variants or models therefore bakes a few atlases.
 
 ## The atlas
 
-The engine bakes the atlas of a variant on the GPU, a few views in each frame, when a tree of that variant first comes near the switch point. The atlas holds 8 x 8 views of the tree over the upper hemisphere, 128 pixels each, each view fitted to the tightest sphere around the tree's vertices. The outer views look from the horizon. Each view stores the base color, the opacity, the normal and the depth. A card blends the 3 views nearest to its viewing direction. It uses the depth to line the views up on the tree's surface, and it leaves out a view that sees leaves in front of that surface.
+The engine bakes the atlas on the GPU, a few views in each frame. A model bakes when it is first drawn, and a tree variant bakes when its first tree is drawn. The atlas holds 8 x 8 views of the object over the upper hemisphere, 128 pixels each, each view fitted to the object's sphere. The outer views look from the horizon. Each view stores the base color, the opacity, the normal, and the depth. A card blends the 3 views nearest to its viewing direction. It uses the depth to line the views up on the object's surface, and it leaves out a view that sees a surface in front of that point.
 
-- The bake draws the tree's own materials without wind, so the card shows the rest pose.
-- An atlas uses 12 MB of GPU memory. All atlases together stay under 256 MB. Past that, the atlas drawn least recently goes, and its trees draw their meshes.
+- The bake draws the materials of the parts. For a model, each part bakes with the material of the first entity that draws it, so an entity that gives a part another material still gets that card.
+- Tree variants bake without wind, so the card shows the rest pose.
+- An atlas uses 12 MB of GPU memory. All atlases together stay under 256 MB. Past that, the atlas drawn least recently goes, and its objects draw their meshes.
 
 ## Limits
 
-- The card turns to face the camera. In shadow passes the card faces the camera too, not the light, so the shadow of a far tree shows the camera's view of the tree.
-- A tree switches between mesh and card without a fade.
-- The card writes a flat depth, not the depth of the baked tree.
-- The card uses a fixed roughness of 0.9, so far trees have no leaf highlight.
+- The card turns to face the camera. In a directional shadow cascade it faces the light, so a far object casts the shadow of the light's view of the object.
+- In shadows, the switch has no margin. Close to the switch point an object can cast the shadow of its mesh while it draws its card, or the reverse.
+- An object switches between mesh and card without a fade.
+- The card writes a flat depth, not the depth of the baked object.
+- The card uses a fixed roughness of 0.9, so far objects have no highlight.
+- The card turns its normals with the object's rotation around the vertical axis only. A tilted object gets slightly wrong lighting on its card.
+- Virtual shadow maps always draw the meshes.
 
 ## Debug switches
 
-- `GE_IMPOSTORS=0` keeps every tree on its mesh, for a comparison against the impostors.
-- `GE_IMPOSTOR_DEBUG_TINT=1` tints the impostor cards red, to show which trees draw cards.
+- `GE_IMPOSTORS=0` keeps every object on its meshes, for a comparison against the impostors.
+- `GE_IMPOSTOR_DEBUG_TINT=1` tints the impostor cards red, to show which objects draw cards.
