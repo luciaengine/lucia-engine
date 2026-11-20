@@ -52,6 +52,20 @@ using Engine::Renderer::IrradianceReadbackFeature;
 using Engine::Renderer::SkyRenderFeature;
 using Mathematics::Vector3;
 
+namespace GameEngine::Engine::Renderer
+{
+struct SceneReflectionProbeTestAccess
+{
+    static void SetFiltering(SceneReflectionProbeEnvironmentSource& probe, uint64_t completedBakes)
+    {
+        probe.m_LastBaseDigest = probe.BaseDigest();
+        probe.m_CaptureDesc = probe.m_Desc;
+        probe.m_CaptureState = SceneReflectionProbeEnvironmentSource::CaptureState::Filtering;
+        probe.m_CompletedBakes = completedBakes;
+    }
+};
+} // namespace GameEngine::Engine::Renderer
+
 namespace
 {
 constexpr std::string_view kCopyPass = "IBLGen.IrradianceReadback";
@@ -446,6 +460,39 @@ TEST_F(IrradianceReadbackTest, AReflectionProbeCopiesTheRestingCubeOnce)
     EXPECT_TRUE(declaresCopy(0)) << "a readback that arrives between bakes must get a reading";
     for (uint64_t i = 1; i < 4; ++i)
         EXPECT_FALSE(declaresCopy(i)) << "frame " << i << ": the resting cube is copied once";
+}
+
+TEST_F(IrradianceReadbackTest, SupersededOnceCaptureRetainsThePublishedCubeAndCanRetryItsOriginalInputs)
+{
+    using namespace Engine::Renderer;
+    SceneReflectionProbeEnvironmentSource probe(*m_Services);
+    SceneReflectionProbeEnvironmentDesc desc{};
+    desc.SourceKey = 1;
+    desc.UpdateMode = SceneReflectionProbeUpdateMode::Once;
+    desc.SceneEditDigest = 2;
+    probe.SetProbe(desc);
+    SceneReflectionProbeTestAccess::SetFiltering(probe, 1);
+    Ibl().SetLastBakedDigest(5);
+
+    desc.SceneEditDigest = 3;
+    probe.SetProbe(desc);
+    m_Frame->BeginFrame(0);
+    EnvironmentBakeContext bakeContext{};
+    bakeContext.Frame = m_Frame.get();
+    bakeContext.Device = m_Device.get();
+    bakeContext.Feature = &Ibl();
+    probe.ScheduleBake(bakeContext);
+
+    EXPECT_FALSE(probe.IsBaking());
+    EXPECT_EQ(probe.GetDiagnostics().CompletedBakes, 1u);
+    EXPECT_EQ(Ibl().GetLastBakedDigest(), 5u);
+
+    desc.SceneEditDigest = 2;
+    probe.SetProbe(desc);
+    EXPECT_TRUE(probe.NeedsBake());
+    m_Frame->BeginFrame(1);
+    probe.ScheduleBake(bakeContext);
+    EXPECT_STREQ(probe.GetDiagnostics().Stage, "Capturing face");
 }
 
 // A box probe hands the image-based lighting its position, box center, half-extents and each
