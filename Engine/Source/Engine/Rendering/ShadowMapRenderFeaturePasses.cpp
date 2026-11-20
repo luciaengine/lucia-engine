@@ -323,10 +323,16 @@ void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, Ren
         // same decision. The world arm's Read on it is the only memory
         // dependency between the reduction and the fragment fetches, which reach
         // the pyramid bindlessly.
+        // Use the mask after the full cascade declaration loop. Rigid restores
+        // can write the array even when no raster pass reaches that receipt.
+        std::optional<uint32_t> scheduledDepthMask;
+        if (buildPyramid && m_Device && m_Device->GetAPI() == Rendering::GraphicsAPI::Vulkan &&
+            !IsRigidCascadeCacheEnabled())
+            scheduledDepthMask = ScheduledCascadeMask(ctx.View, frame);
         rs.PublishPcssPyramid(ctx.Seam, frame, ctx.View,
                               m_MinMaxPyramid.Declare(frame, rs, ctx.View, pyramidSrc,
                                                       GetConfig().Resolution, pyramidCascades,
-                                                      pyramidKernelTexels, buildPyramid));
+                                                      pyramidKernelTexels, buildPyramid, scheduledDepthMask));
     }
 
     // Punctual families are independent of the directional light: always

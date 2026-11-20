@@ -127,6 +127,7 @@
 .package-manager-panel .pkg-issue-error {
     font-size: 11px;
     color: #E06060;
+    white-space: normal;
 }
 
 .package-manager-panel .pkg-issue-warn {
