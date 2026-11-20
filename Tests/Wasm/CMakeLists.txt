@@ -14,6 +14,9 @@ if(BUILD_TESTING)
         add_test(NAME WebEnginePack
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tools/Web/test_engine_pack.py)
         set_tests_properties(WebEnginePack PROPERTIES TIMEOUT 30)
+        add_test(NAME WebManagedEditorPreload
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tools/Web/test_link_managed_editor.py)
+        set_tests_properties(WebManagedEditorPreload PROPERTIES TIMEOUT 30)
     endif()
     if(Python3_Interpreter_FOUND AND GE_WEB_TEST_NODE)
         add_test(NAME WebMailboxPatch

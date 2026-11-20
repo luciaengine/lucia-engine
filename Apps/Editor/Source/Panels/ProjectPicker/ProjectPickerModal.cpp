@@ -27,6 +27,10 @@
 #include "Core/Engine.h"
 #include "Input/KeyCodes.h"
 #include "Types/StringUtils.h"
+#if defined(GE_WEB_MANAGED_EDITOR)
+#include <emscripten/emscripten.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -47,6 +51,12 @@
 namespace GameEngine {
 
 namespace {
+#if defined(GE_WEB_MANAGED_EDITOR)
+EM_JS(int, PollEditorShaderDownload, (), {
+    return Module.webEditorShaders.poll();
+});
+#endif
+
 constexpr const char* kNewProjectViewLayoutAssetPath = "UI/controls/ProjectPicker/ProjectPickerNewProjectView.uxml";
 constexpr const char* kNewProjectGridLayoutAssetPath = "UI/controls/ProjectPicker/ProjectPickerNewProjectGrid.uxml";
 // The ids BuildTree looks up or ProjectPicker.css selects in each layout. A layout that lacks one does not load.
@@ -1586,6 +1596,24 @@ void ProjectPickerModal::Update()
 
     if (m_PendingFolderLoad && m_OnFolderSelected)
     {
+#if defined(GE_WEB_MANAGED_EDITOR)
+        const int shaderState = PollEditorShaderDownload();
+        if (shaderState == 0)
+        {
+            if (auto* label = dynamic_cast<Label*>(m_LoadingLabel))
+                label->SetText("Downloading project shaders...");
+            return;
+        }
+        if (shaderState < 0)
+        {
+            m_PendingFolderLoad = false;
+            m_PendingPath.clear();
+            HideLoading();
+            Logger::Log::Error("Editor: Could not download project shaders. Try opening the project again.");
+            return;
+        }
+        ShowLoading();
+#endif
         m_PendingFolderLoad = false;
         std::filesystem::path pathToLoad = m_PendingPath;
         m_PendingPath.clear();
