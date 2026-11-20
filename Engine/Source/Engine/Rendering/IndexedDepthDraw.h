@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <span>
 
@@ -45,9 +46,10 @@ inline const ResolvedPassResources::BufferEntry* FindReplayPassBuffer(
 inline MaterialSystem::PackedSSBO BoundMaterialParams(const PassBindingContext& pass)
 {
     const auto* entry = FindReplayPassBuffer(pass, HashStringId("MaterialParams"));
-    return entry
-        ? MaterialSystem::PackedSSBO{entry->Buffer, entry->Offset, entry->Range}
-        : MaterialSystem::PackedSSBO{};
+    constexpr auto maxSize = std::numeric_limits<size_t>::max();
+    if (!entry || entry->Offset > maxSize || entry->Range > maxSize)
+        return {};
+    return {entry->Buffer, static_cast<size_t>(entry->Offset), static_cast<size_t>(entry->Range)};
 }
 
 inline std::optional<bool> IndexedDepthHexSpecialization(const Rendering::GraphicsPipelineDesc& pipeline)
