@@ -922,6 +922,30 @@ TEST(IndexedDepthReuse, MeshReplayRejectsUnservedFragmentInputs)
     EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
 }
 
+TEST(IndexedDepthReuse, WhiteSurfaceSlotsRejectTextureAndSamplerEdits)
+{
+    constexpr uint32_t kWhite = 17u;
+    constexpr uint32_t kAuthoredTexture = 21u;
+    auto material = Material::TestFactory::Create(GUID::Generate(), "Masked white slots", 16u);
+    EXPECT_FALSE(HasDefaultWhiteSurfaceSlots(material, 0u));
+    material.SetBindlessTextureIndex(TextureSlot::kAO, kWhite);
+    material.SetBindlessTextureIndex(TextureSlot::kEmissive, kWhite);
+    EXPECT_TRUE(HasDefaultWhiteSurfaceSlots(material, kWhite));
+
+    for (const auto slot : {TextureSlot::kAO, TextureSlot::kEmissive})
+    {
+        material.SetBindlessTextureIndex(slot, kAuthoredTexture);
+        EXPECT_FALSE(HasDefaultWhiteSurfaceSlots(material, kWhite));
+        material.SetBindlessTextureIndex(slot, kWhite);
+        EXPECT_TRUE(HasDefaultWhiteSurfaceSlots(material, kWhite));
+    }
+
+    material.SetSlotSamplerOverride("aoMap"_sid, SamplerPreset::LinearClamp);
+    EXPECT_FALSE(HasDefaultWhiteSurfaceSlots(material, kWhite));
+    material.SetSlotSamplerOverride("aoMap"_sid, std::nullopt);
+    EXPECT_TRUE(HasDefaultWhiteSurfaceSlots(material, kWhite));
+}
+
 TEST(IndexedDepthReuse, DestinationColorLogicKeepsOriginalTriangleContributions)
 {
     namespace R = GameEngine::Rendering;

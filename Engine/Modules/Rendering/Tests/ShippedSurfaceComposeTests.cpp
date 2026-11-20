@@ -163,6 +163,41 @@ TEST(ShippedSurfaceCompose, EditedDepthCoverageCannotCertifyIndexedReuse)
 }
 #endif
 
+TEST(ShippedSurfaceCompose, WhiteSurfaceMapSpecializationIsLimitedToMaskedNativeForward)
+{
+    MaterialDocument material{};
+    material.materialName = "WhiteSurfaceMapSpecialization";
+    material.lightingModel = "StandardPBR";
+    material.alphaMode = MaterialAlphaMode::Mask;
+    material.surfaceShader = "Surfaces/standard_pbr.glsl";
+    const TestUtils::ScopedTempDir cacheRoot = MakeTempCacheRoot();
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    context.CacheRoot = cacheRoot.Path();
+
+    constexpr auto kForward = MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus;
+    constexpr auto kDepth = MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment;
+    constexpr auto kUvFlags = VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasUV0 |
+                              VertexAttributeFlags::HasUV1 | VertexAttributeFlags::HasColor;
+    const auto check = [&](MaterialKeyword keywords, const ShaderCompileTarget& target, bool expected) {
+        const auto built = BuildMaterialToShaderPackage(material, cacheRoot.Path() / "white-surface.material",
+            "WhiteSurfaceMapSpecialization", context, ShaderSourceKind::SpirV, keywords, kUvFlags, target);
+        ASSERT_TRUE(built.success) << (built.errors.empty() ? "" : built.errors.front());
+        ASSERT_NE(built.package, nullptr);
+        const auto& constants = built.package->meta.SpecConstants;
+        EXPECT_EQ(std::any_of(constants.begin(), constants.end(), [](const auto& constant) {
+            return constant.Id == 308u;
+        }), expected);
+    };
+    ShaderCompileTarget native{};
+    check(kForward, native, true);
+    check(kDepth, native, false);
+    check(kForward | MaterialKeyword::UV1Crossfade, native, false);
+    ShaderCompileTarget compatibility{};
+    compatibility.Compatibility = true;
+    check(kForward, compatibility, false);
+}
+
 // The CBT terrain surface, composed and compiled through the real pipeline.
 //
 // It reaches no shipped-asset scan: CBTRenderFeature::EnsureMaterial builds its MaterialDocument in
