@@ -185,6 +185,14 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     // (an indirect command buffer run over a GPU-written execution range; see
     // MetalIndirectCountEncoder), so producers need not zero-fill the rest.
     m_Capabilities.supportsDrawIndirectCountNative = m_IndirectCountResources != nullptr;
+    constexpr NS::UInteger kOwnerReplayScratchBytes = 64u * 1024u * 1024u;
+    m_Capabilities.supportsIndexedDepthOwnerReplay =
+        tier2ArgumentBuffers && m_Capabilities.supportsBufferDeviceAddress &&
+        m_Capabilities.supportsShaderInt64 && m_Capabilities.supportsDrawIndirectCountNative &&
+        m_Device->supportsFamily(MTL::GPUFamilyApple7);
+    m_Capabilities.supportsIndexedDepthMeshReplay =
+        m_Capabilities.supportsIndexedDepthOwnerReplay && m_Capabilities.supportsIndirectMeshTasks &&
+        m_Device->maxBufferLength() >= kOwnerReplayScratchBytes;
     // Ray query: MTLAccelerationStructure plus MSL's intersection_query.
     // supportsRaytracing is Metal's own answer for exactly that pair, so it is
     // the gate rather than a GPU-family proxy. It is an API gate, not a

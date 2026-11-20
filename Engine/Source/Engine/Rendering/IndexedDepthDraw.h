@@ -25,7 +25,17 @@ namespace GameEngine::Engine::Renderer
 inline bool IndexedDepthReuseEnabled(const Rendering::IDevice& device)
 {
     static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_REUSE", true);
-    return enabled && device.GetAPI() == Rendering::GraphicsAPI::Vulkan;
+    if (!enabled)
+        return false;
+
+    const auto api = device.GetAPI();
+    if (api == Rendering::GraphicsAPI::Vulkan)
+        return true;
+    if (api != Rendering::GraphicsAPI::Metal || !device.GetCapabilities().supportsIndexedDepthOwnerReplay)
+        return false;
+
+    static const bool metalReplayEnabled = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_OWNER_REPLAY", false);
+    return metalReplayEnabled;
 }
 
 inline bool LogIndexedDepthReplayDiagnostics()

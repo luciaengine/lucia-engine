@@ -1977,6 +1977,27 @@ TEST(MetalSpirvPipeline, Bc4TextureSamplesAsItsEncodedColors)
     ExpectBcMipChainSamplesAsItsEncodedColors(TextureFormat::BC4_UNORM);
 }
 
+TEST(MetalDeviceCapabilities, DepthOwnerReplayRequiresNativeResources)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+        GTEST_SKIP() << "Metal backend unavailable";
+
+    auto* nativeDevice = static_cast<MetalDevice&>(*device).GetMTLDevice();
+    const auto& capabilities = device->GetCapabilities();
+    const bool indexedReplayAvailable =
+        nativeDevice->argumentBuffersSupport() >= MTL::ArgumentBuffersTier2 &&
+        nativeDevice->supportsFamily(MTL::GPUFamilyApple7) &&
+        capabilities.supportsBufferDeviceAddress && capabilities.supportsShaderInt64 &&
+        capabilities.supportsDrawIndirectCountNative;
+    constexpr NS::UInteger kMeshReplayBufferBytes = 64u * 1024u * 1024u;
+    const bool meshReplayAvailable = indexedReplayAvailable && capabilities.supportsIndirectMeshTasks &&
+        nativeDevice->maxBufferLength() >= kMeshReplayBufferBytes;
+
+    EXPECT_EQ(capabilities.supportsIndexedDepthOwnerReplay, indexedReplayAvailable);
+    EXPECT_EQ(capabilities.supportsIndexedDepthMeshReplay, meshReplayAvailable);
+}
+
 namespace
 {
 void ExpectMeshTriangle(bool withInputs)
