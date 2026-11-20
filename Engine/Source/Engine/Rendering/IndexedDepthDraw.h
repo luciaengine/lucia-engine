@@ -53,6 +53,27 @@ inline MaterialSystem::PackedSSBO BoundMaterialParams(const PassBindingContext& 
     return {entry->Buffer, static_cast<size_t>(entry->Offset), static_cast<size_t>(entry->Range)};
 }
 
+// A donor override can target a constant absent from its shader. Reject it
+// before using an owner shader where that constant can change coverage.
+inline bool BindIndexedOwnerMaterialRow(Rendering::GraphicsPipelineDesc& pipeline,
+                                        const Rendering::ShaderMeta& shader,
+                                        std::optional<uint32_t> certifiedRow)
+{
+    if (std::none_of(shader.SpecConstants.begin(), shader.SpecConstants.end(), [](const auto& constant) {
+            return constant.Id == kForwardMaterialRowConstant;
+        }))
+        return true;
+    if (pipeline.Specialization && pipeline.Specialization->GetEntries().contains(kForwardMaterialRowConstant))
+        return false;
+    if (certifiedRow)
+    {
+        if (!pipeline.Specialization)
+            pipeline.Specialization.emplace();
+        pipeline.Specialization->AddConstant(kForwardMaterialRowConstant, *certifiedRow);
+    }
+    return true;
+}
+
 inline std::optional<bool> IndexedDepthHexSpecialization(const Rendering::GraphicsPipelineDesc& pipeline)
 {
     // The admitted SPIR-V stock mask declares SpecId 302 with a true default.

@@ -114,6 +114,38 @@ TEST(ShippedSurfaceCompose, UnlitSolidComposesThroughRealPipeline)
 }
 
 #if defined(GE_TEST_STOCK_SHADER_HASHES)
+TEST(ShippedSurfaceCompose, CameraDepthOwnerReflectsMaterialRowWithAndWithoutLodFade)
+{
+    const TestUtils::ScopedTempDir stagingRoot = MakeTempCacheRoot();
+    MaterialDocument material{};
+    material.materialName = "DepthOwnerMaterial";
+    material.lightingModel = "StandardPBR";
+    material.alphaMode = MaterialAlphaMode::Mask;
+    material.surfaceShader = "Surfaces/standard_pbr.glsl";
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    context.CacheRoot = stagingRoot.Path();
+    constexpr auto kPrepass = MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment;
+    constexpr auto kOwner = kPrepass | MaterialKeyword::IndexedDepthOwner;
+    for (const auto keywords : {kPrepass, kOwner, kOwner | MaterialKeyword::LodCrossfade})
+    {
+        const auto result = BuildMaterialToShaderPackage(material, stagingRoot.Path() / "owner.material",
+            "DepthOwnerMaterial", context, ShaderSourceKind::SpirV, keywords);
+        ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
+        ASSERT_NE(result.package, nullptr);
+        const auto& metadata = result.package->meta;
+        EXPECT_NE(std::find(metadata.RequiredDefines.begin(), metadata.RequiredDefines.end(), kStockMaskCoverageDefine),
+                  metadata.RequiredDefines.end());
+        const bool owner = keywords != kPrepass;
+        const auto reflects = [&metadata](uint32_t id) {
+            return std::any_of(metadata.SpecConstants.begin(), metadata.SpecConstants.end(),
+                               [id](const auto& constant) { return constant.Id == id; });
+        };
+        EXPECT_EQ(reflects(306), owner);
+        EXPECT_EQ(reflects(307), owner);
+    }
+}
+
 TEST(ShippedSurfaceCompose, EditedDepthCoverageCannotCertifyIndexedReuse)
 {
     const TestUtils::ScopedTempDir stagingRoot = MakeTempCacheRoot();

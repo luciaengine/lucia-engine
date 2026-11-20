@@ -493,7 +493,8 @@ struct GE_MaterialTexture
 // cubes, and shadow maps resolve to the builtins unbiased. nonuniformEXT is
 // applied here, at the descriptor access, so the NonUniform decoration lands
 // on the sampled operand regardless of the call shape.
-#if defined(FORWARD_PLUS) && defined(ALPHA_TEST) && !defined(GE_COMPAT_PROFILE) && !defined(GE_WGSL_COOK)
+#if (defined(FORWARD_PLUS) || defined(GE_INDEXED_DEPTH_OWNER)) && defined(ALPHA_TEST) && \
+    !defined(GE_COMPAT_PROFILE) && !defined(GE_WGSL_COOK)
 #define GE_CAN_SPECIALIZE_MATERIAL_ROW 1
 const uint kPerInstanceMaterialRow = 0xffffffffu;
 layout(constant_id = 306) const uint GE_FORWARD_MATERIAL_ROW = kPerInstanceMaterialRow;
