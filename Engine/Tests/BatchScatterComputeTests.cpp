@@ -4464,7 +4464,8 @@ std::multiset<uint32_t> InstancesInRows(const std::vector<GPUDrawStreamBuilder::
     std::multiset<uint32_t> instances;
     for (size_t row = 0; row < table.size(); ++row)
     {
-        if ((table[row].meshIndex & ~GPUDrawStreamBuilder::kMeshParityBit) != mesh)
+        // The mesh axis is 24 bits; bit 24 is the winding parity of the row.
+        if ((table[row].meshIndex & 0xFFFFFFu) != mesh)
             continue;
         for (uint32_t i = 0; i < std::min(cursors[row], table[row].capacity); ++i)
         {
