@@ -69,6 +69,17 @@ vec3 ge_shadowReceiverDy = vec3(0.0);
 
 #include "shadow_data.glsl"
 
+const int kPcssWithPoissonFallback = -2;
+
+int GE_ResolveForwardShadowFilter()
+{
+    // PCSS and the existing Poisson fallback are the only possible filters for
+    // a PCSS view. Raw-depth registration can fail after pipeline selection.
+    if (GE_FORWARD_SHADOW_FILTER == kPcssWithPoissonFallback)
+        return ge_shadowDebug.y > 0.5 ? 3 : 2;
+    return GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER;
+}
+
 layout(set = 0, binding = 9) uniform texture2DArray ge_shadowMapArrayTex;
 #define ge_shadowMapArray sampler2DArrayShadow(ge_shadowMapArrayTex, ge_shadowCompareSampler)
 
@@ -152,7 +163,7 @@ float GE_TerrainShadow(vec3 posRel, float maxPenumbraRadius)
 {
     if (ge_terrainShadowSource.z == 0u)
         return 1.0;
-    int quality = (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER);
+    int quality = GE_ResolveForwardShadowFilter();
     float tanHalfAngle = (quality == 3 || quality == 5) ? ge_shadowPcssCascades[0].w : 0.0;
     GE_TerrainShadowGrid g;
     g.CenterX = ge_terrainShadowGrid0.x;
@@ -584,7 +595,9 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
     vec2 sc = GE_PoissonRotation(screenPos, shadowUV,
                                  vec2(textureSize(ge_shadowMapArray, 0).xy));
 
-    int quality = (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER);
+    int quality = GE_ResolveForwardShadowFilter();
+
+    const bool pcssWithFallback = GE_FORWARD_SHADOW_FILTER == kPcssWithPoissonFallback;
 
     // MSM4: pre-filtered analytic bound. Falls back to the path below if
     // the moments aren't ready (CPU sets quality=3 in BuildShadowDataGPU
@@ -593,7 +606,7 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
     // side; the existing receiver-bias (refDepth = shadowNDC.z + bias)
     // is reverse-Z, so un-reversing 1.0 - refDepth gives forward-Z with
     // the bias correctly subtracting (anti-acne in forward-Z).
-    if (quality == 4)
+    if (!pcssWithFallback && quality == 4)
     {
         float receiverFZ = clamp(1.0 - refDepth, 0.0001, 0.9999);
         return GE_SampleCascadeMsm(cascadeIdx, shadowUV, receiverFZ);
@@ -604,7 +617,7 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
     // costs no extra fetch and no dependent read — the property PCSS cannot have
     // and the reason this fit a gen8 60 Hz budget. Shares PCSS's raw-depth
     // prerequisite (ge_shadowDebug.y), hence the same gate.
-    if (quality == 5 && int(ge_shadowDebug.y) != 0)
+    if (!pcssWithFallback && quality == 5 && int(ge_shadowDebug.y) != 0)
     {
         float worldPerTexel = ge_shadowPcssCascades[cascadeIdx].x;
         float depthSpanWorld = ge_shadowPcssCascades[cascadeIdx].y;
@@ -666,7 +679,7 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
         return 1.0 - GE_DpcfCurve(percentageOccluded, pcfWeight);
     }
 
-    if (quality == 3 && int(ge_shadowDebug.y) != 0)
+    if ((pcssWithFallback || quality == 3) && int(ge_shadowDebug.y) != 0)
     {
         // PCSS: three-phase contact-hardening shadows.
         //   1) Blocker search reads raw depth (GE_PcssRawDepth).
@@ -797,7 +810,7 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
         return shadow / float(filterTaps);
     }
 
-    if (quality == 2)
+    if (pcssWithFallback || quality == 2)
     {
         // Variable-tap Vogel disk with per-pixel rotation.
         // Tap count shared with PCSS via ge_shadowPcss.y so a single setting
@@ -953,8 +966,8 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     receiverDx = ge_shadowReceiverDx;
     receiverDy = ge_shadowReceiverDy;
     #else
-    if ((GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER) <= 1 ||
-        (ge_shadowPcss.w > 0.5 && (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER) == 3))
+    if (GE_ResolveForwardShadowFilter() <= 1 ||
+        (ge_shadowPcss.w > 0.5 && GE_ResolveForwardShadowFilter() == 3))
     {
       #ifdef GE_FORWARD_EARLY_ALPHA_TEST
         receiverDx = ge_shadowReceiverDx;
@@ -1045,7 +1058,7 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     }
 
     float normalBias = GE_ShadowNormalBiasWorld(ge_shadowParams.y, texelWorld,
-        ge_shadowPcssCascades[0].x, (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER), ge_shadowPcss.x,
+        ge_shadowPcssCascades[0].x, GE_ResolveForwardShadowFilter(), ge_shadowPcss.x,
         dot(normalWS, lightDirWS),
         maxPenumbraWorld,
         ge_shadowPcss.w > 0.5,
@@ -1061,7 +1074,7 @@ float GE_SampleShadow(vec3 posWS, vec3 normalWS, float linearDepth, vec3 lightDi
     virtualResolved = GE_ReadVirtualShadowSunMask(screenPos, gl_FragCoord.z, ge_prepassReceiverDepthGradient, shadow);
 #else
     virtualResolved = GE_TryVirtualShadowDirectional(posWS, normalWS, dot(normalWS, lightDirWS), screenPos,
-        (GE_FORWARD_SHADOW_FILTER < 0 ? int(ge_shadowDebug.w + 0.5) : GE_FORWARD_SHADOW_FILTER), shadow);
+        GE_ResolveForwardShadowFilter(), shadow);
 #endif
 #endif
     if (!virtualResolved)
