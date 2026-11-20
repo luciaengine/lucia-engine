@@ -128,6 +128,10 @@ struct LodDispatchParams
     // leaves the shader's gate at 0, so it touches neither binding and every
     // pre-existing expectation in this file is unaffected by it.
     bool renderedHistory = false;
+    // Impostor stage. 0xFFFFFFFF (the default) selects no card in this dispatch.
+    uint32_t impostorCardMesh = 0xFFFFFFFFu;
+    float impostorEnterCoverage = 0.0f;
+    float impostorExitCoverage = 0.0f;
     // Per-instance visibility for this dispatch, one word per instance. Empty
     // (the default) keeps the pass-through the rest of this file relies on;
     // non-empty models a real culling GENERATION — the world scatter's phase A
@@ -540,6 +544,9 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         pc.lodHysteresisBand = lod.hysteresisBand;
         pc.smallCullCoverage = lod.smallCullCoverage;
         pc.renderedHistoryEnabled = lod.renderedHistory ? 1u : 0u;
+        pc.impostorCardMesh = lod.impostorCardMesh;
+        pc.impostorEnterCoverage = lod.impostorEnterCoverage;
+        pc.impostorExitCoverage = lod.impostorExitCoverage;
 
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Compute);
         cl->Begin();
@@ -4423,6 +4430,162 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(ScatterVariant{false, false}, ScatterVariant{true, false}),
     [](const ::testing::TestParamInfo<ScatterVariant>& info)
     { return std::string(info.param.compact ? "Compact40B" : "FullFat240B"); });
+
+// ---- Impostor stage ----------------------------------------------------------
+
+constexpr uint32_t kImpostorPrimaryIndices = 30u;
+constexpr uint32_t kImpostorSecondaryIndices = 60u;
+constexpr uint32_t kImpostorCardIndices = 6u;
+constexpr float kImpostorEnter = 0.12f;
+constexpr float kImpostorExit = 0.12f * 1.15f;
+// Coverage is 1 / distance here (radius 1, projScaleY 1).
+constexpr float kImpostorNearDist = 5.0f;   // 0.2: above the exit coverage.
+constexpr float kImpostorBandDist = 7.7f;   // 0.13: between enter and exit.
+constexpr float kImpostorFarDist = 10.0f;   // 0.1: below the enter coverage.
+
+LodDispatchParams ImpostorLod(float dist, uint32_t cardMesh, bool hysteresis)
+{
+    LodDispatchParams lod{};
+    lod.projScaleY = 1.0f;
+    lod.cameraPos[0] = dist;
+    lod.impostorCardMesh = cardMesh;
+    lod.impostorEnterCoverage = kImpostorEnter;
+    lod.impostorExitCoverage = hysteresis ? kImpostorExit : kImpostorEnter;
+    return lod;
+}
+
+// Written records of the rows whose mesh axis is `mesh` (either parity): the instance of each.
+std::multiset<uint32_t> InstancesInRows(const std::vector<GPUDrawStreamBuilder::BatchTableEntry>& table,
+                                        const std::vector<uint32_t>& cursors,
+                                        const std::vector<uint32_t>& records,
+                                        const std::vector<uint32_t>& indirection, uint32_t mesh,
+                                        uint32_t expectedIndexCount)
+{
+    std::multiset<uint32_t> instances;
+    for (size_t row = 0; row < table.size(); ++row)
+    {
+        if ((table[row].meshIndex & ~GPUDrawStreamBuilder::kMeshParityBit) != mesh)
+            continue;
+        for (uint32_t i = 0; i < std::min(cursors[row], table[row].capacity); ++i)
+        {
+            const uint32_t slot = table[row].recordOffset + i;
+            EXPECT_EQ(records[slot * kDrawRecordUints], expectedIndexCount);
+            instances.insert(indirection[slot]);
+        }
+    }
+    return instances;
+}
+
+// Past the switch the primary part of a linked model draws the card through the card's own row
+// in every table shape, mirrored instances included, and the secondary part draws nothing. Near,
+// both parts draw their meshes and the card row stays empty.
+TEST_P(BatchScatterComputeTest, ImpostorPastTheSwitchDrawsTheCardForThePrimaryPartOnly)
+{
+    const uint32_t primary = AddMeshRow(kImpostorPrimaryIndices);
+    const uint32_t secondary = AddMeshRow(kImpostorSecondaryIndices);
+    const uint32_t card = AddMeshRow(kImpostorCardIndices);
+    constexpr uint32_t kBarkMaterial = 1u;
+    constexpr uint32_t kLeafMaterial = 2u;
+    constexpr uint32_t kCardMaterial = 3u;
+    const uint32_t bark = m_Scene->AddInstance(MakeInstance(kBarkMaterial, primary));
+    m_Scene->AddInstance(MakeInstance(kLeafMaterial, secondary, kInstanceFlagDepthMaterialDependent));
+    const uint32_t mirroredBark = m_Scene->AddInstance(MakeInstance(kBarkMaterial, primary, kInstanceFlagMirrored));
+    m_Scene->AddInstance(
+        MakeInstance(kLeafMaterial, secondary, kInstanceFlagDepthMaterialDependent | kInstanceFlagMirrored));
+    m_Scene->SetMeshImpostorCard(primary, kCardMaterial, card, true);
+    m_Scene->SetMeshImpostorCard(secondary, kCardMaterial, card, false);
+
+    const std::vector<uint8_t> depthClasses{
+        static_cast<uint8_t>(MaterialDepthClass::EligibleSingleSided),
+        static_cast<uint8_t>(MaterialDepthClass::EligibleSingleSided),
+        static_cast<uint8_t>(MaterialDepthClass::MaterialDependent),
+        static_cast<uint8_t>(MaterialDepthClass::MaterialDependent)};
+    const uint32_t C0 = GPUDrawStreamBuilder::kColorClassBase;
+    const std::vector<uint32_t> colorClass{C0, C0, kLeafMaterial, kCardMaterial};
+
+    for (const uint32_t classMode : {GPUDrawStreamBuilder::kClassModeOff, GPUDrawStreamBuilder::kClassModeColor,
+                                     GPUDrawStreamBuilder::kClassModeShadow})
+    {
+        uint32_t total = 0u;
+        const auto& registry = m_Scene->GetBatchRegistry();
+        const auto table = classMode == GPUDrawStreamBuilder::kClassModeShadow
+                               ? BatchTableTesting::BuildShadow(registry, depthClasses, {}, &total)
+                           : classMode == GPUDrawStreamBuilder::kClassModeColor
+                               ? BatchTableTesting::BuildColor(registry, colorClass, {}, &total)
+                               : BatchTableTesting::Build(registry, {}, &total);
+        // Four mesh instances and the two card slots of the primary part.
+        ASSERT_EQ(total, 6u) << "classMode=" << classMode;
+        const uint32_t rows = static_cast<uint32_t>(table.size());
+
+        const auto far = Dispatch(table, total, 0u, 0u, rows, total, classMode, colorClass, 0xFFFFFFFFu, {}, 0u,
+                                  ImpostorLod(kImpostorFarDist, card, false));
+        EXPECT_EQ(far.stats.tableMisses, 0u) << "classMode=" << classMode;
+        EXPECT_EQ(far.stats.overflows, 0u) << "classMode=" << classMode;
+        EXPECT_EQ(InstancesInRows(table, far.cursors, far.records, far.indirection, card, kImpostorCardIndices),
+                  (std::multiset<uint32_t>{bark, mirroredBark}))
+            << "classMode=" << classMode;
+        EXPECT_TRUE(InstancesInRows(table, far.cursors, far.records, far.indirection, primary,
+                                    kImpostorPrimaryIndices).empty());
+        EXPECT_TRUE(InstancesInRows(table, far.cursors, far.records, far.indirection, secondary,
+                                    kImpostorSecondaryIndices).empty());
+
+        const auto near = Dispatch(table, total, 0u, 0u, rows, total, classMode, colorClass, 0xFFFFFFFFu, {}, 0u,
+                                   ImpostorLod(kImpostorNearDist, card, false));
+        EXPECT_EQ(near.stats.tableMisses, 0u) << "classMode=" << classMode;
+        EXPECT_TRUE(InstancesInRows(table, near.cursors, near.records, near.indirection, card,
+                                    kImpostorCardIndices).empty());
+        EXPECT_EQ(InstancesInRows(table, near.cursors, near.records, near.indirection, primary,
+                                  kImpostorPrimaryIndices).size(), 2u);
+        EXPECT_EQ(InstancesInRows(table, near.cursors, near.records, near.indirection, secondary,
+                                  kImpostorSecondaryIndices).size(), 2u);
+    }
+}
+
+// With a history the card stays until the exit coverage and every part records the card state, so
+// the parts keep deciding alike. Without one (exit == enter) the switch is at the enter coverage.
+// A slice with no card mesh never selects a card.
+TEST_P(BatchScatterComputeTest, ImpostorHysteresisKeepsTheCardUntilTheExitCoverage)
+{
+    const uint32_t primary = AddMeshRow(kImpostorPrimaryIndices);
+    const uint32_t secondary = AddMeshRow(kImpostorSecondaryIndices);
+    const uint32_t card = AddMeshRow(kImpostorCardIndices);
+    const uint32_t bark = m_Scene->AddInstance(MakeInstance(1u, primary));
+    m_Scene->AddInstance(MakeInstance(2u, secondary));
+    m_Scene->SetMeshImpostorCard(primary, 3u, card, true);
+    m_Scene->SetMeshImpostorCard(secondary, 3u, card, false);
+    uint32_t total = 0u;
+    const auto table = BatchTableTesting::Build(m_Scene->GetBatchRegistry(), {}, &total);
+    ASSERT_EQ(total, 3u);
+    const uint32_t rows = static_cast<uint32_t>(table.size());
+    const auto dispatch = [&](float dist, uint32_t cardMesh, bool hysteresis)
+    { return Dispatch(table, total, 0u, 0u, rows, total, 0u, {}, 0xFFFFFFFFu, {}, 0u, ImpostorLod(dist, cardMesh, hysteresis)); };
+    const auto cards = [&](const DispatchResult& r)
+    { return InstancesInRows(table, r.cursors, r.records, r.indirection, card, kImpostorCardIndices); };
+    const uint32_t kCard = GPUDrawStreamBuilder::kImpostorHistory;
+
+    SeedPrevLod(2u, GPUDrawStreamBuilder::kLodNoHistory);
+    const auto enterFromMesh = dispatch(kImpostorBandDist, card, true);
+    EXPECT_TRUE(cards(enterFromMesh).empty()) << "inside the band a mesh stays a mesh";
+    EXPECT_EQ(enterFromMesh.prevLod, (std::vector<uint32_t>{0u, 0u}));
+
+    SeedPrevLod(2u, kCard);
+    const auto holdCard = dispatch(kImpostorBandDist, card, true);
+    EXPECT_EQ(cards(holdCard), std::multiset<uint32_t>{bark}) << "inside the band a card stays a card";
+    EXPECT_EQ(holdCard.prevLod, (std::vector<uint32_t>{kCard, kCard}));
+    // The rule is a fixed point: the same inputs give the same result.
+    EXPECT_EQ(cards(dispatch(kImpostorBandDist, card, true)), std::multiset<uint32_t>{bark});
+
+    SeedPrevLod(2u, kCard);
+    EXPECT_TRUE(cards(dispatch(kImpostorBandDist, card, false)).empty()) << "no history: switch at enter";
+
+    SeedPrevLod(2u, GPUDrawStreamBuilder::kLodNoHistory);
+    const auto farFromMesh = dispatch(kImpostorFarDist, card, true);
+    EXPECT_EQ(cards(farFromMesh), std::multiset<uint32_t>{bark});
+    EXPECT_EQ(farFromMesh.prevLod, (std::vector<uint32_t>{kCard, kCard}));
+
+    SeedPrevLod(2u, GPUDrawStreamBuilder::kLodNoHistory);
+    EXPECT_TRUE(cards(dispatch(kImpostorFarDist, 0xFFFFFFFFu, true)).empty()) << "no card mesh: no stage";
+}
 
 std::string ScatterVariantName(const ::testing::TestParamInfo<ScatterVariant>& info)
 {

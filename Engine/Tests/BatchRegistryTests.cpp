@@ -133,6 +133,52 @@ TEST(BatchRegistryUnit, UpdateMovesCountBetweenBatches)
     EXPECT_EQ(reg.Counts().at(BatchRegistry::MakeKey(2u, 2u)).Total(), 1u);
 }
 
+// The primary part of a linked model counts each instance in its card row too, per parity, so the
+// card row can hold every instance that switches.
+TEST(BatchRegistryUnit, LinkedMeshCountsItsInstancesInTheCardRow)
+{
+    BatchRegistry reg;
+    reg.OnInstanceAdded(1u, 10u, false);
+    reg.OnInstanceAdded(2u, 10u, true);
+    reg.OnInstanceAdded(1u, 11u, false);
+    const uint64_t cardKey = BatchRegistry::MakeKey(50u, 99u);
+
+    reg.SetMeshCardRow(10u, 50u, 99u);
+    ASSERT_EQ(reg.Counts().count(cardKey), 1u);
+    EXPECT_EQ(reg.Counts().at(cardKey), (BatchRegistry::ParityCounts{1u, 1u}));
+
+    reg.OnInstanceAdded(1u, 10u, false);
+    EXPECT_EQ(reg.Counts().at(cardKey), (BatchRegistry::ParityCounts{2u, 1u}));
+    reg.OnInstanceRemoved(2u, 10u, true);
+    EXPECT_EQ(reg.Counts().at(cardKey), (BatchRegistry::ParityCounts{2u, 0u}));
+    // A mesh with no link adds nothing to the card row.
+    reg.OnInstanceAdded(1u, 11u, false);
+    EXPECT_EQ(reg.Counts().at(cardKey), (BatchRegistry::ParityCounts{2u, 0u}));
+
+    reg.ClearMeshCardRow(10u);
+    EXPECT_EQ(reg.Counts().count(cardKey), 0u);
+    EXPECT_EQ(reg.Counts().at(BatchRegistry::MakeKey(1u, 10u)).Total(), 2u);
+    EXPECT_EQ(reg.Counts().at(BatchRegistry::MakeKey(1u, 11u)).Total(), 2u);
+}
+
+TEST(BatchRegistryUnit, SetMeshCardRowMovesTheCountsToTheNewRow)
+{
+    BatchRegistry reg;
+    reg.OnInstanceAdded(1u, 10u, false);
+    reg.OnInstanceAdded(1u, 10u, false);
+    reg.SetMeshCardRow(10u, 50u, 99u);
+    reg.SetMeshCardRow(10u, 51u, 99u);
+    EXPECT_EQ(reg.Counts().count(BatchRegistry::MakeKey(50u, 99u)), 0u);
+    EXPECT_EQ(reg.Counts().at(BatchRegistry::MakeKey(51u, 99u)).Total(), 2u);
+
+    // Two linked meshes that share a card row add up, and each leaves with its own count.
+    reg.OnInstanceAdded(3u, 12u, false);
+    reg.SetMeshCardRow(12u, 51u, 99u);
+    EXPECT_EQ(reg.Counts().at(BatchRegistry::MakeKey(51u, 99u)).Total(), 3u);
+    reg.ClearMeshCardRow(10u);
+    EXPECT_EQ(reg.Counts().at(BatchRegistry::MakeKey(51u, 99u)).Total(), 1u);
+}
+
 // ---- GPUScene integration (mutator hook placement) --------------------------
 
 class GPUSceneBatchRegistryTest : public ::testing::Test
@@ -250,6 +296,48 @@ TEST_F(GPUSceneBatchRegistryTest, DoubleRemoveDecrementsOnce)
     const auto& reg = m_Scene->GetBatchRegistry();
     EXPECT_EQ(reg.Counts().at(BatchRegistry::MakeKey(6u, 60u)).Total(), 1u);
     EXPECT_EQ(Rescan(), reg.Counts());
+}
+
+GPUMesh MakeMeshRow()
+{
+    GPUMesh mesh{};
+    mesh.boundingRadius = 1.0f;
+    mesh.vertexCount = 4u;
+    mesh.indexCount = 6u;
+    mesh.lodCount = 1u;
+    mesh.lodIndexCount[0] = 6u;
+    return mesh;
+}
+
+// GPUScene owns the impostor word of a mesh row: the link survives a row rewrite from the mesh
+// registry, and a freed slot starts the next mesh with no link and no card row.
+TEST_F(GPUSceneBatchRegistryTest, ImpostorLinkSurvivesMeshUpdateAndClearsOnRemove)
+{
+    const uint32_t primary = m_Scene->AddMesh(MakeMeshRow());
+    const uint32_t secondary = m_Scene->AddMesh(MakeMeshRow());
+    const uint32_t card = m_Scene->AddMesh(MakeMeshRow());
+    m_Scene->AddInstance(MakeInstance(1u, primary));
+    m_Scene->AddInstance(MakeInstance(2u, secondary));
+
+    m_Scene->SetMeshImpostorCard(primary, 7u, card, true);
+    m_Scene->SetMeshImpostorCard(secondary, 7u, card, false);
+    EXPECT_EQ(m_Scene->GetMeshes()[primary].impostorCard, 8u | kGPUMeshImpostorPrimaryBit);
+    EXPECT_EQ(m_Scene->GetMeshes()[secondary].impostorCard, 8u);
+    const auto& reg = m_Scene->GetBatchRegistry();
+    // Only the primary part draws the card, so only it counts in the card row.
+    EXPECT_EQ(reg.Counts().at(BatchRegistry::MakeKey(7u, card)).Total(), 1u);
+
+    m_Scene->UpdateMesh(primary, MakeMeshRow());
+    EXPECT_EQ(m_Scene->GetMeshes()[primary].impostorCard, 8u | kGPUMeshImpostorPrimaryBit);
+
+    m_Scene->ClearMeshImpostorCard(secondary);
+    EXPECT_EQ(m_Scene->GetMeshes()[secondary].impostorCard, 0u);
+
+    m_Scene->RemoveMesh(primary);
+    EXPECT_EQ(reg.Counts().count(BatchRegistry::MakeKey(7u, card)), 0u);
+    const uint32_t reused = m_Scene->AddMesh(MakeMeshRow());
+    EXPECT_EQ(reused, primary);
+    EXPECT_EQ(m_Scene->GetMeshes()[reused].impostorCard, 0u);
 }
 
 TEST_F(GPUSceneBatchRegistryTest, FuzzMatchesBruteForceRescan)
