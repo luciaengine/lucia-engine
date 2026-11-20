@@ -14,7 +14,6 @@ namespace
 {
 constexpr uint32_t kLocalLightsConstant = 300;
 constexpr uint32_t kLocalProbesConstant = 301;
-constexpr uint32_t kHexTilingConstant = 302;
 constexpr uint32_t kShadowFilterConstant = 303;
 constexpr uint32_t kShadowDebugConstant = 304;
 constexpr uint32_t kSecondaryLightsConstant = 305;
@@ -91,7 +90,7 @@ std::shared_ptr<const Rendering::SpecializationConstants> ForwardShaderSpecializ
         // Vulkan specialization booleans occupy four bytes.
         constants->AddConstant(kLocalLightsConstant, static_cast<uint32_t>(state[0]));
         constants->AddConstant(kLocalProbesConstant, static_cast<uint32_t>(state[1]));
-        constants->AddConstant(kHexTilingConstant, static_cast<uint32_t>(state[2]));
+        constants->AddConstant(kForwardHexTilingConstant, static_cast<uint32_t>(state[2]));
         constants->AddConstant(kShadowFilterConstant, state[3]);
         constants->AddConstant(kShadowDebugConstant, static_cast<uint32_t>(state[4]));
         constants->AddConstant(kSecondaryLightsConstant, static_cast<uint32_t>(state[5]));

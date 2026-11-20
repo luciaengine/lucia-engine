@@ -133,6 +133,12 @@ class TextureService
 
     bool IsBindlessEnabled() const { return m_BindlessEnabled.load(std::memory_order_relaxed); }
     DescriptorSetHandle BindlessTextureSet() const { return m_BindlessTextureSet; }
+    bool HasPublishedBindlessSampler(uint32_t index) const
+    {
+        return m_BindlessTextureSet.IsValid() &&
+               index < static_cast<uint32_t>(Rendering::SamplerPreset::kCount) &&
+               (m_BindlessSamplerMask & (uint32_t{1} << index)) != 0;
+    }
     static Rendering::DescriptorSetLayoutDesc GetBindlessTextureSetLayout();
     static Rendering::DescriptorSetLayoutDesc GetBindlessTextureSetLayout(uint32_t maxTextures);
     uint32_t ResolveDefaultBindlessIndex(StringId slotName) const;
@@ -154,6 +160,8 @@ class TextureService
     // per-draw shader-side from the shared sampler array, so it's not part of the key.
     // Returns 0 on failure (bindless disabled, invalid handle).
     uint32_t GetBindlessIndex(TextureHandle tex);
+    /// True when the bindless slot serves the current resident authored texture.
+    bool MatchesPublishedAssetTexture(const GUID& material, StringId slot, TextureHandle texture, uint32_t index) const;
     // Advanced: full BindlessTextureDesc (array slices, mip levels, aspect).
     uint32_t GetBindlessIndex(const BindlessTextureDesc& desc);
 
@@ -694,6 +702,7 @@ class TextureService
     MaterialBindingCache m_MaterialBindings;
     // Global bindless texture descriptor set (persistent, holds all registered textures).
     DescriptorSetHandle m_BindlessTextureSet{};
+    uint32_t m_BindlessSamplerMask = 0;
     // Bindless index cache keyed by (texture, array slice, mip level, aspect). The
     // sampler is NOT part of the key: post image/sampler split a texture occupies
     // one SAMPLED_IMAGE slot regardless of filter.

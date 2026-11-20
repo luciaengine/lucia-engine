@@ -74,6 +74,11 @@ struct ComposedShaderSource
     // The preprocessor defines that were injected.
     std::vector<std::string> defines;
 
+    // Nonempty only for the rigid instanced StandardPBR mask recipe.
+    // The compile service checks that the compiler actually read this file.
+    std::filesystem::path stockMaskSurface;
+    uint64_t stockMaskSurfaceHash = 0;
+
     // The declared-property table the GE_Props block was generated from; rides
     // into ShaderMeta::DeclaredProperties so the inspector and the validator
     // see exactly what the shader reads.

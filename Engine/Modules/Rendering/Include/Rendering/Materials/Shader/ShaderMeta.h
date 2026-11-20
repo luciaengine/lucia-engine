@@ -274,6 +274,10 @@ struct SpecConstantMeta {
     std::optional<std::string> DefaultValue; // textual repr
 };
 
+// Generated only by the shader compiler for a verified stock mask. Older
+// packages load normally and omit it.
+inline constexpr char kStockMaskCoverageDefine[] = "GE_STOCK_MASK_COVERAGE_V2";
+
 struct ShaderMeta {
     uint32_t Version = 1;
     std::unordered_map<std::string, std::string> EntryPoints; // stage -> name

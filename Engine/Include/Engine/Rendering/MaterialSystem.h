@@ -285,6 +285,9 @@ class MaterialSystem
         return {m_MaterialParamsSSBOBuffer, m_MaterialParamsSSBOOffset, m_MaterialParamsSSBOSize};
     }
 
+    // Checks the published row in the material buffer range bound by this pass.
+    bool IsCurrentPackedMaterialRow(const Material& material, PackedSSBO bound) const;
+
     // --- classification (bucketer/scatter read side) ---
     Rendering::MaterialDepthClass GetMaterialDepthClass(uint32_t materialIndex) const
     {

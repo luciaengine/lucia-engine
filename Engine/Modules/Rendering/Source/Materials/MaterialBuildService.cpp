@@ -268,6 +268,11 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
         // literals against (BuildMaterialIncludeRoots is the single authority),
         // so every literal it emitted resolves here.
         creq.includeDirs = BuildMaterialIncludeRoots(context, shaderLocalDir);
+        if (kind == ShaderSourceKind::SpirV)
+        {
+            creq.stockMaskSurface = std::move(composed.stockMaskSurface);
+            creq.stockMaskSurfaceHash = composed.stockMaskSurfaceHash;
+        }
         out.composedIncludeRoots = creq.includeDirs;
 
         // Compile the composed source in-memory. The path is the logical name only

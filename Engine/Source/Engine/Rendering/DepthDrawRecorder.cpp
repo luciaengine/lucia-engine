@@ -1,5 +1,6 @@
 // Prepares depth/shadow draws before recording and replays frame-owned packets.
 #include "Engine/Rendering/DepthDrawRecorder.h"
+#include "IndexedDepthDraw.h"
 #include "Engine/Rendering/VirtualShadows/VirtualShadowFeedback.h"
 #include "Rendering/Core/DrawProducerRegistry.h"
 #include "Engine/Rendering/ParallaxReliefDepth.h"
@@ -172,6 +173,17 @@ struct PreparedDepthOnlyPass
     PassBindingContext Inputs;
     std::vector<Draw> Draws;
     std::vector<std::byte> PushConstants;
+    struct IndexedSource
+    {
+        IndexedDepthDraw Draw;
+        const Material* MaterialOwner;
+        uint32_t MaterialRevision;
+        Rendering::FrontFace Winding;
+        bool VertexAlpha;
+        Rendering::GraphicsPipelineId Pipeline;
+    };
+    std::vector<IndexedSource> IndexedSources;
+    RenderGraph::RGFrameStamp IndexedFrame;
     MaterialSystem* Materials = nullptr;
     DepthUnderDrawTracker* UnderDraw = nullptr;
     bool UnderDrew = false;
@@ -186,7 +198,9 @@ struct PreparedDepthOnlyPass
 PreparedDepthOnlyPass* AllocatePreparedDepthOnlyPass(Rendering::RenderGraph::RGFrame& frame,
                                                     DepthOnlyPassParamsRG params)
 {
-    return frame.AllocatePassData<PreparedDepthOnlyPass>(std::move(params));
+    auto* pass = frame.AllocatePassData<PreparedDepthOnlyPass>(std::move(params));
+    pass->IndexedFrame.Stamp(frame);
+    return pass;
 }
 
 namespace
@@ -202,6 +216,7 @@ struct DepthBatchPreparation
     DepthSegmentPipelineChoice Head;
     Rendering::CullModeFlags CullMode;
     bool IsSkinned;
+    bool TexturesReady;
 };
 
 class DepthPassPreparation
@@ -217,6 +232,7 @@ class DepthPassPreparation
     {
         m_Data.Draws.clear();
         m_Data.PushConstants.clear();
+        m_Data.IndexedSources.clear();
         m_Data.AllProducer = {};
         m_Data.RigidProducer = {};
         const bool virtualPage = m_Data.Params.VirtualPageTile.has_value();
@@ -497,6 +513,7 @@ class DepthPassPreparation
     struct ResolvedDepthPipeline
     {
         PipelineHandle Pipeline{};
+        Rendering::GraphicsPipelineId ConcreteId{};
         const Rendering::ShaderMeta* Metadata = nullptr;
         std::span<const Rendering::DescriptorSetLayoutId> SetLayouts;
         // 0 = derive the count from the variant meta (a fragment stage
@@ -623,8 +640,10 @@ class DepthPassPreparation
                                   Rendering::MaterialKeyword::HasVertexMod) ||
             Rendering::HasKeyword(material->GetVariantKey().materialKeywords,
                                   Rendering::MaterialKeyword::HasVertexOutputMod);
-        if ((material->GetAlphaMode() == MaterialAlphaMode::Mask || vertexModified) &&
-            (!m_Services.Textures || !m_Services.Textures->IsMaterialTextureBindingComplete(material->GetGuid())))
+        const bool needsTextures = material->GetAlphaMode() == MaterialAlphaMode::Mask || vertexModified;
+        const bool texturesReady = !needsTextures ||
+            (m_Services.Textures && m_Services.Textures->IsMaterialTextureBindingComplete(material->GetGuid()));
+        if (!texturesReady)
             MarkUnderDraw(DepthUnderDrawReason::TexturesPending, entry);
         const DepthSegmentPipelineChoice head = ChooseDepthHeadPipeline(
             m_PassKeywords, m_Data.Params.PassType,
@@ -645,7 +664,7 @@ class DepthPassPreparation
 
         entryBindings.indexType = entry->indexType;
         const DepthBatchPreparation batch{key, material, entry, entryBindings, depthVertexFlags,
-                                          drawVertexFlags, head, depthCullMode, isSkinnedDepth};
+                                          drawVertexFlags, head, depthCullMode, isSkinnedDepth, texturesReady};
 
         if (m_Services.CpuDrawStream)
         {
@@ -786,11 +805,12 @@ class DepthPassPreparation
                 return resolved;
             }
         }
-        auto [pipeline, variantEntry] = m_Services.Materials.Variants().PrepareDepthInstancedVariant(
+        const auto [pipeline, variantEntry, concreteId] = m_Services.Materials.Variants().PrepareDepthInstancedVariant(
             *batch.Material, batch.DrawVertexFlags, batch.Mesh->topology, choice.Keywords,
             m_Data.Params.RasterizationSamples, m_Data.Params.DepthBiasEnable, m_Data.Params.DepthClampEnable,
             winding, m_Context);
         resolved.Pipeline = pipeline;
+        resolved.ConcreteId = concreteId;
         if (variantEntry)
         {
             resolved.Metadata = variantEntry->VariantMeta.get();
@@ -849,6 +869,24 @@ class DepthPassPreparation
         Append(command, preparedBindings, batch.Geometry, batch.DrawVertexFlags, resolved.ServedVersion,
                batch.Material->GetGpuSceneMaterialIndex(), batch.Key.materialIndex, true, batch.Key.meshIndex, maxDrawCount,
                m_Services.Streams->GetRangeCount());
+        if (IndexedDepthReuseEnabled(*m_Services.Device) && batch.TexturesReady && !crossfading &&
+            m_Data.Params.PassType == DepthPassType::Prepass &&
+            m_Data.Params.Phase == Rendering::GPUDrawStreamBuilder::SlicePhase::A &&
+            m_Data.Params.Heads == PrepassHeads::Occluding &&
+            batch.Material->GetAlphaMode() == MaterialAlphaMode::Mask &&
+            batch.Key.colorClassId == batch.Key.materialIndex &&
+            batch.Key.materialIndex == batch.Material->GetGpuSceneMaterialIndex() &&
+            resolved.ServedVersion == batch.Material->GetVersion() && m_Services.Textures &&
+            resolved.ConcreteId.IsValid() &&
+            HasPublishedReplayAlbedo(*batch.Material, *m_Services.Textures, preparedBindings, m_Context) &&
+            m_Services.Materials.IsCurrentPackedMaterialRow(*batch.Material, BoundMaterialParams(m_Data.Inputs)))
+        {
+            const auto vertexAlpha = StockMaskVertexAlpha(resolved.Metadata, true);
+            if (auto source = GetIndexedDepthDraw(command, batch.Geometry);
+                source && vertexAlpha && HasBoundIndexedMaskSets(*resolved.Metadata, preparedBindings))
+                m_Data.IndexedSources.push_back(
+                    {*source, batch.Material, batch.Material->GetContentRevision(), winding, *vertexAlpha, resolved.ConcreteId});
+        }
     }
 
     void PrepareContributor(const DrawCommand& command)
@@ -943,6 +981,28 @@ bool PrepareDepthOnlyPass(RenderGraph::RGPrepareContext& context,
                           PreparedDepthOnlyPass& data, const DepthDrawServices& services)
 {
     return DepthPassPreparation(context, data, services).Prepare();
+}
+
+bool HasMatchingIndexedDepthViewParams(const PreparedDepthOnlyPass& pass, const PassBindingContext& color)
+{
+    constexpr auto kViewParams = HashStringId("ViewParams");
+    const auto* left = FindReplayPassBuffer(pass.Inputs, kViewParams);
+    const auto* right = FindReplayPassBuffer(color, kViewParams);
+    return left && right && left->Buffer.IsValid() && left->Buffer == right->Buffer &&
+           left->Offset == right->Offset && left->Range == right->Range;
+}
+
+Rendering::GraphicsPipelineId FindPreparedIndexedDepthPipeline(
+    const PreparedDepthOnlyPass& pass, const IndexedDepthDraw& source, const Material& material,
+    Rendering::FrontFace winding, bool vertexAlpha, const RenderGraph::RGPrepareContext& context)
+{
+    if (!context.IsFor(pass.IndexedFrame))
+        return {};
+    const auto found = std::find_if(pass.IndexedSources.begin(), pass.IndexedSources.end(), [&](const auto& entry) {
+        return entry.MaterialOwner == &material && entry.MaterialRevision == material.GetContentRevision() &&
+               entry.Winding == winding && entry.VertexAlpha == vertexAlpha && entry.Draw == source;
+    });
+    return found == pass.IndexedSources.end() ? Rendering::GraphicsPipelineId{} : found->Pipeline;
 }
 
 DepthProducerState GetPreparedDepthProducerState(const PreparedDepthOnlyPass& data,

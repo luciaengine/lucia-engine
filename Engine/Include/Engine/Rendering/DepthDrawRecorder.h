@@ -42,6 +42,7 @@ namespace Engine::Renderer
 {
 class CpuDrawStreamBuilder;
 class WorldDrawBuilder;
+class Material;
 class MaterialSystem;
 class ViewRegistry;
 class TextureService;
@@ -458,6 +459,11 @@ bool PrepassSharedDepthEnabled();
 // Frame-owned state is opaque: selection, pipelines and descriptors are prepared
 // before any command list records; replay emits only the accepted draws.
 struct PreparedDepthOnlyPass;
+struct IndexedDepthDraw;
+bool HasMatchingIndexedDepthViewParams(const PreparedDepthOnlyPass& pass, const PassBindingContext& color);
+Rendering::GraphicsPipelineId FindPreparedIndexedDepthPipeline(
+    const PreparedDepthOnlyPass& pass, const IndexedDepthDraw& source, const Material& material,
+    Rendering::FrontFace winding, bool vertexAlpha, const Rendering::RenderGraph::RGPrepareContext& context);
 PreparedDepthOnlyPass* AllocatePreparedDepthOnlyPass(Rendering::RenderGraph::RGFrame& frame,
                                                     DepthOnlyPassParamsRG params);
 bool PrepareDepthOnlyPass(Rendering::RenderGraph::RGPrepareContext& c,

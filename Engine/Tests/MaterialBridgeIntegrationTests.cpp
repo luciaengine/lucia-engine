@@ -2993,7 +2993,8 @@ struct ColdVariantPreparation
             const auto served = Variants.PrepareColorVariant(
                 SourceMaterial, VertexFlags, PrimitiveTopology::TriangleList,
                 Keywords, FrontFace::CounterClockwise, context);
-            EXPECT_FALSE(served.first.IsValid());
+            EXPECT_FALSE(served.Pipeline.IsValid());
+            EXPECT_FALSE(served.ConcreteId.IsValid());
         }
         return true;
     }
@@ -3114,7 +3115,7 @@ struct SpecializedVariantPreparation
         ++PrepareCalls;
         for (uint32_t attempt = 0; attempt < 2; ++attempt)
         {
-            const auto [pipeline, unit] = Variants.PrepareColorVariant(
+            const auto [pipeline, unit, concreteId] = Variants.PrepareColorVariant(
                 SourceMaterial, VertexFlags, PrimitiveTopology::TriangleList,
                 Keywords, FrontFace::CounterClockwise, context);
             if (attempt != 0)
@@ -3122,6 +3123,7 @@ struct SpecializedVariantPreparation
                 EXPECT_EQ(pipeline, SelectedPipeline);
                 EXPECT_EQ(unit != nullptr, HasSelectedUnit);
             }
+            EXPECT_EQ(pipeline.IsValid(), concreteId.IsValid());
             SelectedPipeline = pipeline;
             HasSelectedUnit = unit != nullptr;
             SelectedUnit = unit ? *unit : PipelineVariantCache::VariantServeUnit{};
@@ -4046,9 +4048,10 @@ TEST_F(MaterialPipelineCompilationTest, VariantRepublish_PreviousUnitKeepsItsOwn
                   [&](RG::RGPassBuilder& pass) {
                       pass.AttachColor(0, target, {.Load = RG::RGLoadOp::Clear});
                       pass.Prepare([&](RG::RGPrepareContext& context) {
-                          auto [pipeline, unit] = variants.PrepareColorVariant(
+                          const auto [pipeline, unit, concreteId] = variants.PrepareColorVariant(
                               *mat, vf, PrimitiveTopology::TriangleList, passKw, FrontFace::CounterClockwise, context);
                           previousSelected = pipeline == warmPrevious && unit
+                              && concreteId == afterApply.PreviousPipelineId
                               && unit->PipelineId == afterApply.PreviousPipelineId
                               && unit->MaterialVersion == afterApply.PreviousMaterialVersion;
                           return false;
