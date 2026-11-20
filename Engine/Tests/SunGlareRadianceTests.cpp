@@ -363,7 +363,7 @@ class SunGlareRadianceTest : public ::testing::Test
         cl->BeginRenderPass(rp);
         cl->EndRenderPass();
         cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::DepthWrite,
-                                                          ResourceState::ShaderResource));
+                                                          ResourceState::DepthSampled));
         cl->End();
         m_Device->ExecuteCommandLists({cl.get()});
         m_Device->WaitForIdle();
