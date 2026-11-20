@@ -764,6 +764,22 @@ void SceneReflectionProbeEnvironmentSource::ScheduleBake(const EnvironmentBakeCo
     ctx.Feature = m_Staging.get();
     auto& feature = *ctx.Feature;
     auto& frame = *ctx.Frame;
+    // Keep the published cube while a repeat Once capture catches up with its inputs.
+    if (m_CaptureState == CaptureState::Filtering && m_CompletedBakes != 0 &&
+        input.Feature->GetLastBakedDigest() != 0 &&
+        m_CaptureDesc.UpdateMode == SceneReflectionProbeUpdateMode::Once &&
+        m_Desc.UpdateMode == SceneReflectionProbeUpdateMode::Once)
+    {
+        if (BaseDigest() != m_LastBaseDigest)
+        {
+            // A discarded target can become current again before the next capture.
+            m_LastBaseDigest = 0;
+            m_CaptureState = CaptureState::Idle;
+            return;
+        }
+        if (m_Services->Materials().Variants().HasAnyPipelineBuildsInFlight())
+            return;
+    }
     if (!EnsurePipelines(*ctx.Device, feature))
     {
         if (m_CaptureState == CaptureState::Slicing) ArmFaces(1u << m_SliceFace);
