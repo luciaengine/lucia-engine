@@ -1811,17 +1811,16 @@ static TextureGPUCache::Entry StageMaterialMipLevels(Rendering::IDevice& device,
     return {texture->Texture, companion ? companion->Texture : TextureHandle{}};
 }
 
-// The mip tail of a new stream, staged from the pixels of the asset that the load gave.
-static TextureGPUCache::Entry StageMaterialMipTail(Rendering::IDevice& device, const MaterialMipStreamSource& source,
-                                                   const TextureAsset& texture,
-                                                   std::vector<Rendering::StagedTextureUpload>& batch,
-                                                   const char*& refusal)
+// The levels `firstMip`..last of a new stream, staged from the pixels of the asset that the load gave.
+static TextureGPUCache::Entry StageMaterialMipStart(Rendering::IDevice& device, const MaterialMipStreamSource& source,
+                                                    const TextureAsset& texture, uint32_t firstMip,
+                                                    std::vector<Rendering::StagedTextureUpload>& batch,
+                                                    const char*& refusal)
 {
     std::vector<Rendering::TextureMipUploadEntry> companionLevels;
     if (source.HasCompanion())
-        companionLevels = AssetMipLevels(*texture.GetNormalVarianceCompanion(), source.CompanionMip(source.Tail()));
-    return StageMaterialMipLevels(device, source, AssetMipLevels(texture, source.Tail()), companionLevels, batch,
-                                  refusal);
+        companionLevels = AssetMipLevels(*texture.GetNormalVarianceCompanion(), source.CompanionMip(firstMip));
+    return StageMaterialMipLevels(device, source, AssetMipLevels(texture, firstMip), companionLevels, batch, refusal);
 }
 
 bool TextureService::TryGetMaterialTextureLocked(const GUID& guid, TextureGPUCache::Entry& out) const
@@ -1920,10 +1919,24 @@ std::shared_ptr<const MaterialMipStreamSource> TextureService::CreateMaterialMip
     return MaterialMipStreamSource::Create(texture, *format, companionFormat);
 }
 
+uint32_t TextureService::FirstMaterialMipLevel(const MaterialMipStreamSource& source, uint64_t stagedBytes) const
+{
+    uint64_t usedBytes = m_ReportedMaterialMipBytes + stagedBytes;
+    for (const auto& [guid, parked] : m_ReleasedUploadReads)
+        if (parked.ForStream)
+            usedBytes += parked.Source->SuffixBytes()[parked.Read->FirstMip];
+    const uint64_t freeBytes = m_MaterialMipBudgetBytes > usedBytes ? m_MaterialMipBudgetBytes - usedBytes : 0;
+    const auto suffixBytes = source.SuffixBytes();
+    uint32_t firstMip = 0;
+    while (firstMip < source.Tail() && suffixBytes[firstMip] > freeBytes)
+        ++firstMip;
+    return firstMip;
+}
+
 std::optional<TextureGPUCache::Entry> TextureService::StageReleasedUpload(
     const GUID& guid, uint32_t epoch, const PreparedTextureUpload& prepared,
-    std::shared_ptr<const MaterialMipStreamSource>& streamSource, std::vector<Rendering::StagedTextureUpload>& batch,
-    const char*& refusal)
+    std::shared_ptr<const MaterialMipStreamSource>& streamSource, uint32_t& streamFirstMip,
+    std::vector<Rendering::StagedTextureUpload>& batch, const char*& refusal)
 {
     const bool forStream = streamSource != nullptr;
     ReleasedUploadRead* parked = m_ReleasedUploadReads.Find(guid);
@@ -1942,7 +1955,7 @@ std::optional<TextureGPUCache::Entry> TextureService::StageReleasedUpload(
             refusal = "its pixels were released and its file gives no levels";
             return TextureGPUCache::Entry{};
         }
-        const uint32_t firstMip = forStream ? source->Tail() : 0u;
+        const uint32_t firstMip = forStream ? streamFirstMip : 0u;
         m_ReleasedUploadReads.InsertOrAssign(
             guid, ReleasedUploadRead{source, MaterialMipStreamSource::ReadLevels(source, *assets, guid, firstMip),
                                      epoch, forStream});
@@ -1959,7 +1972,10 @@ std::optional<TextureGPUCache::Entry> TextureService::StageReleasedUpload(
         return TextureGPUCache::Entry{};
     }
     if (forStream)
+    {
         streamSource = done.Source;
+        streamFirstMip = done.Read->FirstMip;
+    }
     std::vector<Rendering::TextureMipUploadEntry> companionLevels;
     if (done.Source->HasCompanion())
         companionLevels = done.Source->CompanionLevels(*done.Read);
@@ -2755,6 +2771,7 @@ void TextureService::FlushPendingUploads()
         std::shared_ptr<const PreparedTextureUpload> Prepared;
         double StageMs = 0.0;
         std::shared_ptr<const MaterialMipStreamSource> StreamSource;
+        uint32_t StreamFirstMip = 0; // the first level that Uploaded holds, for a stream
         uint32_t Epoch = 0;
     };
     using Clock = std::chrono::high_resolution_clock;
@@ -2762,6 +2779,8 @@ void TextureService::FlushPendingUploads()
     std::vector<StagedFlushUpload> staged;
     // Uploads of released containers whose level read is in flight: they stay queued.
     std::vector<PendingGpuUpload> waitingForLevels;
+    // The bytes of the new streams that this flush staged: they are not in the resident count yet.
+    uint64_t stagedStreamBytes = 0;
 
     for (size_t i = 0; i < uploads.size(); ++i)
     {
@@ -2846,12 +2865,14 @@ void TextureService::FlushPendingUploads()
         const auto tStage = Clock::now();
         const char* refusal = kDeviceRefusal;
         auto streamSource = PrepareMaterialMipStream(upload.TextureGuid, *prepared);
+        uint32_t streamFirstMip = streamSource ? FirstMaterialMipLevel(*streamSource, stagedStreamBytes) : 0u;
         TextureGPUCache::Entry uploaded;
         if (prepared->Container && !prepared->Container->GetPixelData())
         {
             // The levels come from the file, through the I/O service: this thread reads no file.
             const std::optional<TextureGPUCache::Entry> fromFile =
-                StageReleasedUpload(upload.TextureGuid, upload.Epoch, *prepared, streamSource, batch, refusal);
+                StageReleasedUpload(upload.TextureGuid, upload.Epoch, *prepared, streamSource, streamFirstMip, batch,
+                                    refusal);
             if (!fromFile)
             {
                 waitingForLevels.push_back(std::move(upload));
@@ -2862,7 +2883,7 @@ void TextureService::FlushPendingUploads()
         else
         {
             uploaded = streamSource
-                ? StageMaterialMipTail(*m_Device, *streamSource, *prepared->Container, batch, refusal)
+                ? StageMaterialMipStart(*m_Device, *streamSource, *prepared->Container, streamFirstMip, batch, refusal)
                 : StagePreparedUpload(*prepared, batch, refusal);
         }
         if (!uploaded.Texture.IsValid())
@@ -2870,9 +2891,11 @@ void TextureService::FlushPendingUploads()
             PublishFailedUpload(upload.TextureGuid, prepared->Path, refusal);
             continue;
         }
+        if (streamSource)
+            stagedStreamBytes += streamSource->SuffixBytes()[streamFirstMip];
         staged.push_back({upload.TextureGuid, uploaded, std::move(prepared),
                           std::chrono::duration<double, std::milli>(Clock::now() - tStage).count(),
-                          streamSource, upload.Epoch});
+                          streamSource, streamFirstMip, upload.Epoch});
     }
 
     // A level read whose upload left the queue (a hot swap or another upload published the
@@ -2906,7 +2929,7 @@ void TextureService::FlushPendingUploads()
                             {
                                 m_MaterialMipStreams.InsertOrAssign(upload.TextureGuid,
                                     MaterialMipStream{upload.StreamSource, upload.Uploaded,
-                                                      upload.StreamSource->Tail(), upload.Epoch,
+                                                      upload.StreamFirstMip, upload.Epoch,
                                                       MaterialMipCoverageLocked(upload.TextureGuid)});
                                 m_MaterialMipStreamsSettled = false;
                                 ReportMaterialMipBytesLocked();

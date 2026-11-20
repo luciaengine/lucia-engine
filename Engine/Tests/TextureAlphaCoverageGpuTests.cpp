@@ -608,6 +608,39 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     m_Textures.FlushPendingUploads();
 }
 
+TEST_F(TextureCoverageGPU, ANewMaterialMipStreamStartsAtTheLargestLevelThatFitsTheBudget)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    // One level 0 image (about 1.33 MiB) and one tail (about 0.33 MiB) fit. Two level 0 images do not.
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    const StringId slot = HashStringId("albedoMap");
+    std::array<GUID, 2> materialGuids;
+    std::array<Engine::Renderer::Material*, 2> materials{};
+    for (size_t index = 0; index < materials.size(); ++index)
+    {
+        GUID texture;
+        SharedPtr<TextureAsset> asset;
+        ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(texture, asset));
+        materialGuids[index] = GUID::Generate();
+        materials[index] = RegisterStreamingMaterial(materialGuids[index], "MipStreamingFirstLevel");
+        ASSERT_NE(materials[index], nullptr);
+        m_Textures.TrackMaterialTextureRefForTesting(materialGuids[index], slot, texture);
+        Access::Queue(m_Textures, texture, materialGuids[index], asset, slot);
+        // One flush, no step: the level is the level of the first upload.
+        m_Textures.FlushPendingUploads();
+    }
+    EXPECT_EQ(WidthOf(materials[0]->GetTexture(slot)), 512u) << "a stream that fits the budget started at its tail";
+    EXPECT_EQ(WidthOf(materials[1]->GetTexture(slot)), 256u) << "a stream that does not fit started above the budget";
+
+    for (const GUID& materialGuid : materialGuids)
+    {
+        m_Textures.OnMaterialUnregistered(materialGuid);
+        m_Materials.Unregister(materialGuid);
+    }
+    m_Textures.FlushPendingUploads();
+}
+
 TEST_F(TextureCoverageGPU, TheMemoryStatsReportTheBytesThatTheMaterialMipStreamsHold)
 {
     using Access = Engine::Renderer::TextureCoverageUploadTestAccess;

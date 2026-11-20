@@ -550,8 +550,13 @@ class TextureService
     // The level source of a prepared container. Null when a file of it gives no level range.
     std::shared_ptr<const MaterialMipStreamSource> CreateMaterialMipSource(const PreparedTextureUpload& prepared) const;
 
+    // The first level of a new stream of `source`: the largest level that fits the budget with the
+    // resident streams, the stream reads in flight and `stagedBytes`, the streams that this flush
+    // staged. The tail when no larger level fits. Render thread.
+    uint32_t FirstMaterialMipLevel(const MaterialMipStreamSource& source, uint64_t stagedBytes) const;
+
     // The read of the levels that the upload of a released container needs (ReleaseLevelPixels):
-    // the tail for a new stream, all levels for a full upload. Render thread.
+    // the first levels of a new stream, all levels for a full upload. Render thread.
     struct ReleasedUploadRead
     {
         std::shared_ptr<const MaterialMipStreamSource> Source;
@@ -561,10 +566,11 @@ class TextureService
     };
     // Stages the upload of a released container from its file. Nullopt while its read is in
     // flight: the upload stays queued. An invalid entry, with `refusal` set, when it fails.
-    // `streamSource` becomes the source that the staged levels came from.
+    // `streamSource` becomes the source that the staged levels came from. `streamFirstMip` is the
+    // first level to read for a new stream, and becomes the first level of the staged levels.
     std::optional<TextureGPUCache::Entry> StageReleasedUpload(
         const GUID& guid, uint32_t epoch, const PreparedTextureUpload& prepared,
-        std::shared_ptr<const MaterialMipStreamSource>& streamSource,
+        std::shared_ptr<const MaterialMipStreamSource>& streamSource, uint32_t& streamFirstMip,
         std::vector<Rendering::StagedTextureUpload>& batch, const char*& refusal);
     void CancelReleasedUploadRead(const GUID& guid);
     // Finishes the step in flight when its read is done, then plans the next step and starts its read.
