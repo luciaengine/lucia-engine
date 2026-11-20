@@ -56,6 +56,8 @@ public:
     /// Intern a graphics descriptor with constant overrides. Safe to call from recording workers.
     GraphicsPipelineId SpecializeGraphicsPipeline(GraphicsPipelineId base,
                                                    const SpecializationConstants& overrides);
+    /// Reuse a read-only Equal-depth variant of an interned graphics descriptor.
+    GraphicsPipelineId InternReadOnlyDepthEqualPipeline(GraphicsPipelineId base);
     ComputePipelineId  InternComputePipeline(ComputePipelineDesc desc);
     DescriptorSetLayoutId InternDescriptorSetLayout(DescriptorSetLayoutDesc desc);
 
@@ -201,6 +203,7 @@ private:
     std::unordered_map<uint64_t, uint32_t> m_GraphicsHashToId;
     std::vector<InternEntry<GraphicsPipelineDesc>> m_GraphicsEntries;
     FlatMap<std::pair<uint32_t, uint64_t>, GraphicsPipelineId> m_GraphicsSpecializations;
+    FlatMap<uint32_t, GraphicsPipelineId> m_ReadOnlyDepthEqualPipelines;
 
     std::unordered_map<uint64_t, uint32_t> m_ComputeHashToId;
     std::vector<InternEntry<ComputePipelineDesc>> m_ComputeEntries;
