@@ -412,6 +412,12 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
     std::array<uint64_t, CascadeMotionScheduler::kMaxCascades> staleness{};
     staleness.fill(CascadeMotionScheduler::kStalenessUnknown);
     CascadeMotionSource source = CascadeMotionSource::CasterDeformation;
+    constexpr uint32_t kNearCascadePair = 0b11u;
+    const bool nearExtentsChanged = budget.Cap == 1u && numCascades >= 2u && fits &&
+        (*fits)[0].Valid && (*fits)[1].Valid &&
+        (*fits)[0].OrthoHalfExtent != frameData->OrthoHalfExtent[0] &&
+        (*fits)[1].OrthoHalfExtent != frameData->OrthoHalfExtent[1];
+    uint32_t cameraMotionMask = 0u;
     for (uint32_t c = 0; c < numCascades; ++c)
     {
         const CascadeRenderInputs depthIn = BuildCascadeCacheInputs(
@@ -442,14 +448,20 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
         const auto* pairTintCause = tintDeclares ? &tintCause : nullptr;
         classes[c] = ClassifyCascadePair(depthCause, pairTintCause, lockstep);
         if (IsCameraMotionPair(classes[c], depthCause, pairTintCause))
+        {
             source = CascadeMotionSource::Camera;
+            cameraMotionMask |= 1u << c;
+        }
         if (fits && (*fits)[c].Valid)
             staleness[c] = frame.FrameIndex() - (*fits)[c].FrameStamp;
     }
 
+    // The two near grids share a transition band. Refresh them together when both texel scales change.
+    const uint32_t protectedFitMask = nearExtentsChanged && (cameraMotionMask & kNearCascadePair) == kNearCascadePair
+        ? kNearCascadePair : 0u;
     plan.DeferMask = m_MotionScheduler
                          .PlanFrame(static_cast<uint32_t>(viewId), numCascades, classes, staleness,
-                                    budget.Cap, budget.MaxAge, source)
+                                    budget.Cap, budget.MaxAge, source, protectedFitMask)
                          .DeferMask;
     m_MotionPlanByView[viewId] = plan;
 }

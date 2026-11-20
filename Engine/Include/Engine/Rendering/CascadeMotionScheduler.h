@@ -22,7 +22,7 @@
 // cascade whose content would exceed `maxAge` frames of drift is
 // force-rendered, displacing nearer cascades from the budget. If more
 // cascades hit the bound than the budget allows, ALL of them render: the
-// staleness bound is the quality contract, the cap is best-effort. With 4
+// cap yields to the staleness bound and to a protected near fit pair. With 4
 // cascades, cap 2 and maxAge 2 the steady cycle is {0,1}, {0,1}, {2,3}: 2.00
 // renders per frame.
 //
@@ -135,11 +135,13 @@ class CascadeMotionScheduler
     // slot defers this frame. Deferral requires staleness <= maxAge;
     // `motionCap` == 0 disables deferral entirely. `source` selects whether a
     // forced render takes budget (Camera) or goes on top of it
-    // (CasterDeformation).
+    // (CasterDeformation). A one-slot camera budget keeps the fitted cascades
+    // named by protectedFitMask together.
     FramePlan PlanFrame(uint32_t viewId, uint32_t numCascades,
                         const std::array<CascadeUpdateClass, kMaxCascades>& classes,
                         const std::array<uint64_t, kMaxCascades>& staleness,
-                        uint32_t motionCap, uint32_t maxAge, CascadeMotionSource source);
+                        uint32_t motionCap, uint32_t maxAge, CascadeMotionSource source,
+                        uint32_t protectedFitMask = 0u);
 
     void Reset();
 
@@ -147,7 +149,7 @@ class CascadeMotionScheduler
     {
         uint64_t Deferred = 0;        // slot-frames deferred
         uint64_t ForcedByAge = 0;     // renders forced by the staleness bound
-        uint64_t ForcedBeyondCap = 0; // renders past the budget the staleness bound required
+        uint64_t ForcedBeyondCap = 0; // renders past the budget for age or fit
     };
     // Per-view aggregate. Returns a zero Stats for an unknown view.
     const Stats& GetStats(uint32_t viewId) const;
