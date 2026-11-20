@@ -21,6 +21,7 @@
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Materials/Shader/ShaderPropertyTable.h"
 #include "Types/StringId.h"
@@ -155,6 +156,46 @@ std::string KeywordsLabel(MaterialKeyword keywords)
     char buffer[40];
     std::snprintf(buffer, sizeof(buffer), "keywords 0x%llx", static_cast<unsigned long long>(keywords));
     return buffer;
+}
+
+TEST(MaterialPrewarmVariantsTest, IndexedDepthOwnerRequiresVerifiedStockCoverage)
+{
+    const auto shaderDir = TestPaths::StagedRenderingShadersDir();
+    ASSERT_TRUE(std::filesystem::is_directory(shaderDir));
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = shaderDir;
+    MaterialDocument document{};
+    document.materialName = "IndexedDepthOwnerProbe";
+    document.alphaMode = MaterialAlphaMode::Mask;
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+
+    using K = MaterialKeyword;
+    ShaderVariantKey key{};
+    key.vertexFlags = VertexAttributeFlags::StandardMesh;
+    key.materialKeywords = K::AlphaTest | K::Instanced | K::DepthOnlyFragment | K::IndexedDepthOwner;
+    const auto composesOwner = [&](const ShaderCompileTarget& target)
+    {
+        std::vector<std::string> errors;
+        const auto composed = ShaderComposer::Compose(document, key, {}, context, &errors, target);
+        EXPECT_TRUE(errors.empty());
+        return std::find(composed.defines.begin(), composed.defines.end(), "GE_INDEXED_DEPTH_OWNER") !=
+               composed.defines.end();
+    };
+
+    ShaderCompileTarget target{};
+    ASSERT_TRUE(composesOwner(target));
+    key.materialKeywords |= K::LodCrossfade;
+    EXPECT_TRUE(composesOwner(target));
+    key.materialKeywords = key.materialKeywords & ~K::LodCrossfade;
+    target.Compatibility = true;
+    EXPECT_FALSE(composesOwner(target));
+    target.Compatibility = false;
+    key.materialKeywords = key.materialKeywords & ~K::DepthOnlyFragment;
+    EXPECT_FALSE(composesOwner(target));
+    key.materialKeywords |= K::DepthOnlyFragment;
+    document.surfaceShader = "Surfaces/standard_surface.glsl";
+    EXPECT_FALSE(composesOwner(target));
 }
 
 void ExpectEveryParallaxWarmKeyCompiles(MaterialAlphaMode alphaMode)
@@ -1724,7 +1765,12 @@ TEST_F(MaterialShaderIdentityTest, DepthHexSpecializationFollowsTheCompiledSurfa
             ASSERT_NE(unit->VariantMeta, nullptr);
             const auto& defines = unit->VariantMeta->RequiredDefines;
             const auto certified = std::find(defines.begin(), defines.end(), Rendering::kStockMaskCoverageDefine) != defines.end();
-            EXPECT_EQ(certified, !projectOverride && tail == K::None);
+            EXPECT_EQ(certified, !projectOverride);
+            if (certified)
+            {
+                const auto fading = std::find(defines.begin(), defines.end(), "GE_LOD_CROSSFADE") != defines.end();
+                EXPECT_EQ(fading, tail == K::LodCrossfade);
+            }
         }
         services.Shutdown();
     }

@@ -25,6 +25,7 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/LegacyMaterialLanes.h"
+#include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <algorithm>
 #include <array>
@@ -149,6 +150,12 @@ bool ParallaxDepthOffsetEnabled()
     return kEnabled;
 }
 
+struct PreparedOwnerCompaction
+{
+    std::optional<IndexedDepthDraw> Input;
+    IndexedOwnerReplay Output;
+};
+
 struct PreparedDepthOnlyPass
 {
     struct Draw
@@ -166,6 +173,7 @@ struct PreparedDepthOnlyPass
         uint32_t MeshIndex = 0;
         uint32_t MaxDrawCount = 0;
         size_t RangeCount = 0;
+        Rendering::GraphicsPipelineId ConcretePipeline{};
     };
     explicit PreparedDepthOnlyPass(DepthOnlyPassParamsRG params) : Params(std::move(params))
     {
@@ -182,10 +190,18 @@ struct PreparedDepthOnlyPass
         uint32_t MaterialRevision;
         Rendering::FrontFace Winding;
         bool VertexAlpha;
+        bool Crossfading;
         Rendering::GraphicsPipelineId Pipeline;
+        size_t DrawIndex;
+        Rendering::MaterialKeyword OwnerKeywords;
     };
     std::vector<IndexedSource> IndexedSources;
     RenderGraph::RGFrameStamp IndexedFrame;
+    size_t OwnerDrawIndex = ~size_t{0};
+    PipelineHandle OwnerPipeline;
+    RenderGraph::RGBuffer OwnerCompactState;
+    RenderGraph::RGBuffer OwnerCompactDraws;
+    PreparedOwnerCompaction* OwnerCompaction = nullptr;
     MaterialSystem* Materials = nullptr;
     DepthUnderDrawTracker* UnderDraw = nullptr;
     bool UnderDrew = false;
@@ -235,6 +251,8 @@ class DepthPassPreparation
         m_Data.Draws.clear();
         m_Data.PushConstants.clear();
         m_Data.IndexedSources.clear();
+        m_Data.OwnerDrawIndex = ~size_t{0};
+        m_Data.OwnerPipeline = {};
         m_Data.AllProducer = {};
         m_Data.RigidProducer = {};
         const bool virtualPage = m_Data.Params.VirtualPageTile.has_value();
@@ -835,6 +853,7 @@ class DepthPassPreparation
             if (sharedId.IsValid())
             {
                 resolved.Pipeline = m_Context.PreparePipeline(sharedId);
+                resolved.ConcreteId = m_Context.ResolveGraphicsPipelineId(sharedId);
                 resolved.Metadata = m_Services.Materials.Variants().GetSharedDepthShaderMeta(batch.IsSkinned);
                 resolved.SetLayouts = m_Services.Materials.Variants().GetSharedDepthSetLayouts(batch.IsSkinned);
                 return resolved;
@@ -904,7 +923,8 @@ class DepthPassPreparation
         Append(command, preparedBindings, batch.Geometry, batch.DrawVertexFlags, resolved.ServedVersion,
                batch.Material->GetGpuSceneMaterialIndex(), batch.Key.materialIndex, true, batch.Key.meshIndex, maxDrawCount,
                m_Services.Streams->GetRangeCount());
-        if (IndexedDepthReuseEnabled(*m_Services.Device) && batch.TexturesReady && !crossfading &&
+        m_Data.Draws.back().ConcretePipeline = resolved.ConcreteId;
+        if (IndexedDepthReuseEnabled(*m_Services.Device) && batch.TexturesReady &&
             m_Data.Params.PassType == DepthPassType::Prepass &&
             m_Data.Params.Phase == Rendering::GPUDrawStreamBuilder::SlicePhase::A &&
             m_Data.Params.Heads == PrepassHeads::Occluding &&
@@ -916,11 +936,15 @@ class DepthPassPreparation
             HasPublishedReplayAlbedo(*batch.Material, *m_Services.Textures, preparedBindings, m_Context) &&
             m_Services.Materials.IsCurrentPackedMaterialRow(*batch.Material, BoundMaterialParams(m_Data.Inputs)))
         {
-            const auto vertexAlpha = StockMaskVertexAlpha(resolved.Metadata, true);
+            const auto vertexAlpha = StockMaskVertexAlpha(resolved.Metadata, true, crossfading);
             if (auto source = GetIndexedDepthDraw(command, batch.Geometry);
                 source && vertexAlpha && HasBoundIndexedMaskSets(*resolved.Metadata, preparedBindings))
                 m_Data.IndexedSources.push_back(
-                    {*source, batch.Material, batch.Material->GetContentRevision(), winding, *vertexAlpha, resolved.ConcreteId});
+                    {*source, batch.Material, batch.Material->GetContentRevision(), winding, *vertexAlpha, crossfading,
+                     resolved.ConcreteId, m_Data.Draws.size() - 1,
+                     ChooseDepthSegmentPipeline(batch.Head.Keywords, batch.Head.UseSharedDepth,
+                         batch.Head.ComposesFragment, crossfading).Keywords |
+                         Rendering::MaterialKeyword::IndexedDepthOwner});
         }
     }
 
@@ -948,6 +972,7 @@ class DepthPassPreparation
         geometry.indexBuffer = command.Geometry.AltGeom.IB;
         geometry.indexType = static_cast<uint32_t>(command.Geometry.AltGeom.IndexType);
         Append(command, bindings, geometry, Rendering::VertexAttributeFlags::None);
+        m_Data.Draws.back().ConcretePipeline = m_Context.ResolveGraphicsPipelineId(command.InternedPipeline);
     }
 
     DrawStreamLookupKey Lookup(const WorldDrawBuilder::BatchKey& key,
@@ -1050,9 +1075,366 @@ DepthProducerState GetPreparedDepthProducerState(const PreparedDepthOnlyPass& da
 
 namespace
 {
-void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
-                              const PreparedDepthOnlyPass& data, CascadeCasters casters)
+constexpr uint32_t kOwnerMaxDraws = 65535u; // Vulkan minimum indirect compute group capacity.
+constexpr size_t kOwnerReplayDrawStride = 5u * sizeof(uint32_t);
+
+struct OwnerComputeProgram
 {
+    ComputePipelineId Id;
+    DescriptorSetLayoutDesc Layout;
+};
+
+DescriptorWrite OwnerStorage(uint32_t binding, BufferHandle buffer, size_t bytes)
+{
+    return {.Binding = binding, .Type = DescriptorType::StorageBuffer, .Buffer = buffer, .Range = bytes};
+}
+} // namespace
+
+bool PrepareIndexedDepthOwner(RenderGraph::RGPrepareContext& context, PreparedDepthOnlyPass& data)
+{
+    if (!data.Materials || !context.IsFor(data.IndexedFrame))
+        return true;
+
+    // Draw the prefix, owner and suffix in the original order. Pruning also
+    // requires that no later draw can make a hidden fragment visible by lowering depth.
+    auto& device = *context.GetDevice();
+    size_t monotonicBegin = data.Draws.size();
+    while (monotonicBegin != 0)
+    {
+        const auto& draw = data.Draws[monotonicBegin - 1];
+        GraphicsPipelineDesc later;
+        if (!draw.ConcretePipeline.IsValid() || !device.CopyGraphicsPipeline(draw.ConcretePipeline, later))
+            break;
+        const auto& depth = later.DepthStencil;
+        if (depth.depthWriteEnable &&
+            (!depth.depthTestEnable ||
+             (depth.depthCompareOp != ReverseZ::kNearerOrEqual &&
+              depth.depthCompareOp != CompareOp::Greater &&
+              depth.depthCompareOp != CompareOp::Equal &&
+              depth.depthCompareOp != CompareOp::Never)))
+            break;
+        --monotonicBegin;
+    }
+    const PreparedDepthOnlyPass::IndexedSource* selected = nullptr;
+    GraphicsPipelineDesc baseline;
+    for (const auto& source : data.IndexedSources)
+    {
+        if (source.DrawIndex < monotonicBegin || source.Draw.MaxDrawCount < 512u ||
+            source.Draw.MaxDrawCount > kOwnerMaxDraws ||
+            (selected && source.Draw.MaxDrawCount <= selected->Draw.MaxDrawCount))
+            continue;
+        GraphicsPipelineDesc desc;
+        if (!device.CopyGraphicsPipeline(source.Pipeline, desc) || !desc.VertexShader || !desc.PixelShader ||
+            desc.Topology != PrimitiveTopology::TriangleList ||
+            !desc.DepthStencil.depthTestEnable || !desc.DepthStencil.depthWriteEnable ||
+            desc.DepthStencil.depthCompareOp != ReverseZ::kNearerOrEqual ||
+            desc.DepthStencil.stencilTestEnable || desc.DepthStencil.depthBoundsTestEnable ||
+            desc.Rasterization.depthBiasEnable || desc.ColorBlend.alphaToCoverageEnable ||
+            desc.ColorBlend.logicOpEnable)
+            continue;
+        baseline = std::move(desc);
+        selected = &source;
+    }
+    if (!selected)
+        return true;
+
+    const auto& material = *selected->MaterialOwner;
+    if (selected->MaterialRevision != material.GetContentRevision())
+        return true;
+    const auto& draw = data.Draws[selected->DrawIndex];
+    const auto* owner = data.Materials->Variants().FindOrRequestPrepassVariant(
+        material, draw.VertexFlags, baseline.Topology, selected->OwnerKeywords, selected->Winding);
+    if (!owner || owner->MaterialVersion != material.GetVersion() || !owner->VariantMeta)
+        return true;
+    const auto& defines = owner->VariantMeta->RequiredDefines;
+    if (std::find(defines.begin(), defines.end(), "GE_INDEXED_DEPTH_OWNER") == defines.end() ||
+        StockMaskVertexAlpha(owner->VariantMeta.get(), true, selected->Crossfading) !=
+            std::optional{selected->VertexAlpha})
+        return true;
+
+    GraphicsPipelineDesc variant;
+    if (!device.CopyGraphicsPipeline(owner->PipelineId, variant) || !variant.VertexShader || !variant.PixelShader ||
+        variant.DescriptorSetLayouts != baseline.DescriptorSetLayouts ||
+        variant.PushConstants != baseline.PushConstants)
+        return true;
+
+    // Inherit the actually served depth donor's raster state and constants.
+    baseline.VertexShader = variant.VertexShader;
+    baseline.PixelShader = variant.PixelShader;
+    baseline.ColorBlend.attachments.assign(1, ColorBlendAttachmentState{.colorWriteMask = 1u});
+    baseline.DebugName = "IndexedDepthOwner";
+    const auto id = device.InternGraphicsPipeline(baseline);
+    if (id.IsValid() && context.ResolveGraphicsPipelineId(id) == id)
+    {
+        const auto pipeline = context.PreparePipeline(id);
+        if (pipeline.IsValid())
+        {
+            data.OwnerDrawIndex = selected->DrawIndex;
+            data.OwnerPipeline = pipeline;
+        }
+    }
+    return true;
+}
+
+void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
+    PreparedDepthOnlyPass& data, const GPUDrawStreamBuilder& streams, RenderGraph::RGTexture owners,
+    RenderGraph::RGBuffer ordering)
+{
+    constexpr uint32_t shift = 1u; // 64 triangles from two adjacent 32-triangle owner blocks.
+    if (!owners.IsValid() || !device.GetCapabilities().supportsDrawIndirectCountNative ||
+        !streams.GetSharedIndirectionAddress())
+        return;
+
+    struct BlockPush
+    {
+        uint32_t RecordBase;
+        uint32_t CursorIndex;
+        uint32_t MaxDrawCount;
+        uint32_t CollectStats;
+        uint32_t MergeShift;
+        uint32_t Emit;
+    };
+    struct Prepared
+    {
+        PreparedOwnerCompaction* Match;
+        std::array<PipelineHandle, 3> Pipelines{};
+        std::array<DescriptorSetHandle, 3> Sets{};
+        BlockPush Constants{};
+        BufferHandle Bitset{};
+    };
+    constexpr size_t stateBytes = 14u * sizeof(uint32_t);
+    constexpr size_t drawBytes = kOwnerMaxDraws * kOwnerReplayDrawStride;
+    constexpr size_t offsetBytes = kOwnerMaxDraws * sizeof(uint32_t);
+    const size_t maskBytes = offsetBytes * (32u >> shift);
+    const auto records = streams.GetSharedRecordBuffer();
+    const auto cursors = streams.GetSharedCursorBuffer();
+    const uint32_t recordCapacity = streams.GetSharedRecordCapacity();
+    const uint32_t cursorCapacity = streams.GetSharedCursorCapacity();
+    const uint64_t sourceRemap = streams.GetSharedIndirectionAddress();
+    if (!records.IsValid() || !cursors.IsValid() || recordCapacity == 0 || cursorCapacity == 0)
+        return;
+
+    static const auto modules = []
+    {
+        static constexpr std::array packages{
+            "Shaders/indexed_depth_replay_classify.shaderpkg",
+            "Shaders/indexed_depth_replay_ranges.shaderpkg",
+            "Shaders/indexed_depth_replay_offsets.shaderpkg"};
+        std::array<std::shared_ptr<const std::vector<uint8_t>>, packages.size()> binaries{};
+        for (size_t i = 0; i < packages.size(); ++i)
+        {
+            ShaderPackage package{};
+            if (!LoadShaderPkg(packages[i], ShaderSourceKind::SpirV, package))
+                continue;
+            auto stage = package.stageBytes.find("cs");
+            if (stage != package.stageBytes.end() && !stage->second.empty())
+                binaries[i] = std::make_shared<const std::vector<uint8_t>>(std::move(stage->second));
+        }
+        return binaries;
+    }();
+    std::array<OwnerComputeProgram, 3> programs{};
+    static constexpr std::array programNames{"IndexedOwner.ClassifyBlocks", "IndexedOwner.Ranges", "IndexedOwner.RangeOffsets"};
+    constexpr std::array bindingCounts{4u, 5u, 3u};
+    for (uint32_t i = 0; i < programs.size(); ++i)
+    {
+        if (!modules[i])
+            return;
+        auto& program = programs[i];
+        for (uint32_t slot = 0; slot < bindingCounts[i]; ++slot)
+        {
+            const bool image = i == 0 && slot == 0;
+            DescriptorBinding binding{slot, image ? DescriptorType::StorageImage : DescriptorType::StorageBuffer,
+                                       1, kShaderStageCompute};
+            if (image)
+            {
+                binding.storageTexelFormat = static_cast<uint32_t>(TextureFormat::R32_UINT);
+                binding.storageReadOnly = true;
+            }
+            program.Layout.bindings.push_back(binding);
+        }
+        ComputePipelineDesc desc;
+        desc.ComputeShader = modules[i];
+        desc.DescriptorSetLayouts.push_back(device.InternDescriptorSetLayout(program.Layout));
+        desc.PushConstants = {0, sizeof(BlockPush), kShaderStageCompute};
+        desc.DebugName = programNames[i];
+        program.Id = device.InternComputePipeline(desc);
+        if (!program.Id.IsValid())
+            return;
+    }
+
+    const auto create = [&frame](const char* name, size_t bytes, BufferUsage usage)
+    {
+        BufferDesc desc{};
+        desc.size = bytes;
+        desc.memoryUsage = BufferMemoryUsage::DeviceLocal;
+        desc.usage = static_cast<uint32_t>(BufferUsage::Storage | usage);
+        return frame.CreateBuffer(name, desc);
+    };
+    const auto masks = create("IndexedOwner.BlockMasks", maskBytes, BufferUsage::TransferDst);
+    const auto offsets = create("IndexedOwner.BlockOffsets", offsetBytes, BufferUsage::Storage);
+    data.OwnerCompactDraws = create("IndexedOwner.BlockDraws", drawBytes, BufferUsage::Indirect);
+    data.OwnerCompactState = create("IndexedOwner.BlockState", stateBytes,
+        BufferUsage::Indirect | BufferUsage::TransferDst | BufferUsage::TransferSrc);
+    data.OwnerCompaction = frame.AllocatePassData<PreparedOwnerCompaction>();
+    auto* work = frame.AllocatePassData<Prepared>();
+    work->Match = data.OwnerCompaction;
+    const size_t recordsBytes = static_cast<size_t>(recordCapacity) * kOwnerReplayDrawStride;
+    const size_t cursorsBytes = static_cast<size_t>(cursorCapacity) * sizeof(uint32_t);
+    const auto inputRecords = frame.ImportExternalBuffer("IndexedOwner.BlockSourceDraws", records, recordsBytes);
+    const auto inputCursors = frame.ImportExternalBuffer("IndexedOwner.BlockSourceCounts", cursors, cursorsBytes);
+    const auto& extent = frame.Graph().ResourceDesc(owners.Id);
+    const uint32_t groupsX = (extent.Width + 7u) / 8u;
+    const uint32_t groupsY = (extent.Height + 7u) / 8u;
+
+    frame.AddPass("IndexedOwner.FilterBlocks", PassPhase::kWorldRender,
+        [&](RenderGraph::RGPassBuilder& pass)
+        {
+            pass.Read(ordering);
+            pass.Read(inputRecords);
+            pass.Read(inputCursors);
+            pass.Read(owners, RenderGraph::RGTextureRead::Storage);
+            pass.Write(masks, RenderGraph::RGBufferWrite::CopyDst);
+            pass.Write(masks);
+            pass.Write(offsets);
+            pass.Write(data.OwnerCompactState, RenderGraph::RGBufferWrite::CopyDst);
+            pass.Write(data.OwnerCompactState);
+            pass.Write(data.OwnerCompactDraws);
+            pass.Prepare([&data, programs = std::move(programs), work, owners, masks, offsets,
+                records, cursors, sourceRemap, recordCapacity, cursorCapacity, recordsBytes, cursorsBytes](RenderGraph::RGPrepareContext& context)
+            {
+                if (!data.OwnerPipeline.IsValid())
+                    return true;
+                const auto& draw = data.Draws[data.OwnerDrawIndex];
+                const auto source = GetIndexedDepthDraw(draw.Command, draw.Geometry);
+                if (!source || source->Commands != records || source->Count != cursors ||
+                    source->IndirectionAddress != sourceRemap || source->MaxDrawCount > kOwnerMaxDraws ||
+                    source->CommandOffset % kOwnerReplayDrawStride != 0 ||
+                    source->Stride != kOwnerReplayDrawStride || source->CountOffset % sizeof(uint32_t) != 0 ||
+                    source->CommandOffset / kOwnerReplayDrawStride >= recordCapacity ||
+                    source->CountOffset / sizeof(uint32_t) >= cursorCapacity ||
+                    source->MaxDrawCount > recordCapacity - source->CommandOffset / kOwnerReplayDrawStride)
+                    return true;
+                const auto state = context.GetBuffer(data.OwnerCompactState);
+                const auto commands = context.GetBuffer(data.OwnerCompactDraws);
+                const auto marks = context.GetBuffer(masks);
+                const auto ranges = context.GetBuffer(offsets);
+                const auto image = context.GetTexture(owners);
+                if (!state.IsValid() || !commands.IsValid() || !marks.IsValid() || !ranges.IsValid() || !image.IsValid())
+                    return true;
+
+                const DescriptorWrite classifier[]{
+                    {.Binding = 0, .Type = DescriptorType::StorageImage, .Texture = image},
+                    OwnerStorage(1, marks, maskBytes), OwnerStorage(2, cursors, cursorsBytes),
+                    OwnerStorage(3, state, stateBytes)};
+                const DescriptorWrite emit[]{
+                    OwnerStorage(0, records, recordsBytes), OwnerStorage(1, marks, maskBytes),
+                    OwnerStorage(2, ranges, offsetBytes), OwnerStorage(3, commands, drawBytes),
+                    OwnerStorage(4, state, stateBytes)};
+                const DescriptorWrite scan[]{
+                    OwnerStorage(0, ranges, offsetBytes), OwnerStorage(1, state, stateBytes),
+                    OwnerStorage(2, records, recordsBytes)};
+                const std::array<std::span<const DescriptorWrite>, 3> writes{classifier, emit, scan};
+                auto& device = *context.GetDevice();
+                for (uint32_t i = 0; i < programs.size(); ++i)
+                {
+                    work->Pipelines[i] = context.PreparePipeline(programs[i].Id);
+                    work->Sets[i] = device.GetOrCreateDescriptorSet(programs[i].Layout, writes[i], programNames[i]);
+                    if (!work->Pipelines[i].IsValid() || !work->Sets[i].IsValid())
+                        return true;
+                }
+                work->Constants = {static_cast<uint32_t>(source->CommandOffset / kOwnerReplayDrawStride),
+                                    static_cast<uint32_t>(source->CountOffset / sizeof(uint32_t)),
+                                    source->MaxDrawCount, 0u, shift, 0u};
+                work->Bitset = marks;
+                work->Match->Input = source;
+                work->Match->Output = {commands, state, kOwnerMaxDraws};
+                return true;
+            });
+        },
+        [work, groupsX, groupsY](RenderGraph::RGContext& context)
+        {
+            const auto& output = work->Match->Output;
+            if (!output.Counts.IsValid() || !context.Cmd)
+                return;
+            auto& cmd = *context.Cmd;
+            const auto barrier = [&cmd](PipelineStageMask source, PipelineStageMask destination,
+                                        ResourceAccessMask writes, ResourceAccessMask reads)
+            {
+                cmd.Barrier(ResourceBarrier::CreateMemoryBarrier(static_cast<uint64_t>(source),
+                    static_cast<uint64_t>(destination), static_cast<uint64_t>(writes), static_cast<uint64_t>(reads)));
+            };
+            const auto bind = [&](uint32_t stage, BlockPush push)
+            {
+                const auto pipeline = work->Pipelines[stage];
+                cmd.SetPipeline(pipeline);
+                cmd.BindDescriptorSet(0, work->Sets[stage], pipeline);
+                cmd.SetPushConstants(push);
+            };
+            const auto sync = [&]
+            {
+                barrier(PipelineStageMask::ComputeShader, PipelineStageMask::ComputeShader | PipelineStageMask::DrawIndirect,
+                        ResourceAccessMask::ShaderWrite,
+                        ResourceAccessMask::ShaderRead | ResourceAccessMask::ShaderWrite | ResourceAccessMask::IndirectCommandRead);
+            };
+            cmd.FillBuffer(work->Bitset, 0, maskBytes, 0u);
+            cmd.FillBuffer(output.Counts, 0, stateBytes, 0u);
+            barrier(PipelineStageMask::Transfer | PipelineStageMask::ComputeShader, PipelineStageMask::ComputeShader,
+                    ResourceAccessMask::TransferWrite | ResourceAccessMask::ShaderWrite,
+                    ResourceAccessMask::ShaderRead | ResourceAccessMask::ShaderWrite);
+            auto push = work->Constants;
+            push.Emit = 2u;
+            bind(0, push);
+            cmd.Dispatch(1, 1, 1);
+            sync();
+            bind(2, push);
+            cmd.Dispatch(1, 1, 1);
+            sync();
+            push.Emit = 0u;
+            bind(0, push);
+            cmd.Dispatch(groupsX, groupsY, 1);
+            sync();
+            bind(1, push);
+            cmd.DispatchIndirect(output.Counts, 2u * sizeof(uint32_t));
+            sync();
+            bind(2, push);
+            cmd.Dispatch(1, 1, 1);
+            sync();
+            push.Emit = 1u;
+            bind(1, push);
+            cmd.DispatchIndirect(output.Counts, 2u * sizeof(uint32_t));
+            barrier(PipelineStageMask::ComputeShader, PipelineStageMask::DrawIndirect | PipelineStageMask::Transfer,
+                    ResourceAccessMask::ShaderWrite, ResourceAccessMask::IndirectCommandRead | ResourceAccessMask::TransferRead);
+        });
+}
+
+
+void ReadIndexedOwnerCompaction(RenderGraph::RGPassBuilder& pass, const PreparedDepthOnlyPass& data)
+{
+    if (!data.OwnerCompactState.IsValid() || !data.OwnerCompactDraws.IsValid())
+        return;
+    pass.Read(data.OwnerCompactState, RenderGraph::RGBufferRead::Indirect);
+    pass.Read(data.OwnerCompactDraws, RenderGraph::RGBufferRead::Indirect);
+}
+
+IndexedOwnerReplay MatchIndexedOwnerCompaction(const PreparedDepthOnlyPass& data, const IndexedDepthDraw& source)
+{
+    if (data.OwnerCompaction && data.OwnerCompaction->Input == source)
+        return data.OwnerCompaction->Output;
+    return {};
+}
+
+namespace
+{
+enum class DepthDrawSlice { Original, Owner, Remainder };
+
+void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
+                              const PreparedDepthOnlyPass& data, CascadeCasters casters,
+                              DepthDrawSlice slice = DepthDrawSlice::Original)
+{
+    const bool split = data.OwnerPipeline.IsValid();
+    const bool ownerOnly = slice == DepthDrawSlice::Owner;
+    if (slice != DepthDrawSlice::Original && !split)
+        return;
     auto* commands = context.Cmd;
     if (!commands)
         return;
@@ -1067,7 +1449,7 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
                              params.ViewportWidth, params.ViewportHeight);
     }
 
-    if (data.UnderDrew && data.UnderDraw && casters != CascadeCasters::Rigid)
+    if (slice == DepthDrawSlice::Original && data.UnderDrew && data.UnderDraw && casters != CascadeCasters::Rigid)
         data.UnderDraw->Mark(static_cast<uint32_t>(params.ViewId),
                              static_cast<uint8_t>(params.PassType), params.CascadeIndex, data.UnderDrawReason);
     if (!data.Walked)
@@ -1079,8 +1461,23 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
     DrawGeometryBindings geometryBindings(*commands);
 
     const auto& producerNames = Rendering::DrawProducerRegistry::ScopeNames();
-    for (const auto& draw : data.Draws)
+    size_t begin = 0u;
+    size_t end = data.Draws.size();
+    if (split)
     {
+        if (ownerOnly)
+        {
+            begin = data.OwnerDrawIndex;
+            end = begin + 1u;
+        }
+        else if (slice == DepthDrawSlice::Remainder)
+            begin = data.OwnerDrawIndex + 1u;
+        else
+            end = data.OwnerDrawIndex;
+    }
+    for (size_t i = begin; i < end; ++i)
+    {
+        const auto& draw = data.Draws[i];
         if (casters != CascadeCasters::All &&
             Rendering::IsSkinned(draw.VertexFlags) != (casters == CascadeCasters::Skinned))
             continue;
@@ -1096,7 +1493,14 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
         geometryBindings.BindVertexBuffer(geometry.joints1VB, 6);
         geometryBindings.BindVertexBuffer(geometry.weights1VB, 7);
         geometryBindings.BindIndexBuffer(geometry.indexBuffer, static_cast<Rendering::IndexType>(geometry.indexType));
-        binder.BindPreparedForDraw(pass, draw.Bindings, draw.Command.Bindings.PushConstants);
+        if (ownerOnly)
+        {
+            auto bindings = draw.Bindings;
+            bindings.Pipeline = data.OwnerPipeline;
+            binder.BindPreparedForDraw(pass, bindings, draw.Command.Bindings.PushConstants);
+        }
+        else
+            binder.BindPreparedForDraw(pass, draw.Bindings, draw.Command.Bindings.PushConstants);
         const auto& command = draw.Command;
         if (command.UseIndirect && command.IndirectCommandBuffer.IsValid())
             commands->DrawIndexedIndirectCount(command.IndirectCommandBuffer, command.IndirectCountBuffer,
@@ -1117,7 +1521,7 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
                                          draw.MaxDrawCount, draw.RangeCount);
         }
     }
-    if (DrawAttributionEnabled())
+    if (slice == DepthDrawSlice::Original && DrawAttributionEnabled())
     {
         const char* attributionTag = "depth-prepass";
         switch (params.PassType)
@@ -1152,6 +1556,16 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
     binder.EndPass(pass);
 }
 } // namespace
+
+void RecordIndexedDepthOwner(RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data)
+{
+    RecordPreparedDepthDraws(context, data, data.Params.Casters, DepthDrawSlice::Owner);
+}
+
+void RecordIndexedDepthRemainder(RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data)
+{
+    RecordPreparedDepthDraws(context, data, data.Params.Casters, DepthDrawSlice::Remainder);
+}
 
 void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& context,
                                  const PreparedDepthOnlyPass& data)

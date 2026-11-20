@@ -701,6 +701,17 @@ if(GLSLC_EXECUTABLE)
             COMMENT "Compiling compute shader (vulkan1.3): ddgi_classify.comp")
     endif()
 
+    if(NOT EMSCRIPTEN)
+        foreach(pass classify offsets ranges)
+            set(source "${SHADER_SOURCE_DIR}/IndexedDepthReplay/${pass}.comp")
+            ge_compile_shader(VULKAN13
+                OUTPUT "${SHADER_OUTPUT_DIR}/indexed_depth_replay_${pass}.comp.spv"
+                SOURCE "${source}"
+                DEPENDS "${SHADER_SOURCE_DIR}/IndexedDepthReplay/state.glsl"
+                COMMENT "Compiling indexed depth replay compute shader: ${pass}")
+        endforeach()
+    endif()
+
     message(STATUS "✅ Configured automatic GLSL to SPIR-V compilation")
 
 else()
@@ -1557,6 +1568,11 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(visibility_union visibility_union.comp)
     _ge_add_shaderpkg_compute(runtime_visibility_aggregate runtime_visibility_aggregate.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter draw_command_scatter.comp)
+    if(NOT EMSCRIPTEN)
+        foreach(pass classify offsets ranges)
+            _ge_add_shaderpkg_compute(indexed_depth_replay_${pass} indexed_depth_replay_${pass}.comp)
+        endforeach()
+    endif()
     _ge_add_shaderpkg_compute(draw_stream_group_compact draw_stream_group_compact.comp)
     _ge_add_shaderpkg_compute(draw_stream_instance_compact draw_stream_instance_compact.comp)
     _ge_add_shaderpkg_compute(draw_stream_late_shadow_lists draw_stream_late_shadow_lists.comp)

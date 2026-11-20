@@ -2505,6 +2505,8 @@ bool VulkanDevice::CreateLogicalDevice()
 
     VkPhysicalDeviceFeatures deviceFeatures{};
     deviceFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
+    // PrimitiveId in an indexed fragment module declares SPIR-V Geometry.
+    deviceFeatures.geometryShader = supportedFeatures.geometryShader;
     // Enable depth-bounds test feature if supported (allows vkCmdSetDepthBounds and pipeline depthBoundsTestEnable)
     deviceFeatures.depthBounds = supportedFeatures.depthBounds;
 
@@ -3020,6 +3022,7 @@ bool VulkanDevice::CreateLogicalDevice()
     createInfo.ppEnabledLayerNames = nullptr;
 
     VkResult result = vkCreateDevice(m_PhysicalDevice, &createInfo, nullptr, &m_Device);
+    m_FragmentPrimitiveIdEnabledAtInit = result == VK_SUCCESS && deviceFeatures.geometryShader == VK_TRUE;
     if (result != VK_SUCCESS)
     {
         meshShaderEnabled = false;
@@ -3605,6 +3608,28 @@ void VulkanDevice::QueryDeviceCapabilities()
 
     // Basic capabilities - check for extensions
     m_Capabilities.supportsMeshShaders = m_SupportsMeshShaderEXT;
+    if (m_FragmentPrimitiveIdEnabledAtInit && m_SupportsDrawIndirectCount &&
+        m_DeviceFeatures.drawIndirectFirstInstance && m_Capabilities.supportsBufferDeviceAddress &&
+        m_DeviceProperties.apiVersion >= VK_API_VERSION_1_3 &&
+        m_DeviceProperties.limits.maxDrawIndirectCount >= 65535u)
+    {
+        VkPhysicalDeviceSubgroupProperties subgroup{};
+        subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+        VkPhysicalDeviceProperties2 properties{};
+        properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties.pNext = &subgroup;
+        vkGetPhysicalDeviceProperties2(m_PhysicalDevice, &properties);
+        constexpr VkSubgroupFeatureFlags requiredOps = VK_SUBGROUP_FEATURE_BASIC_BIT |
+            VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+        constexpr VkFormatFeatureFlags requiredFormat = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+            VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+        VkFormatProperties ownerFormat{};
+        vkGetPhysicalDeviceFormatProperties(m_PhysicalDevice, VK_FORMAT_R32_UINT, &ownerFormat);
+        m_Capabilities.supportsIndexedDepthOwnerReplay =
+            (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u &&
+            (subgroup.supportedOperations & requiredOps) == requiredOps &&
+            (ownerFormat.optimalTilingFeatures & requiredFormat) == requiredFormat;
+    }
     m_Capabilities.supportsIndirectMeshTasks = m_FpCmdDrawMeshTasksIndirectEXT != nullptr;
     m_Capabilities.supportsRayTracing = CheckExtensionSupport("VK_KHR_ray_tracing_pipeline");
     // Enabled-at-init stash, not detection: true only when acceleration

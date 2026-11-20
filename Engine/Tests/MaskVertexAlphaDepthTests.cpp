@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include "../Source/Engine/Rendering/DepthPrepassLineage.h"
+#include "../Source/Engine/Rendering/IndexedDepthDraw.h"
 #include "AssetCore/GUID.h"
 #include "Assets/ModelAsset.h"
 #include "Core/Application.h"
@@ -863,6 +864,24 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
 
 } // namespace
 
+TEST(IndexedDepthReuse, UsesTheFadeCoverageOfTheServedShader)
+{
+    using GameEngine::Engine::Renderer::StockMaskVertexAlpha;
+    namespace R = GameEngine::Rendering;
+    R::ShaderMeta head{};
+    head.RequiredDefines = {R::kStockMaskCoverageDefine, "GE_DEPTH_ONLY_FRAGMENT"};
+    R::ShaderMeta depthTail = head;
+    depthTail.RequiredDefines.emplace_back("GE_LOD_CROSSFADE");
+    R::ShaderMeta forwardTail{};
+    forwardTail.RequiredDefines = {R::kStockMaskCoverageDefine, "GE_LOD_CROSSFADE"};
+    EXPECT_EQ(StockMaskVertexAlpha(&head, true, false), false);
+    EXPECT_FALSE(StockMaskVertexAlpha(&head, true, true));
+    EXPECT_EQ(StockMaskVertexAlpha(&depthTail, true, true), false);
+    EXPECT_FALSE(StockMaskVertexAlpha(&depthTail, true, false));
+    EXPECT_FALSE(StockMaskVertexAlpha(&depthTail, false, true));
+    EXPECT_EQ(StockMaskVertexAlpha(&forwardTail, false, true), false);
+}
+
 TEST(IndexedDepthReuse, AnInterveningDepthWriterInvalidatesThePrepass)
 {
     namespace RG = GameEngine::Rendering::RenderGraph;
@@ -897,7 +916,59 @@ TEST(IndexedDepthReuse, AnInterveningDepthWriterInvalidatesThePrepass)
         const auto lineage = RG::CheckDepthPrepassLineage(graph, producer, consumer, false);
         EXPECT_EQ(static_cast<bool>(lineage), !rewritesDepth);
         EXPECT_EQ(lineage.BlockingPass, rewritesDepth ? inBetween : RG::kInvalidId);
+        if (rewritesDepth)
+        {
+            auto continuation = producer;
+            continuation.Pass = inBetween;
+            continuation.Ops.Load = RG::RGLoadOp::Load;
+            const std::array<const RG::RGAttachmentRec*, 1> continuations{&continuation};
+            EXPECT_TRUE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, continuations));
+            continuation.Ops.Load = RG::RGLoadOp::Clear;
+            EXPECT_FALSE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, continuations));
+        }
     }
+}
+
+TEST(IndexedDepthReuse, BothDepthContinuationsMustBeDeclaredInOrder)
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    RG::RGGraph graph;
+    graph.BeginFrame();
+    RG::RGResourceDesc desc;
+    desc.Kind = RG::RGResourceKind::Texture;
+    desc.Name = "CameraDepth";
+    desc.Format = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
+    const auto depth = graph.CreateResource(desc);
+    const auto prefix = graph.AddPass({"CameraPrepass"});
+    const auto owner = graph.AddPass({"Owner"});
+    const auto remainder = graph.AddPass({"Remainder"});
+    const auto forward = graph.AddPass({"Forward"});
+    graph.Write(prefix, depth, RG::RGAccess::DepthWrite);
+    for (const auto pass : {owner, remainder})
+    {
+        graph.Read(pass, depth, RG::RGAccess::DepthRead);
+        graph.Write(pass, depth, RG::RGAccess::DepthWrite);
+    }
+    graph.Read(forward, depth, RG::RGAccess::DepthRead);
+    graph.PreventCulling(forward);
+    graph.Compile();
+    graph.Schedule();
+
+    const RG::RGAttachmentRec producer{
+        .Pass = prefix, .Tex = depth, .Ops = {.Load = RG::RGLoadOp::Clear}, .IsDepth = true};
+    const RG::RGAttachmentRec first{.Pass = owner, .Tex = depth, .IsDepth = true};
+    const RG::RGAttachmentRec second{.Pass = remainder, .Tex = depth, .IsDepth = true};
+    const RG::RGAttachmentRec consumer{
+        .Pass = forward, .Tex = depth, .Ops = {.Store = RG::RGStoreOp::None},
+        .IsDepth = true, .ReadOnly = true};
+    const std::array<const RG::RGAttachmentRec*, 2> ordered{&first, &second};
+    EXPECT_TRUE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, ordered));
+    const std::array<const RG::RGAttachmentRec*, 2> reversed{&second, &first};
+    EXPECT_FALSE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, reversed));
+    const std::array<const RG::RGAttachmentRec*, 1> missing{&first};
+    const auto lineage = RG::CheckDepthPrepassLineage(graph, producer, consumer, false, missing);
+    EXPECT_FALSE(lineage);
+    EXPECT_EQ(lineage.BlockingPass, remainder);
 }
 
 // The card's left half is cut away by its vertex alpha, so the prepass depth

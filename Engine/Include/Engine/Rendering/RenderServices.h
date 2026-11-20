@@ -2369,6 +2369,7 @@ class RenderServices
         // against stale depth.
         Rendering::RenderGraph::RGTexture DepthPrepassDepth{};
         Rendering::RenderGraph::RGPass IndexedReplayPrepass{};
+        std::array<Rendering::RenderGraph::RGPass, 2> IndexedReplayContinuations{};
         const PreparedDepthOnlyPass* IndexedReplayProducer = nullptr;
         const Rendering::CameraData* IndexedReplayCamera = nullptr;
         uint32_t IndexedReplayViewportWidth = 0;

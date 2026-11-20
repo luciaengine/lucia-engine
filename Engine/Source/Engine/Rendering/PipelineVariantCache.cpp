@@ -510,7 +510,8 @@ PipelineVariantCache::PrepareDepthInstancedVariant(
     const auto* unit = resolved.Unit;
     if (!withoutHexTiling || !resolved.Pipeline.IsValid() || !unit ||
         unit->MaterialVersion != material.GetVersion() ||
-        !StockMaskVertexAlpha(unit->VariantMeta.get(), /*depthOnly=*/true))
+        !StockMaskVertexAlpha(unit->VariantMeta.get(), /*depthOnly=*/true,
+                              HasKeyword(passKeywords, Rendering::MaterialKeyword::LodCrossfade)))
         return resolved;
 
     auto* device = m_Materials->GetDevice();

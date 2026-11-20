@@ -148,7 +148,8 @@ inline bool MatchesIndexedDepthRaster(const Rendering::GraphicsPipelineDesc& dep
     return matchesInput(position) && matchesInput(uv0) && (!vertexAlpha || matchesInput(colorInput));
 }
 
-inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* meta, bool depthOnly)
+inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* meta,
+                                                    bool depthOnly, bool crossfading)
 {
     if (!meta)
         return std::nullopt;
@@ -156,7 +157,10 @@ inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* met
     const auto contains = [&defines](const char* define) {
         return std::find(defines.begin(), defines.end(), define) != defines.end();
     };
-    if (!contains(Rendering::kStockMaskCoverageDefine) || contains("GE_DEPTH_ONLY_FRAGMENT") != depthOnly)
+    // A cold fade request can serve the regular pipeline. Match the served variant.
+    if (!contains(Rendering::kStockMaskCoverageDefine) ||
+        contains("GE_DEPTH_ONLY_FRAGMENT") != depthOnly ||
+        contains("GE_LOD_CROSSFADE") != crossfading)
         return std::nullopt;
     return contains("HAS_COLOR");
 }

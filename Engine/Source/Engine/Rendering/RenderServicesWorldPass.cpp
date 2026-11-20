@@ -225,6 +225,7 @@ struct PreparedForwardDraw
     std::optional<uint32_t> ServedVersion;
     uint32_t MaterialIndex = 0;
     bool IndexedDepthEqual = false;
+    IndexedOwnerReplay OwnerReplay{};
 };
 
 // The command and its spans belong to the frame's declaration snapshot.
@@ -333,16 +334,20 @@ void RecordForwardDrawCommand(const PreparedForwardDraw& prepared, RenderService
         geometryBindings.BindVertexBuffer(mesh.extraUvVB[streamIndex], 8u + streamIndex);
     geometryBindings.BindIndexBuffer(mesh.indexBuffer, static_cast<Rendering::IndexType>(mesh.indexType));
     services.Materials().Binder().BindPreparedForDraw(pass, prepared.Bindings, command.Bindings.PushConstants);
+    const auto& replay = prepared.OwnerReplay;
+    if (replay.Counts.IsValid())
+        pass.Cmd->DrawIndexedIndirectCount(replay.Draws, replay.Counts, replay.DrawLimit,
+                                          command.IndirectStride, 0, sizeof(uint32_t));
 
     if (command.UseIndirect && command.IndirectCommandBuffer.IsValid())
     {
         pass.Cmd->DrawIndexedIndirectCount(
             command.IndirectCommandBuffer,
-            command.IndirectCountBuffer,
+            replay.Counts.IsValid() ? replay.Counts : command.IndirectCountBuffer,
             command.IndirectMaxDrawCount,
             command.IndirectStride,
             command.IndirectCommandOffset,
-            command.IndirectCountOffset);
+            replay.Counts.IsValid() ? 0u : command.IndirectCountOffset);
         if (prepared.IndexedDepthEqual && LogIndexedDepthReplayDiagnostics())
         {
             static std::atomic_flag logged = ATOMIC_FLAG_INIT;
@@ -1649,13 +1654,13 @@ class RenderServices::WorldPassPreparation
         prepared.Geometry.indexType = batch.Mesh->indexType;
         if (variantEntry)
             prepared.ServedVersion = variantEntry->MaterialVersion;
-        if (m_Data->IndexedReplayProducer && !crossfading &&
+        if (m_Data->IndexedReplayProducer &&
             batch.Material->GetAlphaMode() == MaterialAlphaMode::Mask)
         {
             ++m_Data->IndexedReplayCandidates;
             const auto source = GetIndexedDepthDraw(command, prepared.Geometry);
             const auto* meta = variantEntry ? variantEntry->VariantMeta.get() : nullptr;
-            const auto vertexAlpha = StockMaskVertexAlpha(meta, false);
+            const auto vertexAlpha = StockMaskVertexAlpha(meta, false, crossfading);
             if (source && vertexAlpha && prepared.ServedVersion == batch.Material->GetVersion() &&
                 batch.Key.colorClassId == batch.Key.materialIndex &&
                 batch.Key.materialIndex == batch.Material->GetGpuSceneMaterialIndex() &&
@@ -1685,6 +1690,7 @@ class RenderServices::WorldPassPreparation
                     {
                         prepared.Bindings.Pipeline = equal;
                         prepared.IndexedDepthEqual = true;
+                        prepared.OwnerReplay = MatchIndexedOwnerCompaction(*m_Data->IndexedReplayProducer, *source);
                     }
                 }
             }
@@ -2217,6 +2223,8 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             // own viewport/scissor and binds per draw (CONC-F13), so its interior
             // may record into a worker secondary under GE_PARALLEL_RECORD.
             p.RecordInSecondary();
+            if (reuseIndexedDepth && depthReadOnly && vfr.IndexedReplayProducer)
+                ReadIndexedOwnerCompaction(p, *vfr.IndexedReplayProducer);
             // Slice-3 contract reads. SkinPaletteAtlas is the compute→VS
             // barrier (the VS binds it descriptor-direct, so only this
             // declared read orders skinning). DrawStreamOrdering is the
@@ -2430,6 +2438,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                        reuseIndexedDepth, hasDepthPrepass, depthReadOnly,
                        replayProducer = vfr.IndexedReplayProducer, replayPrepass = vfr.IndexedReplayPrepass,
                        replayCamera = vfr.IndexedReplayCamera,
+                       replayContinuations = vfr.IndexedReplayContinuations,
                        replayExtentMatches = !letterbox.active && !flipViewportY && viewportW != 0 && viewportH != 0 &&
                            viewportW == vfr.IndexedReplayViewportWidth && viewportH == vfr.IndexedReplayViewportHeight,
                        worldCamera = cam.Valid() ? cam.Ptr : nullptr,
@@ -2464,9 +2473,26 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                         [&](const auto& entry) { return isDepthIn(entry, replayPrepass); });
                     const auto after = std::find_if(attachments.begin(), attachments.end(),
                         [&](const auto& entry) { return isDepthIn(entry, data->IndexedReplayWorld); });
+                    std::array<const RenderGraph::RGAttachmentRec*, 2> extensions{};
+                    size_t extensionCount = 0;
+                    bool missingExtension = false;
+                    for (const auto pass : replayContinuations)
+                    {
+                        if (!pass.IsValid())
+                            continue;
+                        const auto extension = std::find_if(attachments.begin(), attachments.end(),
+                            [&](const auto& entry) { return isDepthIn(entry, pass); });
+                        if (extension == attachments.end())
+                        {
+                            missingExtension = true;
+                            break;
+                        }
+                        extensions[extensionCount++] = &*extension;
+                    }
                     const auto& graph = frame.Graph();
-                    const auto lineage = before != attachments.end() && after != attachments.end()
-                        ? RenderGraph::CheckDepthPrepassLineage(graph, *before, *after, frame.IsPoolBackedTexture(depth))
+                    const auto lineage = before != attachments.end() && after != attachments.end() && !missingExtension
+                        ? RenderGraph::CheckDepthPrepassLineage(graph, *before, *after, frame.IsPoolBackedTexture(depth),
+                                                               std::span(extensions.data(), extensionCount))
                         : RenderGraph::DepthPrepassLineage{"missing attachment"};
                     if (lineage)
                         data->IndexedReplayProducer = replayProducer;

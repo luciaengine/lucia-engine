@@ -110,6 +110,11 @@ flat layout(location = 14, component = 1) in uint vLodFadeCode;
 flat layout(location = 14) in uint vInstanceFlags;
 #endif
 
+#ifdef GE_INDEXED_DEPTH_OWNER
+flat layout(location = 14, component = 2) in uint vDepthOwnerSlot;
+layout(location = 0) out uint oDepthOwner;
+#endif
+
 // Render-origin-relative world position (Earth-scale precision). The shadow
 // receiver projects THIS through the rebased ge_shadowVP so caster and receiver
 // agree at fp32-of-small-magnitude far from the origin (no self-shadow acne).
@@ -896,6 +901,14 @@ void main()
     // main() and never evaluated the surface.
     if (!GE_LodCrossfadeKeep(vLodFadeCode, gl_FragCoord.xy))
         discard;
+  #endif
+  #ifdef GE_INDEXED_DEPTH_OWNER
+    // Low ten bits address 32-triangle blocks. Zero denotes a cleared pixel.
+    // The all-ones marker makes the entire packet fall back on encoding overflow.
+    uint block = uint(gl_PrimitiveID) >> 5u;
+    oDepthOwner = vDepthOwnerSlot < 0x3ffffeu && block < 1024u
+        ? ((vDepthOwnerSlot + 1u) << 10u) | block
+        : 0xffffffffu;
   #endif
   #ifdef GE_MOTION_VECTORS
     // Masked motion draw: the payload is exported after the same cutoff the

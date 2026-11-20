@@ -359,10 +359,10 @@ bool IsRigidStandardMask(std::span<const std::string> defines)
 {
     constexpr std::array<std::string_view, 5> required = {
         "HAS_POSITION", "HAS_UV0", "ALPHA_TEST", "GE_INSTANCED", "LIGHTING_MODEL_STANDARD_PBR"};
-    constexpr std::array<std::string_view, 11> optional = {
+    constexpr std::array<std::string_view, 12> optional = {
         "HAS_NORMAL", "HAS_TANGENT", "HAS_COLOR", "FORWARD_PLUS", "HAS_SHADOWS",
         "GE_DEPTH_ONLY_FRAGMENT", "GE_IBL_ENABLED", "GE_GTAO_ENABLED", "GE_DDGI_ENABLED",
-        "GE_SSSR_NORMAL_ROUGHNESS", "GE_SCREEN_SPACE_SHADOWS_ENABLED"};
+        "GE_SSSR_NORMAL_ROUGHNESS", "GE_SCREEN_SPACE_SHADOWS_ENABLED", "GE_LOD_CROSSFADE"};
     const auto contains = [defines](std::string_view define) {
         return std::find(defines.begin(), defines.end(), define) != defines.end();
     };
@@ -972,6 +972,9 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         result.stockMaskSurface = stockMaskSurface;
         result.stockMaskSurfaceHash = stockMaskSurfaceHash;
         result.defines.emplace_back(kStockMaskCoverageDefine);
+        if (!target.Compatibility && HasKeyword(key.materialKeywords, MaterialKeyword::IndexedDepthOwner) &&
+            HasKeyword(key.materialKeywords, MaterialKeyword::DepthOnlyFragment))
+            result.defines.emplace_back("GE_INDEXED_DEPTH_OWNER");
     }
 
     // Generate the define preamble. The valued GE_TEXSLOT_* macros follow the
