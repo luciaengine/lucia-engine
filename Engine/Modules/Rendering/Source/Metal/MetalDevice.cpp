@@ -1191,7 +1191,8 @@ MTL::SamplerState* MetalDevice::GetMipBlitSampler()
 }
 
 void MetalDevice::DeclareDeviceAddressResidency(MTL::RenderCommandEncoder* encoder,
-                                                FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache)
+                                                FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache,
+                                                MTL::RenderStages stages)
 {
     // Residency-set path declares residency once per frame on the queue and
     // orders compute->draw with the fence; the per-encoder blanket is skipped.
@@ -1209,8 +1210,7 @@ void MetalDevice::DeclareDeviceAddressResidency(MTL::RenderCommandEncoder* encod
     // Declaring Write here makes the hazard tracker serialize every render
     // encoder against every other encoder touching these buffers.
     encoder->useResources(reinterpret_cast<const MTL::Resource* const*>(m_DeviceAddressBuffers.data()),
-                          m_DeviceAddressBuffers.size(), MTL::ResourceUsageRead,
-                          MTL::RenderStageVertex | MTL::RenderStageFragment);
+                          m_DeviceAddressBuffers.size(), MTL::ResourceUsageRead, stages);
     for (MTL::Buffer* buffer : m_DeviceAddressBuffers)
     {
         residentCache[buffer] = MTL::ResourceUsageRead;
