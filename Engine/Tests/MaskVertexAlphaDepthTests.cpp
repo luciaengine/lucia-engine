@@ -922,6 +922,35 @@ TEST(IndexedDepthReuse, MeshReplayRejectsUnservedFragmentInputs)
     EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
 }
 
+TEST(IndexedDepthReuse, OwnerMaterialRowPreservesDonorConstantsAndRejectsInheritedRowOverrides)
+{
+    namespace R = GameEngine::Rendering;
+    using GameEngine::Engine::Renderer::BindIndexedOwnerMaterialRow;
+    using GameEngine::Engine::Renderer::kForwardHexTilingConstant;
+    using GameEngine::Engine::Renderer::kForwardMaterialRowConstant;
+
+    R::GraphicsPipelineDesc depth;
+    depth.Specialization.emplace();
+    depth.Specialization->AddConstant(kForwardHexTilingConstant, 0u);
+    R::ShaderMeta shader;
+
+    auto owner = depth;
+    EXPECT_TRUE(BindIndexedOwnerMaterialRow(owner, shader, 18u));
+    EXPECT_EQ(owner.Specialization->GetHash(), depth.Specialization->GetHash());
+
+    shader.SpecConstants.push_back({.Id = kForwardMaterialRowConstant});
+    EXPECT_TRUE(BindIndexedOwnerMaterialRow(owner, shader, std::nullopt));
+    EXPECT_EQ(owner.Specialization->GetHash(), depth.Specialization->GetHash());
+
+    auto expected = depth;
+    expected.Specialization->AddConstant(kForwardMaterialRowConstant, 18u);
+    EXPECT_TRUE(BindIndexedOwnerMaterialRow(owner, shader, 18u));
+    EXPECT_EQ(owner.Specialization->GetHash(), expected.Specialization->GetHash());
+
+    EXPECT_FALSE(BindIndexedOwnerMaterialRow(owner, shader, 41u));
+    EXPECT_EQ(owner.Specialization->GetHash(), expected.Specialization->GetHash());
+}
+
 TEST(IndexedDepthReuse, WhiteSurfaceSlotsRejectTextureAndSamplerEdits)
 {
     constexpr uint32_t kWhite = 17u;

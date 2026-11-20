@@ -1187,9 +1187,10 @@ bool PrepareIndexedDepthOwners(RenderGraph::RGPrepareContext& context, PreparedD
             return;
         auto& baseline = candidate.Pipeline;
         const auto& material = *selected->MaterialOwner;
-        if (selected->MaterialRevision != material.GetContentRevision())
-            return;
         const auto& draw = data.Draws[selected->DrawIndex];
+        if (selected->MaterialRevision != material.GetContentRevision() ||
+            draw.MaterialIndex != material.GetGpuSceneMaterialIndex())
+            return;
         const auto* owner = data.Materials->Variants().FindOrRequestPrepassVariant(
             material, draw.VertexFlags, baseline.Topology, selected->OwnerKeywords, selected->Winding);
         if (!owner || owner->MaterialVersion != material.GetVersion() || !owner->VariantMeta)
@@ -1219,6 +1220,10 @@ bool PrepareIndexedDepthOwners(RenderGraph::RGPrepareContext& context, PreparedD
         if (!baseline.Specialization)
             baseline.Specialization.emplace();
         baseline.Specialization->AddConstant(kOwnerMeshEncodingConstant, packet.UsesMeshReplay ? 1u : 0u);
+        const auto materialRow = device.GetCapabilities().prefersForwardShaderSpecialization
+            ? std::optional{draw.MaterialIndex} : std::nullopt;
+        if (!BindIndexedOwnerMaterialRow(baseline, *owner->VariantMeta, materialRow))
+            return;
         baseline.DebugName = "IndexedDepthOwner";
         const auto id = device.InternGraphicsPipeline(baseline);
         if (id.IsValid() && context.ResolveGraphicsPipelineId(id) == id)

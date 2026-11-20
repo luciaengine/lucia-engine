@@ -429,7 +429,6 @@ PipelineVariantCache::PreparedVariant PipelineVariantCache::PrepareIndexedDepthE
     if (!id.IsValid())
         return {};
 
-    constexpr uint32_t kForwardMaterialRowConstant = 306;
     const bool hasMaterialRowConstant = std::any_of(shader.SpecConstants.begin(), shader.SpecConstants.end(),
         [](const auto& constant) { return constant.Id == kForwardMaterialRowConstant; });
     const uint32_t materialRow = material.GetGpuSceneMaterialIndex();
