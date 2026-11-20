@@ -1082,10 +1082,11 @@ void MaterialSystem::PackMaterialSSBO()
     packedSlot.MappingGeneration = m_MaterialSSBOGeneration;
 }
 
-bool MaterialSystem::IsMaterialRowCurrent(const Material& material, uint32_t row) const
+bool MaterialSystem::IsMaterialRowCurrent(const Material& material, uint32_t row, PackedSSBO bound) const
 {
-    if (!m_FramePool || !m_MaterialParamsSSBOBuffer.IsValid() ||
-        m_MaterialParamsSSBOBuffer == m_MaterialParamsSSBOFallback ||
+    const auto packed = PackedMaterialParams();
+    if (!m_FramePool || !packed.Buffer.IsValid() || packed.Buffer == m_MaterialParamsSSBOFallback ||
+        bound.Buffer != packed.Buffer || bound.Offset != packed.Offset || bound.Size != packed.Size ||
         row >= m_MaterialsBySSBOIndex.size() || m_MaterialsBySSBOIndex[row] != &material)
         return false;
     const auto& slot = m_PackedMaterialSlots[m_FramePool->GetCurrentSlot(FrameWriteUsage::MaterialParams)];

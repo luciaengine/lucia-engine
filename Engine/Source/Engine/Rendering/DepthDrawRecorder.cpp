@@ -23,12 +23,14 @@
 #include "Rendering/Core/HashUtils.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
+#include "Rendering/Materials/LegacyMaterialLanes.h"
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <span>
 #include <string>
@@ -783,8 +785,26 @@ class DepthPassPreparation
             row != batch.Key.materialIndex)
             return false;
 
-        return lookup.classKey == row && m_Services.Materials.IsMaterialRowCurrent(material, row) &&
-               material.GetFloat("hexTiling"_sid, 1.0f) < 0.5f;
+        if (lookup.classKey != row)
+            return false;
+
+        const auto& buffers = m_Data.Inputs.PassResources.Buffers;
+        const auto bound = std::find_if(buffers.begin(), buffers.end(), [](const auto& buffer) {
+            return buffer.Name == HashStringId("MaterialParams");
+        });
+        if (bound == buffers.end() || !m_Services.Materials.IsMaterialRowCurrent(
+                material, row, {bound->Buffer, bound->Offset, bound->Range}))
+            return false;
+
+        static const auto* const kHexTiling = Rendering::FindLegacyMaterialLane("hexTiling");
+        if (!kHexTiling)
+            return false;
+        const auto offset = Rendering::LegacyLaneByteOffset(*kHexTiling);
+        float hexTiling;
+        if (material.GetCacheSize() < offset + sizeof(hexTiling))
+            return false;
+        std::memcpy(&hexTiling, material.GetCacheData() + offset, sizeof(hexTiling));
+        return hexTiling < 0.5f;
     }
 
     ResolvedDepthPipeline ResolvePipeline(const DepthBatchPreparation& batch, Rendering::FrontFace winding,

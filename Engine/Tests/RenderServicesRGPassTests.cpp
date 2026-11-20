@@ -2384,17 +2384,20 @@ TEST(RenderServicesRGPassTests, MaterialParamsRepackWritesOnlyTheChangedRow)
         const uint32_t editedRow = materials[1]->GetGpuSceneMaterialIndex();
         const uint32_t otherRow = materials[0]->GetGpuSceneMaterialIndex();
         const uint32_t shaderVersion = materials[1]->GetVersion();
-        ASSERT_TRUE(materialSystem.IsMaterialRowCurrent(*materials[1], editedRow));
-        EXPECT_FALSE(materialSystem.IsMaterialRowCurrent(*materials[1], otherRow));
+        ASSERT_TRUE(materialSystem.IsMaterialRowCurrent(*materials[1], editedRow, materialSystem.PackedMaterialParams()));
+        auto wrongBinding = materialSystem.PackedMaterialParams();
+        wrongBinding.Offset += kMaterialEntryStride;
+        EXPECT_FALSE(materialSystem.IsMaterialRowCurrent(*materials[1], editedRow, wrongBinding));
+        EXPECT_FALSE(materialSystem.IsMaterialRowCurrent(*materials[1], otherRow, materialSystem.PackedMaterialParams()));
         materials[1]->SetFloat(HashStringId("roughness"), 0.37f);
         EXPECT_EQ(materials[1]->GetVersion(), shaderVersion);
-        EXPECT_FALSE(materialSystem.IsMaterialRowCurrent(*materials[1], editedRow));
-        EXPECT_TRUE(materialSystem.IsMaterialRowCurrent(*materials[0], otherRow));
+        EXPECT_FALSE(materialSystem.IsMaterialRowCurrent(*materials[1], editedRow, materialSystem.PackedMaterialParams()));
+        EXPECT_TRUE(materialSystem.IsMaterialRowCurrent(*materials[0], otherRow, materialSystem.PackedMaterialParams()));
         for (uint32_t i = 0; i < slots; ++i)
         {
             RunFrame();
             ExpectRowsMatchMaterials("after the edit");
-            EXPECT_TRUE(materialSystem.IsMaterialRowCurrent(*materials[1], editedRow));
+            EXPECT_TRUE(materialSystem.IsMaterialRowCurrent(*materials[1], editedRow, materialSystem.PackedMaterialParams()));
         }
         EXPECT_EQ(f.Rs.Materials().GetMaterialSSBORowWriteCount() - afterFirstCycle, slots)
             << "one edited material must rewrite one row per ring slot";

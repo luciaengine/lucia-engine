@@ -286,7 +286,7 @@ class MaterialSystem
     }
 
     // A preparation worker may use the CPU values only if the bound row matches.
-    bool IsMaterialRowCurrent(const Material& material, uint32_t row) const;
+    bool IsMaterialRowCurrent(const Material& material, uint32_t row, PackedSSBO bound) const;
 
     // --- classification (bucketer/scatter read side) ---
     Rendering::MaterialDepthClass GetMaterialDepthClass(uint32_t materialIndex) const
