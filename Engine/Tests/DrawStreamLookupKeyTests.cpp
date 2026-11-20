@@ -179,3 +179,30 @@ TEST(DrawStreamLookupKey, MeshPastTheGroupSpanResolvesToAbsentGroup)
 // plan's, or an absent row would resolve to a key the publisher never wrote.
 static_assert(MeshPoolGroupPlan::kAbsentGroup == GPUDrawStreamBuilder::kAbsentPoolGroup,
               "absent-group sentinels must match across the module boundary");
+
+// A range keyed on the material itself holds that material only, so the draw names it for every
+// record: an impostor card record points at the mesh instance, whose own material is the mesh
+// part's. A merged color class or a shared depth sentinel holds several materials and names none.
+TEST(DrawStreamLookupKey, RangeMaterialIsNamedOnlyForASingleMaterialRange)
+{
+    using GameEngine::Engine::Renderer::DrawStreamRangeMaterial;
+    constexpr uint32_t kNone = 0xFFFFFFFFu;
+    constexpr uint32_t kCard = 9u;
+    const WorldDrawBuilder::BatchKey card = MakeKey(kCard, 4u, kCard);
+    const WorldDrawBuilder::BatchKey merged = MakeKey(2u, 4u, GPUDrawStreamBuilder::kColorClassBase);
+
+    const DrawStreamLookupKey cardColor =
+        ResolveDrawStreamLookupKey(card, GPUDrawStreamBuilder::kCascadeIndexNone,
+                                   MaterialDepthClass::MaterialDependent, {});
+    const DrawStreamLookupKey cardShadow =
+        ResolveDrawStreamLookupKey(card, 0u, MaterialDepthClass::MaterialDependent, {});
+    const DrawStreamLookupKey mergedColor =
+        ResolveDrawStreamLookupKey(merged, GPUDrawStreamBuilder::kCascadeIndexNone, MaterialDepthClass::EligibleSingleSided, {});
+    const DrawStreamLookupKey eligibleShadow =
+        ResolveDrawStreamLookupKey(MakeKey(2u, 4u, 2u), 0u, MaterialDepthClass::EligibleSingleSided, {});
+
+    EXPECT_EQ(DrawStreamRangeMaterial(card, cardColor), kCard);
+    EXPECT_EQ(DrawStreamRangeMaterial(card, cardShadow), kCard);
+    EXPECT_EQ(DrawStreamRangeMaterial(merged, mergedColor), kNone);
+    EXPECT_EQ(DrawStreamRangeMaterial(MakeKey(2u, 4u, 2u), eligibleShadow), kNone);
+}
