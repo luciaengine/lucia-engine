@@ -4,6 +4,7 @@
 // RenderServices class; shared file-scope helpers live in RenderServicesDetail.h.
 #include "Engine/Rendering/RenderServices.h"
 #include "IndexedDepthDraw.h"
+#include "Platform/Environment.h"
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
 #include "Engine/Rendering/Pipeline/ViewMotionVectors.h"
@@ -967,6 +968,44 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
     params.Resources = BuildPassResourcesRG(frame, viewId, Rendering::MaterialKeyword::None,
                                             nullptr, cam.Buffer, cam.Offset);
 
+    const auto declareInputs = [&](RenderGraph::RGPassBuilder& p)
+    {
+        // The skin palette and the draw-stream ordering feed the entity batches only. The
+        // non-occluding prepass draws none, and its heads bind neither, so it declares neither
+        // read (each would add a graph edge from the skinning or the scatter into it).
+        if (!isNonOccluding)
+        {
+            if (m_FrameRG.For.IsFor(frame) && m_FrameRG.SkinPaletteAtlas.IsValid())
+                p.Read(m_FrameRG.SkinPaletteAtlas);
+            else if (m_GPUAnimDataStore.GetInstanceCount() != 0)
+                Logger::Log::Error(
+                    "[RenderGraph] AddWorldDepthPrepassForView(view {}): skinned instances pending "
+                    "but no SkinPaletteAtlas value is published — declare "
+                    "ScheduleGpuSkinningAndRetarget(frame) BEFORE the depth prepass",
+                    viewId);
+            if (m_FrameRG.For.IsFor(frame) && m_FrameRG.DrawStreamOrdering.IsValid())
+                p.Read(m_FrameRG.DrawStreamOrdering, RenderGraph::RGBufferRead::Indirect);
+            else if (m_DrawStreamBuilder && m_DrawStreamBuilder->GetPendingSliceCount() != 0)
+                Logger::Log::Error(
+                    "[RenderGraph] AddWorldDepthPrepassForView(view {}): buckets are registered but "
+                    "no DrawStreamOrdering value is published — declare "
+                    "ScheduleWorldBucketerDispatches(frame) BEFORE the depth prepass",
+                    viewId);
+        }
+        // The buffers the forward producers' prepass heads read (indirect args and the
+        // vertex-stage SSBOs their compute wrote this frame): declaring them orders that
+        // compute before this pass and lands the barriers. Phase A draws the heads; the
+        // recover pass draws none.
+        if (!isRecover)
+        {
+            for (const auto& bufferRead : m_ViewRegistry.PerView(viewId).ForwardSampledBufferRG)
+            {
+                if (bufferRead.Readers == ForwardBufferReaders::WorldPassAndPrepass &&
+                    bufferRead.For.IsFor(frame) && bufferRead.Buffer.IsValid())
+                    p.Read(bufferRead.Buffer, bufferRead.Access);
+            }
+        }
+    };
     auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, params);
     const RenderGraph::RGPass pass = frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kWorldRender,
@@ -977,41 +1016,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
             // A2.4-P0-R: the depth prepass exec is self-contained (own
             // viewport/scissor + per-draw binds) — eligible for secondary record.
             p.RecordInSecondary();
-            // The skin palette and the draw-stream ordering feed the entity batches only. The
-            // non-occluding prepass draws none, and its heads bind neither, so it declares neither
-            // read (each would add a graph edge from the skinning or the scatter into it).
-            if (!isNonOccluding)
-            {
-                if (m_FrameRG.For.IsFor(frame) && m_FrameRG.SkinPaletteAtlas.IsValid())
-                    p.Read(m_FrameRG.SkinPaletteAtlas);
-                else if (m_GPUAnimDataStore.GetInstanceCount() != 0)
-                    Logger::Log::Error(
-                        "[RenderGraph] AddWorldDepthPrepassForView(view {}): skinned instances pending "
-                        "but no SkinPaletteAtlas value is published — declare "
-                        "ScheduleGpuSkinningAndRetarget(frame) BEFORE the depth prepass",
-                        viewId);
-                if (m_FrameRG.For.IsFor(frame) && m_FrameRG.DrawStreamOrdering.IsValid())
-                    p.Read(m_FrameRG.DrawStreamOrdering, RenderGraph::RGBufferRead::Indirect);
-                else if (m_DrawStreamBuilder && m_DrawStreamBuilder->GetPendingSliceCount() != 0)
-                    Logger::Log::Error(
-                        "[RenderGraph] AddWorldDepthPrepassForView(view {}): buckets are registered but "
-                        "no DrawStreamOrdering value is published — declare "
-                        "ScheduleWorldBucketerDispatches(frame) BEFORE the depth prepass",
-                        viewId);
-            }
-            // The buffers the forward producers' prepass heads read (indirect args and the
-            // vertex-stage SSBOs their compute wrote this frame): declaring them orders that
-            // compute before this pass and lands the barriers. Phase A draws the heads; the
-            // recover pass draws none.
-            if (!isRecover)
-            {
-                for (const auto& bufferRead : m_ViewRegistry.PerView(viewId).ForwardSampledBufferRG)
-                {
-                    if (bufferRead.Readers == ForwardBufferReaders::WorldPassAndPrepass &&
-                        bufferRead.For.IsFor(frame) && bufferRead.Buffer.IsValid())
-                        p.Read(bufferRead.Buffer, bufferRead.Access);
-                }
-            }
+            declareInputs(p);
 
             RenderGraph::RGAttachmentOps dops{};
             // Phase B loads the phase-A depth and depth-tests newly-revealed
@@ -1040,6 +1045,82 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
         viewFrame.IndexedReplayCamera = cam.Valid() && !letterbox.active ? cam.Ptr : nullptr;
         viewFrame.IndexedReplayViewportWidth = params.ViewportWidth;
         viewFrame.IndexedReplayViewportHeight = params.ViewportHeight;
+
+        static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_OWNER_REPLAY", false);
+        const auto& caps = m_Device->GetCapabilities();
+        const auto& depthDesc = frame.Graph().ResourceDesc(depth.Id);
+        const auto format = static_cast<Rendering::TextureFormat>(depthDesc.Format);
+        if (enabled && caps.supportsIndexedDepthOwnerReplay && m_DrawStreamBuilder &&
+            !letterbox.active && depthDesc.SampleCount == 1u && depthDesc.ArrayLayers == 1u &&
+            depthDesc.MipLevels == 1u && params.ViewportWidth == depthDesc.Width &&
+            params.ViewportHeight == depthDesc.Height &&
+            (format == Rendering::TextureFormat::D32_FLOAT || format == Rendering::TextureFormat::D32_SFLOAT_S8_UINT) &&
+            m_FrameRG.For.IsFor(frame) && m_FrameRG.DrawStreamOrdering.IsValid())
+        {
+            Rendering::TextureDesc ownerDesc{};
+            ownerDesc.width = depthDesc.Width;
+            ownerDesc.height = depthDesc.Height;
+            ownerDesc.format = static_cast<uint32_t>(Rendering::TextureFormat::R32_UINT);
+            ownerDesc.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget |
+                                                     Rendering::TextureUsage::UnorderedAccess);
+            static const bool useSecond = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_OWNER_SECOND", false);
+            const auto owners = frame.CreateTexture("IndexedDepthOwner", ownerDesc);
+            const auto second = useSecond && owners.IsValid()
+                ? frame.CreateTexture("IndexedDepthOwner.Second", ownerDesc) : RenderGraph::RGTexture{};
+            if (owners.IsValid())
+            {
+                const auto attachDepth = [&](RenderGraph::RGPassBuilder& p)
+                {
+                    declareInputs(p);
+                    p.AttachDepth(depth, {.Load = RenderGraph::RGLoadOp::Load, .Store = RenderGraph::RGStoreOp::Store},
+                                  RenderGraph::RGDepthAccess::ReadWrite);
+                    p.RecordInSecondary();
+                };
+                const size_t count = second.IsValid() ? 2u : 1u;
+                const auto first = frame.AddPass("IndexedDepthOwner", Rendering::PassPhase::kWorldRender,
+                    [&](RenderGraph::RGPassBuilder& p)
+                    {
+                        attachDepth(p);
+                        p.AttachColor(0, owners,
+                            {.Load = RenderGraph::RGLoadOp::Clear, .Store = RenderGraph::RGStoreOp::Store});
+                        p.Prepare([preparedDepth, count](RenderGraph::RGPrepareContext& c)
+                            { return PrepareIndexedDepthOwners(c, *preparedDepth, count); });
+                    },
+                    [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthOwner(c, *preparedDepth, 0u); });
+                frame.AddOrderingEdge(pass, first);
+                auto& continuations = viewFrame.IndexedReplayContinuations;
+                continuations[0] = first;
+                size_t next = 1u;
+                if (second.IsValid())
+                {
+                    const auto between = frame.AddPass("IndexedDepthOwner.Between", Rendering::PassPhase::kWorldRender,
+                        attachDepth,
+                        [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthBetweenOwners(c, *preparedDepth); });
+                    const auto lastOwner = frame.AddPass("IndexedDepthOwner.Second", Rendering::PassPhase::kWorldRender,
+                        [&](RenderGraph::RGPassBuilder& p)
+                        {
+                            attachDepth(p);
+                            p.AttachColor(0, second,
+                                {.Load = RenderGraph::RGLoadOp::Clear, .Store = RenderGraph::RGStoreOp::Store});
+                        },
+                        [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthOwner(c, *preparedDepth, 1u); });
+                    frame.AddOrderingEdge(first, between);
+                    frame.AddOrderingEdge(between, lastOwner);
+                    continuations[next++] = between;
+                    continuations[next++] = lastOwner;
+                }
+                const auto remainder = frame.AddPass("IndexedDepthOwner.Remainder", Rendering::PassPhase::kWorldRender,
+                    attachDepth,
+                    [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthRemainder(c, *preparedDepth); });
+                frame.AddOrderingEdge(continuations[next - 1u], remainder);
+                continuations[next] = remainder;
+                DeclareIndexedOwnerCompaction(frame, *m_Device, *preparedDepth, *m_DrawStreamBuilder,
+                                              owners, m_FrameRG.DrawStreamOrdering, 0u);
+                if (second.IsValid())
+                    DeclareIndexedOwnerCompaction(frame, *m_Device, *preparedDepth, *m_DrawStreamBuilder,
+                                                  second, m_FrameRG.DrawStreamOrdering, 1u);
+            }
+        }
     }
     // The formats the prepass draws with, for the forward producers that pin their heads' pipelines at
     // next frame's emit (PerViewResources::PrepassFormatKey). A formatless import keeps the last snapshot.
@@ -1054,6 +1135,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
                 RenderGraph::DeriveFormatKey(&attachment, 1u, Rendering::TextureFormat{});
         }
     }
+    // Keep specialization and caller-added ordering on the public prepass handle.
+    // Later depth users inherit the internal continuation through its attachment write.
     return pass;
 }
 

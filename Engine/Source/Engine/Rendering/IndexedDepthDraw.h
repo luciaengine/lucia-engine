@@ -9,6 +9,7 @@
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Core/SpecializationConstants.h"
+#include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "RenderServicesDetail.h"
 
@@ -110,6 +111,7 @@ inline bool MatchesIndexedDepthRaster(const Rendering::GraphicsPipelineDesc& dep
                state.depthCompareOp == Rendering::ReverseZ::kNearerOrEqual &&
                !state.depthBoundsTestEnable && !state.stencilTestEnable &&
                !pipeline.ColorBlend.alphaToCoverageEnable &&
+               !pipeline.ColorBlend.logicOpEnable &&
                std::none_of(pipeline.ColorBlend.attachments.begin(), pipeline.ColorBlend.attachments.end(),
                             [](const auto& attachment) { return attachment.blendEnable; });
     };
@@ -148,7 +150,58 @@ inline bool MatchesIndexedDepthRaster(const Rendering::GraphicsPipelineDesc& dep
     return matchesInput(position) && matchesInput(uv0) && (!vertexAlpha || matchesInput(colorInput));
 }
 
-inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* meta, bool depthOnly)
+inline bool MatchesIndexedOwnerMeshVertexLayout(
+    const Rendering::GraphicsPipelineDesc& pipeline, Rendering::VertexAttributeFlags flags)
+{
+    using Rendering::VertexAttributeFlags;
+    if (!Rendering::HasFlag(flags, VertexAttributeFlags::StandardMesh))
+        return false;
+
+    Rendering::GraphicsPipelineDesc expected;
+    const auto consumed = flags & (VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasColor);
+    Rendering::BuildVertexLayoutFromFlags(consumed, expected);
+
+    for (const auto& binding : expected.VertexBindings)
+    {
+        const auto found = std::find_if(pipeline.VertexBindings.begin(), pipeline.VertexBindings.end(),
+            [&binding](const auto& candidate) { return candidate.binding == binding.binding; });
+        if (found == pipeline.VertexBindings.end() || found->stride != binding.stride ||
+            found->inputRate != binding.inputRate)
+            return false;
+    }
+    for (const auto& attribute : expected.VertexAttributes)
+    {
+        const auto found = std::find_if(pipeline.VertexAttributes.begin(), pipeline.VertexAttributes.end(),
+            [&attribute](const auto& candidate) { return candidate.location == attribute.location; });
+        if (found == pipeline.VertexAttributes.end() || found->binding != attribute.binding ||
+            found->offset != attribute.offset || found->format != attribute.format)
+            return false;
+    }
+    return true;
+}
+
+inline bool MatchesIndexedOwnerMeshFragmentInputs(
+    const Rendering::StageMeta& fragment, const Rendering::StageMeta& mesh)
+{
+    for (const auto& input : fragment.Inputs)
+    {
+        if (input.Builtin || input.Component != 0u || !input.Type.ArrayDims.empty())
+            return false;
+        const auto output = std::find_if(mesh.Outputs.begin(), mesh.Outputs.end(),
+            [&input](const auto& candidate) {
+                return candidate.Location == input.Location && candidate.Component == input.Component;
+            });
+        if (output == mesh.Outputs.end() || output->Type.ArrayDims.size() != 1u ||
+            output->Type.Kind != input.Type.Kind || output->Type.Base != input.Type.Base ||
+            output->Type.Rows != input.Type.Rows || output->Type.Cols != input.Type.Cols ||
+            output->Type.VecSize != input.Type.VecSize)
+            return false;
+    }
+    return true;
+}
+
+inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* meta,
+                                                    bool depthOnly, bool crossfading)
 {
     if (!meta)
         return std::nullopt;
@@ -156,7 +209,10 @@ inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* met
     const auto contains = [&defines](const char* define) {
         return std::find(defines.begin(), defines.end(), define) != defines.end();
     };
-    if (!contains(Rendering::kStockMaskCoverageDefine) || contains("GE_DEPTH_ONLY_FRAGMENT") != depthOnly)
+    // A cold fade request can serve the regular pipeline. Match the served variant.
+    if (!contains(Rendering::kStockMaskCoverageDefine) ||
+        contains("GE_DEPTH_ONLY_FRAGMENT") != depthOnly ||
+        contains("GE_LOD_CROSSFADE") != crossfading)
         return std::nullopt;
     return contains("HAS_COLOR");
 }

@@ -216,6 +216,15 @@ std::span<const DrawCommand> CaptureForwardCommands(RenderGraph::RGFrame& frame,
     return storage->Commands;
 }
 
+struct OrderedOwnerMeshPush
+{
+    ComposedPCInstanced Instances{};
+    uint64_t Core = 0, Color = 0, Index = 0, Work = 0, State = 0;
+    uint32_t Index16 = 0;
+};
+static_assert(sizeof(OrderedOwnerMeshPush) == 64);
+static_assert(offsetof(OrderedOwnerMeshPush, Index16) == 56);
+
 struct PreparedForwardDraw
 {
     const DrawCommand* Source = nullptr;
@@ -225,6 +234,9 @@ struct PreparedForwardDraw
     std::optional<uint32_t> ServedVersion;
     uint32_t MaterialIndex = 0;
     bool IndexedDepthEqual = false;
+    IndexedOwnerReplay OwnerReplay{};
+    PreparedDrawBindings OwnerMeshBindings{};
+    OrderedOwnerMeshPush OwnerMeshConstants{};
 };
 
 // The command and its spans belong to the frame's declaration snapshot.
@@ -316,6 +328,112 @@ std::optional<PreparedForwardDraw> PrepareForwardDrawCommand(
     return result;
 }
 
+struct IndexedOwnerMeshShader
+{
+    std::shared_ptr<const std::vector<uint8_t>> Bytes;
+    Rendering::StageMeta Interface;
+};
+
+IndexedOwnerMeshShader LoadIndexedOwnerMeshShader(const char* path)
+{
+    Rendering::ShaderPackage package;
+    if (!Rendering::LoadShaderPkg(path, Rendering::ShaderSourceKind::SpirV, package))
+        return {};
+    auto binary = package.stageBytes.find("ms");
+    auto stage = package.meta.Stages.find("ms");
+    if (binary == package.stageBytes.end() || binary->second.empty() || stage == package.meta.Stages.end())
+        return {};
+    return {std::make_shared<const std::vector<uint8_t>>(std::move(binary->second)), std::move(stage->second)};
+}
+
+const IndexedOwnerMeshShader& GetIndexedOwnerMeshShader(bool color)
+{
+    if (color)
+    {
+        static const auto s_Color = LoadIndexedOwnerMeshShader("Shaders/indexed_depth_replay_mesh_forward_color.shaderpkg");
+        return s_Color;
+    }
+    static const auto s_Plain = LoadIndexedOwnerMeshShader("Shaders/indexed_depth_replay_mesh_forward.shaderpkg");
+    return s_Plain;
+}
+
+void PrepareOrderedOwnerMesh(PreparedForwardDraw& prepared, const IndexedOwnerReplay& replay,
+                             const DrawCommand& command, const Material& material,
+                             const Rendering::ShaderMeta& sourceMeta, Rendering::GraphicsPipelineDesc pipeline,
+                             Rendering::IDevice& device, MaterialBinder& binder, const PassBindingContext& inputs,
+                             const RenderGraph::RGPrepareContext& context, Rendering::VertexAttributeFlags flags)
+{
+    if (!MatchesIndexedOwnerMeshVertexLayout(pipeline, flags) || pipeline.ColorBlend.alphaToCoverageEnable ||
+        pipeline.ColorBlend.logicOpEnable || command.Bindings.PushConstants.size() != sizeof(ComposedPCInstanced))
+        return;
+    const bool color = Rendering::HasFlag(flags, Rendering::VertexAttributeFlags::HasColor);
+    const uint64_t coreAddress = device.GetBufferDeviceAddress(prepared.Geometry.coreVB);
+    const uint64_t index = device.GetBufferDeviceAddress(prepared.Geometry.indexBuffer);
+    const uint64_t colors = color ? device.GetBufferDeviceAddress(prepared.Geometry.colorVB) : 0;
+    if (!coreAddress || !index || (color && !colors))
+        return;
+
+    const auto& shader = GetIndexedOwnerMeshShader(color);
+    const auto fragment = sourceMeta.Stages.find("fs");
+    if (!shader.Bytes || fragment == sourceMeta.Stages.end() ||
+        !MatchesIndexedOwnerMeshFragmentInputs(fragment->second, shader.Interface))
+        return;
+
+    for (auto& id : pipeline.DescriptorSetLayouts)
+    {
+        Rendering::DescriptorSetLayoutDesc layout;
+        if (!device.CopyDescriptorSetLayout(id, layout))
+            return;
+        for (auto& binding : layout.bindings)
+            if (binding.shaderStages & kShaderStageVertex)
+                binding.shaderStages = (binding.shaderStages & ~kShaderStageVertex) | kShaderStageMesh;
+        id = device.InternDescriptorSetLayout(layout);
+    }
+    auto metadata = sourceMeta;
+    for (auto& set : metadata.Sets)
+    {
+        for (auto& binding : set.Bindings)
+            if (binding.StagesMask & ShaderMetaStage::kVertex)
+                binding.StagesMask = (binding.StagesMask & ~ShaderMetaStage::kVertex) | ShaderMetaStage::kMesh;
+        Rendering::FinalizeSetLayout(set);
+    }
+    pipeline.Kind = GraphicsPipelineKind::MeshFragment;
+    pipeline.MeshShader = shader.Bytes;
+    pipeline.VertexShader.reset();
+    pipeline.VertexBindings.clear();
+    pipeline.VertexAttributes.clear();
+    pipeline.PushConstants.Size = sizeof(OrderedOwnerMeshPush);
+    pipeline.PushConstants.StageMask = kShaderStageMesh |
+                                       (pipeline.PushConstants.StageMask & kShaderStageFragment);
+    pipeline.NamedPushConstantRanges.clear();
+    pipeline.DepthStencil.depthCompareOp = CompareOp::Equal;
+    const auto pipelineId = device.InternGraphicsPipeline(pipeline);
+    if (!pipelineId.IsValid() || context.ResolveGraphicsPipelineId(pipelineId) != pipelineId)
+        return;
+    const auto handle = context.PreparePipeline(pipelineId);
+    if (!handle.IsValid())
+        return;
+
+    OrderedOwnerMeshPush mesh{};
+    std::memcpy(&mesh.Instances, command.Bindings.PushConstants.data(), sizeof(mesh.Instances));
+    mesh.Core = coreAddress;
+    mesh.Color = colors;
+    mesh.Index = index;
+    mesh.Work = replay.MeshWorkAddress;
+    mesh.State = replay.MeshStateAddress;
+    mesh.Index16 = prepared.Geometry.indexType == static_cast<uint32_t>(IndexType::Uint16) ? 1u : 0u;
+    DrawBindings bindings = command.Bindings;
+    bindings.PushConstants = std::as_bytes(std::span{&mesh, 1u});
+    const auto bound = binder.PrepareMaterialForDraw(inputs, material, handle, &metadata,
+        bindings, 0, pipeline.DescriptorSetLayouts);
+    if (bound.Pipeline.IsValid())
+    {
+        prepared.OwnerReplay = replay;
+        prepared.OwnerMeshBindings = bound;
+        prepared.OwnerMeshConstants = mesh;
+    }
+}
+
 void RecordForwardDrawCommand(const PreparedForwardDraw& prepared, RenderServices& services,
                               PassBindingContext& pass, DrawGeometryBindings& geometryBindings)
 {
@@ -332,17 +450,30 @@ void RecordForwardDrawCommand(const PreparedForwardDraw& prepared, RenderService
     for (uint32_t streamIndex = 0; streamIndex < mesh.extraUvVB.size(); ++streamIndex)
         geometryBindings.BindVertexBuffer(mesh.extraUvVB[streamIndex], 8u + streamIndex);
     geometryBindings.BindIndexBuffer(mesh.indexBuffer, static_cast<Rendering::IndexType>(mesh.indexType));
-    services.Materials().Binder().BindPreparedForDraw(pass, prepared.Bindings, command.Bindings.PushConstants);
+    auto& binder = services.Materials().Binder();
+    const auto& replay = prepared.OwnerReplay;
+    const bool meshReplay = prepared.OwnerMeshBindings.Pipeline.IsValid();
+    if (meshReplay)
+    {
+        constexpr size_t kMeshArgumentsOffset = 14u * sizeof(uint32_t);
+        binder.BindPreparedForDraw(pass, prepared.OwnerMeshBindings,
+            std::as_bytes(std::span{&prepared.OwnerMeshConstants, 1u}));
+        pass.Cmd->DrawMeshTasksIndirect(replay.Counts, kMeshArgumentsOffset);
+    }
+    binder.BindPreparedForDraw(pass, prepared.Bindings, command.Bindings.PushConstants);
+    if (!meshReplay && replay.Counts.IsValid())
+        pass.Cmd->DrawIndexedIndirectCount(replay.Draws, replay.Counts, replay.DrawLimit,
+                                          command.IndirectStride, 0, sizeof(uint32_t));
 
     if (command.UseIndirect && command.IndirectCommandBuffer.IsValid())
     {
         pass.Cmd->DrawIndexedIndirectCount(
             command.IndirectCommandBuffer,
-            command.IndirectCountBuffer,
+            replay.Counts.IsValid() ? replay.Counts : command.IndirectCountBuffer,
             command.IndirectMaxDrawCount,
             command.IndirectStride,
             command.IndirectCommandOffset,
-            command.IndirectCountOffset);
+            replay.Counts.IsValid() ? 0u : command.IndirectCountOffset);
         if (prepared.IndexedDepthEqual && LogIndexedDepthReplayDiagnostics())
         {
             static std::atomic_flag logged = ATOMIC_FLAG_INIT;
@@ -1649,13 +1780,13 @@ class RenderServices::WorldPassPreparation
         prepared.Geometry.indexType = batch.Mesh->indexType;
         if (variantEntry)
             prepared.ServedVersion = variantEntry->MaterialVersion;
-        if (m_Data->IndexedReplayProducer && !crossfading &&
+        if (m_Data->IndexedReplayProducer &&
             batch.Material->GetAlphaMode() == MaterialAlphaMode::Mask)
         {
             ++m_Data->IndexedReplayCandidates;
             const auto source = GetIndexedDepthDraw(command, prepared.Geometry);
             const auto* meta = variantEntry ? variantEntry->VariantMeta.get() : nullptr;
-            const auto vertexAlpha = StockMaskVertexAlpha(meta, false);
+            const auto vertexAlpha = StockMaskVertexAlpha(meta, false, crossfading);
             if (source && vertexAlpha && prepared.ServedVersion == batch.Material->GetVersion() &&
                 batch.Key.colorClassId == batch.Key.materialIndex &&
                 batch.Key.materialIndex == batch.Material->GetGpuSceneMaterialIndex() &&
@@ -1679,12 +1810,21 @@ class RenderServices::WorldPassPreparation
                     MatchesIndexedDepthHexTiling(depth, color, {batch.Material->GetCacheData(), batch.Material->GetCacheSize()}))
                 {
                     ++m_Data->IndexedReplayMatches;
+                    const auto replay = MatchIndexedOwnerCompaction(*m_Data->IndexedReplayProducer, *source);
                     const auto equal = m_Services.Materials().Variants().PrepareIndexedDepthEqual(
                         *batch.Material, *meta, std::move(color), m_Context.BuildCurrentFormatKey());
-                    if (equal.IsValid())
+                    if (equal.Pipeline.IsValid())
                     {
-                        prepared.Bindings.Pipeline = equal;
+                        prepared.Bindings.Pipeline = equal.Pipeline;
                         prepared.IndexedDepthEqual = true;
+                        if (replay.MeshWorkAddress)
+                        {
+                            if (device.CopyGraphicsPipeline(equal.ConcreteId, color))
+                                PrepareOrderedOwnerMesh(prepared, replay, command, *batch.Material, *meta, std::move(color),
+                                    device, m_Services.Materials().Binder(), m_Data->Inputs, m_Context, batch.VertexFlags);
+                        }
+                        else
+                            prepared.OwnerReplay = replay;
                     }
                 }
             }
@@ -2217,6 +2357,8 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             // own viewport/scissor and binds per draw (CONC-F13), so its interior
             // may record into a worker secondary under GE_PARALLEL_RECORD.
             p.RecordInSecondary();
+            if (reuseIndexedDepth && depthReadOnly && vfr.IndexedReplayProducer)
+                ReadIndexedOwnerCompaction(p, *vfr.IndexedReplayProducer);
             // Slice-3 contract reads. SkinPaletteAtlas is the compute→VS
             // barrier (the VS binds it descriptor-direct, so only this
             // declared read orders skinning). DrawStreamOrdering is the
@@ -2430,6 +2572,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                        reuseIndexedDepth, hasDepthPrepass, depthReadOnly,
                        replayProducer = vfr.IndexedReplayProducer, replayPrepass = vfr.IndexedReplayPrepass,
                        replayCamera = vfr.IndexedReplayCamera,
+                       replayContinuations = vfr.IndexedReplayContinuations,
                        replayExtentMatches = !letterbox.active && !flipViewportY && viewportW != 0 && viewportH != 0 &&
                            viewportW == vfr.IndexedReplayViewportWidth && viewportH == vfr.IndexedReplayViewportHeight,
                        worldCamera = cam.Valid() ? cam.Ptr : nullptr,
@@ -2464,9 +2607,26 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                         [&](const auto& entry) { return isDepthIn(entry, replayPrepass); });
                     const auto after = std::find_if(attachments.begin(), attachments.end(),
                         [&](const auto& entry) { return isDepthIn(entry, data->IndexedReplayWorld); });
+                    std::array<const RenderGraph::RGAttachmentRec*, std::tuple_size_v<decltype(replayContinuations)>> extensions{};
+                    size_t extensionCount = 0;
+                    bool missingExtension = false;
+                    for (const auto pass : replayContinuations)
+                    {
+                        if (!pass.IsValid())
+                            continue;
+                        const auto extension = std::find_if(attachments.begin(), attachments.end(),
+                            [&](const auto& entry) { return isDepthIn(entry, pass); });
+                        if (extension == attachments.end())
+                        {
+                            missingExtension = true;
+                            break;
+                        }
+                        extensions[extensionCount++] = &*extension;
+                    }
                     const auto& graph = frame.Graph();
-                    const auto lineage = before != attachments.end() && after != attachments.end()
-                        ? RenderGraph::CheckDepthPrepassLineage(graph, *before, *after, frame.IsPoolBackedTexture(depth))
+                    const auto lineage = before != attachments.end() && after != attachments.end() && !missingExtension
+                        ? RenderGraph::CheckDepthPrepassLineage(graph, *before, *after, frame.IsPoolBackedTexture(depth),
+                                                               std::span(extensions.data(), extensionCount))
                         : RenderGraph::DepthPrepassLineage{"missing attachment"};
                     if (lineage)
                         data->IndexedReplayProducer = replayProducer;

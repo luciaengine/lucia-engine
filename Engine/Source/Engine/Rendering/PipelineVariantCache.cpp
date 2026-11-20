@@ -415,7 +415,7 @@ PipelineVariantCache::PrepareColorVariant(
     return ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace, context);
 }
 
-Rendering::PipelineHandle PipelineVariantCache::PrepareIndexedDepthEqual(
+PipelineVariantCache::PreparedVariant PipelineVariantCache::PrepareIndexedDepthEqual(
     const Material& material, const Rendering::ShaderMeta& shader, Rendering::GraphicsPipelineDesc desc,
     const Rendering::PipelineFormatKey& formatKey)
 {
@@ -448,7 +448,7 @@ Rendering::PipelineHandle PipelineVariantCache::PrepareIndexedDepthEqual(
         const auto uniformId = device->InternGraphicsPipeline(uniform);
         const auto uniformPipeline = device->TryGetWarmGraphicsPipeline(uniformId, formatKey);
         if (uniformPipeline.IsValid())
-            return uniformPipeline;
+            return {uniformPipeline, nullptr, uniformId};
         QueueConcreteWarm(material, uniformId, formatKey);
     }
 
@@ -456,7 +456,7 @@ Rendering::PipelineHandle PipelineVariantCache::PrepareIndexedDepthEqual(
     const auto pipeline = device->TryGetWarmGraphicsPipeline(id, formatKey);
     if (!pipeline.IsValid())
         QueueConcreteWarm(material, id, formatKey);
-    return pipeline;
+    return {pipeline, nullptr, id};
 }
 
 PipelineVariantCache::PreparedVariant
@@ -540,7 +540,8 @@ PipelineVariantCache::PrepareDepthInstancedVariant(
     const auto* unit = resolved.Unit;
     if (!withoutHexTiling || !resolved.Pipeline.IsValid() || !unit ||
         unit->MaterialVersion != material.GetVersion() ||
-        !StockMaskVertexAlpha(unit->VariantMeta.get(), /*depthOnly=*/true))
+        !StockMaskVertexAlpha(unit->VariantMeta.get(), /*depthOnly=*/true,
+                              HasKeyword(passKeywords, Rendering::MaterialKeyword::LodCrossfade)))
         return resolved;
 
     auto* device = m_Materials->GetDevice();

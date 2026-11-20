@@ -4,6 +4,7 @@
 #include "Rendering/Core/RenderGraph/RGGraph.h"
 
 #include <algorithm>
+#include <span>
 
 namespace GameEngine::Rendering::RenderGraph
 {
@@ -22,7 +23,8 @@ struct DepthPrepassLineage
 // This proves depth provenance. For packed depth/stencil a draw-level proof
 // must also check that the served producer and consumer pipelines disable stencil.
 inline DepthPrepassLineage CheckDepthPrepassLineage(const RGGraph& graph, const RGAttachmentRec& prepass,
-                                                    const RGAttachmentRec& forward, bool verifiedPoolImport)
+                                                    const RGAttachmentRec& forward, bool verifiedPoolImport,
+                                                    std::span<const RGAttachmentRec* const> continuations = {})
 {
     const RGResourceId depth = prepass.Tex;
     if (depth >= graph.ResourceCount() || depth != forward.Tex ||
@@ -52,6 +54,26 @@ inline DepthPrepassLineage CheckDepthPrepassLineage(const RGGraph& graph, const 
         graph.PassExecutionQueue(forward.Pass) != RGQueue::Graphics)
         return {"execution queue"};
 
+    auto previous = from;
+    for (const auto* continuation : continuations)
+    {
+        const auto position = std::find(previous + 1, to, continuation->Pass);
+        if (continuation->Tex != depth || !continuation->IsDepth || continuation->ReadOnly ||
+            continuation->Resolve != kInvalidId ||
+            continuation->Range.BaseMip != 0 || continuation->Range.BaseLayer != 0 ||
+            continuation->Ops.Load != RGLoadOp::Load || continuation->Ops.Store != RGStoreOp::Store ||
+            position == to || graph.PassExecutionQueue(continuation->Pass) != RGQueue::Graphics)
+            return {"invalid depth continuation"};
+        const bool writesDepth = std::any_of(graph.Accesses().begin(), graph.Accesses().end(),
+            [depth, continuation](const auto& access) {
+                return access.Pass == continuation->Pass && access.Resource == depth &&
+                       access.Access == RGAccess::DepthWrite;
+            });
+        if (!writesDepth)
+            return {"missing continuation depth write", continuation->Pass};
+        previous = position;
+    }
+
     bool producerWritesDepth = false;
     bool consumerReadsDepth = false;
     for (const auto& access : graph.Accesses())
@@ -72,7 +94,12 @@ inline DepthPrepassLineage CheckDepthPrepassLineage(const RGGraph& graph, const 
         }
         else if (IsWrite(access.Access) && std::find(from + 1, to, access.Pass) != to)
         {
-            return {"intervening depth write", access.Pass};
+            const bool declaredContinuation = access.Access == RGAccess::DepthWrite &&
+                std::any_of(continuations.begin(), continuations.end(), [&](const auto* continuation) {
+                    return continuation->Pass == access.Pass;
+                });
+            if (!declaredContinuation)
+                return {"intervening depth write", access.Pass};
         }
     }
     if (!producerWritesDepth || !consumerReadsDepth)

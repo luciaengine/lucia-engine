@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include "../Source/Engine/Rendering/DepthPrepassLineage.h"
+#include "../Source/Engine/Rendering/IndexedDepthDraw.h"
 #include "AssetCore/GUID.h"
 #include "Assets/ModelAsset.h"
 #include "Core/Application.h"
@@ -863,6 +864,80 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
 
 } // namespace
 
+TEST(IndexedDepthReuse, UsesTheFadeCoverageOfTheServedShader)
+{
+    using GameEngine::Engine::Renderer::StockMaskVertexAlpha;
+    namespace R = GameEngine::Rendering;
+    R::ShaderMeta head{};
+    head.RequiredDefines = {R::kStockMaskCoverageDefine, "GE_DEPTH_ONLY_FRAGMENT"};
+    R::ShaderMeta depthTail = head;
+    depthTail.RequiredDefines.emplace_back("GE_LOD_CROSSFADE");
+    R::ShaderMeta forwardTail{};
+    forwardTail.RequiredDefines = {R::kStockMaskCoverageDefine, "GE_LOD_CROSSFADE"};
+    EXPECT_EQ(StockMaskVertexAlpha(&head, true, false), false);
+    EXPECT_FALSE(StockMaskVertexAlpha(&head, true, true));
+    EXPECT_EQ(StockMaskVertexAlpha(&depthTail, true, true), false);
+    EXPECT_FALSE(StockMaskVertexAlpha(&depthTail, true, false));
+    EXPECT_FALSE(StockMaskVertexAlpha(&depthTail, false, true));
+    EXPECT_EQ(StockMaskVertexAlpha(&forwardTail, false, true), false);
+}
+
+TEST(IndexedDepthReuse, MeshReplayRequiresTheStockVertexFetch)
+{
+    namespace R = GameEngine::Rendering;
+    using GameEngine::Engine::Renderer::MatchesIndexedOwnerMeshVertexLayout;
+    constexpr auto kFlags = R::VertexAttributeFlags::StandardMesh | R::VertexAttributeFlags::HasColor;
+    R::GraphicsPipelineDesc pipeline;
+    R::BuildVertexLayoutFromFlags(kFlags, pipeline);
+    EXPECT_TRUE(MatchesIndexedOwnerMeshVertexLayout(pipeline, kFlags));
+
+    const auto normal = std::find_if(pipeline.VertexAttributes.begin(), pipeline.VertexAttributes.end(),
+        [](const auto& attribute) { return attribute.location == R::VertexLocation::Normal; });
+    ASSERT_NE(normal, pipeline.VertexAttributes.end());
+    normal->offset = 0u;
+    EXPECT_FALSE(MatchesIndexedOwnerMeshVertexLayout(pipeline, kFlags));
+}
+
+TEST(IndexedDepthReuse, MeshReplayRejectsUnservedFragmentInputs)
+{
+    namespace R = GameEngine::Rendering;
+    using GameEngine::Engine::Renderer::MatchesIndexedOwnerMeshFragmentInputs;
+    R::StageIO normal{
+        .Location = 1u, .Type = {.Kind = R::TypeKind::Vector, .Base = R::BaseType::Float, .VecSize = 3u}};
+    R::StageMeta fragment;
+    fragment.Inputs = {normal};
+    R::StageMeta mesh;
+    normal.Type.ArrayDims = {48u};
+    mesh.Outputs = {normal};
+    EXPECT_TRUE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+
+    fragment.Inputs.front().Type.VecSize = 4u;
+    EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+    fragment.Inputs.front().Type.VecSize = 3u;
+    fragment.Inputs.front().Component = 1u;
+    EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+
+    fragment.Inputs.front().Component = 0u;
+    fragment.Inputs.push_back({.Location = 3u});
+    EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+}
+
+TEST(IndexedDepthReuse, DestinationColorLogicKeepsOriginalTriangleContributions)
+{
+    namespace R = GameEngine::Rendering;
+    using GameEngine::Engine::Renderer::MatchesIndexedDepthRaster;
+    R::GraphicsPipelineDesc depth;
+    R::BuildVertexLayoutFromFlags(R::VertexAttributeFlags::StandardMesh, depth);
+    depth.DepthStencil.depthTestEnable = true;
+    depth.DepthStencil.depthWriteEnable = true;
+    depth.DepthStencil.depthCompareOp = R::ReverseZ::kNearerOrEqual;
+    auto forward = depth;
+    forward.DepthStencil.depthWriteEnable = false;
+    EXPECT_TRUE(MatchesIndexedDepthRaster(depth, forward, false));
+    forward.ColorBlend.logicOpEnable = true;
+    EXPECT_FALSE(MatchesIndexedDepthRaster(depth, forward, false));
+}
+
 TEST(IndexedDepthReuse, AnInterveningDepthWriterInvalidatesThePrepass)
 {
     namespace RG = GameEngine::Rendering::RenderGraph;
@@ -897,7 +972,59 @@ TEST(IndexedDepthReuse, AnInterveningDepthWriterInvalidatesThePrepass)
         const auto lineage = RG::CheckDepthPrepassLineage(graph, producer, consumer, false);
         EXPECT_EQ(static_cast<bool>(lineage), !rewritesDepth);
         EXPECT_EQ(lineage.BlockingPass, rewritesDepth ? inBetween : RG::kInvalidId);
+        if (rewritesDepth)
+        {
+            auto continuation = producer;
+            continuation.Pass = inBetween;
+            continuation.Ops.Load = RG::RGLoadOp::Load;
+            const std::array<const RG::RGAttachmentRec*, 1> continuations{&continuation};
+            EXPECT_TRUE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, continuations));
+            continuation.Ops.Load = RG::RGLoadOp::Clear;
+            EXPECT_FALSE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, continuations));
+        }
     }
+}
+
+TEST(IndexedDepthReuse, BothDepthContinuationsMustBeDeclaredInOrder)
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    RG::RGGraph graph;
+    graph.BeginFrame();
+    RG::RGResourceDesc desc;
+    desc.Kind = RG::RGResourceKind::Texture;
+    desc.Name = "CameraDepth";
+    desc.Format = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
+    const auto depth = graph.CreateResource(desc);
+    const auto prefix = graph.AddPass({"CameraPrepass"});
+    const auto owner = graph.AddPass({"Owner"});
+    const auto remainder = graph.AddPass({"Remainder"});
+    const auto forward = graph.AddPass({"Forward"});
+    graph.Write(prefix, depth, RG::RGAccess::DepthWrite);
+    for (const auto pass : {owner, remainder})
+    {
+        graph.Read(pass, depth, RG::RGAccess::DepthRead);
+        graph.Write(pass, depth, RG::RGAccess::DepthWrite);
+    }
+    graph.Read(forward, depth, RG::RGAccess::DepthRead);
+    graph.PreventCulling(forward);
+    graph.Compile();
+    graph.Schedule();
+
+    const RG::RGAttachmentRec producer{
+        .Pass = prefix, .Tex = depth, .Ops = {.Load = RG::RGLoadOp::Clear}, .IsDepth = true};
+    const RG::RGAttachmentRec first{.Pass = owner, .Tex = depth, .IsDepth = true};
+    const RG::RGAttachmentRec second{.Pass = remainder, .Tex = depth, .IsDepth = true};
+    const RG::RGAttachmentRec consumer{
+        .Pass = forward, .Tex = depth, .Ops = {.Store = RG::RGStoreOp::None},
+        .IsDepth = true, .ReadOnly = true};
+    const std::array<const RG::RGAttachmentRec*, 2> ordered{&first, &second};
+    EXPECT_TRUE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, ordered));
+    const std::array<const RG::RGAttachmentRec*, 2> reversed{&second, &first};
+    EXPECT_FALSE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, reversed));
+    const std::array<const RG::RGAttachmentRec*, 1> missing{&first};
+    const auto lineage = RG::CheckDepthPrepassLineage(graph, producer, consumer, false, missing);
+    EXPECT_FALSE(lineage);
+    EXPECT_EQ(lineage.BlockingPass, remainder);
 }
 
 // The card's left half is cut away by its vertex alpha, so the prepass depth

@@ -2110,6 +2110,7 @@ class VulkanDevice : public IDevice
     PFN_vkCmdDrawMeshTasksEXT m_FpCmdDrawMeshTasksEXT = nullptr;
     PFN_vkCmdDrawMeshTasksIndirectEXT m_FpCmdDrawMeshTasksIndirectEXT = nullptr;
     bool m_SupportsMeshShaderEXT = false;
+    bool m_FragmentPrimitiveIdEnabledAtInit = false;
 
     // VK_EXT_descriptor_buffer function pointers. Populated iff
     // m_Capabilities.supportsDescriptorBuffer is true (see CreateLogicalDevice).
