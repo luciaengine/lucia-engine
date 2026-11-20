@@ -135,30 +135,43 @@ uint64_t ComputeMetalLibraryOptionsHash(bool fastMath)
                                options.texture_buffer_native ? 1u : 0u,
                                options.swizzle_buffer_index};
     uint64_t hash = Hashing::Fnv1a64(fields, sizeof(fields), Hashing::kFnv1a64OffsetBasis);
-    for (const std::string& flag : MetalLibraryCompileFlags(fastMath))
+    uint32_t invariantStages = 0;
+    for (const MetalShaderStage stage : {MetalShaderStage::Vertex, MetalShaderStage::Fragment,
+                                         MetalShaderStage::Compute, MetalShaderStage::Mesh, MetalShaderStage::Object})
+    {
+        if (MetalPreservesRasterPosition(stage))
+            invariantStages |= 1u << static_cast<uint32_t>(stage);
+    }
+    hash = Hashing::Fnv1a64(&invariantStages, sizeof(invariantStages), hash);
+    for (const std::string& flag : MetalLibraryCompileFlags(fastMath, MetalShaderStage::Vertex))
         hash = Hashing::Fnv1a64(flag.c_str(), flag.size() + 1, hash);
     return hash;
 }
 
-std::vector<std::string> MetalLibraryCompileFlags(bool fastMath)
+std::vector<std::string> MetalLibraryCompileFlags(bool fastMath, MetalShaderStage stage)
 {
 #if defined(GE_PLATFORM_IOS)
     constexpr const char* kDeploymentFlag = "-mios-version-min=" GE_METAL_DEPLOYMENT_TARGET;
 #else
     constexpr const char* kDeploymentFlag = "-mmacosx-version-min=" GE_METAL_DEPLOYMENT_TARGET;
 #endif
-    return {fastMath ? "-ffast-math" : "-fno-fast-math",
-            std::format("-std=metal{}.{}", kMetalLanguageMajor, kMetalLanguageMinor),
-            kDeploymentFlag};
+    std::vector<std::string> flags{
+        fastMath ? "-ffast-math" : "-fno-fast-math",
+        std::format("-std=metal{}.{}", kMetalLanguageMajor, kMetalLanguageMinor),
+        kDeploymentFlag,
+    };
+    if (MetalPreservesRasterPosition(stage))
+        flags.emplace_back("-fpreserve-invariance");
+    return flags;
 }
 
-// The depth prepass and the color pass compile one vertex shader into two pipelines. The reverse-Z
-// GreaterOrEqual test needs the same positions from both, so every MSL compile uses these options.
-MTL::CompileOptions* MakeMetalCompileOptions()
+// Depth reuse compares positions from separate raster pipelines.
+MTL::CompileOptions* MakeMetalCompileOptions(MetalShaderStage stage)
 {
     MTL::CompileOptions* options = MTL::CompileOptions::alloc()->init();
     // Fast math matches the Vulkan path (MoltenVK compiles its MSL with fast math) and GLSL without precise.
     options->setFastMathEnabled(MetalFastMathEnabled());
+    options->setPreserveInvariance(MetalPreservesRasterPosition(stage));
     options->setLanguageVersion(static_cast<MTL::LanguageVersion>((kMetalLanguageMajor << 16) | kMetalLanguageMinor));
     return options;
 }

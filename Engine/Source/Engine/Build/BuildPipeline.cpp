@@ -2107,7 +2107,7 @@ bool BuildPipeline::CompileMetalLibraries([[maybe_unused]] const fs::path& conte
     const Rendering::MetalLibraryBake bake = Rendering::BakeMetalLibraries(
         record, packageRoots, workDir,
         [&](std::span<const Rendering::MetalLibraryCompileJob> jobs, std::span<const std::string> flags) {
-            cancelled = !RunMetalCompileJobs(jobs, flags, workDir / "jobs.txt");
+            cancelled = cancelled || !RunMetalCompileJobs(jobs, flags, workDir / "jobs.txt");
         });
     if (cancelled)
         return FailIfCancelled(), false;
