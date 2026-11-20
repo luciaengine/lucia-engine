@@ -181,6 +181,18 @@ def patch_glue(framework, archive):
         r'      if (deferredPackage) \1',
         patched,
     )
+    # The picker can compile a shader before opening a project. Preserve that
+    # cache entry when the cooked archive contains the same path.
+    patched = replace_once(
+        patched,
+        '          Module["FS_createDataFile"](name, null, data, true, true, true);',
+        """          try {
+            Module["FS_createDataFile"](name, null, data, true, true, true);
+          } catch (error) {
+            const alreadyExists = 20; // WasmFS EEXIST
+            if (!deferredPackage || error.errno !== alreadyExists) throw error;
+          }""",
+    )
     # Mono installs preRun itself. Install only with the final runtime Module.
     start = patched.index("    // Detect whether the module JS file has already been loaded.")
     end = patched.index("\n  }\n  loadPackage", start)
