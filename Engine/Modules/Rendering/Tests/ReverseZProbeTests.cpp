@@ -100,6 +100,7 @@ public:
         DeviceDesc desc{};
         desc.preferredAPI = GraphicsAPI::Auto;
         desc.enableSwapchain = false;
+        desc.enableDebugLayer = true;
         m_Device = DeviceFactory::CreateDevice(desc);
         if (!m_Device || !m_Device->Initialize(desc))
         {
@@ -127,6 +128,8 @@ public:
     {
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         cl->Begin();
+        // Every draw clears depth, so the previous contents can be discarded.
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(m_Depth, ResourceState::Undefined, ResourceState::DepthWrite));
         RenderPassDesc pass{};
         pass.colorTargets[0] = m_Color;
         pass.colorTargetCount = 1;
@@ -147,6 +150,7 @@ public:
             cl->Draw(6);
         }
         cl->EndRenderPass();
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(m_Color, ResourceState::RenderTarget, ResourceState::CopySource));
         cl->CopyTextureToBuffer(m_Color, m_Readback, kTargetSize, kTargetSize);
         cl->End();
         m_Device->ExecuteCommandLists({cl.get()});
@@ -163,6 +167,7 @@ public:
     }
 
     GraphicsAPI Api() const { return m_Device->GetAPI(); }
+    bool ValidationEnabled() const { return m_Device->GetValidationStats().Enabled; }
 
 private:
     bool CreateTargets()
@@ -271,6 +276,7 @@ std::unique_ptr<DepthProbe> CreateProbe()
         return nullptr;
     }
     ::testing::Test::RecordProperty("graphicsApi", ApiName(probe->Api()));
+    ::testing::Test::RecordProperty("validationLayer", probe->ValidationEnabled() ? "enabled" : "disabled");
     return probe;
 }
 
