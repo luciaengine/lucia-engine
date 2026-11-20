@@ -3,6 +3,7 @@
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Common/Utils.h"
+#include "Types/FlatMap.h"
 #include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
 #include "Rendering/Materials/Shader/ShaderMetaValidation.h"
@@ -311,7 +312,7 @@ class FileIncluder final : public shaderc::CompileOptions::IncluderInterface
 {
 public:
     explicit FileIncluder(std::vector<std::filesystem::path> dirs,
-                          std::unordered_map<std::string, uint64_t>* outIncludeHashes)
+                          FlatMap<std::string, uint64_t>* outIncludeHashes)
         : m_Dirs(std::move(dirs))
         , m_DirsSignature(ShaderSourceCache::MakeRootsSignature(m_Dirs))
         , m_OutIncludeHashes(outIncludeHashes)
@@ -337,8 +338,8 @@ public:
         const ShaderSourceCache::EntryPtr entry = resolved ? cache.Read(resolved->Candidate, resolved->Key) : nullptr;
         if (entry)
         {
-            if (m_OutIncludeHashes)
-                m_OutIncludeHashes->try_emplace(resolved->Key, entry->Hash);
+            if (m_OutIncludeHashes && !m_OutIncludeHashes->Contains(resolved->Key))
+                m_OutIncludeHashes->InsertOrAssign(resolved->Key, entry->Hash);
 
             m_OwnedStrings.emplace_back(resolved->Candidate.string());
             m_OwnedEntries.push_back(entry);
@@ -387,7 +388,7 @@ public:
 private:
     std::vector<std::filesystem::path> m_Dirs;
     std::string m_DirsSignature;
-    std::unordered_map<std::string, uint64_t>* m_OutIncludeHashes = nullptr;
+    FlatMap<std::string, uint64_t>* m_OutIncludeHashes = nullptr;
     // Keeps the source names whose c_str() we hand to shaderc alive for the whole compile.
     // MUST be std::deque (not std::vector): shaderc holds those pointers across later
     // GetInclude calls (nested includes), and std::vector reallocation on a subsequent
@@ -434,7 +435,7 @@ static bool CompileOneStage(const ShaderStageCompileSpec& spec,
                             ShaderStageKind stageKind,
                             std::vector<uint32_t>& outWords,
                             std::string& outDiagnostics,
-                            std::unordered_map<std::string, uint64_t>* outIncludeHashes)
+                            FlatMap<std::string, uint64_t>* outIncludeHashes)
 {
     const std::filesystem::path srcPath = spec.sourcePath.is_absolute() ? spec.sourcePath : (req.baseDirectory / spec.sourcePath);
     std::string sourceText;
@@ -502,7 +503,7 @@ static bool CompileOneStage(const ShaderStageCompileSpec& spec,
         {
             for (const auto& dep : moduleDeps)
             {
-                if (outIncludeHashes->find(dep) != outIncludeHashes->end())
+                if (outIncludeHashes->Contains(dep))
                     continue;
                 std::string bytes;
                 std::string depErr;
@@ -512,7 +513,7 @@ static bool CompileOneStage(const ShaderStageCompileSpec& spec,
                                      "': " + depErr;
                     return false;
                 }
-                (*outIncludeHashes)[dep] = HashShaderBytes(bytes.data(), bytes.size());
+                outIncludeHashes->InsertOrAssign(dep, HashShaderBytes(bytes.data(), bytes.size()));
             }
         }
         return true;
@@ -886,8 +887,8 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
     std::unordered_map<std::string, std::vector<uint8_t>> wgslBytes;
     std::vector<StageReflectionResult> reflectedStages;
     reflectedStages.reserve(req.stages.size());
-    std::unordered_map<std::string, uint64_t> includeHashes;
-    std::unordered_map<std::string, uint64_t> stockMaskFragmentIncludes;
+    FlatMap<std::string, uint64_t> includeHashes;
+    FlatMap<std::string, uint64_t> stockMaskFragmentIncludes;
     const ShaderStageCompileSpec* stockMaskFragment = nullptr;
 
     for (const auto& stageSpec : req.stages)
@@ -944,16 +945,19 @@ bool ShaderCompileService::CompileProgramToCache(const ShaderProgramCompileReque
                           req.stages.size(), DescribeStages(req));
     }
 
-    const auto stockSurface = stockMaskFragmentIncludes.find(stockMaskPath);
+    const auto* stockSurfaceHash = stockMaskFragmentIncludes.Find(stockMaskPath);
     const bool stockMaskMatched =
-        stockMaskFragment && stockSurface != stockMaskFragmentIncludes.end() &&
-        stockSurface->second == req.stockMaskSurfaceHash &&
+        stockMaskFragment && stockSurfaceHash && *stockSurfaceHash == req.stockMaskSurfaceHash &&
         std::all_of(stockMaskFragmentIncludes.begin(), stockMaskFragmentIncludes.end(),
                     [&](const auto& include) { return isStockInclude(include.first, include.second); }) &&
         std::all_of(includeHashes.begin(), includeHashes.end(),
                     [&](const auto& include) { return isStockInclude(include.first, include.second); }) &&
         ShaderSourceCache::Get().Generation() == sourceGeneration;
-    includeHashes.merge(stockMaskFragmentIncludes);
+    for (const auto& [path, hash] : stockMaskFragmentIncludes)
+    {
+        if (!includeHashes.Contains(path))
+            includeHashes.InsertOrAssign(path, hash);
+    }
 
     // Merge compiler-recorded dependencies the textual scan cannot resolve
     // (Slang module imports, macro-form includes) into the exposed closure.
