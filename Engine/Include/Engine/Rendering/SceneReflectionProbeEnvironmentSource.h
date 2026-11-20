@@ -124,6 +124,8 @@ class SceneReflectionProbeEnvironmentSource final : public IEnvironmentSource
 
 
   private:
+    friend struct SceneReflectionProbeTestAccess;
+
     // One globally granted work unit per frame. Six individually armed faces,
     // then one downsample/convolution/prefilter dispatch per unit. The visible
     // set is swapped only after all filtering has recorded successfully.
