@@ -1261,6 +1261,30 @@ void MetalCommandList::DrawMeshTasks(uint32_t taskCount)
     m_RenderEncoder->drawMeshThreadgroups(grid, objectThreads, meshThreads);
 }
 
+void MetalCommandList::DrawMeshTasksIndirect(BufferHandle argsBuffer, size_t argsOffsetBytes)
+{
+    if (m_RenderEncoder == nullptr || !m_Device.GetCapabilities().supportsIndirectMeshTasks)
+        return;
+
+    const MetalPipeline* pipeline = m_Device.GetMetalPipeline(m_CurrentPipelineHandle);
+    if (pipeline == nullptr || !pipeline->isMeshPipeline)
+        return;
+
+    const MetalBuffer* args = m_Device.GetMetalBuffer(argsBuffer);
+    constexpr size_t kArgumentBytes = 3u * sizeof(uint32_t);
+    if (args == nullptr || args->buffer == nullptr ||
+        (args->usage & BufferUsage::Indirect) == BufferUsage::None ||
+        argsOffsetBytes % sizeof(uint32_t) != 0u ||
+        argsOffsetBytes > args->size || args->size - argsOffsetBytes < kArgumentBytes)
+        return;
+
+    MarkEncoderWork();
+    const MTL::Size meshThreads = MTL::Size::Make(std::max(1u, pipeline->localSizeX),
+                                                  std::max(1u, pipeline->localSizeY),
+                                                  std::max(1u, pipeline->localSizeZ));
+    m_RenderEncoder->drawMeshThreadgroups(args->buffer, argsOffsetBytes, MTL::Size::Make(1, 1, 1), meshThreads);
+}
+
 void MetalCommandList::DrawIndirect(BufferHandle commandBuffer, uint32_t drawCount, uint32_t stride)
 {
     if (m_RenderEncoder == nullptr)
