@@ -864,7 +864,7 @@ MTL::Function* MetalDevice::NewStageFunction(const std::vector<uint8_t>& source,
         msl.assign(reinterpret_cast<const char*>(source.data()), source.size());
     }
     NS::Error* error = nullptr;
-    MTL::CompileOptions* compileOptions = MakeMetalCompileOptions();
+    MTL::CompileOptions* compileOptions = MakeMetalCompileOptions(stage);
     const auto libraryStart = std::chrono::steady_clock::now();
     MTL::Library* library = m_Device->newLibrary(MakeNSString(msl), compileOptions, &error);
     timing.LibraryMs += msSince(libraryStart);

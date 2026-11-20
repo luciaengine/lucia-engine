@@ -176,8 +176,13 @@ MetalLibraryBake BakeMetalLibraries(const std::filesystem::path& recordFile,
 
     std::error_code ec;
     std::filesystem::create_directories(workDir, ec);
+    std::stable_partition(records.begin(), records.end(), [](const ShaderStageRecord& record) {
+        const auto stage = StageFromName(record.Stage);
+        return stage && MetalPreservesRasterPosition(*stage);
+    });
     std::vector<MetalLibraryCompileJob> jobs;
     std::vector<MetalLibraryArchiveEntry> entries;
+    size_t invariantJobCount = 0;
     FlatSet<uint64_t> keys;
     for (const ShaderStageRecord& record : records)
     {
@@ -205,10 +210,16 @@ MetalLibraryBake BakeMetalLibraries(const std::filesystem::path& recordFile,
         std::ofstream(job.Source, std::ios::binary) << translation.Msl;
         std::filesystem::remove(job.Library, ec);
         entries.push_back({key, translation.LocalSizeX, translation.LocalSizeY, translation.LocalSizeZ, {}});
+        if (MetalPreservesRasterPosition(*stage))
+            ++invariantJobCount;
     }
     if (jobs.empty())
         return bake;
-    compile(jobs, MetalLibraryCompileFlags(kShippedFastMath));
+    const std::span<const MetalLibraryCompileJob> compileJobs = jobs;
+    if (invariantJobCount != 0)
+        compile(compileJobs.first(invariantJobCount), MetalLibraryCompileFlags(kShippedFastMath, MetalShaderStage::Vertex));
+    if (invariantJobCount != jobs.size())
+        compile(compileJobs.subspan(invariantJobCount), MetalLibraryCompileFlags(kShippedFastMath, MetalShaderStage::Compute));
 
     std::vector<std::string> libraries(jobs.size());
     std::vector<MetalLibraryArchiveEntry> compiled;
