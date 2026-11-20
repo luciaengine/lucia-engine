@@ -12,6 +12,7 @@
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "Source/Materials/Shader/ShaderSourceCache.h"
 #include "StagedTestPaths.h"
 #include "TestUtils.h"
 #include "TestTempDir.h"
@@ -111,6 +112,56 @@ TEST(ShippedSurfaceCompose, UnlitSolidComposesThroughRealPipeline)
     EXPECT_FALSE(result.package->stageBytes.at("vs").empty());
     EXPECT_FALSE(result.package->stageBytes.at("fs").empty());
 }
+
+#if defined(GE_TEST_STOCK_SHADER_HASHES)
+TEST(ShippedSurfaceCompose, EditedDepthCoverageCannotCertifyIndexedReuse)
+{
+    const TestUtils::ScopedTempDir stagingRoot = MakeTempCacheRoot();
+    const auto shaderRoot = stagingRoot.Path() / "Shaders";
+    fs::copy(GameEngine::Rendering::Tests::GetAdapterShaderDir(), shaderRoot, fs::copy_options::recursive);
+    const auto surface = shaderRoot / "Surfaces" / "standard_pbr.glsl";
+    auto text = ReadWholeFile(surface);
+    const auto coverageReturn = text.rfind("    return o;");
+    ASSERT_NE(coverageReturn, std::string::npos);
+
+    MaterialDocument material{};
+    material.materialName = "CoverageCertification";
+    material.lightingModel = "StandardPBR";
+    material.alphaMode = MaterialAlphaMode::Mask;
+    material.surfaceShader = "Surfaces/standard_pbr.glsl";
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = shaderRoot;
+    context.CacheRoot = stagingRoot.Path() / "Cache";
+    constexpr auto kForward = MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus |
+                              MaterialKeyword::Shadows | MaterialKeyword::ScreenSpaceShadows;
+    constexpr auto kPrepass = MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment;
+    const auto build = [&](MaterialKeyword keywords) {
+        return BuildMaterialToShaderPackage(material, stagingRoot.Path() / "coverage.material",
+            "CoverageCertification", context, ShaderSourceKind::SpirV, keywords);
+    };
+    const auto certified = [](const MaterialBuildResult& result) {
+        if (!result.package)
+            return false;
+        const auto& defines = result.package->meta.RequiredDefines;
+        return std::find(defines.begin(), defines.end(), kStockMaskCoverageDefine) != defines.end();
+    };
+    for (const auto keywords : {kForward, kPrepass})
+    {
+        const auto original = build(keywords);
+        ASSERT_TRUE(original.success) << (original.errors.empty() ? "" : original.errors.front());
+        EXPECT_TRUE(certified(original));
+    }
+    text.insert(coverageReturn, "#ifdef GE_DEPTH_ONLY_FRAGMENT\n    o.opacity = 0.0;\n#endif\n");
+    std::ofstream(surface, std::ios::binary | std::ios::trunc) << text;
+    ShaderSourceCache::Get().InvalidateAll();
+    for (const auto keywords : {kForward, kPrepass})
+    {
+        const auto edited = build(keywords);
+        ASSERT_TRUE(edited.success) << (edited.errors.empty() ? "" : edited.errors.front());
+        EXPECT_FALSE(certified(edited));
+    }
+}
+#endif
 
 // The CBT terrain surface, composed and compiled through the real pipeline.
 //

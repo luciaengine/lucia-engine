@@ -240,6 +240,8 @@ bool TextureService::CreateDeviceScopedResources()
 // global texture/sampler set every material samples through on the full profile.
 void TextureService::CreateBindlessResources()
 {
+    static_assert(static_cast<uint32_t>(Rendering::SamplerPreset::kCount) <= 32);
+    m_BindlessSamplerMask = 0;
     const auto caps = m_Device->GetCapabilities();
 
     m_Bindless = std::make_unique<Rendering::BindlessResourceManager>(m_Device);
@@ -284,7 +286,10 @@ void TextureService::CreateBindlessResources()
             {
                 auto sampler = GetSampler(static_cast<Rendering::SamplerPreset>(i));
                 if (sampler.IsValid())
+                {
                     m_Device->UpdateSamplerBinding(m_BindlessTextureSet, 1, sampler, i);
+                    m_BindlessSamplerMask |= uint32_t{1} << i;
+                }
             }
         }
     }
@@ -3613,6 +3618,29 @@ uint32_t TextureService::GetBindlessIndex(
         }
     }
     return resultIdx;
+}
+
+bool TextureService::MatchesPublishedAssetTexture(const GUID& material, StringId slot,
+                                                   TextureHandle texture, uint32_t index) const
+{
+    if (!IsBindlessEnabled() || !texture.IsValid() || index == 0)
+        return false;
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        const auto materialRef = m_MaterialTextureRefs.find(material);
+        if (materialRef == m_MaterialTextureRefs.end())
+            return false;
+        const auto textureRef = materialRef->second.find(slot);
+        TextureGPUCache::Entry resident;
+        if (textureRef == materialRef->second.end() ||
+            !TryGetMaterialTextureLocked(textureRef->second, resident) || resident.Texture != texture)
+            return false;
+    }
+    const Rendering::BindlessTextureDesc desc{};
+    const BindlessCacheKey key{texture.id, desc.arraySlice, desc.mipLevel, desc.mipCount, desc.aspect};
+    std::lock_guard lock(m_BindlessMutex);
+    const auto entry = m_BindlessTextureIndexCache.find(key);
+    return entry != m_BindlessTextureIndexCache.end() && entry->second.bindlessIndex == index;
 }
 
 uint32_t TextureService::GetBindlessIndex(Rendering::TextureHandle tex)

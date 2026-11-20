@@ -5,11 +5,14 @@
 
 #include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "Rendering/Materials/Shader/ShaderMeta.h"
 #include "Rendering/Materials/Shader/ShaderPropertyTableCache.h"
 #include "Rendering/Materials/UserKeyword.h"
 #include "Rendering/ShaderGraph/SgTagParser.h"
 #include "Rendering/Materials/MaterialShaderIncludeRoots.h"
+#include "ShaderIncludeClosure.h"
 #include "ShaderSourceCache.h"
+#include "StockShaderSources.h"
 
 #include "Logger/Logger.h"
 #include "Types/NearestName.h"
@@ -20,6 +23,7 @@
 #include <cctype>
 #include <cstdio>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -348,6 +352,28 @@ static bool IsGraphLivePreviewMaterialDirectory(const std::filesystem::path& mat
 
 // The surface a document that authors none composes with.
 static constexpr const char* kDefaultSurfaceShader = "Surfaces/standard_surface.glsl";
+
+// Only the stock vertex path and the shared StandardPBR alpha calculation.
+// Any new variant define is ineligible until its coverage behavior is reviewed.
+bool IsRigidStandardMask(std::span<const std::string> defines)
+{
+    constexpr std::array<std::string_view, 5> required = {
+        "HAS_POSITION", "HAS_UV0", "ALPHA_TEST", "GE_INSTANCED", "LIGHTING_MODEL_STANDARD_PBR"};
+    constexpr std::array<std::string_view, 11> optional = {
+        "HAS_NORMAL", "HAS_TANGENT", "HAS_COLOR", "FORWARD_PLUS", "HAS_SHADOWS",
+        "GE_DEPTH_ONLY_FRAGMENT", "GE_IBL_ENABLED", "GE_GTAO_ENABLED", "GE_DDGI_ENABLED",
+        "GE_SSSR_NORMAL_ROUGHNESS", "GE_SCREEN_SPACE_SHADOWS_ENABLED"};
+    const auto contains = [defines](std::string_view define) {
+        return std::find(defines.begin(), defines.end(), define) != defines.end();
+    };
+    if (contains("FORWARD_PLUS") == contains("GE_DEPTH_ONLY_FRAGMENT"))
+        return false;
+    return std::all_of(required.begin(), required.end(), contains) &&
+           std::all_of(defines.begin(), defines.end(), [&](std::string_view define) {
+               return std::find(required.begin(), required.end(), define) != required.end() ||
+                      std::find(optional.begin(), optional.end(), define) != optional.end();
+           });
+}
 
 // True when a relative reference names a file inside the material's own directory.
 // An absolute reference never resolves through a directory.
@@ -863,6 +889,12 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         return result;
     }
 
+    const bool stockAdapters =
+        MatchesStockShaderSource(vsPath.lexically_relative(adapterShaderDir),
+                                 HashShaderBytes(vsSrc.data(), vsSrc.size())) &&
+        MatchesStockShaderSource(fsPath.lexically_relative(adapterShaderDir),
+                                 HashShaderBytes(fsSrc.data(), fsSrc.size()));
+
     // Declared properties: one parse shared with registration (the cache), the
     // GE_Props block substituted into both adapters. Every declaration error is a
     // compose failure carrying file:line, so it reaches the Shader Errors panel
@@ -929,6 +961,19 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         return result;
     substituteDeclaredBlock(vsSrc, vsPath, false);
 
+    constexpr std::string_view surfaceIncludeMarker = "#include GE_SURFACE_SHADER_PATH";
+    const auto stockMaskSurface = adapterShaderDir / "Surfaces/standard_pbr.glsl";
+    const auto stockMaskSurfaceHash = HashShaderBytes(surfaceSource.data(), surfaceSource.size());
+    if (stockAdapters && fsSrc.find(surfaceIncludeMarker) != std::string::npos &&
+        !doc.customVertexShader && doc.vertexModifier.empty() && IsRigidStandardMask(result.defines) &&
+        ShaderSourceCache::NormalizedKey(resolvedSurfacePath) == ShaderSourceCache::NormalizedKey(stockMaskSurface) &&
+        MatchesStockShaderSource("Surfaces/standard_pbr.glsl", stockMaskSurfaceHash))
+    {
+        result.stockMaskSurface = stockMaskSurface;
+        result.stockMaskSurfaceHash = stockMaskSurfaceHash;
+        result.defines.emplace_back(kStockMaskCoverageDefine);
+    }
+
     // Generate the define preamble. The valued GE_TEXSLOT_* macros follow the
     // flag defines so the surface include (and GE_USER_TEXTURE) see them.
     const std::string preamble = GenerateDefinePreamble(result.defines) + textureSlotPreamble;
@@ -978,11 +1023,10 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
     // surfaces were validated above (hard failure when unresolved), so the
     // literal always names a readable file for them.
     {
-        const std::string marker = "#include GE_SURFACE_SHADER_PATH";
-        const size_t at = fsSrc.find(marker);
+        const size_t at = fsSrc.find(surfaceIncludeMarker);
         if (at != std::string::npos)
         {
-            fsSrc.replace(at, marker.size(),
+            fsSrc.replace(at, surfaceIncludeMarker.size(),
                           "#include " + MakeIncludeLiteral(resolvedSurfacePath, includeRoots,
                                                            doc.surfaceShader));
         }
@@ -1023,7 +1067,6 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         }
     }
 
-    result.resolvedSurfacePath = resolvedSurfacePath;
     result.vertexSource = std::move(vsSrc);
     result.fragmentSource = std::move(fsSrc);
     return result;

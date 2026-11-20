@@ -247,8 +247,8 @@ struct GraphPreviewAtlas::FramePlan
                 const auto variant = materials.Variants().PrepareColorVariant(
                     *material, VertexFlags, Rendering::PrimitiveTopology::TriangleList,
                     MaterialKeyword::IBL, basePipeline.Rasterization.frontFace, context);
-                pipeline = variant.first;
-                served = variant.second;
+                pipeline = variant.Pipeline;
+                served = variant.Unit;
             }
             else
                 pipeline = context.PreparePipeline(material->GetGraphicsPipelineIdForFlags(

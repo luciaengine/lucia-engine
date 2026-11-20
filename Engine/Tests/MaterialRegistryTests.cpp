@@ -1721,7 +1721,10 @@ TEST_F(MaterialShaderIdentityTest, DepthHexSpecializationFollowsTheCompiledSurfa
             variants.ApplyPendingVariantPublishes();
             const auto* unit = variants.FindOrRequestPrepassVariant(*material, flags, topology, keywords, winding);
             ASSERT_NE(unit, nullptr);
-            EXPECT_EQ(unit->CanSkipHexTiling, !projectOverride);
+            ASSERT_NE(unit->VariantMeta, nullptr);
+            const auto& defines = unit->VariantMeta->RequiredDefines;
+            const auto certified = std::find(defines.begin(), defines.end(), Rendering::kStockMaskCoverageDefine) != defines.end();
+            EXPECT_EQ(certified, !projectOverride && tail == K::None);
         }
         services.Shutdown();
     }

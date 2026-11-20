@@ -1,6 +1,8 @@
 // PipelineVariantCache implementation — see PipelineVariantCache.h for the
 // service contract.
 #include "Engine/Rendering/PipelineVariantCache.h"
+
+#include "IndexedDepthDraw.h"
 #include "SceneLoadTracker/SceneLoadTracker.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/MaterialSystem.h"
@@ -308,7 +310,7 @@ void PipelineVariantCache::LogColdServe(std::string_view materialName, Rendering
                           materialName, id.Value, FormatPipelineKey(formatKey), occurrence);
 }
 
-std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
+PipelineVariantCache::PreparedVariant
 PipelineVariantCache::ResolveWarmPipeline(const Material& material,
                                           const InstancedVariantEntry& entry,
                                           const Rendering::PipelineFormatKey& formatKey,
@@ -317,25 +319,26 @@ PipelineVariantCache::ResolveWarmPipeline(const Material& material,
     Rendering::IDevice* device = m_Materials->GetDevice();
     const auto pipelineId = context.ResolveGraphicsPipelineId(entry.Current.PipelineId);
     if (auto pipeline = device->TryGetWarmGraphicsPipeline(pipelineId, formatKey); pipeline.IsValid())
-        return {pipeline, &entry.Current};
+        return {pipeline, &entry.Current, pipelineId};
 
     // Preparation only queues cold IDs; frame begin may build them inline or on workers.
     QueueConcreteWarm(material, pipelineId, formatKey);
     if (pipelineId != entry.Current.PipelineId)
     {
         if (auto pipeline = device->TryGetWarmGraphicsPipeline(entry.Current.PipelineId, formatKey); pipeline.IsValid())
-            return {pipeline, &entry.Current};
+            return {pipeline, &entry.Current, entry.Current.PipelineId};
         QueueConcreteWarm(material, entry.Current.PipelineId, formatKey);
     }
-    if (entry.Previous.PipelineId.IsValid())
+    const auto previousId = entry.Previous.PipelineId;
+    if (previousId.IsValid())
     {
-        auto pipeline = device->TryGetWarmGraphicsPipeline(entry.Previous.PipelineId, formatKey);
-        return {pipeline, &entry.Previous};
+        const auto pipeline = device->TryGetWarmGraphicsPipeline(previousId, formatKey);
+        return {pipeline, &entry.Previous, pipeline.IsValid() ? previousId : GraphicsPipelineId{}};
     }
-    return {{}, nullptr};
+    return {};
 }
 
-std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
+PipelineVariantCache::PreparedVariant
 PipelineVariantCache::ResolveColorVariant(
     const Material& material,
     Rendering::VertexAttributeFlags vertexFlags,
@@ -392,15 +395,15 @@ PipelineVariantCache::ResolveColorVariant(
                 FormatPipelineKey(formatKey));
         return staleEntry != nullptr
             ? ResolveWarmPipeline(material, *staleEntry, formatKey, context)
-            : std::pair<PipelineHandle, const VariantServeUnit*>{{}, nullptr};
+            : PreparedVariant{};
     }
     EnqueueVariantCompile(key, /*isDepth=*/false);
     if (staleEntry != nullptr)
         return ResolveWarmPipeline(material, *staleEntry, formatKey, context);
-    return {{}, nullptr};
+    return {};
 }
 
-std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
+PipelineVariantCache::PreparedVariant
 PipelineVariantCache::PrepareColorVariant(
     const Material& material,
     Rendering::VertexAttributeFlags vertexFlags,
@@ -412,7 +415,21 @@ PipelineVariantCache::PrepareColorVariant(
     return ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace, context);
 }
 
-std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
+Rendering::PipelineHandle PipelineVariantCache::PrepareIndexedDepthEqual(
+    const Material& material, Rendering::GraphicsPipelineDesc desc, const Rendering::PipelineFormatKey& formatKey)
+{
+    auto* device = m_Materials->GetDevice();
+    if (!device)
+        return {};
+    desc.DepthStencil.depthCompareOp = Rendering::CompareOp::Equal;
+    const auto id = device->InternGraphicsPipeline(desc);
+    const auto pipeline = device->TryGetWarmGraphicsPipeline(id, formatKey);
+    if (!pipeline.IsValid())
+        QueueConcreteWarm(material, id, formatKey);
+    return pipeline;
+}
+
+PipelineVariantCache::PreparedVariant
 PipelineVariantCache::ResolveDepthVariant(
     const Material& material,
     Rendering::VertexAttributeFlags vertexFlags,
@@ -468,14 +485,14 @@ PipelineVariantCache::ResolveDepthVariant(
     if (!m_Materials->IsMaterialBuildContextReady())
         return staleEntry != nullptr
             ? ResolveWarmPipeline(material, *staleEntry, formatKey, context)
-            : std::pair<PipelineHandle, const VariantServeUnit*>{{}, nullptr};
+            : PreparedVariant{};
     EnqueueVariantCompile(key, /*isDepth=*/true);
     if (staleEntry != nullptr)
         return ResolveWarmPipeline(material, *staleEntry, formatKey, context);
-    return {{}, nullptr};
+    return {};
 }
 
-std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
+PipelineVariantCache::PreparedVariant
 PipelineVariantCache::PrepareDepthInstancedVariant(
     const Material& material,
     Rendering::VertexAttributeFlags vertexFlags,
@@ -490,21 +507,22 @@ PipelineVariantCache::PrepareDepthInstancedVariant(
 {
     auto resolved = ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
                                         depthClampEnable, frontFace, context);
-    const auto* unit = resolved.second;
-    if (!withoutHexTiling || !resolved.first.IsValid() || !unit || !unit->CanSkipHexTiling ||
-        unit->MaterialVersion != material.GetVersion())
+    const auto* unit = resolved.Unit;
+    if (!withoutHexTiling || !resolved.Pipeline.IsValid() || !unit ||
+        unit->MaterialVersion != material.GetVersion() ||
+        !StockMaskVertexAlpha(unit->VariantMeta.get(), /*depthOnly=*/true))
         return resolved;
 
     auto* device = m_Materials->GetDevice();
     const auto format = context.BuildCurrentFormatKey();
     if (context.ResolveGraphicsPipelineId(unit->PipelineId) != unit->PipelineId ||
-        device->TryGetWarmGraphicsPipeline(unit->PipelineId, format) != resolved.first)
+        resolved.ConcreteId != unit->PipelineId)
         return resolved;
 
     static const auto constants = []
     {
         Rendering::SpecializationConstants overrides;
-        overrides.AddConstant(kHexTilingShaderConstant, uint32_t{0});
+        overrides.AddConstant(kForwardHexTilingConstant, uint32_t{0});
         return overrides;
     }();
     const auto specialized = device->GetMutablePipelineCache().SpecializeGraphicsPipeline(unit->PipelineId, constants);
@@ -512,7 +530,10 @@ PipelineVariantCache::PrepareDepthInstancedVariant(
     {
         const auto pipeline = device->TryGetWarmGraphicsPipeline(specialized, format);
         if (pipeline.IsValid())
-            resolved.first = pipeline;
+        {
+            resolved.Pipeline = pipeline;
+            resolved.ConcreteId = specialized;
+        }
         else
             QueueConcreteWarm(material, specialized, format);
     }
@@ -882,7 +903,7 @@ void PipelineVariantCache::InsertVariantEntry(
     VariantCacheMap& cache, const InstancedVariantKey& key,
     Rendering::GraphicsPipelineId pipelineId, uint32_t materialVersion,
     std::vector<Rendering::DescriptorSetLayoutId> setLayouts,
-    std::shared_ptr<Rendering::ShaderMeta> meta, bool canSkipHexTiling)
+    std::shared_ptr<Rendering::ShaderMeta> meta)
 {
     std::unique_lock lock(m_CacheMutex);
 #if GE_DEBUG_INSTRUMENTATION
@@ -913,7 +934,6 @@ void PipelineVariantCache::InsertVariantEntry(
         cached.Current.SetLayouts  = std::move(setLayouts);
         cached.Current.VariantMeta = std::move(meta);
         cached.Current.MaterialVersion = materialVersion;
-        cached.Current.CanSkipHexTiling = canSkipHexTiling;
         // Retire L1 slots stamped against the previous publication so their next
         // probe re-finds the node under the lock. This runs in the serial window
         // (phase-separated from record), so the bump is slot hygiene, not a
@@ -970,7 +990,7 @@ void PipelineVariantCache::ApplyPendingVariantPublishes()
             continue;
         InsertVariantEntry(rec.IsDepth ? m_DepthInstancedVariantCache : m_InstancedVariantCache,
                            rec.Key, rec.PipelineId, rec.MaterialVersion,
-                           std::move(rec.SetLayouts), std::move(rec.VariantMeta), rec.CanSkipHexTiling);
+                           std::move(rec.SetLayouts), std::move(rec.VariantMeta));
         // Marker erase strictly AFTER the insert: preparation that misses the
         // cache must always find the marker set, or it would re-enqueue a variant
         // that is already compiled.
@@ -1157,12 +1177,9 @@ void PipelineVariantCache::RunDepthVariantCompile(const VariantCompileRequest& r
         setLayouts = std::move(dsDesc.DescriptorSetLayouts);
 
     // Hand the compiled unit to the serial apply (see RunColorVariantCompile).
-    const bool canSkipHexTiling = fragmentMode == DepthFragmentMode::CoverageDiscard &&
-        variant->usesBuiltInStandardPbr && req.Spec.alphaTest && !req.Spec.parallax &&
-        !req.Spec.customVertexShader && req.Spec.vertexModifierPath.empty() && req.Spec.userKeywords.empty();
     QueueVariantPublish({req.Key, pipelineId, req.MaterialVersion,
                          std::move(setLayouts), compatMeta ? std::move(compatMeta) : variant->meta,
-                         req.MaterialGuid, req.RegistrationGeneration, /*IsDepth=*/true, canSkipHexTiling});
+                         req.MaterialGuid, req.RegistrationGeneration, /*IsDepth=*/true});
     releaseScope.PublishQueued = true;
 
     m_AsyncVariantCompilesTotal.fetch_add(1, std::memory_order_relaxed);

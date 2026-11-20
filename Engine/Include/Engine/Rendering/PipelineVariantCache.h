@@ -158,7 +158,12 @@ class PipelineVariantCache
         // with the unit so a Previous unit served through a recompile window
         // still names its own generation, not the replacement's.
         uint32_t MaterialVersion = 0;
-        bool CanSkipHexTiling = false;
+    };
+    struct PreparedVariant
+    {
+        PipelineHandle Pipeline{};
+        const VariantServeUnit* Unit = nullptr;
+        GraphicsPipelineId ConcreteId{};
     };
     struct InstancedVariantEntry
     {
@@ -193,7 +198,7 @@ class PipelineVariantCache
     /// Select a warm unit during graph preparation; cold builds are queued for frame begin.
     /// The returned unit is borrowed until the next serial material-frame begin.
     /// Copy its generation into the draw packet and stamp it only after recording that draw.
-    std::pair<PipelineHandle, const VariantServeUnit*> PrepareColorVariant(
+    PreparedVariant PrepareColorVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
@@ -201,10 +206,15 @@ class PipelineVariantCache
         FrontFace frontFace,
         const RenderGraph::RGPrepareContext& context);
 
+    /// Clone an already matched forward pipeline. A cold clone leaves the
+    /// original draw active and joins the frame-begin warm queue.
+    PipelineHandle PrepareIndexedDepthEqual(const Material& material, Rendering::GraphicsPipelineDesc desc,
+                                            const Rendering::PipelineFormatKey& formatKey);
+
     /// Select a warm unit during graph preparation; cold builds are queued for frame begin.
     /// The returned unit is borrowed until the next serial material-frame begin.
     /// Copy its generation into the draw packet and stamp it only after recording that draw.
-    std::pair<PipelineHandle, const VariantServeUnit*> PrepareDepthInstancedVariant(
+    PreparedVariant PrepareDepthInstancedVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
@@ -448,14 +458,14 @@ class PipelineVariantCache
     InstancedVariantKey MakeColorVariantKey(const Material& material, VertexAttributeFlags vertexFlags,
                                             uint32_t sampleCount, MaterialKeyword passKeywords,
                                             PrimitiveTopology topology, FrontFace frontFace) const;
-    std::pair<PipelineHandle, const VariantServeUnit*> ResolveColorVariant(
+    PreparedVariant ResolveColorVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
         MaterialKeyword passKeywords,
         FrontFace frontFace,
         const RenderGraph::RGPrepareContext& context);
-    std::pair<PipelineHandle, const VariantServeUnit*> ResolveDepthVariant(
+    PreparedVariant ResolveDepthVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
@@ -469,8 +479,8 @@ class PipelineVariantCache
     bool EnsureSharedDepthShaderLoaded(bool isSkinned);
 
     // Prefer specialized Current, then unspecialized Current and Previous, without backend builds.
-    // Queue cold current IDs; each returned handle retains its own unit's metadata and generation.
-    std::pair<PipelineHandle, const VariantServeUnit*> ResolveWarmPipeline(
+    // Queue cold current IDs and preserve the concrete ID, metadata and generation of the selected handle.
+    PreparedVariant ResolveWarmPipeline(
         const Material& material, const InstancedVariantEntry& entry,
         const Rendering::PipelineFormatKey& formatKey, const RenderGraph::RGPrepareContext& context);
 
@@ -550,7 +560,6 @@ class PipelineVariantCache
         GUID MaterialGuid;
         uint64_t RegistrationGeneration = 0;
         bool IsDepth = false;
-        bool CanSkipHexTiling = false;
     };
     void QueueVariantPublish(PendingVariantPublish&& publish);
 
@@ -561,7 +570,7 @@ class PipelineVariantCache
     void InsertVariantEntry(VariantCacheMap& cache, const InstancedVariantKey& key,
                             GraphicsPipelineId pipelineId, uint32_t materialVersion,
                             std::vector<DescriptorSetLayoutId> setLayouts,
-                            std::shared_ptr<ShaderMeta> meta, bool canSkipHexTiling);
+                            std::shared_ptr<ShaderMeta> meta);
 
     // Debug-only ownership check: a cold insert must hold the exclusive lock.
     // Replaces the old single-writer tripwire — A2.4-D6 makes multi-thread

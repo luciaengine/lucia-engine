@@ -3,6 +3,7 @@
 // former single RenderServices.cpp. All files define members of the same
 // RenderServices class; shared file-scope helpers live in RenderServicesDetail.h.
 #include "Engine/Rendering/RenderServices.h"
+#include "IndexedDepthDraw.h"
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
 #include "Engine/Rendering/Pipeline/ViewMotionVectors.h"
@@ -1030,7 +1031,16 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
 
     if (isNonOccluding)
         return pass;
-    ViewFrameRGFor(frame, viewId).DepthPrepassDepth = depth;
+    auto& viewFrame = ViewFrameRGFor(frame, viewId);
+    viewFrame.DepthPrepassDepth = depth;
+    if (!isRecover && IndexedDepthReuseEnabled(*m_Device))
+    {
+        viewFrame.IndexedReplayPrepass = pass;
+        viewFrame.IndexedReplayProducer = preparedDepth;
+        viewFrame.IndexedReplayCamera = cam.Valid() && !letterbox.active ? cam.Ptr : nullptr;
+        viewFrame.IndexedReplayViewportWidth = params.ViewportWidth;
+        viewFrame.IndexedReplayViewportHeight = params.ViewportHeight;
+    }
     // The formats the prepass draws with, for the forward producers that pin their heads' pipelines at
     // next frame's emit (PerViewResources::PrepassFormatKey). A formatless import keeps the last snapshot.
     if (!isRecover)

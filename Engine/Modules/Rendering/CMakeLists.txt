@@ -879,6 +879,23 @@ add_library(GameEngineRendering OBJECT
 	${RENDERING_CORE_SOURCES}
 )
 
+# Tie stock mask certification to the sources that ship with this build.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+set(_stock_shader_hashes "${CMAKE_CURRENT_BINARY_DIR}/generated/StockShaderHashes.inc")
+if(Python3_Interpreter_FOUND AND NOT EMSCRIPTEN)
+    file(GLOB_RECURSE _stock_shader_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/*.glsl")
+    set(_stock_hash_generator "${CMAKE_SOURCE_DIR}/Tools/ShaderCook/generate_stock_hashes.py")
+    add_custom_command(OUTPUT "${_stock_shader_hashes}"
+        COMMAND "${Python3_EXECUTABLE}" "${_stock_hash_generator}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Shaders" "${_stock_shader_hashes}"
+        DEPENDS "${_stock_hash_generator}" ${_stock_shader_sources}
+        VERBATIM)
+else()
+    file(GENERATE OUTPUT "${_stock_shader_hashes}" CONTENT "")
+endif()
+target_sources(GameEngineRendering PRIVATE "${_stock_shader_hashes}")
+target_include_directories(GameEngineRendering PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
     # Core engine dependencies
 	target_link_libraries(GameEngineRendering PUBLIC Logger)
 	# Types: header-only basic types module exposing "Types/Types.h" used by
@@ -2735,6 +2752,9 @@ if(GTest_FOUND)
             Tests/ImpostorBakeVariantTests.cpp
             Tests/ImpostorSurfaceComposeTests.cpp)
         target_link_libraries(ShaderVariantKeyTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
+        if(Python3_Interpreter_FOUND AND NOT EMSCRIPTEN)
+            target_compile_definitions(ShaderVariantKeyTests PRIVATE GE_TEST_STOCK_SHADER_HASHES=1)
+        endif()
         target_include_directories(ShaderVariantKeyTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
         # Module-private headers (Source/Materials/ShaderSourceCache.h) by module path.
         # Module-private headers (Source/Materials/Shader/ShaderSourceCache.h) by module path; the
@@ -3847,7 +3867,6 @@ endif()
 # byte-compares the WGSL against Tools/ShaderCook/golden/. Needs only host
 # tools (glslc + the vendored naga/tint), no build products. Reports SKIPPED
 # (exit 125) when naga has not been fetched (Tools/ShaderCook/toolchain/setup.py).
-find_package(Python3 COMPONENTS Interpreter QUIET)
 if(BUILD_TESTING AND GLSLC_EXECUTABLE AND Python3_Interpreter_FOUND)
     add_test(NAME ShaderCookGoldenTests
              COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tools/ShaderCook/run_golden_tests.py)

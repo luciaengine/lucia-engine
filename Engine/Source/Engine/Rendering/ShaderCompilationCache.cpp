@@ -236,7 +236,6 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
 
     const auto& pkg = *buildResult.package;
     auto variant = std::make_shared<SharedShaderVariant>();
-    variant->usesBuiltInStandardPbr = buildResult.usesBuiltInStandardPbr;
 
     auto itVs = pkg.stageBytes.find("vs");
     auto itFs = pkg.stageBytes.find("fs");
