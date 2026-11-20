@@ -36,7 +36,7 @@ MeshReloadBoundsRefreshReport RefreshLocalBoundsAfterMeshReload(
     std::vector<SharedPtr<Asset>> reloadedModels;
     reloadedModels.reserve(reloadedModelGuids.size());
     for (const GUID& guid : reloadedModelGuids)
-        reloadedModels.push_back(EngineCore::GetInstance().GetAssetManager().GetLoadedAsset(guid));
+        reloadedModels.push_back(EngineCore::GetInstance().GetAssetManager().GetAsset(guid));
 
     // LocalBounds is bound Read and written through the value gate below: a
     // Write binding would stamp every visited chunk whether or not the geometry
