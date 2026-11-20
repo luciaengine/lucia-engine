@@ -827,6 +827,17 @@ void MetalCommandList::ApplyRenderState()
         m_RenderEncoder->setDepthBias(0.0f, 0.0f, 0.0f);
     }
     m_AppliedRenderPipeline = m_CurrentPipelineHandle;
+    const bool restoreMeshConstants = !m_AppliedMeshPipeline && pipeline->isMeshPipeline;
+    m_AppliedMeshPipeline = pipeline->isMeshPipeline;
+    if (m_AppliedMeshPipeline && !m_MeshDeviceAddressesDeclared)
+    {
+        m_Device.DeclareDeviceAddressResidency(m_RenderEncoder, m_EncoderMeshResidents, MTL::RenderStageMesh);
+        if (m_Device.UsesResidencySet() && m_GpuDrivenFenceSignaled)
+            m_RenderEncoder->waitForFence(m_Device.GpuDrivenFence(), MTL::RenderStageMesh);
+        m_MeshDeviceAddressesDeclared = true;
+    }
+    if (restoreMeshConstants)
+        ApplyPushConstants();
 }
 
 void MetalCommandList::ApplyPushConstants()
@@ -839,6 +850,8 @@ void MetalCommandList::ApplyPushConstants()
     {
         m_RenderEncoder->setVertexBytes(m_PushConstantData.data(), m_PushConstantDirtyBytes, kPushConstantBufferIndex);
         m_RenderEncoder->setFragmentBytes(m_PushConstantData.data(), m_PushConstantDirtyBytes, kPushConstantBufferIndex);
+        if (m_AppliedMeshPipeline)
+            m_RenderEncoder->setMeshBytes(m_PushConstantData.data(), m_PushConstantDirtyBytes, kPushConstantBufferIndex);
     }
     if (m_ComputeEncoder != nullptr)
     {
@@ -1023,6 +1036,45 @@ void AssertSetDeclaresShaderWrites(uint32_t setIndex, const MetalDescriptorSet& 
 }
 } // namespace
 
+void MetalCommandList::CollectDescriptorResidents(
+    const MetalDescriptorSet& descriptors, FastHashMap<MTL::Resource*, MTL::ResourceUsage>& cache)
+{
+    m_ScratchReadResidents.clear();
+    m_ScratchWriteResidents.clear();
+    for (const auto& [resource, writable] : descriptors.compactResidents)
+    {
+        const MTL::ResourceUsage usage = writable ? (MTL::ResourceUsageRead | MTL::ResourceUsageWrite)
+                                                  : MTL::ResourceUsageRead;
+        auto [it, inserted] = cache.try_emplace(resource, usage);
+        if (!inserted)
+        {
+            if ((it->second & usage) == usage)
+                continue;
+            it->second = static_cast<MTL::ResourceUsage>(it->second | usage);
+        }
+        (writable ? m_ScratchWriteResidents : m_ScratchReadResidents).push_back(resource);
+    }
+}
+
+void MetalCommandList::BindMeshDescriptorSet(uint32_t set, const MetalDescriptorSet& descriptors)
+{
+    const BoundArgumentTable bound = set < kMaxDescriptorSets ? m_EncoderMeshBoundSets[set] : BoundArgumentTable{};
+    if (bound.Buffer != descriptors.argumentBuffer)
+        m_RenderEncoder->setMeshBuffer(descriptors.argumentBuffer, descriptors.argumentOffset, set);
+    else if (bound.Offset != descriptors.argumentOffset)
+        m_RenderEncoder->setMeshBufferOffset(descriptors.argumentOffset, set);
+    if (set < kMaxDescriptorSets)
+        m_EncoderMeshBoundSets[set] = {descriptors.argumentBuffer, descriptors.argumentOffset};
+
+    CollectDescriptorResidents(descriptors, m_EncoderMeshResidents);
+    if (!m_ScratchReadResidents.empty())
+        m_RenderEncoder->useResources(m_ScratchReadResidents.data(), m_ScratchReadResidents.size(),
+                                       MTL::ResourceUsageRead, MTL::RenderStageMesh);
+    if (!m_ScratchWriteResidents.empty())
+        m_RenderEncoder->useResources(m_ScratchWriteResidents.data(), m_ScratchWriteResidents.size(),
+                                       MTL::ResourceUsageRead | MTL::ResourceUsageWrite, MTL::RenderStageMesh);
+}
+
 void MetalCommandList::BindDescriptorSet(uint32_t set, DescriptorSetHandle descriptorSet, PipelineHandle pipeline)
 {
     MetalDescriptorSet* ds = m_Device.GetMetalDescriptorSet(descriptorSet);
@@ -1095,23 +1147,7 @@ void MetalCommandList::BindDescriptorSet(uint32_t set, DescriptorSetHandle descr
     const BoundArgumentTable bound = set < kMaxDescriptorSets ? m_EncoderBoundSets[set] : BoundArgumentTable{};
     const bool sameBuffer = bound.Buffer == ds->argumentBuffer;
     const bool alreadyBound = sameBuffer && bound.Offset == ds->argumentOffset;
-    m_ScratchReadResidents.clear();
-    m_ScratchWriteResidents.clear();
-    for (const auto& [resource, writable] : ds->compactResidents)
-    {
-        const MTL::ResourceUsage usage = writable ? (MTL::ResourceUsageRead | MTL::ResourceUsageWrite)
-                                                  : MTL::ResourceUsageRead;
-        auto [it, inserted] = m_EncoderResidents.try_emplace(resource, usage);
-        if (!inserted)
-        {
-            if ((it->second & usage) == usage)
-            {
-                continue;
-            }
-            it->second = static_cast<MTL::ResourceUsage>(it->second | usage);
-        }
-        (writable ? m_ScratchWriteResidents : m_ScratchReadResidents).push_back(resource);
-    }
+    CollectDescriptorResidents(*ds, m_EncoderResidents);
 
     if (m_RenderEncoder != nullptr)
     {
@@ -1142,6 +1178,8 @@ void MetalCommandList::BindDescriptorSet(uint32_t set, DescriptorSetHandle descr
             m_RenderEncoder->useResources(m_ScratchWriteResidents.data(), m_ScratchWriteResidents.size(),
                                           MTL::ResourceUsageRead | MTL::ResourceUsageWrite, kAllStages);
         }
+        if (m_AppliedMeshPipeline)
+            BindMeshDescriptorSet(set, *ds);
     }
     else
     {
@@ -1173,10 +1211,14 @@ void MetalCommandList::BindDescriptorSet(uint32_t set, DescriptorSetHandle descr
 void MetalCommandList::ResetEncoderBindingState()
 {
     m_EncoderBoundSets.fill({});
+    m_EncoderMeshBoundSets.fill({});
     m_EncoderResidents.clear();
+    m_EncoderMeshResidents.clear();
     // A fresh encoder carries no pipeline state — force the next ApplyRenderState
     // to re-apply rather than skip on a stale match.
     m_AppliedRenderPipeline = {};
+    m_AppliedMeshPipeline = false;
+    m_MeshDeviceAddressesDeclared = false;
 }
 
 // ---------------------------------------------------------------------------

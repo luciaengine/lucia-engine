@@ -13,6 +13,7 @@
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include "Mathematics/HalfFloat.h"
+#include "Mathematics/Vector4.h"
 #include "Memory/AllocationCountScope.h"
 
 #include "../Source/Metal/MetalArgumentBufferLayout.h"
@@ -1976,14 +1977,9 @@ TEST(MetalSpirvPipeline, Bc4TextureSamplesAsItsEncodedColors)
     ExpectBcMipChainSamplesAsItsEncodedColors(TextureFormat::BC4_UNORM);
 }
 
-// Mesh-shader end-to-end: a GL_EXT_mesh_shader mesh stage emits a triangle that
-// a solid-green fragment shader fills. Exercises the whole path — mesh GLSL ->
-// SPIR-V -> MSL [[mesh]] -> MeshRenderPipelineDescriptor -> drawMeshThreadgroups
-// -> readback. Guards the two fixes this needed: the LocalSizeId->LocalSize
-// workgroup-size resolution (else gl_WorkGroupSize is 0 and the emit loops spin)
-// and NOT setting maxTotalThreadsPerObjectThreadgroup on a mesh-only pipeline
-// (else Metal waits on a nonexistent object stage). Both manifested as GPU hangs.
-TEST(MetalSpirvPipeline, MeshShaderTriangle)
+namespace
+{
+void ExpectMeshTriangle(bool withInputs)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -1994,19 +1990,36 @@ TEST(MetalSpirvPipeline, MeshShaderTriangle)
     {
         GTEST_SKIP() << "mesh shaders unsupported on this GPU";
     }
+    if (withInputs && (!device->GetCapabilities().supportsBufferDeviceAddress ||
+                       !device->GetCapabilities().supportsBindlessResources))
+    {
+        GTEST_SKIP() << "mesh input test requires device addresses and argument buffers";
+    }
 
     static const char* kMesh = R"(
-#version 460
 #extension GL_EXT_mesh_shader : require
+#ifdef MESH_INPUTS
+#extension GL_EXT_buffer_reference : require
+#endif
 layout(local_size_x = 1) in;
 layout(triangles) out;
 layout(max_vertices = 3, max_primitives = 1) out;
+#ifdef MESH_INPUTS
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer MeshPosition { float OffsetX; };
+layout(push_constant) uniform MeshPlacement { MeshPosition Position; } placement;
+layout(set = 0, binding = 0, std140) uniform MeshVerticalOffset { float OffsetY; } vertical;
+#endif
 void main()
 {
     SetMeshOutputsEXT(3, 1);
-    gl_MeshVerticesEXT[0].gl_Position = vec4(-0.6, -0.6, 0.0, 1.0);
-    gl_MeshVerticesEXT[1].gl_Position = vec4( 0.6, -0.6, 0.0, 1.0);
-    gl_MeshVerticesEXT[2].gl_Position = vec4( 0.0,  0.6, 0.0, 1.0);
+#ifdef MESH_INPUTS
+    vec2 offset = vec2(placement.Position.OffsetX, vertical.OffsetY);
+#else
+    vec2 offset = vec2(0.75);
+#endif
+    gl_MeshVerticesEXT[0].gl_Position = vec4(vec2(-1.35, -1.35) + offset, 0.0, 1.0);
+    gl_MeshVerticesEXT[1].gl_Position = vec4(vec2(-0.15, -1.35) + offset, 0.0, 1.0);
+    gl_MeshVerticesEXT[2].gl_Position = vec4(vec2(-0.75, -0.15) + offset, 0.0, 1.0);
     gl_PrimitiveTriangleIndicesEXT[0] = uvec3(0, 1, 2);
 }
 )";
@@ -2015,7 +2028,11 @@ void main()
 layout(location = 0) out vec4 outColor;
 void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
 )";
-    std::vector<uint8_t> meshSpv = CompileGlsl(kMesh, shaderc_mesh_shader, "tri.mesh");
+    std::string meshSource = "#version 460\n";
+    if (withInputs)
+        meshSource += "#define MESH_INPUTS\n";
+    meshSource += kMesh;
+    std::vector<uint8_t> meshSpv = CompileGlsl(meshSource.c_str(), shaderc_mesh_shader, "tri.mesh");
     std::vector<uint8_t> fragSpv = CompileGlsl(kFrag, shaderc_fragment_shader, "tri.frag");
     ASSERT_FALSE(meshSpv.empty());
     ASSERT_FALSE(fragSpv.empty());
@@ -2029,6 +2046,38 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
     TextureHandle rt = device->CreateTexture(rtDesc);
     ASSERT_TRUE(rt.IsValid());
 
+    BufferHandle position{};
+    BufferHandle vertical{};
+    DescriptorSetHandle inputs{};
+    DescriptorSetLayoutDesc layout{};
+    uint64_t positionAddress = 0;
+    if (withInputs)
+    {
+        constexpr float kOffsetX = 0.75f;
+        const GameEngine::Mathematics::Vector4 offsetY{0.75f, 0.0f, 0.0f, 0.0f};
+        BufferDesc addressDesc{};
+        addressDesc.size = sizeof(kOffsetX);
+        addressDesc.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::ShaderDeviceAddress);
+        position = device->CreateBuffer(addressDesc);
+        ASSERT_TRUE(position.IsValid());
+        device->UpdateBuffer(position, 0, sizeof(kOffsetX), &kOffsetX);
+        positionAddress = device->GetBufferDeviceAddress(position);
+        ASSERT_NE(positionAddress, 0u);
+
+        BufferDesc verticalDesc{};
+        verticalDesc.size = sizeof(offsetY);
+        verticalDesc.usage = static_cast<uint32_t>(BufferUsage::Uniform);
+        vertical = device->CreateBuffer(verticalDesc);
+        ASSERT_TRUE(vertical.IsValid());
+        device->UpdateBuffer(vertical, 0, sizeof(offsetY), &offsetY);
+        layout.bindings.push_back({0, DescriptorType::UniformBuffer, 1, kShaderStageMesh});
+        DescriptorSetDesc descriptorSet{};
+        descriptorSet.layout = layout;
+        inputs = device->CreateDescriptorSet(descriptorSet);
+        ASSERT_TRUE(inputs.IsValid());
+        device->UpdateBufferBinding(inputs, 0, vertical, 0, sizeof(offsetY));
+    }
+
     PipelineDesc pipelineDesc{};
     pipelineDesc.type = PipelineType::Mesh;
     pipelineDesc.meshShader = meshSpv;
@@ -2037,6 +2086,12 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
     pipelineDesc.rasterizationState.cullMode = CullModeFlagBits::None;
     pipelineDesc.depthStencilState.depthTestEnable = false;
     pipelineDesc.depthStencilState.depthWriteEnable = false;
+    if (withInputs)
+    {
+        pipelineDesc.descriptorSetLayouts = {layout};
+        pipelineDesc.pushConstantSize = sizeof(positionAddress);
+        pipelineDesc.pushConstantStagesMask = kShaderStageMesh;
+    }
     pipelineDesc.debugName = "MetalMeshTriangle";
     PipelineHandle pipeline = device->CreatePipeline(pipelineDesc);
     ASSERT_TRUE(pipeline.IsValid());
@@ -2077,7 +2132,11 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
         pass.depthTarget = INVALID_TEXTURE_HANDLE;
         pass.clearDepth = false;
         commandList->BeginRenderPass(pass);
+        if (withInputs)
+            commandList->SetConstants(0, sizeof(positionAddress), &positionAddress);
         commandList->SetPipeline(pipeline);
+        if (withInputs)
+            commandList->BindDescriptorSet(0, inputs, pipeline);
         commandList->SetViewport(0.0f, 0.0f, static_cast<float>(kRtDim), static_cast<float>(kRtDim));
         commandList->SetScissor(0, 0, kRtDim, kRtDim);
         if (indirect)
@@ -2101,10 +2160,27 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
         device->UnmapBuffer(readback);
     }
 
+    if (withInputs)
+    {
+        device->DestroyDescriptorSet(inputs);
+        device->DestroyBuffer(vertical);
+        device->DestroyBuffer(position);
+    }
     device->DestroyBuffer(arguments);
     device->DestroyBuffer(readback);
     device->DestroyTexture(rt);
     device->Shutdown();
+}
+} // namespace
+
+TEST(MetalSpirvPipeline, MeshShaderTriangle)
+{
+    ExpectMeshTriangle(false);
+}
+
+TEST(MetalSpirvPipeline, MeshShaderReadsPushConstantsAndDescriptors)
+{
+    ExpectMeshTriangle(true);
 }
 
 // Mirrors the engine's GE_INSTANCED path: the vertex shader fetches its data

@@ -429,7 +429,8 @@ class MetalDevice : public IDevice
     // no binding for such a buffer. The function records each buffer and its usage in `residentCache`.
     // With a residency set, the function does nothing.
     void DeclareDeviceAddressResidency(MTL::RenderCommandEncoder* encoder,
-                                       FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache);
+                                       FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache,
+                                       MTL::RenderStages stages = MTL::RenderStageVertex | MTL::RenderStageFragment);
     void DeclareDeviceAddressResidency(MTL::ComputeCommandEncoder* encoder,
                                        FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache);
 
