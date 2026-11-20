@@ -1812,7 +1812,7 @@ class RenderServices::WorldPassPreparation
                     ++m_Data->IndexedReplayMatches;
                     const auto replay = MatchIndexedOwnerCompaction(*m_Data->IndexedReplayProducer, *source);
                     const auto equal = m_Services.Materials().Variants().PrepareIndexedDepthEqual(
-                        *batch.Material, *meta, std::move(color), m_Context.BuildCurrentFormatKey());
+                        *batch.Material, *meta, concreteId, color, m_Context.BuildCurrentFormatKey());
                     if (equal.Pipeline.IsValid())
                     {
                         prepared.Bindings.Pipeline = equal.Pipeline;
