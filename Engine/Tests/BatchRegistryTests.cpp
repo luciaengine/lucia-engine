@@ -319,8 +319,8 @@ TEST_F(GPUSceneBatchRegistryTest, ImpostorLinkSurvivesMeshUpdateAndClearsOnRemov
     m_Scene->AddInstance(MakeInstance(1u, primary));
     m_Scene->AddInstance(MakeInstance(2u, secondary));
 
-    m_Scene->SetMeshImpostorCard(primary, 7u, card, true);
-    m_Scene->SetMeshImpostorCard(secondary, 7u, card, false);
+    const uint32_t parts[] = {primary, secondary};
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 7u, card));
     EXPECT_EQ(m_Scene->GetMeshes()[primary].impostorCard, 8u | kGPUMeshImpostorPrimaryBit);
     EXPECT_EQ(m_Scene->GetMeshes()[secondary].impostorCard, 8u);
     const auto& reg = m_Scene->GetBatchRegistry();
@@ -329,14 +329,19 @@ TEST_F(GPUSceneBatchRegistryTest, ImpostorLinkSurvivesMeshUpdateAndClearsOnRemov
 
     m_Scene->UpdateMesh(primary, MakeMeshRow());
     EXPECT_EQ(m_Scene->GetMeshes()[primary].impostorCard, 8u | kGPUMeshImpostorPrimaryBit);
+    EXPECT_EQ(m_Scene->GetMeshes()[primary].nextImpostorPart, secondary);
 
-    m_Scene->ClearMeshImpostorCard(secondary);
+    m_Scene->ClearMeshImpostorGroup(secondary);
     EXPECT_EQ(m_Scene->GetMeshes()[secondary].impostorCard, 0u);
+    EXPECT_EQ(m_Scene->GetMeshes()[primary].impostorCard, 0u);
+    EXPECT_EQ(reg.Counts().count(BatchRegistry::MakeKey(7u, card)), 0u);
 
-    m_Scene->RemoveMesh(primary);
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 7u, card));
+    m_Scene->RemoveMesh(secondary);
+    EXPECT_EQ(m_Scene->GetMeshes()[primary].impostorCard, 0u);
     EXPECT_EQ(reg.Counts().count(BatchRegistry::MakeKey(7u, card)), 0u);
     const uint32_t reused = m_Scene->AddMesh(MakeMeshRow());
-    EXPECT_EQ(reused, primary);
+    EXPECT_EQ(reused, secondary);
     EXPECT_EQ(m_Scene->GetMeshes()[reused].impostorCard, 0u);
 }
 

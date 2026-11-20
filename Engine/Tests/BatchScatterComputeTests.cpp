@@ -4493,8 +4493,8 @@ TEST_P(BatchScatterComputeTest, ImpostorPastTheSwitchDrawsTheCardForThePrimaryPa
     const uint32_t mirroredBark = m_Scene->AddInstance(MakeInstance(kBarkMaterial, primary, kInstanceFlagMirrored));
     m_Scene->AddInstance(
         MakeInstance(kLeafMaterial, secondary, kInstanceFlagDepthMaterialDependent | kInstanceFlagMirrored));
-    m_Scene->SetMeshImpostorCard(primary, kCardMaterial, card, true);
-    m_Scene->SetMeshImpostorCard(secondary, kCardMaterial, card, false);
+    const uint32_t parts[] = {primary, secondary};
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, kCardMaterial, card));
 
     const std::vector<uint8_t> depthClasses{
         static_cast<uint8_t>(MaterialDepthClass::EligibleSingleSided),
@@ -4552,8 +4552,8 @@ TEST_P(BatchScatterComputeTest, ImpostorHysteresisKeepsTheCardUntilTheExitCovera
     const uint32_t card = AddMeshRow(kImpostorCardIndices);
     const uint32_t bark = m_Scene->AddInstance(MakeInstance(1u, primary));
     m_Scene->AddInstance(MakeInstance(2u, secondary));
-    m_Scene->SetMeshImpostorCard(primary, 3u, card, true);
-    m_Scene->SetMeshImpostorCard(secondary, 3u, card, false);
+    const uint32_t parts[] = {primary, secondary};
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 3u, card));
     uint32_t total = 0u;
     const auto table = BatchTableTesting::Build(m_Scene->GetBatchRegistry(), {}, &total);
     ASSERT_EQ(total, 3u);
@@ -4586,6 +4586,60 @@ TEST_P(BatchScatterComputeTest, ImpostorHysteresisKeepsTheCardUntilTheExitCovera
 
     SeedPrevLod(2u, GPUDrawStreamBuilder::kLodNoHistory);
     EXPECT_TRUE(cards(dispatch(kImpostorFarDist, 0xFFFFFFFFu, true)).empty()) << "no card mesh: no stage";
+}
+
+TEST_P(BatchScatterComputeTest, ImpostorWaitsForTheCoarsestLodOfEveryPart)
+{
+    const uint32_t barkMesh = AddMeshRow(kImpostorPrimaryIndices);
+    const uint32_t leafMesh = AddMeshRow(kImpostorSecondaryIndices);
+    const uint32_t cardMesh = AddMeshRow(kImpostorCardIndices);
+    const uint32_t bark = m_Scene->AddInstance(MakeInstance(1u, barkMesh));
+    const uint32_t leaves = m_Scene->AddInstance(MakeInstance(2u, leafMesh));
+    const uint32_t parts[] = {barkMesh, leafMesh};
+    constexpr uint32_t kCoarseLeafIndices = 12u;
+    GPUMesh leaf = m_Scene->GetMeshes()[leafMesh];
+    leaf.lodCount = 2u;
+    leaf.lodIndexCount[1] = kCoarseLeafIndices;
+    leaf.lodThreshold[0] = 1.0f;
+    leaf.lodFlags = 1u;
+    m_Scene->UpdateMesh(leafMesh, leaf);
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 3u, cardMesh));
+
+    uint32_t total = 0u;
+    const auto table = BatchTableTesting::Build(m_Scene->GetBatchRegistry(), {}, &total);
+    const auto dispatch = [&](float coverage, uint32_t forceLod = 0xFFFFFFFFu)
+    {
+        auto lod = ImpostorLod(1.0f / coverage, cardMesh, false);
+        lod.sseThresholdToCoverage = 0.08f;
+        return Dispatch(table, total, 0u, 0u, static_cast<uint32_t>(table.size()), total, 0u, {},
+                        forceLod, {}, 0u, lod);
+    };
+    const auto instances = [&](const DispatchResult& result, uint32_t mesh, uint32_t indexCount)
+    {
+        return InstancesInRows(table, result.cursors, result.records, result.indirection, mesh, indexCount);
+    };
+
+    const auto aboveFinalMeshLod = dispatch(0.10f);
+    EXPECT_EQ(instances(aboveFinalMeshLod, barkMesh, kImpostorPrimaryIndices), std::multiset<uint32_t>{bark});
+    EXPECT_EQ(instances(aboveFinalMeshLod, leafMesh, kImpostorSecondaryIndices), std::multiset<uint32_t>{leaves});
+    EXPECT_TRUE(instances(aboveFinalMeshLod, cardMesh, kImpostorCardIndices).empty());
+
+    const auto atCardDistance = dispatch(0.07f);
+    EXPECT_TRUE(instances(atCardDistance, barkMesh, kImpostorPrimaryIndices).empty());
+    EXPECT_TRUE(instances(atCardDistance, leafMesh, kCoarseLeafIndices).empty());
+    EXPECT_EQ(instances(atCardDistance, cardMesh, kImpostorCardIndices), std::multiset<uint32_t>{bark});
+
+    const auto forced = dispatch(0.07f, 1u);
+    EXPECT_EQ(instances(forced, barkMesh, kImpostorPrimaryIndices), std::multiset<uint32_t>{bark});
+    EXPECT_EQ(instances(forced, leafMesh, kCoarseLeafIndices), std::multiset<uint32_t>{leaves});
+    EXPECT_TRUE(instances(forced, cardMesh, kImpostorCardIndices).empty());
+
+    // An authored switch can keep the coarsest mesh on screen longer.
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 3u, cardMesh, 0.06f));
+    const auto beforeAuthoredSwitch = dispatch(0.07f);
+    EXPECT_EQ(instances(beforeAuthoredSwitch, leafMesh, kCoarseLeafIndices), std::multiset<uint32_t>{leaves});
+    EXPECT_TRUE(instances(beforeAuthoredSwitch, cardMesh, kImpostorCardIndices).empty());
+    EXPECT_EQ(instances(dispatch(0.05f), cardMesh, kImpostorCardIndices), std::multiset<uint32_t>{bark});
 }
 
 std::string ScatterVariantName(const ::testing::TestParamInfo<ScatterVariant>& info)

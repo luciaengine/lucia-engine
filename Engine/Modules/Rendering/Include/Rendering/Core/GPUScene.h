@@ -223,15 +223,15 @@ struct GPUMesh
     float lodCoverageScale = 1.0f; // 16
     // Impostor link of the mesh (GPUScene::SetMeshImpostorCard): 0 = none, otherwise the
     // card material's GPU-scene index + 1 in bits 0..23 and kGPUMeshImpostorPrimaryBit for
-    // the part that draws the card. GPUScene owns this word; AddMesh and UpdateMesh keep it.
+    // the part that draws the card. GPUScene owns these links.
     uint32_t impostorCard;  // 20
     uint32_t vertexOffset;  // 24     (in vertices, NOT bytes)
     uint32_t vertexCount;   // 28     (total vertex count for this submesh)
     uint32_t indexOffset;   // 32     (LOD0 firstIndex into bound IB pool, in indices)
     uint32_t indexCount;    // 36     (LOD0 index count)
     uint32_t lodCount;      // 40     (1..kMaxMeshLODs)
-    uint32_t bucketKey;     // 44     (VertexAttributeFlags as uint32; 0 = unbucketed)
-    uint32_t indexType;     // 48     (0 = uint16, 1 = uint32; matches Rendering::IndexType)
+    uint32_t nextImpostorPart; // 44  (next mesh index in the linked model's circular list)
+    float impostorSwitchCoverage; // 48 (0 uses the view's default)
     uint32_t vertexFlags;   // 52     (source mesh's VertexAttributeFlags)
     uint32_t lodIndexOffset[kMaxMeshLODs]; // 56..72  (per-LOD firstIndex; [0]==indexOffset)
     uint32_t lodIndexCount[kMaxMeshLODs];  // 72..88  (per-LOD index count; [0]==indexCount)
@@ -268,6 +268,8 @@ inline constexpr uint32_t kGPUMeshLodTightClassBit = 1u << 4;
 inline constexpr uint32_t kGPUMeshImpostorMaterialMask = 0xFFFFFFu;
 inline constexpr uint32_t kGPUMeshImpostorPrimaryBit   = 1u << 31;
 static_assert(offsetof(GPUMesh, impostorCard) == 20, "GPUMesh.impostorCard offset drift");
+static_assert(offsetof(GPUMesh, nextImpostorPart) == 44, "GPUMesh.nextImpostorPart offset drift");
+static_assert(offsetof(GPUMesh, impostorSwitchCoverage) == 48, "GPUMesh.impostorSwitchCoverage offset drift");
 static_assert(sizeof(GPUMesh) == 128,
               "GPUMesh must be 128 bytes to match draw_command_scatter.comp std430 layout");
 static_assert(offsetof(GPUMesh, lodCoverageScale) == 16, "GPUMesh.lodCoverageScale offset drift");
@@ -540,16 +542,13 @@ class GPUScene
     void RemoveMesh(uint32_t meshIndex);
 
     /**
-     * Link mesh `meshIndex` to an impostor card. Past the switch coverage the scatter draws the
-     * card (material `cardMaterialIndex`, mesh `cardMeshIndex`) for the primary part and nothing
-     * for the other parts of the model. The primary part's instances also count in the card's
-     * batch row, so the row has room for every instance that can switch.
+     * Link all parts to one impostor card. Only the first part draws the card and contributes
+     * capacity to its batch. Invalid or conflicting groups leave the existing links in place.
      */
-    /// Returns false, and links nothing, for a mesh, card material or card mesh that does not exist.
-    bool SetMeshImpostorCard(uint32_t meshIndex, uint32_t cardMaterialIndex, uint32_t cardMeshIndex,
-                             bool primary);
-    /// Remove the impostor link of the mesh; its instances draw the mesh at every distance.
-    void ClearMeshImpostorCard(uint32_t meshIndex);
+    bool SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t cardMaterialIndex,
+                              uint32_t cardMeshIndex, float switchCoverage = 0.0f);
+    /// Clear the group that contains this mesh, if any.
+    void ClearMeshImpostorGroup(uint32_t meshIndex);
 
     // Debug / test accessor.
     const std::vector<GPUMesh>& GetMeshes() const { return m_Meshes; }
@@ -809,8 +808,6 @@ class GPUScene
     // Only populated + uploaded when m_ScatterHotEnabled.
     std::vector<GPUInstanceScatterHot> m_ScatterHot;
     std::vector<GPUMesh> m_Meshes;
-    // GPUMesh.impostorCard per mesh index, stamped into every mesh row write.
-    std::vector<uint32_t> m_MeshImpostorCard;
     BatchRegistry m_BatchRegistry;
     std::vector<uint32_t> m_FreeInstanceSlots;
     // Dense free-membership mirror: m_InstanceSlotFree[i] != 0 iff slot i is on

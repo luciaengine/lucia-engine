@@ -549,13 +549,14 @@ bool ge_UpdateLodFade(uint instanceIndex, uint selected, out uint outFromLod, ou
 // True when this slice selects impostor cards: a perspective slice that picks its own levels.
 bool ge_ImpostorStageActive()
 {
-    return pc.impostorCardMesh != 0xFFFFFFFFu && pc.projScaleY > 0.0 && pc.forceLod == 0xFFFFFFFFu;
+    return pc.impostorCardMesh != 0xFFFFFFFFu && pc.projScaleY > 0.0 && pc.forceLod == 0xFFFFFFFFu
+           && pc.impostorEnterCoverage > 0.0;
 }
 
 // The impostor switch (Hlod::UpdateProxyActive on Hlod::ClusterCoverage). Every part of a linked
 // model has the model's sphere as its instance sphere, so the parts decide alike. With a history
 // the card stays until the exit coverage; without one the switch is at the enter coverage.
-bool ge_SelectImpostor(uint instanceIndex)
+bool ge_SelectImpostor(uint instanceIndex, uint meshIndex, uint cardMaterial)
 {
     vec3 camPos = vec3(pc.cameraPosX, pc.cameraPosY, pc.cameraPosZ);
     float dist = max(distance(camPos, ge_InstanceCenterRelativeToOrigin(instanceIndex)), 1e-4);
@@ -563,7 +564,28 @@ bool ge_SelectImpostor(uint instanceIndex)
     coverage *= exp2(instances[instanceIndex].lodBias + pc.lodBiasGlobal);
     bool hasHistory = pc.impostorExitCoverage > pc.impostorEnterCoverage;
     bool wasCard = hasHistory && prevLod[instanceIndex] == kImpostorHistory;
-    return coverage < (wasCard ? pc.impostorExitCoverage : pc.impostorEnterCoverage);
+    float enter = meshes[meshIndex].impostorSwitchCoverage;
+    if (enter <= 0.0)
+        enter = pc.impostorEnterCoverage;
+    float hysteresis = pc.impostorExitCoverage / pc.impostorEnterCoverage;
+    if (coverage >= (wasCard ? enter * hysteresis : enter))
+        return false;
+
+    // A card replaces the whole model only after every part reaches its last mesh LOD.
+    // Reserve the card's exit band on entry so it can never hold over a finer mesh LOD.
+    float meshCoverage = wasCard ? coverage : coverage * hysteresis;
+    uint part = meshIndex;
+    for (uint checked = 0u; checked < meshes.length(); ++checked) {
+        if (part >= meshes.length() || (meshes[part].impostorCard & kImpostorMaterialMask) != cardMaterial)
+            return false;
+        uint lodCount = meshes[part].lodCount;
+        if (lodCount > 1u && ge_ScanLOD(part, lodCount, meshCoverage * meshes[part].lodCoverageScale) != lodCount - 1u)
+            return false;
+        part = meshes[part].nextImpostorPart;
+        if (part == meshIndex)
+            return true;
+    }
+    return false;
 }
 
 // Emit one indirect draw record for `lod` of `meshIndex` at arena slot `slot`,
@@ -636,11 +658,15 @@ void main() {
     // Impostor stage: past the switch the primary part of a linked model draws the card and the
     // other parts draw nothing. Decided before every claim, so a dropped part leaves no record.
     uint impostorCard = meshes[meshIndex].impostorCard;
-    bool drawCard = impostorCard != 0u && ge_ImpostorStageActive() && ge_SelectImpostor(instanceIndex);
+    bool drawCard = impostorCard != 0u && ge_ImpostorStageActive()
+                    && ge_SelectImpostor(instanceIndex, meshIndex, impostorCard & kImpostorMaterialMask);
     bool impostorHistory = impostorCard != 0u && pc.impostorExitCoverage > pc.impostorEnterCoverage;
     if (drawCard && (impostorCard & kImpostorPrimaryBit) == 0u) {
         if (impostorHistory) {
             prevLod[instanceIndex] = kImpostorHistory;
+        }
+        if (pc.crossfadeTailActive != 0u) {
+            lodFade[instanceIndex] = uvec2(kLodNoHistory, 0u);
         }
         return;
     }

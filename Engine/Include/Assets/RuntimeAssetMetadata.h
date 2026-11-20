@@ -32,6 +32,7 @@ namespace GameEngine
     ENTRY(kLodUseGlobalMetaKey, Model, "assets.lod.useGlobal") \
     ENTRY(kBoneLODSettingsMetaKey, Model, "assets.model.boneLOD") \
     ENTRY(kModelImpostorMetaKey, Model, "assets.model.impostor") \
+    ENTRY(kModelImpostorScreenHeightMetaKey, Model, "assets.model.impostorScreenHeightPercent") \
     ENTRY(kModelRigKindMetaKey, Model, "assets.model.rigKind") \
     ENTRY(kTextureAlphaCoverageMetaKey, Texture, "assets.texture.alphaCoverage") \
     ENTRY(kTextureAlphaCutoffMetaKey, Texture, "assets.texture.alphaCutoff") \
