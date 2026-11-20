@@ -113,6 +113,7 @@ flat layout(location = 14) in uint vInstanceFlags;
 #ifdef GE_INDEXED_DEPTH_OWNER
 flat layout(location = 14, component = 2) in uint vDepthOwnerSlot;
 layout(location = 0) out uint oDepthOwner;
+layout(constant_id = 307) const uint GE_OWNER_MESH_ENCODING = 0u;
 #endif
 
 // Render-origin-relative world position (Earth-scale precision). The shadow
@@ -903,12 +904,17 @@ void main()
         discard;
   #endif
   #ifdef GE_INDEXED_DEPTH_OWNER
-    // Low ten bits address 32-triangle blocks. Zero denotes a cleared pixel.
-    // The all-ones marker makes the entire packet fall back on encoding overflow.
-    uint block = uint(gl_PrimitiveID) >> 5u;
-    oDepthOwner = vDepthOwnerSlot < 0x3ffffeu && block < 1024u
-        ? ((vDepthOwnerSlot + 1u) << 10u) | block
-        : 0xffffffffu;
+    // Zero is clear. The all-ones marker requires replay of the original packet.
+    uint primitive = uint(gl_PrimitiveID);
+    if (GE_OWNER_MESH_ENCODING != 0u)
+        oDepthOwner = primitive < 7936u ? ((primitive + 1u) << 16u) | (vDepthOwnerSlot & 65535u) : 0xffffffffu;
+    else
+    {
+        uint block = primitive >> 5u;
+        oDepthOwner = vDepthOwnerSlot < 0x3ffffeu && block < 1024u
+            ? ((vDepthOwnerSlot + 1u) << 10u) | block
+            : 0xffffffffu;
+    }
   #endif
   #ifdef GE_MOTION_VECTORS
     // Masked motion draw: the payload is exported after the same cutoff the

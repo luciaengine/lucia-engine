@@ -3950,17 +3950,30 @@ void VulkanDevice::QueryDeviceCapabilities()
         }
     }
 
-    // Query mesh shader properties if supported
-    if (m_Capabilities.supportsMeshShaders)
+    if (m_Capabilities.supportsIndexedDepthOwnerReplay && m_Capabilities.supportsMeshShaders &&
+        m_Capabilities.supportsIndirectMeshTasks && m_Capabilities.supportsBufferDeviceAddress)
     {
-        VkPhysicalDeviceMeshShaderPropertiesEXT meshShaderProps{};
-        meshShaderProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
+        VkPhysicalDeviceMeshShaderPropertiesEXT meshProperties{};
+        meshProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
+        VkPhysicalDeviceProperties2 properties{};
+        properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties.pNext = &meshProperties;
+        vkGetPhysicalDeviceProperties2(m_PhysicalDevice, &properties);
 
-        VkPhysicalDeviceProperties2 props2{};
-        props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        props2.pNext = &meshShaderProps;
-
-        vkGetPhysicalDeviceProperties2(m_PhysicalDevice, &props2);
+        // The mesh compactor stores three uvec4s per workgroup. It pads the final row.
+        constexpr uint32_t kMeshGroupsPerRow = 1024;
+        constexpr uint32_t kMaximumMeshRows = (65535u / 3u + kMeshGroupsPerRow - 1u) / kMeshGroupsPerRow;
+        constexpr uint32_t kMeshMaskBytes = 65535u * 256u * sizeof(uint32_t);
+        constexpr uint32_t kMeshShaderOutputBytes = 8192;
+        m_Capabilities.supportsIndexedDepthMeshReplay =
+            meshProperties.maxMeshWorkGroupInvocations >= 32u && meshProperties.maxMeshWorkGroupSize[0] >= 32u &&
+            meshProperties.maxMeshOutputVertices >= 48u && meshProperties.maxMeshOutputPrimitives >= 16u &&
+            meshProperties.maxMeshOutputComponents >= 25u &&
+            meshProperties.maxMeshOutputMemorySize >= kMeshShaderOutputBytes &&
+            meshProperties.maxMeshWorkGroupCount[0] >= kMeshGroupsPerRow &&
+            meshProperties.maxMeshWorkGroupCount[1] >= kMaximumMeshRows &&
+            meshProperties.maxMeshWorkGroupTotalCount >= kMeshGroupsPerRow * kMaximumMeshRows &&
+            m_DeviceProperties.limits.maxStorageBufferRange >= kMeshMaskBytes;
     }
 
     // Published, not derived: SelectPhysicalDevice owns the derivation so the

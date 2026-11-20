@@ -479,6 +479,8 @@ struct IndexedOwnerReplay
     Rendering::BufferHandle Draws{};
     Rendering::BufferHandle Counts{};
     uint32_t DrawLimit = 0;
+    uint64_t MeshWorkAddress = 0;
+    uint64_t MeshStateAddress = 0;
 };
 bool PrepareIndexedDepthOwners(Rendering::RenderGraph::RGPrepareContext& context, PreparedDepthOnlyPass& data, size_t count);
 void RecordIndexedDepthOwner(Rendering::RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data, size_t slot);

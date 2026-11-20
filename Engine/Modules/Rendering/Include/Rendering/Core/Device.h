@@ -867,6 +867,7 @@ struct RenderingDeviceCapabilities
     bool supportsMeshShaders = false;
     // Indexed ownership requires fragment PrimitiveId, counted draws and the compute replay path.
     bool supportsIndexedDepthOwnerReplay = false;
+    bool supportsIndexedDepthMeshReplay = false;
     bool supportsIndirectMeshTasks = false;
     bool supportsRayTracing = false;
     // True when the backend's acceleration-structure and ray-query extensions

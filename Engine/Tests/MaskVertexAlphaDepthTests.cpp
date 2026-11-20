@@ -882,6 +882,62 @@ TEST(IndexedDepthReuse, UsesTheFadeCoverageOfTheServedShader)
     EXPECT_EQ(StockMaskVertexAlpha(&forwardTail, false, true), false);
 }
 
+TEST(IndexedDepthReuse, MeshReplayRequiresTheStockVertexFetch)
+{
+    namespace R = GameEngine::Rendering;
+    using GameEngine::Engine::Renderer::MatchesIndexedOwnerMeshVertexLayout;
+    constexpr auto kFlags = R::VertexAttributeFlags::StandardMesh | R::VertexAttributeFlags::HasColor;
+    R::GraphicsPipelineDesc pipeline;
+    R::BuildVertexLayoutFromFlags(kFlags, pipeline);
+    EXPECT_TRUE(MatchesIndexedOwnerMeshVertexLayout(pipeline, kFlags));
+
+    const auto normal = std::find_if(pipeline.VertexAttributes.begin(), pipeline.VertexAttributes.end(),
+        [](const auto& attribute) { return attribute.location == R::VertexLocation::Normal; });
+    ASSERT_NE(normal, pipeline.VertexAttributes.end());
+    normal->offset = 0u;
+    EXPECT_FALSE(MatchesIndexedOwnerMeshVertexLayout(pipeline, kFlags));
+}
+
+TEST(IndexedDepthReuse, MeshReplayRejectsUnservedFragmentInputs)
+{
+    namespace R = GameEngine::Rendering;
+    using GameEngine::Engine::Renderer::MatchesIndexedOwnerMeshFragmentInputs;
+    R::StageIO normal{
+        .Location = 1u, .Type = {.Kind = R::TypeKind::Vector, .Base = R::BaseType::Float, .VecSize = 3u}};
+    R::StageMeta fragment;
+    fragment.Inputs = {normal};
+    R::StageMeta mesh;
+    normal.Type.ArrayDims = {48u};
+    mesh.Outputs = {normal};
+    EXPECT_TRUE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+
+    fragment.Inputs.front().Type.VecSize = 4u;
+    EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+    fragment.Inputs.front().Type.VecSize = 3u;
+    fragment.Inputs.front().Component = 1u;
+    EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+
+    fragment.Inputs.front().Component = 0u;
+    fragment.Inputs.push_back({.Location = 3u});
+    EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+}
+
+TEST(IndexedDepthReuse, DestinationColorLogicKeepsOriginalTriangleContributions)
+{
+    namespace R = GameEngine::Rendering;
+    using GameEngine::Engine::Renderer::MatchesIndexedDepthRaster;
+    R::GraphicsPipelineDesc depth;
+    R::BuildVertexLayoutFromFlags(R::VertexAttributeFlags::StandardMesh, depth);
+    depth.DepthStencil.depthTestEnable = true;
+    depth.DepthStencil.depthWriteEnable = true;
+    depth.DepthStencil.depthCompareOp = R::ReverseZ::kNearerOrEqual;
+    auto forward = depth;
+    forward.DepthStencil.depthWriteEnable = false;
+    EXPECT_TRUE(MatchesIndexedDepthRaster(depth, forward, false));
+    forward.ColorBlend.logicOpEnable = true;
+    EXPECT_FALSE(MatchesIndexedDepthRaster(depth, forward, false));
+}
+
 TEST(IndexedDepthReuse, AnInterveningDepthWriterInvalidatesThePrepass)
 {
     namespace RG = GameEngine::Rendering::RenderGraph;

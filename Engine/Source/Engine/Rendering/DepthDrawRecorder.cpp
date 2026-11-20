@@ -204,6 +204,7 @@ struct PreparedDepthOnlyPass
         RenderGraph::RGBuffer State;
         RenderGraph::RGBuffer Draws;
         PreparedOwnerCompaction* Compaction = nullptr;
+        bool UsesMeshReplay = false;
     };
     std::array<OwnerPacket, 2> Owners{};
     MaterialSystem* Materials = nullptr;
@@ -1094,6 +1095,35 @@ DescriptorWrite OwnerStorage(uint32_t binding, BufferHandle buffer, size_t bytes
 }
 } // namespace
 
+using OwnerReplayShaderBytes = std::array<std::shared_ptr<const std::vector<uint8_t>>, 3>;
+
+static OwnerReplayShaderBytes LoadOwnerReplayModules(const std::array<const char*, 3>& packages)
+{
+    OwnerReplayShaderBytes binaries{};
+    for (size_t index = 0; index < packages.size(); ++index)
+    {
+        ShaderPackage package{};
+        if (!LoadShaderPkg(packages[index], ShaderSourceKind::SpirV, package))
+            continue;
+        auto stage = package.stageBytes.find("cs");
+        if (stage != package.stageBytes.end() && !stage->second.empty())
+            binaries[index] = std::make_shared<const std::vector<uint8_t>>(std::move(stage->second));
+    }
+    return binaries;
+}
+
+static const OwnerReplayShaderBytes& OwnerReplayModules(
+    bool mesh, const std::array<const char*, 3>& rangePackages, const std::array<const char*, 3>& meshPackages)
+{
+    if (mesh)
+    {
+        static const auto s_MeshModules = LoadOwnerReplayModules(meshPackages);
+        return s_MeshModules;
+    }
+    static const auto s_RangeModules = LoadOwnerReplayModules(rangePackages);
+    return s_RangeModules;
+}
+
 bool PrepareIndexedDepthOwners(RenderGraph::RGPrepareContext& context, PreparedDepthOnlyPass& data, size_t count)
 {
     if (!data.Materials || !context.IsFor(data.IndexedFrame))
@@ -1180,6 +1210,15 @@ bool PrepareIndexedDepthOwners(RenderGraph::RGPrepareContext& context, PreparedD
         baseline.VertexShader = variant.VertexShader;
         baseline.PixelShader = variant.PixelShader;
         baseline.ColorBlend.attachments.assign(1, ColorBlendAttachmentState{.colorWriteMask = 1u});
+        constexpr uint32_t kOwnerMeshEncodingConstant = 307;
+        const auto& constants = owner->VariantMeta->SpecConstants;
+        if (std::none_of(constants.begin(), constants.end(), [](const auto& constant) {
+                return constant.Id == kOwnerMeshEncodingConstant;
+            }))
+            return;
+        if (!baseline.Specialization)
+            baseline.Specialization.emplace();
+        baseline.Specialization->AddConstant(kOwnerMeshEncodingConstant, packet.UsesMeshReplay ? 1u : 0u);
         baseline.DebugName = "IndexedDepthOwner";
         const auto id = device.InternGraphicsPipeline(baseline);
         if (id.IsValid() && context.ResolveGraphicsPipelineId(id) == id)
@@ -1192,17 +1231,15 @@ bool PrepareIndexedDepthOwners(RenderGraph::RGPrepareContext& context, PreparedD
             }
         }
     };
+    if (count == 2u && ranked[0].Source && ranked[1].Source &&
+        ranked[0].Source->DrawIndex > ranked[1].Source->DrawIndex)
+        std::swap(ranked[0], ranked[1]);
+
     preparePacket(ranked[0], data.Owners[0]);
     if (count == 2u)
     {
-        preparePacket(ranked[1], data.Owners[1]);
-        auto& primary = data.Owners[0];
-        auto& secondary = data.Owners[1];
-        if (secondary.Pipeline.IsValid() && (!primary.Pipeline.IsValid() || primary.DrawIndex > secondary.DrawIndex))
-        {
-            std::swap(primary.DrawIndex, secondary.DrawIndex);
-            std::swap(primary.Pipeline, secondary.Pipeline);
-        }
+        const size_t slot = data.Owners[0].Pipeline.IsValid() ? 1u : 0u;
+        preparePacket(ranked[1], data.Owners[slot]);
     }
     return true;
 }
@@ -1212,6 +1249,9 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
     RenderGraph::RGBuffer ordering, size_t slot)
 {
     auto& owner = data.Owners[slot];
+    static const bool s_MeshReplayEnabled = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_MESH_REPLAY", true);
+    const bool useMesh = slot == 0u && s_MeshReplayEnabled && device.GetCapabilities().supportsIndexedDepthMeshReplay;
+    owner.UsesMeshReplay = useMesh;
     constexpr uint32_t shift = 1u; // 64 triangles from two adjacent 32-triangle owner blocks.
     if (!owners.IsValid() || !device.GetCapabilities().supportsDrawIndirectCountNative ||
         !streams.GetSharedIndirectionAddress())
@@ -1234,10 +1274,10 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
         BlockPush Constants{};
         BufferHandle Bitset{};
     };
-    constexpr size_t stateBytes = 14u * sizeof(uint32_t);
-    constexpr size_t drawBytes = kOwnerMaxDraws * kOwnerReplayDrawStride;
+    const size_t stateBytes = (useMesh ? 17u : 14u) * sizeof(uint32_t);
+    const size_t drawBytes = kOwnerMaxDraws * (useMesh ? 4u * sizeof(uint32_t) : kOwnerReplayDrawStride);
     constexpr size_t offsetBytes = kOwnerMaxDraws * sizeof(uint32_t);
-    const size_t maskBytes = offsetBytes * (32u >> shift);
+    const size_t maskBytes = offsetBytes * (useMesh ? 256u : (32u >> shift));
     const auto records = streams.GetSharedRecordBuffer();
     const auto cursors = streams.GetSharedCursorBuffer();
     const uint32_t recordCapacity = streams.GetSharedRecordCapacity();
@@ -1246,30 +1286,21 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
     if (!records.IsValid() || !cursors.IsValid() || recordCapacity == 0 || cursorCapacity == 0)
         return;
 
-    static const auto modules = []
-    {
-        static constexpr std::array packages{
-            "Shaders/indexed_depth_replay_classify.shaderpkg",
-            "Shaders/indexed_depth_replay_ranges.shaderpkg",
-            "Shaders/indexed_depth_replay_offsets.shaderpkg"};
-        std::array<std::shared_ptr<const std::vector<uint8_t>>, packages.size()> binaries{};
-        for (size_t i = 0; i < packages.size(); ++i)
-        {
-            ShaderPackage package{};
-            if (!LoadShaderPkg(packages[i], ShaderSourceKind::SpirV, package))
-                continue;
-            auto stage = package.stageBytes.find("cs");
-            if (stage != package.stageBytes.end() && !stage->second.empty())
-                binaries[i] = std::make_shared<const std::vector<uint8_t>>(std::move(stage->second));
-        }
-        return binaries;
-    }();
+    constexpr std::array kRangePrograms{
+        "Shaders/indexed_depth_replay_classify.shaderpkg",
+        "Shaders/indexed_depth_replay_ranges.shaderpkg",
+        "Shaders/indexed_depth_replay_offsets.shaderpkg"};
+    constexpr std::array kMeshPrograms{
+        "Shaders/indexed_depth_replay_mesh_classify.shaderpkg",
+        "Shaders/indexed_depth_replay_mesh_ranges.shaderpkg",
+        "Shaders/indexed_depth_replay_mesh_offsets.shaderpkg"};
+    const auto& shaderModules = OwnerReplayModules(useMesh, kRangePrograms, kMeshPrograms);
     std::array<OwnerComputeProgram, 3> programs{};
     static constexpr std::array programNames{"IndexedOwner.ClassifyBlocks", "IndexedOwner.Ranges", "IndexedOwner.RangeOffsets"};
     constexpr std::array bindingCounts{4u, 5u, 3u};
     for (uint32_t i = 0; i < programs.size(); ++i)
     {
-        if (!modules[i])
+        if (!shaderModules[i])
             return;
         auto& program = programs[i];
         for (uint32_t slot = 0; slot < bindingCounts[i]; ++slot)
@@ -1285,7 +1316,7 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
             program.Layout.bindings.push_back(binding);
         }
         ComputePipelineDesc desc;
-        desc.ComputeShader = modules[i];
+        desc.ComputeShader = shaderModules[i];
         desc.DescriptorSetLayouts.push_back(device.InternDescriptorSetLayout(program.Layout));
         desc.PushConstants = {0, sizeof(BlockPush), kShaderStageCompute};
         desc.DebugName = programNames[i];
@@ -1304,9 +1335,11 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
     };
     const auto masks = create("IndexedOwner.BlockMasks", maskBytes, BufferUsage::TransferDst);
     const auto offsets = create("IndexedOwner.BlockOffsets", offsetBytes, BufferUsage::Storage);
-    owner.Draws = create("IndexedOwner.BlockDraws", drawBytes, BufferUsage::Indirect);
+    const auto countUsage = BufferUsage::Indirect | BufferUsage::TransferDst | BufferUsage::TransferSrc;
+    owner.Draws = create("IndexedOwner.BlockDraws", drawBytes,
+        useMesh ? BufferUsage::ShaderDeviceAddress : BufferUsage::Indirect);
     owner.State = create("IndexedOwner.BlockState", stateBytes,
-        BufferUsage::Indirect | BufferUsage::TransferDst | BufferUsage::TransferSrc);
+        useMesh ? (countUsage | BufferUsage::ShaderDeviceAddress) : countUsage);
     owner.Compaction = frame.AllocatePassData<PreparedOwnerCompaction>();
     auto* work = frame.AllocatePassData<Prepared>();
     work->Match = owner.Compaction;
@@ -1331,8 +1364,8 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
             pass.Write(owner.State, RenderGraph::RGBufferWrite::CopyDst);
             pass.Write(owner.State);
             pass.Write(owner.Draws);
-            pass.Prepare([&data, &owner, slot, programs = std::move(programs), work, owners, masks, offsets,
-                records, cursors, sourceRemap, recordCapacity, cursorCapacity, recordsBytes, cursorsBytes](RenderGraph::RGPrepareContext& context)
+            pass.Prepare([&data, &owner, useMesh, programs = std::move(programs), work, owners, masks, offsets,
+                records, cursors, sourceRemap, recordCapacity, cursorCapacity, recordsBytes, cursorsBytes, maskBytes, stateBytes, drawBytes](RenderGraph::RGPrepareContext& context)
             {
                 if (!owner.Pipeline.IsValid())
                     return true;
@@ -1378,12 +1411,20 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
                                     static_cast<uint32_t>(source->CountOffset / sizeof(uint32_t)),
                                     source->MaxDrawCount, 0u, shift, 0u};
                 work->Bitset = marks;
+                IndexedOwnerReplay replay{commands, state, kOwnerMaxDraws};
+                if (useMesh)
+                {
+                    replay.MeshWorkAddress = device.GetBufferDeviceAddress(commands);
+                    replay.MeshStateAddress = device.GetBufferDeviceAddress(state);
+                    if (!replay.MeshWorkAddress || !replay.MeshStateAddress)
+                        return true;
+                }
                 work->Match->Input = source;
-                work->Match->Output = {commands, state, kOwnerMaxDraws};
+                work->Match->Output = replay;
                 return true;
             });
         },
-        [work, groupsX, groupsY](RenderGraph::RGContext& context)
+        [work, groupsX, groupsY, stateBytes, maskBytes, useMesh](RenderGraph::RGContext& context)
         {
             const auto& output = work->Match->Output;
             if (!output.Counts.IsValid() || !context.Cmd)
@@ -1408,7 +1449,8 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
                         ResourceAccessMask::ShaderWrite,
                         ResourceAccessMask::ShaderRead | ResourceAccessMask::ShaderWrite | ResourceAccessMask::IndirectCommandRead);
             };
-            cmd.FillBuffer(work->Bitset, 0, maskBytes, 0u);
+            const size_t clearBytes = useMesh ? 8u * kOwnerMaxDraws * sizeof(uint32_t) : maskBytes;
+            cmd.FillBuffer(work->Bitset, 0, clearBytes, 0u);
             cmd.FillBuffer(output.Counts, 0, stateBytes, 0u);
             barrier(PipelineStageMask::Transfer | PipelineStageMask::ComputeShader, PipelineStageMask::ComputeShader,
                     ResourceAccessMask::TransferWrite | ResourceAccessMask::ShaderWrite,
@@ -1421,6 +1463,16 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
             bind(2, push);
             cmd.Dispatch(1, 1, 1);
             sync();
+            if (useMesh)
+            {
+                push.Emit = 3u;
+                bind(0, push);
+                cmd.Dispatch(groupsX, groupsY, 1);
+                sync();
+                bind(1, push);
+                cmd.Dispatch((kOwnerMaxDraws + 63u) / 64u, 1, 1);
+                sync();
+            }
             push.Emit = 0u;
             bind(0, push);
             cmd.Dispatch(groupsX, groupsY, 1);
@@ -1434,8 +1486,14 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
             push.Emit = 1u;
             bind(1, push);
             cmd.DispatchIndirect(output.Counts, 2u * sizeof(uint32_t));
-            barrier(PipelineStageMask::ComputeShader, PipelineStageMask::DrawIndirect | PipelineStageMask::Transfer,
-                    ResourceAccessMask::ShaderWrite, ResourceAccessMask::IndirectCommandRead | ResourceAccessMask::TransferRead);
+            auto readers = PipelineStageMask::DrawIndirect | PipelineStageMask::Transfer;
+            auto access = ResourceAccessMask::IndirectCommandRead | ResourceAccessMask::TransferRead;
+            if (useMesh)
+            {
+                readers = readers | PipelineStageMask::GraphicsMesh;
+                access = access | ResourceAccessMask::ShaderRead;
+            }
+            barrier(PipelineStageMask::ComputeShader, readers, ResourceAccessMask::ShaderWrite, access);
         });
 }
 
@@ -1447,7 +1505,13 @@ void ReadIndexedOwnerCompaction(RenderGraph::RGPassBuilder& pass, const Prepared
         if (!owner.State.IsValid() || !owner.Draws.IsValid())
             continue;
         pass.Read(owner.State, RenderGraph::RGBufferRead::Indirect);
-        pass.Read(owner.Draws, RenderGraph::RGBufferRead::Indirect);
+        if (owner.UsesMeshReplay)
+        {
+            pass.Read(owner.Draws, RenderGraph::RGBufferRead::MeshStorage);
+            pass.Read(owner.State, RenderGraph::RGBufferRead::MeshStorage);
+        }
+        else
+            pass.Read(owner.Draws, RenderGraph::RGBufferRead::Indirect);
     }
 }
 

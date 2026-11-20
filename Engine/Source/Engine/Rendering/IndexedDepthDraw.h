@@ -9,6 +9,7 @@
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Core/SpecializationConstants.h"
+#include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "RenderServicesDetail.h"
 
@@ -110,6 +111,7 @@ inline bool MatchesIndexedDepthRaster(const Rendering::GraphicsPipelineDesc& dep
                state.depthCompareOp == Rendering::ReverseZ::kNearerOrEqual &&
                !state.depthBoundsTestEnable && !state.stencilTestEnable &&
                !pipeline.ColorBlend.alphaToCoverageEnable &&
+               !pipeline.ColorBlend.logicOpEnable &&
                std::none_of(pipeline.ColorBlend.attachments.begin(), pipeline.ColorBlend.attachments.end(),
                             [](const auto& attachment) { return attachment.blendEnable; });
     };
@@ -146,6 +148,56 @@ inline bool MatchesIndexedDepthRaster(const Rendering::GraphicsPipelineDesc& dep
     constexpr uint32_t uv0 = 2;
     constexpr uint32_t colorInput = 4;
     return matchesInput(position) && matchesInput(uv0) && (!vertexAlpha || matchesInput(colorInput));
+}
+
+inline bool MatchesIndexedOwnerMeshVertexLayout(
+    const Rendering::GraphicsPipelineDesc& pipeline, Rendering::VertexAttributeFlags flags)
+{
+    using Rendering::VertexAttributeFlags;
+    if (!Rendering::HasFlag(flags, VertexAttributeFlags::StandardMesh))
+        return false;
+
+    Rendering::GraphicsPipelineDesc expected;
+    const auto consumed = flags & (VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasColor);
+    Rendering::BuildVertexLayoutFromFlags(consumed, expected);
+
+    for (const auto& binding : expected.VertexBindings)
+    {
+        const auto found = std::find_if(pipeline.VertexBindings.begin(), pipeline.VertexBindings.end(),
+            [&binding](const auto& candidate) { return candidate.binding == binding.binding; });
+        if (found == pipeline.VertexBindings.end() || found->stride != binding.stride ||
+            found->inputRate != binding.inputRate)
+            return false;
+    }
+    for (const auto& attribute : expected.VertexAttributes)
+    {
+        const auto found = std::find_if(pipeline.VertexAttributes.begin(), pipeline.VertexAttributes.end(),
+            [&attribute](const auto& candidate) { return candidate.location == attribute.location; });
+        if (found == pipeline.VertexAttributes.end() || found->binding != attribute.binding ||
+            found->offset != attribute.offset || found->format != attribute.format)
+            return false;
+    }
+    return true;
+}
+
+inline bool MatchesIndexedOwnerMeshFragmentInputs(
+    const Rendering::StageMeta& fragment, const Rendering::StageMeta& mesh)
+{
+    for (const auto& input : fragment.Inputs)
+    {
+        if (input.Builtin || input.Component != 0u || !input.Type.ArrayDims.empty())
+            return false;
+        const auto output = std::find_if(mesh.Outputs.begin(), mesh.Outputs.end(),
+            [&input](const auto& candidate) {
+                return candidate.Location == input.Location && candidate.Component == input.Component;
+            });
+        if (output == mesh.Outputs.end() || output->Type.ArrayDims.size() != 1u ||
+            output->Type.Kind != input.Type.Kind || output->Type.Base != input.Type.Base ||
+            output->Type.Rows != input.Type.Rows || output->Type.Cols != input.Type.Cols ||
+            output->Type.VecSize != input.Type.VecSize)
+            return false;
+    }
+    return true;
 }
 
 inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* meta,

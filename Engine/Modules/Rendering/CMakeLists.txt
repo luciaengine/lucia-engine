@@ -709,6 +709,22 @@ if(GLSLC_EXECUTABLE)
                 SOURCE "${source}"
                 DEPENDS "${SHADER_SOURCE_DIR}/IndexedDepthReplay/state.glsl"
                 COMMENT "Compiling indexed depth replay compute shader: ${pass}")
+            ge_compile_shader(VULKAN13
+                OUTPUT "${SHADER_OUTPUT_DIR}/indexed_depth_replay_mesh_${pass}.comp.spv"
+                SOURCE "${SHADER_SOURCE_DIR}/IndexedDepthReplay/Mesh/${pass}.comp"
+                DEPENDS "${SHADER_SOURCE_DIR}/IndexedDepthReplay/Mesh/state.glsl"
+                COMMENT "Compiling indexed mesh replay compute shader: ${pass}")
+        endforeach()
+        foreach(stem indexed_depth_replay_mesh_forward indexed_depth_replay_mesh_forward_color)
+            set(defines "")
+            if(stem STREQUAL "indexed_depth_replay_mesh_forward_color")
+                set(defines -DHAS_COLOR)
+            endif()
+            ge_compile_shader(VULKAN13
+                OUTPUT "${SHADER_OUTPUT_DIR}/${stem}.mesh.spv"
+                SOURCE "${SHADER_SOURCE_DIR}/IndexedDepthReplay/Mesh/forward.mesh"
+                DEFINES ${defines}
+                COMMENT "Compiling indexed mesh replay forward shader: ${stem}")
         endforeach()
     endif()
 
@@ -1571,6 +1587,19 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     if(NOT EMSCRIPTEN)
         foreach(pass classify offsets ranges)
             _ge_add_shaderpkg_compute(indexed_depth_replay_${pass} indexed_depth_replay_${pass}.comp)
+            _ge_add_shaderpkg_compute(indexed_depth_replay_mesh_${pass} indexed_depth_replay_mesh_${pass}.comp)
+        endforeach()
+        foreach(stem indexed_depth_replay_mesh_forward indexed_depth_replay_mesh_forward_color)
+            set(stage "${CMAKE_BINARY_DIR}/Shaders/${stem}.mesh.spv")
+            set(package "${CMAKE_BINARY_DIR}/Shaders/${stem}.shaderpkg")
+            add_custom_command(
+                OUTPUT "${package}"
+                COMMAND "${_GE_SHADERREFLECT_CMD}" --ms "${stage}" --out "${package}"
+                DEPENDS "${stage}" ${_GE_SHADERREFLECT_TOOL_DEP}
+                COMMENT "Packaging indexed mesh replay shaderpkg: ${stem}"
+                VERBATIM
+            )
+            set_property(GLOBAL APPEND PROPERTY GE_SHADERPKG_OUTPUTS "${package}")
         endforeach()
     endif()
     _ge_add_shaderpkg_compute(draw_stream_group_compact draw_stream_group_compact.comp)
