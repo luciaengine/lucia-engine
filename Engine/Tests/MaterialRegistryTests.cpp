@@ -23,6 +23,7 @@
 #include "Rendering/Materials/MaterialParamsLayout.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Materials/Shader/ShaderPropertyTable.h"
+#include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Types/StringId.h"
 
 #include "ScopedCompatShaderProfile.h"
@@ -133,6 +134,50 @@ TEST(MaterialPrewarmVariantsTest, EveryGlassWarmKeyCompiles)
     }
     std::error_code ec;
     std::filesystem::remove_all(cacheRoot, ec);
+}
+
+TEST(MaterialPrewarmVariantsTest, FixedMaterialRowIsReflectedOnlyForDesktopForward)
+{
+    const auto shaderDirectory = TestPaths::StagedRenderingShadersDir();
+    ASSERT_TRUE(std::filesystem::is_directory(shaderDirectory));
+    if (!ShaderCompileService::IsCompilerAvailable())
+        GTEST_SKIP() << "No shader compiler available";
+
+    const auto cacheRoot = std::filesystem::temp_directory_path() /
+        ("ge-fixed-material-row-" + GUID::Generate().ToString());
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = shaderDirectory;
+    context.CacheRoot = cacheRoot / "Shaders";
+    MaterialDocument document{};
+    document.materialName = "FixedMaterialRow";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    document.alphaMode = MaterialAlphaMode::Mask;
+
+    auto target = Rendering::CurrentShaderCompileTarget();
+    TestSupport::ScopedShaderCompileTarget restore{target};
+    for (const bool compatibility : {false, true})
+    {
+        target.Compatibility = compatibility;
+        Rendering::ApplyShaderCompileProfile(target);
+        for (const bool depthOnly : {false, true})
+        {
+            const auto keywords = MaterialKeyword::Instanced |
+                (depthOnly ? MaterialKeyword::DepthOnlyFragment : MaterialKeyword::ForwardPlus);
+            const auto result = BuildMaterialToShaderPackage(document, cacheRoot / "FixedMaterialRow.material",
+                "FixedMaterialRow", context, ShaderSourceKind::SpirV, keywords, VertexAttributeFlags::StandardMesh);
+            ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
+            ASSERT_NE(result.package, nullptr);
+            const auto& constants = result.package->meta.SpecConstants;
+            constexpr uint32_t kForwardMaterialRowConstant = 306;
+            const auto found = std::find_if(constants.begin(), constants.end(), [](const auto& constant) {
+                return constant.Id == kForwardMaterialRowConstant;
+            });
+            EXPECT_EQ(found != constants.end(), !compatibility && !depthOnly);
+        }
+    }
+    std::error_code error;
+    std::filesystem::remove_all(cacheRoot, error);
 }
 
 // A height map bound on the standard surface compiles the relief march into every shading key the
