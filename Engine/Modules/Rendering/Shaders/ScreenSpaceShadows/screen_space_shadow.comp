@@ -28,6 +28,7 @@ layout(set = 0, binding = 3, std430) buffer Coverage { uint writes[]; };
 #endif
 shared float rayDepth[128];
 shared float raySurfaceDepth[128];
+shared uint continuousPair[128];
 
 bool InBounds(ivec2 p)
 {
@@ -89,6 +90,25 @@ void main()
         pixel += delta * direction;
     }
     barrier();
+
+    // Adjacent samples have the same continuity for every receiver whose ray
+    // crosses them. Resolve the pair once, including at wave boundaries.
+    for (int i = 0; i < 2; ++i)
+    {
+        int pair = lane + 64 * i;
+        bool continuous = pair < 127;
+        if (continuous)
+        {
+            float a = raySurfaceDepth[pair];
+            float b = raySurfaceDepth[pair + 1];
+            continuous = a > 0.0 && b > 0.0 &&
+                         abs(a - b) <= min(a, b) * uSettings.y &&
+                         abs(rayDepth[pair]) < 1e9 && abs(rayDepth[pair + 1]) < 1e9;
+        }
+        continuousPair[pair] = continuous ? 1u : 0u;
+    }
+    barrier();
+
     if (!InBounds(outputPixel))
         return;
 #ifdef GE_SSS_TEST_COVERAGE
@@ -109,11 +129,7 @@ void main()
             // A sloping blocker can cross the ray between samples without
             // either endpoint entering the thin hit window. Test that segment
             // too, but never bridge a depth discontinuity or the far border.
-            float depthA = raySurfaceDepth[index];
-            float depthB = raySurfaceDepth[index + 1];
-            if (i < 59 && depthA > 0.0 && depthB > 0.0 &&
-                abs(depthA - depthB) <= min(depthA, depthB) * uSettings.y &&
-                abs(rayDepth[index]) < 1e9 && abs(rayDepth[index + 1]) < 1e9)
+            if (i < 59 && continuousPair[index] != 0u)
             {
                 float deltaB = reference - rayDepth[index + 1] * scale;
                 float segmentDistance = deltaA * deltaB <= 0.0 ? 0.0 : min(abs(deltaA), abs(deltaB));
