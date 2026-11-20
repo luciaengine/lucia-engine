@@ -1611,10 +1611,9 @@ protected:
     bool m_IsManagerRoot = false;
 
   public:
-    // Index of this element in UIManager::m_PrimitiveDataDirty. Valid only while
-    // InPrimitiveDataDirty is set in m_InQueueFlags, so RemoveFromDirtyQueues
-    // tombstones the entry in constant time. Declared here to fill the padding
-    // after m_IsManagerRoot: the size pin in UIElement.cpp forbids growth.
+    // Index in UIManager::m_PrimitiveDataDirty, valid while m_InQueueFlags has
+    // InPrimitiveDataDirty. It fills the padding after m_IsManagerRoot because
+    // the size pin in UIElement.cpp forbids growth.
     uint32_t m_PrimitiveDataDirtySlot = 0;
 
   private:
