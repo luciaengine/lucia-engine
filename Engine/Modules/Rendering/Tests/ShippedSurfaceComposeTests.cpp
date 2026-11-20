@@ -12,6 +12,7 @@
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "Source/Materials/Shader/ShaderSourceCache.h"
 #include "StagedTestPaths.h"
 #include "TestUtils.h"
 #include "TestTempDir.h"
@@ -152,6 +153,7 @@ TEST(ShippedSurfaceCompose, EditedDepthCoverageCannotCertifyIndexedReuse)
     }
     text.insert(coverageReturn, "#ifdef GE_DEPTH_ONLY_FRAGMENT\n    o.opacity = 0.0;\n#endif\n");
     std::ofstream(surface, std::ios::binary | std::ios::trunc) << text;
+    ShaderSourceCache::Get().InvalidateAll();
     for (const auto keywords : {kForward, kPrepass})
     {
         const auto edited = build(keywords);
