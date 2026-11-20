@@ -223,7 +223,8 @@ class PipelineVariantCache
         bool depthBiasEnable,
         bool depthClampEnable,
         FrontFace frontFace,
-        const RenderGraph::RGPrepareContext& context);
+        const RenderGraph::RGPrepareContext& context,
+        bool withoutHexTiling = false);
 
     // The published camera-prepass variant a draw producer pins on a head it
     // emits while the frame is declared (DrawCommand::InternedPipeline and

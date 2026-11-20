@@ -927,6 +927,7 @@ bool MaterialSystem::IsCurrentPackedMaterialRow(const Material& material, Packed
     const auto row = material.GetGpuSceneMaterialIndex();
     const auto revision = material.GetContentRevision();
     return revision != 0 && slot.Buffer == bound.Buffer && slot.Offset == bound.Offset &&
+        slot.MappingGeneration == m_MaterialSSBOGeneration && row < bound.Size / kMaterialEntryStride &&
         row < slot.RowRevisions.size() && row < m_MaterialsBySSBOIndex.size() &&
         m_MaterialsBySSBOIndex[row] == &material && slot.RowRevisions[row] == revision;
 }
@@ -1094,6 +1095,7 @@ void MaterialSystem::PackMaterialSSBO()
     packedSlot.Offset = alloc.offset;
     packedSlot.Stamp = stamp;
     packedSlot.ContentEpoch = contentEpoch;
+    packedSlot.MappingGeneration = m_MaterialSSBOGeneration;
 }
 
 Material* MaterialSystem::RegisterMaterialFromDocument(

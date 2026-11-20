@@ -1,6 +1,8 @@
 // PipelineVariantCache implementation — see PipelineVariantCache.h for the
 // service contract.
 #include "Engine/Rendering/PipelineVariantCache.h"
+
+#include "IndexedDepthDraw.h"
 #include "SceneLoadTracker/SceneLoadTracker.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/MaterialSystem.h"
@@ -47,6 +49,7 @@
 #include "Engine/Rendering/Pipeline/Nodes/LensFlareRenderNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/VolumetricFogNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/TransmissivePassNode.h"
+#include "Engine/Rendering/Pipeline/Nodes/ForwardShaderSpecialization.h"
 #include "Engine/Rendering/Pipeline/Nodes/WorldRenderNode.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
@@ -499,10 +502,42 @@ PipelineVariantCache::PrepareDepthInstancedVariant(
     bool depthBiasEnable,
     bool depthClampEnable,
     Rendering::FrontFace frontFace,
-    const Rendering::RenderGraph::RGPrepareContext& context)
+    const Rendering::RenderGraph::RGPrepareContext& context,
+    bool withoutHexTiling)
 {
-    return ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
-                               depthClampEnable, frontFace, context);
+    auto resolved = ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
+                                        depthClampEnable, frontFace, context);
+    const auto* unit = resolved.Unit;
+    if (!withoutHexTiling || !resolved.Pipeline.IsValid() || !unit ||
+        unit->MaterialVersion != material.GetVersion() ||
+        !StockMaskVertexAlpha(unit->VariantMeta.get(), /*depthOnly=*/true))
+        return resolved;
+
+    auto* device = m_Materials->GetDevice();
+    const auto format = context.BuildCurrentFormatKey();
+    if (context.ResolveGraphicsPipelineId(unit->PipelineId) != unit->PipelineId ||
+        resolved.ConcreteId != unit->PipelineId)
+        return resolved;
+
+    static const auto constants = []
+    {
+        Rendering::SpecializationConstants overrides;
+        overrides.AddConstant(kForwardHexTilingConstant, uint32_t{0});
+        return overrides;
+    }();
+    const auto specialized = device->GetMutablePipelineCache().SpecializeGraphicsPipeline(unit->PipelineId, constants);
+    if (specialized.IsValid())
+    {
+        const auto pipeline = device->TryGetWarmGraphicsPipeline(specialized, format);
+        if (pipeline.IsValid())
+        {
+            resolved.Pipeline = pipeline;
+            resolved.ConcreteId = specialized;
+        }
+        else
+            QueueConcreteWarm(material, specialized, format);
+    }
+    return resolved;
 }
 
 const PipelineVariantCache::VariantServeUnit* PipelineVariantCache::FindOrRequestPrepassVariant(

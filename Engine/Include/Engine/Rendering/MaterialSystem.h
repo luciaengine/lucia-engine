@@ -759,6 +759,7 @@ class MaterialSystem
         // Layout stamp: the slot mapping, the row count and the unassigned-row
         // defaults. Equal stamp and placement means only rows can differ.
         uint64_t Stamp = 0;
+        uint64_t MappingGeneration = 0;
         // Material::GetGlobalContentEpoch at the last pack. Equal means no row
         // can differ, so the pack is skipped without scanning rows.
         uint64_t ContentEpoch = 0;
