@@ -493,6 +493,12 @@ struct GE_MaterialTexture
 // cubes, and shadow maps resolve to the builtins unbiased. nonuniformEXT is
 // applied here, at the descriptor access, so the NonUniform decoration lands
 // on the sampled operand regardless of the call shape.
+#if defined(FORWARD_PLUS) && defined(ALPHA_TEST) && !defined(GE_COMPAT_PROFILE) && !defined(GE_WGSL_COOK)
+#define GE_CAN_SPECIALIZE_MATERIAL_ROW 1
+const uint kPerInstanceMaterialRow = 0xffffffffu;
+layout(constant_id = 306) const uint GE_FORWARD_MATERIAL_ROW = kPerInstanceMaterialRow;
+#endif
+
 #if defined(GE_COMPAT_PROFILE)
 vec4 texture(GE_MaterialTexture t, vec2 uv)
 {
@@ -501,6 +507,11 @@ vec4 texture(GE_MaterialTexture t, vec2 uv)
 #else
 vec4 texture(GE_MaterialTexture t, vec2 uv)
 {
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
+        return texture(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]),
+                       uv, ge_mipBiasParams.x);
+#endif
     return texture(sampler2D(ge_BindlessTextures[nonuniformEXT(t.TexIdx)],
                              ge_BindlessSamplers[nonuniformEXT(t.SamplerIdx)]),
                    uv, ge_mipBiasParams.x);
@@ -521,6 +532,11 @@ vec4 textureGrad(GE_MaterialTexture t, vec2 uv, vec2 uvPerPixelX, vec2 uvPerPixe
 vec4 textureGrad(GE_MaterialTexture t, vec2 uv, vec2 uvPerPixelX, vec2 uvPerPixelY)
 {
     float biasScale = exp2(ge_mipBiasParams.x);
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
+        return textureGrad(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]),
+                           uv, uvPerPixelX * biasScale, uvPerPixelY * biasScale);
+#endif
     return textureGrad(sampler2D(ge_BindlessTextures[nonuniformEXT(t.TexIdx)],
                                  ge_BindlessSamplers[nonuniformEXT(t.SamplerIdx)]),
                        uv, uvPerPixelX * biasScale, uvPerPixelY * biasScale);
@@ -536,6 +552,10 @@ ivec2 textureSize(GE_MaterialTexture t, int lod)
 #else
 ivec2 textureSize(GE_MaterialTexture t, int lod)
 {
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
+        return textureSize(ge_BindlessTextures[t.TexIdx], lod);
+#endif
     return textureSize(ge_BindlessTextures[nonuniformEXT(t.TexIdx)], lod);
 }
 #endif
@@ -550,6 +570,10 @@ vec4 textureLod(GE_MaterialTexture t, vec2 uv, float lod)
 #else
 vec4 textureLod(GE_MaterialTexture t, vec2 uv, float lod)
 {
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
+        return textureLod(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]), uv, lod);
+#endif
     return textureLod(sampler2D(ge_BindlessTextures[nonuniformEXT(t.TexIdx)],
                                 ge_BindlessSamplers[nonuniformEXT(t.SamplerIdx)]),
                       uv, lod);
@@ -698,9 +722,15 @@ void main()
     oSpecularWeight = vec4(0.0);
     oSpecularRadiance = vec4(0.0);
 #endif
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    const uint materialRow = GE_FORWARD_MATERIAL_ROW == kPerInstanceMaterialRow ? vMaterialIndex : GE_FORWARD_MATERIAL_ROW;
+    ge_MatData = MaterialParams.ge_Materials[GE_MATERIAL_ROW_INDEX(
+        MaterialParams.ge_Materials, materialRow)];
+#else
     // Fetch material data from shared SSBO using per-instance material index.
     ge_MatData = MaterialParams.ge_Materials[GE_MATERIAL_ROW_INDEX(
         MaterialParams.ge_Materials, vMaterialIndex)];
+#endif
     GE_LoadDeclaredProperties();
 
 #ifdef GE_GLASS_SHADOW_COLOR

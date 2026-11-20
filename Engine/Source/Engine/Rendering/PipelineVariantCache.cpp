@@ -415,18 +415,48 @@ PipelineVariantCache::PrepareColorVariant(
     return ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace, context);
 }
 
-Rendering::PipelineHandle PipelineVariantCache::PrepareIndexedDepthEqual(
-    const Material& material, Rendering::GraphicsPipelineDesc desc, const Rendering::PipelineFormatKey& formatKey)
+PipelineVariantCache::PreparedVariant PipelineVariantCache::PrepareIndexedDepthEqual(
+    const Material& material, const Rendering::ShaderMeta& shader, Rendering::GraphicsPipelineDesc desc,
+    const Rendering::PipelineFormatKey& formatKey)
 {
     auto* device = m_Materials->GetDevice();
     if (!device)
         return {};
     desc.DepthStencil.depthCompareOp = Rendering::CompareOp::Equal;
+
+    constexpr uint32_t kForwardMaterialRowConstant = 306;
+    const bool hasMaterialRowConstant = std::any_of(shader.SpecConstants.begin(), shader.SpecConstants.end(),
+        [](const auto& constant) { return constant.Id == kForwardMaterialRowConstant; });
+    const uint32_t materialRow = material.GetGpuSceneMaterialIndex();
+    bool agreesWithOverride = true;
+    if (desc.Specialization)
+    {
+        const auto& entries = desc.Specialization->GetEntries();
+        if (const auto entry = entries.find(kForwardMaterialRowConstant); entry != entries.end())
+        {
+            agreesWithOverride = entry->second.Size == sizeof(materialRow) &&
+                std::memcmp(desc.Specialization->GetDataPtr() + entry->second.Offset,
+                            &materialRow, sizeof(materialRow)) == 0;
+        }
+    }
+    if (device->GetCapabilities().prefersForwardShaderSpecialization && hasMaterialRowConstant && agreesWithOverride)
+    {
+        auto uniform = desc;
+        if (!uniform.Specialization)
+            uniform.Specialization.emplace();
+        uniform.Specialization->AddConstant(kForwardMaterialRowConstant, materialRow);
+        const auto uniformId = device->InternGraphicsPipeline(uniform);
+        const auto uniformPipeline = device->TryGetWarmGraphicsPipeline(uniformId, formatKey);
+        if (uniformPipeline.IsValid())
+            return {uniformPipeline, nullptr, uniformId};
+        QueueConcreteWarm(material, uniformId, formatKey);
+    }
+
     const auto id = device->InternGraphicsPipeline(desc);
     const auto pipeline = device->TryGetWarmGraphicsPipeline(id, formatKey);
     if (!pipeline.IsValid())
         QueueConcreteWarm(material, id, formatKey);
-    return pipeline;
+    return {pipeline, nullptr, id};
 }
 
 PipelineVariantCache::PreparedVariant

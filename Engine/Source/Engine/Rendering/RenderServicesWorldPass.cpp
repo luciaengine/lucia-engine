@@ -1812,18 +1812,18 @@ class RenderServices::WorldPassPreparation
                 {
                     ++m_Data->IndexedReplayMatches;
                     const auto replay = MatchIndexedOwnerCompaction(*m_Data->IndexedReplayProducer, *source);
-                    auto& variants = m_Services.Materials().Variants();
-                    const auto format = m_Context.BuildCurrentFormatKey();
-                    const auto equal = replay.MeshWorkAddress
-                        ? variants.PrepareIndexedDepthEqual(*batch.Material, color, format)
-                        : variants.PrepareIndexedDepthEqual(*batch.Material, std::move(color), format);
-                    if (equal.IsValid())
+                    const auto equal = m_Services.Materials().Variants().PrepareIndexedDepthEqual(
+                        *batch.Material, *meta, std::move(color), m_Context.BuildCurrentFormatKey());
+                    if (equal.Pipeline.IsValid())
                     {
-                        prepared.Bindings.Pipeline = equal;
+                        prepared.Bindings.Pipeline = equal.Pipeline;
                         prepared.IndexedDepthEqual = true;
                         if (replay.MeshWorkAddress)
-                            PrepareOrderedOwnerMesh(prepared, replay, command, *batch.Material, *meta, std::move(color),
-                                device, m_Services.Materials().Binder(), m_Data->Inputs, m_Context, batch.VertexFlags);
+                        {
+                            if (device.CopyGraphicsPipeline(equal.ConcreteId, color))
+                                PrepareOrderedOwnerMesh(prepared, replay, command, *batch.Material, *meta, std::move(color),
+                                    device, m_Services.Materials().Binder(), m_Data->Inputs, m_Context, batch.VertexFlags);
+                        }
                         else
                             prepared.OwnerReplay = replay;
                     }
