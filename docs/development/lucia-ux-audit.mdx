@@ -1,9 +1,9 @@
 ---
 title: Lucia editor UX audit after the OpenEngine import
-description: The Lucia editor looks and controls that the OpenEngine import removed and that no later change restored, for a decision per item.
+description: The Lucia editor UX audit after the import, with the decision for each item.
 ---
 
-The OpenEngine import (#83, snapshot `be9186a74`) replaced Lucia editor files. Pull requests #101 to #174 restored part of that work. This page lists what is still different. The owner decides per row. Only approved rows are restored.
+The OpenEngine import (#83, snapshot `be9186a74`) replaced Lucia editor files. Pull requests #101 to #174 restored part of that work. The comparison tables record the audit at #174. See Decisions for the current status.
 
 ## Decisions
 
@@ -16,7 +16,8 @@ The owner said "do whats best" and, for row 7, "yes min 12 font size".
 | 8 | Not restored. `main` rasterizes each editor SVG at the size it is drawn at, and the engine has no setter for an editor raster size. A setting would have nothing to control. |
 | 9 | Correction: the cards are on `main`. The audit looked for the CSS classes, and `main` styles the cards from C++. The cards now take the same look from `inspector.css`. |
 | 12 | Already on `main` when the restore started. |
-| 13, 14 | Separate tasks. |
+| 13 | [#216](https://github.com/luciaengine/lucia-engine/pull/216) restored Auto Pixels Per Unit and the 2D Scene View pixel grid. |
+| 14 | Build Verge was already available at the audit revision. [#28](https://github.com/luciaengine/lucia-engine/pull/28) records the road recipe verification. |
 
 ## Method
 
@@ -49,14 +50,12 @@ The owner said "do whats best" and, for row 7, "yes min 12 font size".
 | 11 | Day Cycle preset picker | `Apps/Editor/Source/DayCycle/DayCycleProfile/DayCycleProfileControls.cpp:149`: one dropdown "Load preset..." with an undo tooltip | One button per preset under "Presets (loads the preset's tracks)" | Lucia used 1 compact dropdown. `main` shows a row of buttons. OpenEngine took the Day Cycle window from Lucia (#39) and changed this. | verified | Owner choice. The dropdown takes less room; the buttons take one click less. |
 | 12 | Physics Material field tooltip | `Apps/Editor/Source/Inspectors/PhysicsColliderInspector.cpp:145` | The field from #111 has no tooltip | No tooltip on the collider's Physics Material field. The notice under it is the same. | verified | Restore. |
 
-## Lost features with no engine side on `main`
+## Camera and road features
 
-These rows need engine work, not only editor work. Each one is a separate task.
-
-| # | Item | Lucia (`e18015eea`) | `main` now | What you see | Tier | Recommendation |
-|---|---|---|---|---|---|---|
-| 13 | Camera Auto Pixels Per Unit | `Apps/Editor/Source/Inspectors/CameraInspector.cpp:359`; engine field `PixelPerfectAutoPixelsPerUnit` | The field does not exist; the Scene View pixel-perfect helper was deleted in #94 | A 2D camera cannot take its pixels-per-unit from the scene's tile maps. The CRT effect tooltip (`CrtEffectInspector.cpp:112`) also refers to this. | verified | Restore together with Scene View pixel-perfect 2D, if 2D tile games matter now. |
-| 14 | Road verge | `Apps/Editor/Source/Inspectors/SplineRecipe/Paving/SplinePavingInspector.cpp:155` "Build Verge"; engine field `SplineExtrude::Verge` | The field does not exist | A road of the Channel kind cannot get a curb on both sides. | verified | Restore in the spline road area, as one engine and editor change. |
+| # | Item | Status on `main` |
+|---|---|---|
+| 13 | Camera Auto Pixels Per Unit | A pixel-perfect camera can take its density from the scene's tile maps. The Camera inspector shows the resolved value and its source. |
+| 14 | Road verge | The Spline Extrude inspector has a **Build Verge** toggle for roads in **Channel** mode. It builds a curb along both edges. See [Spline Paving](../editor/spline-paving.mdx). |
 
 ## Same result in another form
 
