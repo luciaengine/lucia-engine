@@ -648,6 +648,7 @@ public:
     /// True when the model's setting `assets.model.impostor` is on: far away, its parts draw one
     /// baked impostor card (Engine/Rendering/Impostors/MeshImpostorSystem.h).
     bool IsImpostorEnabled() const { return m_ImpostorEnabled; }
+    float GetImpostorSwitchCoverage() const { return m_ImpostorSwitchCoverage; }
 
     // Names of animations embedded in the source file, in source-file order.
     // Empty when the model has no animations or when the loader couldn't
@@ -825,6 +826,7 @@ private:
 
     bool m_HasAnimations;
     bool m_ImpostorEnabled = false;
+    float m_ImpostorSwitchCoverage = 0.0f;
     Vector<String> m_AnimationNames;
     Vector<GUID> m_EmbeddedClipGuids;
     Vector<std::pair<GUID, std::shared_ptr<Animation::AnimationClip>>> m_PendingRuntimeClips;

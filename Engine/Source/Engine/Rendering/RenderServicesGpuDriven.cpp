@@ -668,7 +668,7 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
         if (!isShadowBucket)
             s.lod.renderedLevelHistoryRequested = true;
         if (const auto* impostors = GetFeature<ImpostorStage>())
-            impostors->ApplyToSlice(s.lod);
+            impostors->ApplyToSlice(s.lod, *this, viewId);
         // Fit-freeze lane: a directional cascade slice selects LODs with the
         // FROZEN camera captured at that cascade's last refit (the value the
         // static-cache key holds via CullCameraViewProj), so a retained layer
@@ -882,7 +882,7 @@ bool RenderServices::ScheduleBucketerDispatchesForViewSlices(
         m_ViewRegistry.ResolveCameraData(viewId), m_LODGlobalBias, ResolveViewForceLOD(viewId),
         m_SmallObjectCullCoverage, ComputeViewSseScales(viewId), m_LODCrossfadeDuration, 0.0f);
     if (const auto* impostors = GetFeature<ImpostorStage>())
-        impostors->ApplyToSlice(lod);
+        impostors->ApplyToSlice(lod, *this, viewId);
     const uint32_t viewWorldKey = WorldKeyForView(viewId);
     for (const uint8_t cascadeIdx : cascadeIndices)
     {
@@ -1001,7 +1001,7 @@ bool RenderServices::ScheduleWorldOcclusionRecoverScatterForView(
                               m_LODHysteresisBand);
     // Phase B selects cards exactly as phase A does.
     if (const auto* impostors = GetFeature<ImpostorStage>())
-        impostors->ApplyToSlice(s.lod);
+        impostors->ApplyToSlice(s.lod, *this, viewId);
     // Phase B shares this view's history buffer with phase A (the comment
     // above), so it asks for it too.
     s.lod.renderedLevelHistoryRequested = true;

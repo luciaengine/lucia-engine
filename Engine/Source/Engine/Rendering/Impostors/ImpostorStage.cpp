@@ -33,13 +33,16 @@ void ImpostorStage::EnsureCardMesh(RenderServices& services)
     m_CardMeshIndex.store(entry ? entry->gpuMeshIndex : kNoCardMesh, std::memory_order_relaxed);
 }
 
-void ImpostorStage::ApplyToSlice(Rendering::GPUDrawStreamBuilder::ViewLODParams& lod) const
+void ImpostorStage::ApplyToSlice(Rendering::GPUDrawStreamBuilder::ViewLODParams& lod, const RenderServices& services,
+                                 Rendering::ViewId viewId) const
 {
     static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_IMPOSTORS", true);
-    if (!enabled)
+    if (!enabled || services.GetMeshGPURegistry().GetLodSelectionMode() == Rendering::LodSelectionMode::Off)
         return;
+    const uint32 height = services.Views().GetViewWorldViewportHeight(viewId);
+    const uint32 renderHeight = height > 0u ? height : Rendering::kLodSseFallbackViewportH;
     lod.impostorCardMesh = m_CardMeshIndex.load(std::memory_order_relaxed);
-    lod.impostorSwitchCoverage = kSwitchCoverage;
+    lod.impostorSwitchCoverage = static_cast<float>(ImpostorAtlasKey{}.FrameSize) / static_cast<float>(renderHeight);
     lod.impostorSwitchHysteresis = kSwitchHysteresis;
 }
 
@@ -98,7 +101,8 @@ std::vector<uint32> ImpostorStage::PartMeshIndices(const RenderServices& service
     return indices;
 }
 
-bool ImpostorStage::Link(RenderServices& services, std::span<const uint32> partMeshes, const Material& card) const
+bool ImpostorStage::Link(RenderServices& services, std::span<const uint32> partMeshes, const Material& card,
+                         float switchCoverage) const
 {
     Rendering::GPUScene* scene = services.GetGPUScene();
     const uint32 cardMesh = m_CardMeshIndex.load(std::memory_order_relaxed);
@@ -115,15 +119,7 @@ bool ImpostorStage::Link(RenderServices& services, std::span<const uint32> partM
                            cardMaterial);
         return false;
     }
-    for (size_t i = 0; i < partMeshes.size(); ++i)
-    {
-        if (!scene->SetMeshImpostorCard(partMeshes[i], cardMaterial, cardMesh, i == 0))
-        {
-            Unlink(services, partMeshes.first(i));
-            return false;
-        }
-    }
-    return true;
+    return scene->SetMeshImpostorGroup(partMeshes, cardMaterial, cardMesh, switchCoverage);
 }
 
 void ImpostorStage::Unlink(RenderServices& services, std::span<const uint32> partMeshes)
@@ -131,8 +127,8 @@ void ImpostorStage::Unlink(RenderServices& services, std::span<const uint32> par
     Rendering::GPUScene* scene = services.GetGPUScene();
     if (!scene)
         return;
-    for (const uint32 mesh : partMeshes)
-        scene->ClearMeshImpostorCard(mesh);
+    if (!partMeshes.empty())
+        scene->ClearMeshImpostorGroup(partMeshes.front());
 }
 
 void ImpostorStage::SubmitCards(RenderServices& services, uint64 worldId, std::span<const Material* const> cards) const

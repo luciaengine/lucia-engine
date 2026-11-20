@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AssetCore/AssetReloadInvalidator.h"
 #include "AssetCore/GUID.h"
 #include "ECS/ChangeFilter.h"
 #include "ECS/Systems.h"
@@ -8,6 +9,7 @@
 #include "Types/FlatMap.h"
 #include "Types/Types.h"
 
+#include <atomic>
 #include <cstddef>
 #include <vector>
 
@@ -35,22 +37,25 @@ public:
     // It writes GPUScene mesh rows and batch counts, which have one writer at a time.
     bool RequiresExclusiveUpdate() const override { return true; }
 
-    /// One part of a model: a submesh with the material it bakes with.
+    /// One part of a model with the material it bakes with.
     struct Part
     {
-        uint32 Submesh = 0;
         Rendering::MeshGPUHandle Mesh;
         GUID Material;
+
+        bool operator==(const Part&) const = default;
     };
 
 private:
     struct ModelImpostor
     {
-        // Sorted by submesh index; Parts[0] is the primary part, which draws the card.
+        // Indexed by submesh. An empty part prevents the model from linking.
         std::vector<Part> Parts;
         Mathematics::Vector3 Center;
         float Radius = 0.0f;
+        float SwitchCoverage = 0.0f;
         uint64 MeshHash = 0;
+        bool HasConflictingParts = false;
         // The card material index and the part mesh indices the link holds; empty while not linked.
         uint32 LinkedMaterial = 0xFFFFFFFFu;
         std::vector<uint32> LinkedMeshes;
@@ -70,6 +75,8 @@ private:
     std::size_t m_StructuralVersion = static_cast<std::size_t>(-1);
     uint64 m_DeviceGeneration = 0;
     uint64 m_Frame = 0;
+    std::atomic<bool> m_ModelReloaded{false};
+    AssetReloadInvalidator m_ModelReloadInvalidator;
 };
 
 } // namespace GameEngine::Engine::Renderer

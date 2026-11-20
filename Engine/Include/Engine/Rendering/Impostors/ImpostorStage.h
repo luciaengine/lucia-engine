@@ -26,11 +26,7 @@ struct ImpostorAtlas;
 class ImpostorStage final : public IRenderFeature
 {
 public:
-    /// Screen coverage (radius * proj[1][1] / distance, Hlod::ClusterCoverage) under which a
-    /// linked instance draws its card. A frame of the default atlas spans the sphere over 128
-    /// pixels, so at 1080 lines this is about one atlas texel per screen pixel.
-    static constexpr float kSwitchCoverage = 0.12f;
-    /// The card stays until the coverage is kSwitchCoverage * (1 + kSwitchHysteresis).
+    /// Extra coverage the card can retain, within the coarsest mesh LOD.
     static constexpr float kSwitchHysteresis = 0.15f;
 
     /// Registers the card quad, a [0,1] UV square that impostor_card.glsl places, and publishes its
@@ -39,7 +35,8 @@ public:
 
     /// Sets the impostor fields of a slice's LOD parameters. GE_IMPOSTORS=0 leaves every linked
     /// mesh on its mesh, as a reference for comparisons.
-    void ApplyToSlice(Rendering::GPUDrawStreamBuilder::ViewLODParams& lod) const;
+    void ApplyToSlice(Rendering::GPUDrawStreamBuilder::ViewLODParams& lod, const RenderServices& services,
+                      Rendering::ViewId viewId) const;
 
     /// Registers (or points at a new atlas) the card material `material` of an atlas: the engine's
     /// Surfaces/impostor.glsl and VertexModifiers/impostor_card.glsl, fitted to the sphere
@@ -56,7 +53,8 @@ public:
     /// parts[0] is the primary part, which draws the card; the others draw nothing past the switch.
     /// Every part must have the same instance sphere, so all parts switch in the same frame. Links
     /// all parts or none: returns false when the card cannot draw.
-    bool Link(RenderServices& services, std::span<const uint32> partMeshes, const Material& card) const;
+    bool Link(RenderServices& services, std::span<const uint32> partMeshes, const Material& card,
+              float switchCoverage = 0.0f) const;
 
     /// Removes the links of the parts; they draw their meshes at every distance.
     static void Unlink(RenderServices& services, std::span<const uint32> partMeshes);

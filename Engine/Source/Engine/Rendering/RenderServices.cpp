@@ -1435,13 +1435,11 @@ void RenderServices::DrainPendingAssetInvalidations()
                         m_MeshGPURegistry.ReloadModelMeshes(inv.Guid, *reloaded);
                     m_GPUAnimDataStore.InvalidateSkeleton(reloaded->GetSkeletonId());
                     m_GPUAnimDataStore.InvalidateAllClips();
+                    // Reloaded settings can change derived bounds even when the GPU geometry is identical.
+                    if (report.ChangedAnything() || report.SubmeshesTotal != 0u)
+                        m_ModelsReloadedInPlace.push_back(inv.Guid);
                     if (report.ChangedAnything())
                     {
-                        // The handles survived, so nothing re-resolves the
-                        // entities pointing at them: publish the GUID so the
-                        // world-owning caller can re-derive the LocalBounds
-                        // those entities still carry from the old geometry.
-                        m_ModelsReloadedInPlace.push_back(inv.Guid);
                         Logger::Log::Info(
                             "[AssetReload] model {} GPU meshes refreshed in place: "
                             "{} re-uploaded, {} unchanged, {} removed (of {} submeshes)",

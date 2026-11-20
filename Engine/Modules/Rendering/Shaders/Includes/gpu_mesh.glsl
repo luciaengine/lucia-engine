@@ -18,8 +18,8 @@ struct GPUMesh {
     uint  indexOffset;
     uint  indexCount;
     uint  lodCount;
-    uint  bucketKey;
-    uint  indexType;
+    uint  nextImpostorPart;
+    float impostorSwitchCoverage;
     uint  vertexFlags;
     uint  lodIndexOffset[kMaxMeshLODs];
     uint  lodIndexCount[kMaxMeshLODs];

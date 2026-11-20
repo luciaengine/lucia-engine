@@ -6,6 +6,7 @@
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
+#include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
@@ -42,11 +43,36 @@ uint64 MaterialHash(const std::vector<MeshImpostorSystem::Part>& parts)
     return hash;
 }
 
+bool CanBakeMaterial(const Material& material)
+{
+    using Rendering::MaterialKeyword;
+    const MaterialKeyword keywords = material.GetVariantKey().materialKeywords;
+    const MaterialAlphaMode alphaMode = material.GetAlphaMode();
+    if ((alphaMode != MaterialAlphaMode::Opaque && alphaMode != MaterialAlphaMode::Mask)
+        || Rendering::HasKeyword(keywords, MaterialKeyword::Transmission)
+        || Rendering::HasKeyword(keywords, MaterialKeyword::DiffuseTransmission)
+        || Rendering::HasKeyword(keywords, MaterialKeyword::Subsurface)
+        || material.GetCompileSpec().customVertexShader
+        || !material.GetDepthWriteOverride().value_or(true)
+        || !material.GetDepthTestOverride().value_or(true)
+        || !material.GetGraphicsPipelineId().IsValid())
+        return false;
+    for (uint32 slot = 0; slot < kTextureSlotArraySize; ++slot)
+        if (material.IsTextureAwaited(slot))
+            return false;
+    return true;
+}
+
 } // namespace
 
 MeshImpostorSystem::MeshImpostorSystem(RenderServices* renderServices)
     : m_RenderServices(renderServices)
 {
+    if (auto* assets = EngineCore::GetInstance().TryGetAssetManager())
+        m_ModelReloadInvalidator = AssetReloadInvalidator(
+            assets->GetEventDispatcher(), AssetType::Model,
+            [this](const GUID&) { m_ModelReloaded.store(true, std::memory_order_relaxed); },
+            AssetReloadInvalidator::EventSet::ReloadedOnly);
 }
 
 MeshImpostorSystem::~MeshImpostorSystem()
@@ -79,7 +105,8 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 
     const uint64 probeVersion = world.GetGlobalSystemVersion();
     const std::size_t structuralVersion = world.GetStructuralChangeVersion();
-    bool changed = deviceRebuilt || structuralVersion != m_StructuralVersion;
+    const bool modelReloaded = m_ModelReloaded.exchange(false, std::memory_order_relaxed);
+    bool changed = deviceRebuilt || modelReloaded || structuralVersion != m_StructuralVersion;
     m_StructuralVersion = structuralVersion;
     {
         auto query = world.Query<ECS::Read<Components::MeshRenderer>>();
@@ -107,8 +134,8 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 
 void MeshImpostorSystem::Scan(ECS::World& world)
 {
-    // Opt-in state of each model met in this scan: absent from `models` = not yet looked up.
-    FlatMap<GUID, bool> optedIn;
+    // A null entry records a model checked but ineligible for a static bake.
+    FlatMap<GUID, SharedPtr<Asset>> sources;
     FlatMap<GUID, ModelImpostor> models;
     AssetManager* assets = EngineCore::GetInstance().TryGetAssetManager();
     if (!assets)
@@ -119,45 +146,51 @@ void MeshImpostorSystem::Scan(ECS::World& world)
             if (renderer.meshGpuHandleId == 0u || renderer.modelAssetGuid.IsNull())
                 return;
             const GUID modelGuid = renderer.modelAssetGuid.ToGuid();
-            const bool* known = optedIn.Find(modelGuid);
-            if (!known)
+            const SharedPtr<Asset>* source = sources.Find(modelGuid);
+            if (!source)
             {
-                const SharedPtr<Asset> asset = assets->GetAsset(modelGuid);
+                SharedPtr<Asset> asset = assets->GetAsset(modelGuid);
                 const auto* model = dynamic_cast<const ModelAsset*>(asset.get());
-                const bool enabled = model && model->IsImpostorEnabled();
-                known = &optedIn.InsertOrAssign(modelGuid, enabled);
-                if (enabled)
+                if (model && model->IsImpostorEnabled() && model->GetMeshCount() > 0
+                    && !model->GetClusterLODManifest()
+                    && std::ranges::none_of(model->GetMeshes(), [](const Mesh& mesh)
+                       { return mesh.IsSkinned() || mesh.HasMorphTargets(); }))
                 {
                     const Mathematics::BoundingBox box = ComputeModelBounds(*model).Box;
                     ModelImpostor& impostor = models.InsertOrAssign(modelGuid, ModelImpostor{});
+                    impostor.Parts.resize(model->GetMeshCount());
                     impostor.Center = box.center;
                     impostor.Radius = box.Radius();
+                    impostor.SwitchCoverage = model->GetImpostorSwitchCoverage();
                     impostor.MeshHash = Hashing::HashCombine(model->GetSourceContentHash(),
                                                              std::hash<GUID>{}(modelGuid));
                 }
+                else
+                {
+                    asset.reset();
+                }
+                source = &sources.InsertOrAssign(modelGuid, std::move(asset));
             }
-            if (!*known)
+            if (!*source)
                 return;
+            const auto& model = static_cast<const ModelAsset&>(**source);
             ModelImpostor& impostor = *models.Find(modelGuid);
-            const auto existing = std::find_if(impostor.Parts.begin(), impostor.Parts.end(),
-                                               [&renderer](const Part& part) { return part.Submesh == renderer.meshId; });
-            // The first entity that draws a part gives the material the atlas bakes with.
-            if (existing == impostor.Parts.end())
-                impostor.Parts.push_back(Part{renderer.meshId, Rendering::MeshGPUHandle(renderer.meshGpuHandleId),
-                                              renderer.materialAssetGuid.ToGuid()});
+            const uint32 submesh = ResolveSubmeshIndex(modelGuid, model, renderer);
+            const Part part{Rendering::MeshGPUHandle(renderer.meshGpuHandleId), renderer.materialAssetGuid.ToGuid()};
+            Part& existing = impostor.Parts[submesh];
+            // The mesh row is shared by its instances, so all of them must agree on the bake.
+            if (!existing.Mesh.IsValid())
+                existing = part;
+            else if (existing != part)
+                impostor.HasConflictingParts = true;
         });
-    for (auto& [model, impostor] : models)
-        std::sort(impostor.Parts.begin(), impostor.Parts.end(),
-                  [](const Part& a, const Part& b) { return a.Submesh < b.Submesh; });
 
     // Keep the link of a model whose parts did not change; unlink every other model.
     for (auto& [model, previous] : m_Models)
     {
         ModelImpostor* next = models.Find(model);
-        const bool sameParts = next && next->Parts.size() == previous.Parts.size()
-                               && std::equal(next->Parts.begin(), next->Parts.end(), previous.Parts.begin(),
-                                             [](const Part& a, const Part& b)
-                                             { return a.Mesh == b.Mesh && a.Material == b.Material; });
+        const bool sameParts = next && !next->HasConflictingParts && next->SwitchCoverage == previous.SwitchCoverage
+                               && next->MeshHash == previous.MeshHash && next->Parts == previous.Parts;
         if (sameParts)
         {
             next->LinkedMaterial = previous.LinkedMaterial;
@@ -174,17 +207,35 @@ void MeshImpostorSystem::Scan(ECS::World& world)
 const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
                                                 ImpostorStage& stage)
 {
+    if (impostor.HasConflictingParts)
+    {
+        UnlinkModel(impostor);
+        return nullptr;
+    }
+
     ImpostorBakeRequest request{};
     request.Key.MeshHash = impostor.MeshHash;
-    request.Key.MaterialHash = MaterialHash(impostor.Parts);
+    const uint64 materialIdentity = MaterialHash(impostor.Parts);
+    request.Key.MaterialHash = materialIdentity;
     request.Key.Layout = kLayout;
     request.Center = impostor.Center;
     request.Radius = impostor.Radius;
+    const auto& materials = m_RenderServices->Materials().Registry();
     for (const Part& part : impostor.Parts)
+    {
+        const Material* material = part.Mesh.IsValid() && !part.Material.IsNull() ? materials.Find(part.Material) : nullptr;
+        if (!material || !CanBakeMaterial(*material))
+        {
+            UnlinkModel(impostor);
+            return nullptr;
+        }
+        request.Key.MaterialHash = Hashing::HashCombine(request.Key.MaterialHash, material->GetContentRevision());
+        request.Key.MaterialHash = Hashing::HashCombine(request.Key.MaterialHash, material->GetVersion());
         request.Parts.push_back({part.Mesh, part.Material});
+    }
     // A request each frame keeps the atlas in the baker's least-recently-used budget.
     const ImpostorAtlas atlas = baker.Request(request, m_Frame);
-    const GUID cardGuid = GUID::Derive(model, "impostor-card-" + std::to_string(request.Key.MaterialHash));
+    const GUID cardGuid = GUID::Derive(model, "impostor-card-" + std::to_string(materialIdentity));
     const Material* card = ImpostorStage::RegisterCardMaterial(*m_RenderServices, cardGuid, "Impostor", atlas,
                                                                impostor.Center, impostor.Radius,
                                                                request.Key.FramesPerSide, kLayout);
@@ -201,7 +252,7 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     if (card->GetGpuSceneMaterialIndex() == impostor.LinkedMaterial && meshes == impostor.LinkedMeshes)
         return card;
     UnlinkModel(impostor);
-    if (!stage.Link(*m_RenderServices, meshes, *card))
+    if (!stage.Link(*m_RenderServices, meshes, *card, impostor.SwitchCoverage))
         return nullptr;
     impostor.LinkedMaterial = card->GetGpuSceneMaterialIndex();
     impostor.LinkedMeshes = meshes;
