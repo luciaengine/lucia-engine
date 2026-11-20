@@ -1063,45 +1063,62 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
             ownerDesc.format = static_cast<uint32_t>(Rendering::TextureFormat::R32_UINT);
             ownerDesc.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget |
                                                      Rendering::TextureUsage::UnorderedAccess);
+            static const bool useSecond = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_OWNER_SECOND", false);
             const auto owners = frame.CreateTexture("IndexedDepthOwner", ownerDesc);
+            const auto second = useSecond && owners.IsValid()
+                ? frame.CreateTexture("IndexedDepthOwner.Second", ownerDesc) : RenderGraph::RGTexture{};
             if (owners.IsValid())
             {
-                auto* splitAdmitted = frame.AllocatePassData<bool>(false);
-                const auto continuation = frame.AddPass("IndexedDepthOwner", Rendering::PassPhase::kWorldRender,
+                const auto attachDepth = [&](RenderGraph::RGPassBuilder& p)
+                {
+                    declareInputs(p);
+                    p.AttachDepth(depth, {.Load = RenderGraph::RGLoadOp::Load, .Store = RenderGraph::RGStoreOp::Store},
+                                  RenderGraph::RGDepthAccess::ReadWrite);
+                    p.RecordInSecondary();
+                };
+                const size_t count = second.IsValid() ? 2u : 1u;
+                const auto first = frame.AddPass("IndexedDepthOwner", Rendering::PassPhase::kWorldRender,
                     [&](RenderGraph::RGPassBuilder& p)
                     {
-                        declareInputs(p);
-                        p.AttachDepth(depth, {.Load = RenderGraph::RGLoadOp::Load, .Store = RenderGraph::RGStoreOp::Store},
-                                      RenderGraph::RGDepthAccess::ReadWrite);
+                        attachDepth(p);
                         p.AttachColor(0, owners,
                             {.Load = RenderGraph::RGLoadOp::Clear, .Store = RenderGraph::RGStoreOp::Store});
-                        p.Prepare([preparedDepth, splitAdmitted](RenderGraph::RGPrepareContext& c)
-                        { return !*splitAdmitted || PrepareIndexedDepthOwner(c, *preparedDepth); });
-                        p.RecordInSecondary();
+                        p.Prepare([preparedDepth, count](RenderGraph::RGPrepareContext& c)
+                            { return PrepareIndexedDepthOwners(c, *preparedDepth, count); });
                     },
-                    [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthOwner(c, *preparedDepth); });
-                if (continuation.IsValid())
+                    [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthOwner(c, *preparedDepth, 0u); });
+                frame.AddOrderingEdge(pass, first);
+                auto& continuations = viewFrame.IndexedReplayContinuations;
+                continuations[0] = first;
+                size_t next = 1u;
+                if (second.IsValid())
                 {
-                    frame.AddOrderingEdge(pass, continuation);
-                    const auto remainder = frame.AddPass("IndexedDepthOwner.Remainder", Rendering::PassPhase::kWorldRender,
+                    const auto between = frame.AddPass("IndexedDepthOwner.Between", Rendering::PassPhase::kWorldRender,
+                        attachDepth,
+                        [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthBetweenOwners(c, *preparedDepth); });
+                    const auto lastOwner = frame.AddPass("IndexedDepthOwner.Second", Rendering::PassPhase::kWorldRender,
                         [&](RenderGraph::RGPassBuilder& p)
                         {
-                            declareInputs(p);
-                            p.AttachDepth(depth, {.Load = RenderGraph::RGLoadOp::Load, .Store = RenderGraph::RGStoreOp::Store},
-                                          RenderGraph::RGDepthAccess::ReadWrite);
-                            p.RecordInSecondary();
+                            attachDepth(p);
+                            p.AttachColor(0, second,
+                                {.Load = RenderGraph::RGLoadOp::Clear, .Store = RenderGraph::RGStoreOp::Store});
                         },
-                        [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthRemainder(c, *preparedDepth); });
-                    if (remainder.IsValid())
-                    {
-                        frame.AddOrderingEdge(continuation, remainder);
-                        viewFrame.IndexedReplayContinuations = {continuation, remainder};
-                        *splitAdmitted = true;
-                    }
-                    if (*splitAdmitted)
-                        DeclareIndexedOwnerCompaction(frame, *m_Device, *preparedDepth, *m_DrawStreamBuilder,
-                                                      owners, m_FrameRG.DrawStreamOrdering);
+                        [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthOwner(c, *preparedDepth, 1u); });
+                    frame.AddOrderingEdge(first, between);
+                    frame.AddOrderingEdge(between, lastOwner);
+                    continuations[next++] = between;
+                    continuations[next++] = lastOwner;
                 }
+                const auto remainder = frame.AddPass("IndexedDepthOwner.Remainder", Rendering::PassPhase::kWorldRender,
+                    attachDepth,
+                    [preparedDepth](RenderGraph::RGContext& c) { RecordIndexedDepthRemainder(c, *preparedDepth); });
+                frame.AddOrderingEdge(continuations[next - 1u], remainder);
+                continuations[next] = remainder;
+                DeclareIndexedOwnerCompaction(frame, *m_Device, *preparedDepth, *m_DrawStreamBuilder,
+                                              owners, m_FrameRG.DrawStreamOrdering, 0u);
+                if (second.IsValid())
+                    DeclareIndexedOwnerCompaction(frame, *m_Device, *preparedDepth, *m_DrawStreamBuilder,
+                                                  second, m_FrameRG.DrawStreamOrdering, 1u);
             }
         }
     }

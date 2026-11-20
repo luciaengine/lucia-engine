@@ -2473,7 +2473,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                         [&](const auto& entry) { return isDepthIn(entry, replayPrepass); });
                     const auto after = std::find_if(attachments.begin(), attachments.end(),
                         [&](const auto& entry) { return isDepthIn(entry, data->IndexedReplayWorld); });
-                    std::array<const RenderGraph::RGAttachmentRec*, 2> extensions{};
+                    std::array<const RenderGraph::RGAttachmentRec*, std::tuple_size_v<decltype(replayContinuations)>> extensions{};
                     size_t extensionCount = 0;
                     bool missingExtension = false;
                     for (const auto pass : replayContinuations)

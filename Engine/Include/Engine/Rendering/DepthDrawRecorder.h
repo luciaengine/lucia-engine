@@ -480,12 +480,13 @@ struct IndexedOwnerReplay
     Rendering::BufferHandle Counts{};
     uint32_t DrawLimit = 0;
 };
-bool PrepareIndexedDepthOwner(Rendering::RenderGraph::RGPrepareContext& context, PreparedDepthOnlyPass& data);
-void RecordIndexedDepthOwner(Rendering::RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data);
+bool PrepareIndexedDepthOwners(Rendering::RenderGraph::RGPrepareContext& context, PreparedDepthOnlyPass& data, size_t count);
+void RecordIndexedDepthOwner(Rendering::RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data, size_t slot);
+void RecordIndexedDepthBetweenOwners(Rendering::RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data);
 void RecordIndexedDepthRemainder(Rendering::RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data);
 void DeclareIndexedOwnerCompaction(Rendering::RenderGraph::RGFrame& frame, Rendering::IDevice& device,
     PreparedDepthOnlyPass& data, const Rendering::GPUDrawStreamBuilder& streams,
-    Rendering::RenderGraph::RGTexture owners, Rendering::RenderGraph::RGBuffer ordering);
+    Rendering::RenderGraph::RGTexture owners, Rendering::RenderGraph::RGBuffer ordering, size_t slot);
 void ReadIndexedOwnerCompaction(Rendering::RenderGraph::RGPassBuilder& pass, const PreparedDepthOnlyPass& data);
 IndexedOwnerReplay MatchIndexedOwnerCompaction(const PreparedDepthOnlyPass& data, const IndexedDepthDraw& source);
 // Primary command list, inside the cascade's Load pass. A failed rigid restore

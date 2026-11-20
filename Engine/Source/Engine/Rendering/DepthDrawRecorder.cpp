@@ -197,11 +197,15 @@ struct PreparedDepthOnlyPass
     };
     std::vector<IndexedSource> IndexedSources;
     RenderGraph::RGFrameStamp IndexedFrame;
-    size_t OwnerDrawIndex = ~size_t{0};
-    PipelineHandle OwnerPipeline;
-    RenderGraph::RGBuffer OwnerCompactState;
-    RenderGraph::RGBuffer OwnerCompactDraws;
-    PreparedOwnerCompaction* OwnerCompaction = nullptr;
+    struct OwnerPacket
+    {
+        size_t DrawIndex = 0;
+        PipelineHandle Pipeline;
+        RenderGraph::RGBuffer State;
+        RenderGraph::RGBuffer Draws;
+        PreparedOwnerCompaction* Compaction = nullptr;
+    };
+    std::array<OwnerPacket, 2> Owners{};
     MaterialSystem* Materials = nullptr;
     DepthUnderDrawTracker* UnderDraw = nullptr;
     bool UnderDrew = false;
@@ -251,8 +255,8 @@ class DepthPassPreparation
         m_Data.Draws.clear();
         m_Data.PushConstants.clear();
         m_Data.IndexedSources.clear();
-        m_Data.OwnerDrawIndex = ~size_t{0};
-        m_Data.OwnerPipeline = {};
+        for (auto& owner : m_Data.Owners)
+            owner.Pipeline = {};
         m_Data.AllProducer = {};
         m_Data.RigidProducer = {};
         const bool virtualPage = m_Data.Params.VirtualPageTile.has_value();
@@ -1090,7 +1094,7 @@ DescriptorWrite OwnerStorage(uint32_t binding, BufferHandle buffer, size_t bytes
 }
 } // namespace
 
-bool PrepareIndexedDepthOwner(RenderGraph::RGPrepareContext& context, PreparedDepthOnlyPass& data)
+bool PrepareIndexedDepthOwners(RenderGraph::RGPrepareContext& context, PreparedDepthOnlyPass& data, size_t count)
 {
     if (!data.Materials || !context.IsFor(data.IndexedFrame))
         return true;
@@ -1115,14 +1119,23 @@ bool PrepareIndexedDepthOwner(RenderGraph::RGPrepareContext& context, PreparedDe
             break;
         --monotonicBegin;
     }
-    const PreparedDepthOnlyPass::IndexedSource* selected = nullptr;
-    GraphicsPipelineDesc baseline;
+    struct Candidate
+    {
+        const PreparedDepthOnlyPass::IndexedSource* Source = nullptr;
+        GraphicsPipelineDesc Pipeline;
+    };
+    std::array<Candidate, 2> ranked{};
     for (const auto& source : data.IndexedSources)
     {
         if (source.DrawIndex < monotonicBegin || source.Draw.MaxDrawCount < 512u ||
-            source.Draw.MaxDrawCount > kOwnerMaxDraws ||
-            (selected && source.Draw.MaxDrawCount <= selected->Draw.MaxDrawCount))
+            source.Draw.MaxDrawCount > kOwnerMaxDraws)
             continue;
+        auto position = std::find_if(ranked.begin(), ranked.begin() + count, [&](const Candidate& candidate) {
+            return !candidate.Source || source.Draw.MaxDrawCount > candidate.Source->Draw.MaxDrawCount;
+        });
+        if (position == ranked.begin() + count)
+            continue;
+
         GraphicsPipelineDesc desc;
         if (!device.CopyGraphicsPipeline(source.Pipeline, desc) || !desc.VertexShader || !desc.PixelShader ||
             desc.Topology != PrimitiveTopology::TriangleList ||
@@ -1132,45 +1145,63 @@ bool PrepareIndexedDepthOwner(RenderGraph::RGPrepareContext& context, PreparedDe
             desc.Rasterization.depthBiasEnable || desc.ColorBlend.alphaToCoverageEnable ||
             desc.ColorBlend.logicOpEnable)
             continue;
-        baseline = std::move(desc);
-        selected = &source;
+
+        std::move_backward(position, ranked.begin() + count - 1u, ranked.begin() + count);
+        *position = {&source, std::move(desc)};
     }
-    if (!selected)
-        return true;
 
-    const auto& material = *selected->MaterialOwner;
-    if (selected->MaterialRevision != material.GetContentRevision())
-        return true;
-    const auto& draw = data.Draws[selected->DrawIndex];
-    const auto* owner = data.Materials->Variants().FindOrRequestPrepassVariant(
-        material, draw.VertexFlags, baseline.Topology, selected->OwnerKeywords, selected->Winding);
-    if (!owner || owner->MaterialVersion != material.GetVersion() || !owner->VariantMeta)
-        return true;
-    const auto& defines = owner->VariantMeta->RequiredDefines;
-    if (std::find(defines.begin(), defines.end(), "GE_INDEXED_DEPTH_OWNER") == defines.end() ||
-        StockMaskVertexAlpha(owner->VariantMeta.get(), true, selected->Crossfading) !=
-            std::optional{selected->VertexAlpha})
-        return true;
-
-    GraphicsPipelineDesc variant;
-    if (!device.CopyGraphicsPipeline(owner->PipelineId, variant) || !variant.VertexShader || !variant.PixelShader ||
-        variant.DescriptorSetLayouts != baseline.DescriptorSetLayouts ||
-        variant.PushConstants != baseline.PushConstants)
-        return true;
-
-    // Inherit the actually served depth donor's raster state and constants.
-    baseline.VertexShader = variant.VertexShader;
-    baseline.PixelShader = variant.PixelShader;
-    baseline.ColorBlend.attachments.assign(1, ColorBlendAttachmentState{.colorWriteMask = 1u});
-    baseline.DebugName = "IndexedDepthOwner";
-    const auto id = device.InternGraphicsPipeline(baseline);
-    if (id.IsValid() && context.ResolveGraphicsPipelineId(id) == id)
+    const auto preparePacket = [&](Candidate& candidate, PreparedDepthOnlyPass::OwnerPacket& packet)
     {
-        const auto pipeline = context.PreparePipeline(id);
-        if (pipeline.IsValid())
+        const auto* selected = candidate.Source;
+        if (!selected)
+            return;
+        auto& baseline = candidate.Pipeline;
+        const auto& material = *selected->MaterialOwner;
+        if (selected->MaterialRevision != material.GetContentRevision())
+            return;
+        const auto& draw = data.Draws[selected->DrawIndex];
+        const auto* owner = data.Materials->Variants().FindOrRequestPrepassVariant(
+            material, draw.VertexFlags, baseline.Topology, selected->OwnerKeywords, selected->Winding);
+        if (!owner || owner->MaterialVersion != material.GetVersion() || !owner->VariantMeta)
+            return;
+        const auto& defines = owner->VariantMeta->RequiredDefines;
+        if (std::find(defines.begin(), defines.end(), "GE_INDEXED_DEPTH_OWNER") == defines.end() ||
+            StockMaskVertexAlpha(owner->VariantMeta.get(), true, selected->Crossfading) !=
+                std::optional{selected->VertexAlpha})
+            return;
+
+        GraphicsPipelineDesc variant;
+        if (!device.CopyGraphicsPipeline(owner->PipelineId, variant) || !variant.VertexShader || !variant.PixelShader ||
+            variant.DescriptorSetLayouts != baseline.DescriptorSetLayouts ||
+            variant.PushConstants != baseline.PushConstants)
+            return;
+
+        // Inherit the actually served depth donor's raster state and constants.
+        baseline.VertexShader = variant.VertexShader;
+        baseline.PixelShader = variant.PixelShader;
+        baseline.ColorBlend.attachments.assign(1, ColorBlendAttachmentState{.colorWriteMask = 1u});
+        baseline.DebugName = "IndexedDepthOwner";
+        const auto id = device.InternGraphicsPipeline(baseline);
+        if (id.IsValid() && context.ResolveGraphicsPipelineId(id) == id)
         {
-            data.OwnerDrawIndex = selected->DrawIndex;
-            data.OwnerPipeline = pipeline;
+            const auto pipeline = context.PreparePipeline(id);
+            if (pipeline.IsValid())
+            {
+                packet.DrawIndex = selected->DrawIndex;
+                packet.Pipeline = pipeline;
+            }
+        }
+    };
+    preparePacket(ranked[0], data.Owners[0]);
+    if (count == 2u)
+    {
+        preparePacket(ranked[1], data.Owners[1]);
+        auto& primary = data.Owners[0];
+        auto& secondary = data.Owners[1];
+        if (secondary.Pipeline.IsValid() && (!primary.Pipeline.IsValid() || primary.DrawIndex > secondary.DrawIndex))
+        {
+            std::swap(primary.DrawIndex, secondary.DrawIndex);
+            std::swap(primary.Pipeline, secondary.Pipeline);
         }
     }
     return true;
@@ -1178,8 +1209,9 @@ bool PrepareIndexedDepthOwner(RenderGraph::RGPrepareContext& context, PreparedDe
 
 void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
     PreparedDepthOnlyPass& data, const GPUDrawStreamBuilder& streams, RenderGraph::RGTexture owners,
-    RenderGraph::RGBuffer ordering)
+    RenderGraph::RGBuffer ordering, size_t slot)
 {
+    auto& owner = data.Owners[slot];
     constexpr uint32_t shift = 1u; // 64 triangles from two adjacent 32-triangle owner blocks.
     if (!owners.IsValid() || !device.GetCapabilities().supportsDrawIndirectCountNative ||
         !streams.GetSharedIndirectionAddress())
@@ -1272,12 +1304,12 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
     };
     const auto masks = create("IndexedOwner.BlockMasks", maskBytes, BufferUsage::TransferDst);
     const auto offsets = create("IndexedOwner.BlockOffsets", offsetBytes, BufferUsage::Storage);
-    data.OwnerCompactDraws = create("IndexedOwner.BlockDraws", drawBytes, BufferUsage::Indirect);
-    data.OwnerCompactState = create("IndexedOwner.BlockState", stateBytes,
+    owner.Draws = create("IndexedOwner.BlockDraws", drawBytes, BufferUsage::Indirect);
+    owner.State = create("IndexedOwner.BlockState", stateBytes,
         BufferUsage::Indirect | BufferUsage::TransferDst | BufferUsage::TransferSrc);
-    data.OwnerCompaction = frame.AllocatePassData<PreparedOwnerCompaction>();
+    owner.Compaction = frame.AllocatePassData<PreparedOwnerCompaction>();
     auto* work = frame.AllocatePassData<Prepared>();
-    work->Match = data.OwnerCompaction;
+    work->Match = owner.Compaction;
     const size_t recordsBytes = static_cast<size_t>(recordCapacity) * kOwnerReplayDrawStride;
     const size_t cursorsBytes = static_cast<size_t>(cursorCapacity) * sizeof(uint32_t);
     const auto inputRecords = frame.ImportExternalBuffer("IndexedOwner.BlockSourceDraws", records, recordsBytes);
@@ -1286,7 +1318,7 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
     const uint32_t groupsX = (extent.Width + 7u) / 8u;
     const uint32_t groupsY = (extent.Height + 7u) / 8u;
 
-    frame.AddPass("IndexedOwner.FilterBlocks", PassPhase::kWorldRender,
+    frame.AddPass(slot == 0u ? "IndexedOwner.FilterBlocks" : "IndexedOwner.FilterSecond", PassPhase::kWorldRender,
         [&](RenderGraph::RGPassBuilder& pass)
         {
             pass.Read(ordering);
@@ -1296,15 +1328,15 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
             pass.Write(masks, RenderGraph::RGBufferWrite::CopyDst);
             pass.Write(masks);
             pass.Write(offsets);
-            pass.Write(data.OwnerCompactState, RenderGraph::RGBufferWrite::CopyDst);
-            pass.Write(data.OwnerCompactState);
-            pass.Write(data.OwnerCompactDraws);
-            pass.Prepare([&data, programs = std::move(programs), work, owners, masks, offsets,
+            pass.Write(owner.State, RenderGraph::RGBufferWrite::CopyDst);
+            pass.Write(owner.State);
+            pass.Write(owner.Draws);
+            pass.Prepare([&data, &owner, slot, programs = std::move(programs), work, owners, masks, offsets,
                 records, cursors, sourceRemap, recordCapacity, cursorCapacity, recordsBytes, cursorsBytes](RenderGraph::RGPrepareContext& context)
             {
-                if (!data.OwnerPipeline.IsValid())
+                if (!owner.Pipeline.IsValid())
                     return true;
-                const auto& draw = data.Draws[data.OwnerDrawIndex];
+                const auto& draw = data.Draws[owner.DrawIndex];
                 const auto source = GetIndexedDepthDraw(draw.Command, draw.Geometry);
                 if (!source || source->Commands != records || source->Count != cursors ||
                     source->IndirectionAddress != sourceRemap || source->MaxDrawCount > kOwnerMaxDraws ||
@@ -1314,8 +1346,8 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
                     source->CountOffset / sizeof(uint32_t) >= cursorCapacity ||
                     source->MaxDrawCount > recordCapacity - source->CommandOffset / kOwnerReplayDrawStride)
                     return true;
-                const auto state = context.GetBuffer(data.OwnerCompactState);
-                const auto commands = context.GetBuffer(data.OwnerCompactDraws);
+                const auto state = context.GetBuffer(owner.State);
+                const auto commands = context.GetBuffer(owner.Draws);
                 const auto marks = context.GetBuffer(masks);
                 const auto ranges = context.GetBuffer(offsets);
                 const auto image = context.GetTexture(owners);
@@ -1410,30 +1442,39 @@ void DeclareIndexedOwnerCompaction(RenderGraph::RGFrame& frame, IDevice& device,
 
 void ReadIndexedOwnerCompaction(RenderGraph::RGPassBuilder& pass, const PreparedDepthOnlyPass& data)
 {
-    if (!data.OwnerCompactState.IsValid() || !data.OwnerCompactDraws.IsValid())
-        return;
-    pass.Read(data.OwnerCompactState, RenderGraph::RGBufferRead::Indirect);
-    pass.Read(data.OwnerCompactDraws, RenderGraph::RGBufferRead::Indirect);
+    for (const auto& owner : data.Owners)
+    {
+        if (!owner.State.IsValid() || !owner.Draws.IsValid())
+            continue;
+        pass.Read(owner.State, RenderGraph::RGBufferRead::Indirect);
+        pass.Read(owner.Draws, RenderGraph::RGBufferRead::Indirect);
+    }
 }
 
 IndexedOwnerReplay MatchIndexedOwnerCompaction(const PreparedDepthOnlyPass& data, const IndexedDepthDraw& source)
 {
-    if (data.OwnerCompaction && data.OwnerCompaction->Input == source)
-        return data.OwnerCompaction->Output;
+    for (const auto& owner : data.Owners)
+        if (owner.Compaction && owner.Compaction->Input == source)
+            return owner.Compaction->Output;
     return {};
 }
 
 namespace
 {
-enum class DepthDrawSlice { Original, Owner, Remainder };
+enum class DepthDrawSlice { Original, Owner, Between, Remainder };
 
 void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
                               const PreparedDepthOnlyPass& data, CascadeCasters casters,
-                              DepthDrawSlice slice = DepthDrawSlice::Original)
+                              DepthDrawSlice slice = DepthDrawSlice::Original, size_t slot = 0u)
 {
-    const bool split = data.OwnerPipeline.IsValid();
+    const auto& primary = data.Owners[0];
+    const auto& secondary = data.Owners[1];
+    const bool split = primary.Pipeline.IsValid();
+    const bool hasSecond = secondary.Pipeline.IsValid();
     const bool ownerOnly = slice == DepthDrawSlice::Owner;
-    if (slice != DepthDrawSlice::Original && !split)
+    if ((slice != DepthDrawSlice::Original && !split) ||
+        (ownerOnly && !data.Owners[slot].Pipeline.IsValid()) ||
+        (slice == DepthDrawSlice::Between && !hasSecond))
         return;
     auto* commands = context.Cmd;
     if (!commands)
@@ -1467,13 +1508,18 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
     {
         if (ownerOnly)
         {
-            begin = data.OwnerDrawIndex;
+            begin = data.Owners[slot].DrawIndex;
             end = begin + 1u;
         }
+        else if (slice == DepthDrawSlice::Between)
+        {
+            begin = primary.DrawIndex + 1u;
+            end = secondary.DrawIndex;
+        }
         else if (slice == DepthDrawSlice::Remainder)
-            begin = data.OwnerDrawIndex + 1u;
+            begin = (hasSecond ? secondary.DrawIndex : primary.DrawIndex) + 1u;
         else
-            end = data.OwnerDrawIndex;
+            end = primary.DrawIndex;
     }
     for (size_t i = begin; i < end; ++i)
     {
@@ -1496,7 +1542,7 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
         if (ownerOnly)
         {
             auto bindings = draw.Bindings;
-            bindings.Pipeline = data.OwnerPipeline;
+            bindings.Pipeline = data.Owners[slot].Pipeline;
             binder.BindPreparedForDraw(pass, bindings, draw.Command.Bindings.PushConstants);
         }
         else
@@ -1557,9 +1603,14 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
 }
 } // namespace
 
-void RecordIndexedDepthOwner(RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data)
+void RecordIndexedDepthOwner(RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data, size_t slot)
 {
-    RecordPreparedDepthDraws(context, data, data.Params.Casters, DepthDrawSlice::Owner);
+    RecordPreparedDepthDraws(context, data, data.Params.Casters, DepthDrawSlice::Owner, slot);
+}
+
+void RecordIndexedDepthBetweenOwners(RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data)
+{
+    RecordPreparedDepthDraws(context, data, data.Params.Casters, DepthDrawSlice::Between);
 }
 
 void RecordIndexedDepthRemainder(RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data)
