@@ -120,7 +120,7 @@ void MeshImpostorSystem::Scan(ECS::World& world)
             const bool* known = optedIn.Find(modelGuid);
             if (!known)
             {
-                const SharedPtr<Asset> asset = assets.GetLoadedAsset(modelGuid);
+                const SharedPtr<Asset> asset = assets.GetAsset(modelGuid);
                 const auto* model = dynamic_cast<const ModelAsset*>(asset.get());
                 const bool enabled = model && model->IsImpostorEnabled();
                 known = &optedIn.InsertOrAssign(modelGuid, enabled);
