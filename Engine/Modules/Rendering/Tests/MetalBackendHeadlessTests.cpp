@@ -2047,38 +2047,61 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
     BufferHandle readback = device->CreateBuffer(readbackDesc);
     ASSERT_TRUE(readback.IsValid());
 
-    auto cl = device->CreateCommandList(IDevice::QueueType::Graphics);
-    cl->Begin();
-    RenderPassDesc pass{};
-    pass.colorTargets[0] = rt;
-    pass.colorTargetCount = 1;
-    pass.clearColor[0] = true;
-    pass.clearColorValue[0][0] = 1.0f; // red clear — the green triangle must overdraw it
-    pass.clearColorValue[0][1] = 0.0f;
-    pass.clearColorValue[0][2] = 0.0f;
-    pass.clearColorValue[0][3] = 1.0f;
-    pass.depthTarget = INVALID_TEXTURE_HANDLE;
-    pass.clearDepth = false;
-    cl->BeginRenderPass(pass);
-    cl->SetPipeline(pipeline);
-    cl->SetViewport(0.0f, 0.0f, static_cast<float>(kRtDim), static_cast<float>(kRtDim));
-    cl->SetScissor(0, 0, kRtDim, kRtDim);
-    cl->DrawMeshTasks(1);
-    cl->EndRenderPass();
-    cl->CopyTextureToBuffer(rt, readback, kRtDim, kRtDim);
-    cl->End();
-    device->ExecuteCommandLists({cl.get()});
-    device->WaitForIdle();
+    constexpr size_t kArgumentOffset = sizeof(uint32_t);
+    constexpr size_t kGridBytes = 3u * sizeof(uint32_t);
+    BufferDesc argumentDesc{};
+    argumentDesc.size = kArgumentOffset + kGridBytes;
+    argumentDesc.usage = static_cast<uint32_t>(BufferUsage::Indirect | BufferUsage::TransferDst);
+    BufferHandle arguments = device->CreateBuffer(argumentDesc);
+    ASSERT_TRUE(arguments.IsValid());
 
-    const uint8_t* mapped = static_cast<const uint8_t*>(device->MapBuffer(readback));
-    ASSERT_NE(mapped, nullptr);
-    // Center pixel (NDC 0,0) lies inside the triangle. BGRA: green fill.
-    const uint8_t* center = mapped + ((kRtDim / 2) * kRtDim + kRtDim / 2) * 4;
-    EXPECT_EQ(center[0], 0u) << "B";
-    EXPECT_NEAR(center[1], 255, 2) << "G (mesh-shader triangle fill)";
-    EXPECT_EQ(center[2], 0u) << "R (proves the triangle overdrew the red clear)";
-    EXPECT_EQ(center[3], 255u) << "A";
+    for (const bool indirect : {false, true})
+    {
+        SCOPED_TRACE(indirect ? "GPU-written indirect grid" : "direct grid");
+        auto commandList = device->CreateCommandList(IDevice::QueueType::Graphics);
+        commandList->Begin();
+        if (indirect)
+        {
+            EXPECT_TRUE(device->GetCapabilities().supportsIndirectMeshTasks);
+            commandList->FillBuffer(arguments, 0, kArgumentOffset, 0u);
+            commandList->FillBuffer(arguments, kArgumentOffset, kGridBytes, 1u);
+        }
+        RenderPassDesc pass{};
+        pass.colorTargets[0] = rt;
+        pass.colorTargetCount = 1;
+        pass.clearColor[0] = true;
+        pass.clearColorValue[0][0] = 1.0f; // red clear — the green triangle must overdraw it
+        pass.clearColorValue[0][1] = 0.0f;
+        pass.clearColorValue[0][2] = 0.0f;
+        pass.clearColorValue[0][3] = 1.0f;
+        pass.depthTarget = INVALID_TEXTURE_HANDLE;
+        pass.clearDepth = false;
+        commandList->BeginRenderPass(pass);
+        commandList->SetPipeline(pipeline);
+        commandList->SetViewport(0.0f, 0.0f, static_cast<float>(kRtDim), static_cast<float>(kRtDim));
+        commandList->SetScissor(0, 0, kRtDim, kRtDim);
+        if (indirect)
+            commandList->DrawMeshTasksIndirect(arguments, kArgumentOffset);
+        else
+            commandList->DrawMeshTasks(1);
+        commandList->EndRenderPass();
+        commandList->CopyTextureToBuffer(rt, readback, kRtDim, kRtDim);
+        commandList->End();
+        device->ExecuteCommandLists({commandList.get()});
+        device->WaitForIdle();
 
+        const uint8_t* mapped = static_cast<const uint8_t*>(device->MapBuffer(readback));
+        ASSERT_NE(mapped, nullptr);
+        // Center pixel (NDC 0,0) lies inside the triangle. BGRA: green fill.
+        const uint8_t* center = mapped + ((kRtDim / 2) * kRtDim + kRtDim / 2) * 4;
+        EXPECT_EQ(center[0], 0u) << "B";
+        EXPECT_NEAR(center[1], 255, 2) << "G (mesh-shader triangle fill)";
+        EXPECT_EQ(center[2], 0u) << "R (proves the triangle overdrew the red clear)";
+        EXPECT_EQ(center[3], 255u) << "A";
+        device->UnmapBuffer(readback);
+    }
+
+    device->DestroyBuffer(arguments);
     device->DestroyBuffer(readback);
     device->DestroyTexture(rt);
     device->Shutdown();

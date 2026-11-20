@@ -175,6 +175,7 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     // both Apple7 and Metal3 capability imply the drawMeshThreadgroups API.
     m_Capabilities.supportsMeshShaders =
         m_Device->supportsFamily(MTL::GPUFamilyApple7) || m_Device->supportsFamily(MTL::GPUFamilyMetal3);
+    m_Capabilities.supportsIndirectMeshTasks = m_Capabilities.supportsMeshShaders;
     // Plain 64-bit integer math is available on Apple GPU family 3 and newer.
     // CBT terrain uses non-atomic ulong load/store and arithmetic for HeapID;
     // its atomics remain 32-bit and do not require Metal's 64-bit atomics.
