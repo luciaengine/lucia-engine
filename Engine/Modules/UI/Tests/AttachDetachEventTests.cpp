@@ -1676,8 +1676,7 @@ TEST(AttachDetachEventTests, ControlDetachHandlerAddingToAnUnrelatedParentIsSafe
 
 // A detach takes each element of the subtree out of the manager's dirty queues. That cost must
 // be constant per element: a scan of the queue per element makes the detach of a large
-// subtree whose elements are all queued quadratic (an Inspector rebuild of 23,000 elements
-// spent seconds there).
+// subtree whose elements are all queued quadratic.
 TEST(AttachDetachEventTests, DetachCostDoesNotGrowWithQueuedElements)
 {
     auto* dev = SharedHeadlessDevice();
