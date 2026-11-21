@@ -132,7 +132,9 @@ A vertex modifier that moves vertices declares the largest distance it can move 
 
 Select `VertexModifiers/foliage_wind.glsl` on bark and leaf materials and add a Wind Volume to the scene. **Foliage Base and Height** defines the mesh-local height range over which sway reaches its full strength. **Foliage Sway and Leaf Flutter** sets the two motion distances in meters. Bark can sway with the leaf flutter distance set to zero.
 
-Enable **Use Authored Leaf Pivots** on the leaf material. Give all vertices of each leaf the same mesh-local pivot and radius. Put pivot X and Y in `TEXCOORD_6` and pivot Z and radius in `TEXCOORD_7`. The radius must reach the leaf's farthest vertex. A nonpositive radius leaves that geometry on height-based sway. The leaf hinge rotates positions, normals, and tangents together. The impostor atlas captures the rest pose.
+Enable **Use Authored Leaf Pivots** on the leaf material. Give all vertices of each leaf the same pivot and radius. Apply the mesh's import axis conversion and bake rotation to the pivot before you store it. If import mirrors X, negate the source pivot's X coordinate. Store pivot X and Y in `TEXCOORD_6`. Store pivot Z and the radius in meters in `TEXCOORD_7`.
+
+Set the radius to reach the leaf's farthest vertex in the imported mesh. A nonpositive radius uses height-based sway. The leaf hinge rotates positions, normals, and tangents together. The impostor atlas captures the rest pose.
 
 ## 5 · Keywords (static variants)
 
