@@ -1,5 +1,7 @@
 #include "Engine/Rendering/Forest/ForestStandDraws.h"
 
+#include "../IdentityMeshDrawConstants.h"
+
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
 #include "Engine/Rendering/Forest/ForestPlacementFeature.h"
 #include "Engine/Rendering/RenderOrigin.h"
@@ -7,23 +9,12 @@
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
-#include <bit>
 #include <limits>
 
 namespace GameEngine::Engine::Renderer
 {
 namespace
 {
-
-struct StandTransform
-{
-    std::array<float, 16> Model{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-    std::array<float, 4> NormalX{1, 0, 0, 0};
-    std::array<float, 4> NormalY{0, 1, 0, 0};
-    std::array<float, 4> NormalZ{0, 0, 1, 0};
-    std::array<float, 4> Extra{};
-};
-static_assert(sizeof(StandTransform) == 128, "Matches adapter_vertex.glsl's non-instanced push constants");
 
 bool ApplyStandIndexRange(const DrawCommand& head, std::span<DrawSubCommand> ranges)
 {
@@ -147,8 +138,8 @@ ScopedSubscription RegisterForestStandMesh(
                 !registry.TryGetDrawableBindings(*geometry, bindings))
                 return std::nullopt;
 
-            auto* transform = ctx.Frame->AllocatePassData<StandTransform>();
-            transform->Extra[0] = std::bit_cast<float>(mat->GetGpuSceneMaterialIndex());
+            const auto* transform = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(
+                mat->GetGpuSceneMaterialIndex());
             ForestStandDrawHeads heads{};
             auto& color = heads.Color;
             color.Material = mat;

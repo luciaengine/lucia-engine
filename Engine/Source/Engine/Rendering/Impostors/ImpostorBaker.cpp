@@ -1,5 +1,7 @@
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 
+#include "../IdentityMeshDrawConstants.h"
+
 #include "Engine/Rendering/DrawCommand.h"
 #include "Engine/Rendering/Impostors/ImpostorFrameCamera.h"
 #include "Engine/Rendering/Material.h"
@@ -14,7 +16,7 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <algorithm>
-#include <cstring>
+#include <bit>
 #include <utility>
 
 namespace GameEngine::Engine::Renderer
@@ -29,31 +31,6 @@ constexpr Rendering::MaterialKeyword kBakeKeywords = Rendering::MaterialKeyword:
 // warm-up frame have requested every variant the bake needs by then.
 constexpr uint32 kSettleFrames = 2;
 constexpr uint64 kAllocationRetryDelay = 120;
-
-// The vertex adapter's push-constant block on the non-instanced path (adapter_vertex.glsl, PC).
-struct BakePushConstants
-{
-    float Model[16];
-    float NormalColumn0[4];
-    float NormalColumn1[4];
-    float NormalColumn2[4];
-    float Extra[4]; // x = material index bits, y = skin palette offset bits.
-};
-static_assert(sizeof(BakePushConstants) == 128, "BakePushConstants must match adapter_vertex.glsl's PC block");
-
-std::array<std::byte, 128> MakePushConstants(uint32 materialIndex)
-{
-    BakePushConstants push{};
-    // The parts draw untransformed: identity model and normal matrices.
-    push.Model[0] = push.Model[5] = push.Model[10] = push.Model[15] = 1.0f;
-    push.NormalColumn0[0] = 1.0f;
-    push.NormalColumn1[1] = 1.0f;
-    push.NormalColumn2[2] = 1.0f;
-    std::memcpy(&push.Extra[0], &materialIndex, sizeof(materialIndex));
-    std::array<std::byte, 128> bytes{};
-    std::memcpy(bytes.data(), &push, sizeof(push));
-    return bytes;
-}
 
 uint32 AtlasSide(const ImpostorAtlasKey& key)
 {
@@ -441,7 +418,8 @@ const bool* ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, Render
         const Material* material = services.Materials().Registry().Find(part.Material);
         if (!material)
             continue;
-        slot.PushConstants.push_back(MakePushConstants(material->GetGpuSceneMaterialIndex()));
+        const IdentityMeshDrawConstants constants{material->GetGpuSceneMaterialIndex()};
+        slot.PushConstants.push_back(std::bit_cast<std::array<std::byte, sizeof(constants)>>(constants));
         DrawCommand command{};
         command.Material = material;
         command.Geometry.Mesh = part.Mesh;
