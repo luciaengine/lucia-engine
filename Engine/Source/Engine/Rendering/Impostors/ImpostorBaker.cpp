@@ -73,8 +73,9 @@ ImpostorBaker::~ImpostorBaker()
     }
 }
 
-ImpostorAtlas ImpostorBaker::Request(const ImpostorBakeRequest& request, uint64 frame)
+ImpostorAtlas ImpostorBaker::Request(const ImpostorBakeRequest& request, const RenderServices& services)
 {
+    const uint64 frame = services.Spine().WorldFrameEpoch();
     std::lock_guard lock(m_Mutex);
     const ImpostorAtlasCache::State state = m_Cache.Request(request.Key, frame, m_Evicted);
     if (state == ImpostorAtlasCache::State::Ready)

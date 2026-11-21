@@ -67,7 +67,8 @@ public:
 
     /// The atlas of `request.Key` once it is baked; an atlas with invalid textures until then.
     /// The first call for a key queues its bake when it fits the budget. Thread safe.
-    ImpostorAtlas Request(const ImpostorBakeRequest& request, uint64 frame);
+    /// Atlas eviction uses the renderer's app-frame epoch for every producer.
+    ImpostorAtlas Request(const ImpostorBakeRequest& request, const RenderServices& services);
 
     void DeclareFrameStage(Rendering::RenderGraph::RGFrame& frame, RenderServices& services) override;
     void OnDeviceRebuilt(Rendering::IDevice* device) override;
