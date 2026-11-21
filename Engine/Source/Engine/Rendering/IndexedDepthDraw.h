@@ -9,6 +9,7 @@
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Core/SpecializationConstants.h"
+#include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "RenderServicesDetail.h"
 
@@ -24,7 +25,17 @@ namespace GameEngine::Engine::Renderer
 inline bool IndexedDepthReuseEnabled(const Rendering::IDevice& device)
 {
     static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_REUSE", true);
-    return enabled && device.GetAPI() == Rendering::GraphicsAPI::Vulkan;
+    if (!enabled)
+        return false;
+
+    const auto api = device.GetAPI();
+    if (api == Rendering::GraphicsAPI::Vulkan)
+        return true;
+    if (api != Rendering::GraphicsAPI::Metal || !device.GetCapabilities().supportsIndexedDepthOwnerReplay)
+        return false;
+
+    static const bool metalReplayEnabled = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_OWNER_REPLAY", false);
+    return metalReplayEnabled;
 }
 
 inline bool LogIndexedDepthReplayDiagnostics()
@@ -50,6 +61,27 @@ inline MaterialSystem::PackedSSBO BoundMaterialParams(const PassBindingContext& 
     if (!entry || entry->Offset > maxSize || entry->Range > maxSize)
         return {};
     return {entry->Buffer, static_cast<size_t>(entry->Offset), static_cast<size_t>(entry->Range)};
+}
+
+// A donor override can target a constant absent from its shader. Reject it
+// before using an owner shader where that constant can change coverage.
+inline bool BindIndexedOwnerMaterialRow(Rendering::GraphicsPipelineDesc& pipeline,
+                                        const Rendering::ShaderMeta& shader,
+                                        std::optional<uint32_t> certifiedRow)
+{
+    if (std::none_of(shader.SpecConstants.begin(), shader.SpecConstants.end(), [](const auto& constant) {
+            return constant.Id == kForwardMaterialRowConstant;
+        }))
+        return true;
+    if (pipeline.Specialization && pipeline.Specialization->GetEntries().contains(kForwardMaterialRowConstant))
+        return false;
+    if (certifiedRow)
+    {
+        if (!pipeline.Specialization)
+            pipeline.Specialization.emplace();
+        pipeline.Specialization->AddConstant(kForwardMaterialRowConstant, *certifiedRow);
+    }
+    return true;
 }
 
 inline std::optional<bool> IndexedDepthHexSpecialization(const Rendering::GraphicsPipelineDesc& pipeline)
@@ -110,6 +142,7 @@ inline bool MatchesIndexedDepthRaster(const Rendering::GraphicsPipelineDesc& dep
                state.depthCompareOp == Rendering::ReverseZ::kNearerOrEqual &&
                !state.depthBoundsTestEnable && !state.stencilTestEnable &&
                !pipeline.ColorBlend.alphaToCoverageEnable &&
+               !pipeline.ColorBlend.logicOpEnable &&
                std::none_of(pipeline.ColorBlend.attachments.begin(), pipeline.ColorBlend.attachments.end(),
                             [](const auto& attachment) { return attachment.blendEnable; });
     };
@@ -148,7 +181,58 @@ inline bool MatchesIndexedDepthRaster(const Rendering::GraphicsPipelineDesc& dep
     return matchesInput(position) && matchesInput(uv0) && (!vertexAlpha || matchesInput(colorInput));
 }
 
-inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* meta, bool depthOnly)
+inline bool MatchesIndexedOwnerMeshVertexLayout(
+    const Rendering::GraphicsPipelineDesc& pipeline, Rendering::VertexAttributeFlags flags)
+{
+    using Rendering::VertexAttributeFlags;
+    if (!Rendering::HasFlag(flags, VertexAttributeFlags::StandardMesh))
+        return false;
+
+    Rendering::GraphicsPipelineDesc expected;
+    const auto consumed = flags & (VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasColor);
+    Rendering::BuildVertexLayoutFromFlags(consumed, expected);
+
+    for (const auto& binding : expected.VertexBindings)
+    {
+        const auto found = std::find_if(pipeline.VertexBindings.begin(), pipeline.VertexBindings.end(),
+            [&binding](const auto& candidate) { return candidate.binding == binding.binding; });
+        if (found == pipeline.VertexBindings.end() || found->stride != binding.stride ||
+            found->inputRate != binding.inputRate)
+            return false;
+    }
+    for (const auto& attribute : expected.VertexAttributes)
+    {
+        const auto found = std::find_if(pipeline.VertexAttributes.begin(), pipeline.VertexAttributes.end(),
+            [&attribute](const auto& candidate) { return candidate.location == attribute.location; });
+        if (found == pipeline.VertexAttributes.end() || found->binding != attribute.binding ||
+            found->offset != attribute.offset || found->format != attribute.format)
+            return false;
+    }
+    return true;
+}
+
+inline bool MatchesIndexedOwnerMeshFragmentInputs(
+    const Rendering::StageMeta& fragment, const Rendering::StageMeta& mesh)
+{
+    for (const auto& input : fragment.Inputs)
+    {
+        if (input.Builtin || input.Component != 0u || !input.Type.ArrayDims.empty())
+            return false;
+        const auto output = std::find_if(mesh.Outputs.begin(), mesh.Outputs.end(),
+            [&input](const auto& candidate) {
+                return candidate.Location == input.Location && candidate.Component == input.Component;
+            });
+        if (output == mesh.Outputs.end() || output->Type.ArrayDims.size() != 1u ||
+            output->Type.Kind != input.Type.Kind || output->Type.Base != input.Type.Base ||
+            output->Type.Rows != input.Type.Rows || output->Type.Cols != input.Type.Cols ||
+            output->Type.VecSize != input.Type.VecSize)
+            return false;
+    }
+    return true;
+}
+
+inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* meta,
+                                                    bool depthOnly, bool crossfading)
 {
     if (!meta)
         return std::nullopt;
@@ -156,7 +240,10 @@ inline std::optional<bool> StockMaskVertexAlpha(const Rendering::ShaderMeta* met
     const auto contains = [&defines](const char* define) {
         return std::find(defines.begin(), defines.end(), define) != defines.end();
     };
-    if (!contains(Rendering::kStockMaskCoverageDefine) || contains("GE_DEPTH_ONLY_FRAGMENT") != depthOnly)
+    // A cold fade request can serve the regular pipeline. Match the served variant.
+    if (!contains(Rendering::kStockMaskCoverageDefine) ||
+        contains("GE_DEPTH_ONLY_FRAGMENT") != depthOnly ||
+        contains("GE_LOD_CROSSFADE") != crossfading)
         return std::nullopt;
     return contains("HAS_COLOR");
 }
@@ -183,6 +270,42 @@ inline bool HasPublishedReplayAlbedo(const Material& material, const TextureServ
            textures.MatchesPublishedAssetTexture(
                material.GetGuid(), kAlbedo, albedo, material.GetBindlessTextureIndex(kAlbedoSlot)) &&
            !context.HasDeclaredTextureWrite(albedo);
+}
+
+inline bool HasDefaultWhiteSurfaceSlots(const Material& material, uint32_t whiteIndex)
+{
+    if (whiteIndex == 0u || material.GetBindlessTextureIndex(TextureSlot::kAO) != whiteIndex ||
+        material.GetBindlessTextureIndex(TextureSlot::kEmissive) != whiteIndex)
+        return false;
+
+    const uint32_t samplers = material.GetPackedSamplerIndices();
+    constexpr auto kWhiteSampler = static_cast<uint32_t>(Rendering::SamplerPreset::LinearRepeat);
+    const auto usesRepeat = [samplers](TextureSlot slot) {
+        return ((samplers >> (static_cast<uint32_t>(slot) * 4u)) & 0xfu) == kWhiteSampler;
+    };
+    return usesRepeat(TextureSlot::kAO) && usesRepeat(TextureSlot::kEmissive);
+}
+
+inline bool CanSpecializeWhiteMaps(const Material& material, const TextureService& textures,
+                                   const Rendering::GraphicsPipelineDesc& color)
+{
+    // The caller has verified that the bound buffer holds this material revision.
+    if (!HasDefaultWhiteSurfaceSlots(material, textures.DefaultWhiteBindlessIndex()) ||
+        !textures.HasPublishedBindlessSampler(static_cast<uint32_t>(Rendering::SamplerPreset::LinearRepeat)))
+        return false;
+
+    const auto hexSpec = IndexedDepthHexSpecialization(color);
+    if (hexSpec == false)
+        return true;
+    const auto* hexLane = Rendering::FindLegacyMaterialLane("hexTiling");
+    if (!hexSpec || !hexLane)
+        return false;
+    const auto offset = Rendering::LegacyLaneByteOffset(*hexLane);
+    if (material.GetCacheSize() < offset + sizeof(float))
+        return false;
+    float hexTiling;
+    std::memcpy(&hexTiling, material.GetCacheData() + offset, sizeof(hexTiling));
+    return hexTiling < 0.5f;
 }
 
 // Identity of the indexed GPU draw source. The caller must validate same-frame

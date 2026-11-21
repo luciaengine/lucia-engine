@@ -18,7 +18,7 @@ struct MetalLibraryCompileJob
 };
 
 /// Runs the Metal compiler with @p flags (the `metal` flags that give the device's compile) for each
-/// job. A job whose library file is missing afterwards failed.
+/// job. The bake can call the compiler once per set of flags. A missing library marks a failed job.
 using MetalLibraryCompiler =
     std::function<void(std::span<const MetalLibraryCompileJob> jobs, std::span<const std::string> flags)>;
 

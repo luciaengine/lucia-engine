@@ -222,6 +222,8 @@ void GameEngine::UIManager::RefreshDynamicStyleAnalysis(
         info.MayAffectSiblings = info.MayAffectSiblings || maySib;
     };
 
+    // True while scanChain reads a selector inside :is, :where or :not.
+    bool scanningNestedChain = false;
     std::function<void(const SelectorChain&, bool, bool)> scanChain;
     scanChain = [&](const SelectorChain& chain, bool ruleLayout, bool rulePaint)
     {
@@ -261,6 +263,12 @@ void GameEngine::UIManager::RefreshDynamicStyleAnalysis(
                     {
                     case PseudoClass::Kind::Hover:
                         updateInfo(next.Hover, ruleLayout, rulePaint, mayDesc, maySib);
+                        if (scanningNestedChain && (mayDesc || maySib))
+                            next.HoverAnchorsIncomplete = true;
+                        if (!scanningNestedChain && mayDesc)
+                            next.HoverDescendantAnchors.push_back(term.Selector);
+                        if (!scanningNestedChain && maySib)
+                            next.HoverSiblingAnchors.push_back(term.Selector);
                         break;
                     case PseudoClass::Kind::Active:
                         updateInfo(next.Active, ruleLayout, rulePaint, mayDesc, maySib);
@@ -293,8 +301,12 @@ void GameEngine::UIManager::RefreshDynamicStyleAnalysis(
 
                 for (const auto& nested : pseudo.SelectorList)
                 {
-                    if (nested)
-                        scanChain(*nested, ruleLayout, rulePaint);
+                    if (!nested)
+                        continue;
+                    const bool wasNested = scanningNestedChain;
+                    scanningNestedChain = true;
+                    scanChain(*nested, ruleLayout, rulePaint);
+                    scanningNestedChain = wasNested;
                 }
             }
         }

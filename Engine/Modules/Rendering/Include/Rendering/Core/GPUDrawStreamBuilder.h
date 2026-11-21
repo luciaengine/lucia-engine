@@ -891,6 +891,11 @@ class GPUDrawStreamBuilder
     /// draw record.
     BufferHandle GetSharedIndirectionBuffer() const { return m_SharedIndirection; }
 
+    BufferHandle GetSharedRecordBuffer() const { return m_SharedRecords; }
+    BufferHandle GetSharedCursorBuffer() const { return m_SharedCursors; }
+    uint32_t GetSharedRecordCapacity() const { return m_RecordCapacity; }
+    uint32_t GetSharedCursorCapacity() const { return m_CursorCapacity; }
+
     size_t GetRangeCount() const { return m_RangeMap.Size(); }
 
     /// The range-map inserts of this frame that land before the last key; each one moved every range

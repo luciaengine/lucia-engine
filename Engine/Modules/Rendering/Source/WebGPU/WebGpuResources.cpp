@@ -2,6 +2,7 @@
 
 #include "WebGpuConversions.h"
 #include "WebGpuDevice.h"
+#include "WebGpuSwapchain.h"
 #include "WebGpuUnsupported.h"
 
 #include "Logger/Logger.h"
@@ -767,7 +768,18 @@ void WebGpuDevice::DestroySampler(SamplerHandle handle)
 WebGpuTexture* WebGpuDevice::GetTexture(TextureHandle handle)
 {
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
-    return m_Textures.Get(ToGeneric(handle));
+    WebGpuTexture* texture = m_Textures.Get(ToGeneric(handle));
+#if defined(__EMSCRIPTEN__)
+    // A canvas texture expires when the browser task yields. Acquire it at
+    // command recording, after any GPU waits during frame preparation.
+    if (texture != nullptr && texture->isSurfaceSlot && texture->texture == nullptr)
+    {
+        WebGpuSwapchain* swapchain = GetSwapchain(m_ActiveWindowTarget);
+        if (swapchain == nullptr || swapchain->GetSlotTexture() != handle || !swapchain->Acquire(*this))
+            return nullptr;
+    }
+#endif
+    return texture;
 }
 
 WebGpuTextureView* WebGpuDevice::GetTextureView(TextureViewHandle handle)

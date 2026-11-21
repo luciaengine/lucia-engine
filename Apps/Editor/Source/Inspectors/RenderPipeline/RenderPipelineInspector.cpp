@@ -1,4 +1,5 @@
 #include "Inspectors/RenderPipeline/RenderPipelineInspector.h"
+#include "AssetCore/AssetEvents.h"
 #include "AssetCore/SharedFileRead.h"
 
 #include "InspectorRegistry.h"
@@ -502,6 +503,17 @@ static bool SaveJsonToDisk(RenderPipelineAsset& pipe, const nlohmann::json& docu
     return true;
 }
 
+// A direct Reload raises no event. An undo or a redo writes text that the tree does not show, so it
+// tells the listeners at once; the Inspector panel then rebuilds the tree before the next frame.
+static void DispatchPipelineReloaded(const RenderPipelineAsset& pipe)
+{
+    EngineCore& engine = EngineCore::GetInstance();
+    if (!engine.IsInitialized())
+        return;
+    engine.GetAssetManager().GetEventDispatcher().DispatchEvent(
+        AssetEvents::AssetReloaded(pipe.GetGUID(), pipe.GetType(), pipe.GetPath().string()));
+}
+
 static Editor::UndoRedoService::SnapshotTarget MakeRenderPipelineSnapshotTarget(RenderPipelineAsset* pipe,
                                                                                 const std::string& label)
 {
@@ -543,7 +555,8 @@ static Editor::UndoRedoService::SnapshotTarget MakeRenderPipelineSnapshotTarget(
             return false;
         }
 
-        (void)pipe->Reload();
+        if (pipe->Reload() == ReloadOutcome::Reloaded)
+            DispatchPipelineReloaded(*pipe);
         if (auto* vcs = Editor::EditorVcsProviderRegistry::Get().ActiveIntegration())
             vcs->RefreshStatus();
         return true;
@@ -608,83 +621,6 @@ static std::unique_ptr<UIElement> MakeSettingsRow()
     row->AddClass("settings-row");
     row->AddClass("inspector-row");
     return row;
-}
-
-static void NormalizeRenderPipelineFoldoutContent(Foldout* foldout)
-{
-    if (!foldout)
-        return;
-    if (UIElement* content = foldout->GetContentContainer())
-    {
-        content->Style()
-            .Set(Style::Gap, StyleLength::Px(0.0f))
-            .Set(Style::PaddingTop, StyleLength::Px(0.0f))
-            .Set(Style::PaddingBottom, StyleLength::Px(0.0f));
-    }
-}
-
-static void NormalizeRenderPipelineInspectorRows(UIElement* root)
-{
-    if (!root)
-        return;
-
-    float labelWidthPercent = 37.0f;
-    {
-        auto prefs = Editor::OpenEditorPreferences();
-        std::string err;
-        prefs.Load(&err);
-        double stored = labelWidthPercent;
-        if (prefs.TryGetDouble("ui.inspectorLabelWidth", stored))
-            labelWidthPercent = static_cast<float>(std::clamp(stored, 20.0, 60.0));
-    }
-
-    std::function<void(UIElement*)> visit = [&](UIElement* el)
-    {
-        if (!el)
-            return;
-
-        if (el->HasClass("inspector-row"))
-        {
-            el->Style()
-                .Set(Style::FlexWrap, false)
-                .Set(Style::AlignItems, AlignItems::Center);
-
-            for (const auto& child : el->GetChildren())
-            {
-                UIElement* c = child.get();
-                if (!c)
-                    continue;
-
-                if (c->HasClass("inspector-label-cell") || c->HasClass("inspector-label"))
-                {
-                    c->Style()
-                        .Set(Style::FlexGrow, 0.0f)
-                        .Set(Style::FlexShrink, 0.0f)
-                        .Set(Style::FlexBasis, StyleLength::Percent(labelWidthPercent))
-                        .Set(Style::Width, StyleLength::Percent(labelWidthPercent))
-                        .Set(Style::MinWidth, StyleLength::Px(0.0f))
-                        .Set(Style::MaxWidth, StyleLength::Percent(labelWidthPercent));
-                }
-                else if (c->HasClass("inspector-field") || c->HasClass("settings-row-field"))
-                {
-                    c->Style()
-                        .Set(Style::FlexGrow, 1.0f)
-                        .Set(Style::FlexShrink, 1.0f)
-                        .Set(Style::FlexBasis, StyleLength::Px(0.0f))
-                        .Set(Style::Width, StyleLength::Auto())
-                        .Set(Style::MinWidth, StyleLength::Px(0.0f))
-                        .Set(Style::MaxWidth, StyleLength::Auto())
-                        .Set(Style::MarginRight, StyleLength::Px(0.0f))
-                        .Set(Style::AlignSelf, AlignItems::Center);
-                }
-            }
-        }
-
-        for (const auto& child : el->GetChildren())
-            visit(child.get());
-    };
-
-    visit(root);
 }
 
 static std::vector<Dropdown::Option> MakeOptionsFromLabels(const std::vector<std::string>& labels)
@@ -882,7 +818,6 @@ static void RequestPassRebuild(const SharedPassFieldsContext& fields, size_t pas
             content->RemoveAllChildren();
         foldout->SetTitle(PassFoldoutTitle(pass, passIndex));
         BuildPassFields(fields, passIndex, *foldout);
-        NormalizeRenderPipelineInspectorRows(foldout);
         InspectorDrag::AutoSetupDragForInspector(foldout);
     };
     if (UIElement::IsInEventDispatch())
@@ -1703,7 +1638,6 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     settingsFoldout->AddClass("rp-foldout");
     settingsFoldout->AddClass("rp-foldout-top");
     settingsFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-foldout-settings", true));
-    NormalizeRenderPipelineFoldoutContent(settingsFoldout.get());
     settingsFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
                                           { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
     Foldout* settingsFoldoutPtr = settingsFoldout.get();
@@ -1715,7 +1649,6 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     resourcesFoldout->AddClass("rp-foldout");
     resourcesFoldout->AddClass("rp-foldout-top");
     resourcesFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-foldout-resources", false));
-    NormalizeRenderPipelineFoldoutContent(resourcesFoldout.get());
     resourcesFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
                                            { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
     Foldout* resourcesFoldoutPtr = resourcesFoldout.get();
@@ -1727,7 +1660,6 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     passesFoldout->AddClass("rp-foldout");
     passesFoldout->AddClass("rp-foldout-top");
     passesFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-foldout-passes", true));
-    NormalizeRenderPipelineFoldoutContent(passesFoldout.get());
     passesFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
                                         { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
     Foldout* passesFoldoutPtr = passesFoldout.get();
@@ -1739,7 +1671,6 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
     debugFoldout->AddClass("rp-foldout");
     debugFoldout->AddClass("rp-foldout-top");
     debugFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-foldout-debug", false));
-    NormalizeRenderPipelineFoldoutContent(debugFoldout.get());
     debugFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
                                        { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
     Foldout* debugFoldoutPtr = debugFoldout.get();
@@ -1913,7 +1844,6 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
             resFoldout->SetTitle(resName + " (Resource)");
             resFoldout->AddClass("rp-foldout");
             resFoldout->SetExpanded(FoldoutStateCache::Get(pipe, "rp-res-" + idRes + "-foldout", false));
-            NormalizeRenderPipelineFoldoutContent(resFoldout.get());
             resFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
                                              { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
             Foldout* resFoldoutPtr = resFoldout.get();
@@ -2621,7 +2551,6 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
         passFoldout->SetId(PassFoldoutId(i));
         passFoldout->AddClass("rp-foldout");
         passFoldout->SetExpanded(FoldoutStateCache::Get(pipe, passFoldout->GetId(), false));
-        NormalizeRenderPipelineFoldoutContent(passFoldout.get());
         passFoldout->SetOnExpandedChanged([pipe](Foldout& f, bool expanded)
                                           { FoldoutStateCache::Set(pipe, f.GetId(), expanded); });
         UIElement* passUI = passFoldout.get();
@@ -2719,7 +2648,6 @@ static void BuildRenderPipelineEditorUI(UIElement* root,
         passContainerPtr->AddEntry(i, passFoldoutPtr, "Drag to reorder this pass.");
     }
 
-    NormalizeRenderPipelineInspectorRows(root);
 
     // Render-pipeline assets still contain a few generic JSON editors whose exact
     // keys are only known at runtime. Make their numeric labels behave like the

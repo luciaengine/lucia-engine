@@ -145,7 +145,6 @@ void main()
 #if defined(GE_COMPAT_PROFILE)
     // Uniform control flow ends at the first mode branch below, so every
     // implicit derivative the shader needs is taken here (UI/ui_derivatives.glsl).
-    ge_UiDeriv.LocalPerPixel = px;
     ge_UiDeriv.UvDdx = dFdx(vUV);
     ge_UiDeriv.UvDdy = dFdy(vUV);
 #endif
@@ -201,7 +200,7 @@ void main()
             vec2 shadowP = p - effects.xy;
             float sdShadow = roundedRectSDF(shadowP, elemRect, radX, radY);
             float blur = max(effects.z, 0.5);
-            shadowA = evaluateShadowAlpha(sdShadow, blur);
+            shadowA = evaluateShadowAlpha(sdShadow, blur, px);
         }
 
         // Glow (around)

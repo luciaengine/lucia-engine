@@ -23,7 +23,7 @@ def main():
     spec.loader.exec_module(cook)
     packages = {name: cook.kPackages.get(name, cook.kEditorPackages.get(name)) for name in (
         "volumetric_clouds_march", "ffx_dof_tile", "ffx_dof_dilate", "ffx_dof_composite",
-        "ddgi_glossy_resolve_blur", "screen_space_shadow_prepare",
+        "ddgi_glossy_resolve", "ddgi_glossy_resolve_blur", "screen_space_shadow_prepare",
         "screen_space_shadow", "screen_space_shadow_resolve", "screen_space_shadow_match",
         # Cook only: atomics on values a loop carries out are a shape naga 29.x rejects.
         "depth_reduce", "depth_reduce_ms",
@@ -61,6 +61,19 @@ def main():
                         for b in group["bindings"]}
             return meta, bindings, wgsl
         errors = []
+        allocator = f"CBT/cbt_kernels_{cook.CBTKernelValue('Allocate')}.comp"
+        stages = {name: cook.kEditorStageShaders[name] for name in
+                  (allocator, "TerrainGrass/terrain_grass_plan.comp")}
+        failures = cook.CookStageShaders(cook.kRepoRoot / "Engine/Modules/Rendering/Shaders",
+                                        output, stages=stages)
+        for name, message in failures:
+            errors.append(f"{name}: {message}")
+        if not failures:
+            kernel = (output / f"{allocator}.wgsl").read_text()
+            storage = re.findall(r"@group\(0\)\s*@binding\((\d+)\)\s*var<storage\b", kernel)
+            # The allocator reads or writes the heap, allocation, bisector, and neighbor buffers.
+            if set(storage) != {"3", "4", "5", "6"}:
+                errors.append(f"CBT allocator: expected the four live storage bindings, got {storage}")
         for package in ("screen_space_shadow_prepare", "screen_space_shadow",
                         "screen_space_shadow_resolve", "screen_space_shadow_match"):
             if package not in cook.kPackages:
@@ -100,7 +113,22 @@ def main():
                 errors.append(f"cloud march: WGSL lacks read-only storage for {name}")
         if not meta["pushConstants"]:
             errors.append("cloud march: metadata lost the engine push-constant declaration")
+        _, bindings, wgsl = read("ddgi_glossy_resolve")
+        for name in ("ge_shadowCompareSampler", "ge_pointClampSampler"):
+            if name in bindings:
+                errors.append(f"DDGI resolve: layout requires unused sampler {name}")
+        linear_sampler = bindings.get("ge_linearClampSampler")
+        if not linear_sampler or not re.search(
+                rf"@group\(0\)\s*@binding\({linear_sampler['binding']}\)\s*var\s+\w+\s*:\s*sampler\b", wgsl):
+            errors.append("DDGI resolve: shared linear sampler is missing from reflection or WGSL")
         _, bindings, wgsl = read("ddgi_glossy_resolve_blur")
+        lobes = bindings.get("uLobesOut")
+        if not lobes or not lobes.get("image", {}).get("arrayed", False):
+            errors.append("DDGI blur: both reflection lobes must share a layered output")
+        elif not re.search(
+                rf"@group\(0\)\s*@binding\({lobes['binding']}\)\s*var\s+\w+\s*:\s*texture_storage_2d_array<rgba16float,\s*write>",
+                wgsl):
+            errors.append("DDGI blur: WGSL lacks the layered RGBA16F storage output")
         for name in ("uRoughIn", "uGlossyIn", "uIrradianceIn", "uHistoryIrr"):
             if not bindings[name].get("image", {}).get("filtered", False):
                 errors.append(f"DDGI blur: {name} lost linear filtering")

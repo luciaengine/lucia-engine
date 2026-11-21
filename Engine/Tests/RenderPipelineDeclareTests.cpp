@@ -12199,9 +12199,8 @@ std::optional<PausedViewBuilds> RunPausedOcclusionView(std::vector<std::string> 
     setup.EmptyScene = emptyScene;
     setup.Width = width;
     setup.ProbedComputePipelines = std::move(probed);
-    setup.Resources.push_back(
-        {"View.DepthResolved",
-         R"({"kind":"texture","scope":"perView","format":"R32_FLOAT","extent":{"scale":[1,1]},"usage":["shaderResource","unorderedAccess"]})"});
+    if (!frustumStrategy && !emptyScene)
+        setup.Passes.push_back({"DepthResolve", "DepthResolve", R"({"id":"DepthResolve","type":"DepthResolve"})"});
     setup.Passes.push_back({"HZBBuild", "HZBBuild", R"({"id":"HZBBuild","type":"HZBBuild"})"});
     setup.Passes.push_back({"OcclusionCullP2", "OcclusionCullP2", R"({"id":"OcclusionCullP2","type":"OcclusionCullP2"})"});
     setup.Passes.push_back({"ScatterB", "ScatterB", R"({"id":"ScatterB","type":"ScatterB"})"});
@@ -22139,13 +22138,37 @@ TEST(RenderPipelineDeclareTests, ShadowMinMaxPyramidBatchesLayersWithExactDepthB
         constexpr uint32_t kResolution = 64;
         constexpr uint32_t kSourceLayers = 4;
         constexpr size_t kLayerTexels = kResolution * kResolution;
-        // Exercise every layer, shrink below the depth array's layer count,
-        // force a single-layer array view, then grow the pooled image again.
-        const uint32_t activeCounts[] = {4, 2, 1, 4};
-        for (uint32_t frameIndex = 0; frameIndex < std::size(activeCounts); ++frameIndex)
+        struct Sample
         {
-            SCOPED_TRACE(frameIndex);
-            frame.BeginFrame(frameIndex);
+            uint32_t FrameIndex;
+            uint32_t ActiveLayers;
+            std::optional<uint32_t> ScheduledMask;
+            uint32_t ModifiedMask;
+            bool ExpectsReduction;
+            bool PersistentDepth = true;
+            bool Submit = true;
+        };
+        const Sample samples[] = {
+            {0, 4, std::nullopt, 0b1111, true, false},
+            {1, 2, std::nullopt, 0b1111, true, false},
+            {2, 1, std::nullopt, 0b1111, true, false},
+            {3, 4, std::nullopt, 0b1111, true, false},
+            {4, 4, 0b1111, 0b1111, true},
+            {5, 4, 0b1001, 0b1001, true},
+            {6, 4, 0u, 0u, false},
+            {7, 2, 0b0001, 0b0001, true},
+            {9, 2, 0u, 0u, true},
+            {10, 2, 0b0001, 0u, true, true, false},
+            {11, 2, 0u, 0u, true},
+            {12, 2, std::nullopt, 0b1001, true},
+            {13, 2, 0u, 0u, true},
+            {14, 2, 0u, 0u, true, false},
+        };
+        std::array<uint32_t, kSourceLayers> layerVersions{};
+        for (const Sample& sample : samples)
+        {
+            SCOPED_TRACE(sample.FrameIndex);
+            frame.BeginFrame(sample.FrameIndex);
             // The buffer-upload API accepts color images only. R32_FLOAT supplies the same
             // depth-valued scalar reads to sampler2DArray without an invalid D32 color-aspect copy;
             // the production D32 binding remains covered by the shadow declaration tests.
@@ -22157,11 +22180,16 @@ TEST(RenderPipelineDeclareTests, ShadowMinMaxPyramidBatchesLayersWithExactDepthB
             depthDesc.flags = TextureCreateFlags::ForceArrayView;
             depthDesc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource |
                                                    TextureUsage::TransferDst);
-            const auto depth = frame.CreateTexture("PyramidOracle.Depth", depthDesc);
+            const auto depth = sample.PersistentDepth
+                ? frame.ImportPersistentTexture("PyramidOracle.Depth", depthDesc)
+                : frame.CreateTexture("PyramidOracle.Depth", depthDesc);
             ASSERT_TRUE(depth.IsValid());
 
             std::vector<float> source(kLayerTexels * kSourceLayers);
             for (uint32_t layer = 0; layer < kSourceLayers; ++layer)
+            {
+                if (sample.ModifiedMask & (1u << layer))
+                    layerVersions[layer] = sample.FrameIndex;
                 for (uint32_t y = 0; y < kResolution; ++y)
                     for (uint32_t x = 0; x < kResolution; ++x)
                     {
@@ -22171,10 +22199,11 @@ TEST(RenderPipelineDeclareTests, ShadowMinMaxPyramidBatchesLayersWithExactDepthB
                         const bool clear = (x + y + layer) % 13u == 0u;
                         source[layer * kLayerTexels + y * kResolution + x] =
                             clear ? 0.0f
-                                  : float((17u * x + 29u * y + 43u * layer + 31u * frameIndex) %
+                                  : float((17u * x + 29u * y + 43u * layer + 31u * layerVersions[layer]) %
                                           251u) /
                                         256.0f;
                     }
+            }
             const auto upload = frame.AllocUpload(source.size() * sizeof(float));
             ASSERT_TRUE(upload.Valid());
             std::memcpy(upload.Ptr, source.data(), source.size() * sizeof(float));
@@ -22190,21 +22219,25 @@ TEST(RenderPipelineDeclareTests, ShadowMinMaxPyramidBatchesLayersWithExactDepthB
                             upload.Offset + layer * kLayerTexels * sizeof(float));
                 });
 
-            const uint32_t activeLayers = activeCounts[frameIndex];
+            const uint32_t activeLayers = sample.ActiveLayers;
             const size_t passesBefore = frame.Graph().PassCount();
             // A kernel this wide needs every level the 16-texel base can hold.
             constexpr float kKernelTexels = 60.0f;
             const uint32_t expectedLevels = ShadowMinMaxPyramid::LevelsForQuery(
                 kResolution >> ShadowMinMaxPyramid::kBaseDownshift,
                 kKernelTexels + ShadowMinMaxPyramid::kQueryMarginTexels);
-            const auto pyramid =
-                feature.Declare(frame, rs, 1u, depth, kResolution, activeLayers, kKernelTexels, true);
+            const auto pyramid = feature.Declare(frame, rs, 1u, depth, kResolution, activeLayers,
+                                                 kKernelTexels, true, sample.ScheduledMask);
             ASSERT_TRUE(pyramid.IsValid()) << "shadow_minmax_reduce.shaderpkg must be staged";
-            EXPECT_EQ(frame.Graph().PassCount() - passesBefore, expectedLevels)
-                << "one pass per mip, independent of the active cascade count";
+            EXPECT_EQ(frame.Graph().PassCount() - passesBefore, sample.ExpectsReduction ? expectedLevels : 0u);
             const auto state = feature.StateFor(1u, frame);
             ASSERT_EQ(state.Layers, activeLayers);
             ASSERT_EQ(state.Levels, static_cast<int>(expectedLevels));
+            if (!sample.Submit)
+            {
+                frame.DiscardRecordedPasses();
+                continue;
+            }
 
             std::vector<std::shared_ptr<Rendering::RGReadbackTicket>> depthTickets;
             for (uint32_t layer = 0; layer < kSourceLayers; ++layer)
@@ -22694,10 +22727,9 @@ TEST(RenderPipelineDeclareTests, FogLightingReadsLocalShadowsAndEmissionComputeS
     f.Device->WaitForIdle();
 }
 
-// The diffuse-only resolve must keep native allocation unchanged while a
-// backend that prohibits writable aliases gets distinct, bounded placeholders.
-// Exercise the real declaration so every placeholder must also have its graph
-// access declared; missing edges previously made the proposed Web fix fail on Vulkan.
+// Both backends bind a tiny output array with the lobes off. A backend
+// that prohibits writable aliases also needs separate raw lobe placeholders.
+// Execute the real passes so the validation layer checks their declarations.
 TEST(RenderPipelineDeclareTests, DdgiInactiveLobesRespectStorageAliasingCapability)
 {
     // Its own device: the test reads the validation layer's error count.
@@ -22752,26 +22784,27 @@ TEST(RenderPipelineDeclareTests, DdgiInactiveLobesRespectStorageAliasingCapabili
                 auto params = frame.AllocUpload<ViewParamsUBO>();
                 ASSERT_TRUE(params.Valid());
                 *params.Ptr = {};
-                RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+                RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
                 ASSERT_TRUE(feature.DeclareGlossyResolveForView(
                     frame, rs, params.Buffer, params.Offset, sizeof(ViewParamsUBO), depth,
-                    64, 64, 42, 1.0f, "DDGI.Test.Resolve", rough, glossy, irradiance, gatherNormal, normal));
+                    64, 64, 42, 1.0f, "DDGI.Test.Resolve", lobes, irradiance, gatherNormal, normal));
 
                 const auto& graph = frame.Graph();
                 EXPECT_EQ(graph.ResourceDesc(irradiance.Id).Width, 32u);
                 EXPECT_EQ(graph.ResourceDesc(irradiance.Id).Height, 32u);
-                EXPECT_EQ(rough.Id == irradiance.Id, aliasesAllowed);
-                EXPECT_EQ(glossy.Id == irradiance.Id, aliasesAllowed);
-                if (!aliasesAllowed)
-                {
-                    EXPECT_NE(rough.Id, glossy.Id);
-                }
+                ASSERT_TRUE(lobes.IsValid());
+                EXPECT_NE(lobes.Id, irradiance.Id);
+                const auto& lobeDesc = graph.ResourceDesc(lobes.Id);
+                EXPECT_EQ(lobeDesc.Width, 1u);
+                EXPECT_EQ(lobeDesc.Height, 1u);
+                EXPECT_EQ(lobeDesc.ArrayLayers, 2u);
 
                 const auto resolve = RGQuery::FindDeclared(graph, RGQuery::Exact{"DDGI.Test.Resolve"});
                 const auto blur = RGQuery::FindDeclared(graph, RGQuery::Exact{"DDGI.Test.ResolveBlur"});
                 ASSERT_NE(resolve, RenderGraph::kInvalidId);
                 ASSERT_NE(blur, RenderGraph::kInvalidId);
-                for (const char* lobe : {"Rough", "Glossy", "RoughBlur", "GlossyBlur"})
+                EXPECT_TRUE(graph.HasWriteAccess(blur, lobes.Id));
+                for (const char* lobe : {"Rough", "Glossy"})
                 {
                     const std::string name = std::string("DDGIGlossyResolve.") + lobe + ".42";
                     RenderGraph::RGResourceId found = RenderGraph::kInvalidId;
@@ -22786,12 +22819,8 @@ TEST(RenderPipelineDeclareTests, DdgiInactiveLobesRespectStorageAliasingCapabili
                     ASSERT_NE(found, RenderGraph::kInvalidId) << name;
                     EXPECT_EQ(graph.ResourceDesc(found).Width, 1u) << name;
                     EXPECT_EQ(graph.ResourceDesc(found).Height, 1u) << name;
-                    const bool blurred = std::string_view(lobe).ends_with("Blur");
-                    EXPECT_TRUE(graph.HasWriteAccess(blurred ? blur : resolve, found)) << name;
-                    if (!blurred)
-                    {
-                        EXPECT_TRUE(graph.HasReadAccess(blur, found)) << name;
-                    }
+                    EXPECT_TRUE(graph.HasWriteAccess(resolve, found)) << name;
+                    EXPECT_TRUE(graph.HasReadAccess(blur, found)) << name;
                 }
                 // Execute both capability arms: declaration alone cannot catch
                 // invalid descriptor byte ranges in the resolve callback.
@@ -22879,10 +22908,10 @@ TEST(RenderPipelineDeclareTests, DdgiResolveFirstFrameNeverBlendsUndefinedHistor
             for (float* m : {params.Ptr->ge_invProj, params.Ptr->ge_invView, params.Ptr->ge_prevViewProj})
                 for (int i = 0; i < 4; ++i)
                     m[i * 5] = 1.0f;
-            RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+            RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            "DDGI.Test.Resolve", lobes, irradiance,
                                                             gatherNormal, normal));
             const auto& irradianceDesc = frame.Graph().ResourceDesc(irradiance.Id);
             const uint32_t w = irradianceDesc.Width;
@@ -22993,9 +23022,9 @@ void ExecuteGlossyResolveOnce(IDevice& device, RenderServices& rs, DDGIProbeFeat
     auto params = frame.AllocUpload<ViewParamsUBO>();
     ASSERT_TRUE(params.Valid());
     *params.Ptr = {};
-    RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+    RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
     ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset, sizeof(ViewParamsUBO),
-                                                    depth, 64, 64, 42, 1.0f, "DDGI.Rebuild.Resolve", rough, glossy,
+                                                    depth, 64, 64, 42, 1.0f, "DDGI.Rebuild.Resolve", lobes,
                                                     irradiance, gatherNormal, normal));
     frame.MarkOutput(irradiance);
     frame.Execute();
@@ -23413,10 +23442,10 @@ TEST(RenderPipelineDeclareTests, DdgiResolveDeclaresItsProbeStateReads)
             auto params = frame.AllocUpload<ViewParamsUBO>();
             ASSERT_TRUE(params.Valid());
             *params.Ptr = {};
-            RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+            RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            "DDGI.Test.Resolve", lobes, irradiance,
                                                             gatherNormal, normal));
             // Imports dedup by physical, so these return the resources the clears wrote.
             const auto probeStateRG = frame.ImportExternalBuffer("DDGI.Test.ProbeState", probeState.Buffer);
@@ -23491,10 +23520,10 @@ TEST(RenderPipelineDeclareTests, DdgiResolveDeclaresItsAtlasReads)
             auto params = frame.AllocUpload<ViewParamsUBO>();
             ASSERT_TRUE(params.Valid());
             *params.Ptr = {};
-            RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+            RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            "DDGI.Test.Resolve", lobes, irradiance,
                                                             gatherNormal, normal));
             const auto& graph = frame.Graph();
             const auto resolve = RGQuery::FindDeclared(graph, RGQuery::Exact{"DDGI.Test.Resolve"});
@@ -23570,7 +23599,7 @@ void ExpectWorldPassDeclaresDdgiGatherReads(IDevice* device, Components::DDGIGlo
             RenderGraph::RGTexture normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(
                 frame, rs, params.Buffer, params.Offset, sizeof(ViewParamsUBO), targets.Depth, 64, 64, viewId, 1.0f,
-                "DDGI.Test.Resolve", targets.DDGIResolveRough, targets.DDGIResolveGlossy,
+                "DDGI.Test.Resolve", targets.DDGIResolveLobes,
                 targets.DDGIResolveIrradiance, targets.DDGIResolveGatherNormal, normal));
         }
         rs.BeginWorldDrawFrame();

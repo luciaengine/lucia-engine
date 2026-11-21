@@ -11,6 +11,13 @@ try {
     const installEditorAssets = globalThis.geInstallEditorAssets;
     delete globalThis.geInstallEditorAssets;
     await installEditorAssets(Module);
+    const prepareEditorShaders = globalThis.gePrepareEditorShaders;
+    delete globalThis.gePrepareEditorShaders;
+    const prepareShaders = () => prepareEditorShaders(Module);
+    const shaders = createShaderDownload(prepareShaders);
+    Module.webEditorShaders = shaders;
+    if (new URLSearchParams(location.search).get('project'))
+        shaders.mount(await prepareShaders());
     const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
     const scripts = exports.Lucia.Web.Editor.BrowserPlayMode;
     const scriptSession = createScriptSession(Module, scripts);
@@ -25,6 +32,7 @@ try {
     async function frame() {
         try {
             const keepRunning = await Module.ccall('GeTickEditor', 'boolean', [], [], { async: true });
+            shaders.mountReady();
             await scriptSession.runPending();
             if (keepRunning)
                 scheduleFrame();
@@ -42,6 +50,51 @@ try {
     scheduleFrame();
 } catch (error) {
     report(error);
+}
+
+function createShaderDownload(prepare) {
+    let state = 0;
+    let downloading = false;
+    let ready;
+
+    function mount(install) {
+        install();
+        state = 1;
+    }
+
+    function fail(error) {
+        console.error('Could not load the editor shader cache', error);
+        downloading = false;
+        state = -1;
+    }
+
+    return {
+        mount,
+        mountReady() {
+            if (!ready)
+                return;
+            const install = ready;
+            ready = undefined;
+            try {
+                mount(install);
+            } catch (error) {
+                fail(error);
+            }
+        },
+        poll() {
+            if (state < 0) {
+                state = 0;
+                return -1;
+            }
+            if (!state && !downloading) {
+                downloading = true;
+                void prepare().then(install => {
+                    ready = install;
+                }, fail);
+            }
+            return state;
+        },
+    };
 }
 
 function createScriptSession(module, scripts) {

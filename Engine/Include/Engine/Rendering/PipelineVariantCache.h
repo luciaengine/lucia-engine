@@ -206,10 +206,12 @@ class PipelineVariantCache
         FrontFace frontFace,
         const RenderGraph::RGPrepareContext& context);
 
-    /// Clone an already matched forward pipeline. A cold clone leaves the
-    /// original draw active and joins the frame-begin warm queue.
-    PipelineHandle PrepareIndexedDepthEqual(const Material& material, Rendering::GraphicsPipelineDesc desc,
-                                            const Rendering::PipelineFormatKey& formatKey);
+    /// Prepare an Equal-depth pipeline for a certified masked draw from its served shader metadata.
+    /// Cold pipelines join the frame-begin warm queue. A warm per-instance row remains usable.
+    PreparedVariant PrepareIndexedDepthEqual(const Material& material, const Rendering::ShaderMeta& shader,
+                                            Rendering::GraphicsPipelineId base,
+                                            const Rendering::GraphicsPipelineDesc& desc,
+                                            const Rendering::PipelineFormatKey& formatKey, bool useWhiteMaps);
 
     /// Select a warm unit during graph preparation; cold builds are queued for frame begin.
     /// The returned unit is borrowed until the next serial material-frame begin.

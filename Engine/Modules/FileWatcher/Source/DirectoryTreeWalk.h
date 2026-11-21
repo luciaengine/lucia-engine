@@ -14,8 +14,9 @@ namespace GameEngine
 
 /**
  * @brief Walks a directory tree in pre-order with opendir and readdir, in the order of
- * std::filesystem::recursive_directory_iterator. It keeps its buffers between walks, so
- * with libc++ a walk of a tree that it walked before makes no operator new call.
+ * std::filesystem::recursive_directory_iterator. It keeps its buffers between walks and builds no
+ * std::filesystem::path for an entry, so a walk of a tree that it walked before makes no operator
+ * new call.
  */
 class DirectoryTreeWalk
 {
@@ -58,10 +59,10 @@ class DirectoryTreeWalk
     EntryType CurrentType() const { return m_CurrentType; }
 
     /**
-     * @brief The current entry's path: the root joined with the names under it, as
-     * std::filesystem::path::operator/ joins them.
+     * @brief The current entry's path, null-terminated: the root joined with the names under it,
+     * as std::filesystem::path::operator/ joins them.
      */
-    const std::filesystem::path& CurrentPath() const { return m_CurrentPath; }
+    const char* CurrentPath() const { return m_PathText.c_str(); }
 
     std::string_view CurrentName() const { return std::string_view(m_PathText).substr(m_NameStart); }
 
@@ -82,7 +83,6 @@ class DirectoryTreeWalk
     [[noreturn]] void Fail(const char* operation, size_t pathLength, int error);
 
     std::string m_PathText;
-    std::filesystem::path m_CurrentPath;
     std::vector<OpenDirectory> m_OpenDirectories;
     size_t m_RelativeStart = 0;
     size_t m_NameStart = 0;

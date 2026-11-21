@@ -40,7 +40,9 @@ public:
 
     bool IsOpen() const { return m_IsOpen; }
     const PageStoreLayout& Layout() const { return m_Layout; }
-    const std::filesystem::path& File() const { return m_File; }
+    const std::filesystem::path& File() const;
+    /// A queued range read holds the path from this open, even if the reader opens another store.
+    std::shared_ptr<const std::filesystem::path> ShareFilePath() const { return m_File; }
     /// Where the store starts in File(); a page's file position is BaseOffset() + its entry's Offset.
     uint64 BaseOffset() const { return m_BaseOffset; }
 
@@ -59,7 +61,7 @@ public:
     bool DecodePayload(const PageAddress& address, std::span<const uint8> stored, std::vector<uint8>& outPayload) const;
 
 private:
-    std::filesystem::path m_File;
+    std::shared_ptr<const std::filesystem::path> m_File;
     uint64 m_BaseOffset = 0;
     PageStoreLayout m_Layout;
     bool m_IsOpen = false;

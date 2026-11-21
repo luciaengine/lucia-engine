@@ -257,10 +257,22 @@ TEST(OverlappingSourceRemap, ReclaimedGuidDoesNotStrandTheRemappedLoadGeneration
     fs::rename(originalPath, renamedPath, renameError);
     ASSERT_FALSE(renameError) << renameError.message();
     ASSERT_TRUE(manager.RenameAssetPath(originalPath, renamedPath));
+    AssetMetadata staleScanRecord{};
+    ASSERT_TRUE(registry.TryGetAssetMetadata(renamedPath, staleScanRecord));
+    ASSERT_EQ(staleScanRecord.Guid, originalGuid);
     ASSERT_TRUE(registry.RegisterAsset(renamedPath, "project"));
     const GUID remappedGuid = registry.GetAssetGUID(renamedPath);
     ASSERT_NE(remappedGuid, originalGuid);
     ASSERT_EQ(registry.ResolveSessionAlias(originalGuid), remappedGuid);
+
+    // A scan can publish metadata it read while the renamed path still held the old GUID.
+    Vector<AssetMetadata> scanBatch;
+    scanBatch.push_back(std::move(staleScanRecord));
+    ASSERT_EQ(registry.RegisterAssetMetadataBatch(std::move(scanBatch), nullptr), 1u);
+    EXPECT_EQ(registry.GetAssetGUID(renamedPath), remappedGuid);
+    ASSERT_EQ(registry.ResolveSessionAlias(originalGuid), remappedGuid)
+        << "a metadata refresh must leave the in-flight load's alias reachable";
+
     auto joined = std::make_shared<std::promise<bool>>();
     auto callback = joined->get_future();
     manager.LoadAsset(remappedGuid, [joined](Result<SharedPtr<Asset>, AssetError> result)

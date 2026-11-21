@@ -1,0 +1,171 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define STATE_BINDING 4
+#include "state.glsl"
+
+layout(local_size_x=64) in;
+
+struct Draw
+{
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+layout(std430, set=0, binding=0) readonly buffer Source { Draw records[]; } source;
+layout(std430, set=0, binding=1) buffer Masks { uint words[]; } masks;
+layout(std430, set=0, binding=2) buffer Offsets { uint offsets[]; } runs;
+layout(std430, set=0, binding=3) writeonly buffer Output { uvec4 items[]; } outputWork;
+shared uint prefix[64];
+
+uint lowBits(uint count)
+{
+    return count < 32u ? (1u << count) - 1u : 0xffffffffu;
+}
+
+void main()
+{
+    if (packet.emit == 3u)
+    {
+        uint slot = gl_GlobalInvocationID.x;
+        if (state.slotEnd <= state.slotBegin || state.slotEnd - state.slotBegin > 65535u ||
+            slot >= state.slotEnd - state.slotBegin)
+            return;
+        for (uint w=0u; w<8u; ++w)
+        {
+            uint summary = masks.words[slot*8u + w];
+            while (summary != 0u)
+            {
+                uint word = 32u*w + uint(findLSB(summary));
+                summary &= summary - 1u;
+                masks.words[524280u + slot*248u + word] = 0u;
+            }
+        }
+        return;
+    }
+
+    uint drawIndex = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+    if (state.slotEnd > state.slotBegin && state.slotEnd - state.slotBegin > 65535u)
+        return;
+    if (packet.emit != 0u && state.selectedCount == 0u)
+        return;
+
+    Draw command = source.records[packet.recordBase + drawIndex];
+    uint indexLimit = 7936u * 3u;
+    bool valid = command.instanceCount <= 64u && command.indexCount <= indexLimit &&
+                 command.indexCount % 3u == 0u &&
+                 command.firstIndex <= 0xffffffffu - command.indexCount;
+    if (command.instanceCount != 0u)
+    {
+        valid = valid && command.firstInstance >= state.slotBegin && command.firstInstance < state.slotEnd &&
+                command.instanceCount <= state.slotEnd - command.firstInstance;
+    }
+    if (!valid)
+    {
+        if (lane == 0u)
+        {
+            runs.offsets[drawIndex] = 0u;
+            atomicOr(state.flags, 2u);
+        }
+        return;
+    }
+
+    uint blocks = command.indexCount / 3u;
+    uint wordCount = (blocks + 31u) / 32u;
+    uint slot = command.firstInstance + lane;
+    uint localSlot = slot - state.slotBegin;
+    uint slotWord = 524280u + localSlot*248u;
+    uint slotSummary = localSlot*8u;
+
+    uint runCount = 0u;
+    uint retained = 0u;
+    if (lane < command.instanceCount)
+    {
+        uint summaryCount=(wordCount+31u)/32u;
+        for (uint w=0u; w<summaryCount; ++w)
+        {
+            uint summary = masks.words[slotSummary + w] & lowBits(wordCount - 32u*w);
+            while (summary != 0u)
+            {
+                uint word = 32u*w + uint(findLSB(summary));
+                summary &= summary - 1u;
+                uint bits = masks.words[slotWord + word] & lowBits(blocks - 32u*word);
+                retained += uint(bitCount(bits));
+            }
+        }
+        runCount = (retained + 15u) / 16u;
+        if (packet.collectStats != 0u && packet.emit == 0u && retained != 0u)
+        {
+            atomicAdd(state.retainedInstances, 1u);
+            atomicAdd(state.retainedTriangles, retained);
+        }
+    }
+
+    prefix[lane] = runCount;
+    barrier();
+    for (uint distance=1u; distance < 64u; distance <<= 1u)
+    {
+        uint prior = lane >= distance ? prefix[lane - distance] : 0u;
+        barrier();
+        prefix[lane] += prior;
+        barrier();
+    }
+
+    if (packet.emit == 0u)
+    {
+        if (lane == 0u)
+        {
+            runs.offsets[drawIndex] = prefix[63];
+            if (packet.collectStats != 0u)
+            {
+                atomicAdd(state.originalInstances, command.instanceCount);
+                atomicAdd(state.originalTriangles, command.instanceCount * (command.indexCount / 3u));
+            }
+        }
+        return;
+    }
+
+    if (runCount == 0u)
+        return;
+    uint destination = runs.offsets[drawIndex] + prefix[lane] - runCount;
+    uint total=0u;
+    uint summaryCount=(wordCount+31u)/32u;
+    uvec4 packed0=uvec4(0u);
+    uvec4 packed1=uvec4(0u);
+    for (uint w=0u; w<summaryCount; ++w)
+    {
+        uint summary = masks.words[slotSummary + w] & lowBits(wordCount - 32u*w);
+        while (summary != 0u)
+        {
+            uint word = 32u*w + uint(findLSB(summary));
+            summary &= summary - 1u;
+            uint bits = masks.words[slotWord + word] & lowBits(blocks - 32u*word);
+            while (bits != 0u)
+            {
+                uint primitive = word*32u + uint(findLSB(bits));
+                bits &= bits - 1u;
+                uint local = total & 15u;
+                uint pair = local >> 1u;
+                uint halfPrimitive = primitive << ((local & 1u)*16u);
+                if (pair < 4u)
+                    packed0[pair] |= halfPrimitive;
+                else
+                    packed1[pair - 4u] |= halfPrimitive;
+                ++total;
+                if ((total & 15u) == 0u || total == retained)
+                {
+                    uint outBase=3u*destination++;
+                    outputWork.items[outBase]=uvec4(command.firstIndex, uint(command.vertexOffset), slot, local + 1u);
+                    outputWork.items[outBase+1u]=packed0;
+                    outputWork.items[outBase+2u]=packed1;
+                    packed0=uvec4(0u);
+                    packed1=uvec4(0u);
+                }
+            }
+        }
+    }
+}

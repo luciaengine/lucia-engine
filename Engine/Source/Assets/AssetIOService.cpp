@@ -387,7 +387,7 @@ void AssetIOService::ExecuteRead(ReadRequest& request, bool holdsDecodeSlot)
             std::chrono::high_resolution_clock::now() - startTime);
 
         Logger::Log::Error("AssetIOService: read failed for {} ({}) after {}μs: {}",
-                           request.Metadata.Path.string(), request.AssetGuid.ToString(),
+                           request.ReadPath().string(), request.AssetGuid.ToString(),
                            duration.count(), readError);
         AssetTaskPerformanceMonitor::GetInstance().RecordTaskExecution(
             "AssetFileIOTask", duration.count() / 1000.0, false);
@@ -482,12 +482,12 @@ bool AssetIOService::ReadDecodeInputs(const ReadRequest& request, FunctionRef<As
     }
     catch (const std::exception& e)
     {
-        outError = "Resolving the decode inputs of " + request.Metadata.Path.string() + " failed: " + e.what();
+        outError = "Resolving the decode inputs of " + request.ReadPath().string() + " failed: " + e.what();
         return false;
     }
     catch (...)
     {
-        outError = "Resolving the decode inputs of " + request.Metadata.Path.string() + " failed";
+        outError = "Resolving the decode inputs of " + request.ReadPath().string() + " failed";
         return false;
     }
 
@@ -511,7 +511,7 @@ bool AssetIOService::ReadDecodeInputs(const ReadRequest& request, FunctionRef<As
         catch (const std::exception& e)
         {
             outError = "Cannot read " + input.Path.string() + ", a file the decode of " +
-                       request.Metadata.Path.string() + " reads: " + e.what();
+                       request.ReadPath().string() + " reads: " + e.what();
             return false;
         }
     }
@@ -526,10 +526,11 @@ bool AssetIOService::ReadDecodeInputs(const ReadRequest& request, FunctionRef<As
 
 bool AssetIOService::ReadFileRange(const ReadRequest& request, ByteBuffer& outData, String& outError)
 {
+    const std::filesystem::path& path = request.ReadPath();
     SharedFileReader reader;
-    if (!reader.Open(request.Metadata.Path))
+    if (!reader.Open(path))
     {
-        outError = "Cannot open file: " + request.Metadata.Path.string();
+        outError = "Cannot open file: " + path.string();
         return false;
     }
     const int64 fileBytes = reader.Size();
@@ -537,7 +538,7 @@ bool AssetIOService::ReadFileRange(const ReadRequest& request, ByteBuffer& outDa
         request.RangeBytes > static_cast<uint64>(fileBytes) - request.RangeOffset)
     {
         outError = "Short read: " + std::to_string(request.RangeBytes) + " bytes at offset " +
-                   std::to_string(request.RangeOffset) + " lie past the end of " + request.Metadata.Path.string();
+                   std::to_string(request.RangeOffset) + " lie past the end of " + path.string();
         return false;
     }
     if (request.RangeBytes > request.MaximumBytes || request.RangeBytes > std::numeric_limits<size_t>::max())
@@ -551,7 +552,7 @@ bool AssetIOService::ReadFileRange(const ReadRequest& request, ByteBuffer& outDa
     {
         outData = ByteBuffer();
         outError = "Short read of " + std::to_string(request.RangeBytes) + " bytes at offset " +
-                   std::to_string(request.RangeOffset) + " of " + request.Metadata.Path.string();
+                   std::to_string(request.RangeOffset) + " of " + path.string();
         return false;
     }
     return true;

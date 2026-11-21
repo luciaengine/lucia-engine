@@ -114,6 +114,38 @@ TEST(ShippedSurfaceCompose, UnlitSolidComposesThroughRealPipeline)
 }
 
 #if defined(GE_TEST_STOCK_SHADER_HASHES)
+TEST(ShippedSurfaceCompose, CameraDepthOwnerReflectsMaterialRowWithAndWithoutLodFade)
+{
+    const TestUtils::ScopedTempDir stagingRoot = MakeTempCacheRoot();
+    MaterialDocument material{};
+    material.materialName = "DepthOwnerMaterial";
+    material.lightingModel = "StandardPBR";
+    material.alphaMode = MaterialAlphaMode::Mask;
+    material.surfaceShader = "Surfaces/standard_pbr.glsl";
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    context.CacheRoot = stagingRoot.Path();
+    constexpr auto kPrepass = MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment;
+    constexpr auto kOwner = kPrepass | MaterialKeyword::IndexedDepthOwner;
+    for (const auto keywords : {kPrepass, kOwner, kOwner | MaterialKeyword::LodCrossfade})
+    {
+        const auto result = BuildMaterialToShaderPackage(material, stagingRoot.Path() / "owner.material",
+            "DepthOwnerMaterial", context, ShaderSourceKind::SpirV, keywords);
+        ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
+        ASSERT_NE(result.package, nullptr);
+        const auto& metadata = result.package->meta;
+        EXPECT_NE(std::find(metadata.RequiredDefines.begin(), metadata.RequiredDefines.end(), kStockMaskCoverageDefine),
+                  metadata.RequiredDefines.end());
+        const bool owner = keywords != kPrepass;
+        const auto reflects = [&metadata](uint32_t id) {
+            return std::any_of(metadata.SpecConstants.begin(), metadata.SpecConstants.end(),
+                               [id](const auto& constant) { return constant.Id == id; });
+        };
+        EXPECT_EQ(reflects(306), owner);
+        EXPECT_EQ(reflects(307), owner);
+    }
+}
+
 TEST(ShippedSurfaceCompose, EditedDepthCoverageCannotCertifyIndexedReuse)
 {
     const TestUtils::ScopedTempDir stagingRoot = MakeTempCacheRoot();
@@ -162,6 +194,41 @@ TEST(ShippedSurfaceCompose, EditedDepthCoverageCannotCertifyIndexedReuse)
     }
 }
 #endif
+
+TEST(ShippedSurfaceCompose, WhiteSurfaceMapSpecializationIsLimitedToMaskedNativeForward)
+{
+    MaterialDocument material{};
+    material.materialName = "WhiteSurfaceMapSpecialization";
+    material.lightingModel = "StandardPBR";
+    material.alphaMode = MaterialAlphaMode::Mask;
+    material.surfaceShader = "Surfaces/standard_pbr.glsl";
+    const TestUtils::ScopedTempDir cacheRoot = MakeTempCacheRoot();
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    context.CacheRoot = cacheRoot.Path();
+
+    constexpr auto kForward = MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus;
+    constexpr auto kDepth = MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment;
+    constexpr auto kUvFlags = VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasUV0 |
+                              VertexAttributeFlags::HasUV1 | VertexAttributeFlags::HasColor;
+    const auto check = [&](MaterialKeyword keywords, const ShaderCompileTarget& target, bool expected) {
+        const auto built = BuildMaterialToShaderPackage(material, cacheRoot.Path() / "white-surface.material",
+            "WhiteSurfaceMapSpecialization", context, ShaderSourceKind::SpirV, keywords, kUvFlags, target);
+        ASSERT_TRUE(built.success) << (built.errors.empty() ? "" : built.errors.front());
+        ASSERT_NE(built.package, nullptr);
+        const auto& constants = built.package->meta.SpecConstants;
+        EXPECT_EQ(std::any_of(constants.begin(), constants.end(), [](const auto& constant) {
+            return constant.Id == 308u;
+        }), expected);
+    };
+    ShaderCompileTarget native{};
+    check(kForward, native, true);
+    check(kDepth, native, false);
+    check(kForward | MaterialKeyword::UV1Crossfade, native, false);
+    ShaderCompileTarget compatibility{};
+    compatibility.Compatibility = true;
+    check(kForward, compatibility, false);
+}
 
 // The CBT terrain surface, composed and compiled through the real pipeline.
 //

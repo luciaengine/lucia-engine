@@ -864,7 +864,7 @@ MTL::Function* MetalDevice::NewStageFunction(const std::vector<uint8_t>& source,
         msl.assign(reinterpret_cast<const char*>(source.data()), source.size());
     }
     NS::Error* error = nullptr;
-    MTL::CompileOptions* compileOptions = MakeMetalCompileOptions();
+    MTL::CompileOptions* compileOptions = MakeMetalCompileOptions(stage);
     const auto libraryStart = std::chrono::steady_clock::now();
     MTL::Library* library = m_Device->newLibrary(MakeNSString(msl), compileOptions, &error);
     timing.LibraryMs += msSince(libraryStart);
@@ -913,6 +913,13 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     const SpecializationConstants* specialization =
         gd.Specialization.has_value() ? &gd.Specialization.value() : nullptr;
     const bool fragmentSamplesTextures = FragmentSamplesTextures(layoutValues);
+    static const bool s_TryTexturedIndirectCommands =
+        Platform::EnvironmentSwitchEnabled("GE_METAL_TRY_TEXTURED_ICB", false);
+    const bool supportsIndirectCommands = m_Capabilities.supportsDrawIndirectCountNative &&
+                                          m_Capabilities.supportsBindlessResources;
+    const bool tryTexturedIndirectCommands = fragmentSamplesTextures && s_TryTexturedIndirectCommands &&
+                                             supportsIndirectCommands;
+    bool usesTexturedIndirectCommands = false;
 
     // GE_METAL_DUMP_PIPELINE_TIMING=1: per-pipeline stage costs (translate /
     // newLibrary / PSO) for attributing first-frame creation hitches.
@@ -1057,12 +1064,9 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     }
     pd->setRasterSampleCount(std::max<uint8_t>(1, fk.RasterizationSamples));
     pd->setAlphaToCoverageEnabled(gd.ColorBlend.alphaToCoverageEnable);
-    // DrawIndexedIndirectCount runs indirect command buffer commands that inherit this pipeline
-    // from the render encoder, and Metal requires the pipeline to opt in. A pipeline whose fragment
-    // stage samples textures draws natively instead (MetalPipeline::fragmentSamplesTextures), so
-    // it does not opt in: the GPU compiler fails on large fragment stages built for ICBs.
-    pd->setSupportIndirectCommandBuffers(!fragmentSamplesTextures && m_Capabilities.supportsDrawIndirectCountNative &&
-                                        m_Capabilities.supportsBindlessResources);
+    // Counted command buffers inherit the render encoder's pipeline.
+    pd->setSupportIndirectCommandBuffers(supportsIndirectCommands &&
+                                        (!fragmentSamplesTextures || tryTexturedIndirectCommands));
 
     for (uint8_t i = 0; i < fk.ColorCount && i < PipelineFormatKey::kMaxColors; ++i)
     {
@@ -1123,6 +1127,23 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     error = nullptr;
     const auto psoStart = std::chrono::steady_clock::now();
     pso = m_Device->newRenderPipelineState(pd, &error);
+    if (tryTexturedIndirectCommands)
+    {
+        if (pso != nullptr)
+        {
+            usesTexturedIndirectCommands = pso->supportIndirectCommandBuffers();
+            if (usesTexturedIndirectCommands)
+                Logger::Log::Info("Metal textured counted draws: indirect command buffer for '{}'", gd.DebugName);
+        }
+        else
+        {
+            Logger::Log::Warning("Metal textured counted draws: padded draws for '{}' ({})", gd.DebugName,
+                                 error != nullptr ? error->localizedDescription()->utf8String() : "unknown error");
+            pd->setSupportIndirectCommandBuffers(false);
+            error = nullptr;
+            pso = m_Device->newRenderPipelineState(pd, &error);
+        }
+    }
     if (DumpPipelineTiming())
     {
         Logger::Log::Warning(
@@ -1148,7 +1169,9 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     wrapper.renderPipeline = pso;
     wrapper.type = PipelineType::Graphics;
     wrapper.isMeshPipeline = isMesh;
-    wrapper.fragmentSamplesTextures = fragmentSamplesTextures;
+    wrapper.HasObjectShader = isMesh && gd.AmplificationShader && !gd.AmplificationShader->empty();
+    wrapper.FragmentSamplesTextures = fragmentSamplesTextures;
+    wrapper.UsesPaddedCountedDraws = fragmentSamplesTextures && !usesTexturedIndirectCommands;
     if (isMesh)
     {
         wrapper.localSizeX = meshThreadsX;

@@ -43,7 +43,7 @@
 #ifndef GE_DDGI_PROBES_GLSL
 #define GE_DDGI_PROBES_GLSL
 
-#include "frame_samplers.glsl"
+#include "frame_linear_clamp_sampler.glsl"
 
 #include "ddgi_common.glsl"
 
@@ -67,9 +67,7 @@ layout(std140, set = 0, binding = 30) uniform DDGIVolumeData
     vec4 uParams0;       // x=minCellWS, y=normalBiasScale, z=chebyshevStrength, w=classifyStrength
     vec4 uParams1;       // x=enabled (0/1), y=intensity, z=glossyEnabled (0/1), w=reflectionIntensity
     ivec4 uParams2;      // x=glossyTilesX, yz=glossy atlas size (texels),
-                         // w=1 while the scaled glossy resolve is active
-                         // (ibl.glsl taps ge_ddgiResolveRough/Glossy instead
-                         // of the inline gather; only this C0 block's w is read)
+                         // w=1 while the scaled resolve is active. Only cascade 0 supplies this flag.
 } DDGIVolume;
 #else
 
@@ -84,9 +82,7 @@ layout(std140, set = 0, binding = 30) uniform DDGIVolumeData
     vec4 uParams0;       // x=minCellWS, y=normalBiasScale, z=chebyshevStrength, w=classifyStrength
     vec4 uParams1;       // x=enabled (0/1), y=intensity, z=glossyEnabled (0/1), w=reflectionIntensity
     ivec4 uParams2;      // x=glossyTilesX, yz=glossy atlas size (texels),
-                         // w=1 while the scaled glossy resolve is active
-                         // (ibl.glsl taps ge_ddgiResolveRough/Glossy instead
-                         // of the inline gather; only this C0 block's w is read)
+                         // w=1 while the scaled resolve is active. Only cascade 0 supplies this flag.
     ivec4 uParams3;      // x=Components::DDGIDebugView (0 = off); read only by
                          // the resolve kernel, never by a forward fragment
                          // y=depth atlas interior tile resolution (GE_DDGIDepthTexelUV)

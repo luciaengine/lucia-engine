@@ -11,6 +11,7 @@
 
 #include "Core/DebugMetrics.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MaterialMipStreaming/MaterialMipBudget.h"
 #include "Engine/Rendering/MaterialBinder.h"
 #include "Engine/Rendering/MaterialCompiler.h"
 #include "Engine/Rendering/ShaderGraphMaterial.h"
@@ -82,7 +83,6 @@
 #include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
 #include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Types/ParseNumber.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
@@ -163,14 +163,6 @@ TextureService::SelectMaterialIndexingMode(const Rendering::RenderingDeviceCapab
 bool TextureService::Initialize(IDevice* device, MaterialRegistry& materials,
                                 const Rendering::RendererProfile& profile)
 {
-    m_MaterialMipBudgetBytes = 0;
-    if (const char* value = std::getenv("GE_MATERIAL_MIP_BUDGET_MB"))
-    {
-        constexpr uint64_t kBytesPerMiB = 1024 * 1024;
-        if (const auto budgetMiB = ParseUnsigned(value); budgetMiB && *budgetMiB <= UINT32_MAX)
-            m_MaterialMipBudgetBytes = *budgetMiB * kBytesPerMiB;
-    }
-
     m_Device = device;
     m_Materials = &materials;
     m_Profile = profile;
@@ -191,6 +183,11 @@ bool TextureService::Initialize(IDevice* device, MaterialRegistry& materials,
     // shared SSBO in both modes.
     const auto caps = m_Device->GetCapabilities();
     m_IndexingMode = SelectMaterialIndexingMode(caps);
+    m_MaterialMipBudgetBytes = MaterialMipBudget::ForPlatform(caps);
+    constexpr uint64_t kBytesPerMiB = 1024 * 1024;
+    Logger::Log::Info("TextureService: the material mip streams have a budget of {} MiB{}.",
+                      m_MaterialMipBudgetBytes / kBytesPerMiB,
+                      m_MaterialMipBudgetBytes ? "" : " (streaming is off)");
     // Classic is a supported path, not a failure, but it is a different renderer from the
     // one a full-profile device runs — and nothing else in the boot log names it. Say which
     // mode this device took and what put it there, so a materials question asked about a
@@ -295,57 +292,55 @@ void TextureService::CreateBindlessResources()
     }
 }
 
-// A 1x1 RGBA8 cube, every face opaque black, in ShaderResource. Its default view is a cube
-// (CubeCompatible, six layers), the shape a textureCube slot declares.
-static Rendering::TextureHandle CreateBlackCube1x1(Rendering::IDevice* dev)
+static Rendering::TextureHandle CreateSolidTextureLayers1x1(
+    Rendering::IDevice* dev, const char* name, uint32_t layerCount, Rendering::TextureCreateFlags flags,
+    uint32_t pixel)
 {
-    constexpr uint32_t kFaceCount = 6;
     Rendering::TextureDesc td{};
     td.width = 1;
     td.height = 1;
     td.mipLevels = 1;
-    td.arrayLayers = kFaceCount;
+    td.arrayLayers = layerCount;
     td.format = static_cast<uint32_t>(Rendering::TextureFormat::RGBA8_UNORM);
     td.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource) |
                static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
-    td.flags = Rendering::TextureCreateFlags::CubeCompatible;
+    td.flags = flags;
     td.persistent = true;
-    td.debugName = "DefaultBlackCube1x1";
-    const Rendering::TextureHandle cube = dev->CreateTexture(td);
-    if (!cube.IsValid())
+    td.debugName = name;
+    const Rendering::TextureHandle texture = dev->CreateTexture(td);
+    if (!texture.IsValid())
     {
-        Logger::Log::Error("TextureService: the DefaultBlackCube1x1 slot default could not be created");
-        return cube;
+        Logger::Log::Error("TextureService: could not create {}", name);
+        return texture;
     }
 
-    // One staging row serves all six faces; its pitch is padded to the device's copy alignment
-    // (256 on WebGPU), and the padding is never read.
+    // One aligned staging row supplies every layer.
     const size_t rowPitch =
         std::max<size_t>(4u, dev->GetCapabilities().textureCopyRowPitchAlignment);
     std::vector<uint8_t> row(rowPitch, 0u);
-    row[3] = 0xFFu; // opaque black
-    const Rendering::BufferHandle staging = dev->CreateUploadBuffer(rowPitch, "DefaultBlackCubeStaging");
+    std::memcpy(row.data(), &pixel, sizeof(pixel));
+    const Rendering::BufferHandle staging = dev->CreateUploadBuffer(rowPitch, "DefaultTextureLayerStaging");
     auto cl = dev->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
     if (!staging.IsValid() || !cl)
     {
-        Logger::Log::Error("TextureService: the DefaultBlackCube1x1 slot default could not be seeded");
+        Logger::Log::Error("TextureService: could not seed {}", name);
         if (staging.IsValid())
             dev->DestroyBuffer(staging);
-        dev->DestroyTexture(cube);
+        dev->DestroyTexture(texture);
         return {};
     }
     dev->UpdateBuffer(staging, 0, rowPitch, row.data());
     cl->Begin();
     cl->Barrier(Rendering::ResourceBarrier::CreateTextureBarrier(
-        cube, Rendering::ResourceState::Undefined, Rendering::ResourceState::CopyDest, 0, 1, 0, kFaceCount));
-    for (uint32_t face = 0; face < kFaceCount; ++face)
-        cl->CopyBufferToTextureSubresource(staging, cube, 0, face, 1, 1, 0, rowPitch);
+        texture, Rendering::ResourceState::Undefined, Rendering::ResourceState::CopyDest, 0, 1, 0, layerCount));
+    for (uint32_t layer = 0; layer < layerCount; ++layer)
+        cl->CopyBufferToTextureSubresource(staging, texture, 0, layer, 1, 1, 0, rowPitch);
     cl->Barrier(Rendering::ResourceBarrier::CreateTextureBarrier(
-        cube, Rendering::ResourceState::CopyDest, Rendering::ResourceState::ShaderResource, 0, 1, 0, kFaceCount));
+        texture, Rendering::ResourceState::CopyDest, Rendering::ResourceState::ShaderResource, 0, 1, 0, layerCount));
     cl->End();
     dev->ExecuteCommandLists(std::vector<Rendering::CommandList*>{cl.get()});
     dev->DestroyBuffer(staging);
-    return cube;
+    return texture;
 }
 
 // Default fallback textures and identity LUTs.
@@ -378,7 +373,15 @@ void TextureService::CreateDefaultTexturesAndLuts(Rendering::IDevice* dev)
         // ForceArrayView: the one layer is sampled through a 2D-array view.
         m_DefaultWhiteArrayTexture =
             createDefaultTexture("DefaultWhite1x1Array", 1, 1, Rendering::TextureCreateFlags::ForceArrayView);
-        m_DefaultBlackCubeTexture = CreateBlackCube1x1(dev);
+        constexpr uint32_t kCubeFaces = 6;
+        constexpr uint32_t kTransparentArrayLayers = 2;
+        constexpr uint32_t kOpaqueBlack = 0xFF000000u;
+        constexpr uint32_t kTransparentBlack = 0u;
+        m_DefaultBlackCubeTexture = CreateSolidTextureLayers1x1(
+            dev, "DefaultBlackCube1x1", kCubeFaces, Rendering::TextureCreateFlags::CubeCompatible, kOpaqueBlack);
+        m_DefaultTransparentArrayTexture = CreateSolidTextureLayers1x1(
+            dev, "DefaultTransparent1x1Array", kTransparentArrayLayers,
+            Rendering::TextureCreateFlags::ForceArrayView, kTransparentBlack);
 
         // Batch-upload the default textures on the graphics queue: queue order makes them
         // visible to every later frame submit, which cannot wait on a transfer-queue token.
@@ -524,6 +527,7 @@ void TextureService::ReprovisionAfterDeviceRebuild()
         m_DefaultFlatNormalTexture = {};
         m_DefaultLensFlareTexture = {};
         m_DefaultWhiteArrayTexture = {};
+        m_DefaultTransparentArrayTexture = {};
         m_DefaultBlackCubeTexture = {};
         m_IdentityLut3D = {};
         m_IdentityLut1DStrip = {};
@@ -640,8 +644,11 @@ void TextureService::Shutdown()
             m_Device->DestroyTexture(m_DefaultLensFlareTexture);
         if (m_DefaultWhiteArrayTexture.IsValid())
             m_Device->DestroyTexture(m_DefaultWhiteArrayTexture);
-        if (m_DefaultBlackCubeTexture.IsValid())
-            m_Device->DestroyTexture(m_DefaultBlackCubeTexture);
+        for (const Rendering::TextureHandle texture : {m_DefaultTransparentArrayTexture, m_DefaultBlackCubeTexture})
+        {
+            if (texture.IsValid())
+                m_Device->DestroyTexture(texture);
+        }
         for (auto& entry : m_CubeLutGpuCache)
         {
             CubeLutGpuBindingState& lut = entry.second;
@@ -668,6 +675,7 @@ void TextureService::Shutdown()
         m_DefaultFlatNormalTexture = {};
         m_DefaultLensFlareTexture = {};
         m_DefaultWhiteArrayTexture = {};
+        m_DefaultTransparentArrayTexture = {};
         m_DefaultBlackCubeTexture = {};
         m_IdentityLut3D = {};
         m_IdentityLut1DStrip = {};
@@ -1811,17 +1819,16 @@ static TextureGPUCache::Entry StageMaterialMipLevels(Rendering::IDevice& device,
     return {texture->Texture, companion ? companion->Texture : TextureHandle{}};
 }
 
-// The mip tail of a new stream, staged from the pixels of the asset that the load gave.
-static TextureGPUCache::Entry StageMaterialMipTail(Rendering::IDevice& device, const MaterialMipStreamSource& source,
-                                                   const TextureAsset& texture,
-                                                   std::vector<Rendering::StagedTextureUpload>& batch,
-                                                   const char*& refusal)
+// The levels `firstMip`..last of a new stream, staged from the pixels of the asset that the load gave.
+static TextureGPUCache::Entry StageMaterialMipStart(Rendering::IDevice& device, const MaterialMipStreamSource& source,
+                                                    const TextureAsset& texture, uint32_t firstMip,
+                                                    std::vector<Rendering::StagedTextureUpload>& batch,
+                                                    const char*& refusal)
 {
     std::vector<Rendering::TextureMipUploadEntry> companionLevels;
     if (source.HasCompanion())
-        companionLevels = AssetMipLevels(*texture.GetNormalVarianceCompanion(), source.CompanionMip(source.Tail()));
-    return StageMaterialMipLevels(device, source, AssetMipLevels(texture, source.Tail()), companionLevels, batch,
-                                  refusal);
+        companionLevels = AssetMipLevels(*texture.GetNormalVarianceCompanion(), source.CompanionMip(firstMip));
+    return StageMaterialMipLevels(device, source, AssetMipLevels(texture, firstMip), companionLevels, batch, refusal);
 }
 
 bool TextureService::TryGetMaterialTextureLocked(const GUID& guid, TextureGPUCache::Entry& out) const
@@ -1920,10 +1927,36 @@ std::shared_ptr<const MaterialMipStreamSource> TextureService::CreateMaterialMip
     return MaterialMipStreamSource::Create(texture, *format, companionFormat);
 }
 
+uint64_t TextureService::ParkedMaterialMipBytes() const
+{
+    uint64_t bytes = 0;
+    for (const auto& [guid, parked] : m_ReleasedUploadReads)
+        if (parked.ForStream)
+            bytes += parked.Source->SuffixBytes()[parked.Read->FirstMip];
+    return bytes;
+}
+
+uint32_t TextureService::FirstMaterialMipLevel(const MaterialMipStreamSource& source, uint64_t stagedBytes) const
+{
+    uint64_t usedBytes = m_ReportedMaterialMipBytes + stagedBytes + ParkedMaterialMipBytes();
+    // A gain step in flight takes its bytes when its read is done.
+    if (m_MaterialMipStep.Read && m_MaterialMipStep.Read->FirstMip < m_MaterialMipStep.Candidate.FirstMip)
+    {
+        const auto stepBytes = m_MaterialMipStep.Candidate.Source->SuffixBytes();
+        usedBytes += stepBytes[m_MaterialMipStep.Read->FirstMip] - stepBytes[m_MaterialMipStep.Candidate.FirstMip];
+    }
+    const uint64_t freeBytes = m_MaterialMipBudgetBytes > usedBytes ? m_MaterialMipBudgetBytes - usedBytes : 0;
+    const auto suffixBytes = source.SuffixBytes();
+    uint32_t firstMip = 0;
+    while (firstMip < source.Tail() && suffixBytes[firstMip] > freeBytes)
+        ++firstMip;
+    return firstMip;
+}
+
 std::optional<TextureGPUCache::Entry> TextureService::StageReleasedUpload(
     const GUID& guid, uint32_t epoch, const PreparedTextureUpload& prepared,
-    std::shared_ptr<const MaterialMipStreamSource>& streamSource, std::vector<Rendering::StagedTextureUpload>& batch,
-    const char*& refusal)
+    std::shared_ptr<const MaterialMipStreamSource>& streamSource, uint64_t stagedStreamBytes,
+    uint32_t& streamFirstMip, std::vector<Rendering::StagedTextureUpload>& batch, const char*& refusal)
 {
     const bool forStream = streamSource != nullptr;
     ReleasedUploadRead* parked = m_ReleasedUploadReads.Find(guid);
@@ -1942,7 +1975,7 @@ std::optional<TextureGPUCache::Entry> TextureService::StageReleasedUpload(
             refusal = "its pixels were released and its file gives no levels";
             return TextureGPUCache::Entry{};
         }
-        const uint32_t firstMip = forStream ? source->Tail() : 0u;
+        const uint32_t firstMip = forStream ? FirstMaterialMipLevel(*source, stagedStreamBytes) : 0u;
         m_ReleasedUploadReads.InsertOrAssign(
             guid, ReleasedUploadRead{source, MaterialMipStreamSource::ReadLevels(source, *assets, guid, firstMip),
                                      epoch, forStream});
@@ -1959,7 +1992,10 @@ std::optional<TextureGPUCache::Entry> TextureService::StageReleasedUpload(
         return TextureGPUCache::Entry{};
     }
     if (forStream)
+    {
         streamSource = done.Source;
+        streamFirstMip = done.Read->FirstMip;
+    }
     std::vector<Rendering::TextureMipUploadEntry> companionLevels;
     if (done.Source->HasCompanion())
         companionLevels = done.Source->CompanionLevels(*done.Read);
@@ -2038,7 +2074,10 @@ void TextureService::AdvanceMaterialMipStreams()
                                                   source.TopExtent(), stream.ScreenCoverage});
         }
         m_MaterialMipCoverageStale = false;
-        const auto planned = m_MaterialMipPlanner.Plan(m_MaterialMipPlanInput, m_MaterialMipBudgetBytes);
+        // A new stream whose first levels are in a read holds its part of the budget.
+        const uint64_t parkedBytes = ParkedMaterialMipBytes();
+        const auto planned = m_MaterialMipPlanner.Plan(
+            m_MaterialMipPlanInput, m_MaterialMipBudgetBytes > parkedBytes ? m_MaterialMipBudgetBytes - parkedBytes : 0);
         m_MaterialMipStreamsSettled = !planned.has_value();
         if (!planned)
             return;
@@ -2755,6 +2794,7 @@ void TextureService::FlushPendingUploads()
         std::shared_ptr<const PreparedTextureUpload> Prepared;
         double StageMs = 0.0;
         std::shared_ptr<const MaterialMipStreamSource> StreamSource;
+        uint32_t StreamFirstMip = 0; // the first level that Uploaded holds, for a stream
         uint32_t Epoch = 0;
     };
     using Clock = std::chrono::high_resolution_clock;
@@ -2762,6 +2802,8 @@ void TextureService::FlushPendingUploads()
     std::vector<StagedFlushUpload> staged;
     // Uploads of released containers whose level read is in flight: they stay queued.
     std::vector<PendingGpuUpload> waitingForLevels;
+    // The bytes of the new streams that this flush staged: they are not in the resident count yet.
+    uint64_t stagedStreamBytes = 0;
 
     for (size_t i = 0; i < uploads.size(); ++i)
     {
@@ -2846,12 +2888,14 @@ void TextureService::FlushPendingUploads()
         const auto tStage = Clock::now();
         const char* refusal = kDeviceRefusal;
         auto streamSource = PrepareMaterialMipStream(upload.TextureGuid, *prepared);
+        uint32_t streamFirstMip = 0;
         TextureGPUCache::Entry uploaded;
         if (prepared->Container && !prepared->Container->GetPixelData())
         {
             // The levels come from the file, through the I/O service: this thread reads no file.
             const std::optional<TextureGPUCache::Entry> fromFile =
-                StageReleasedUpload(upload.TextureGuid, upload.Epoch, *prepared, streamSource, batch, refusal);
+                StageReleasedUpload(upload.TextureGuid, upload.Epoch, *prepared, streamSource, stagedStreamBytes,
+                                    streamFirstMip, batch, refusal);
             if (!fromFile)
             {
                 waitingForLevels.push_back(std::move(upload));
@@ -2861,8 +2905,10 @@ void TextureService::FlushPendingUploads()
         }
         else
         {
+            if (streamSource)
+                streamFirstMip = FirstMaterialMipLevel(*streamSource, stagedStreamBytes);
             uploaded = streamSource
-                ? StageMaterialMipTail(*m_Device, *streamSource, *prepared->Container, batch, refusal)
+                ? StageMaterialMipStart(*m_Device, *streamSource, *prepared->Container, streamFirstMip, batch, refusal)
                 : StagePreparedUpload(*prepared, batch, refusal);
         }
         if (!uploaded.Texture.IsValid())
@@ -2870,9 +2916,11 @@ void TextureService::FlushPendingUploads()
             PublishFailedUpload(upload.TextureGuid, prepared->Path, refusal);
             continue;
         }
+        if (streamSource)
+            stagedStreamBytes += streamSource->SuffixBytes()[streamFirstMip];
         staged.push_back({upload.TextureGuid, uploaded, std::move(prepared),
                           std::chrono::duration<double, std::milli>(Clock::now() - tStage).count(),
-                          streamSource, upload.Epoch});
+                          streamSource, streamFirstMip, upload.Epoch});
     }
 
     // A level read whose upload left the queue (a hot swap or another upload published the
@@ -2906,7 +2954,7 @@ void TextureService::FlushPendingUploads()
                             {
                                 m_MaterialMipStreams.InsertOrAssign(upload.TextureGuid,
                                     MaterialMipStream{upload.StreamSource, upload.Uploaded,
-                                                      upload.StreamSource->Tail(), upload.Epoch,
+                                                      upload.StreamFirstMip, upload.Epoch,
                                                       MaterialMipCoverageLocked(upload.TextureGuid)});
                                 m_MaterialMipStreamsSettled = false;
                                 ReportMaterialMipBytesLocked();

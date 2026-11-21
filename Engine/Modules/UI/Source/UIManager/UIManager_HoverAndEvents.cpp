@@ -700,11 +700,10 @@ bool UIManager::MarkHoverTransitionDirty(UIElement* prevHover, UIElement* newHov
     // Cascade-memoization Phase 5: when the rule cache is the primary
     // cascade path, m_MatchedPseudoStates reflects which dynamic pseudo
     // classes appear in any rule that COULD match an element (structural
-    // matches independent of state). Skip MarkDirty for elements with no
-    // HoverRules bit — no rule references :hover for them, so the
-    // transition can't change their style. Recursion still walks the
-    // subtree because descendants may have the bit even when an ancestor
-    // doesn't.
+    // matches independent of state). Skip MarkDirty for an element whose rules
+    // cannot change with this transition (shouldMarkHover). Recursion still
+    // walks the subtree because descendants may have the bit even when an
+    // ancestor doesn't.
     //
     // Without the cache, m_MatchedPseudoStates only captures rules
     // currently matching, which is unsound (an element with
@@ -714,11 +713,15 @@ bool UIManager::MarkHoverTransitionDirty(UIElement* prevHover, UIElement* newHov
     const bool narrow = UIParsing::CSSParser::IsRuleCacheEnabled();
     int traceMarked = 0;
     int traceNarrowSkipped = 0;
-    auto shouldMarkHover = [narrow, &traceNarrowSkipped](UIElement* el) -> bool
+    // An element on a changed chain changes with its own hover (HoverRules) or with an ancestor's
+    // (HoverContextRules). A descendant or sibling that the walk reaches changes only through a rule with
+    // :hover on another compound, so it needs HoverContextRules.
+    auto shouldMarkHover = [narrow, &traceNarrowSkipped](UIElement* el, bool onChangedChain) -> bool
     {
         if (!narrow)
             return true;
-        const bool has = el->HasPseudoStateRules(UIElement::HoverRules);
+        const bool has = el->HasPseudoStateRules(UIElement::HoverContextRules) ||
+                         (onChangedChain && el->HasPseudoStateRules(UIElement::HoverRules));
         if (!has)
             ++traceNarrowSkipped;
         return has;
@@ -756,11 +759,26 @@ bool UIManager::MarkHoverTransitionDirty(UIElement* prevHover, UIElement* newHov
         }
     };
 
+    // A chain element's hover reaches its descendants or siblings only through a rule whose :hover compound
+    // matches it. Without that, its subtree and its siblings cannot change, so the walk stops at it.
+    const auto& analysis = m_StyleAnalysis;
+    auto matchesAnyAnchor = [&analysis](const UIElement& el, const std::vector<CompoundSelector>& anchors)
+    {
+        if (analysis.HoverAnchorsIncomplete)
+            return true;
+        for (const CompoundSelector& anchor : anchors)
+            if (UIParsing::CSSParser::MatchesCompoundIgnoringState(el, anchor))
+                return true;
+        return false;
+    };
+
     auto markHoverDirty = [&](UIElement* root)
     {
         if (!root)
             return;
-        if (maySib)
+        const bool walkSiblings = maySib && matchesAnyAnchor(*root, analysis.HoverSiblingAnchors);
+        const bool walkDescendants = mayDesc && matchesAnyAnchor(*root, analysis.HoverDescendantAnchors);
+        if (walkSiblings)
         {
             if (UIElement* p = root->GetParent())
             {
@@ -768,7 +786,7 @@ bool UIManager::MarkHoverTransitionDirty(UIElement* prevHover, UIElement* newHov
                 // this, ResolveInPlace re-bakes root's full cascade twice per
                 // transition.
                 for (auto& ch : p->GetChildren())
-                    if (ch && ch.get() != root && shouldMarkHover(ch.get()))
+                    if (ch && ch.get() != root && shouldMarkHover(ch.get(), false))
                         markOneElement(ch.get());
             }
         }
@@ -781,9 +799,9 @@ bool UIManager::MarkHoverTransitionDirty(UIElement* prevHover, UIElement* newHov
             stack.pop_back();
             if (!cur)
                 continue;
-            if (shouldMarkHover(cur))
+            if (shouldMarkHover(cur, cur == root))
                 markOneElement(cur);
-            if (mayDesc)
+            if (walkDescendants)
             {
                 for (const auto& ch : cur->GetChildren())
                     if (ch)

@@ -871,13 +871,8 @@ class RenderServices
         // VolumetricClouds-keyword passes, which their node sets only when the clouds composited this
         // frame.
         Rendering::RenderGraph::RGTexture VolumetricClouds{};
-        // DDGI scaled glossy-reflection resolve outputs
-        // (DDGIProbeFeature::DeclareGlossyResolveForView), bound as
-        // ge_ddgiResolveRough/ge_ddgiResolveGlossy on DDGI-keyword passes.
-        // Invalid = black fallback; the shader then only samples them when
-        // the C0 volume UBO's uParams2.w flag is set.
-        Rendering::RenderGraph::RGTexture DDGIResolveRough{};
-        Rendering::RenderGraph::RGTexture DDGIResolveGlossy{};
+        // Each array layer carries one reflection lobe. A view without resolve outputs binds zero coverage.
+        Rendering::RenderGraph::RGTexture DDGIResolveLobes{};
         Rendering::RenderGraph::RGTexture DDGIResolveIrradiance{};
         // The normal each DDGIResolveIrradiance texel was gathered for (ge_ddgiResolveGatherNormal).
         Rendering::RenderGraph::RGTexture DDGIResolveGatherNormal{};
@@ -2369,6 +2364,7 @@ class RenderServices
         // against stale depth.
         Rendering::RenderGraph::RGTexture DepthPrepassDepth{};
         Rendering::RenderGraph::RGPass IndexedReplayPrepass{};
+        std::array<Rendering::RenderGraph::RGPass, 4> IndexedReplayContinuations{};
         const PreparedDepthOnlyPass* IndexedReplayProducer = nullptr;
         const Rendering::CameraData* IndexedReplayCamera = nullptr;
         uint32_t IndexedReplayViewportWidth = 0;

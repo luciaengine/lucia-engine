@@ -42,6 +42,7 @@
 #include "Engine/Rendering/RetargetRenderFeature.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
+#include "Engine/Rendering/Pipeline/Nodes/LightUploadNode.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
 #include "Rendering/Common/Utils.h"
@@ -469,16 +470,15 @@ void RenderServices::CreateFallbackBuffers()
             }
         };
 
-        // ClusterBuffer header layout is uvec4 (clustersX, clustersY, depthSlices, maxLightsPerCluster).
-        // Use 1,1,1,1 so shaders clamp to valid non-zero values.
-        struct UVec4
-        {
-            uint32_t x, y, z, w;
-        };
-        const UVec4 clusterHeader{1u, 1u, 1u, 1u};
+        // WebGPU validates space for one runtime-array element. ClusterBuffer
+        // has a uvec4 header and a uvec2 (firstIndex, count), rounded to 16-byte alignment.
+        const std::array<uint32_t, 8> clusterBuffer{1u, 1u, 1u, 1u};
         const uint32_t lightIndex0 = 0u;
-        const UVec4 lightHeader{0u, 0u, 0u, 0u}; // LightBuffer.header.x = lightCount = 0
-        const UVec4 clusterParams{16u, 16u, 24u, 64u};
+        using Pipeline::Nodes::LightUploadNode;
+        constexpr size_t kEmptyLightBufferBytes =
+            LightUploadNode::kLightBufferHeaderBytes + sizeof(LightUploadNode::GPULightPacked);
+        const std::array<uint8_t, kEmptyLightBufferBytes> lightBuffer{};
+        const std::array<uint32_t, 4> clusterParams{16u, 16u, 24u, 64u};
 
         // ViewParams identity fallback (bound when a view publishes no buffer).
         // Layout is the shared Rendering::ViewParamsUBO (ViewParamsLayout.h).
@@ -520,13 +520,13 @@ void RenderServices::CreateFallbackBuffers()
                 m_FallbackBuffers[HashStringId(name)] = buf;
         };
         registerFallback("ClusterBuffer", Rendering::BufferUsage::Storage,
-                         sizeof(clusterHeader), "RenderServices.Fallback.ClusterBuffer", &clusterHeader);
+                         sizeof(clusterBuffer), "RenderServices.Fallback.ClusterBuffer", clusterBuffer.data());
         registerFallback("LightIndexBuffer", Rendering::BufferUsage::Storage,
                          sizeof(lightIndex0), "RenderServices.Fallback.LightIndexBuffer", &lightIndex0);
         registerFallback("LightBuffer", Rendering::BufferUsage::Storage,
-                         sizeof(lightHeader), "RenderServices.Fallback.LightBuffer", &lightHeader);
+                         sizeof(lightBuffer), "RenderServices.Fallback.LightBuffer", lightBuffer.data());
         registerFallback("ClusterParams", Rendering::BufferUsage::Uniform,
-                         sizeof(clusterParams), "RenderServices.Fallback.ClusterParams", &clusterParams);
+                         sizeof(clusterParams), "RenderServices.Fallback.ClusterParams", clusterParams.data());
         registerFallback("ViewParams", Rendering::BufferUsage::Uniform,
                          sizeof(Rendering::ViewParamsUBO), "RenderServices.Fallback.ViewParams", &vp);
         registerFallback("LightUBO", Rendering::BufferUsage::Uniform,

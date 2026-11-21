@@ -72,11 +72,17 @@ constexpr bool kShippedFastMath = true;
 // library built under another value is stale and is not used.
 uint64_t ComputeMetalLibraryOptionsHash(bool fastMath);
 
+// Stages that write a raster position share the same invariance policy.
+constexpr bool MetalPreservesRasterPosition(MetalShaderStage stage)
+{
+    return stage == MetalShaderStage::Vertex || stage == MetalShaderStage::Mesh;
+}
+
 // The `metal` flags of a shipped stage library: the options of MakeMetalCompileOptions as flags.
-std::vector<std::string> MetalLibraryCompileFlags(bool fastMath);
+std::vector<std::string> MetalLibraryCompileFlags(bool fastMath, MetalShaderStage stage);
 
 // The options the device compiles MSL with. The caller releases them.
-MTL::CompileOptions* MakeMetalCompileOptions();
+MTL::CompileOptions* MakeMetalCompileOptions(MetalShaderStage stage);
 
 // The fast-math setting of the device: kShippedFastMath, unless GE_METAL_PRECISE_MATH=1.
 bool MetalFastMathEnabled();
