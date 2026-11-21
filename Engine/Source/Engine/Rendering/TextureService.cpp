@@ -83,7 +83,6 @@
 #include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
 #include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Types/ParseNumber.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
@@ -185,6 +184,10 @@ bool TextureService::Initialize(IDevice* device, MaterialRegistry& materials,
     const auto caps = m_Device->GetCapabilities();
     m_IndexingMode = SelectMaterialIndexingMode(caps);
     m_MaterialMipBudgetBytes = MaterialMipBudget::ForPlatform(caps);
+    constexpr uint64_t kBytesPerMiB = 1024 * 1024;
+    Logger::Log::Info("TextureService: the material mip streams have a budget of {} MiB{}.",
+                      m_MaterialMipBudgetBytes / kBytesPerMiB,
+                      m_MaterialMipBudgetBytes ? "" : " (streaming is off)");
     // Classic is a supported path, not a failure, but it is a different renderer from the
     // one a full-profile device runs — and nothing else in the boot log names it. Say which
     // mode this device took and what put it there, so a materials question asked about a

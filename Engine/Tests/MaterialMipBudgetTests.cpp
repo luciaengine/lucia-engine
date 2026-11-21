@@ -2,6 +2,7 @@
 
 #include "Engine/Rendering/MaterialMipStreaming/MaterialMipBudget.h"
 
+#include "../Modules/Rendering/Tests/ScopedEnvVar.h"
 #include "Rendering/Core/Device.h"
 
 #include <gtest/gtest.h>
@@ -42,9 +43,37 @@ TEST(MaterialMipBudget, ABackendThatReportsNoMemoryStillStreams)
 {
     const Rendering::RenderingDeviceCapabilities caps;
 
-    EXPECT_EQ(MaterialMipBudget::FromDevice(caps), MaterialMipBudget::kUnknownDeviceBytes);
+    EXPECT_EQ(MaterialMipBudget::FromDevice(caps), MaterialMipBudget::kMinimumBytes);
 
     Rendering::RenderingDeviceCapabilities emptyTopology;
     emptyTopology.memoryTopology = Rendering::DeviceMemoryTopology{};
-    EXPECT_EQ(MaterialMipBudget::FromDevice(emptyTopology), MaterialMipBudget::kUnknownDeviceBytes);
+    EXPECT_EQ(MaterialMipBudget::FromDevice(emptyTopology), MaterialMipBudget::kMinimumBytes);
 }
+
+TEST(MaterialMipBudget, UnifiedMemoryWithASmallDeviceLocalHeapGetsTheMinimum)
+{
+    Rendering::RenderingDeviceCapabilities caps;
+    caps.memoryTopology = Rendering::DeviceMemoryTopology{true, kGiB / 2, kGiB / 2};
+
+    EXPECT_EQ(MaterialMipBudget::FromDevice(caps), MaterialMipBudget::kMinimumBytes);
+}
+
+#if !defined(NDEBUG) && !defined(PLATFORM_STEAMDECK)
+TEST(MaterialMipBudget, ABuildWithNoNdebugReadsTheTestOverride)
+{
+    Rendering::RenderingDeviceCapabilities caps;
+    caps.memoryTopology = Rendering::DeviceMemoryTopology{false, 0, 8 * kGiB};
+    {
+        const Rendering::Tests::ScopedEnvVar budget("GE_MATERIAL_MIP_BUDGET_MB", "3");
+        EXPECT_EQ(MaterialMipBudget::ForPlatform(caps), 3ull * 1024ull * 1024ull);
+    }
+    {
+        const Rendering::Tests::ScopedEnvVar off("GE_MATERIAL_MIP_BUDGET_MB", "0");
+        EXPECT_EQ(MaterialMipBudget::ForPlatform(caps), 0u);
+    }
+    {
+        const Rendering::Tests::ScopedEnvVar invalid("GE_MATERIAL_MIP_BUDGET_MB", "many");
+        EXPECT_EQ(MaterialMipBudget::ForPlatform(caps), 4 * kGiB) << "a value that does not parse changed the budget";
+    }
+}
+#endif
