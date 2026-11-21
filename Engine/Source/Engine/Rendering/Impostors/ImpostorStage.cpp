@@ -138,7 +138,8 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
         doc.properties["foliageWindSway"] = sway.MaxDisplacement;
         doc.properties["impostorAtlas"] = std::vector<float>{
             static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f,
-            Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f, 0.0f};
+            Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f,
+            static_cast<float>(atlas.HighestReadyMip)};
         doc.textures["albedoMap"] = std::string{};
         doc.textures["normalMap"] = std::string{};
         doc.textures["impostorSeasonMaskMap"] = std::string{};

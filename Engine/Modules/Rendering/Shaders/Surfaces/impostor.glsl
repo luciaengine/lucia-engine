@@ -11,9 +11,10 @@
 // @property vec4 impostorAutumnTint "Impostor Autumn Tint" default=1,1,1,0 group=Impostor
 // @property float impostorSnowAmount "Impostor Snow Amount" default=0 group=Impostor
 // @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
-// impostorAtlas.z = 1 tints the cards red (GE_IMPOSTOR_DEBUG_TINT), to show which trees are cards.
+// impostorAtlas.z = 1 tints cards red. The w lane is the highest mip available for tile sampling.
 
 #include "Includes/impostor_frame.glsl"
+#include "Includes/foliage_coverage.glsl"
 #include "Includes/foliage_season.glsl"
 
 // The object-space surface point (in sphere radii from the center) that `frame` sees through card
@@ -45,9 +46,14 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec2 frames[3];
     vec3 weights;
     GE_ImpostorBlendFrames(sIn.custom0.xy, Props.impostorAtlas, frames, weights);
-    // These atlases have one mip and no gutters. Explicit base-level samples
-    // avoid a derivative-driven footprint that can cross into a different frame.
-    vec2 halfTexel = min(vec2(0.5), 0.5 * Props.impostorAtlas.x / vec2(textureSize(albedoMap, 0)));
+    vec2 frameTexels = vec2(textureSize(albedoMap, 0)) / max(Props.impostorAtlas.x, 1.0);
+    vec2 dx = dFdx(sIn.uv0) * frameTexels;
+    vec2 dy = dFdy(sIn.uv0) * frameTexels;
+    float footprint = max(dot(dx, dx), dot(dy, dy));
+    float mip = min(max(0.0, Props.impostorAtlas.w), 0.5 * log2(max(1.0, footprint)));
+    vec2 halfTexel = min(vec2(0.5), 0.5 / frameTexels);
+    // Trilinear taps at both levels must stay inside this view tile.
+    vec2 shadingInset = min(vec2(0.5), halfTexel * exp2(ceil(mip)));
 
     // Atlas texels outside the tree hold 0 in every channel, so a filtered sample at a leaf edge is
     // already premultiplied by its coverage. Divide by the summed coverage; never multiply by it.
@@ -82,22 +88,22 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 #endif
     for (int i = 0; i < 3; ++i)
     {
-        vec2 uv = GE_ImpostorFrameUv(frames[i], frameBases[i], surface, Props.impostorAtlas, halfTexel);
-        vec4 sampleColor = textureLod(albedoMap, uv, 0.0);
-        vec4 sampleNormalDepth = textureLod(normalMap, uv, 0.0);
+        vec2 uv = GE_ImpostorFrameUv(frames[i], frameBases[i], surface, Props.impostorAtlas, shadingInset);
+        vec4 sampleColor = textureLod(albedoMap, uv, mip);
+        vec4 sampleNormalDepth = textureLod(normalMap, uv, mip);
         float expectedDepth = dot(surface, frameBases[i].direction) * 0.5 + 0.5;
         float storedDepth = sampleNormalDepth.w / max(sampleColor.a, 0.0001);
         float occluded = smoothstep(kOccluderDepth, kOccluderDepth + kOccluderFade, storedDepth - expectedDepth) *
-                         smoothstep(0.25, 0.75, sampleColor.a);
+                         smoothstep(0.25, 0.75, sampleColor.a) * (1.0 - smoothstep(1.0, 3.0, mip));
         float weight = weights[i] * max(1.0 - occluded, kOccludedWeight);
         color += sampleColor * weight;
         objectNormal += (sampleNormalDepth.xyz * 2.0 - sampleColor.a) * weight;
         weightSum += weight;
 #if !defined(GE_DEPTH_ONLY_FRAGMENT) && !defined(GE_MOTION_VECTORS)
         if (shadeSeason)
-            seasonMask += textureLod(GE_USER_TEXTURE(impostorSeasonMaskMap), uv, 0.0).rg * weight;
+            seasonMask += textureLod(GE_USER_TEXTURE(impostorSeasonMaskMap), uv, mip).rg * weight;
   #ifdef GE_DIFFUSE_TRANSMISSION_ENABLED
-        diffuseTransmission += textureLod(GE_USER_TEXTURE(impostorDiffuseTransmissionMap), uv, 0.0) * weight;
+        diffuseTransmission += textureLod(GE_USER_TEXTURE(impostorDiffuseTransmissionMap), uv, mip) * weight;
   #endif
 #endif
     }
@@ -105,6 +111,12 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     objectNormal /= weightSum;
     o.baseColor = color.a > 0.0001 ? color.rgb / color.a : vec3(0.0);
     o.opacity = color.a;
+    if (mip > 0.5)
+    {
+        float cutout = step(clamp(Props.alphaCutoff, 0.0, 1.0), color.a);
+        float coverage = mix(cutout, color.a, smoothstep(0.5, 2.0, mip));
+        o.opacity = coverage > GE_FoliageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
+    }
     if (Props.impostorAtlas.z > 0.5)
         o.baseColor = mix(o.baseColor, vec3(1.0, 0.15, 0.1), 0.65);
 

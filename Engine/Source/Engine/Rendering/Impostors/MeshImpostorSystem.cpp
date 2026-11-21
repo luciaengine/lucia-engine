@@ -1,5 +1,7 @@
 #include "Engine/Rendering/Impostors/MeshImpostorSystem.h"
 
+#include "Platform/Environment.h"
+
 #include "Assets/AssetManager.h"
 #include "Assets/ModelAsset.h"
 #include "Components/Rendering/MeshRenderer.h"
@@ -608,6 +610,7 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     request.Key.MaterialHash = materialIdentity;
     request.Key.Layout = kLayout;
     request.Key.FrameSize = m_RenderServices->GetProfile().ImpostorFramePixels;
+    request.Key.FilterMips = Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_FILTER_MIPS", false);
     request.Center = impostor.Center;
     request.Radius = impostor.Radius;
     const auto& materials = m_RenderServices->Materials().Registry();

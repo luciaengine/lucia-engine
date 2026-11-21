@@ -54,6 +54,7 @@ struct ImpostorAtlas
     Rendering::TextureHandle NormalDepth;
     Rendering::TextureHandle SeasonMask;
     Rendering::TextureHandle DiffuseTransmission;
+    uint32 HighestReadyMip = 0;
 };
 
 /// Bakes impostor atlases within a byte budget. Each submitted frame advances one pending bake.
@@ -87,6 +88,7 @@ private:
         uint32 NextFrame = 0;     // The next atlas frame to draw.
         uint32 SettledFrames = 0; // Frames in a row with no pipeline build in flight for its materials.
         bool Cleared = false;
+        uint32 NextMip = 1;
     };
     struct PendingBake
     {
@@ -94,10 +96,13 @@ private:
         uint64 FrameIndex = 0;
         std::array<const bool*, kFramesPerRenderedFrame> RecordedTiles{};
         bool Yield = false;
+        uint32 RecordedMip = 0;
+        std::array<const bool*, 4> RecordedMipLayers{};
     };
     struct AtlasTextures
     {
         ImpostorAtlas Atlas;
+        std::array<std::vector<Rendering::TextureViewHandle>, 4> SampleViews;
         bool Ready = false;
     };
     // Draw commands and push constants live until the frame that declared them executes.
@@ -109,6 +114,11 @@ private:
     };
 
     bool EnsureBakeView(RenderServices& services);
+    bool EnsureMipPipeline(Rendering::IDevice& device);
+    bool DeclareMip(Rendering::RenderGraph::RGFrame& frame, RenderServices& services,
+                    AtlasTextures& textures, const BakeJob& job,
+                    const std::array<Rendering::RenderGraph::RGTexture, 4>& resources);
+    void DestroyAtlas(Rendering::IDevice& device, AtlasTextures& textures);
     AtlasTextures& EnsureTextures(Rendering::IDevice& device, const ImpostorAtlasKey& key);
     void FreeTextures(Rendering::IDevice* device, const ImpostorAtlasKey& key);
     bool PartsSettled(RenderServices& services, BakeJob& job);
@@ -129,6 +139,9 @@ private:
     std::vector<ImpostorAtlasKey> m_Finished; // Complete on the submitted graphics queue.
     std::array<FrameSlot, kFrameSlots> m_FrameSlots;
     Rendering::IDevice* m_Device = nullptr;
+    Rendering::DescriptorSetLayoutDesc m_MipLayout;
+    Rendering::GraphicsPipelineId m_MipPipeline{};
+    bool m_MipPipelineRequested = false;
     Rendering::CameraId m_Camera{};
     Rendering::ViewId m_View{};
 };

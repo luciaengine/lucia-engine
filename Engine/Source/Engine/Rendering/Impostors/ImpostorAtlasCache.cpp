@@ -1,6 +1,7 @@
 #include "Engine/Rendering/Impostors/ImpostorAtlasCache.h"
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <limits>
 
@@ -8,6 +9,8 @@ namespace GameEngine::Engine::Renderer
 {
 namespace
 {
+
+constexpr uint32 kMinimumMipTileSize = 4;
 
 constexpr uint64 kColorBytesPerPixel = 4;        // RGBA8
 constexpr uint64 kNormalDepthBytesPerPixel = 8;  // RGBA16F
@@ -21,10 +24,23 @@ bool IsRecent(uint64 requestFrame, uint64 frame)
 
 } // namespace
 
+uint32 ImpostorAtlasMipCount(const ImpostorAtlasKey& key)
+{
+    if (!key.FilterMips || key.FrameSize < kMinimumMipTileSize || !std::has_single_bit(key.FrameSize))
+        return 1;
+    return std::bit_width(key.FrameSize / kMinimumMipTileSize);
+}
+
 uint64 ImpostorAtlasBytes(const ImpostorAtlasKey& key)
 {
     const uint64 frames = static_cast<uint64>(key.FramesPerSide) * key.FramesPerSide;
-    const uint64 pixels = static_cast<uint64>(key.FrameSize) * key.FrameSize;
+    const uint32 mipCount = ImpostorAtlasMipCount(key);
+    uint64 pixels = 0;
+    for (uint32 mip = 0; mip < mipCount; ++mip)
+    {
+        const uint64 tile = key.FrameSize >> mip;
+        pixels += tile * tile;
+    }
     const uint64 transmissionBytes = key.BakeDiffuseTransmission ? kTransmissionBytesPerPixel : 0u;
     return frames * pixels *
            (kColorBytesPerPixel + kNormalDepthBytesPerPixel + kSeasonMaskBytesPerPixel + transmissionBytes);

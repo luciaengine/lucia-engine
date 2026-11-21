@@ -19,11 +19,15 @@ struct ImpostorAtlasKey
     uint32 FramesPerSide = 8; // The atlas holds FramesPerSide^2 frames.
     uint32 FrameSize = 128;   // Pixels per frame side.
     bool BakeDiffuseTransmission = false;
+    bool FilterMips = false;
 
     auto operator<=>(const ImpostorAtlasKey&) const = default;
 };
 
-/// GPU bytes of all resident atlas layers, including optional diffuse transmission.
+/// Allocated mip levels through a four-texel view tile when filtering is enabled.
+uint32 ImpostorAtlasMipCount(const ImpostorAtlasKey& key);
+
+/// GPU bytes of all allocated atlas levels, including optional diffuse transmission.
 uint64 ImpostorAtlasBytes(const ImpostorAtlasKey& key);
 
 /// Which atlases live inside a byte budget. An atlas is requested when an instance first needs

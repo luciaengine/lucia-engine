@@ -26,6 +26,36 @@ TEST(ImpostorAtlasCache, AtlasBytesIncludeTheSeasonMask)
     EXPECT_EQ(ImpostorAtlasBytes(KeyFor(1)), 64ull * 128 * 128 * 14);
 }
 
+TEST(ImpostorAtlasCache, FilteredAtlasesReserveEveryTileLevel)
+{
+    const auto standard = KeyFor(1);
+    auto filtered = standard;
+    filtered.FilterMips = true;
+    EXPECT_NE(standard, filtered);
+    EXPECT_EQ(ImpostorAtlasMipCount(standard), 1u);
+    EXPECT_EQ(ImpostorAtlasMipCount(filtered), 6u);
+    EXPECT_EQ(ImpostorAtlasBytes(filtered), 64ull * 21'840 * 14);
+
+    ImpostorAtlasCache cache(ImpostorAtlasBytes(standard));
+    std::vector<ImpostorAtlasKey> evicted;
+    EXPECT_EQ(cache.Request(filtered, 1, evicted), ImpostorAtlasCache::State::Absent);
+    EXPECT_EQ(cache.Request(standard, 1, evicted), ImpostorAtlasCache::State::Pending);
+}
+
+TEST(ImpostorAtlasCache, FilteredTilesStopBeforeLevelsCanMergeViews)
+{
+    auto compact = KeyFor(1);
+    compact.FilterMips = true;
+    compact.BakeDiffuseTransmission = true;
+    compact.FrameSize = 64;
+    EXPECT_EQ(ImpostorAtlasMipCount(compact), 5u);
+    EXPECT_EQ(ImpostorAtlasBytes(compact), 64ull * 5'456 * 18);
+
+    compact.FrameSize = 48;
+    EXPECT_EQ(ImpostorAtlasMipCount(compact), 1u);
+    EXPECT_EQ(ImpostorAtlasBytes(compact), 64ull * 48 * 48 * 18);
+}
+
 TEST(ImpostorAtlasCache, OnlyTransmittingAtlasesPayForTheExtraLayer)
 {
     const auto standard = KeyFor(1);
