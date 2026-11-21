@@ -85,6 +85,7 @@ private:
         ImpostorBakeRequest Request;
         uint32 NextFrame = 0;     // The next atlas frame to draw.
         uint32 SettledFrames = 0; // Frames in a row with no pipeline build in flight for its materials.
+        uint32 MipAttemptsWithoutProgress = 0;
         bool Cleared = false;
     };
     struct AtlasTextures

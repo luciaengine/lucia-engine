@@ -31,6 +31,7 @@ constexpr Rendering::MaterialKeyword kBakeKeywords = Rendering::MaterialKeyword:
 // Frames in a row with no pipeline build in flight before a job bakes: the draws of the
 // warm-up frame have requested every variant the bake needs by then.
 constexpr uint32 kSettleFrames = 2;
+constexpr uint32 kMaxMipAttemptsWithoutProgress = 8;
 
 // The vertex adapter's push-constant block on the non-instanced path (adapter_vertex.glsl, PC).
 struct BakePushConstants
@@ -117,6 +118,23 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
         return;
     }
 
+    if (job.MipAttemptsWithoutProgress >= kMaxMipAttemptsWithoutProgress)
+    {
+        if (auto* textures = m_Textures.Find(job.Request.Key))
+        {
+            DestroyAtlas(*device, *textures);
+            // An empty entry tells the allocator to use one mip on the next attempt.
+            *textures = {};
+        }
+        job = BakeJob{std::move(job.Request)};
+        if (m_Jobs.size() > 1)
+        {
+            m_Jobs.push_back(std::move(job));
+            m_Jobs.pop_front();
+        }
+        return;
+    }
+
     AtlasTextures& textures = EnsureTextures(*device, job.Request.Key);
     if (!textures.Atlas.Color.IsValid() || !textures.Atlas.NormalDepth.IsValid())
     {
@@ -143,7 +161,8 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
         Rendering::TextureFormat::R16G16B16A16_FLOAT, textures.MipCount);
     if (job.NextFrame == frameCount)
     {
-        DeclareMip(frame, services, textures, job.Request.Key, {color, normalDepth});
+        if (!DeclareMip(frame, services, textures, job.Request.Key, {color, normalDepth}))
+            ++job.MipAttemptsWithoutProgress;
         return;
     }
     // The world pass binds its depth target as ge_sceneDepth at declaration, so the depth must
@@ -205,12 +224,17 @@ void ImpostorBaker::OnFrameSubmittedRG(RenderGraph::RGFrame& frame, const Render
         frame.Stats().SubmissionsMade != frame.Graph().Submissions().size() ||
         m_Jobs.empty() || m_Jobs.front().Request.Key != pending.Key)
         return;
-    if (!std::ranges::all_of(pending.Recorded, [](const bool* recorded) { return recorded && *recorded; }))
-        return;
     auto* textures = m_Textures.Find(pending.Key);
     if (!textures || textures->Atlas.HighestReadyMip + 1 != pending.Level)
         return;
+    BakeJob& job = m_Jobs.front();
+    if (!std::ranges::all_of(pending.Recorded, [](const bool* recorded) { return recorded && *recorded; }))
+    {
+        ++job.MipAttemptsWithoutProgress;
+        return;
+    }
 
+    job.MipAttemptsWithoutProgress = 0;
     textures->Atlas.HighestReadyMip = pending.Level;
     if (pending.Level + 1 == textures->MipCount)
     {
@@ -414,8 +438,9 @@ bool ImpostorBaker::DeclareMip(RenderGraph::RGFrame& frame, RenderServices& serv
                 context.Cmd->Draw(3, 1);
                 *recorded = true;
             });
+        // Keep the pending frame until submission if the other pass was already added.
         if (!pass.IsValid())
-            return false;
+            break;
         pending.Recorded[layer] = recorded;
         frame.MarkOutput(image, RenderGraph::RGImageLayout::ShaderReadOnly);
     }
