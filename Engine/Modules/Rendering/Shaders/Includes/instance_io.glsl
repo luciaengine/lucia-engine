@@ -269,6 +269,7 @@ layout(push_constant) uniform InstancedPC
     uint64_t ge_workAddress;
     uint64_t ge_countsAddress;
     uint ge_index16;
+    uint ge_meshPushPadding;
 #endif
 } pc_inst;
 
