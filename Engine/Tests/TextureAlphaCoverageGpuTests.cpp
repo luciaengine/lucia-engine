@@ -740,6 +740,54 @@ TEST_F(TextureCoverageGPU, ANewMaterialMipStreamStartsAtTheLargestLevelThatFitsT
     m_Textures.FlushPendingUploads();
 }
 
+TEST_F(TextureCoverageGPU, ANewMaterialMipStreamReservesAnInFlightGain)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    constexpr uint32 kFullWidth = 512;
+    constexpr uint32 kTailWidth = 256;
+    const StringId slot = HashStringId("albedoMap");
+    Access::SetMipBudget(m_Textures, kMiB);
+
+    GUID firstTexture;
+    SharedPtr<TextureAsset> firstAsset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(firstTexture, firstAsset, kFullWidth));
+    const GUID firstMaterialGuid = GUID::Generate();
+    auto* firstMaterial = RegisterStreamingMaterial(firstMaterialGuid, "MipStreamingGain");
+    ASSERT_NE(firstMaterial, nullptr);
+    m_Textures.TrackMaterialTextureRefForTesting(firstMaterialGuid, slot, firstTexture);
+    Access::Queue(m_Textures, firstTexture, firstMaterialGuid, firstAsset, slot);
+    m_Textures.FlushPendingUploads();
+    ASSERT_EQ(WidthOf(firstMaterial->GetTexture(slot)), kTailWidth);
+
+    GUID secondTexture;
+    SharedPtr<TextureAsset> secondAsset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(secondTexture, secondAsset, kFullWidth));
+    const GUID secondMaterialGuid = GUID::Generate();
+    auto* secondMaterial = RegisterStreamingMaterial(secondMaterialGuid, "MipStreamingDuringGain");
+    ASSERT_NE(secondMaterial, nullptr);
+    m_Textures.TrackMaterialTextureRefForTesting(secondMaterialGuid, slot, secondTexture);
+    Access::Queue(m_Textures, secondTexture, secondMaterialGuid, secondAsset, slot);
+
+    // One flush begins the gain read before admitting the new stream.
+    // Two full chains exceed 2 MiB. A full chain and a tail fit.
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    m_Textures.FlushPendingUploads();
+    EXPECT_EQ(WidthOf(firstMaterial->GetTexture(slot)), kTailWidth);
+    EXPECT_EQ(WidthOf(secondMaterial->GetTexture(slot)), kTailWidth);
+
+    SettleMipStreams();
+    EXPECT_EQ(WidthOf(firstMaterial->GetTexture(slot)), kFullWidth);
+    EXPECT_EQ(WidthOf(secondMaterial->GetTexture(slot)), kTailWidth);
+
+    for (const GUID& materialGuid : {firstMaterialGuid, secondMaterialGuid})
+    {
+        m_Textures.OnMaterialUnregistered(materialGuid);
+        m_Materials.Unregister(materialGuid);
+    }
+    m_Textures.FlushPendingUploads();
+}
+
 TEST_F(TextureCoverageGPU, AnEvictedStreamInsideTheBudgetStartsAgainAtFullResolutionFromItsFile)
 {
     using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
