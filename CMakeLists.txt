@@ -1094,8 +1094,8 @@ if(ENABLE_TSAN)
 	add_compile_options("$<$<CONFIG:Debug>:-fsanitize=thread;-fno-omit-frame-pointer>")
 	add_link_options("$<$<CONFIG:Debug>:-fsanitize=thread>")
 	if(APPLE)
-		# The runtime adds a personality routine to those of C++, Objective-C and Rust. The compact
-		# unwind format of ld holds 3, so the link of Engine fails unless the format is off.
+		# A sanitizer link of Engine has 4 personality routines (C, C++, Objective-C, Rust). The compact
+		# unwind format of ld holds 3, so the format is off and unwinding uses the DWARF tables.
 		add_link_options("$<$<CONFIG:Debug>:LINKER:-no_compact_unwind>")
 	endif()
 	# Every test executable starts with the runtime options in Tests/ThreadSanitizerOptions.cpp.
