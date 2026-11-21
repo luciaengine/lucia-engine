@@ -642,6 +642,10 @@ void main() {
         if (impostorHistory) {
             prevLod[instanceIndex] = kImpostorHistory;
         }
+        // As for the card below: the part adopts its level on return instead of fading.
+        if (pc.crossfadeTailActive != 0u) {
+            lodFade[instanceIndex] = uvec2(kLodNoHistory, 0u);
+        }
         return;
     }
 
