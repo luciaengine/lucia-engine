@@ -7,6 +7,7 @@
 #include "Assets/RuntimeHumanoidProfile.h"
 #include "Core/Engine.h"
 #include "Engine/Build/BuildPipeline.h"
+#include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "TestTempDir.h"
 
 #include <gtest/gtest.h>
@@ -187,4 +188,58 @@ TEST_F(PackagedAssetManifestTest, ExportKeepsSeparateHlodBakesForSameNamedScenes
         EXPECT_EQ(bake.Key.ConfigHash, i + 1);
     }
     playerAssets.Shutdown();
+}
+
+TEST_F(PackagedAssetManifestTest, ForestArchiveAndNearBudgetSurviveDesktopExport)
+{
+    const std::string archive = "Forests/StandingTrees.geforest";
+    const auto sourceArchive = Assets / archive;
+    fs::create_directories(sourceArchive.parent_path());
+    using PageStreaming::PackedPlacement;
+    const std::array records{PackedPlacement{20, 40, 0, 32768}, PackedPlacement{80, 100, 16384, 65535}};
+    const std::array pages{PageStreaming::PlacementPage{
+        .Origin = {4'000.0, 10.0, -6'000.0}, .LocalMin = {-2, 0, -2}, .LocalMax = {8, 15, 8},
+        .First = 0, .Count = static_cast<uint32>(records.size())}};
+    ASSERT_EQ(PageStreaming::WritePackedPlacementStore(sourceArchive, pages, records), "");
+
+    GameConfig sourceConfig;
+    sourceConfig.forestStand = ForestStandConfig{
+        .archive = archive, .entity = "ForestOverview", .impostorModel = "Model.obj",
+        .detailDistance = 275.0f, .nearMeshBudget = 96};
+    ASSERT_TRUE(SaveGameConfig(Project / "game.config", sourceConfig));
+
+    BuildSettings build;
+    build.platformName = "Linux";
+    build.projectRoot = Project;
+    build.prebuiltPlayerDirectory = Runtime;
+    build.outputDirectory = Output;
+    build.compileScripts = false;
+    build.buildConfiguration = "Release";
+    build.playerConfig.gameName = "ForestExportProbe";
+    BuildPipeline pipeline(nullptr);
+    BuildProgress progress;
+    ASSERT_TRUE(pipeline.Execute(build, [&progress](const BuildProgress& current) { progress = current; }))
+        << progress.statusMessage << '\n' << testing::PrintToString(progress.errors);
+
+    const auto packaged = LoadGameConfig(Output / "game.config");
+    ASSERT_TRUE(packaged.forestStand);
+    EXPECT_EQ(packaged.forestStand->archive, archive);
+    EXPECT_EQ(packaged.forestStand->entity, "ForestOverview");
+    EXPECT_EQ(packaged.forestStand->impostorModel, "Model.obj");
+    EXPECT_FLOAT_EQ(packaged.forestStand->detailDistance, 275.0f);
+    EXPECT_EQ(packaged.forestStand->nearMeshBudget, 96u);
+
+    PageStreaming::PackedPlacementStore store;
+    ASSERT_EQ(store.Open(Output / "Assets" / packaged.forestStand->archive), "");
+    ASSERT_EQ(store.Pages().size(), 1u);
+    EXPECT_EQ(store.PlacementCount(), records.size());
+    EXPECT_EQ(store.Pages().front().Origin, pages.front().Origin);
+    const auto range = store.ReadRange(0);
+    ASSERT_TRUE(range);
+    ASSERT_EQ(range->Bytes, sizeof(records));
+    std::array<uint8, sizeof(records)> bytes{};
+    std::ifstream data(store.File(), std::ios::binary);
+    data.seekg(static_cast<std::streamoff>(range->Offset));
+    ASSERT_TRUE(data.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())));
+    EXPECT_TRUE(store.VerifyPage(0, bytes));
 }
