@@ -2001,8 +2001,13 @@ TEST(MetalDeviceCapabilities, DepthOwnerReplayRequiresNativeResources)
 
 namespace
 {
-void ExpectMeshTriangle(bool withInputs)
+enum class MeshTriangleInput { None, Mesh, Object };
+
+void ExpectMeshTriangle(MeshTriangleInput input)
 {
+    const bool withInputs = input != MeshTriangleInput::None;
+    const bool withMeshInputs = input == MeshTriangleInput::Mesh;
+    const bool withObject = input == MeshTriangleInput::Object;
     auto device = CreateHeadlessMetalDevice();
     if (!device)
     {
@@ -2031,11 +2036,16 @@ layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Mes
 layout(push_constant) uniform MeshPlacement { MeshPosition Position; } placement;
 layout(set = 0, binding = 0, std140) uniform MeshVerticalOffset { float OffsetY; } vertical;
 #endif
+#ifdef OBJECT_INPUTS
+taskPayloadSharedEXT struct MeshPlacementPayload { float OffsetX; } payload;
+#endif
 void main()
 {
     SetMeshOutputsEXT(3, 1);
 #ifdef MESH_INPUTS
     vec2 offset = vec2(placement.Position.OffsetX, vertical.OffsetY);
+#elif defined(OBJECT_INPUTS)
+    vec2 offset = vec2(payload.OffsetX, 0.75);
 #else
     vec2 offset = vec2(0.75);
 #endif
@@ -2050,14 +2060,36 @@ void main()
 layout(location = 0) out vec4 outColor;
 void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
 )";
+    static const char* kObject = R"(
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 1) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer MeshPosition { float OffsetX; };
+layout(push_constant) uniform MeshPlacement { MeshPosition Position; } placement;
+taskPayloadSharedEXT struct MeshPlacementPayload { float OffsetX; } payload;
+void main()
+{
+    payload.OffsetX = placement.Position.OffsetX;
+    EmitMeshTasksEXT(1, 1, 1);
+}
+)";
     std::string meshSource = "#version 460\n";
-    if (withInputs)
+    if (withMeshInputs)
         meshSource += "#define MESH_INPUTS\n";
+    if (withObject)
+        meshSource += "#define OBJECT_INPUTS\n";
     meshSource += kMesh;
     std::vector<uint8_t> meshSpv = CompileGlsl(meshSource.c_str(), shaderc_mesh_shader, "tri.mesh");
     std::vector<uint8_t> fragSpv = CompileGlsl(kFrag, shaderc_fragment_shader, "tri.frag");
     ASSERT_FALSE(meshSpv.empty());
     ASSERT_FALSE(fragSpv.empty());
+    std::vector<uint8_t> objectSpv;
+    if (withObject)
+    {
+        objectSpv = CompileGlsl(kObject, shaderc_task_shader, "tri.task");
+        ASSERT_FALSE(objectSpv.empty());
+    }
 
     constexpr uint32_t kRtDim = 64;
     TextureDesc rtDesc{};
@@ -2076,7 +2108,6 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
     if (withInputs)
     {
         constexpr float kOffsetX = 0.75f;
-        const GameEngine::Mathematics::Vector4 offsetY{0.75f, 0.0f, 0.0f, 0.0f};
         BufferDesc addressDesc{};
         addressDesc.size = sizeof(kOffsetX);
         addressDesc.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::ShaderDeviceAddress);
@@ -2085,7 +2116,10 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
         device->UpdateBuffer(position, 0, sizeof(kOffsetX), &kOffsetX);
         positionAddress = device->GetBufferDeviceAddress(position);
         ASSERT_NE(positionAddress, 0u);
-
+    }
+    if (withMeshInputs)
+    {
+        const GameEngine::Mathematics::Vector4 offsetY{0.75f, 0.0f, 0.0f, 0.0f};
         BufferDesc verticalDesc{};
         verticalDesc.size = sizeof(offsetY);
         verticalDesc.usage = static_cast<uint32_t>(BufferUsage::Uniform);
@@ -2103,14 +2137,16 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
     PipelineDesc pipelineDesc{};
     pipelineDesc.type = PipelineType::Mesh;
     pipelineDesc.meshShader = meshSpv;
+    pipelineDesc.amplificationShader = objectSpv;
     pipelineDesc.pixelShader = fragSpv;
     pipelineDesc.colorAttachmentFormats = {static_cast<uint32_t>(TextureFormat::BGRA8_UNORM)};
     pipelineDesc.rasterizationState.cullMode = CullModeFlagBits::None;
     pipelineDesc.depthStencilState.depthTestEnable = false;
     pipelineDesc.depthStencilState.depthWriteEnable = false;
+    if (withMeshInputs)
+        pipelineDesc.descriptorSetLayouts = {layout};
     if (withInputs)
     {
-        pipelineDesc.descriptorSetLayouts = {layout};
         pipelineDesc.pushConstantSize = sizeof(positionAddress);
         pipelineDesc.pushConstantStagesMask = kShaderStageMesh;
     }
@@ -2126,13 +2162,18 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
 
     constexpr size_t kArgumentOffset = sizeof(uint32_t);
     constexpr size_t kGridBytes = 3u * sizeof(uint32_t);
-    BufferDesc argumentDesc{};
-    argumentDesc.size = kArgumentOffset + kGridBytes;
-    argumentDesc.usage = static_cast<uint32_t>(BufferUsage::Indirect | BufferUsage::TransferDst);
-    BufferHandle arguments = device->CreateBuffer(argumentDesc);
-    ASSERT_TRUE(arguments.IsValid());
+    BufferHandle arguments{};
+    if (!withObject)
+    {
+        BufferDesc argumentDesc{};
+        argumentDesc.size = kArgumentOffset + kGridBytes;
+        argumentDesc.usage = static_cast<uint32_t>(BufferUsage::Indirect | BufferUsage::TransferDst);
+        arguments = device->CreateBuffer(argumentDesc);
+        ASSERT_TRUE(arguments.IsValid());
+    }
 
-    for (const bool indirect : {false, true})
+    constexpr std::array kDrawModes{false, true};
+    for (const bool indirect : std::span{kDrawModes}.first(withObject ? 1u : kDrawModes.size()))
     {
         SCOPED_TRACE(indirect ? "GPU-written indirect grid" : "direct grid");
         auto commandList = device->CreateCommandList(IDevice::QueueType::Graphics);
@@ -2157,7 +2198,7 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
         if (withInputs)
             commandList->SetConstants(0, sizeof(positionAddress), &positionAddress);
         commandList->SetPipeline(pipeline);
-        if (withInputs)
+        if (withMeshInputs)
             commandList->BindDescriptorSet(0, inputs, pipeline);
         commandList->SetViewport(0.0f, 0.0f, static_cast<float>(kRtDim), static_cast<float>(kRtDim));
         commandList->SetScissor(0, 0, kRtDim, kRtDim);
@@ -2182,13 +2223,15 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
         device->UnmapBuffer(readback);
     }
 
-    if (withInputs)
+    if (withMeshInputs)
     {
         device->DestroyDescriptorSet(inputs);
         device->DestroyBuffer(vertical);
-        device->DestroyBuffer(position);
     }
-    device->DestroyBuffer(arguments);
+    if (withInputs)
+        device->DestroyBuffer(position);
+    if (arguments.IsValid())
+        device->DestroyBuffer(arguments);
     device->DestroyBuffer(readback);
     device->DestroyTexture(rt);
     device->Shutdown();
@@ -2197,12 +2240,17 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
 
 TEST(MetalSpirvPipeline, MeshShaderTriangle)
 {
-    ExpectMeshTriangle(false);
+    ExpectMeshTriangle(MeshTriangleInput::None);
 }
 
 TEST(MetalSpirvPipeline, MeshShaderReadsPushConstantsAndDescriptors)
 {
-    ExpectMeshTriangle(true);
+    ExpectMeshTriangle(MeshTriangleInput::Mesh);
+}
+
+TEST(MetalSpirvPipeline, ObjectShaderReadsDeviceAddressFromPushConstants)
+{
+    ExpectMeshTriangle(MeshTriangleInput::Object);
 }
 
 // Mirrors the engine's GE_INSTANCED path: the vertex shader fetches its data

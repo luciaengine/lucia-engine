@@ -189,6 +189,7 @@ struct MetalPipeline
     // MeshFragment pipeline: DrawMeshTasks dispatches mesh threadgroups using
     // localSize{X,Y,Z} (the mesh stage's workgroup size) as threads-per-mesh.
     bool isMeshPipeline = false;
+    bool hasObjectShader = false;
     // Some textured pipelines need padded native calls because ICB execution
     // can return zero for sampled scene-color textures.
     bool FragmentSamplesTextures = false;
