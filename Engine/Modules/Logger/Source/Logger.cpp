@@ -36,8 +36,8 @@ namespace Logger
 namespace
 {
 // Set once at startup by RedirectToSharedState; nullptr = this module owns its
-// own state (the standalone / single-module case).
-Log::LoggerState* s_RedirectedState = nullptr;
+// own state (the standalone / single-module case). Atomic: a drain thread can read it during the set.
+std::atomic<Log::LoggerState*> s_RedirectedState{nullptr};
 
 // Upper bound on how long dispatched-but-unflushed output may sit in sink
 // buffers (FileSink defaults to autoFlush=false, so a burst's trailing lines —
@@ -88,8 +88,8 @@ void SetInitialized(Log::LoggerState& state, bool initialized)
 
 Log::LoggerState& Log::GetState()
 {
-    if (s_RedirectedState)
-        return *s_RedirectedState;
+    if (LoggerState* redirected = s_RedirectedState.load(std::memory_order_acquire))
+        return *redirected;
     static LoggerState state;
     return state;
 }
@@ -103,7 +103,7 @@ void Log::RedirectToSharedState(LoggerState* state)
 {
     assert(GetState().Channels.GetCount() == 1 &&
            "a channel registered before RedirectToSharedState holds an index into a table no sink reads");
-    s_RedirectedState = state;
+    s_RedirectedState.store(state, std::memory_order_release);
 }
 
 std::string& Log::GetFormatBuffer()
@@ -184,7 +184,7 @@ void Log::Shutdown()
     }
     // The drain thread is gone; clear its id so a later thread that recycles
     // the OS thread id doesn't take the drain-thread re-entrancy paths.
-    state.DrainThreadId = {};
+    state.DrainThreadId.store({}, std::memory_order_release);
 
     // Dispatch any remaining owned records synchronously
     {
@@ -528,7 +528,7 @@ void Log::DispatchCritical(const LogMessage& msg)
 
     // Re-entrancy guard: drain thread already holds state.Mutex during dispatch.
     // Acquiring it again would deadlock (non-recursive mutex).
-    if (std::this_thread::get_id() == state.DrainThreadId)
+    if (std::this_thread::get_id() == state.DrainThreadId.load(std::memory_order_acquire))
     {
         DispatchToSinks(msg);
         return;
@@ -587,7 +587,7 @@ void Log::PushEntry(LogMessage&& entry)
     // already held by this thread (non-recursive), and dispatching inline
     // would recurse through any sink that logs on every message. Drop the
     // entry — the logger is past the point of accepting work.
-    if (std::this_thread::get_id() == state.DrainThreadId)
+    if (std::this_thread::get_id() == state.DrainThreadId.load(std::memory_order_acquire))
     {
         return;
     }
@@ -634,7 +634,7 @@ void Log::DrainThreadFunc()
 #endif
 
     auto& state = GetState();
-    state.DrainThreadId = std::this_thread::get_id();
+    state.DrainThreadId.store(std::this_thread::get_id(), std::memory_order_release);
 
     std::vector<LogMessage> localBatch;
     std::vector<std::promise<void>> localPromises;
@@ -772,7 +772,7 @@ void Log::Flush()
         return;
     }
 
-    if (std::this_thread::get_id() == state.DrainThreadId)
+    if (std::this_thread::get_id() == state.DrainThreadId.load(std::memory_order_acquire))
     {
         return;
     }
@@ -823,7 +823,7 @@ bool Log::FlushForCrash(std::chrono::milliseconds timeout)
     // acknowledgement would never return. Report false: nothing was flushed, and the
     // caller reaching here died inside a sink on the drain thread — precisely the case
     // where the tail IS at risk, so it must not be told otherwise.
-    if (std::this_thread::get_id() == state.DrainThreadId)
+    if (std::this_thread::get_id() == state.DrainThreadId.load(std::memory_order_acquire))
     {
         return false;
     }
