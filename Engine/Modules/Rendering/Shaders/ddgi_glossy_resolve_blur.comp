@@ -31,8 +31,8 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D uRoughIn;
 layout(set = 0, binding = 1) uniform sampler2D uGlossyIn;
-layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D uRoughOut;
-layout(set = 0, binding = 3, rgba16f) uniform writeonly image2D uGlossyOut;
+// The forward pass samples both lobes through one binding. Layer 0 is rough, layer 1 is glossy.
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2DArray uLobesOut;
 // 1-sample view depth at render extent, reverse-Z (near = 1, far/cleared = 0).
 layout(set = 0, binding = 4) uniform sampler2D uViewDepth;
 layout(set = 0, binding = 5) uniform sampler2D uIrradianceIn;
@@ -171,8 +171,8 @@ void main()
     // screen-space history would smear it under camera motion.
     if (lobes)
     {
-        imageStore(uRoughOut, pixel, roughOut);
-        imageStore(uGlossyOut, pixel, glossyOut);
+        imageStore(uLobesOut, ivec3(pixel, 0), roughOut);
+        imageStore(uLobesOut, ivec3(pixel, 1), glossyOut);
     }
 
     // Irradiance: temporal accumulation with camera reprojection. Take this

@@ -22727,10 +22727,9 @@ TEST(RenderPipelineDeclareTests, FogLightingReadsLocalShadowsAndEmissionComputeS
     f.Device->WaitForIdle();
 }
 
-// The diffuse-only resolve must keep native allocation unchanged while a
-// backend that prohibits writable aliases gets distinct, bounded placeholders.
-// Exercise the real declaration so every placeholder must also have its graph
-// access declared; missing edges previously made the proposed Web fix fail on Vulkan.
+// Both backends bind a tiny output array with the lobes off. A backend
+// that prohibits writable aliases also needs separate raw lobe placeholders.
+// Execute the real passes so the validation layer checks their declarations.
 TEST(RenderPipelineDeclareTests, DdgiInactiveLobesRespectStorageAliasingCapability)
 {
     // Its own device: the test reads the validation layer's error count.
@@ -22785,26 +22784,27 @@ TEST(RenderPipelineDeclareTests, DdgiInactiveLobesRespectStorageAliasingCapabili
                 auto params = frame.AllocUpload<ViewParamsUBO>();
                 ASSERT_TRUE(params.Valid());
                 *params.Ptr = {};
-                RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+                RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
                 ASSERT_TRUE(feature.DeclareGlossyResolveForView(
                     frame, rs, params.Buffer, params.Offset, sizeof(ViewParamsUBO), depth,
-                    64, 64, 42, 1.0f, "DDGI.Test.Resolve", rough, glossy, irradiance, gatherNormal, normal));
+                    64, 64, 42, 1.0f, "DDGI.Test.Resolve", lobes, irradiance, gatherNormal, normal));
 
                 const auto& graph = frame.Graph();
                 EXPECT_EQ(graph.ResourceDesc(irradiance.Id).Width, 32u);
                 EXPECT_EQ(graph.ResourceDesc(irradiance.Id).Height, 32u);
-                EXPECT_EQ(rough.Id == irradiance.Id, aliasesAllowed);
-                EXPECT_EQ(glossy.Id == irradiance.Id, aliasesAllowed);
-                if (!aliasesAllowed)
-                {
-                    EXPECT_NE(rough.Id, glossy.Id);
-                }
+                ASSERT_TRUE(lobes.IsValid());
+                EXPECT_NE(lobes.Id, irradiance.Id);
+                const auto& lobeDesc = graph.ResourceDesc(lobes.Id);
+                EXPECT_EQ(lobeDesc.Width, 1u);
+                EXPECT_EQ(lobeDesc.Height, 1u);
+                EXPECT_EQ(lobeDesc.ArrayLayers, 2u);
 
                 const auto resolve = RGQuery::FindDeclared(graph, RGQuery::Exact{"DDGI.Test.Resolve"});
                 const auto blur = RGQuery::FindDeclared(graph, RGQuery::Exact{"DDGI.Test.ResolveBlur"});
                 ASSERT_NE(resolve, RenderGraph::kInvalidId);
                 ASSERT_NE(blur, RenderGraph::kInvalidId);
-                for (const char* lobe : {"Rough", "Glossy", "RoughBlur", "GlossyBlur"})
+                EXPECT_TRUE(graph.HasWriteAccess(blur, lobes.Id));
+                for (const char* lobe : {"Rough", "Glossy"})
                 {
                     const std::string name = std::string("DDGIGlossyResolve.") + lobe + ".42";
                     RenderGraph::RGResourceId found = RenderGraph::kInvalidId;
@@ -22819,12 +22819,8 @@ TEST(RenderPipelineDeclareTests, DdgiInactiveLobesRespectStorageAliasingCapabili
                     ASSERT_NE(found, RenderGraph::kInvalidId) << name;
                     EXPECT_EQ(graph.ResourceDesc(found).Width, 1u) << name;
                     EXPECT_EQ(graph.ResourceDesc(found).Height, 1u) << name;
-                    const bool blurred = std::string_view(lobe).ends_with("Blur");
-                    EXPECT_TRUE(graph.HasWriteAccess(blurred ? blur : resolve, found)) << name;
-                    if (!blurred)
-                    {
-                        EXPECT_TRUE(graph.HasReadAccess(blur, found)) << name;
-                    }
+                    EXPECT_TRUE(graph.HasWriteAccess(resolve, found)) << name;
+                    EXPECT_TRUE(graph.HasReadAccess(blur, found)) << name;
                 }
                 // Execute both capability arms: declaration alone cannot catch
                 // invalid descriptor byte ranges in the resolve callback.
@@ -22912,10 +22908,10 @@ TEST(RenderPipelineDeclareTests, DdgiResolveFirstFrameNeverBlendsUndefinedHistor
             for (float* m : {params.Ptr->ge_invProj, params.Ptr->ge_invView, params.Ptr->ge_prevViewProj})
                 for (int i = 0; i < 4; ++i)
                     m[i * 5] = 1.0f;
-            RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+            RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            "DDGI.Test.Resolve", lobes, irradiance,
                                                             gatherNormal, normal));
             const auto& irradianceDesc = frame.Graph().ResourceDesc(irradiance.Id);
             const uint32_t w = irradianceDesc.Width;
@@ -23026,9 +23022,9 @@ void ExecuteGlossyResolveOnce(IDevice& device, RenderServices& rs, DDGIProbeFeat
     auto params = frame.AllocUpload<ViewParamsUBO>();
     ASSERT_TRUE(params.Valid());
     *params.Ptr = {};
-    RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+    RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
     ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset, sizeof(ViewParamsUBO),
-                                                    depth, 64, 64, 42, 1.0f, "DDGI.Rebuild.Resolve", rough, glossy,
+                                                    depth, 64, 64, 42, 1.0f, "DDGI.Rebuild.Resolve", lobes,
                                                     irradiance, gatherNormal, normal));
     frame.MarkOutput(irradiance);
     frame.Execute();
@@ -23446,10 +23442,10 @@ TEST(RenderPipelineDeclareTests, DdgiResolveDeclaresItsProbeStateReads)
             auto params = frame.AllocUpload<ViewParamsUBO>();
             ASSERT_TRUE(params.Valid());
             *params.Ptr = {};
-            RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+            RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            "DDGI.Test.Resolve", lobes, irradiance,
                                                             gatherNormal, normal));
             // Imports dedup by physical, so these return the resources the clears wrote.
             const auto probeStateRG = frame.ImportExternalBuffer("DDGI.Test.ProbeState", probeState.Buffer);
@@ -23524,10 +23520,10 @@ TEST(RenderPipelineDeclareTests, DdgiResolveDeclaresItsAtlasReads)
             auto params = frame.AllocUpload<ViewParamsUBO>();
             ASSERT_TRUE(params.Valid());
             *params.Ptr = {};
-            RenderGraph::RGTexture rough, glossy, irradiance, gatherNormal, normal;
+            RenderGraph::RGTexture lobes, irradiance, gatherNormal, normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(frame, rs, params.Buffer, params.Offset,
                                                             sizeof(ViewParamsUBO), depth, 64, 64, 42, 1.0f,
-                                                            "DDGI.Test.Resolve", rough, glossy, irradiance,
+                                                            "DDGI.Test.Resolve", lobes, irradiance,
                                                             gatherNormal, normal));
             const auto& graph = frame.Graph();
             const auto resolve = RGQuery::FindDeclared(graph, RGQuery::Exact{"DDGI.Test.Resolve"});
@@ -23603,7 +23599,7 @@ void ExpectWorldPassDeclaresDdgiGatherReads(IDevice* device, Components::DDGIGlo
             RenderGraph::RGTexture normal;
             ASSERT_TRUE(feature.DeclareGlossyResolveForView(
                 frame, rs, params.Buffer, params.Offset, sizeof(ViewParamsUBO), targets.Depth, 64, 64, viewId, 1.0f,
-                "DDGI.Test.Resolve", targets.DDGIResolveRough, targets.DDGIResolveGlossy,
+                "DDGI.Test.Resolve", targets.DDGIResolveLobes,
                 targets.DDGIResolveIrradiance, targets.DDGIResolveGatherNormal, normal));
         }
         rs.BeginWorldDrawFrame();

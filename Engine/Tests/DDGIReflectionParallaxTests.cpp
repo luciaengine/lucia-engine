@@ -67,8 +67,8 @@ TEST(DDGIReflectionParallaxTests, ForwardShadingUsesOnlyTheScreenSpaceReflection
         << "an inline reflection gather makes every forward DDGI variant pay its register "
            "cost even when no fragment takes the branch";
     EXPECT_EQ(source.find("GE_SampleDDGIReflection("), std::string::npos);
-    EXPECT_NE(source.find("textureLod(ge_ddgiResolveRough,"), std::string::npos);
-    EXPECT_NE(source.find("textureLod(ge_ddgiResolveGlossy,"), std::string::npos);
+    EXPECT_NE(source.find("textureLod(ge_ddgiResolveLobes, vec3(uvTap, 0.0),"), std::string::npos);
+    EXPECT_NE(source.find("textureLod(ge_ddgiResolveLobes, vec3(uvTap, 1.0),"), std::string::npos);
 #endif
 }
 

@@ -208,6 +208,8 @@ class TextureService
     // rejects it. A 1x1 white one-layer 2D-array view, and a 1x1 black cube (a missing
     // environment adds no light).
     TextureHandle GetDefaultWhiteArrayTexture() const { return m_DefaultWhiteArrayTexture; }
+    /// Both layers contain transparent black.
+    TextureHandle GetDefaultTransparentArrayTexture() const { return m_DefaultTransparentArrayTexture; }
     TextureHandle GetDefaultBlackCubeTexture() const { return m_DefaultBlackCubeTexture; }
     // Bindless indices of the default textures (0 when bindless is disabled).
     uint32_t DefaultWhiteBindlessIndex() const { return m_DefaultWhiteBindlessIndex; }
@@ -754,6 +756,7 @@ class TextureService
     TextureHandle m_DefaultFlatNormalTexture{};
     TextureHandle m_DefaultLensFlareTexture{};
     TextureHandle m_DefaultWhiteArrayTexture{};
+    TextureHandle m_DefaultTransparentArrayTexture{};
     TextureHandle m_DefaultBlackCubeTexture{};
     TextureHandle m_IdentityLut3D{};
     TextureHandle m_IdentityLut1DStrip{};
