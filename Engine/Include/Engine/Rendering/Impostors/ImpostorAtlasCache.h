@@ -62,6 +62,7 @@ private:
     {
         State Status = State::Pending;
         uint64 LastUsedFrame = 0;
+        uint64 ReservedBytes = 0;
     };
 
     void EvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted);
