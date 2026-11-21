@@ -161,6 +161,8 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     }
 
     m_Capabilities = {};
+    m_Capabilities.prefersForwardShaderSpecialization =
+        Platform::EnvironmentSwitchEnabled("GE_METAL_TRY_FORWARD_SPECIALIZATION", false);
     m_Capabilities.supportsFilterableFloat32 = m_Device->supports32BitFloatFiltering();
     // Bindless: the engine's texture/sampler arrays map onto Tier2 argument
     // buffers where supported; descriptor writes are raw 8-byte slot
