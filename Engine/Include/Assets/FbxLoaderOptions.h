@@ -24,7 +24,7 @@ inline constexpr uint8 kFbxImportGeometryVersion = 6u;
 
 // Salt for cooked glTF LODs, which store whole vertices. Change it when
 // LoadGLTF produces different geometry for the same source file.
-inline constexpr uint8 kGltfImportGeometryVersion = 2u;
+inline constexpr uint8 kGltfImportGeometryVersion = 3u;
 
 struct FbxLoaderOptions {
     bool GenerateMissingTangents = true;
