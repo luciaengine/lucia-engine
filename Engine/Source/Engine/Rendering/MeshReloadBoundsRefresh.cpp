@@ -33,10 +33,13 @@ MeshReloadBoundsRefreshReport RefreshLocalBoundsAfterMeshReload(
 
     // The reloaded models, parallel to reloadedModelGuids: a part of a model with its impostor
     // stage on takes the whole model's box (ModelPartBounds).
-    std::vector<SharedPtr<Asset>> reloadedModels;
-    reloadedModels.reserve(reloadedModelGuids.size());
-    for (const GUID& guid : reloadedModelGuids)
-        reloadedModels.push_back(EngineCore::GetInstance().GetAssetManager().GetAsset(guid));
+    // A host with no asset manager keeps the submesh bounds.
+    std::vector<SharedPtr<Asset>> reloadedModels(reloadedModelGuids.size());
+    if (AssetManager* assets = EngineCore::GetInstance().TryGetAssetManager())
+    {
+        for (size_t i = 0; i < reloadedModelGuids.size(); ++i)
+            reloadedModels[i] = assets->GetAsset(reloadedModelGuids[i]);
+    }
 
     // LocalBounds is bound Read and written through the value gate below: a
     // Write binding would stamp every visited chunk whether or not the geometry

@@ -110,7 +110,9 @@ void MeshImpostorSystem::Scan(ECS::World& world)
     // Opt-in state of each model met in this scan: absent from `models` = not yet looked up.
     FlatMap<GUID, bool> optedIn;
     FlatMap<GUID, ModelImpostor> models;
-    AssetManager& assets = EngineCore::GetInstance().GetAssetManager();
+    AssetManager* assets = EngineCore::GetInstance().TryGetAssetManager();
+    if (!assets)
+        return;
     world.Query<ECS::Read<Components::MeshRenderer>>().Each(
         [&](ECS::EntityHandle, const Components::MeshRenderer& renderer)
         {
@@ -120,7 +122,7 @@ void MeshImpostorSystem::Scan(ECS::World& world)
             const bool* known = optedIn.Find(modelGuid);
             if (!known)
             {
-                const SharedPtr<Asset> asset = assets.GetAsset(modelGuid);
+                const SharedPtr<Asset> asset = assets->GetAsset(modelGuid);
                 const auto* model = dynamic_cast<const ModelAsset*>(asset.get());
                 const bool enabled = model && model->IsImpostorEnabled();
                 known = &optedIn.InsertOrAssign(modelGuid, enabled);
