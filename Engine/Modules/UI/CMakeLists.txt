@@ -754,6 +754,7 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PressOwnerRemovedTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIManagerRenderRGTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIOpaqueInteriorsTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIBoxShadowRenderTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UITargetSpaceTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UITextureSpaceTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIBackgroundTextureMipTests.cpp
