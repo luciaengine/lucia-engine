@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <map>
+#include <optional>
+#include <random>
 #include <set>
 #include <span>
+#include <tuple>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -262,6 +265,207 @@ TEST(VirtualShadowPageCacheTests, ARefreshedPageKeepsItsTileContentAndANewPageDo
         ASSERT_TRUE(row.NeedsRender);
         EXPECT_EQ(row.Refresh, row.Page.X < 100) << "page " << row.Page.X;
     }
+}
+
+// The plan of the cache before the per-call stamps: a set of the demand and a map lookup per tile.
+// The equivalence test runs it beside VirtualShadowPageCache and requires the same rows.
+class ReferencePageCache
+{
+public:
+    explicit ReferencePageCache(uint32_t tileCount) : m_Tiles(tileCount) {}
+
+    std::vector<VirtualShadowPageWork> Plan(std::span<const VirtualShadowPage> requests, uint64_t frame,
+                                            uint64_t completedFrame)
+    {
+        std::set<VirtualShadowPage> demanded;
+        std::vector<VirtualShadowPageWork> work;
+        for (const auto& page : requests)
+            if (IsValid(page) && demanded.insert(page).second)
+                work.push_back({.Page = page});
+        const auto residentCount = std::min(work.size(), m_Tiles.size());
+        for (std::size_t i = residentCount; i < work.size(); ++i)
+            demanded.erase(work[i].Page);
+
+        std::vector<uint32_t> available;
+        for (uint32_t index = 0; index < m_Tiles.size(); ++index)
+        {
+            const auto& tile = m_Tiles[index];
+            if (!tile.Page || (tile.LastUse <= completedFrame && !demanded.contains(*tile.Page)))
+                available.push_back(index);
+        }
+        std::ranges::sort(available, {}, [this](uint32_t index) {
+            return std::tuple{m_Tiles[index].Page.has_value(), m_Tiles[index].LastUse, index};
+        });
+        std::size_t next = 0;
+        for (auto& row : std::span(work).first(residentCount))
+        {
+            if (const auto found = m_Mappings.find(row.Page); found != m_Mappings.end())
+                row.Tile = found->second;
+            else if (next < available.size())
+            {
+                row.Tile = available[next++];
+                auto& tile = m_Tiles[row.Tile];
+                if (tile.Page)
+                    m_Mappings.erase(*tile.Page);
+                tile.Page = row.Page;
+                Invalidate(tile);
+                m_Mappings[row.Page] = row.Tile;
+            }
+            if (row.Tile == kUnmappedShadowPage)
+                continue;
+            auto& tile = m_Tiles[row.Tile];
+            tile.LastUse = frame;
+            row.Revision = tile.Revision;
+            row.NeedsRender = !tile.Rendered;
+            if (row.NeedsRender)
+                tile.RenderFrame = frame;
+        }
+        RefreshDeformed(std::span(work).first(residentCount), frame);
+        return work;
+    }
+
+    void MarkRendered(const VirtualShadowPageWork& work)
+    {
+        auto& tile = m_Tiles[work.Tile];
+        if (work.NeedsRender && tile.Page == work.Page && tile.Revision == work.Revision)
+            tile.Rendered = true;
+    }
+    void MarkDirty(const VirtualShadowPage& page)
+    {
+        if (const auto found = m_Mappings.find(page); found != m_Mappings.end())
+            Invalidate(m_Tiles[found->second]);
+    }
+    void MarkDeformed()
+    {
+        for (auto& tile : m_Tiles)
+            tile.Deformed = tile.Rendered;
+    }
+
+private:
+    struct Tile
+    {
+        std::optional<VirtualShadowPage> Page;
+        uint64_t LastUse = 0;
+        uint64_t Revision = 0;
+        uint64_t RenderFrame = 0;
+        bool Rendered = false;
+        bool Deformed = false;
+    };
+
+    static bool IsValid(const VirtualShadowPage& page)
+    {
+        if (page.Family == VirtualShadowLight::Directional)
+            return page.Projection < kVirtualShadowClipLevels && page.Mip == 0;
+        if ((page.Family == VirtualShadowLight::Spot && page.Projection != 0) ||
+            (page.Family == VirtualShadowLight::Point && page.Projection >= 6) || page.Mip > 7 || page.X < 0 ||
+            page.Y < 0)
+            return false;
+        const int64_t side = kVirtualLocalShadowPagesPerAxis >> page.Mip;
+        return page.X < side && page.Y < side;
+    }
+
+    void Invalidate(Tile& tile)
+    {
+        tile.Revision = m_NextRevision++;
+        tile.Rendered = false;
+        tile.Deformed = false;
+    }
+
+    void RefreshDeformed(std::span<VirtualShadowPageWork> rows, uint64_t frame)
+    {
+        const auto missing = static_cast<uint32_t>(std::ranges::count_if(rows, &VirtualShadowPageWork::NeedsRender));
+        if (missing >= kVirtualShadowPageRenderBudget)
+            return;
+        std::vector<std::pair<VirtualShadowPageWork*, double>> deformed;
+        for (std::size_t index = 0; index < rows.size(); ++index)
+        {
+            auto& row = rows[index];
+            if (row.Tile == kUnmappedShadowPage || row.NeedsRender || !m_Tiles[row.Tile].Deformed)
+                continue;
+            const uint32_t level = row.Page.Family == VirtualShadowLight::Directional ? row.Page.Projection : row.Page.Mip;
+            const uint64_t age = frame - std::min(frame, m_Tiles[row.Tile].RenderFrame);
+            const double limit = static_cast<double>(kVirtualShadowDeformedMaxAgeFrames << std::min(level, 16u)) *
+                                 (1.0 + static_cast<double>(index) / kVirtualShadowDeformedRefreshRowScale);
+            deformed.emplace_back(&row, static_cast<double>(age) / limit);
+        }
+        const auto count = std::min<std::size_t>(
+            deformed.size(), std::min(kVirtualShadowDeformedRefreshBudget, kVirtualShadowPageRenderBudget - missing));
+        std::ranges::partial_sort(deformed, deformed.begin() + static_cast<std::ptrdiff_t>(count), {},
+                                  [](const auto& candidate) { return -candidate.second; });
+        for (const auto& [row, staleness] : std::span(deformed).first(count))
+        {
+            auto& tile = m_Tiles[row->Tile];
+            Invalidate(tile);
+            tile.RenderFrame = frame;
+            row->Revision = tile.Revision;
+            row->NeedsRender = true;
+            row->Refresh = true;
+        }
+    }
+
+    std::vector<Tile> m_Tiles;
+    std::map<VirtualShadowPage, uint32_t> m_Mappings;
+    uint64_t m_NextRevision = 1;
+};
+
+// Pages of all families, a few invalid, drawn with repeats from a pool larger than the tiles.
+std::vector<VirtualShadowPage> RandomDemand(std::mt19937& random)
+{
+    std::vector<VirtualShadowPage> demand(std::uniform_int_distribution<size_t>(0, 160)(random));
+    for (auto& page : demand)
+    {
+        const auto family = static_cast<VirtualShadowLight>(random() % 3);
+        const auto projection = static_cast<uint8_t>(random() % (family == VirtualShadowLight::Point ? 7 : 3));
+        const auto mip = static_cast<uint8_t>(family == VirtualShadowLight::Directional ? random() % 5 / 4 : random() % 3);
+        page = {random() % 2, family, projection, mip, static_cast<int64_t>(random() % 12) - 1,
+                static_cast<int64_t>(random() % 6)};
+    }
+    return demand;
+}
+
+TEST(VirtualShadowPageCacheTests, PlanRowsMatchTheSetBasedReferenceOverRandomFrames)
+{
+    constexpr uint32_t kTiles = 48;
+    VirtualShadowPageCache cache(kTiles);
+    ReferencePageCache reference(kTiles);
+    std::mt19937 random(11);
+    size_t overflowFrames = 0;
+    for (uint64_t frame = 1; frame <= 400; ++frame)
+    {
+        const uint64_t completed = frame - std::min<uint64_t>(frame, 1 + random() % 3);
+        const auto demand = RandomDemand(random);
+        const auto rows = cache.Plan(demand, frame, completed);
+        const auto expected = reference.Plan(demand, frame, completed);
+        ASSERT_EQ(rows.size(), expected.size()) << "frame " << frame;
+        overflowFrames += rows.size() > kTiles ? 1 : 0;
+        for (size_t index = 0; index < rows.size(); ++index)
+        {
+            const auto& row = rows[index];
+            const auto& want = expected[index];
+            ASSERT_EQ(std::tie(row.Page, row.Tile, row.Revision, row.NeedsRender, row.Refresh),
+                      std::tie(want.Page, want.Tile, want.Revision, want.NeedsRender, want.Refresh))
+                << "frame " << frame << " row " << index;
+        }
+        for (const auto& row : rows)
+        {
+            if (row.Tile == kUnmappedShadowPage || random() % 4 == 0)
+                continue;
+            cache.MarkRendered(row);
+            reference.MarkRendered(row);
+        }
+        if (random() % 5 == 0)
+        {
+            cache.MarkDeformed();
+            reference.MarkDeformed();
+        }
+        if (!demand.empty() && random() % 3 == 0)
+        {
+            const auto& page = demand[random() % demand.size()];
+            cache.MarkDirty(page);
+            reference.MarkDirty(page);
+        }
+    }
+    EXPECT_GT(overflowFrames, 20u) << "the demand must often exceed the tiles";
 }
 
 TEST(VirtualShadowPageCacheTests, CropMapsTopLeftAtlasCoordinatesWithoutChangingPerspectiveDepth)
