@@ -887,7 +887,7 @@ struct ClusterLODFeature::State
         else if (geometries.CheckedEpoch != GeometriesEpoch)
         {
             geometries.CheckedEpoch = GeometriesEpoch;
-            std::erase_if(geometries.Waiting, [&](uint32 unit)
+            std::erase_if(geometries.Waiting, [this, &guid, &model, &manifest, &geometries](uint32 unit)
             {
                 bool waiting = false;
                 geometries.Handles[unit] = LookUpUnitGeometry(guid, model, manifest, unit, waiting);
