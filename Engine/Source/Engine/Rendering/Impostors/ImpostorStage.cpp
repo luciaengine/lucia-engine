@@ -148,7 +148,9 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
             doc.textures["impostorDiffuseTransmissionMap"] = std::string{};
             keywords |= Rendering::MaterialKeyword::DiffuseTransmission;
         }
-        registered = services.Materials().RegisterMaterialFromDocument(material, doc, keywords);
+        // Source meshes or the forest stand remain drawable until the card pipeline publishes.
+        registered = services.Materials().RegisterMaterialFromDocument(
+            material, doc, keywords, MaterialSystem::BaseCompileMode::Async);
         if (!registered)
             return nullptr;
         // The atlas is a runtime texture: bound by handle, as a video frame is.
