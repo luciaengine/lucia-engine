@@ -19,6 +19,8 @@
     <ProjectReference Include="../GameEngine.Scripting.Web.csproj" />
     <EmccExportedRuntimeMethod Include="ccall" />
     <EmccExportedRuntimeMethod Include="FS" />
+    <!-- The linker patches readable JS. Strip native symbols after Emscripten emits it. -->
+    <WasmOptConfigurationFlags Include="--strip-debug" />
   </ItemGroup>
   <Target Name="CollectScriptReferences" BeforeTargets="AssignTargetPaths"
           DependsOnTargets="ResolveReferences">
