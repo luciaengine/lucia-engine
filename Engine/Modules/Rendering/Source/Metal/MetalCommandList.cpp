@@ -829,9 +829,9 @@ void MetalCommandList::ApplyRenderState()
     }
     m_AppliedRenderPipeline = m_CurrentPipelineHandle;
     const bool restoreMeshConstants = !m_AppliedMeshPipeline && pipeline->isMeshPipeline;
-    const bool restoreObjectConstants = !m_AppliedObjectPipeline && pipeline->hasObjectShader;
+    const bool restoreObjectConstants = !m_AppliedObjectPipeline && pipeline->HasObjectShader;
     m_AppliedMeshPipeline = pipeline->isMeshPipeline;
-    m_AppliedObjectPipeline = pipeline->hasObjectShader;
+    m_AppliedObjectPipeline = pipeline->HasObjectShader;
     if (m_AppliedMeshPipeline && !m_MeshDeviceAddressesDeclared)
     {
         m_Device.DeclareDeviceAddressResidency(m_RenderEncoder, m_EncoderMeshResidents, MTL::RenderStageMesh);
