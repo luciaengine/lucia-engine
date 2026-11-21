@@ -22,6 +22,7 @@
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Inspectors/ModelSettingsReload.h"
 #include "Inspectors/SubmeshLodProvenance.h"
+#include "Logger/Logger.h"
 #include "Mathematics/Interpolation.h"
 #include "Thumbnails/IThumbnailProvider.h"
 #include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
@@ -36,6 +37,8 @@
 #include "UI/Controls/Toggle.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/StyleProperties.h"
+#include "UndoRedo/SetAssetMetaValueCommand.h"
+#include "UndoRedo/UndoRedoService.h"
 
 #include <algorithm>
 #include <array>
@@ -1116,25 +1119,47 @@ void BuildRigTab(UIElement* root,
         });
 }
 
-// The impostor stage of the model: one baked card for all its parts, far away.
-void BuildImpostorSection(UIElement* root, const std::filesystem::path& assetPath,
+void EditImpostorSetting(const std::filesystem::path& assetPath, const char* key, const std::string& value,
+                         Editor::UndoRedoService* undo, const std::function<void()>& requestInspectorRefresh)
+{
+    const auto write = [key](const std::filesystem::path& path, const std::string& stored)
+    {
+        auto& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
+        if (registry.SetMetaValue(path, key, stored))
+            ReloadModel(path);
+        else
+            Logger::Log::Warning("Impostor settings could not be saved for {}.", path.string());
+    };
+    if (undo)
+    {
+        undo->Execute(std::make_unique<Editor::SetAssetMetaValueCommand>(
+            assetPath, key, value, write, requestInspectorRefresh));
+        return;
+    }
+    write(assetPath, value);
+    if (requestInspectorRefresh)
+        requestInspectorRefresh();
+}
+
+void BuildImpostorSection(UIElement* root, const std::filesystem::path& assetPath, Editor::UndoRedoService* undo,
                           std::function<void()> requestInspectorRefresh)
 {
     InspectorUI::AddTextBlock(root, "Impostor", "inspector-section-subheader");
-    auto& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
+    const auto& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
     const ModelAssetSettings settings = ModelAssetSettings::Load(registry, assetPath);
-    InspectorDrag::AddToggleRow(root, "Far impostor", settings.Impostor,
-        [assetPath, requestInspectorRefresh](bool enabled) {
-            auto& assets = EngineCore::GetInstance().GetAssetManager();
-            ModelAssetSettings edited = ModelAssetSettings::Load(assets.GetRegistry(), assetPath);
-            edited.Impostor = enabled;
-            edited.Save(assets.GetRegistry(), assetPath);
-            ReloadModel(assetPath);
-            if (requestInspectorRefresh)
-                requestInspectorRefresh();
+    const bool writable = registry.GetImportSettingsOrigin(assetPath).Writable;
+    if (!writable)
+        AddHintBox(root, "Edit the source package to change these read-only impostor settings.");
+
+    auto* toggle = InspectorDrag::AddToggleRow(root, "Far impostor", settings.Impostor,
+        [assetPath, undo, requestInspectorRefresh](bool enabled)
+        {
+            EditImpostorSetting(assetPath, ModelAssetSettings::kImpostorKey, enabled ? "true" : "false",
+                                undo, requestInspectorRefresh);
         },
         "Far away, draw one baked card for all parts of this model. Use it for trees, large plants "
         "and props seen from far. A small model with few triangles draws faster without it.");
+    toggle->SetEnabled(writable);
 
     if (!settings.Impostor)
         return;
@@ -1143,17 +1168,17 @@ void BuildImpostorSection(UIElement* root, const std::filesystem::path& assetPat
         root, "Impostor Screen Height (%)", static_cast<int>(settings.ImpostorScreenHeightPercent), 0, kMaxPercent,
         "Set how small the model must look before it can use a card. Use 0 for the view's automatic setting. "
         "All parts must also reach their last mesh LOD.");
-    const auto commit = [assetPath, kMaxPercent, slider = row.Slider, field = row.ValueField](int value) {
+    row.Row->SetEnabled(writable);
+    const auto commit = [assetPath, undo, requestInspectorRefresh, kMaxPercent,
+                         slider = row.Slider, field = row.ValueField](int value)
+    {
         const int percent = std::clamp(value, 0, kMaxPercent);
         slider->SetValueWithoutNotify(static_cast<float>(percent));
         field->SetValueWithoutNotify(percent);
-        auto& assets = EngineCore::GetInstance().GetAssetManager();
-        ModelAssetSettings edited = ModelAssetSettings::Load(assets.GetRegistry(), assetPath);
-        if (edited.ImpostorScreenHeightPercent == static_cast<uint32>(percent))
-            return;
-        edited.ImpostorScreenHeightPercent = static_cast<uint32>(percent);
-        if (edited.Save(assets.GetRegistry(), assetPath))
-            ReloadModel(assetPath);
+        const auto& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
+        if (ModelAssetSettings::Load(registry, assetPath).ImpostorScreenHeightPercent != static_cast<uint32>(percent))
+            EditImpostorSetting(assetPath, kModelImpostorScreenHeightMetaKey, std::to_string(percent), undo,
+                                requestInspectorRefresh);
     };
     row.Slider->SetOnValueChanging([field = row.ValueField](const float& value) {
         field->SetValueWithoutNotify(static_cast<int>(std::lround(value)));
@@ -1179,7 +1204,7 @@ void BuildModelInspector(UIElement* root,
     {
     case ModelInspectorTab::Lod:
         BuildLodSection(root, model, undo, requestInspectorRefresh);
-        BuildImpostorSection(root, assetPath, requestInspectorRefresh);
+        BuildImpostorSection(root, assetPath, undo, requestInspectorRefresh);
         break;
     case ModelInspectorTab::Rig:
         BuildRigTab(root, model, assetPath, requestInspectorRefresh);
