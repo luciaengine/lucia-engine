@@ -7,10 +7,12 @@
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Mathematics/Vector3.h"
 #include "Types/FlatMap.h"
+#include "Types/FlatSet.h"
 #include "Types/Types.h"
 
 #include <atomic>
 #include <cstddef>
+#include <string_view>
 #include <vector>
 
 namespace GameEngine
@@ -77,6 +79,8 @@ private:
         AssetManager* Assets = nullptr;
         FlatMap<GUID, SharedPtr<Asset>> Sources;
         FlatMap<GUID, ModelImpostor> Models;
+        // Opted-in models that cannot take a card, with the reason.
+        FlatMap<GUID, std::string_view> Refusals;
     };
 
     // Rebuilds the parts of the opted-in models from the world's mesh renderers.
@@ -87,9 +91,13 @@ private:
     const Material* UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
                                 ImpostorStage& stage);
     void UnlinkModel(ModelImpostor& impostor);
+    // Warns once that an opted-in model keeps its meshes, and why.
+    void LogRefusal(const GUID& model, std::string_view reason);
 
     RenderServices* m_RenderServices = nullptr;
     FlatMap<GUID, ModelImpostor> m_Models;
+    // The models with a refusal warning; a model leaves the set when it links.
+    FlatSet<GUID> m_RefusalsLogged;
     ECS::ChangeGate m_MeshRendererGate;
     // A destroy that empties its chunk stamps no column, so the structural version also starts a scan.
     std::size_t m_StructuralVersion = static_cast<std::size_t>(-1);

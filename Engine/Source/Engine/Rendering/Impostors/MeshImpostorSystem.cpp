@@ -44,19 +44,41 @@ uint64 MaterialHash(const std::vector<MeshImpostorSystem::Part>& parts)
     return hash;
 }
 
-bool CanBakeMaterial(const Material& material)
+// The reason a material can never bake, or empty when it can.
+std::string_view MaterialRefusal(const Material& material)
 {
     using Rendering::MaterialKeyword;
     const MaterialKeyword keywords = material.GetVariantKey().materialKeywords;
     const MaterialAlphaMode alphaMode = material.GetAlphaMode();
-    if ((alphaMode != MaterialAlphaMode::Opaque && alphaMode != MaterialAlphaMode::Mask)
-        || Rendering::HasKeyword(keywords, MaterialKeyword::Transmission)
+    if (alphaMode != MaterialAlphaMode::Opaque && alphaMode != MaterialAlphaMode::Mask)
+        return "a part material is not opaque or masked";
+    if (Rendering::HasKeyword(keywords, MaterialKeyword::Transmission)
         || Rendering::HasKeyword(keywords, MaterialKeyword::DiffuseTransmission)
-        || Rendering::HasKeyword(keywords, MaterialKeyword::Subsurface)
-        || material.GetCompileSpec().customVertexShader
-        || !material.GetDepthWriteOverride().value_or(true)
-        || !material.GetDepthTestOverride().value_or(true)
-        || !material.GetGraphicsPipelineId().IsValid())
+        || Rendering::HasKeyword(keywords, MaterialKeyword::Subsurface))
+        return "a part material uses transmission or subsurface scattering";
+    if (material.GetCompileSpec().customVertexShader)
+        return "a part material has a custom vertex shader";
+    if (!material.GetDepthWriteOverride().value_or(true) || !material.GetDepthTestOverride().value_or(true))
+        return "a part material turns off the depth write or the depth test";
+    return {};
+}
+
+// The reason an opted-in model can never take a card, or empty when it can.
+std::string_view ModelRefusal(const ModelAsset& model)
+{
+    if (model.GetClusterLODManifest())
+        return "the model uses cluster LOD";
+    if (std::ranges::any_of(model.GetMeshes(), [](const Mesh& mesh) { return mesh.IsSkinned(); }))
+        return "the model is skinned";
+    if (std::ranges::any_of(model.GetMeshes(), [](const Mesh& mesh) { return mesh.HasMorphTargets(); }))
+        return "the model has morph targets";
+    return {};
+}
+
+// True when the material's pipeline is built and its textures are loaded.
+bool IsMaterialReady(const Material& material)
+{
+    if (!material.GetGraphicsPipelineId().IsValid())
         return false;
     for (uint32 slot = 0; slot < kTextureSlotArraySize; ++slot)
         if (material.IsTextureAwaited(slot))
@@ -143,10 +165,7 @@ void MeshImpostorSystem::AddRenderer(ScanState& scan, const Components::MeshRend
     {
         SharedPtr<Asset> asset = scan.Assets->GetAsset(modelGuid);
         const auto* model = dynamic_cast<const ModelAsset*>(asset.get());
-        if (model && model->IsImpostorEnabled() && model->GetMeshCount() > 0
-            && !model->GetClusterLODManifest()
-            && std::ranges::none_of(model->GetMeshes(), [](const Mesh& mesh)
-               { return mesh.IsSkinned() || mesh.HasMorphTargets(); }))
+        if (model && model->IsImpostorEnabled() && model->GetMeshCount() > 0 && ModelRefusal(*model).empty())
         {
             const Mathematics::BoundingBox box = ComputeModelBounds(*model).Box;
             ModelImpostor& impostor = scan.Models.InsertOrAssign(modelGuid, ModelImpostor{});
@@ -159,6 +178,8 @@ void MeshImpostorSystem::AddRenderer(ScanState& scan, const Components::MeshRend
         }
         else
         {
+            if (model && model->IsImpostorEnabled() && model->GetMeshCount() > 0)
+                scan.Refusals.InsertOrAssign(modelGuid, ModelRefusal(*model));
             asset.reset();
         }
         source = &scan.Sources.InsertOrAssign(modelGuid, std::move(asset));
@@ -204,6 +225,15 @@ void MeshImpostorSystem::Scan(ECS::World& world)
         }
     }
     m_Models = std::move(scan.Models);
+    for (const auto& [model, reason] : scan.Refusals)
+        LogRefusal(model, reason);
+}
+
+void MeshImpostorSystem::LogRefusal(const GUID& model, std::string_view reason)
+{
+    if (m_RefusalsLogged.Insert(model))
+        Logger::Log::Warning("MeshImpostorSystem: model {} keeps its meshes at every distance: {}", model.ToString(),
+                             reason);
 }
 
 const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
@@ -212,6 +242,7 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     if (impostor.HasConflictingParts)
     {
         UnlinkModel(impostor);
+        LogRefusal(model, "instances of one part use different meshes or materials");
         return nullptr;
     }
 
@@ -226,7 +257,10 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     for (const Part& part : impostor.Parts)
     {
         const Material* material = part.Mesh.IsValid() && !part.Material.IsNull() ? materials.Find(part.Material) : nullptr;
-        if (!material || !CanBakeMaterial(*material))
+        const std::string_view refusal = material ? MaterialRefusal(*material) : std::string_view{};
+        if (!refusal.empty())
+            LogRefusal(model, refusal);
+        if (!material || !refusal.empty() || !IsMaterialReady(*material))
         {
             UnlinkModel(impostor);
             return nullptr;
@@ -262,6 +296,7 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     }
     Logger::Log::Info("MeshImpostorSystem: model {} links {} parts to card material {}", model.ToString(),
                       meshes.size(), card->GetGpuSceneMaterialIndex());
+    m_RefusalsLogged.Erase(model);
     impostor.LinkedMaterial = card->GetGpuSceneMaterialIndex();
     impostor.LinkedMeshes = meshes;
     return card;
