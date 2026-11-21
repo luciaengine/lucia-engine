@@ -1141,8 +1141,8 @@ void BuildImpostorSection(UIElement* root, const std::filesystem::path& assetPat
     constexpr int kMaxPercent = static_cast<int>(ModelAssetSettings::kMaxImpostorScreenHeightPercent);
     const auto row = InspectorDrag::AddSliderWithIntValueRow(
         root, "Impostor Screen Height (%)", static_cast<int>(settings.ImpostorScreenHeightPercent), 0, kMaxPercent,
-        "Set how small the model must look before it can use a card. Use 0 for the view's automatic setting. "
-        "All parts must also reach their last mesh LOD.");
+        "Set how small the model must look before it draws its card. Use 0 for the automatic setting: one "
+        "atlas pixel per screen pixel.");
     const auto commit = [assetPath, kMaxPercent, slider = row.Slider, field = row.ValueField](int value) {
         const int percent = std::clamp(value, 0, kMaxPercent);
         slider->SetValueWithoutNotify(static_cast<float>(percent));

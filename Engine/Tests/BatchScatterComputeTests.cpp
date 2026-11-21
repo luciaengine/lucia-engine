@@ -4588,7 +4588,10 @@ TEST_P(BatchScatterComputeTest, ImpostorHysteresisKeepsTheCardUntilTheExitCovera
     EXPECT_TRUE(cards(dispatch(kImpostorFarDist, 0xFFFFFFFFu, true)).empty()) << "no card mesh: no stage";
 }
 
-TEST_P(BatchScatterComputeTest, ImpostorWaitsForTheCoarsestLodOfEveryPart)
+// Below the switch the card replaces every mesh LOD of the parts, the finest included: a coarse
+// LOD of alpha-masked leaves loses far more than a card at one atlas texel per pixel. A forced
+// level keeps the meshes, and a model's own switch moves the card farther away.
+TEST_P(BatchScatterComputeTest, ImpostorReplacesEveryMeshLodBelowTheSwitch)
 {
     const uint32_t barkMesh = AddMeshRow(kImpostorPrimaryIndices);
     const uint32_t leafMesh = AddMeshRow(kImpostorSecondaryIndices);
@@ -4597,6 +4600,7 @@ TEST_P(BatchScatterComputeTest, ImpostorWaitsForTheCoarsestLodOfEveryPart)
     const uint32_t leaves = m_Scene->AddInstance(MakeInstance(2u, leafMesh));
     const uint32_t parts[] = {barkMesh, leafMesh};
     constexpr uint32_t kCoarseLeafIndices = 12u;
+    // Two leaf levels with an SSE switch at coverage 1.0 * 0.08: LOD0 above it, LOD1 below.
     GPUMesh leaf = m_Scene->GetMeshes()[leafMesh];
     leaf.lodCount = 2u;
     leaf.lodIndexCount[1] = kCoarseLeafIndices;
@@ -4619,22 +4623,23 @@ TEST_P(BatchScatterComputeTest, ImpostorWaitsForTheCoarsestLodOfEveryPart)
         return InstancesInRows(table, result.cursors, result.records, result.indirection, mesh, indexCount);
     };
 
-    const auto aboveFinalMeshLod = dispatch(0.10f);
-    EXPECT_EQ(instances(aboveFinalMeshLod, barkMesh, kImpostorPrimaryIndices), std::multiset<uint32_t>{bark});
-    EXPECT_EQ(instances(aboveFinalMeshLod, leafMesh, kImpostorSecondaryIndices), std::multiset<uint32_t>{leaves});
-    EXPECT_TRUE(instances(aboveFinalMeshLod, cardMesh, kImpostorCardIndices).empty());
+    const auto aboveSwitch = dispatch(0.15f);
+    EXPECT_EQ(instances(aboveSwitch, barkMesh, kImpostorPrimaryIndices), std::multiset<uint32_t>{bark});
+    EXPECT_EQ(instances(aboveSwitch, leafMesh, kImpostorSecondaryIndices), std::multiset<uint32_t>{leaves});
+    EXPECT_TRUE(instances(aboveSwitch, cardMesh, kImpostorCardIndices).empty());
 
-    const auto atCardDistance = dispatch(0.07f);
-    EXPECT_TRUE(instances(atCardDistance, barkMesh, kImpostorPrimaryIndices).empty());
-    EXPECT_TRUE(instances(atCardDistance, leafMesh, kCoarseLeafIndices).empty());
-    EXPECT_EQ(instances(atCardDistance, cardMesh, kImpostorCardIndices), std::multiset<uint32_t>{bark});
+    // Coverage 0.10: the leaves would still draw LOD0, and the card replaces them.
+    const auto belowSwitch = dispatch(0.10f);
+    EXPECT_TRUE(instances(belowSwitch, barkMesh, kImpostorPrimaryIndices).empty());
+    EXPECT_TRUE(instances(belowSwitch, leafMesh, kImpostorSecondaryIndices).empty());
+    EXPECT_EQ(instances(belowSwitch, cardMesh, kImpostorCardIndices), std::multiset<uint32_t>{bark});
 
     const auto forced = dispatch(0.07f, 1u);
     EXPECT_EQ(instances(forced, barkMesh, kImpostorPrimaryIndices), std::multiset<uint32_t>{bark});
     EXPECT_EQ(instances(forced, leafMesh, kCoarseLeafIndices), std::multiset<uint32_t>{leaves});
     EXPECT_TRUE(instances(forced, cardMesh, kImpostorCardIndices).empty());
 
-    // An authored switch can keep the coarsest mesh on screen longer.
+    // A model's own switch at 0.06 keeps the mesh at 0.07 and draws the card at 0.05.
     ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 3u, cardMesh, 0.06f));
     const auto beforeAuthoredSwitch = dispatch(0.07f);
     EXPECT_EQ(instances(beforeAuthoredSwitch, leafMesh, kCoarseLeafIndices), std::multiset<uint32_t>{leaves});

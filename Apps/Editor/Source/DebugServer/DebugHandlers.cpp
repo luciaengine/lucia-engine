@@ -9068,6 +9068,13 @@ void RegisterDebugHandlers(EditorDebugServer& server,
                     entry["lodCoverageScale"] = row->lodCoverageScale;
                     entry["tightClass"] =
                         (row->lodFlags & Rendering::kGPUMeshLodTightClassBit) != 0u;
+                    // The impostor link (GPUScene::SetMeshImpostorGroup): 0 = none.
+                    if (row->impostorCard != 0u)
+                        entry["impostor"] = json{
+                            {"cardMaterial", (row->impostorCard & Rendering::kGPUMeshImpostorMaterialMask) - 1u},
+                            {"primary", (row->impostorCard & Rendering::kGPUMeshImpostorPrimaryBit) != 0u},
+                            {"nextPart", row->nextImpostorPart},
+                            {"switchCoverage", row->impostorSwitchCoverage}};
                 }
                 rows.push_back(std::move(entry));
             });

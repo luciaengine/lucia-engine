@@ -26,7 +26,7 @@ struct ImpostorAtlas;
 class ImpostorStage final : public IRenderFeature
 {
 public:
-    /// Extra coverage the card can retain, within the coarsest mesh LOD.
+    /// The card stays until the coverage is the switch coverage * (1 + kSwitchHysteresis).
     static constexpr float kSwitchHysteresis = 0.15f;
 
     /// Registers the card quad, a [0,1] UV square that impostor_card.glsl places, and publishes its

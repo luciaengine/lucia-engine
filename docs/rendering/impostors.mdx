@@ -17,9 +17,9 @@ All parts of the model switch together. A model with a bark part and a leaf part
 
 ## How objects switch to impostors
 
-The GPU measures the projected size of the object's bounding sphere. An object switches to its card only after every submesh reaches its coarsest mesh LOD and the card is ready. A small margin reduces switching when the camera moves near the threshold.
+The GPU measures the projected size of the object's bounding sphere. When the sphere is smaller than one atlas view across the screen, about 128 pixels across, the object draws its card in place of all its parts, whatever mesh LOD they show. At that size the card shows about one atlas pixel per screen pixel, so it looks closer to the object than a coarse mesh LOD of its leaves. The object switches only when its card is ready. A small margin reduces switching when the camera moves near that size.
 
-Use **Impostor Screen Height (%)** to set the maximum screen height at which an opted-in model can switch. A value of 0 uses the default of one atlas texel per rendered pixel, about 128 pixels across the sphere. The mesh LOD error budget still controls when each submesh reaches its coarsest LOD.
+Use **Impostor Screen Height (%)** to set the screen height under which an opted-in model switches. A value of 0 uses the default of one atlas pixel per rendered pixel.
 
 Trees with equal options share one tree variant, and a variant has one atlas. A model has one atlas. A forest that reuses a few variants or models therefore bakes a few atlases.
 

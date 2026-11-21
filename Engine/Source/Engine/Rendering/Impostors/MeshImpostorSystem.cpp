@@ -11,6 +11,7 @@
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
 #include "Types/Fnv1a.h"
 
@@ -254,7 +255,13 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
         return card;
     UnlinkModel(impostor);
     if (!stage.Link(*m_RenderServices, meshes, *card, impostor.SwitchCoverage))
+    {
+        Logger::Log::Warning("MeshImpostorSystem: model {} could not link its {} parts to its card", model.ToString(),
+                             meshes.size());
         return nullptr;
+    }
+    Logger::Log::Info("MeshImpostorSystem: model {} links {} parts to card material {}", model.ToString(),
+                      meshes.size(), card->GetGpuSceneMaterialIndex());
     impostor.LinkedMaterial = card->GetGpuSceneMaterialIndex();
     impostor.LinkedMeshes = meshes;
     return card;
