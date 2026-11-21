@@ -86,6 +86,8 @@ Desktop export reads the configured stands from the project root's `game.config`
 
 Use an opaque bark material and an alpha-masked leaf material. For thin leaves that transmit light, enable **Diffuse Transmission** on the Standard PBR material and set its strength. The card uses a per-texel bake of that response, so the bark remains opaque on the same card.
 
+Enable **Preserve Alpha Coverage** in the leaf texture's Texture Inspector. Set **Coverage Cutoff** to the leaf material's alpha cutoff. This helps retain thin leaves as the mesh samples smaller texture mips. Check the mesh and card at the handoff distance. [Alpha coverage mipmaps](../assets/texture-alpha-coverage.mdx)
+
 Add a `FoliageSeason` component to the scene to drive autumn tint and snow in the entire world. When several are enabled, the highest priority supplies the settings. For Standard PBR materials, set `impostorLeafTintWeight` and `impostorSnowWeight` in the material properties. For example, use a leaf tint weight of 1 on foliage and 0 on bark. Snow also uses the shaded normal, so upward-facing surfaces receive more. Changing the scene's season updates mesh and card shading without rebaking the atlas.
 
 Use the bundled `VertexModifiers/foliage_wind.glsl` modifier on both leaf and bark materials. Give every part the same base, height range, and sway amplitude so the leaves follow the trunk and branches.
