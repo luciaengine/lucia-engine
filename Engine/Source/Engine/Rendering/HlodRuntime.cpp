@@ -100,24 +100,41 @@ LiveMemberIndex BuildLiveIndex(GameEngine::ECS::World& world, const ModelResolve
 
 } // namespace
 
-void HlodRuntime::Retire(GameEngine::ECS::World& world,
-                         GameEngine::Rendering::MeshGPURegistry& meshReg) {
+bool HlodRuntime::IsBoundTo(const GameEngine::ECS::World& world) const
+{
+    return m_BoundWorldId == world.GetWorldId() && m_BoundWorldEpoch == world.GetEntityHandleEpoch();
+}
+
+void HlodRuntime::Retire(GameEngine::ECS::World& world, GameEngine::Rendering::MeshGPURegistry& meshReg)
+{
     if (m_Clusters.empty())
         return;
 
-    for (RuntimeCluster& cluster : m_Clusters) {
-        for (GameEngine::ECS::EntityHandle proxy : cluster.Proxies) {
-            if (world.IsValid(proxy))
-                world.DestroyEntity(proxy);
+    // Clear can reuse the same handles in a new scene in this world.
+    const bool ownsEntities = IsBoundTo(world);
+    for (RuntimeCluster& cluster : m_Clusters)
+    {
+        if (ownsEntities)
+        {
+            if (cluster.ProxyActive)
+            {
+                for (const auto member : cluster.Members)
+                    if (auto* gpu = world.GetComponentForWrite<Components::MeshGPUData>(member))
+                        gpu->hlodEvicted = false;
+            }
+            for (const auto proxy : cluster.Proxies)
+                if (world.IsValid(proxy))
+                    world.DestroyEntity(proxy);
         }
-        // C7: no refcount on RegisterSubmesh, so the proxy meshes leak until
-        // Shutdown unless explicitly unregistered here.
-        for (const GameEngine::Rendering::MeshGPUKey& key : cluster.ProxyMeshKeys)
+
+        for (const auto& key : cluster.ProxyMeshKeys)
             meshReg.UnregisterSubmesh(key);
     }
-    world.ProcessCommands();
+    if (ownsEntities)
+        world.ProcessCommands();
     m_Clusters.clear();
     m_BoundWorldId = 0;
+    m_BoundWorldEpoch = 0;
 }
 
 uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
@@ -167,6 +184,7 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
     const ReconcileResult reconciled = ReconcileBakedScene(baked, live);
 
     m_BoundWorldId = world.GetWorldId();
+    m_BoundWorldEpoch = world.GetEntityHandleEpoch();
 
     for (const ReconciledCluster& rc : reconciled.Clusters) {
         if (rc.Members.empty())

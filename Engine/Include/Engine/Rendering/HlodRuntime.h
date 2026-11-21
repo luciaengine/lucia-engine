@@ -94,11 +94,13 @@ public:
     std::vector<RuntimeCluster>& GetClusters() { return m_Clusters; }
     const std::vector<RuntimeCluster>& GetClusters() const { return m_Clusters; }
     bool HasClusters() const { return !m_Clusters.empty(); }
-    uint64 GetBoundWorldId() const { return m_BoundWorldId; }
+    /// True while the world owns the recorded entity handles.
+    bool IsBoundTo(const GameEngine::ECS::World& world) const;
 
 private:
     std::vector<RuntimeCluster> m_Clusters;
     uint64 m_BoundWorldId = 0;
+    uint64 m_BoundWorldEpoch = 0;
 };
 
 } // namespace Hlod

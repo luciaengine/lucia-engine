@@ -315,6 +315,107 @@ TEST(HlodRuntimeReconcile, ReconcileSpawnsEvictedProxiesAndTagsMembers) {
     std::filesystem::remove(out, ec);
 }
 
+TEST(HlodRuntimeReconcile, LateRetirePreservesIncomingEntityWithRecycledProxyHandle)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto world = std::make_unique<ECS::World>(nullptr);
+    ModelBank bank;
+    auto& runtime = services.GetHlodRuntime();
+    const auto material = GUID::Derive(GUID::Null(), "reconcile/late-retire");
+    const auto cache = BakeAndReconcile(
+        services, *world, bank, runtime, material, 0.0f, "hlod_reconcile_late_retire.gehlod");
+
+    ASSERT_EQ(runtime.GetClusters().size(), 1u);
+    const auto& cluster = runtime.GetClusters().front();
+    ASSERT_FALSE(cluster.Proxies.empty());
+    ASSERT_FALSE(cluster.ProxyMeshKeys.empty());
+    const auto outgoingProxy = cluster.Proxies.front();
+    const auto proxyMeshes = cluster.ProxyMeshKeys;
+    const auto outgoingCount = world->GetEntityCount();
+    const auto outgoingEpoch = world->GetEntityHandleEpoch();
+
+    world->Clear();
+    world->ProcessCommands();
+    ASSERT_NE(world->GetEntityHandleEpoch(), outgoingEpoch);
+
+    ECS::EntityHandle incoming{};
+    for (size_t index = 0; index < outgoingCount; ++index)
+    {
+        incoming = world->CreateEntity();
+        if (incoming == outgoingProxy)
+            break;
+    }
+    ASSERT_EQ(incoming, outgoingProxy);
+    ASSERT_TRUE(world->IsValid(incoming));
+
+    runtime.Retire(*world, services.GetMeshGPURegistry());
+    world->ProcessCommands();
+    EXPECT_TRUE(world->IsValid(incoming));
+    EXPECT_TRUE(runtime.GetClusters().empty());
+    for (const auto& key : proxyMeshes)
+        EXPECT_EQ(services.GetMeshGPURegistry().FindByKey(key), nullptr);
+
+    world.reset();
+    services.Shutdown();
+    std::error_code error;
+    std::filesystem::remove(cache, error);
+}
+
+TEST(HlodRuntimeReconcile, RetireRestoresMembersOfAnActiveProxy)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto world = std::make_unique<ECS::World>(nullptr);
+    ModelBank bank;
+    auto& runtime = services.GetHlodRuntime();
+    const auto material = GUID::Derive(GUID::Null(), "reconcile/active-retire");
+    const auto cache = BakeAndReconcile(
+        services, *world, bank, runtime, material, 0.0f, "hlod_reconcile_active_retire.gehlod");
+
+    ASSERT_EQ(runtime.GetClusters().size(), 1u);
+    const auto camera = services.Views().AllocateCamera("HlodActiveRetire");
+    services.Views().SetViewpointCamera(camera);
+    services.Views().SetCameraData(camera, GameEngine::Tests::TestCameraWithEye(CameraAt(0, 0, -2000)), kCameraAtRanges);
+    HLODSelectSystem select(&services);
+    select.Update(*world, 1.0f / 60.0f);
+
+    const auto& cluster = runtime.GetClusters().front();
+    ASSERT_TRUE(cluster.ProxyActive);
+    const auto members = cluster.Members;
+    const auto proxies = cluster.Proxies;
+    for (const auto member : members)
+    {
+        const auto* gpu = world->GetComponent<MeshGPUData>(member);
+        ASSERT_NE(gpu, nullptr);
+        ASSERT_TRUE(gpu->hlodEvicted);
+    }
+
+    runtime.Retire(*world, services.GetMeshGPURegistry());
+    EXPECT_TRUE(runtime.GetClusters().empty());
+    for (const auto member : members)
+    {
+        const auto* gpu = world->GetComponent<MeshGPUData>(member);
+        ASSERT_NE(gpu, nullptr);
+        EXPECT_FALSE(gpu->hlodEvicted);
+    }
+    for (const auto proxy : proxies)
+        EXPECT_FALSE(world->IsValid(proxy));
+
+    world.reset();
+    services.Shutdown();
+    std::error_code error;
+    std::filesystem::remove(cache, error);
+}
+
 // Members in one cell on two layers bake into one cluster per layer set, and each proxy draws on its
 // members' layers: no proxy draws a member in a view that does not draw that member.
 TEST(HlodRuntimeReconcile, ProxyLayersEqualTheirMembersLayers) {
