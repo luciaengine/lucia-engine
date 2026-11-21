@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -77,20 +78,36 @@ ImpostorAtlas ImpostorBaker::Request(const ImpostorBakeRequest& request, const R
 {
     const uint64 frame = services.Spine().WorldFrameEpoch();
     std::lock_guard lock(m_Mutex);
-    const ImpostorAtlasCache::State state = m_Cache.Request(request.Key, frame, m_Evicted);
+    const ImpostorAtlasCache::State state = m_Cache.Touch(request.Key, frame);
     if (state == ImpostorAtlasCache::State::Ready)
     {
         const AtlasTextures* textures = m_Textures.Find(request.Key);
         return textures ? textures->Atlas : ImpostorAtlas{};
     }
-    if (state == ImpostorAtlasCache::State::Pending && !m_Textures.Contains(request.Key))
+    if (state == ImpostorAtlasCache::State::Absent)
     {
-        const bool queued = std::any_of(m_Jobs.begin(), m_Jobs.end(),
-                                        [&request](const BakeJob& job) { return job.Request.Key == request.Key; });
-        if (!queued)
-            m_Jobs.push_back(BakeJob{request});
+        if (m_RequestFrame != frame)
+        {
+            m_Requests.Clear();
+            m_RequestFrame = frame;
+        }
+        if (!m_Requests.Contains(request.Key))
+            m_Requests.InsertOrAssign(request.Key, request);
     }
     return {};
+}
+
+void ImpostorBaker::AdmitRequests(uint64 frame)
+{
+    if (m_RequestFrame == frame)
+    {
+        for (auto& [key, request] : m_Requests)
+        {
+            if (m_Cache.Request(key, frame, m_Evicted) == ImpostorAtlasCache::State::Pending)
+                m_Jobs.push_back(BakeJob{std::move(request)});
+        }
+    }
+    m_Requests.Clear();
 }
 
 void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderServices& services)
@@ -109,19 +126,23 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
         m_Cache.MarkReady(key);
     }
     m_Finished.clear();
-    for (const ImpostorAtlasKey& key : m_Evicted)
-        FreeTextures(device, key);
-    m_Evicted.clear();
+
+    // Extraction has marked the atlases in use before any new reservation can evict one.
+    AdmitRequests(services.Spine().WorldFrameEpoch());
+    if (!m_Evicted.empty())
+    {
+        std::erase_if(m_Jobs, [this](const BakeJob& job)
+        {
+            return m_Cache.GetState(job.Request.Key) == ImpostorAtlasCache::State::Absent;
+        });
+        for (const ImpostorAtlasKey& key : m_Evicted)
+            FreeTextures(device, key);
+        m_Evicted.clear();
+    }
 
     if (m_Jobs.empty() || !EnsureBakeView(services))
         return;
     BakeJob& job = m_Jobs.front();
-    if (m_Cache.GetState(job.Request.Key) == ImpostorAtlasCache::State::Absent)
-    {
-        m_Jobs.pop_front(); // Evicted before its bake finished.
-        return;
-    }
-
     AtlasTextures& textures = EnsureTextures(*device, job.Request.Key);
     if (!textures.Atlas.Color.IsValid() || !textures.Atlas.NormalDepth.IsValid())
         return;
@@ -192,6 +213,7 @@ void ImpostorBaker::OnDeviceRebuilt(Rendering::IDevice* device)
     // The rebuild freed the textures; the next request of each atlas bakes it again.
     m_Textures.Clear();
     m_Cache.Clear();
+    m_Requests.Clear();
     m_Jobs.clear();
     m_Finished.clear();
     m_Evicted.clear();

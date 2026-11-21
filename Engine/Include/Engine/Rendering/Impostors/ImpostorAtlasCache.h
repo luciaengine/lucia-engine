@@ -43,6 +43,9 @@ public:
 
     State GetState(const ImpostorAtlasKey& key) const;
 
+    /// Marks an existing reservation as used. An absent key leaves the cache unchanged.
+    State Touch(const ImpostorAtlasKey& key, uint64 frame);
+
     /// Holds `key` and marks it used in `frame`. An absent atlas becomes Pending when it fits the
     /// budget after evicting atlases unused in this frame; the evicted keys go to `outEvicted`.
     /// Returns the state after the request: Absent when the atlas does not fit.

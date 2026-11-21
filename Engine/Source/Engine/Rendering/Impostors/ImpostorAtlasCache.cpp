@@ -31,15 +31,22 @@ ImpostorAtlasCache::State ImpostorAtlasCache::GetState(const ImpostorAtlasKey& k
     return entry ? entry->Status : State::Absent;
 }
 
-ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& key,
-                                                      uint64 frame,
-                                                      std::vector<ImpostorAtlasKey>& outEvicted)
+ImpostorAtlasCache::State ImpostorAtlasCache::Touch(const ImpostorAtlasKey& key, uint64 frame)
 {
-    if (Entry* entry = m_Entries.Find(key))
-    {
-        entry->LastUsedFrame = frame;
-        return entry->Status;
-    }
+    Entry* entry = m_Entries.Find(key);
+    if (!entry)
+        return State::Absent;
+    entry->LastUsedFrame = frame;
+    return entry->Status;
+}
+
+ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& key,
+                                                     uint64 frame,
+                                                     std::vector<ImpostorAtlasKey>& outEvicted)
+{
+    const State state = Touch(key, frame);
+    if (state != State::Absent)
+        return state;
     const uint64 bytes = ImpostorAtlasBytes(key);
     if (bytes > m_BudgetBytes)
         return State::Absent;

@@ -66,7 +66,7 @@ public:
     ~ImpostorBaker() override;
 
     /// The atlas of `request.Key` once it is baked; an atlas with invalid textures until then.
-    /// The first call for a key queues its bake when it fits the budget. Thread safe.
+    /// New atlases enter the budget after extraction marks the atlases it uses. Thread safe.
     /// Atlas eviction uses the renderer's app-frame epoch for every producer.
     ImpostorAtlas Request(const ImpostorBakeRequest& request, const RenderServices& services);
 
@@ -94,6 +94,7 @@ private:
         std::vector<std::array<std::byte, 128>> PushConstants;
     };
 
+    void AdmitRequests(uint64 frame);
     bool EnsureBakeView(RenderServices& services);
     AtlasTextures& EnsureTextures(Rendering::IDevice& device, const ImpostorAtlasKey& key);
     void FreeTextures(Rendering::IDevice* device, const ImpostorAtlasKey& key);
@@ -105,6 +106,8 @@ private:
     std::mutex m_Mutex;
     ImpostorAtlasCache m_Cache{kDefaultBudgetBytes};
     FlatMap<ImpostorAtlasKey, AtlasTextures> m_Textures;
+    FlatMap<ImpostorAtlasKey, ImpostorBakeRequest> m_Requests;
+    uint64 m_RequestFrame = 0;
     std::deque<BakeJob> m_Jobs;
     std::vector<ImpostorAtlasKey> m_Evicted;
     std::vector<ImpostorAtlasKey> m_Finished; // Baked in a declared frame; ready once it ran.
