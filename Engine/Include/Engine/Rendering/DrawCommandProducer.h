@@ -113,6 +113,10 @@ struct ForwardProducerOptions
     /// current RGFrame, including views without mesh submissions. False runs it while batch keys
     /// are built, when ForwardEmitContext::Frame can still be null.
     bool RequiresFrame = false;
+
+    /// Run after the world pass resolves this frame's attachments and shader keywords.
+    /// Such producers use color-pass depth and cannot provide camera-prepass heads.
+    bool NeedsWorldPassFormats = false;
 };
 
 // Parameter bag passed to a registered depth-emit callback. Producers push

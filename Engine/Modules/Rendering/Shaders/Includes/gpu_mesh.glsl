@@ -10,14 +10,16 @@ struct GPUMesh {
     vec3  boundingCenter;
     float boundingRadius;
     float lodCoverageScale;
-    uint  clusterCount;
+    // Impostor link: 0 = none, else card material index + 1 in bits 0..23 and bit 31 for the
+    // primary part. MUST match GPUScene.h kGPUMeshImpostor*.
+    uint  impostorCard;
     uint  vertexOffset;
     uint  vertexCount;
     uint  indexOffset;
     uint  indexCount;
     uint  lodCount;
-    uint  bucketKey;
-    uint  indexType;
+    uint  nextImpostorPart;
+    float impostorSwitchCoverage;
     uint  vertexFlags;
     uint  lodIndexOffset[kMaxMeshLODs];
     uint  lodIndexCount[kMaxMeshLODs];

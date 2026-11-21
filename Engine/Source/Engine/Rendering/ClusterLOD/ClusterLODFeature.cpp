@@ -26,6 +26,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Matrix4x4.h"
+#include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Engine/Rendering/RenderOrigin.h"
@@ -54,6 +55,8 @@ constexpr uint32 kMaximumPendingReads = 8;
 constexpr uint32 kMaximumAdmissionsPerFrame = 8;
 constexpr uint64 kPageWorkMultiplier = 8;
 constexpr uint64 kUnusedFrameGrace = 30;
+// Cooked spheres enclose undeformed groups. Keep a guard band at the streaming boundary.
+constexpr float kStreamingFrustumRadiusScale = 1.05f;
 // A split registers the resident units of its first cut before it activates.
 constexpr uint32 kMaximumUnitRegistrationsPerFrame = 512;
 // A frame can read fine pages on every queue. Graphics is first: its token is required.
@@ -82,14 +85,27 @@ bool HasUnsupportedConsumers(ECS::World& world)
 }
 
 bool SupportsFineInstance(RenderServices& services, ECS::World& world, ECS::EntityHandle entity,
-                          const Components::MeshRenderer& renderer)
+                          const Components::MeshRenderer& renderer, const ModelAsset& model, uint32 mesh)
 {
     if (world.HasComponent<Components::SkinnedMeshRenderer>(entity) ||
         world.HasComponent<Components::MorphTargetWeights>(entity))
         return false;
     const auto* material = services.Materials().Registry().Find(renderer.materialAssetGuid.ToGuid());
-    if (!material || material->GetAlphaMode() != MaterialAlphaMode::Opaque)
+    if (!material)
         return false;
+    const auto alpha = material->GetAlphaMode();
+    if (alpha == MaterialAlphaMode::Mask)
+    {
+        // Only a cutout cooked with UV-aware reductions can refine as a cutout.
+        const auto& materials = model.GetMaterials();
+        const uint32 slot = model.GetMesh(mesh).MaterialIndex;
+        if (slot >= materials.size() || materials[slot].AlphaMode != AlphaMode::Mask)
+            return false;
+    }
+    else if (alpha != MaterialAlphaMode::Opaque)
+    {
+        return false;
+    }
     const auto& spec = material->GetCompileSpec();
     return (spec.surfaceShaderPath == "Surfaces/standard_pbr.glsl" ||
             spec.surfaceShaderPath == "Surfaces/standard_pbr_extended.glsl") &&
@@ -97,15 +113,26 @@ bool SupportsFineInstance(RenderServices& services, ECS::World& world, ECS::Enti
         !spec.parallax && !HasKeyword(material->GetVariantKey().materialKeywords, MaterialKeyword::Transmission);
 }
 
-// Frobenius norm bounds the largest scale even for a sheared affine transform.
+// The largest eigenvalue of the Gram matrix is bounded by both its trace and
+// its largest absolute row sum. The row sum is tight for perpendicular axes.
 double ScaleBound(const Components::WorldTransform& transform)
 {
-    double squared = 0.0;
-    for (uint32 column = 0; column < 3; ++column)
-        for (uint32 row = 0; row < 3; ++row)
-            squared += static_cast<double>(transform.Basis.Data()[column * 3 + row]) *
-                       static_cast<double>(transform.Basis.Data()[column * 3 + row]);
-    return std::sqrt(squared);
+    const float* basis = transform.Basis.Data();
+    const auto dot = [basis](uint32 left, uint32 right)
+    {
+        return static_cast<double>(basis[left]) * basis[right] +
+               static_cast<double>(basis[left + 1u]) * basis[right + 1u] +
+               static_cast<double>(basis[left + 2u]) * basis[right + 2u];
+    };
+    const double xx = dot(0, 0);
+    const double yy = dot(3, 3);
+    const double zz = dot(6, 6);
+    const double xy = std::abs(dot(0, 3));
+    const double xz = std::abs(dot(0, 6));
+    const double yz = std::abs(dot(3, 6));
+    const double trace = xx + yy + zz;
+    const double largestRow = std::max({xx + xy + xz, yy + xy + yz, zz + xz + yz});
+    return std::sqrt(std::min(trace, largestRow));
 }
 
 // The values of one view that every group's demand reads, collected once per preparation.
@@ -126,6 +153,9 @@ struct DemandView
     uint32 Height = 0;
     bool Orthographic = false;
     double Budget = 0.0;
+    Mathematics::WorldPosition FrustumOrigin;
+    std::array<Vector4, 6> FrustumPlanes{};
+    bool HasFrustum = false;
 };
 
 void CollectDemandViews(const RenderServices& services, std::vector<DemandView>& views)
@@ -153,17 +183,34 @@ void CollectDemandViews(const RenderServices& services, std::vector<DemandView>&
             sample.Budget = ResolveLodBudgetPx(services.GetLODErrorBudgetPx(),
                                                services.GetLODViewBudgetOverride(view.purpose));
             sample.Unusable = !std::isfinite(sample.Budget) || sample.Budget <= 0.0 || sample.ProjectionScaleY == 0.0;
+            if (camera.renderOriginSector[3] != 0 && services.Views().FindCameraData(view.cameraId))
+            {
+                sample.FrustumOrigin = Mathematics::WorldPosition::FromSector(CameraRenderOriginSector(camera), {});
+                ExtractFrustumPlanes(camera.viewProjRel, sample.FrustumPlanes.data());
+                sample.HasFrustum = true;
+            }
         }
         views.push_back(sample);
     }
+}
+
+bool CanRejectGroup(const DemandView& view, const Components::MeshRenderer& renderer,
+                    const Mathematics::WorldPosition& center, double radius)
+{
+    // Offscreen casters can still affect visible receivers. Their LOD demand
+    // stays conservative until it can be evaluated in the light's view.
+    if (!view.HasFrustum || renderer.shadowCasting != Components::ShadowCasting::Off)
+        return false;
+    return !TestSphereFrustum(center - view.FrustumOrigin, static_cast<float>(radius),
+                              view.FrustumPlanes.data(), kStreamingFrustumRadiusScale);
 }
 
 // The largest projected error of one sphere over the views, divided by the switch threshold (the
 // keep band for a group that is refined). Above 1 wants refinement. Infinity: a view must draw
 // the finest units (forced LOD 0, selection off or an unusable projection).
 double Demand(std::span<const DemandView> views, const Components::MeshRenderer& renderer,
-              const Components::WorldTransform& transform, const Vector3& center, float radius, float error,
-              uint64 worldId, bool wasRefined, float lodBias)
+              const Components::WorldTransform& transform, double scale, const Vector3& center, float radius,
+              float error, uint64 worldId, bool wasRefined, float lodBias, bool refineGroup)
 {
     constexpr double kMustRefine = std::numeric_limits<double>::infinity();
     double offset[3]{};
@@ -171,7 +218,6 @@ double Demand(std::span<const DemandView> views, const Components::MeshRenderer&
     for (uint32 row = 0; row < 3; ++row)
         for (uint32 column = 0; column < 3; ++column)
             offset[row] += static_cast<double>(transform.Basis.Data()[column * 3 + row]) * localCenter[column];
-    const double scale = ScaleBound(transform);
     const double worldRadius = static_cast<double>(radius) * scale;
     if (!std::isfinite(scale) || !std::isfinite(worldRadius) ||
         !std::isfinite(offset[0]) || !std::isfinite(offset[1]) || !std::isfinite(offset[2]))
@@ -184,6 +230,12 @@ double Demand(std::span<const DemandView> views, const Components::MeshRenderer&
         if (view.MustRefine)
             return kMustRefine;
         if (!view.Measured || error <= 0.0f)
+            continue;
+        // The whole mesh sphere is an error estimate. Only actual group
+        // spheres provide the bounds used to reject a streamed group.
+        if (refineGroup && CanRejectGroup(view, renderer,
+            {transform.Position.X + offset[0], transform.Position.Y + offset[1],
+             transform.Position.Z + offset[2]}, worldRadius))
             continue;
         if (view.Unusable)
             return kMustRefine;
@@ -851,6 +903,7 @@ struct ClusterLODFeature::State
         const auto& manifest = *model.GetClusterLODManifest();
         const auto& range = manifest.Meshes[instance.Mesh];
         const float bias = LodBias(world, instance.Owner);
+        const double scale = ScaleBound(transform);
         // Every unit is a group's unit once and a producer's unit at most once: check it once.
         UnitReady.resize(range.UnitCount);
         const auto& geometries = UnitGeometries(instance.Model, model);
@@ -862,8 +915,8 @@ struct ClusterLODFeature::State
             ClusterLODCutGroup state;
             state.WasRefined = IsClusterLODRefined(instance.Decisions[local]);
             if (!group.Terminal)
-                state.Demand = Demand(DemandViews, renderer, transform, group.Center, group.Radius, group.Error,
-                                      world.GetWorldId(), state.WasRefined, bias);
+                state.Demand = Demand(DemandViews, renderer, transform, scale, group.Center, group.Radius, group.Error,
+                                      world.GetWorldId(), state.WasRefined, bias, true);
             state.UnitsReady = true;
             for (uint32 unit = group.FirstUnit; unit < group.FirstUnit + group.UnitCount && state.UnitsReady; ++unit)
                 state.UnitsReady = UnitReady[unit - range.FirstUnit] != 0;
@@ -983,7 +1036,7 @@ struct ClusterLODFeature::State
         if (mesh >= model->GetMeshes().size())
             return;
         UnsplitCoarseTriangles += model->GetMeshes()[mesh].Indices.size() / 3;
-        if (PolicyBlocked || !SupportsFineInstance(*Services, world, entity, renderer))
+        if (PolicyBlocked || !SupportsFineInstance(*Services, world, entity, renderer, *model, mesh))
             return;
         // An ended split restores the owner, so the owner's coarse mesh must draw before a split starts.
         auto& registry = Services->GetMeshGPURegistry();
@@ -994,16 +1047,17 @@ struct ClusterLODFeature::State
         if (range.ResidentDepth == 0)
             return;
         const float bias = LodBias(world, entity);
+        const double scale = ScaleBound(transform);
         const uint64 worldId = world.GetWorldId();
         const StreamedEntry whole = WholeMeshEntry(manifest, mesh, model->GetMeshes()[mesh]);
-        if (Demand(DemandViews, renderer, transform, whole.Center, whole.Radius, whole.Error, worldId, false, bias) <= 1.0)
+        if (Demand(DemandViews, renderer, transform, scale, whole.Center, whole.Radius, whole.Error, worldId, false, bias, false) <= 1.0)
             return;
         for (uint32 group = range.FirstGroup; group < range.FirstGroup + range.GroupCount; ++group)
         {
             const auto& record = manifest.Groups[group];
             if (record.Terminal || record.Depth + 1 != range.ResidentDepth)
                 continue;
-            if (Demand(DemandViews, renderer, transform, record.Center, record.Radius, record.Error, worldId, false, bias) > 1.0)
+            if (Demand(DemandViews, renderer, transform, scale, record.Center, record.Radius, record.Error, worldId, false, bias, true) > 1.0)
             {
                 splits.push_back({entity, renderer, guid, mesh});
                 return;
@@ -1011,8 +1065,9 @@ struct ClusterLODFeature::State
         }
     }
 
-    void BeginSplits(const std::vector<PendingSplit>& splits, uint64 epoch)
+    void BeginSplits(ECS::World& world, const std::vector<PendingSplit>& splits, uint64 epoch)
     {
+        bool placementChanged = false;
         for (const PendingSplit& split : splits)
         {
             const auto model = std::dynamic_pointer_cast<ModelAsset>(Assets->GetAsset(split.Model));
@@ -1021,7 +1076,16 @@ struct ClusterLODFeature::State
             const auto& manifest = *model->GetClusterLODManifest();
             Splits.Begin(split.Owner, split.Renderer, split.Model, split.Mesh, ResidentCut(manifest, split.Mesh),
                          manifest.Meshes[split.Mesh].UnitCount, epoch);
+            // The whole resident mesh remains drawable during preparation, but its card must
+            // give way before the split parts can become visible.
+            if (auto* gpu = world.GetComponentForWrite<Components::MeshGPUData>(split.Owner))
+                gpu->clusterSplitOwner = true;
+            else
+                world.AddComponentImmediate(split.Owner, Components::MeshGPUData{.clusterSplitOwner = true});
+            placementChanged |= model->IsImpostorEnabled();
         }
+        if (placementChanged)
+            Services->RequestResidencyExtraction();
     }
 
     // True when the split must end: its owner, model, renderer or support changed.
@@ -1032,7 +1096,8 @@ struct ClusterLODFeature::State
         return !owner || !transform || !model || !model->GetClusterLODManifest() ||
             owner->modelAssetGuid.ToGuid() != instance.Model ||
             ResolveSubmeshIndex(instance.Model, *model, *owner) != instance.Mesh ||
-            !SameRendererState(*owner, instance.Renderer) || !SupportsFineInstance(*Services, world, instance.Owner, *owner) ||
+            !SameRendererState(*owner, instance.Renderer) ||
+            !SupportsFineInstance(*Services, world, instance.Owner, *owner, *model, instance.Mesh) ||
             !ECS::Entity(&world, instance.Owner).IsEnabledInHierarchy() || IsHlodEvicted(world, instance.Owner);
     }
 
@@ -1274,7 +1339,7 @@ void ClusterLODFeature::Prepare(ECS::World& world)
             state.ConsiderInstance(world, entity, renderer, transform, splits);
         });
     // A new split prepares its first cut in the frame it starts.
-    state.BeginSplits(splits, epoch);
+    state.BeginSplits(world, splits, epoch);
     state.UpdateSplits(world, epoch);
     state.AdmitPages(epoch);
     state.EndIdleSplits(world, epoch);

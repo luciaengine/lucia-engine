@@ -694,12 +694,12 @@ class DepthPassPreparation
         if (m_Services.CpuDrawStream)
         {
             const bool shadowFamily = m_Data.Params.PassType == DepthPassType::ShadowCascade || m_Data.Params.PassType == DepthPassType::AreaShadow || m_Data.Params.PassType == DepthPassType::SpotShadow || m_Data.Params.PassType == DepthPassType::PointShadow;
-            const CpuDrawStreamBuilder::InstanceList instances =
-                m_Services.CpuDrawStream->GetInstances(
+            const auto runs =
+                m_Services.CpuDrawStream->GetLodRuns(
                     m_Data.Params.ViewId, key.materialIndex, key.meshIndex,
                     shadowFamily ? CpuDrawStreamBuilder::InstanceSet::ShadowCasters
                                  : CpuDrawStreamBuilder::InstanceSet::Camera);
-            if (instances.Count == 0u)
+            if (runs.empty())
                 return;
             assert(m_UploadedCompatListBytes ==
                        m_Services.CpuDrawStream->GetIndexList(m_Data.Params.ViewId).size_bytes() &&
@@ -717,33 +717,35 @@ class DepthPassPreparation
                 return;
             }
 
-            const uint32_t compatListFirst = instances.First;
-            Engine::Renderer::DrawBindings compatBindings{};
-            compatBindings.PushConstants = std::span<const std::byte>(
-                reinterpret_cast<const std::byte*>(&compatListFirst),
-                sizeof(compatListFirst));
-
-            const auto preparedBindings = m_Services.Materials.Binder().PrepareMaterialForDraw(
-                m_Data.Inputs, *material, resolved.Pipeline, resolved.Metadata, compatBindings, resolved.SetCount, resolved.SetLayouts);
-            if (!preparedBindings.Pipeline.IsValid())
+            for (const auto& run : runs)
             {
-                LogMeshDrawSkipDiagnostic(
-                    "depth", "material-bind-invalid", m_Data.Params.ViewId,
-                    key.materialIndex, key.meshIndex, false, false, 0ull,
-                    m_InstanceAddress, false, 0u);
-                MarkUnderDraw(DepthUnderDrawReason::BindPending, entry);
-                return;
-            }
+                const ComposedPCCompatInstanced constants{run.Instances.First, key.materialIndex};
+                Engine::Renderer::DrawBindings compatBindings{};
+                compatBindings.PushConstants = std::as_bytes(std::span(&constants, 1u));
 
-            DrawCommand command{};
-            command.Bindings = compatBindings;
-            command.IndexCount = entry->indexCount;
-            command.InstanceCount = instances.Count;
-            command.FirstIndex = entry->firstIndex;
-            command.VertexOffset = static_cast<int32_t>(entry->vertexOffset);
-            entryBindings.indexType = entry->indexType;
-            Append(command, preparedBindings, entryBindings, drawVertexFlags, resolved.ServedVersion,
-                   material->GetGpuSceneMaterialIndex(), key.materialIndex, true, key.meshIndex, 1u, 0u);
+                const auto preparedBindings = m_Services.Materials.Binder().PrepareMaterialForDraw(
+                    m_Data.Inputs, *material, resolved.Pipeline, resolved.Metadata, compatBindings, resolved.SetCount, resolved.SetLayouts);
+                if (!preparedBindings.Pipeline.IsValid())
+                {
+                    LogMeshDrawSkipDiagnostic(
+                        "depth", "material-bind-invalid", m_Data.Params.ViewId,
+                        key.materialIndex, key.meshIndex, false, false, 0ull,
+                        m_InstanceAddress, false, 0u);
+                    MarkUnderDraw(DepthUnderDrawReason::BindPending, entry);
+                    return;
+                }
+
+                const auto geometry = entry->DrawForLod(run.Level);
+                DrawCommand command{};
+                command.Bindings = compatBindings;
+                command.IndexCount = geometry.IndexCount;
+                command.InstanceCount = run.Instances.Count;
+                command.FirstIndex = geometry.FirstIndex;
+                command.VertexOffset = static_cast<int32_t>(geometry.VertexOffset);
+                entryBindings.indexType = entry->indexType;
+                Append(command, preparedBindings, entryBindings, drawVertexFlags, resolved.ServedVersion,
+                       material->GetGpuSceneMaterialIndex(), key.materialIndex, true, key.meshIndex, 1u, 0u);
+            }
             return;
         }
 
@@ -792,6 +794,7 @@ class DepthPassPreparation
 
         instanceConstants.indirectionAddr = slotIndirectionBda;
         instanceConstants.gpuInstancesAddr = m_InstanceAddress;
+        instanceConstants.materialOverride = DrawStreamRangeMaterial(key, lookup);
         std::span<const std::byte> constantBytes(
             reinterpret_cast<const std::byte*>(&instanceConstants), sizeof(instanceConstants));
 
@@ -1618,9 +1621,7 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
             binder.BindPreparedForDraw(pass, draw.Bindings, draw.Command.Bindings.PushConstants);
         const auto& command = draw.Command;
         if (command.UseIndirect && command.IndirectCommandBuffer.IsValid())
-            commands->DrawIndexedIndirectCount(command.IndirectCommandBuffer, command.IndirectCountBuffer,
-                                               command.IndirectMaxDrawCount, command.IndirectStride,
-                                               command.IndirectCommandOffset, command.IndirectCountOffset);
+            command.RecordIndirect(*commands);
         else if (command.SubDraws.empty())
             commands->DrawIndexed(command.IndexCount, command.InstanceCount, command.FirstIndex, command.VertexOffset, command.FirstInstance);
         else

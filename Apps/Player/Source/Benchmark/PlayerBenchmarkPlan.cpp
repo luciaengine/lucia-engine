@@ -142,6 +142,25 @@ std::optional<PlayerBenchmarkPlan> ParsePlayerBenchmarkPlan(const nlohmann::json
             return std::nullopt;
         plan.Poses.push_back(std::move(*pose));
     }
+    if (const auto path = document.find("timingPath"); path != document.end())
+    {
+        if (plan.Poses.size() != 1 || !path->is_array() || path->size() != plan.TimingFrames)
+        {
+            error = "'timingPath' requires one warm-up pose and one camera pose per timing frame";
+            return std::nullopt;
+        }
+        plan.TimingPath.reserve(path->size());
+        for (size_t i = 0; i < path->size(); ++i)
+        {
+            std::optional<PlayerBenchmarkPose> pose = ParsePose((*path)[i], i, error);
+            if (!pose)
+            {
+                error = "'timingPath' frame " + std::to_string(i) + ": " + error;
+                return std::nullopt;
+            }
+            plan.TimingPath.push_back(std::move(*pose));
+        }
+    }
     return plan;
 }
 

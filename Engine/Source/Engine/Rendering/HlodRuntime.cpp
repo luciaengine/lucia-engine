@@ -10,12 +10,15 @@
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/RuntimeOnlyEntity.h"
 #include "Components/Transform.h"
+#include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
+#include "Engine/Rendering/ModelRenderSetup.h"
 #include "Logger/Logger.h"
 
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
 
+#include <algorithm>
 #include <limits>
 #include <string>
 
@@ -84,6 +87,7 @@ LiveMemberIndex BuildLiveIndex(GameEngine::ECS::World& world, const ModelResolve
         const MemberInput& m = gathered.Members[i];
         LiveMemberState state;
         state.Entity = gathered.Entities[i];
+        state.SubmeshIndex = gathered.SubmeshIndices[i];
         state.Resolved.StableId = m.StableId;
         state.Resolved.MeshContentHash = m.MeshContentHash;
         state.Resolved.MaterialGuid = m.MaterialGuid;
@@ -100,24 +104,71 @@ LiveMemberIndex BuildLiveIndex(GameEngine::ECS::World& world, const ModelResolve
 
 } // namespace
 
+bool HlodRuntime::IsBoundTo(const GameEngine::ECS::World& world) const {
+    return m_BoundWorldId == world.GetWorldId() && m_BoundWorldEpoch == world.GetEntityHandleEpoch();
+}
+
 void HlodRuntime::Retire(GameEngine::ECS::World& world,
                          GameEngine::Rendering::MeshGPURegistry& meshReg) {
     if (m_Clusters.empty())
         return;
 
+    // World::Clear can reuse entity handles in the same world. Retire their meshes,
+    // but leave the entities that now occupy those handles alone.
+    const bool ownsEntities = IsBoundTo(world);
     for (RuntimeCluster& cluster : m_Clusters) {
-        for (GameEngine::ECS::EntityHandle proxy : cluster.Proxies) {
-            if (world.IsValid(proxy))
-                world.DestroyEntity(proxy);
+        if (ownsEntities && cluster.ProxyActive) {
+            for (const GameEngine::ECS::EntityHandle member : cluster.Members) {
+                if (auto* gpu = world.GetComponentForWrite<Components::MeshGPUData>(member))
+                    gpu->hlodEvicted = false;
+            }
+        }
+        if (ownsEntities) {
+            for (GameEngine::ECS::EntityHandle proxy : cluster.Proxies) {
+                if (world.IsValid(proxy))
+                    world.DestroyEntity(proxy);
+            }
         }
         // C7: no refcount on RegisterSubmesh, so the proxy meshes leak until
         // Shutdown unless explicitly unregistered here.
         for (const GameEngine::Rendering::MeshGPUKey& key : cluster.ProxyMeshKeys)
             meshReg.UnregisterSubmesh(key);
     }
-    world.ProcessCommands();
+    if (ownsEntities)
+        world.ProcessCommands();
     m_Clusters.clear();
+    m_MemberLocations.clear();
+    m_ResolveModel = {};
     m_BoundWorldId = 0;
+    m_BoundWorldEpoch = 0;
+}
+
+std::span<const HlodRuntime::MemberLocation> HlodRuntime::FindMemberLocations(ECS::EntityHandle member) const
+{
+    const auto matches = std::ranges::equal_range(m_MemberLocations, member.id, {},
+                                                  [](const MemberLocation& location) { return location.Entity.id; });
+    return {matches.begin(), matches.end()};
+}
+
+bool HlodRuntime::ReloadedGeometryChanged(const ECS::World& world, const RuntimeCluster& cluster,
+                                         std::span<const GUID> reloadedModels) const
+{
+    if (!m_ResolveModel)
+        return false;
+    for (size_t i = 0; i < cluster.Members.size(); ++i)
+    {
+        const GUID& guid = cluster.MemberMeshSources[i].Model;
+        if (!std::binary_search(reloadedModels.begin(), reloadedModels.end(), guid))
+            continue;
+        const auto* renderer = world.GetComponent<Components::MeshRenderer>(cluster.Members[i]);
+        const auto model = m_ResolveModel(guid);
+        if (!renderer || !model || model->GetMeshCount() == 0)
+            return true;
+        const uint32 submesh = Engine::Renderer::ResolveSubmeshIndex(guid, *model, *renderer);
+        if (MemberMeshContentHash(*model, submesh) != cluster.MemberMeshContentHashes[i])
+            return true;
+    }
+    return false;
 }
 
 uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
@@ -163,10 +214,17 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
     if (status != HlodCacheStatus::Hit || baked.Clusters.empty())
         return 0u;
 
+    // Scene loading can bind a bake before the first hierarchy tick. Resolve
+    // derived world poses before hashing the members or recording their versions.
+    Engine::Renderer::TransformHierarchySystem hierarchy;
+    hierarchy.Update(world, 0.0f);
+    world.ProcessCommands();
+
     const LiveMemberIndex live = BuildLiveIndex(world, resolveModel);
     const ReconcileResult reconciled = ReconcileBakedScene(baked, live);
 
     m_BoundWorldId = world.GetWorldId();
+    m_BoundWorldEpoch = world.GetEntityHandleEpoch();
 
     for (const ReconciledCluster& rc : reconciled.Clusters) {
         if (rc.Members.empty())
@@ -177,6 +235,7 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
         for (int c = 0; c < 3; ++c)
             cluster.SphereCenter[c] = rc.SphereCenter[c];
         cluster.SphereRadius = rc.SphereRadius;
+        cluster.RenderLayers = baked.Clusters[rc.ClusterId].RenderLayers;
         cluster.Members = rc.Members;
         cluster.Stale = rc.Stale;
 
@@ -196,6 +255,19 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
         // the scene, the cluster never goes proxy-active until a rebake + reload.
         if (!cluster.Stale) {
             const BakedCluster& bc = baked.Clusters[rc.ClusterId];
+            cluster.MemberMeshContentHashes.reserve(bc.Members.size());
+            for (size_t memberIndex = 0; memberIndex < bc.Members.size(); ++memberIndex)
+            {
+                cluster.MemberMeshContentHashes.push_back(bc.Members[memberIndex].MeshContentHash);
+                const uint32 level = bc.Members[memberIndex].ChosenLod;
+                if (level == 0)
+                    continue;
+                const ECS::EntityHandle member = cluster.Members[memberIndex];
+                const GUID& modelGuid = cluster.MemberMeshSources[memberIndex].Model;
+                const uint32 submesh = live.at(bc.Members[memberIndex].StableId).SubmeshIndex;
+                cluster.CoarsenedMembers.push_back({member, {modelGuid, submesh}, level});
+                cluster.MaxBakedLevel = std::max(cluster.MaxBakedLevel, level);
+            }
             const GUID proxyAsset = ProxyMeshAssetGuid(sceneKey, runtimeId);
             for (size_t s = 0; s < bc.Submeshes.size(); ++s) {
                 const BakedSubmesh& sub = bc.Submeshes[s];
@@ -207,8 +279,12 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
                 const Mesh proxyMesh = MeshFromBakedSubmesh(sub);
                 const GameEngine::Rendering::MeshGPUHandle handle =
                     meshReg.RegisterSubmesh(key, proxyMesh);
-                if (!handle.IsValid())
-                    continue;
+                const auto* mesh = meshReg.Find(handle);
+                if (!mesh || !meshReg.IsEntryDrawable(*mesh)) {
+                    if (handle.IsValid())
+                        meshReg.UnregisterSubmesh(key);
+                    break;
+                }
                 cluster.ProxyMeshKeys.push_back(key);
 
                 GameEngine::ECS::Entity proxy = world.Create();
@@ -245,12 +321,33 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
 
                 cluster.Proxies.push_back(proxy.GetHandle());
             }
+            if (cluster.Proxies.empty() || cluster.Proxies.size() != bc.Submeshes.size()) {
+                // A partial proxy cannot replace the whole cluster.
+                world.ProcessCommands();
+                for (const auto proxy : cluster.Proxies)
+                    world.DestroyEntity(proxy);
+                for (const auto& key : cluster.ProxyMeshKeys)
+                    meshReg.UnregisterSubmesh(key);
+                cluster.Proxies.clear();
+                cluster.ProxyMeshKeys.clear();
+                cluster.Stale = true;
+            }
         }
 
+        if (!cluster.Stale)
+        {
+            for (uint32 memberIndex = 0; memberIndex < cluster.Members.size(); ++memberIndex)
+                m_MemberLocations.push_back({cluster.Members[memberIndex], runtimeId, memberIndex});
+        }
         m_Clusters.push_back(std::move(cluster));
     }
 
     world.ProcessCommands();
+    std::ranges::sort(m_MemberLocations, {},
+                      [](const MemberLocation& location) { return location.Entity.id; });
+    ++m_ReconcileRevision;
+    if (!m_Clusters.empty())
+        m_ResolveModel = resolveModel;
 
     Logger::Log::Info(
         "Hlod: reconciled {} runtime clusters ({} stale, {} missing members) from '{}'",

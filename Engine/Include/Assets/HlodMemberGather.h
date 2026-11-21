@@ -11,12 +11,12 @@
 // Model geometry is resolved through a caller-supplied ModelResolver rather than
 // reaching into the AssetManager directly, so the gather is unit-testable with a
 // World(nullptr) + SetMeshesForTest-backed model map and no live asset system.
-// The resolved ModelAsset (and the Mesh pointers into it) must outlive the
-// subsequent BakeScene call.
+// GatheredMembers keeps the source assets alive through BakeScene.
 
 #include "Assets/HlodClustering.h" // MemberInput
 #include "AssetCore/GUID.h"
 #include "ECS/ECS.h" // EntityHandle
+#include "Types/FlatMap.h"
 #include "Types/Types.h"
 
 #include <cstdint>
@@ -33,7 +33,10 @@ namespace ECS { class World; }
 namespace Hlod {
 
 // Resolve a model GUID to its loaded ModelAsset, or nullptr when unavailable.
-using ModelResolver = std::function<const ModelAsset*(const GUID&)>;
+using ModelResolver = std::function<SharedPtr<const ModelAsset>(const GUID&)>;
+
+// Identity of the source file and its resolved geometry, including cooked LODs.
+uint64 MemberMeshContentHash(const ModelAsset& model, uint32 submesh);
 
 // Parallel arrays feeding HlodBaker::BakeScene, plus the owning member entity
 // (for the editor bake-time proxy setup) and a breakdown of what was excluded.
@@ -41,18 +44,25 @@ struct GatheredMembers {
     std::vector<MemberInput> Members;                    // BakeScene member span
     std::vector<const Mesh*>  Geometry;                  // parallel: source submesh, may be null
     std::vector<GameEngine::ECS::EntityHandle> Entities; // parallel: owning member entity
+    std::vector<uint32> SubmeshIndices;                 // parallel: resolved index in the model
+    struct ResolvedModel {
+        SharedPtr<const ModelAsset> Asset;
+        bool RequiresExtraVertexStreams = false;
+    };
+    FlatMap<GUID, ResolvedModel> Models;
 
     uint32 SkippedSkinned = 0;     // SkinnedMeshRenderer / skinned mesh
     uint32 SkippedMorph = 0;       // morph-target carriers
     uint32 SkippedNoModel = 0;     // no resolvable ModelAsset
     uint32 SkippedNoMaterial = 0;  // null material GUID
     uint32 SkippedNonTriangle = 0; // non-triangle topology submesh
+    uint32 SkippedExtraVertexStreams = 0; // Model uses UV2..UV7, which the proxy cannot preserve
     uint32 SkippedDisabled = 0;    // inactive entity or switched-off renderer
     uint32 SkippedShadowsOnly = 0; // Shadow Casting is Shadows Only: the member casts its own shadow
 };
 
 // Gather eligible static members from `world`. Excludes skinned/morph members,
-// members with no resolvable model or material, non-triangle topology,
+// members with no resolvable model or material, models using UV2..UV7, non-triangle topology,
 // disabled entities or renderers, and shadows-only renderers: a proxy draws in
 // color, so a shadows-only member stays itself and keeps casting its own shadow. Members are emitted in world iteration order; a fixed world
 // yields a deterministic gather. The non-default-custom0 exclusion (design §3.2)

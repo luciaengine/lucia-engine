@@ -244,6 +244,12 @@ class PipelineVariantCache
                                                         MaterialKeyword passKeywords,
                                                         FrontFace frontFace);
 
+    // Request the conventional shadow depth head and its concrete D32 pipeline.
+    // Directional cascades enable depth clamp. Area, spot and point passes do not.
+    bool WarmShadowDepthVariant(const Material& material, VertexAttributeFlags vertexFlags,
+                                PrimitiveTopology topology, MaterialKeyword passKeywords,
+                                FrontFace frontFace, bool depthClampEnable);
+
     // Whether the device has built pipeline `id` for the pass formats `fk`.
     // When it has not, requests the build on a prewarm worker, once: a build
     // that failed is not requested again, so a pipeline the device cannot
@@ -251,8 +257,8 @@ class PipelineVariantCache
     // at declare time (a forward producer's prepass head) emits that command
     // only once this holds, so a pass never relies on a draw it cannot record.
     // Declaration thread.
-    /// Request a scene draw's color variant and concrete pass formats before it is shown.
-    void WarmColorVariant(const Material& material, VertexAttributeFlags vertexFlags,
+    /// Request a scene draw's color variant and return whether its concrete pass pipeline can draw.
+    bool WarmColorVariant(const Material& material, VertexAttributeFlags vertexFlags,
                           PrimitiveTopology topology, MaterialKeyword passKeywords,
                           FrontFace frontFace, const Rendering::PipelineFormatKey& format);
 
@@ -467,6 +473,11 @@ class PipelineVariantCache
         MaterialKeyword passKeywords,
         FrontFace frontFace,
         const RenderGraph::RGPrepareContext& context);
+    InstancedVariantKey MakeDepthVariantKey(const Material& material, VertexAttributeFlags vertexFlags,
+                                            PrimitiveTopology topology, MaterialKeyword passKeywords,
+                                            uint32_t samples, bool depthBiasEnable, bool depthClampEnable,
+                                            FrontFace frontFace) const;
+    const VariantServeUnit* FindOrRequestDepthVariant(const InstancedVariantKey& key);
     PreparedVariant ResolveDepthVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,

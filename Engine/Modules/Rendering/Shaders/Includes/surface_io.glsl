@@ -118,6 +118,9 @@ struct SurfaceOutput
     vec3 coatNormalWS; // clear-coat shading normal; == normalWS unless a coat normal map perturbs it (GE_COAT_NORMAL_ENABLED)
     vec3 emissive;
     float opacity;
+#ifdef GE_IMPOSTOR_BAKE
+    vec2 impostorSeasonMask; // Leaf tint and snow receptivity.
+#endif
     float planarReflectionMask; // Material coverage of a planar reflection, independent of opacity.
 
     // Extended (used by specific lighting models)
@@ -247,6 +250,9 @@ SurfaceOutput DefaultSurfaceOutput()
     o.coatNormalWS = vec3(0.0, 1.0, 0.0); // mirrors normalWS; the coat lobe reads it only under GE_COAT_NORMAL_ENABLED
     o.emissive = vec3(0.0);
     o.opacity = 1.0;
+#ifdef GE_IMPOSTOR_BAKE
+    o.impostorSeasonMask = vec2(0.0);
+#endif
     o.planarReflectionMask = 1.0;
     o.ao = 1.0;
     o.bentNormalWS = vec3(0.0, 1.0, 0.0);

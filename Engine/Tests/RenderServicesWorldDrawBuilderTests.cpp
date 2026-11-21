@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Engine/Rendering/CpuDrawStreamBuilder.h"
+#include "Engine/Rendering/MaterialDepthClassify.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
@@ -22,6 +23,7 @@
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "TestCameraEye.h"
 #include "Memory/AllocationCountScope.h"
+#include "Types/Fnv1a.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -34,7 +36,7 @@ namespace
 
 // Build a minimal mesh and register it in the RenderServices' MeshGPURegistry
 // so the WorldDrawBuilder's resident-mesh guard accepts submissions for it.
-Rendering::MeshGPUHandle RegisterTestMesh(RenderServices& rs, bool skinned = false)
+Rendering::MeshGPUHandle RegisterTestMesh(RenderServices& rs, bool skinned = false, float lodCoverage = 0.0f)
 {
     Mesh mesh{};
     mesh.Name = "TestTriangle";
@@ -45,6 +47,17 @@ Rendering::MeshGPUHandle RegisterTestMesh(RenderServices& rs, bool skinned = fal
     v0.Normal[2] = 1.0f; v1.Normal[2] = 1.0f; v2.Normal[2] = 1.0f;
     mesh.Vertices = {v0, v1, v2};
     mesh.Indices = {0, 1, 2};
+    if (lodCoverage > 0.0f)
+    {
+        mesh.MinBounds[0] = -1.0f;
+        mesh.MinBounds[1] = -1.0f;
+        mesh.MaxBounds[0] = 1.0f;
+        mesh.MaxBounds[1] = 1.0f;
+        mesh.AuthoredLODs = true;
+        mesh.ExtraLODs = {mesh.Indices};
+        mesh.ExtraLODVertices = {mesh.Vertices};
+        mesh.ExtraLODCoverage = {lodCoverage};
+    }
     if (skinned)
     {
         mesh.Skinned = true;
@@ -453,11 +466,11 @@ Rendering::CameraData MakeIdentityFrustumCamera()
 
 // A zero-radius instance at `center`. Zero radius keeps TestSphereFrustum's
 // 1.5x edge inflation out of the expectations.
-uint32_t AddPointInstance(Rendering::GPUScene& scene, float x, float y, float z)
+uint32_t AddPointInstance(Rendering::GPUScene& scene, float x, float y, float z, float radius = 0.0f)
 {
     Rendering::GPUInstance inst{};
     inst.boundingCenter = Rendering::Vector3(x, y, z);
-    inst.boundingRadius = 0.0f;
+    inst.boundingRadius = radius;
     return scene.AddInstance(inst);
 }
 
@@ -543,6 +556,193 @@ TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_ListsOneBatchAsOneDrawWh
                                CpuDrawStreamBuilder::InstanceSet::Camera).Count, 0u);
 
     rs.Shutdown();
+    device->Shutdown();
+}
+
+TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_SelectsCameraMeshLodsAndKeepsShadowCasters)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto& scene = *services.GetGPUScene();
+    const auto mesh = RegisterTestMesh(services, false, 0.05f);
+    const auto* entry = services.GetMeshGPURegistry().Find(mesh);
+    ASSERT_NE(entry, nullptr);
+    ASSERT_EQ(entry->lodCount, 2u);
+    ASSERT_LT(entry->gpuMeshIndex, scene.GetMeshes().size());
+    const auto& row = scene.GetMeshes()[entry->gpuMeshIndex];
+    ASSERT_EQ(row.lodCount, 2u);
+    ASSERT_FLOAT_EQ(row.lodThreshold[0], 0.05f);
+    ASSERT_GT(0.10f * row.lodCoverageScale, row.lodThreshold[0]);
+    ASSERT_LT(0.025f * row.lodCoverageScale, row.lodThreshold[0]);
+    EXPECT_GT(entry->DrawForLod(1).VertexOffset, entry->DrawForLod(0).VertexOffset);
+    EXPECT_GT(entry->DrawForLod(1).FirstIndex, entry->DrawForLod(0).FirstIndex);
+    auto material = Material::TestFactory::Create(GUID::Generate(), "LodMat", 32u);
+    Material::TestFactory::SetGraphicsPipelineId(material, Rendering::GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(material, 5u);
+    const auto camera = services.Views().AllocateCamera("LOD overview");
+    services.Views().SetCameraData(camera, Tests::TestCameraWithEye(MakeIdentityFrustumCamera()), {0.1f, 1000.0f});
+    const auto view = services.Views().AllocateView("LOD overview", camera);
+    const uint32_t near = AddPointInstance(scene, 0.0f, 0.0f, 0.2f, 0.02f);
+    const uint32_t far = AddPointInstance(scene, 0.0f, 0.0f, 0.8f, 0.02f);
+    const WorldSubmissionRecord submissions[] = {
+        MakeRecord(view, mesh, material, far, kSubmissionFlagCastShadows),
+        MakeRecord(view, mesh, material, near, kSubmissionFlagCastShadows),
+    };
+    WorldDrawBuilder draws(nullptr);
+    draws.BeginFrame();
+    draws.Submit(submissions);
+    draws.BuildBatchKeys(services.GetMeshGPURegistry(), {}, kTestMaterialGeneration);
+
+    CpuDrawStreamBuilder stream;
+    auto policy = CpuDrawStreamBuilder::LodPolicy{};
+    const auto build = [&]
+    {
+        stream.Build(draws, services.GetMeshGPURegistry(), scene, services.Views(), nullptr,
+                     [&](Rendering::ViewId) { return policy; });
+    };
+    const auto runs = [&](CpuDrawStreamBuilder::InstanceSet set)
+    {
+        return stream.GetLodRuns(view, 5u, entry->gpuMeshIndex, set);
+    };
+    build();
+    const auto cameraRuns = runs(CpuDrawStreamBuilder::InstanceSet::Camera);
+    ASSERT_EQ(cameraRuns.size(), 2u)
+        << "camera-visible " << stream.GetStats().CameraVisible
+        << ", first level " << (cameraRuns.empty() ? ~0u : cameraRuns[0].Level);
+    const auto indices = stream.GetIndexList(view);
+    EXPECT_EQ(cameraRuns[0].Level, 0u);
+    EXPECT_EQ(indices[cameraRuns[0].Instances.First], near);
+    EXPECT_EQ(cameraRuns[1].Level, 1u);
+    EXPECT_EQ(indices[cameraRuns[1].Instances.First], far);
+
+    policy.SmallObjectCoverage = 0.03f;
+    build();
+    ASSERT_EQ(runs(CpuDrawStreamBuilder::InstanceSet::Camera).size(), 1u);
+    EXPECT_EQ(runs(CpuDrawStreamBuilder::InstanceSet::Camera)[0].Level, 0u);
+    const auto casters = runs(CpuDrawStreamBuilder::InstanceSet::ShadowCasters);
+    ASSERT_EQ(casters.size(), 1u);
+    EXPECT_EQ(casters[0].Level, 0u);
+    EXPECT_EQ(casters[0].Instances.Count, 2u);
+
+    policy.ForceLevel = 1u;
+    policy.SmallObjectCoverage = 0.0f;
+    build();
+    const auto forced = runs(CpuDrawStreamBuilder::InstanceSet::Camera);
+    ASSERT_EQ(forced.size(), 1u);
+    EXPECT_EQ(forced[0].Level, 1u);
+    EXPECT_EQ(forced[0].Instances.Count, 2u);
+
+    services.Shutdown();
+    device->Shutdown();
+}
+
+TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_ImpostorPreservesMeshesUntilAllPartsReachLastLod)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto& scene = *services.GetGPUScene();
+    auto& registry = services.GetMeshGPURegistry();
+    const auto barkMesh = RegisterTestMesh(services, false, 0.05f);
+    const auto leafMesh = RegisterTestMesh(services, false, 0.05f);
+    const auto cardMesh = RegisterTestMesh(services);
+    const uint32_t barkRow = registry.Find(barkMesh)->gpuMeshIndex;
+    const uint32_t leafRow = registry.Find(leafMesh)->gpuMeshIndex;
+    const uint32_t cardRow = registry.Find(cardMesh)->gpuMeshIndex;
+
+    auto barkMaterial = Material::TestFactory::Create(GUID::Generate(), "Bark", 32u);
+    auto leafMaterial = Material::TestFactory::Create(GUID::Generate(), "Leaves", 32u);
+    auto cardMaterial = Material::TestFactory::Create(GUID::Generate(), "Card", 32u);
+    MaterialCompileSpec cardSpec{};
+    cardSpec.surfaceShaderPath = "Surfaces/impostor.glsl";
+    Material::TestFactory::SetCompileSpec(cardMaterial, cardSpec);
+    Material::TestFactory::SetGraphicsPipelineId(barkMaterial, Rendering::GraphicsPipelineId{1u});
+    Material::TestFactory::SetGraphicsPipelineId(leafMaterial, Rendering::GraphicsPipelineId{1u});
+    Material::TestFactory::SetGraphicsPipelineId(cardMaterial, Rendering::GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(barkMaterial, 5u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(leafMaterial, 6u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(cardMaterial, 7u);
+
+    const uint32_t parts[] = {barkRow, leafRow};
+    ASSERT_TRUE(scene.SetMeshImpostorGroup(parts, 7u, cardRow, 0.0f, true));
+    Rendering::GPUInstance bark{};
+    bark.meshIndex = barkRow;
+    bark.materialIndex = 5u;
+    bark.flags = Rendering::kInstanceFlagImpostorPlacement;
+    bark.boundingRadius = 0.02f;
+    bark.boundingCenter = Rendering::Vector3(0.0f, 0.0f, 0.2f);
+    const uint32_t barkSlot = scene.AddInstance(bark);
+    bark.impostorPlacementPrimaryPlusOne = barkSlot + 1u;
+    scene.UpdateInstance(barkSlot, bark);
+    Rendering::GPUInstance leaves = bark;
+    leaves.meshIndex = leafRow;
+    leaves.materialIndex = 6u;
+    const uint32_t leafSlot = scene.AddInstance(leaves);
+    Rendering::GPUInstance unlinked = leaves;
+    unlinked.impostorPlacementPrimaryPlusOne = 0u;
+    unlinked.flags = 0u;
+    unlinked.boundingCenter = Rendering::Vector3(0.0f, 0.5f, 0.8f);
+    const uint32_t unlinkedSlot = scene.AddInstance(unlinked);
+
+    const auto camera = services.Views().AllocateCamera("Compatibility impostor overview");
+    services.Views().SetCameraData(camera, Tests::TestCameraWithEye(MakeIdentityFrustumCamera()), {0.1f, 1000.0f});
+    const auto view = services.Views().AllocateView("Compatibility impostor overview", camera);
+    const WorldSubmissionRecord records[] = {
+        MakeRecord(view, barkMesh, barkMaterial, barkSlot, kSubmissionFlagCastShadows),
+        MakeRecord(view, leafMesh, leafMaterial, leafSlot, kSubmissionFlagCastShadows),
+        MakeRecord(view, leafMesh, leafMaterial, unlinkedSlot, 0u),
+        MakeRecord(view, cardMesh, cardMaterial, 0xFFFFFFFFu, 0u),
+    };
+    WorldDrawBuilder draws(nullptr);
+    CpuDrawStreamBuilder stream;
+    const auto build = [&](bool cardReady)
+    {
+        draws.BeginFrame();
+        draws.Submit(std::span(records, cardReady ? 4u : 3u));
+        draws.BuildBatchKeys(registry, {}, kTestMaterialGeneration);
+        stream.Build(draws, registry, scene, services.Views(), nullptr, [&](Rendering::ViewId)
+        {
+            CpuDrawStreamBuilder::LodPolicy policy;
+            policy.CardMesh = cardRow;
+            policy.CardCoverage = 0.15f;
+            policy.CardHysteresis = 0.15f;
+            return policy;
+        });
+    };
+    const auto cameraInstances = [&](uint32_t material, uint32_t row)
+    {
+        return stream.GetInstances(view, material, row, CpuDrawStreamBuilder::InstanceSet::Camera);
+    };
+    build(true);
+    EXPECT_EQ(cameraInstances(7u, cardRow).Count, 0u);
+    EXPECT_EQ(cameraInstances(5u, barkRow).Count, 1u);
+    EXPECT_EQ(cameraInstances(6u, leafRow).Count, 2u);
+
+    bark.boundingCenter.z = 0.8f;
+    leaves.boundingCenter.z = 0.8f;
+    scene.UpdateInstance(barkSlot, bark);
+    scene.UpdateInstance(leafSlot, leaves);
+    build(true);
+    const auto card = cameraInstances(7u, cardRow);
+    ASSERT_EQ(card.Count, 1u);
+    EXPECT_EQ(stream.GetIndexList(view)[card.First], barkSlot);
+    EXPECT_EQ(cameraInstances(5u, barkRow).Count, 0u);
+    const auto independentLeaves = cameraInstances(6u, leafRow);
+    ASSERT_EQ(independentLeaves.Count, 1u);
+    EXPECT_EQ(stream.GetIndexList(view)[independentLeaves.First], unlinkedSlot);
+    EXPECT_EQ(stream.GetInstances(view, 5u, barkRow, CpuDrawStreamBuilder::InstanceSet::ShadowCasters).Count, 1u);
+    EXPECT_EQ(stream.GetInstances(view, 6u, leafRow, CpuDrawStreamBuilder::InstanceSet::ShadowCasters).Count, 1u);
+
+    build(false);
+    EXPECT_EQ(cameraInstances(7u, cardRow).Count, 0u);
+    EXPECT_EQ(cameraInstances(5u, barkRow).Count, 1u);
+    EXPECT_EQ(cameraInstances(6u, leafRow).Count, 2u);
+    services.Shutdown();
     device->Shutdown();
 }
 
@@ -951,6 +1151,41 @@ TEST(RenderServicesWorldDrawBuilderTests, TransmissiveCasterPredicateFollowsTheC
     }
     rs.Shutdown();
     device->Shutdown();
+}
+
+TEST(RenderServicesWorldDrawBuilderTests, ImpostorSwayControlsAnimationWithoutChangingDepthClass)
+{
+    Material card = Material::TestFactory::Create(GUID::Generate(), "Impostor", 32u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(card, 5u);
+    Rendering::ShaderVariantKey key{};
+    key.materialKeywords = Rendering::MaterialKeyword::HasVertexMod;
+    Material::TestFactory::SetVariantKey(card, key);
+    MaterialCompileSpec spec{};
+    spec.surfaceShaderPath = "Surfaces/impostor.glsl";
+    spec.vertexModifierPath = "VertexModifiers/impostor_card.glsl";
+    Material::TestFactory::SetCompileSpec(card, spec);
+    constexpr auto windSway = HashStringId("foliageWindSway");
+    Material::TestFactory::AddPropertyLayout(card, windSway, 0u, sizeof(float));
+
+    Rendering::MeshGPURegistry meshes;
+    WorldDrawBuilder builder(nullptr);
+    constexpr Rendering::ViewId viewId = 37u;
+    const auto record = MakeRecord(viewId, {}, card, 0u, kSubmissionFlagCastShadows);
+    const auto check = [&](float amplitude, bool animated)
+    {
+        SCOPED_TRACE(amplitude);
+        card.SetFloat(windSway, amplitude);
+        builder.BeginFrame();
+        // Keep the submitted set stable so the cached batch-key path runs.
+        builder.Submit(std::span(&record, 1u), 3u);
+        builder.BuildBatchKeys(meshes, {}, kTestMaterialGeneration);
+        EXPECT_EQ(builder.HasAnimatedVertexModifierSubmissions(viewId), animated);
+        EXPECT_EQ(builder.HasAnimatedVertexModifierCasterSubmissions(viewId), animated);
+        EXPECT_EQ(ClassifyMaterialDepthClass(card), Rendering::MaterialDepthClass::MaterialDependent);
+    };
+    check(0.0f, false);
+    check(0.5f, true);
+    check(0.0f, false);
 }
 
 // The deforming subset is derived from the same submissions, in the same pass,

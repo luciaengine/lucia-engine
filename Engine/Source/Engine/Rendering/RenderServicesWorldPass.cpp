@@ -222,8 +222,13 @@ struct OrderedOwnerMeshPush
     uint64_t Core = 0, Color = 0, Index = 0, Work = 0, State = 0;
     uint32_t Index16 = 0;
 };
-static_assert(sizeof(OrderedOwnerMeshPush) == 64);
-static_assert(offsetof(OrderedOwnerMeshPush, Index16) == 56);
+static_assert(sizeof(OrderedOwnerMeshPush) == 72);
+static_assert(offsetof(OrderedOwnerMeshPush, Core) == 24);
+static_assert(offsetof(OrderedOwnerMeshPush, Color) == 32);
+static_assert(offsetof(OrderedOwnerMeshPush, Index) == 40);
+static_assert(offsetof(OrderedOwnerMeshPush, Work) == 48);
+static_assert(offsetof(OrderedOwnerMeshPush, State) == 56);
+static_assert(offsetof(OrderedOwnerMeshPush, Index16) == 64);
 
 struct PreparedForwardDraw
 {
@@ -467,13 +472,12 @@ void RecordForwardDrawCommand(const PreparedForwardDraw& prepared, RenderService
 
     if (command.UseIndirect && command.IndirectCommandBuffer.IsValid())
     {
-        pass.Cmd->DrawIndexedIndirectCount(
-            command.IndirectCommandBuffer,
-            replay.Counts.IsValid() ? replay.Counts : command.IndirectCountBuffer,
-            command.IndirectMaxDrawCount,
-            command.IndirectStride,
-            command.IndirectCommandOffset,
-            replay.Counts.IsValid() ? 0u : command.IndirectCountOffset);
+        if (replay.Counts.IsValid())
+            pass.Cmd->DrawIndexedIndirectCount(command.IndirectCommandBuffer, replay.Counts,
+                                               command.IndirectMaxDrawCount, command.IndirectStride,
+                                               command.IndirectCommandOffset, 0u);
+        else
+            command.RecordIndirect(*pass.Cmd);
         if (prepared.IndexedDepthEqual && LogIndexedDepthReplayDiagnostics())
         {
             static std::atomic_flag logged = ATOMIC_FLAG_INIT;
@@ -1532,7 +1536,7 @@ class RenderServices::WorldPassPreparation
     }
 
     void PrepareEntityBatch(const WorldDrawBuilder::BatchKey& key, const DrawStreamLookupKey& lookup,
-                            const CpuDrawStreamBuilder::InstanceList* orderedRun = nullptr)
+                            const CpuDrawStreamBuilder::LodRun* orderedRun = nullptr)
     {
         ComposedPCInstanced instanceConstants{};
 
@@ -1613,9 +1617,10 @@ class RenderServices::WorldPassPreparation
 
         if (m_Services.m_Profile.IsCompat())
         {
-            const CpuDrawStreamBuilder::InstanceList instances =
-                orderedRun ? *orderedRun : m_Services.m_CpuDrawStream.GetInstances(m_ViewId, key.materialIndex, key.meshIndex, CpuDrawStreamBuilder::InstanceSet::Camera);
-            if (instances.Count == 0u)
+            const auto runs = orderedRun ? std::span(orderedRun, 1u)
+                : m_Services.m_CpuDrawStream.GetLodRuns(m_ViewId, key.materialIndex, key.meshIndex,
+                                                      CpuDrawStreamBuilder::InstanceSet::Camera);
+            if (runs.empty())
                 return;
             assert(m_UploadedCompatListBytes == m_Services.m_CpuDrawStream.GetIndexList(m_ViewId).size_bytes() &&
                    "the view's instance list was rebuilt after its first pass declared");
@@ -1633,36 +1638,38 @@ class RenderServices::WorldPassPreparation
                 return;
             }
 
-            // firstInstance stays 0: it does not reach gl_InstanceIndex
-            // through SPIRV-Cross/Metal, so the list offset is the push
-            // constant on every compat backend.
-            const uint32_t compatListFirst = instances.First;
-            Engine::Renderer::DrawBindings compatBindings{};
-            compatBindings.PushConstants = std::span<const std::byte>(
-                reinterpret_cast<const std::byte*>(&compatListFirst),
-                sizeof(compatListFirst));
-
-            const auto preparedBindings = m_Services.Materials().Binder().PrepareMaterialForDraw(
-                m_Data->Inputs, *material, pipeline,
-                variantEntry ? variantEntry->VariantMeta.get() : nullptr, compatBindings, /*pipelineSetCount=*/0,
-                variantEntry ? std::span<const Rendering::DescriptorSetLayoutId>(variantEntry->SetLayouts)
-                             : std::span<const Rendering::DescriptorSetLayoutId>{});
-            if (!preparedBindings.Pipeline.IsValid())
+            for (const auto& run : runs)
             {
-                LogMeshDrawSkipDiagnostic(
-                    "color", "material-bind-invalid", m_ViewId,
-                    key.materialIndex, key.meshIndex, false, false, 0ull,
-                    m_InstanceAddress, false, 0u);
-                return;
-            }
+                // firstInstance stays 0: it does not reach gl_InstanceIndex
+                // through SPIRV-Cross/Metal, so the list offset is the push
+                // constant on every compat backend.
+                const ComposedPCCompatInstanced constants{run.Instances.First, key.materialIndex};
+                Engine::Renderer::DrawBindings compatBindings{};
+                compatBindings.PushConstants = std::as_bytes(std::span(&constants, 1u));
 
-            DrawCommand command{};
-            command.Bindings = compatBindings;
-            PreparedForwardDraw prepared{nullptr, preparedBindings, entryBindings, {entry->indexCount, instances.Count, entry->firstIndex, 0u, static_cast<int32_t>(entry->vertexOffset)}, {}, material->GetGpuSceneMaterialIndex()};
-            prepared.Geometry.indexType = entry->indexType;
-            if (variantEntry)
-                prepared.ServedVersion = variantEntry->MaterialVersion;
-            Append(command, prepared, true, key.materialIndex, key.meshIndex, 1u, 0u);
+                const auto preparedBindings = m_Services.Materials().Binder().PrepareMaterialForDraw(
+                    m_Data->Inputs, *material, pipeline,
+                    variantEntry ? variantEntry->VariantMeta.get() : nullptr, compatBindings, /*pipelineSetCount=*/0,
+                    variantEntry ? std::span<const Rendering::DescriptorSetLayoutId>(variantEntry->SetLayouts)
+                                 : std::span<const Rendering::DescriptorSetLayoutId>{});
+                if (!preparedBindings.Pipeline.IsValid())
+                {
+                    LogMeshDrawSkipDiagnostic(
+                        "color", "material-bind-invalid", m_ViewId,
+                        key.materialIndex, key.meshIndex, false, false, 0ull,
+                        m_InstanceAddress, false, 0u);
+                    return;
+                }
+
+                const auto geometry = entry->DrawForLod(run.Level);
+                DrawCommand command{};
+                command.Bindings = compatBindings;
+                PreparedForwardDraw prepared{nullptr, preparedBindings, entryBindings, {geometry.IndexCount, run.Instances.Count, geometry.FirstIndex, 0u, static_cast<int32_t>(geometry.VertexOffset)}, {}, material->GetGpuSceneMaterialIndex()};
+                prepared.Geometry.indexType = entry->indexType;
+                if (variantEntry)
+                    prepared.ServedVersion = variantEntry->MaterialVersion;
+                Append(command, prepared, true, key.materialIndex, key.meshIndex, 1u, 0u);
+            }
             return;
         }
 
@@ -1709,6 +1716,7 @@ class RenderServices::WorldPassPreparation
 
         instanceConstants.indirectionAddr = slotIndirectionBda;
         instanceConstants.gpuInstancesAddr = m_InstanceAddress;
+        instanceConstants.materialOverride = DrawStreamRangeMaterial(key, lookup);
         std::span<const std::byte> constantBytes(
             reinterpret_cast<const std::byte*>(&instanceConstants), sizeof(instanceConstants));
 
@@ -1858,6 +1866,7 @@ class RenderServices::WorldPassPreparation
             {
                 const WorldDrawBuilder::BatchKey* Key;
                 uint32_t IndexOffset;
+                uint32_t Lod;
                 float Depth;
             };
             std::vector<OrderedInstance> ordered;
@@ -1868,10 +1877,12 @@ class RenderServices::WorldPassPreparation
             {
                 if (!IsBlendedMaterial(key.material))
                     continue;
-                const auto list = m_Services.m_CpuDrawStream.GetInstances(m_ViewId, key.materialIndex,
-                                                                          key.meshIndex, CpuDrawStreamBuilder::InstanceSet::Camera);
+                const auto runs = m_Services.m_CpuDrawStream.GetLodRuns(m_ViewId, key.materialIndex,
+                    key.meshIndex, CpuDrawStreamBuilder::InstanceSet::Camera);
                 const auto indices = m_Services.m_CpuDrawStream.GetIndexList(m_ViewId);
+                for (const auto& run : runs)
                 {
+                    const auto& list = run.Instances;
                     for (uint32_t instanceIndex = 0; instanceIndex < list.Count; ++instanceIndex)
                     {
                         const uint32_t instance = indices[list.First + instanceIndex];
@@ -1881,7 +1892,7 @@ class RenderServices::WorldPassPreparation
                         const float depth = (center.x - camera.Position.x) * camera.Forward.x +
                                             (center.y - camera.Position.y) * camera.Forward.y +
                                             (center.z - camera.Position.z) * camera.Forward.z;
-                        ordered.push_back({&key, list.First + instanceIndex, depth});
+                        ordered.push_back({&key, list.First + instanceIndex, run.Level, depth});
                     }
                 }
             }
@@ -1892,14 +1903,15 @@ class RenderServices::WorldPassPreparation
             for (size_t instanceIndex = 0; instanceIndex < ordered.size();)
             {
                 const auto& first = ordered[instanceIndex];
-                CpuDrawStreamBuilder::InstanceList run{first.IndexOffset, 1};
+                CpuDrawStreamBuilder::LodRun run{{first.IndexOffset, 1}, first.Lod};
                 size_t next = instanceIndex + 1;
                 // Coalesce only neighbours whose sorted order remains
                 // identical to consecutive entries in the uploaded index list.
                 while (next < ordered.size() && ordered[next].Key == first.Key &&
-                       ordered[next].IndexOffset == run.First + run.Count)
+                       ordered[next].Lod == first.Lod &&
+                       ordered[next].IndexOffset == run.Instances.First + run.Instances.Count)
                 {
-                    ++run.Count;
+                    ++run.Instances.Count;
                     ++next;
                 }
                 PrepareEntityBatch(*first.Key, Lookup(*first.Key, meshGroups), &run);
@@ -2002,6 +2014,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     // scatter ranges. Everything else (resources, keywords, resolve, shadows,
     // IBL) is identical to phase A so recovered geometry shades the same.
     const bool isRecover = (phase == Rendering::GPUDrawStreamBuilder::SlicePhase::B);
+    const bool publishesOpaqueWarmKeys = !isRecover && scope != WorldPassDrawScope::TransmissiveOnly;
 
     float bandStart = 0.0f, bandEnd = 0.0f;
     int distanceMode = 0;
@@ -2036,8 +2049,9 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     // scatter and were already drawn in phase A; draining them here draws the
     // entire contributor a second time.
     const bool hasForwardContributors = !isRecover && HasForwardCommands(viewId);
+    const bool emitFrameContributors = publishesOpaqueWarmKeys && targets.EmitFrameContributors;
     if (!hasTargets ||
-        (!anyClearRequested && m_WorldDrawBuilder.GetBatchKeys(viewId).empty() &&
+        (!emitFrameContributors && !anyClearRequested && m_WorldDrawBuilder.GetBatchKeys(viewId).empty() &&
          !hasForwardContributors))
         return result;
 
@@ -2090,71 +2104,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 Rendering::TextureFormat::R16G16B16A16_UNORM, 1, cfg.NumCascades);
         }
     }
-
-    // Phase A arms the misorder tripwire (producers after this point derive
-    // WAR). The recover pass LEGITIMATELY follows the phase-A raster, so it must
-    // not arm it (and the phase-A pass already published the blackboard).
-    if (!isRecover)
-        vfr.WorldDeclared = true;
-
-    // Depth-clear suppression + read-only depth: the RenderGraph prepass is declared
-    // only when it runs and always clears, so the old prepassWillExecute
-    // dance collapses to the per-frame record. Texture IDENTITY, not a bool:
-    // a prepass that ran on an override depth didn't write THIS depth, and
-    // suppressing the clear would depth-test against stale content.
-    const bool hasDepthPrepass = vfr.DepthPrepassDepth.IsValid() && targets.Depth.IsValid() &&
-                                 vfr.DepthPrepassDepth.Id == targets.Depth.Id;
-    // Recover always loads the phase-A depth (the phase-B depth recover already
-    // wrote newly-revealed fragments into it) — never clears.
-    //
-    // The transmissive pass composites over an already-rasterized opaque scene and attaches that
-    // scene's depth read-only: clearing it would both discard depth later passes still read and
-    // leave the glass testing against a cleared buffer. Independent of the prepass, whose absence
-    // would otherwise let the view's clearDepth through on a pass that only ever loads.
-    const bool suppressDepthClear =
-        hasDepthPrepass || isRecover || scope == WorldPassDrawScope::TransmissiveOnly;
-    const bool needsClear = view->targets.clearColor ||
-                            (view->targets.clearDepth && !suppressDepthClear) ||
-                            view->targets.clearStencil;
-    const auto entityBatchKeys = m_WorldDrawBuilder.GetBatchKeys(viewId);
-
-    // The prepass wrote this view's opaque depth, Mask coverage included (its alpha-tested heads run
-    // the colour pass's own cutoff), and the depth of every forward draw whose producer emitted its
-    // head there (ForwardDrawDepth::Prepass, or PrepassNonOccluding through the non-occluding prepass
-    // after DepthResolve), so the world pass only tests against it. A forward
-    // draw that writes its own depth (ForwardDrawDepth::ColourPass) keeps it writable.
-    const ViewRegistry::PerViewResources* forwardView = m_ViewRegistry.FindPerView(viewId);
-    bool depthReadOnly =
-        hasDepthPrepass && !(forwardView && forwardView->ForwardDrawsWritingDepth != 0u);
-    // A Blend material that authors zWrite writes its own depth in this pass whenever blended
-    // entities draw here (compatibility profile, drain fallback, order-independent blends). A
-    // read-only attachment drops those writes, so later depth readers (a DepthResolve after
-    // SortedTransparent) would see the backdrop behind the sprite instead.
-    if (depthReadOnly &&
-        std::any_of(entityBatchKeys.begin(), entityBatchKeys.end(),
-                    [](const WorldDrawBuilder::BatchKey& key)
-                    {
-                        return key.material && key.material->GetAlphaMode() == MaterialAlphaMode::Blend &&
-                               key.material->GetDepthWriteOverride().value_or(false);
-                    }))
-        depthReadOnly = false;
-    // The transmissive pass never writes depth: glass composites over the lit opaque scene
-    // and only depth-tests (ReadOnly) against the opaque depth — single-layer, order-independent.
-    if (scope == WorldPassDrawScope::TransmissiveOnly)
-        depthReadOnly = true;
-
-    // A parallax material's colour draw reads the relief depth the prepass wrote, from the depth it
-    // attaches read-only (ge_prepassDepth), and rebuilds the hit instead of marching again. The read is
-    // declared only when a parallax material is in view.
-    const ReliefDepthSource reliefDepthSource = WorldPassReliefDepthSource(
-        hasDepthPrepass, depthReadOnly && scope != WorldPassDrawScope::TransmissiveOnly,
-        targets.Depth.IsValid() ? frame.Graph().ResourceDesc(targets.Depth.Id).SampleCount : 1u);
-    const bool readsReliefDepth =
-        (reliefDepthSource == ReliefDepthSource::PrepassReadable ||
-         reliefDepthSource == ReliefDepthSource::PrepassReadableMultisample) &&
-        std::any_of(entityBatchKeys.begin(), entityBatchKeys.end(),
-                    [](const WorldDrawBuilder::BatchKey& key)
-                    { return key.material && WritesReliefDepth(key.material->GetVariantKey().materialKeywords); });
 
     // Recover loads the phase-A colour (additive) — treat it as already
     // initialized so the attach below takes the Load branch, never Clear.
@@ -2223,12 +2172,13 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             frame.Graph().ResourceDesc(targets.Color.Id).SampleCount;
     // And the formats it draws with, for the forward producers and the scene warm that request a
     // pipeline's build at the next frame (PerViewResources::WorldColorFormatKey).
-    if (!isRecover && scope == WorldPassDrawScope::All)
+    if (publishesOpaqueWarmKeys)
     {
         if (const std::optional<Rendering::PipelineFormatKey> fk =
                 WorldColorFormatKey(frame, targets, collapseToResolve))
             m_ViewRegistry.PerView(viewId).WorldColorFormatKey = *fk;
-        m_ViewRegistry.PerView(viewId).WorldReliefDepthSource = reliefDepthSource;
+        else if (emitFrameContributors)
+            m_ViewRegistry.PerView(viewId).WorldColorFormatKey = {};
     }
 
     // Camera UBO: upload-ring alloc written NOW. Clear-only frames still get
@@ -2291,8 +2241,83 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     // None, which leaves the recorded value unchanged.
     if (passKeywords != Rendering::MaterialKeyword::None)
         m_ViewRegistry.PerView(viewId).WorldPassKeywords = passKeywords;
-    if (!isRecover && scope == WorldPassDrawScope::All)
+    if (publishesOpaqueWarmKeys)
         m_ViewRegistry.PerView(viewId).DeclaredWorldPassKeywords = passKeywords;
+
+    if (emitFrameContributors)
+    {
+        EmitFrameForwardCommandsForView(frame, viewId, true);
+        if (!anyClearRequested && m_WorldDrawBuilder.GetBatchKeys(viewId).empty() && !HasForwardCommands(viewId))
+            return result;
+    }
+
+    // Phase A arms the misorder tripwire (producers after this point derive
+    // WAR). The recover pass LEGITIMATELY follows the phase-A raster, so it must
+    // not arm it (and the phase-A pass already published the blackboard).
+    if (!isRecover)
+        vfr.WorldDeclared = true;
+
+    // Depth-clear suppression + read-only depth: the RenderGraph prepass is declared
+    // only when it runs and always clears, so the old prepassWillExecute
+    // dance collapses to the per-frame record. Texture IDENTITY, not a bool:
+    // a prepass that ran on an override depth didn't write THIS depth, and
+    // suppressing the clear would depth-test against stale content.
+    const bool hasDepthPrepass = vfr.DepthPrepassDepth.IsValid() && targets.Depth.IsValid() &&
+                                 vfr.DepthPrepassDepth.Id == targets.Depth.Id;
+    // Recover always loads the phase-A depth (the phase-B depth recover already
+    // wrote newly-revealed fragments into it) — never clears.
+    //
+    // The transmissive pass composites over an already-rasterized opaque scene and attaches that
+    // scene's depth read-only: clearing it would both discard depth later passes still read and
+    // leave the glass testing against a cleared buffer. Independent of the prepass, whose absence
+    // would otherwise let the view's clearDepth through on a pass that only ever loads.
+    const bool suppressDepthClear =
+        hasDepthPrepass || isRecover || scope == WorldPassDrawScope::TransmissiveOnly;
+    const bool needsClear = view->targets.clearColor ||
+                            (view->targets.clearDepth && !suppressDepthClear) ||
+                            view->targets.clearStencil;
+    const auto entityBatchKeys = m_WorldDrawBuilder.GetBatchKeys(viewId);
+
+    // The prepass wrote this view's opaque depth, Mask coverage included (its alpha-tested heads run
+    // the colour pass's own cutoff), and the depth of every forward draw whose producer emitted its
+    // head there (ForwardDrawDepth::Prepass, or PrepassNonOccluding through the non-occluding prepass
+    // after DepthResolve), so the world pass only tests against it. A forward
+    // draw that writes its own depth (ForwardDrawDepth::ColourPass) keeps it writable.
+    const ViewRegistry::PerViewResources* forwardView = m_ViewRegistry.FindPerView(viewId);
+    bool depthReadOnly =
+        hasDepthPrepass && !(forwardView && forwardView->ForwardDrawsWritingDepth != 0u);
+    // A Blend material that authors zWrite writes its own depth in this pass whenever blended
+    // entities draw here (compatibility profile, drain fallback, order-independent blends). A
+    // read-only attachment drops those writes, so later depth readers (a DepthResolve after
+    // SortedTransparent) would see the backdrop behind the sprite instead.
+    if (depthReadOnly &&
+        std::any_of(entityBatchKeys.begin(), entityBatchKeys.end(),
+                    [](const WorldDrawBuilder::BatchKey& key)
+                    {
+                        return key.material && key.material->GetAlphaMode() == MaterialAlphaMode::Blend &&
+                               key.material->GetDepthWriteOverride().value_or(false);
+                    }))
+        depthReadOnly = false;
+    // The transmissive pass never writes depth: glass composites over the lit opaque scene
+    // and only depth-tests (ReadOnly) against the opaque depth — single-layer, order-independent.
+    if (scope == WorldPassDrawScope::TransmissiveOnly)
+        depthReadOnly = true;
+
+    // A parallax material's colour draw reads the relief depth the prepass wrote, from the depth it
+    // attaches read-only (ge_prepassDepth), and rebuilds the hit instead of marching again. The read is
+    // declared only when a parallax material is in view.
+    const ReliefDepthSource reliefDepthSource = WorldPassReliefDepthSource(
+        hasDepthPrepass, depthReadOnly && scope != WorldPassDrawScope::TransmissiveOnly,
+        targets.Depth.IsValid() ? frame.Graph().ResourceDesc(targets.Depth.Id).SampleCount : 1u);
+    const bool readsReliefDepth =
+        (reliefDepthSource == ReliefDepthSource::PrepassReadable ||
+         reliefDepthSource == ReliefDepthSource::PrepassReadableMultisample) &&
+        std::any_of(entityBatchKeys.begin(), entityBatchKeys.end(),
+                    [](const WorldDrawBuilder::BatchKey& key)
+                    { return key.material && WritesReliefDepth(key.material->GetVariantKey().materialKeywords); });
+
+    if (publishesOpaqueWarmKeys)
+        m_ViewRegistry.PerView(viewId).WorldReliefDepthSource = reliefDepthSource;
 
     // Coverage census (GE_PROP_CENSUS; throttled). Declaration-time: extraction
     // is complete and this pass's scatter snapshot was captured from the same
@@ -2724,7 +2749,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
     std::span<const Rendering::RenderGraph::RGTexture> sampledTextures,
     const char* passName,
     std::span<const ForwardBufferReadRG> sampledBuffers,
-    Rendering::RenderGraph::RGDepthAccess depthAccess)
+    Rendering::RenderGraph::RGDepthAccess depthAccess,
+    ForwardCommandPassCompletion* completion)
 {
     if (!Spine().BindWorldGeometry(frame))
         return {};
@@ -2975,10 +3001,10 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 return true;
             });
         },
-        [this, data, viewportW, viewportH, letterbox, flipViewportY](RenderGraph::RGContext& ctx)
+        [this, data, viewportW, viewportH, letterbox, flipViewportY, completion](RenderGraph::RGContext& ctx)
         {
             auto* cl = ctx.Cmd;
-            if (!cl)
+            if (!cl || (completion && (completion->WarmupOnly || data->Prepared.size() != data->Commands.size())))
                 return;
 
             if (viewportW != 0 && viewportH != 0)
@@ -3016,6 +3042,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 RecordForwardDrawCommand(prepared, *this, pass, geometryBindings);
 
             binder.EndPass(pass);
+            if (completion)
+                completion->Recorded = true;
         });
     if (canResolveColor && drawPass.IsValid())
     {

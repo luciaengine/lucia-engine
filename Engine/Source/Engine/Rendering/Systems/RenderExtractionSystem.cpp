@@ -31,6 +31,7 @@
 #include "Components/Animation/AnimatorRef.h"
 #include "Components/Animation/SkeletonRef.h"
 #include "Components/Rendering/Light.h"
+#include "Components/Rendering/FoliageSeason.h"
 #include "Components/Rendering/LightPhotometry.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/LODGroup.h"
@@ -456,19 +457,23 @@ void BuildGpuInstancePayload(GPUInstance& instance, const Mathematics::Matrix4x4
                              const Vector3& boundsCenter, float localBoundsRadius,
                              uint32 mshIdx, uint32 matIdx, uint32 flags, float lodBias,
                              uint32 skinPaletteOffset, uint32 runtimeId,
-                             int32 sectorX, int32 sectorY, int32 sectorZ, RenderLayerMask renderLayers)
+                             int32 sectorX, int32 sectorY, int32 sectorZ, RenderLayerMask renderLayers,
+                             uint32 impostorPrimaryPlusOne)
 {
     instance = GPUInstance{};
     instance.transform = matrix;
     instance.prevTransform = prevMatrix;
     bool mirrored = false;
     Vector4 normalColumn0;
+    Vector4 normalColumn1;
     MatrixUtils::ComputeNormalMatrixColumns(matrix.Data(),
                                             normalColumn0,
-                                            instance.normalMatrixCol1,
+                                            normalColumn1,
                                             instance.normalMatrixCol2,
                                             &mirrored);
     instance.normalMatrixCol0 = Vector3(normalColumn0.x, normalColumn0.y, normalColumn0.z);
+    instance.normalMatrixCol1 = Vector3(normalColumn1.x, normalColumn1.y, normalColumn1.z);
+    instance.impostorPlacementPrimaryPlusOne = impostorPrimaryPlusOne;
     instance.renderLayerMask = renderLayers.Bits;
     // Camera-relative rendering: the transform column and boundingCenter are local
     // to the instance sector, packed into the reserved words. Each consumer
@@ -752,12 +757,14 @@ void PrepareRecord(const WorldRenderableRecord& rec,
         return;
     }
 
-    const uint32 flags = ComputeInstanceFlags(rec.meshRenderer.shadowCasting,
+    uint32 flags = ComputeInstanceFlags(rec.meshRenderer.shadowCasting,
                                               !rec.hasBounds || rec.bounds.CastShadows,
                                               rec.meshRenderer.receiveShadows,
                                               rs.Materials().GetMaterialDepthClass(matIdx),
                                               IsOrderDependentBlendMaterial(*material),
                                               rec.giEmitter, rec.editorHidden, worldId);
+    if (meshGpu->impostorPlacementPrimaryPlusOne != 0u)
+        flags |= Rendering::kInstanceFlagImpostorPlacement;
 
     // Bone-palette atlas offset (SkinDiag logging is intentionally omitted here —
     // it is env-gated diagnostics that would log unordered from workers).
@@ -781,6 +788,8 @@ void PrepareRecord(const WorldRenderableRecord& rec,
         meshGpu->LastMeshUploadSequence == meshEntry->uploadSeq &&
         meshGpu->LastFlags == flags &&
         scene.GetInstances()[meshGpu->instanceIndex].renderLayerMask == rec.meshRenderer.RenderLayers.Bits &&
+        scene.GetInstances()[meshGpu->instanceIndex].impostorPlacementPrimaryPlusOne ==
+            meshGpu->impostorPlacementPrimaryPlusOne &&
         meshGpu->LastSkinPaletteOffset == skinPaletteOffset &&
         meshGpu->LastLodBias == rec.lodBias &&
         meshGpu->LastRuntimeId == rec.runtimeId &&
@@ -860,7 +869,7 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     BuildGpuInstancePayload(out.payload, localMatrix, prevMatrix, rec.hasBounds,
                             boundsCenter, boundsRadius, mshIdx, matIdx, flags,
                             rec.lodBias, skinPaletteOffset, rec.runtimeId, secX, secY, secZ,
-                            rec.meshRenderer.RenderLayers);
+                            rec.meshRenderer.RenderLayers, meshGpu->impostorPlacementPrimaryPlusOne);
     const bool prevDiffers = PayloadPrevDiffers(out.payload);
 
     if (meshGpu->instanceIndex == 0xFFFFFFFFu)
@@ -987,7 +996,8 @@ void BuildPatchedInstances(std::span<const RenderExtractionParallelState::DirtyR
                                 meshGpu->LastBoundsRadius,
                                 meshGpu->meshIndex, meshGpu->materialIndex, meshGpu->LastFlags,
                                 meshGpu->LastLodBias, meshGpu->LastSkinPaletteOffset,
-                                meshGpu->LastRuntimeId, sector.X, sector.Y, sector.Z, mr->RenderLayers);
+                                meshGpu->LastRuntimeId, sector.X, sector.Y, sector.Z, mr->RenderLayers,
+                                rows[meshGpu->instanceIndex].impostorPlacementPrimaryPlusOne);
         const bool differs = PayloadPrevDiffers(write.Instance);
         isMover[i] = (differs && mr) ? 1u : 0u;
         if (isMover[i] != 0u)
@@ -2210,11 +2220,13 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
 
         const bool castShadows = mr->shadowCasting != Components::ShadowCasting::Off && (!hasBounds || lb->CastShadows);
         rigidCasterRefreshed |= castShadows && !Rendering::IsSkinned(meshEntry->vertexFlags);
-        const uint32 flags =
+        uint32 flags =
             ComputeInstanceFlags(mr->shadowCasting, !hasBounds || lb->CastShadows, mr->receiveShadows,
                                  m_RenderServices->Materials().GetMaterialDepthClass(matIdx),
                                  IsOrderDependentBlendMaterial(*material), giEmitter,
                                  hidden != nullptr || hiddenInHierarchy != nullptr, worldId);
+        if (mgRead->impostorPlacementPrimaryPlusOne != 0u)
+            flags |= Rendering::kInstanceFlagImpostorPlacement;
         const bool castsShadows =
             mr->shadowCasting != Components::ShadowCasting::Off && (!hasBounds || lb->CastShadows);
         rigidCasterRefreshed |= castsShadows && !Rendering::IsSkinned(meshEntry->vertexFlags);
@@ -2231,6 +2243,8 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
             mgRead->materialIndex == matIdx &&
             mgRead->LastMeshUploadSequence == meshEntry->uploadSeq &&
             mgRead->LastFlags == flags &&
+            scene.GetInstances()[mgRead->instanceIndex].impostorPlacementPrimaryPlusOne ==
+                mgRead->impostorPlacementPrimaryPlusOne &&
             mgRead->LastSkinPaletteOffset == skinPaletteOffset &&
             mgRead->LastLodBias == lodBias &&
             mgRead->LastRuntimeId == runtimeId &&
@@ -2269,7 +2283,8 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         const Mathematics::Matrix4x4 prevMatrix = PreviousMatrixInSector(previousInstance.transform, *meshGpu, sector);
         BuildGpuInstancePayload(payload, localMatrix, prevMatrix, hasBounds, boundsCenter,
                                 boundsRadius, mshIdx, matIdx, flags, lodBias,
-                                skinPaletteOffset, runtimeId, sector.X, sector.Y, sector.Z, mr->RenderLayers);
+                                skinPaletteOffset, runtimeId, sector.X, sector.Y, sector.Z, mr->RenderLayers,
+                                meshGpu->impostorPlacementPrimaryPlusOne);
         const bool prevDiffers = PayloadPrevDiffers(payload);
         // Before UpdateInstance overwrites the mirror `previousInstance` aliases.
         // A refreshed caster counts as changed whatever field moved — a palette
@@ -2677,7 +2692,33 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     lightsMs = elapsedMs(lightsStart, ExtractionClock::now());
 
     if (rs)
+    {
         rs->SetWorldWeatherWind(worldId, WindVolumeResolver::ExtractForGpu(world));
+        const Components::FoliageSeason* selected = nullptr;
+        ECS::EntityHandle owner;
+        world.Query<ECS::Read<Components::FoliageSeason>>().Each(
+            [&](ECS::EntityHandle entity, const Components::FoliageSeason& season)
+            {
+                if (!selected || season.Priority > selected->Priority
+                    || (season.Priority == selected->Priority && entity.id < owner.id))
+                {
+                    selected = &season;
+                    owner = entity;
+                }
+            });
+        if (selected)
+        {
+            const auto tint = [](float value) { return std::isfinite(value) ? std::max(value, 0.0f) : 1.0f; };
+            const auto amount = [](float value) { return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f; };
+            FoliageSeasonGPU season{};
+            season.AutumnTint[0] = tint(selected->AutumnTint.x);
+            season.AutumnTint[1] = tint(selected->AutumnTint.y);
+            season.AutumnTint[2] = tint(selected->AutumnTint.z);
+            season.AutumnTint[3] = amount(selected->AutumnAmount);
+            season.Snow[0] = amount(selected->SnowAmount);
+            rs->SetWorldFoliageSeason(worldId, season);
+        }
+    }
     ExtractPostProcessVolumes(world, worldId, rs);
     for (const auto& hooks : Rendering::PostProcessEffectRegistry::AllViewPreparations())
         if (hooks.AfterWorldExtraction)

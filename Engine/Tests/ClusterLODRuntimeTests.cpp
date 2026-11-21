@@ -25,6 +25,7 @@
 #include "Engine/Rendering/RenderOrigin.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Mathematics/MatrixOps.h"
+#include "ModelAssetFbxTestAccess.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/RenderGraph/RGResourcePool.h"
 #include "Rendering/Core/RenderGraph/RGTransientPool.h"
@@ -88,7 +89,18 @@ class ClusterLODRuntimeTest : public ::testing::Test
         for (auto& vertex : sourceMesh.Vertices)
             vertex.Position[1] = std::sin(vertex.Position[0] * 0.21f) * std::sin(vertex.Position[2] * 0.19f);
         ModelAsset source(GUID::Generate(), m_Temporary.Path() / "absent.obj");
-        source.SetMeshesForTest({std::move(sourceMesh)});
+        if (CooksCutout())
+        {
+            ImportedMaterialData canopy{};
+            canopy.AlphaMode = AlphaMode::Mask;
+            // Install the synthesized import on a loaded model, as the cooker requires.
+            source.SetMeshesForTest({});
+            ModelAssetFbxTestAccess::DemoteMasks(source, {std::move(sourceMesh)}, {canopy}, {});
+        }
+        else
+        {
+            source.SetMeshesForTest({std::move(sourceMesh)});
+        }
         const auto path = m_Temporary.Path() / "runtime.gecluster";
         MeshClusterLODConfig config;
         config.MeshletsPerGroup = MeshletsPerGroup();
@@ -141,6 +153,7 @@ class ClusterLODRuntimeTest : public ::testing::Test
         ASSERT_TRUE(m_Feature->Initialize(m_Services, m_Assets));
     }
 
+    virtual bool CooksCutout() const { return false; }
     virtual size_t WorkerCount() const { return 0; }
     virtual uint32 MeshletsPerGroup() const { return 4; }
     virtual std::unique_ptr<IDevice> CreateDevice() { return CreateVulkanDeviceFast(); }
@@ -746,16 +759,88 @@ TEST_P(ClusterLODMultipleViewTest, NearDemandSurvivesFarViewAndRecoversAfterView
     Prepare();
     Prepare();
     ASSERT_EQ(CurrentHandle(), m_Coarse) << "the far view alone must select coarse";
+    const auto splitOwnsGeometry = [this]
+    {
+        const auto* gpu = m_World.GetComponent<Components::MeshGPUData>(m_Entity);
+        return gpu && gpu->clusterSplitOwner;
+    };
+    EXPECT_FALSE(splitOwnsGeometry());
 
     m_Services.Views().SetViewRenderLayerMask(nearView, RenderLayerMask::FromLayer(0));
+    Prepare();
+    EXPECT_TRUE(splitOwnsGeometry()) << "a pending split takes priority over a card";
     ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+    EXPECT_TRUE(splitOwnsGeometry());
     ASSERT_TRUE(m_Services.Views().ReleaseView(nearView));
     Prepare();
     ASSERT_EQ(CurrentHandle(), m_Coarse);
     for (uint32 frame = 0; frame < 35; ++frame)
         Prepare();
+    EXPECT_FALSE(splitOwnsGeometry()) << "an idle split returns ownership to the resident model";
     AddSseView(nearEye, center);
     ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+}
+
+TEST_P(ClusterLODMultipleViewTest, OffscreenNonCasterWaitsForAViewButShadowCasterCanRefine)
+{
+    ASSERT_TRUE(m_Services.Views().ReleaseView(m_View));
+    m_Services.SetLODForceLevel(~0u);
+    m_Services.GetMeshGPURegistry().SetLodSelectionMode(LodSelectionMode::Sse);
+    m_Services.SetLODErrorBudgetPx(0.0001f);
+    const auto& manifest = *m_Model->GetClusterLODManifest();
+    const auto& unit = manifest.Units[m_Unit];
+    ASSERT_GT(manifest.Groups[unit.Group].Error, 0.0f);
+    const Vector3 center = (unit.MinBounds + unit.MaxBounds) * 0.5f;
+    const auto& range = manifest.Meshes[0];
+    float guardedExtent = 0.0f;
+    float drawExtent = 0.0f;
+    for (uint32 index = range.FirstGroup; index < range.FirstGroup + range.GroupCount; ++index)
+    {
+        const auto& group = manifest.Groups[index];
+        if (group.Terminal || group.Depth + 1 != range.ResidentDepth || group.Error <= 0.0f)
+            continue;
+        const float offset = center.z - group.Center.z;
+        guardedExtent = std::max(guardedExtent, offset + 1.05f * group.Radius);
+        drawExtent = std::max(drawExtent, offset + 1.5f * group.Radius);
+    }
+    // The old draw guard overlaps the reversed near plane. Cooked geometry is behind it.
+    ASSERT_GT(drawExtent, guardedExtent + 0.2f);
+    const Vector3 eye = center + Vector3(0, 0, -(guardedExtent + drawExtent) * 0.5f);
+    const Vector3 turnedAway = eye + Vector3(0, 0, -1);
+    const Mathematics::WorldPosition origin = GetParam()
+        ? Mathematics::WorldPosition{1.0e9, 0, 1.0e9}
+        : Mathematics::WorldPosition{};
+    m_World.GetComponentForWrite<Components::WorldTransform>(m_Entity)->Position = origin;
+    auto* renderer = m_World.GetComponentForWrite<Components::MeshRenderer>(m_Entity);
+    ASSERT_NE(renderer, nullptr);
+    renderer->shadowCasting = Components::ShadowCasting::Off;
+
+    const auto awayView = AddSseViewAt(origin, eye, turnedAway);
+    Prepare();
+    auto splitOwnsGeometry = [this]
+    {
+        const auto* gpu = m_World.GetComponent<Components::MeshGPUData>(m_Entity);
+        return gpu && gpu->clusterSplitOwner;
+    };
+    EXPECT_FALSE(splitOwnsGeometry()) << "offscreen noncaster must not start a split";
+    EXPECT_EQ(CurrentHandle(), m_Coarse);
+
+    const auto visibleView = AddSseViewAt(origin, eye, center);
+    Prepare();
+    EXPECT_TRUE(splitOwnsGeometry());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+    ASSERT_TRUE(m_Services.Views().ReleaseView(visibleView));
+    for (uint32 frame = 0; frame < 35; ++frame)
+        Prepare();
+    EXPECT_FALSE(splitOwnsGeometry());
+    ASSERT_EQ(CurrentHandle(), m_Coarse);
+
+    m_World.GetComponentForWrite<Components::MeshRenderer>(m_Entity)->shadowCasting =
+        Components::ShadowCasting::On;
+    Prepare();
+    EXPECT_TRUE(splitOwnsGeometry());
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+    EXPECT_TRUE(m_Services.Views().ReleaseView(awayView));
 }
 
 // The same near and far sequence, with the object and both cameras 100 km from the origin at a
@@ -1175,6 +1260,65 @@ TEST_F(ClusterLODRuntimeTest, MissingFineStoreKeepsCoarseCoverageAndFinishesTheR
     for (uint32 frame = 0; frame < 120; ++frame)
         Prepare();
     ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+}
+
+class ClusterLODCutoutRuntimeTest : public ClusterLODRuntimeTest
+{
+protected:
+    bool CooksCutout() const override { return true; }
+};
+
+TEST_F(ClusterLODCutoutRuntimeTest, CutoutPagesRefineWithTheirOwnMaterialAndRestoreTheResidentCut)
+{
+    MaterialDocument cutout;
+    cutout.lightingModel = "StandardPBR";
+    cutout.surfaceShader = "Surfaces/standard_pbr.glsl";
+    cutout.alphaMode = MaterialAlphaMode::Mask;
+    cutout.doubleSided = true;
+    cutout.properties["alphaCutoff"] = 0.37f;
+    const GUID cutoutGuid = GUID::Generate();
+    const Material* material = m_Services.Materials().Registry().Register(cutoutGuid, cutout);
+    ASSERT_NE(material, nullptr);
+    ASSERT_EQ(material->GetAlphaMode(), MaterialAlphaMode::Mask);
+    m_World.GetComponentForWrite<Components::MeshRenderer>(m_Entity)->materialAssetGuid.Set(cutoutGuid);
+
+    Prepare();
+    const auto* ownerData = m_World.GetComponent<Components::MeshGPUData>(m_Entity);
+    ASSERT_TRUE(ownerData && ownerData->clusterSplitOwner) << "a cooked cutout must start refining";
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+    const auto* part = m_World.GetComponent<Components::MeshRenderer>(Part());
+    ASSERT_NE(part, nullptr);
+    EXPECT_EQ(part->materialAssetGuid.ToGuid(), cutoutGuid);
+    EXPECT_TRUE(part->receiveShadows);
+    EXPECT_TRUE(material->IsDoubleSided());
+    EXPECT_FLOAT_EQ(material->GetFloat(HashStringId("alphaCutoff")), 0.37f);
+
+    m_Services.SetLODForceLevel(1);
+    // The split uses its coarser parts during the retirement grace period.
+    for (uint32 frame = 0; frame < 35; ++frame)
+        Prepare();
+    EXPECT_EQ(CurrentHandle(), m_Coarse);
+    EXPECT_FALSE(IsEvicted(m_World, m_Entity));
+    EXPECT_EQ(m_World.GetComponent<Components::MeshRenderer>(m_Entity)->materialAssetGuid.ToGuid(), cutoutGuid);
+}
+
+TEST_F(ClusterLODRuntimeTest, OpaqueGeometryDoesNotRefineWithAMaskedOverride)
+{
+    ASSERT_NO_FATAL_FAILURE(PrepareUntilFine());
+    MaterialDocument cutout;
+    cutout.lightingModel = "StandardPBR";
+    cutout.surfaceShader = "Surfaces/standard_pbr.glsl";
+    cutout.alphaMode = MaterialAlphaMode::Mask;
+    const GUID cutoutGuid = GUID::Generate();
+    ASSERT_NE(m_Services.Materials().Registry().Register(cutoutGuid, cutout), nullptr);
+    m_World.GetComponentForWrite<Components::MeshRenderer>(m_Entity)->materialAssetGuid.Set(cutoutGuid);
+
+    Prepare();
+    EXPECT_EQ(CurrentHandle(), m_Coarse);
+    EXPECT_FALSE(IsEvicted(m_World, m_Entity));
+    Prepare();
+    EXPECT_EQ(CurrentHandle(), m_Coarse);
+    EXPECT_FALSE(IsEvicted(m_World, m_Entity));
 }
 
 TEST_F(ClusterLODRuntimeTest, LiveOpaqueToBlendAndBackChangesOnlyTheCachedGeometry)

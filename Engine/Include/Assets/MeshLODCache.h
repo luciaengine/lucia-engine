@@ -140,7 +140,9 @@ inline constexpr uint32 kAuthoredLodImportVersion = 1u;
 // in .Cache/Lod and cross-commit comparisons silently reused the older cook.
 // If a change is meant to be measured, it needs its own version — otherwise
 // purge .Cache/Lod between measurement runs.
-inline constexpr uint32 kLodGeneratorVersion = 13u;
+// v14: preserve extra UVs on co-located wedge repairs and reject levels that
+// connect vertices across authored foliage pivots.
+inline constexpr uint32 kLodGeneratorVersion = 14u;
 
 // Full FNV-1a-64 content hash of a model's source bytes. Portable across machines
 // and fresh git checkouts (unlike the registry's mtime+size fingerprint), at the

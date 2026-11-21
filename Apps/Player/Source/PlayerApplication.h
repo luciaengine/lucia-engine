@@ -5,6 +5,7 @@
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Events/Event.h"
 #include "PlayerStartupReadiness.h"
+#include "Types/ScopedSubscription.h"
 #include "UI/UITextureSpace.h"
 #if GE_PLAYER_MOVIE_RECORDER
 #include "Video/AsyncVideoRecorder.h"
@@ -73,6 +74,7 @@ private:
     // The startup scene is in the world: adds the default camera if it has none, and registers
     // the managed system bridge.
     void OnStartupSceneInstantiated(SceneLoadInstantiated& instantiated);
+    bool AttachStartupForest(SceneLoadInstantiated& instantiated);
     // The startup scene is revealed: logs the resolve totals and starts its autoplay animators.
     void OnStartupSceneRevealed();
     // The startup scene did not load: the Player exits.
@@ -117,6 +119,7 @@ private:
 #endif
 
     GameConfig m_GameConfig;
+    ScopedSubscription m_ForestStand;
     // True when C# GameSystems must tick each frame (NativeAOT library staged, or
     // CoreCLR with a loadable script assembly). See PlayerNeedsManagedSystemBridge.
     bool m_TickManagedSystems = false;

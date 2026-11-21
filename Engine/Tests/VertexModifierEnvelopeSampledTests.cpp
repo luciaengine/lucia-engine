@@ -37,6 +37,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifndef GE_RENDERER_REPO_ROOT
@@ -53,6 +54,7 @@ const fs::path kRepoRoot = fs::path(GE_RENDERER_REPO_ROOT);
 
 // The modifiers this file samples, relative to the repository root.
 const char* const kEzTreeWind = "Packages/eztree/Assets/Shaders/VertexModifiers/ez_tree_wind.glsl";
+const char* const kFoliageWind = "Engine/Modules/Rendering/Shaders/VertexModifiers/foliage_wind.glsl";
 
 std::string ReadText(const fs::path& path)
 {
@@ -161,14 +163,115 @@ void main()
 }
 )";
 
+constexpr uint32_t kFoliageShapeSamples = 8u;
+const char* const kFoliageWindPrologue = R"(#version 450
+layout(local_size_x = 64) in;
+#define HAS_UV6
+#define HAS_UV7
+vec2 aUV6;
+vec2 aUV7;
+
+#include "Includes/instance_sector.glsl"
+struct InstanceData
+{
+    float deformationTimeSeconds;
+    mat4 modelMatrix;
+    ivec3 sector;
+};
+struct WeatherLightLanes
+{
+    vec4 uWeatherWindCount;
+    vec4 uWeatherWind[7];
+};
+WeatherLightLanes Light;
+struct FoliageProperties
+{
+    vec2 foliageWindHeight;
+    vec2 foliageWindMotion;
+    float foliageLeafPivots;
+};
+FoliageProperties Props;
+#line 1
+)";
+
+const char* const kFoliageWindSampler = R"(
+layout(std430, set = 0, binding = 0) buffer SampledBound
+{
+    uint maxRatioBits;
+    uint sampleCount;
+    uint flutterSamples;
+    uint invalidSamples;
+};
+
+void main()
+{
+    uint windIndex = gl_GlobalInvocationID.y;
+    uint shape = gl_GlobalInvocationID.z;
+    float angle = float(windIndex % 8u) * (6.2831853 / 8.0);
+    const float speeds[4] = float[4](0.0, 4.0, 10.0, 40.0);
+    vec3 wind = vec3(cos(angle), 0.0, sin(angle)) * speeds[windIndex / 8u];
+    // One global override volume with the production velocity, gust and mode lanes.
+    Light.uWeatherWindCount = vec4(1.0, 0.0, 0.0, 0.0);
+    Light.uWeatherWind[0] = vec4(0.0);
+    Light.uWeatherWind[1] = vec4(1.0, 0.0, 0.0, 1.0);
+    Light.uWeatherWind[2] = vec4(0.0, 1.0, 0.0, 1.0);
+    Light.uWeatherWind[3] = vec4(0.0, 0.0, 1.0, 1.0);
+    Light.uWeatherWind[4] = vec4(wind, 1.0);
+    Light.uWeatherWind[5] = vec4(0.5, 0.53, 70.0, 1.0);
+    Light.uWeatherWind[6] = vec4(0.0, 1.0, 1.0, 0.0);
+
+    Props.foliageWindHeight = vec2(-2.0, 12.0);
+    Props.foliageWindMotion = shape < 4u ? vec2(0.4, 0.0) : vec2(1.2, 0.18);
+    Props.foliageLeafPivots = 1.0;
+
+    InstanceData inst;
+    inst.deformationTimeSeconds = float(gl_GlobalInvocationID.x) * 0.07371;
+    inst.modelMatrix = mat4(1.0);
+    if (shape >= 4u)
+    {
+        inst.modelMatrix[0] = vec4(0.0, 0.0, 2.0, 0.0);
+        inst.modelMatrix[2] = vec4(-0.5, 0.0, 0.0, 0.0);
+    }
+    inst.modelMatrix[3] = vec4(8.0, 0.0, 32.0, 1.0);
+    inst.sector = ivec3(0);
+    const float heights[4] = float[4](-8.0, -2.0, 4.0, 16.0);
+    vec3 position = vec3(2.0, heights[shape % 4u], -3.0);
+    aUV6 = position.xy - vec2(0.7, 0.28);
+    aUV7 = vec2(position.z + 0.6, 1.0);
+    mat3 rotation;
+    vec3 deformed = ModifyVertexFrame(position, inst, rotation);
+    vec3 displacement = deformed - position;
+    float ratio = length(displacement) / length(Props.foliageWindMotion);
+    // The leaf stays rigid around the swaying hinge even at zero flutter amplitude.
+    vec3 pivot = vec3(aUV6, aUV7.x);
+    vec3 hinged = ModifyVertex(pivot, inst);
+    vec3 swayedPivot = GE_ApplyFoliageSway(pivot, inst, Props.foliageWindHeight, Props.foliageWindMotion.x);
+    vec3 reference = swayedPivot + rotation * (position - pivot);
+    if (distance(hinged, swayedPivot) > 0.00001 ||
+        distance(deformed, reference) > 0.00001 ||
+        abs(distance(hinged, deformed) - distance(pivot, position)) > 0.00001)
+        atomicAdd(invalidSamples, 1u);
+    if (abs(displacement.y) > 0.00001)
+    {
+        atomicAdd(flutterSamples, 1u);
+        if (shape < 4u || position.y <= Props.foliageWindHeight.x || windIndex < 8u)
+            atomicAdd(invalidSamples, 1u);
+    }
+    atomicMax(maxRatioBits, floatBitsToUint(ratio));
+    atomicAdd(sampleCount, 1u);
+}
+)";
+
 struct SampledBound
 {
     float MaxRatio = 0.0f;
     uint32_t Samples = 0;
+    uint32_t FlutterSamples = 0;
+    uint32_t InvalidSamples = 0;
     std::string SkipReason;
 };
 
-SampledBound SampleEzTreeWind(const std::string& modifierText)
+SampledBound SampleModifier(const fs::path& modifier, std::string source, uint32_t shapeSamples)
 {
     SampledBound out{};
     if (!ShaderCompileService::IsCompilerAvailable())
@@ -184,14 +287,14 @@ SampledBound SampleEzTreeWind(const std::string& modifierText)
     }
 
     ShaderProgramCompileRequest req{};
-    req.debugName = "EzTreeWindSampledBound";
-    req.baseDirectory = kRepoRoot / "Packages" / "eztree" / "Assets" / "Shaders";
+    req.debugName = modifier.stem().string() + "_sampled_bound";
+    req.baseDirectory = modifier.parent_path().parent_path();
     req.cacheRoot = fs::temp_directory_path() / "ge_modifier_envelope_sampled_cache";
     req.includeDirs = {kRepoRoot / "Engine" / "Modules" / "Rendering" / "Shaders"};
     ShaderStageCompileSpec cs{};
     cs.stage = "cs";
-    cs.sourcePath = req.baseDirectory / "ez_tree_wind_sampled_bound.comp";
-    cs.inlineSource = std::string(kEzTreeWindPrologue) + modifierText + kEzTreeWindSampler;
+    cs.sourcePath = req.baseDirectory / (req.debugName + ".comp");
+    cs.inlineSource = std::move(source);
     req.stages = {cs};
     ShaderProgramCompileResult compiled{};
     std::string error;
@@ -201,7 +304,7 @@ SampledBound SampleEzTreeWind(const std::string& modifierText)
         return out;
 
     DescriptorSetLayoutDesc layout{};
-    layout.debugName = "EzTreeWindSampledBound.Layout";
+    layout.debugName = "SampledDeformationBound.Layout";
     DescriptorBinding binding{};
     binding.binding = 0;
     binding.type = DescriptorType::StorageBuffer;
@@ -212,7 +315,7 @@ SampledBound SampleEzTreeWind(const std::string& modifierText)
     ComputePipelineDesc pipelineDesc{};
     pipelineDesc.ComputeShader = std::make_shared<const std::vector<uint8_t>>(spirv->second);
     pipelineDesc.DescriptorSetLayouts.push_back(device->InternDescriptorSetLayout(layout));
-    pipelineDesc.DebugName = "EzTreeWindSampledBound";
+    pipelineDesc.DebugName = req.debugName;
     const PipelineHandle pipeline =
         device->GetOrCreateComputePipeline(device->InternComputePipeline(pipelineDesc));
     EXPECT_TRUE(pipeline.IsValid());
@@ -221,7 +324,7 @@ SampledBound SampleEzTreeWind(const std::string& modifierText)
     resultDesc.size = 16;
     resultDesc.usage = static_cast<uint32_t>(BufferUsage::Storage) | static_cast<uint32_t>(BufferUsage::TransferDst);
     resultDesc.memoryUsage = BufferMemoryUsage::Readback;
-    resultDesc.debugName = "EzTreeWindSampledBound.Result";
+    resultDesc.debugName = "SampledDeformationBound.Result";
     const BufferHandle result = device->CreateBuffer(resultDesc);
     std::memset(device->MapBuffer(result), 0, resultDesc.size);
     device->UnmapBuffer(result);
@@ -237,18 +340,20 @@ SampledBound SampleEzTreeWind(const std::string& modifierText)
     commands->Begin();
     commands->SetPipeline(pipeline);
     commands->BindDescriptorSet(0, set, pipeline);
-    commands->Dispatch(kTimeSamples / 64u, kWindSamples, kShapeSamples);
+    commands->Dispatch(kTimeSamples / 64u, kWindSamples, shapeSamples);
     commands->End();
     device->ExecuteCommandLists({commands.get()});
     device->WaitForIdle();
 
-    uint32_t words[2]{};
+    uint32_t words[4]{};
     std::memcpy(words, device->MapBuffer(result), sizeof(words));
     device->UnmapBuffer(result);
     device->DestroyBuffer(result);
     device->Shutdown();
     out.MaxRatio = std::bit_cast<float>(words[0]);
     out.Samples = words[1];
+    out.FlutterSamples = words[2];
+    out.InvalidSamples = words[3];
     return out;
 }
 
@@ -272,7 +377,7 @@ TEST(VertexModifierEnvelopeSampled, EveryShippedDeclarationHasASampler)
                 declaring.insert(relative);
         }
     }
-    EXPECT_EQ(declaring, (std::set<std::string>{kEzTreeWind}));
+    EXPECT_EQ(declaring, (std::set<std::string>{kEzTreeWind, kFoliageWind}));
 }
 
 TEST(VertexModifierEnvelopeSampled, EzTreeWindStaysInsideItsDeclaredEnvelope)
@@ -283,7 +388,8 @@ TEST(VertexModifierEnvelopeSampled, EzTreeWindStaysInsideItsDeclaredEnvelope)
     ASSERT_TRUE(declared.Usable()) << declared.Refusal;
     ASSERT_EQ(declared.ScaledBy, "windStrength") << "the sampler divides by the wind vector's length";
 
-    const SampledBound sampled = SampleEzTreeWind(modifierText);
+    const SampledBound sampled = SampleModifier(kRepoRoot / kEzTreeWind,
+        std::string(kEzTreeWindPrologue) + modifierText + kEzTreeWindSampler, kShapeSamples);
     if (!sampled.SkipReason.empty())
         GTEST_SKIP() << sampled.SkipReason;
     ASSERT_EQ(sampled.Samples, kTimeSamples * kWindSamples * kShapeSamples) << "every sample must run";
@@ -297,4 +403,24 @@ TEST(VertexModifierEnvelopeSampled, EzTreeWindStaysInsideItsDeclaredEnvelope)
     EXPECT_LE(sampled.MaxRatio, declared.Meters)
         << "ez_tree_wind.glsl moves a vertex " << sampled.MaxRatio << " x |windStrength.xyz|, past its declared "
         << "@deformationEnvelope " << declared.Meters << ": raise the declaration";
+}
+
+TEST(VertexModifierEnvelopeSampled, FoliageWindStaysInsideItsDeclaredEnvelope)
+{
+    const std::string modifierText = ReadText(kRepoRoot / kFoliageWind);
+    ASSERT_FALSE(modifierText.empty());
+    const auto declared = ReadDeclaration(modifierText, kFoliageWind);
+    ASSERT_TRUE(declared.Usable()) << declared.Refusal;
+    ASSERT_EQ(declared.ScaledBy, "foliageWindMotion");
+
+    const auto sampled = SampleModifier(kRepoRoot / kFoliageWind,
+        std::string(kFoliageWindPrologue) + modifierText + kFoliageWindSampler, kFoliageShapeSamples);
+    if (!sampled.SkipReason.empty())
+        GTEST_SKIP() << sampled.SkipReason;
+    ASSERT_EQ(sampled.Samples, kTimeSamples * kWindSamples * kFoliageShapeSamples);
+    EXPECT_GT(sampled.FlutterSamples, 0u);
+    EXPECT_EQ(sampled.InvalidSamples, 0u);
+    ::testing::Test::RecordProperty("sampledMaxRatio", std::to_string(sampled.MaxRatio));
+    EXPECT_GT(sampled.MaxRatio, 0.99f);
+    EXPECT_LE(sampled.MaxRatio, declared.Meters + 0.00001f);
 }

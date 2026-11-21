@@ -14,6 +14,7 @@
 #include "Engine/Build/PackageBuildStaging.h"
 #include "Engine/Build/PlayerBuildConfig.h"
 #include "Engine/Build/TerrainPageExport.h"
+#include "Engine/Build/ForestPlacementExport.h"
 #include "Engine/Build/TexturePackageCook.h"
 #include "Engine/Build/PlayerSourcePreparation.h"
 #include "Engine/Build/RuntimeDependencyStaging.h"
@@ -37,6 +38,7 @@
 #include "NativeScripting/SdkManifest.h"
 #include "Assets/AssetManager.h"
 #include "Assets/FbxLoaderOptions.h"
+#include "Assets/HlodBakeDriver.h"
 #include "Assets/LodAssetSettings.h"
 #include "Assets/RuntimeAssetMetadata.h"
 #include "Assets/MeshLODCache.h"
@@ -70,6 +72,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <unordered_map>
@@ -447,6 +450,17 @@ bool BuildPipeline::Execute(const BuildSettings& settings, ProgressCallback prog
 
     try
     {
+        const fs::path gameConfig = settings.projectRoot / "game.config";
+        std::error_code configError;
+        if (!settings.playerConfig.forestStand && !settings.projectRoot.empty() && fs::is_regular_file(gameConfig, configError))
+        {
+            if (auto forest = LoadGameConfig(gameConfig).forestStand)
+            {
+                BuildSettings configured = settings;
+                configured.playerConfig.forestStand = std::move(forest);
+                return ExecuteImpl(configured);
+            }
+        }
         return ExecuteImpl(settings);
     }
     catch (const std::exception& e)
@@ -958,6 +972,18 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
         return false;
     }
 
+    if (settings.playerConfig.forestStand)
+    {
+        const std::string error = StageForestPlacementArchive(*settings.playerConfig.forestStand,
+            EngineCore::GetInstance().GetResolvedAssetRoot(), contentRoot / "Assets", shipRules);
+        if (!error.empty())
+        {
+            m_Progress.errors.push_back(error);
+            ReportProgress(BuildProgress::Stage::Failed, 0.0f, "Failed to stage forest placements");
+            return false;
+        }
+    }
+
     // 12. Write game.config (into the bundle's Contents/Resources on macOS).
     if (!WriteGameConfig(contentRoot, settings))
     {
@@ -1014,6 +1040,7 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     // Player consumes them without a runtime meshopt dependency (Phase B). A
     // cook failure is non-fatal: the Player falls back to runtime generation.
     CookMeshLODs(contentRoot, manifest);
+    StageHlodBakes(contentRoot, manifest);
 
     // 13e. Pack each shipped terrain heightmap's cooked pages into its terrain container
     // (Assets/Cooked/Terrain/<guid>.geterrain), cooking it in the project cache first when it changed.
@@ -2542,6 +2569,27 @@ bool BuildPipeline::StageAssetManifest(const fs::path& contentRoot, const AssetM
         "Build: Wrote .assetmanifest x{} ({} entries total, {} with runtime settings, {} with resolved FBX options)",
         stores.size(), manifest.entries.size(), metadataAssets, fbxKvAssets);
     return true;
+}
+
+void BuildPipeline::StageHlodBakes(const fs::path& contentRoot, const AssetManifest& manifest)
+{
+    auto& assets = EngineCore::GetInstance().GetAssetManager();
+    for (const AssetManifestEntry& entry : manifest.entries)
+    {
+        if (entry.type != AssetType::Scene || entry.guid.IsNull())
+            continue;
+        const fs::path source = Hlod::ResolveExistingHlodCacheFile(assets, entry.sourcePath);
+        std::error_code error;
+        if (source.empty() || !fs::is_regular_file(source, error))
+            continue;
+        const fs::path output = Hlod::PackagedHlodCacheFile(contentRoot / "Assets", entry.guid);
+        fs::create_directories(output.parent_path(), error);
+        if (!error)
+            fs::copy_file(source, output, fs::copy_options::overwrite_existing, error);
+        if (error)
+            m_Progress.warnings.push_back(std::format("Could not stage HLOD for '{}'. The scene will use its members: {}",
+                                                     entry.sourcePath.string(), error.message()));
+    }
 }
 
 // ---------------------------------------------------------------------------

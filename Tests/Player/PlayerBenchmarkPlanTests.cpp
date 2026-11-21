@@ -60,6 +60,35 @@ TEST(PlayerBenchmarkPlan, RefusesAPlanThatCannotMeasure)
     EXPECT_FALSE(Parse(R"({"timingFrames": "600", "poses": [{"position": [0, 0, 0]}]})"));
 }
 
+TEST(PlayerBenchmarkPlan, ReadsEveryTimedCameraPose)
+{
+    const auto plan = Parse(R"({
+        "timingFrames": 2,
+        "poses": [{"position": [1, 100, 0]}],
+        "timingPath": [{"position": [1, 50, 0], "pitchDeg": -10},
+                       {"position": [1, 5, 0], "yawDeg": 90}]})");
+    ASSERT_TRUE(plan);
+    ASSERT_EQ(plan->TimingPath.size(), 2u);
+    EXPECT_DOUBLE_EQ(plan->Poses[0].Position.Y, 100.0);
+    EXPECT_DOUBLE_EQ(plan->TimingPath.front().Position.Y, 50.0);
+    EXPECT_DOUBLE_EQ(plan->TimingPath.front().PitchDeg, -10.0);
+    EXPECT_DOUBLE_EQ(plan->TimingPath.back().Position.Y, 5.0);
+    EXPECT_DOUBLE_EQ(plan->TimingPath.back().YawDeg, 90.0);
+}
+
+TEST(PlayerBenchmarkPlan, RefusesAMotionPathWithoutExactlyOnePosePerTimedFrame)
+{
+    EXPECT_FALSE(Parse(R"({
+        "timingFrames": 2, "poses": [{"position": [0, 0, 0]}],
+        "timingPath": [{"position": [0, 0, 1]}]})"));
+    EXPECT_FALSE(Parse(R"({
+        "timingFrames": 2, "poses": [{"position": [0, 0, 0]}, {"position": [0, 0, 1]}],
+        "timingPath": [{"position": [0, 0, 1]}, {"position": [0, 0, 2]}]})"));
+    EXPECT_FALSE(Parse(R"({
+        "timingFrames": 2, "poses": [{"position": [0, 0, 0]}],
+        "timingPath": [{"position": [0, 0, 1]}, {"position": [0, 0]}]})"));
+}
+
 TEST(PlayerBenchmarkPlan, ReadsMonitorNamesAndRefusesInvalidEntries)
 {
     const auto plan = Parse(R"({"poses": [{"position": [0, 0, 0]}],

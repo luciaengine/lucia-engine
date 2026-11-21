@@ -86,6 +86,8 @@ enum class MaterialKeyword : uint64_t
     VirtualShadowSunMask = 1ull << 49, // Pass keyword, beside VirtualShadowMaps (set per view only in a frame whose virtual shadow sun mask pass ran on the prepass depth): the sun reads its virtual page visibility from ge_virtualShadowSunMask (set-0 b66, R32_UINT receiver depth and visibility, Includes/virtual_shadow_sun_mask.glsl) where the fragment is the prepass receiver, and runs GE_TryVirtualShadowDirectional elsewhere. Without the keyword neither the binding nor the read is in the SPIR-V
     ImpostorBake = 1ull << 50, // Pass keyword (set on the draws of an impostor bake, ImpostorBaker): the forward adapter runs the material's surface and its alpha cutoff and writes the surface instead of shading it: location 0 base colour and coverage, location 1 the normal (the bake draws the mesh untransformed, so object space) and the depth along the frame axis. No lighting, fog, exposure or SSSR. Mutually exclusive with DepthOnlyFragment, MotionVectors and DepthOnlyTransmissionColor (the adapter refuses each pairing by name). Without the keyword none of it is in the SPIR-V
     IndexedDepthOwner = 1ull << 51, // Internal masked camera depth variant that also writes the primitive owner.
+    ImpostorBakeTransmission = 1ull << 53, // Adds the optional thin-surface transmission atlas target to a bake.
+    ForestMeshInstances = 1ull << 52, // Instanced source meshes backed by the packed forest view's transform buffer.
 };
 
 inline constexpr MaterialKeyword operator|(MaterialKeyword a, MaterialKeyword b)
@@ -244,6 +246,8 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
         defs.push_back("GE_ALPHA_BLEND");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::Instanced))
         defs.push_back("GE_INSTANCED");
+    if (HasKeyword(key.materialKeywords, MaterialKeyword::ForestMeshInstances))
+        defs.push_back("GE_FOREST_MESH_INSTANCES");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::HasVertexMod))
         defs.push_back("HAS_VERTEX_MODIFIER");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::HasVertexOutputMod))
@@ -319,7 +323,11 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
     if (HasKeyword(key.materialKeywords, MaterialKeyword::MotionVectors))
         defs.push_back("GE_MOTION_VECTORS");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::ImpostorBake))
+    {
         defs.push_back("GE_IMPOSTOR_BAKE");
+        if (HasKeyword(key.materialKeywords, MaterialKeyword::ImpostorBakeTransmission))
+            defs.push_back("GE_IMPOSTOR_BAKE_TRANSMISSION");
+    }
     if (HasKeyword(key.materialKeywords, MaterialKeyword::Parallax))
         defs.push_back("GE_PARALLAX_ENABLED");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::ParallaxStepsView))

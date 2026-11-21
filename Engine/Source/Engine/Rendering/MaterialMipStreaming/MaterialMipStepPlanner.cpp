@@ -1,6 +1,7 @@
 #include "Engine/Rendering/MaterialMipStreaming/MaterialMipStepPlanner.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -31,6 +32,9 @@ uint64 LossBytes(const Stream& stream)
 
 float32 Need(const Stream& stream)
 {
+    // Source opacity for an actively baking atlas has priority within the shared budget.
+    if (stream.ImpostorOpacity)
+        return std::numeric_limits<float32>::max();
     const uint32 residentExtent = std::max(stream.TopExtent >> stream.FirstMip, 1u);
     return stream.ScreenCoverage / static_cast<float32>(residentExtent);
 }
@@ -102,7 +106,8 @@ std::optional<MaterialMipStepPlanner::Step> MaterialMipStepPlanner::PlanGain(std
     for (const Candidate& taker : m_Takers)
     {
         if (taker.Bytes <= freeBytes)
-            return Step{taker.StreamIndex, streams[taker.StreamIndex].FirstMip - 1};
+            return Step{taker.StreamIndex, streams[taker.StreamIndex].FirstMip - 1,
+                        streams[taker.StreamIndex].ImpostorOpacity};
 
         // The donors of this taker are a prefix of m_Donors: need rises along it.
         const auto firstTooNeedy =
@@ -111,7 +116,8 @@ std::optional<MaterialMipStepPlanner::Step> MaterialMipStepPlanner::PlanGain(std
         if (donorCount > 0 && m_DonorSavings[donorCount - 1] >= taker.Bytes - freeBytes)
         {
             const uint32 donor = m_Donors.front().StreamIndex;
-            return Step{donor, streams[donor].FirstMip + 1};
+            return Step{donor, streams[donor].FirstMip + 1,
+                        streams[taker.StreamIndex].ImpostorOpacity};
         }
     }
     return std::nullopt;

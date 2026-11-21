@@ -34,7 +34,7 @@ void AddShadowMembership(WorldDrawBuilder::ShadowSubmissionState& state,
 // The material facts the key derivation reads, one bit each.
 constexpr uint32_t kPipelineValid = 1u << 0;
 constexpr uint32_t kTransmission = 1u << 1;
-constexpr uint32_t kDeformsVertices = 1u << 2;
+constexpr uint32_t kAnimatedVertices = 1u << 2;
 constexpr uint32_t kSupportsDeformationMotion = 1u << 3;
 
 uint32_t MaterialKeyPredicates(const Material& material)
@@ -44,8 +44,8 @@ uint32_t MaterialKeyPredicates(const Material& material)
         predicates |= kPipelineValid;
     if (HasKeyword(material.GetVariantKey().materialKeywords, MaterialKeyword::Transmission))
         predicates |= kTransmission;
-    if (MaterialDeformsVertices(material))
-        predicates |= kDeformsVertices;
+    if (MaterialHasAnimatedVertices(material))
+        predicates |= kAnimatedVertices;
     if (SupportsDeformationMotion(material))
         predicates |= kSupportsDeformationMotion;
     return predicates;
@@ -397,7 +397,7 @@ void WorldDrawBuilder::DeriveBatchKeysForView(ViewBatchState& view,
         // Either way the caches never hold a layer rasterized without a drawn
         // caster, because this derivation precedes every reader in the frame.
         // A caster implies a renderable, so the first one found ends the search.
-        if (!animatedVertexModifierCaster && MaterialDeformsVertices(*rec.material))
+        if (!animatedVertexModifierCaster && MaterialHasAnimatedVertices(*rec.material))
         {
             animatedVertexModifier = true;
             animatedVertexModifierCaster = (rec.flags & kSubmissionFlagCastShadows) != 0u;

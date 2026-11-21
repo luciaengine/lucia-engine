@@ -7,6 +7,7 @@
 #include "Types/Types.h"
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -63,6 +64,25 @@ class CpuDrawStreamBuilder
         uint32_t Count = 0;
     };
 
+    struct LodRun
+    {
+        InstanceList Instances;
+        uint32_t Level = 0;
+    };
+
+    struct LodPolicy
+    {
+        float GlobalBias = 0.0f;
+        float DefaultSseScale = 0.0f;
+        float TightSseScale = 0.0f;
+        float SmallObjectCoverage = 0.0f;
+        uint32_t ForceLevel = 0xFFFFFFFFu;
+        uint32_t CardMesh = 0xFFFFFFFFu;
+        float CardCoverage = 0.0f;
+        float CardHysteresis = 0.0f;
+    };
+    using ViewLodPolicy = std::function<LodPolicy(Rendering::ViewId)>;
+
     // Which consumer an instance set serves. The two differ in their filter,
     // not their keying.
     enum class InstanceSet : uint8_t
@@ -87,7 +107,7 @@ class CpuDrawStreamBuilder
                const Rendering::MeshGPURegistry& meshRegistry,
                const Rendering::GPUScene& scene,
                const ViewRegistry& views,
-               JobSystem::WorkStealingThreadPool* pool);
+               JobSystem::WorkStealingThreadPool* pool, const ViewLodPolicy& lodPolicy = {});
 
     // Rebuild ONE view's lists, leaving every other view's untouched. The
     // editor's one-shot views (thumbnails, previews) declare after the frame's
@@ -97,12 +117,14 @@ class CpuDrawStreamBuilder
     void BuildForView(Rendering::ViewId viewId, const WorldDrawBuilder& drawBuilder,
                       const Rendering::MeshGPURegistry& meshRegistry,
                       const Rendering::GPUScene& scene, const ViewRegistry& views,
-                      JobSystem::WorkStealingThreadPool* pool);
+                      JobSystem::WorkStealingThreadPool* pool, const ViewLodPolicy& lodPolicy = {});
 
     // The instances of one batch of one view. Count 0 when the batch has no
     // surviving instance in that set — the caller skips the draw entirely.
     InstanceList GetInstances(Rendering::ViewId viewId, uint32_t materialIndex,
                               uint32_t meshIndex, InstanceSet set) const;
+    std::span<const LodRun> GetLodRuns(Rendering::ViewId viewId, uint32_t materialIndex,
+                                       uint32_t meshIndex, InstanceSet set) const;
 
     // The view's whole index list (every batch, both sets): what the world
     // pass uploads as `CompatInstanceList`. Empty when the view draws nothing.
@@ -127,20 +149,26 @@ class CpuDrawStreamBuilder
     struct Candidate
     {
         uint64_t Key;
+        uint64_t CameraKey;
         uint32_t Instance;
         uint8_t State; // CandidateState
+        uint8_t Lod;
     };
 
     struct KeyedInstance
     {
         uint64_t Key;
         uint32_t Instance;
+        uint8_t Lod;
     };
 
     struct ViewLists
     {
         std::vector<uint32_t> Indices;
+        std::vector<LodRun> Runs[2];
+        std::vector<uint64_t> PreviousCards;
         std::unordered_map<uint64_t, InstanceList> Index[2];
+        void Reset();
     };
 
     // What one cull range reads; defined in the .cpp.
@@ -149,7 +177,7 @@ class CpuDrawStreamBuilder
     void BuildView(Rendering::ViewId viewId, const WorldDrawBuilder& drawBuilder,
                    const Rendering::MeshGPURegistry& meshRegistry,
                    const Rendering::GPUScene& scene, const ViewRegistry& views,
-                   JobSystem::WorkStealingThreadPool* pool);
+                   JobSystem::WorkStealingThreadPool* pool, const ViewLodPolicy& lodPolicy);
 
     // Resolves and frustum-tests submissions [begin, end) into `candidates`.
     // `inputs` is taken by value: the range reads its own copy, on the stack of
@@ -170,6 +198,8 @@ class CpuDrawStreamBuilder
     std::vector<Candidate> m_Candidates;
     std::vector<KeyedInstance> m_CameraEntries;
     std::vector<KeyedInstance> m_ShadowEntries;
+    std::vector<uint32_t> m_AvailableCardMaterials;
+    std::vector<uint64_t> m_NextCards;
 
     Stats m_Stats{};
 };

@@ -1,6 +1,7 @@
 #include "Engine/Rendering/Impostors/ImpostorAtlasCache.h"
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 
 namespace GameEngine::Engine::Renderer
@@ -10,6 +11,13 @@ namespace
 
 constexpr uint64 kColorBytesPerPixel = 4;        // RGBA8
 constexpr uint64 kNormalDepthBytesPerPixel = 8;  // RGBA16F
+constexpr uint64 kSeasonMaskBytesPerPixel = 2;   // RG8
+constexpr uint64 kTransmissionBytesPerPixel = 4; // RGBA8
+
+bool IsRecent(uint64 requestFrame, uint64 frame)
+{
+    return requestFrame >= frame || frame - requestFrame <= 1u;
+}
 
 } // namespace
 
@@ -17,7 +25,9 @@ uint64 ImpostorAtlasBytes(const ImpostorAtlasKey& key)
 {
     const uint64 frames = static_cast<uint64>(key.FramesPerSide) * key.FramesPerSide;
     const uint64 pixels = static_cast<uint64>(key.FrameSize) * key.FrameSize;
-    return frames * pixels * (kColorBytesPerPixel + kNormalDepthBytesPerPixel);
+    const uint64 transmissionBytes = key.BakeDiffuseTransmission ? kTransmissionBytesPerPixel : 0u;
+    return frames * pixels *
+           (kColorBytesPerPixel + kNormalDepthBytesPerPixel + kSeasonMaskBytesPerPixel + transmissionBytes);
 }
 
 ImpostorAtlasCache::ImpostorAtlasCache(uint64 budgetBytes)
@@ -29,6 +39,12 @@ ImpostorAtlasCache::State ImpostorAtlasCache::GetState(const ImpostorAtlasKey& k
 {
     const Entry* entry = m_Entries.Find(key);
     return entry ? entry->Status : State::Absent;
+}
+
+bool ImpostorAtlasCache::HasRecentPendingRequest(const ImpostorAtlasKey& key, uint64 frame) const
+{
+    const Entry* entry = m_Entries.Find(key);
+    return entry && entry->Status == State::Pending && IsRecent(entry->LastUsedFrame, frame);
 }
 
 ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& key,
@@ -43,9 +59,8 @@ ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& ke
     const uint64 bytes = ImpostorAtlasBytes(key);
     if (bytes > m_BudgetBytes)
         return State::Absent;
-    if (m_UsedBytes + bytes > m_BudgetBytes)
-        EvictLeastRecentlyUsed(m_UsedBytes + bytes - m_BudgetBytes, frame, outEvicted);
-    if (m_UsedBytes + bytes > m_BudgetBytes)
+    const uint64 available = m_BudgetBytes - m_UsedBytes;
+    if (bytes > available && !TryEvictLeastRecentlyUsed(bytes - available, frame, outEvicted))
         return State::Absent;
     m_Entries.InsertOrAssign(key, Entry{State::Pending, frame});
     m_UsedBytes += bytes;
@@ -58,15 +73,36 @@ void ImpostorAtlasCache::MarkReady(const ImpostorAtlasKey& key)
         entry->Status = State::Ready;
 }
 
+void ImpostorAtlasCache::ReleasePending(const ImpostorAtlasKey& key)
+{
+    if (GetState(key) != State::Pending)
+        return;
+    m_UsedBytes -= ImpostorAtlasBytes(key);
+    m_Entries.Erase(key);
+}
+
 void ImpostorAtlasCache::Clear()
 {
     m_Entries.Clear();
     m_UsedBytes = 0;
 }
 
-void ImpostorAtlasCache::EvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted)
+bool ImpostorAtlasCache::TryEvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame,
+                                                 std::vector<ImpostorAtlasKey>& outEvicted)
 {
-    // An atlas used in this frame stays: its instances already draw it.
+    // Check the total first so a rejected request leaves the cache intact.
+    // The previous frame's atlases are protected until callers refresh demand.
+    uint64 reclaimable = 0;
+    for (const auto& [key, entry] : m_Entries)
+    {
+        if (!IsRecent(entry.LastUsedFrame, frame))
+            reclaimable += ImpostorAtlasBytes(key);
+        if (reclaimable >= neededBytes)
+            break;
+    }
+    if (reclaimable < neededBytes)
+        return false;
+
     uint64 freed = 0;
     while (freed < neededBytes)
     {
@@ -74,21 +110,21 @@ void ImpostorAtlasCache::EvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame
         uint64 oldestFrame = std::numeric_limits<uint64>::max();
         for (const auto& [key, entry] : m_Entries)
         {
-            if (entry.LastUsedFrame < frame && entry.LastUsedFrame < oldestFrame)
+            if (!IsRecent(entry.LastUsedFrame, frame) && entry.LastUsedFrame < oldestFrame)
             {
                 oldest = &key;
                 oldestFrame = entry.LastUsedFrame;
             }
         }
-        if (!oldest)
-            return;
+        assert(oldest);
         const ImpostorAtlasKey victim = *oldest;
         const uint64 bytes = ImpostorAtlasBytes(victim);
+        outEvicted.push_back(victim);
         freed += bytes;
         m_UsedBytes -= bytes;
-        outEvicted.push_back(victim);
         m_Entries.Erase(victim);
     }
+    return true;
 }
 
 } // namespace GameEngine::Engine::Renderer

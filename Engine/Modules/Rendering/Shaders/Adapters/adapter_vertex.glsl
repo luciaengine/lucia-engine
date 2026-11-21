@@ -1,6 +1,6 @@
 #version 450
 
-#ifdef GE_INSTANCED
+#if defined(GE_INSTANCED) && !defined(GE_FOREST_MESH_INSTANCES)
 // Instanced path reads the instance-indirection buffer + GPUInstances via
 // GL_EXT_buffer_reference with device addresses in push constants,
 // leaving set 0 free of per-frame-rotating handles. See instance_io.glsl.
@@ -272,6 +272,8 @@ layout(set = 0, binding = 6) uniform LightUBO {
     vec4 uSecondaryDirs[3];
     vec4 uSecondaryColors[3];
 #include "../Includes/weather_wind_fields.glsl"
+    vec4 uFoliageAutumnTint;
+    vec4 uFoliageSnow;
 } Light;
 #endif
 
@@ -441,6 +443,11 @@ void ge_ApplySkinning8(inout vec3 position, inout vec3 normal,
 //
 // 1. Simple (HAS_VERTEX_MODIFIER): position-only modification.
 //      vec3 ModifyVertex(vec3 position, InstanceData inst);
+//    It may also define GE_VERTEX_MODIFIER_INSTANCE and
+//      void ModifyInstance(inout InstanceData inst);
+//    which runs once before ModifyVertex, to set inst.custom0 for the fragment stage.
+//    GE_VERTEX_MODIFIER_FRAME also supplies ModifyVertexFrame(position, inst, rotation).
+//    Its local-space rotation applies to the normal and tangent.
 //
 // 2. Extended (HAS_VERTEX_OUTPUT_MODIFIER): full vertex output control.
 //      void ModifyVertex(inout VertexOutput v, InstanceData inst);
@@ -452,7 +459,7 @@ void ge_ApplySkinning8(inout vec3 position, inout vec3 normal,
 
 #ifdef HAS_VERTEX_OUTPUT_MODIFIER
 #include GE_VERTEX_MODIFIER_PATH
-#elif defined(HAS_VERTEX_MODIFIER)
+#elif defined(HAS_VERTEX_MODIFIER) && !defined(GE_IMPOSTOR_BAKE)
 #include GE_VERTEX_MODIFIER_PATH
 #endif
 
@@ -615,8 +622,13 @@ void main()
 #endif
 #endif
 
-    // Simple vertex modifier (operates in local space).
-#ifdef HAS_VERTEX_MODIFIER
+    // The impostor atlas captures the rest pose. Apply animation when drawing the asset.
+#if defined(HAS_VERTEX_MODIFIER) && !defined(GE_IMPOSTOR_BAKE)
+#ifdef GE_VERTEX_MODIFIER_INSTANCE
+    // A modifier that defines GE_VERTEX_MODIFIER_INSTANCE sets per-instance data (custom0) for
+    // every endpoint and for the fragment stage, before it moves the vertex.
+    ModifyInstance(inst);
+#endif
 #ifdef GE_MOTION_VECTORS
     // The previous endpoint, evaluated before the current one overwrites the
     // shared pre-modifier vertex. Both endpoints deform the same skinned pose:
@@ -627,7 +639,13 @@ void main()
     InstanceData gePrevInst = ge_PreviousEndpoint(inst);
     vec3 gePrevLocalPos = ModifyVertex(localPos, gePrevInst);
 #endif
+#ifdef GE_VERTEX_MODIFIER_FRAME
+    mat3 modifierRotation;
+    localPos = ModifyVertexFrame(localPos, inst, modifierRotation);
+    localNormal = modifierRotation * localNormal;
+#else
     localPos = ModifyVertex(localPos, inst);
+#endif
 #endif
 
     // Transform to sector-local world space, then reconstruct the camera-relative
@@ -669,7 +687,11 @@ void main()
     // Shared outputs (both paths).
 #ifndef HAS_VERTEX_OUTPUT_MODIFIER
 #ifdef HAS_TANGENT
-    vTangentWS = vec4(normalize(mat3(inst.modelMatrix) * aTangent.xyz), aTangent.w);
+    vec3 localTangent = aTangent.xyz;
+#ifdef GE_VERTEX_MODIFIER_FRAME
+    localTangent = modifierRotation * localTangent;
+#endif
+    vTangentWS = vec4(normalize(mat3(inst.modelMatrix) * localTangent), aTangent.w);
 #endif
 
 #ifdef HAS_COLOR

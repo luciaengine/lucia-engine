@@ -1125,7 +1125,32 @@ TEST_F(MeshClusterLODAssetTest, ExtractsRegisteredTextureDependenciesThroughTheM
     EXPECT_EQ(targets, (std::set<GUID>{first, second}));
 }
 
-TEST_F(MeshClusterLODAssetTest, RefusesNonopaqueNonfiniteAndUnresolvedTextureMaterials)
+TEST_F(MeshClusterLODAssetTest, CooksAndLoadsAnAuthoredCutoutMaterial)
+{
+    ImportedMaterialData leaves{};
+    leaves.Name = "Canopy";
+    leaves.AlphaMode = AlphaMode::Mask;
+    leaves.AlphaCutoff = 0.37f;
+    leaves.DoubleSided = true;
+    const GUID texture = GUID::Generate();
+    leaves.DiffuseTexture = texture.ToString();
+    ModelAssetFbxTestAccess::DemoteMasks(m_Source, m_Source.GetMeshes(), {leaves}, {});
+
+    const auto path = m_Temporary.Path() / "canopy.gecluster";
+    ASSERT_TRUE(Cook(path)) << m_Error;
+    ModelAsset model(GUID::Generate(), path);
+    ASSERT_TRUE(model.Load());
+    ASSERT_EQ(model.GetMaterials().size(), 1u);
+    const auto& material = model.GetMaterials().front();
+    EXPECT_EQ(material.AlphaMode, AlphaMode::Mask);
+    EXPECT_FLOAT_EQ(material.AlphaCutoff, leaves.AlphaCutoff);
+    EXPECT_TRUE(material.DoubleSided);
+    EXPECT_EQ(material.DiffuseTexture, leaves.DiffuseTexture);
+    ASSERT_NE(model.GetClusterLODManifest(), nullptr);
+    EXPECT_EQ(model.GetClusterLODManifest()->TextureDependencies, (Vector<GUID>{texture}));
+}
+
+TEST_F(MeshClusterLODAssetTest, RefusesBlendedNonfiniteAndUnresolvedTextureMaterials)
 {
     const auto path = m_Temporary.Path() / "refused.gecluster";
     for (uint32 fault = 0; fault < 4; ++fault)

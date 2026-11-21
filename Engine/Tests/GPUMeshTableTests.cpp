@@ -185,8 +185,8 @@ TEST_F(GPUMeshTableTest, RegisterFirstMeshAllocatesGPUMeshRowAtVertexOffsetZero)
     EXPECT_EQ(row.indexOffset, 0u);
     EXPECT_EQ(row.indexCount, static_cast<uint32_t>(mesh.Indices.size()));
     // Index type matches the entry's choice (uint16 for <= 65535 verts).
-    EXPECT_EQ(row.indexType, entry->indexType);
-    EXPECT_EQ(row.bucketKey, static_cast<uint32_t>(entry->bucketKey));
+    EXPECT_EQ(row.impostorSwitchCoverage, 0.0f);
+    EXPECT_EQ(row.nextImpostorPart, 0u);
     EXPECT_EQ(row.vertexFlags, static_cast<uint32_t>(entry->vertexFlags));
 }
 

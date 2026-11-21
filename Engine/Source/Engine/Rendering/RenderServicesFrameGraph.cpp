@@ -275,6 +275,7 @@ void RenderServices::BeginWorldDrawFrame()
         lights.clear();
     m_WorldPostProcess.clear();
     m_WorldWeatherWind.Clear();
+    m_WorldFoliageSeason.Clear();
     // Cleared with the other per-world extraction state so destroyed worlds
     // (thumbnail/preview churn) can't accumulate entries; every live world's
     // extraction republishes before probes read it later the same frame.

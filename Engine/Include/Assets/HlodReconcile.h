@@ -51,6 +51,7 @@ struct ReconcileResult {
 struct LiveMemberState {
     GameEngine::ECS::EntityHandle Entity;
     BakedMemberRef Resolved; // the C3 key inputs as they are in the live scene now
+    uint32 SubmeshIndex = 0;
 };
 
 using LiveMemberIndex = std::unordered_map<GUID, LiveMemberState>;

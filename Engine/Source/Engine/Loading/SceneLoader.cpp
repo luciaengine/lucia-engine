@@ -1,16 +1,23 @@
 #include "Engine/Loading/SceneLoader.h"
 
 #include "Assets/AssetManager.h"
+#include "Assets/HlodBakeDriver.h"
+#include "Assets/ModelAsset.h"
 #include "Components/Rendering/Camera.h"
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
 #include "Engine/Loading/SceneLoadInstantiated.h"
+#include "Engine/Rendering/DeviceLostEcsRecovery.h"
+#include "Engine/Rendering/HlodRuntime.h"
+#include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SceneResolveService.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
 #include "NativeScripting/UserSystemRegistry.h"
+#include "Platform/Environment.h"
+#include "Rendering/Core/Device.h"
 #include "SceneLoadState.h"
 #include "SplineRecipes/SplineRecipeSystem.h"
 
@@ -70,10 +77,50 @@ bool ReleaseDocumentIfReadEnded(SceneLoadState& state)
 // generated in, before the clear (SplineRecipeSystem).
 void ReleaseSceneScopedContent(ECS::World& world)
 {
+    if (auto* render = EngineCore::GetInstance().GetRenderServices())
+    {
+        auto& hlod = render->GetHlodRuntime();
+        if (hlod.GetBoundWorldId() == world.GetWorldId())
+        {
+            hlod.Retire(world, render->GetMeshGPURegistry());
+            render->RequestResidencyExtraction();
+        }
+    }
     auto* loop = EngineCore::GetInstance().GetRenderingLoop();
     auto* systems = loop ? loop->GetSystemManager() : nullptr;
     if (auto* recipes = systems ? systems->GetSystem<SplineRecipes::SplineRecipeSystem>() : nullptr)
         recipes->ReleaseSceneScoped(world);
+}
+
+bool BindSceneHlod(const std::filesystem::path& sceneFile)
+{
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_HLOD", true);
+    if (!enabled)
+        return false;
+    auto& engine = EngineCore::GetInstance();
+    auto* render = engine.GetRenderServices();
+    auto* world = engine.GetPrimaryWorld();
+    if (!render || !render->GetGPUScene() || !world)
+        return false;
+
+    auto& assets = engine.GetAssetManager();
+    const GUID scene = assets.GetRegistry().GetAssetGUID(sceneFile);
+    auto path = Hlod::PackagedHlodCacheFile(assets.GetAssetRoot(), scene);
+    std::error_code error;
+    if (path.empty() || !std::filesystem::is_regular_file(path, error))
+        path = Hlod::ResolveExistingHlodCacheFile(assets, sceneFile);
+    if (path.empty() || !std::filesystem::is_regular_file(path, error))
+        return false;
+
+    const Hlod::ModelResolver models = [&assets](const GUID& model) -> SharedPtr<const ModelAsset>
+    {
+        return std::dynamic_pointer_cast<const ModelAsset>(assets.GetAsset(model));
+    };
+    const uint32 clusters = render->GetHlodRuntime().ReconcileScene(
+        *world, render->GetMeshGPURegistry(), path,
+        scene.IsNull() ? sceneFile.generic_string() : scene.ToString(), models);
+    render->RequestResidencyExtraction();
+    return clusters != 0u;
 }
 
 bool IsSingle(const std::shared_ptr<SceneLoadState>& state)
@@ -133,6 +180,7 @@ void SceneLoader::Tick(Clock::time_point now, Microseconds gpuWait)
         StartQueued();
     if (m_Current)
         Advance();
+    RecoverHlodAfterDeviceRebuild();
     if (m_Current)
         UpdateProgress(now);
     if (m_Current && m_Current->ReadyToShow)
@@ -246,6 +294,16 @@ void SceneLoader::Advance()
             // instantiated, so it holds the resolve work that the instantiate began.
             if (!m_Tracker.IsReadyToShow())
                 return;
+            if (state.Request.Mode == SceneLoadMode::Single && BindSceneHlod(state.SceneFile))
+            {
+                auto& engine = EngineCore::GetInstance();
+                const auto* world = engine.GetPrimaryWorld();
+                const auto* device = engine.GetRenderServices()->GetDevice();
+                m_HlodSceneFile = state.SceneFile;
+                m_HlodWorldId = world->GetWorldId();
+                m_HlodWorldEpoch = world->GetEntityHandleEpoch();
+                m_HlodDeviceGeneration = device ? device->GetDeviceRebuildGeneration() : 0u;
+            }
             if (!state.Request.PauseWorldDrawing)
             {
                 state.ReadyToShow = true;
@@ -295,7 +353,10 @@ void SceneLoader::Instantiate()
     // An Additive load keeps the world, its tick and the generated content of the scene it shows.
     const bool additive = state.Request.Mode == SceneLoadMode::Additive;
     if (!additive)
+    {
+        m_HlodSceneFile.clear();
         ReleaseSceneScopedContent(*world);
+    }
     const Scene::SceneInstantiateResult result =
         Scene::InstantiateSceneDocument(*world, state.Read.Document, {.ClearWorldFirst = !additive});
     // The world keeps no reference into the document. Release it, so that a held operation does
@@ -346,6 +407,30 @@ void SceneLoader::Instantiate()
                       state.Read.Timings.ReadMs + state.Read.Timings.ParseMs + state.Read.Timings.ValidateMs +
                           state.Read.Timings.SourcesMs,
                       result.Timings.ClearMs, result.Timings.InstantiateMs);
+}
+
+void SceneLoader::RecoverHlodAfterDeviceRebuild()
+{
+    if (m_HlodSceneFile.empty())
+        return;
+    auto& engine = EngineCore::GetInstance();
+    auto* world = engine.GetPrimaryWorld();
+    if (!world || world->GetWorldId() != m_HlodWorldId || world->GetEntityHandleEpoch() != m_HlodWorldEpoch)
+    {
+        m_HlodSceneFile.clear();
+        return;
+    }
+    auto* render = engine.GetRenderServices();
+    const auto* device = render ? render->GetDevice() : nullptr;
+    if (!device || !Engine::Renderer::ShouldRunHealthyGatedDeviceRecovery(
+            device->GetDeviceHealth(), device->GetDeviceRebuildGeneration(), m_HlodDeviceGeneration))
+        return;
+
+    // Retire restores the members. A missing or stale bake then leaves them as the fallback.
+    render->GetHlodRuntime().Retire(*world, render->GetMeshGPURegistry());
+    render->RequestResidencyExtraction();
+    if (!BindSceneHlod(m_HlodSceneFile))
+        m_HlodSceneFile.clear();
 }
 
 void SceneLoader::PauseWorldDrawing()

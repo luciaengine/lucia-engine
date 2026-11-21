@@ -86,5 +86,23 @@ TEST(PlayerStartupReadiness, TheGameConfigWaitsForTheRecipesUnlessItSaysFalse)
     EXPECT_FALSE(LoadGameConfig(configPath).waitForSplineRecipes);
 }
 
+TEST(PlayerStartupReadiness, ForestStandArchiveAndEntityRoundTrip)
+{
+    const TestUtils::ScopedTempDir root(TestUtils::MakeUniqueTempDirectory("PlayerStartupForest"));
+    const auto configPath = root.Path() / "game.config";
+    GameConfig config;
+    ASSERT_TRUE(SaveGameConfig(configPath, config));
+    EXPECT_FALSE(LoadGameConfig(configPath).forestStand);
+    config.forestStand = ForestStandConfig{"Forests/Forest.geforest", "Canopy", "Trees/Tree.glb", 275.0f, 64u};
+    ASSERT_TRUE(SaveGameConfig(configPath, config));
+    const auto loaded = LoadGameConfig(configPath);
+    ASSERT_TRUE(loaded.forestStand);
+    EXPECT_EQ(loaded.forestStand->archive, "Forests/Forest.geforest");
+    EXPECT_EQ(loaded.forestStand->entity, "Canopy");
+    EXPECT_EQ(loaded.forestStand->impostorModel, "Trees/Tree.glb");
+    EXPECT_FLOAT_EQ(loaded.forestStand->detailDistance, 275.0f);
+    EXPECT_EQ(loaded.forestStand->nearMeshBudget, 64u);
+}
+
 } // namespace
 } // namespace GameEngine

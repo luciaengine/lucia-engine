@@ -1396,6 +1396,7 @@ set_tests_properties(TerrainPagePublicationTests PROPERTIES WORKING_DIRECTORY ${
 # asset reader threads.
 add_executable(PageStoreTests
   PageStoreTests.cpp
+  PackedPlacementStoreTests.cpp
 )
 if(MSVC)
   target_compile_options(PageStoreTests PRIVATE /wd6326)

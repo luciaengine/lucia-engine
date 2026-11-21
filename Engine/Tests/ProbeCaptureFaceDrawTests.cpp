@@ -282,7 +282,7 @@ SurfaceDraw DrawTheSurface(IDevice* device, const std::vector<ExtractedLight>& l
     instance.transform = Mathematics::Matrix4x4::Identity();
     instance.prevTransform = Mathematics::Matrix4x4::Identity();
     instance.normalMatrixCol0 = Mathematics::Vector3(1.0f, 0.0f, 0.0f);
-    instance.normalMatrixCol1 = Mathematics::Vector4(0.0f, 1.0f, 0.0f, 0.0f);
+    instance.normalMatrixCol1 = Mathematics::Vector3(0.0f, 1.0f, 0.0f);
     instance.normalMatrixCol2 = Mathematics::Vector4(0.0f, 0.0f, 1.0f, 0.0f);
     instance.renderLayerMask = RenderLayerMask::Default().Bits;
     instance.meshIndex = meshEntry->gpuMeshIndex;

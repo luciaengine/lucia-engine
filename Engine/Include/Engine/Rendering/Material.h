@@ -442,6 +442,10 @@ class Material
     // it; the global epoch below cannot tell them which material moved.
     uint32_t GetContentRevision() const { return m_ContentRevision; }
 
+    /// Content identity for a baked representation. Replacing a resident mip
+    /// suffix updates GPU bindings without changing the source texture.
+    uint32_t GetBakeContentRevision() const { return m_ContentRevision - m_MipResidencyRevisionDelta; }
+
     // Process-wide epoch bumped by every MarkDirty() on any material (the list
     // above). PackMaterialSSBO keeps it per ring slot, making the idle-frame skip
     // check O(1): an unchanged epoch skips the pack without scanning rows, and a
@@ -696,6 +700,7 @@ class Material
     uint32_t m_Version = 0;
     // Monotonic content revision bumped by MarkDirty (see GetContentRevision).
     uint32_t m_ContentRevision = 0;
+    uint32_t m_MipResidencyRevisionDelta = 0;
 
     // Per-flags interned-id cache. Lazily filled by
     // `GetGraphicsPipelineIdForFlags`. Invalidated when `m_Version`

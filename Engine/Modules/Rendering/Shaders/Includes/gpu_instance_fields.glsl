@@ -16,7 +16,8 @@
     // mat3 assembly.
     vec3 normalMatrixCol0;
     uint renderLayerMask;
-    vec4 normalMatrixCol1;
+    vec3 normalMatrixCol1;
+    uint impostorPlacementPrimaryPlusOne;
     vec4 normalMatrixCol2;
     uint meshIndex;
     uint materialIndex;

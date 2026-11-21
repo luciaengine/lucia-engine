@@ -11,14 +11,17 @@
  * deformed surface needs its own depth variant rather than the shared
  * position-only one) and the per-frame content signal (the depth-derived
  * caches must not retain a layer rasterized at an older deformation).
- * Whether a given modifier is actually time-varying is not knowable CPU-side,
- * so both treat any modifier as animated — an honest superset.
+ * Unknown modifiers remain conservative. A built-in impostor card still
+ * needs its depth variant when the authored wind amplitude is zero.
  */
 #pragma once
 
 #include "Engine/Rendering/Material.h"
 
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Types/Fnv1a.h"
+
+#include <limits>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -29,6 +32,20 @@ inline bool MaterialDeformsVertices(const Material& mat)
     const R::MaterialKeyword keywords = mat.GetVariantKey().materialKeywords;
     return R::HasKeyword(keywords, R::MaterialKeyword::HasVertexMod)
         || R::HasKeyword(keywords, R::MaterialKeyword::HasVertexOutputMod);
+}
+
+inline bool MaterialHasAnimatedVertices(const Material& mat)
+{
+    if (!MaterialDeformsVertices(mat))
+        return false;
+    const auto& spec = mat.GetCompileSpec();
+    if (spec.surfaceShaderPath != "Surfaces/impostor.glsl" ||
+        spec.vertexModifierPath != "VertexModifiers/impostor_card.glsl")
+        return true;
+    // The card faces its pass's viewer. Only the sway reads the animation clock.
+    const float amplitude = mat.GetFloat(HashStringId("foliageWindSway"),
+                                         std::numeric_limits<float>::quiet_NaN());
+    return !(amplitude <= 0.0f);
 }
 
 } // namespace GameEngine::Engine::Renderer

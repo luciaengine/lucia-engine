@@ -19,6 +19,11 @@
 #include <unordered_map>
 #include <vector>
 
+namespace GameEngine::Rendering
+{
+class RGBufferReadbackTicket;
+}
+
 namespace GameEngine::Engine::Renderer
 {
 class Material;
@@ -182,6 +187,7 @@ public:
     void OnDeviceRebuilt(Rendering::IDevice* device) override;
 
 private:
+    friend class TerrainGrassRenderNode;
     struct PlacementBuffers;
 
     void EnsureBladeSegments(uint32 bladeSegments);
@@ -392,6 +398,15 @@ private:
     uint32 m_LastFlushDeviceFrame = 0xFFFFFFFFu;
 
     TerrainGrassPlacementStats m_PlacementStats;
+
+    struct PlacementDebugReadback
+    {
+        std::shared_ptr<Rendering::RGBufferReadbackTicket> Roots;
+        uint32 LastPlaced = 0xFFFFFFFFu;
+        float LastRootY = -1e9f;
+        bool RootsIdle = false;
+    };
+    std::unordered_map<uint32, PlacementDebugReadback> m_PlacementDebug;
 };
 
 } // namespace GameEngine::TerrainGrass

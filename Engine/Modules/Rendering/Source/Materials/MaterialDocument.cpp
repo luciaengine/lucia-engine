@@ -131,6 +131,8 @@ MaterialDocument MaterialDocument::CreateDefaultPBR(const std::string& name)
     doc.properties["enableAnisotropy"] = false;                            // reshapes the base GGX lobe along the tangent when true
     doc.properties["anisotropy"] = 0.5f;                                    // signed [-1..1]; 0=isotropic so default non-zero
     doc.properties["anisotropyRotation"] = 0.0f;                            // radians; 0 = groove follows the geometric tangent (rotate guard no-op)
+    doc.properties["enableDiffuseTransmission"] = false;
+    doc.properties["diffuseTransmission"] = 0.35f;
     doc.properties["enableSubsurface"] = false;                            // compiles the translucency term in when true
     doc.properties["subsurfaceColor"] = std::vector<float>{0.9f, 0.3f, 0.2f}; // fleshy translucent default — visible on enable (tints transmitted light)
     doc.properties["thickness"] = 0.5f;                                    // [0..1]; 0 makes transmission vanish, so seed non-zero

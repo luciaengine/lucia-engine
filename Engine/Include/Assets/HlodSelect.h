@@ -20,7 +20,8 @@ namespace Hlod {
 // 2D editor view) means LOD selection is disabled and the cluster must stay on
 // its members (matching ge_SelectLOD returning LOD0).
 struct ViewLod {
-    float CameraPos[3] = {0.0f, 0.0f, 0.0f};
+    // Absolute camera position, narrowed only after subtracting the cluster origin.
+    double CameraPos[3] = {0.0, 0.0, 0.0};
     float ProjScaleY = 0.0f;
     float LodBiasGlobal = 0.0f;
 };
@@ -35,6 +36,8 @@ struct SwitchConfig {
 
 // Build a SwitchConfig from the volume's coverage + hysteresis fraction.
 SwitchConfig MakeSwitchConfig(float switchCoverage, float switchHysteresis);
+
+double ClusterDistance(const ViewLod& view, const float sphereCenter[3]);
 
 // Screen-space coverage of a cluster bounding sphere for the given view — the
 // ge_SelectLOD metric: worldRadius * projScaleY / distance, scaled by

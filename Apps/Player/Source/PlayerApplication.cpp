@@ -16,6 +16,7 @@
 #include "Assets/Packages/PackagesIndex.h"
 #include "Audio/AudioSystem.h"
 #include "Components/Name.h"
+#include "Components/Rendering/MeshRenderer.h"
 #include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
@@ -30,6 +31,9 @@
 #include "UI/UITextureSpace.h"
 #include "Engine/Rendering/AnimatorScenePlayback.h"
 #include "Engine/Rendering/FrameOrchestrator.h"
+#include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
+#include "Engine/Rendering/Forest/ForestStandDraws.h"
+#include "Engine/Rendering/Forest/ForestPlacementFeature.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Engine/Rendering/RenderDeviceContext.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -498,6 +502,7 @@ bool PlayerApplication::Initialize()
 
 void PlayerApplication::Shutdown()
 {
+    m_ForestStand.Reset();
     // Stop user C++ systems (OnDestroy) while the world is still alive. A Player that exits
     // before its startup scene is instantiated never started them.
     if (auto* world = EngineCore::GetInstance().GetPrimaryWorld();
@@ -651,8 +656,85 @@ void PlayerApplication::LoadStartupScene()
 void PlayerApplication::OnStartupSceneInstantiated(SceneLoadInstantiated& instantiated)
 {
     m_Host->EnsureCamera(instantiated.World());
+    if (!AttachStartupForest(instantiated))
+        return;
     if (m_TickManagedSystems)
         RegisterManagedSystemBridge();
+}
+
+bool PlayerApplication::AttachStartupForest(SceneLoadInstantiated& instantiated)
+{
+    m_ForestStand.Reset();
+    auto& engine = EngineCore::GetInstance();
+    auto* services = engine.GetRenderServices();
+    if (!m_GameConfig.forestStand || !services)
+        return true;
+
+    auto& world = instantiated.World();
+    const auto& config = *m_GameConfig.forestStand;
+    ECS::EntityHandle stand{};
+    std::optional<Components::MeshRenderer> source;
+    uint32 matches = 0;
+    world.Query<ECS::Read<Components::Name>, ECS::Read<Components::MeshRenderer>>().Each(
+        [&](ECS::EntityHandle entity, const Components::Name& name, const Components::MeshRenderer& renderer)
+        {
+            if (name.View() == config.entity)
+            {
+                stand = entity;
+                source = renderer;
+                ++matches;
+            }
+        });
+    if (matches != 1 || source->modelAssetGuid.IsNull() ||
+        source->RenderLayers != Rendering::RenderLayerMask::None() || source->MeshNameId != 0)
+    {
+        instantiated.Fail("forestStand.entity must name one stand with a mesh asset and no render layers");
+        return false;
+    }
+
+    auto& assets = engine.GetAssetManager();
+    const auto archive = assets.ResolveAssetPath(config.archive);
+    const auto& profile = services->GetProfile();
+    const bool constrained = profile.IsCompat() || profile.ImpostorAtlasBudgetBytes <= (64ull << 20u);
+    const bool detailEnabled = !config.impostorModel.empty() && config.detailDistance > 0.0f;
+    const uint32 slots = detailEnabled ? (constrained ? 128u : 512u) : 0u;
+    const uint32 readsPerFrame = constrained ? 4u : 12u;
+    const uint32 nearBudget = detailEnabled ? std::min(config.nearMeshBudget, constrained ? 128u : 256u) : 0u;
+    std::string error;
+    auto placements = Engine::Renderer::ForestPlacementRuntime::OpenQuadStand(archive, error, slots, readsPerFrame, nearBudget != 0);
+    if (!placements)
+    {
+        instantiated.Fail("Forest stand archive '" + config.archive + "': " + error);
+        return false;
+    }
+    const auto worldId = world.GetWorldId();
+    const auto epoch = world.GetEntityHandleEpoch();
+    std::shared_ptr<Engine::Renderer::ForestPlacementSession> details;
+    if (detailEnabled)
+    {
+        const auto model = assets.ResolveAssetGuid(config.impostorModel);
+        if (!model.IsNull())
+            details = services->EnsureFeature<Engine::Renderer::ForestPlacementFeature>().Attach(
+                placements, assets, worldId, model, config.detailDistance, nearBudget);
+    }
+    Logger::Log::Info("Player: forest stand attached to '{}' with {} cells and {} placements",
+                      config.entity, placements->Store().Pages().size(), placements->Store().PlacementCount());
+    m_ForestStand = Engine::Renderer::RegisterForestStandMesh(
+        *services, worldId, Rendering::RenderLayerMask::Default(), std::move(placements),
+        Rendering::MeshGPUKey{source->modelAssetGuid.ToGuid(), source->meshId},
+        [worldId, epoch, stand, model = source->modelAssetGuid, meshId = source->meshId]() -> GUID
+        {
+            const auto* current = EngineCore::GetInstance().GetPrimaryWorld();
+            if (!current || current->GetWorldId() != worldId || current->GetEntityHandleEpoch() != epoch ||
+                !current->IsValid(stand))
+                return {};
+            // Model resolution fills materialAssetGuid from the imported mesh when the scene leaves it empty.
+            const auto* renderer = current->GetComponent<Components::MeshRenderer>(stand);
+            if (!renderer || renderer->modelAssetGuid != model || renderer->meshId != meshId)
+                return {};
+            return renderer->materialAssetGuid.ToGuid();
+        }, std::move(details));
+    return true;
 }
 
 void PlayerApplication::OnStartupSceneRevealed()

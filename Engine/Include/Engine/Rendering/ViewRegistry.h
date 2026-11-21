@@ -257,6 +257,8 @@ public:
         // self-invalidates next frame without manual clearing. {frameIndex, result}.
         std::pair<uint64_t, bool> TransmissionMemo{~0ull, false};
 
+        Rendering::RenderGraph::RGFrameStamp FormattedForwardEmittedFor;
+
     private:
         // Light UBO ring, IDevice::GetFrameRingDepth() deep: WriteViewLightBuffer fills one slot
         // inside an acquired frame while older frames still read theirs. Only the accessors above

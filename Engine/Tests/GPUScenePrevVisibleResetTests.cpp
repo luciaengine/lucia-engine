@@ -242,6 +242,16 @@ TEST_F(GPUScenePrevVisibleResetTest, FreshAppendsQueueNothing)
     EXPECT_TRUE(Drain().empty());
 }
 
+TEST_F(GPUScenePrevVisibleResetTest, ExplicitHistoryResetKeepsTheInstanceLive)
+{
+    const uint32_t instance = m_Scene->AddInstance(MakeInstance(1u, 10u));
+    m_Scene->RequestInstanceHistoryReset(instance);
+    m_Scene->RequestInstanceHistoryReset(0xFFFFFFFFu);
+    EXPECT_EQ(Drain(), std::vector<uint32_t>{instance});
+    EXPECT_EQ(m_Scene->GetInstances()[instance].meshIndex, 10u);
+    EXPECT_TRUE(Drain().empty());
+}
+
 // Reset-on-REUSE, not reset-on-free: removing (without re-adding) must NOT
 // queue, because the freed tombstone stays in the cull range and phase B keeps
 // rewriting its prevVisible until the slot is actually reused.

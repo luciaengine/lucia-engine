@@ -1,5 +1,7 @@
 #include "Assets/AssetManager.h"
 #include "Assets/AuthoredLodImport.h"
+#include "Assets/HlodBakeDriver.h"
+#include "Assets/HlodCache.h"
 #include "Assets/ModelAssetSettings.h"
 #include "Assets/BoneLOD/BoneLODAssetSettings.h"
 #include "Assets/RuntimeHumanoidProfile.h"
@@ -87,6 +89,8 @@ TEST_F(PackagedAssetManifestTest, RuntimeSettingsSurviveExportAndPlayerManifestM
         {"Model.obj", "assets.lod.slot2", slot},
         {"Model.obj", "assets.lod.slot3", slot},
         {"Model.obj", "assets.model.rigKind", "none"},
+        {"Model.obj", "assets.model.impostor", "true"},
+        {"Model.obj", "assets.model.impostorScreenHeightPercent", "12"},
         {"Model.obj", "assets.model.boneLOD", R"({"budget":24,"mandatoryPaths":[["Root","Hand"]]})"},
         {"Image.svg", "assets.texture.svgRasterSize", "64"},
         {"Model.obj", "assets.lod.generate", "false"},
@@ -120,11 +124,67 @@ TEST_F(PackagedAssetManifestTest, RuntimeSettingsSurviveExportAndPlayerManifestM
         EXPECT_TRUE(playerRegistry.TryGetMetaValue(Output / "Assets" / setting.Asset, setting.Key, value));
         EXPECT_EQ(value, setting.Value);
     }
-    EXPECT_EQ(ModelAssetSettings::Load(playerRegistry, Output / "Assets/Model.obj").RigKind,
-              ModelRigKind::NotHumanoid);
+    const auto modelSettings = ModelAssetSettings::Load(playerRegistry, Output / "Assets/Model.obj");
+    EXPECT_EQ(modelSettings.RigKind, ModelRigKind::NotHumanoid);
+    EXPECT_TRUE(modelSettings.Impostor);
+    EXPECT_EQ(modelSettings.ImpostorScreenHeightPercent, 12u);
+    const auto linkedLodSettings = ModelAssetSettings::Load(playerRegistry, Output / "Assets/Low.obj");
+    EXPECT_FALSE(linkedLodSettings.Impostor);
+    EXPECT_EQ(linkedLodSettings.ImpostorScreenHeightPercent, 0u);
     const auto boneLOD = BoneLODAssetSettings::Load(playerRegistry, Output / "Assets/Model.obj");
     EXPECT_TRUE(boneLOD.Error.empty());
     EXPECT_EQ(boneLOD.BoneBudget, 24u);
     EXPECT_EQ(boneLOD.MandatoryPaths, (std::vector<std::vector<std::string>>{{"Root", "Hand"}}));
+    playerAssets.Shutdown();
+}
+
+TEST_F(PackagedAssetManifestTest, ExportKeepsSeparateHlodBakesForSameNamedScenes)
+{
+    auto& assets = Engine.GetAssetManager();
+    auto& registry = assets.GetRegistry();
+    const std::array<fs::path, 2> scenes{ "Scenes/Forest/Overview.scene", "Scenes/Mountain/Overview.scene" };
+    std::array<GUID, 2> sceneIds;
+    for (size_t i = 0; i < scenes.size(); ++i)
+    {
+        const fs::path scene = Assets / scenes[i];
+        WriteFile(scene, "[scene name=\"Overview\" version=1]\n");
+        ASSERT_TRUE(registry.RegisterAsset(scene));
+        sceneIds[i] = registry.GetAssetGUID(scene);
+        ASSERT_FALSE(sceneIds[i].IsNull());
+        Hlod::HlodBakedScene bake{};
+        bake.Key.ConfigHash = i + 1;
+        bake.CellSize = 64.0f;
+        ASSERT_TRUE(Hlod::WriteHlodCache(Hlod::ResolveHlodCacheFile(assets, scene), bake));
+    }
+    ASSERT_NE(sceneIds[0], sceneIds[1]);
+
+    BuildSettings build;
+    build.platformName = "Linux";
+    build.projectRoot = Project;
+    build.prebuiltPlayerDirectory = Runtime;
+    build.outputDirectory = Output;
+    build.compileScripts = false;
+    build.buildConfiguration = "Release";
+    build.playerConfig.gameName = "HlodSidecarProbe";
+    for (const auto& scene : scenes)
+        build.scenes.push_back(scene.generic_string());
+    BuildPipeline pipeline(nullptr);
+    BuildProgress progress;
+    ASSERT_TRUE(pipeline.Execute(build, [&progress](const BuildProgress& current) { progress = current; }))
+        << progress.statusMessage << '\n' << testing::PrintToString(progress.errors);
+
+    AssetManager playerAssets;
+    ASSERT_TRUE(playerAssets.Initialize(Output / "Assets", nullptr,
+                                        Temporary.Path() / "UserData/AssetDatabase.assetdb",
+                                        Temporary.Path() / "UserData/.Cache/AssetDatabase"));
+    for (size_t i = 0; i < scenes.size(); ++i)
+    {
+        const GUID packagedId = playerAssets.GetRegistry().GetAssetGUID(Output / "Assets" / scenes[i]);
+        ASSERT_EQ(packagedId, sceneIds[i]);
+        const fs::path sidecar = Hlod::PackagedHlodCacheFile(playerAssets.GetAssetRoot(), packagedId);
+        Hlod::HlodBakedScene bake;
+        ASSERT_EQ(Hlod::ReadHlodCache(sidecar, nullptr, bake), Hlod::HlodCacheStatus::Hit);
+        EXPECT_EQ(bake.Key.ConfigHash, i + 1);
+    }
     playerAssets.Shutdown();
 }

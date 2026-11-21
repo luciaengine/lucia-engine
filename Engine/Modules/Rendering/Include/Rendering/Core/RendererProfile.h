@@ -44,6 +44,13 @@ struct RendererProfile
     // tier, clamped to the device's maxSamplerAnisotropy. 1 = isotropic filtering.
     float MaterialSamplerAnisotropy = 1.0f;
 
+    // Projected diameter where the final mesh LOD can hand off to a card.
+    uint32_t ImpostorSwitchPixels = 128;
+    // Atlas resolution and residency scale together to retain a comparable
+    // number of tree types on constrained devices.
+    uint32_t ImpostorFramePixels = 128;
+    uint64_t ImpostorAtlasBudgetBytes = 256ull << 20;
+
     bool IsCompat() const { return ActiveTier == Tier::Compatibility; }
 
     // Derive the profile from what the device reports. Bindless is the

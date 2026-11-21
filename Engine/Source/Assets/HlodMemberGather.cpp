@@ -17,6 +17,7 @@
 #include "ECS/Query.h"
 #include "ECS/World.h"
 
+#include <algorithm>
 #include <string>
 
 namespace GameEngine {
@@ -49,6 +50,13 @@ GUID MemberStableId(const Components::SceneEntityTag* tag, GameEngine::ECS::Enti
 }
 
 } // namespace
+
+uint64 MemberMeshContentHash(const ModelAsset& model, uint32 submesh)
+{
+    const auto hashes = model.GetMeshContentHashes();
+    const uint64 resolved = submesh < hashes.size() ? hashes[submesh] : ComputeMeshContentHash(model.GetMesh(submesh));
+    return Fold(Fold(Fold(Hashing::kFnv1a64OffsetBasis, model.GetSourceContentHash()), submesh), resolved);
+}
 
 GatheredMembers GatherHlodMembers(GameEngine::ECS::World& world, const ModelResolver& resolveModel) {
     GatheredMembers out;
@@ -104,9 +112,27 @@ GatheredMembers GatherHlodMembers(GameEngine::ECS::World& world, const ModelReso
             }
 
             const GUID modelGuid = mr.modelAssetGuid.ToGuid();
-            const ModelAsset* model = modelGuid.IsNull() ? nullptr : resolveModel(modelGuid);
+            const GatheredMembers::ResolvedModel* resolved = nullptr;
+            if (!modelGuid.IsNull()) {
+                resolved = out.Models.Find(modelGuid);
+                if (!resolved) {
+                    auto asset = resolveModel(modelGuid);
+                    const bool usesExtraStreams = asset && std::ranges::any_of(asset->GetMeshes(), [](const Mesh& mesh) {
+                        return !mesh.ExtraTexCoords.empty();
+                    });
+                    resolved = &out.Models.InsertOrAssign(modelGuid, {std::move(asset), usesExtraStreams});
+                }
+            }
+            const ModelAsset* model = resolved ? resolved->Asset.get() : nullptr;
             if (model == nullptr || model->GetMeshCount() == 0) {
                 ++out.SkippedNoModel;
+                return;
+            }
+
+            // An HLOD proxy cannot represent UV2..UV7. Keep the whole model on the source path
+            // so a merge cannot take opaque bark out of a pivot-animated tree's impostor group.
+            if (resolved->RequiresExtraVertexStreams) {
+                ++out.SkippedExtraVertexStreams;
                 return;
             }
 
@@ -127,11 +153,7 @@ GatheredMembers GatherHlodMembers(GameEngine::ECS::World& world, const ModelReso
             MemberInput member;
             member.StableId = MemberStableId(tag, e);
             member.MaterialGuid = materialGuid;
-            // Content key: what changes when the member's baked geometry changes
-            // (model reimport, submesh reselection). Handle key: which mesh the
-            // member selected (identity, C3).
-            member.MeshContentHash =
-                Fold(Fold(Hashing::kFnv1a64OffsetBasis, model->GetSourceContentHash()), submeshIndex);
+            member.MeshContentHash = MemberMeshContentHash(*model, submeshIndex);
             member.MeshHandleKey = Fold(GuidFold(Hashing::kFnv1a64OffsetBasis, modelGuid), submeshIndex);
 
             const Mathematics::Matrix4x4 world = xf.ToMatrix4x4(xf.GetPosition() - Mathematics::WorldPosition{});
@@ -173,6 +195,7 @@ GatheredMembers GatherHlodMembers(GameEngine::ECS::World& world, const ModelReso
             out.Members.push_back(member);
             out.Geometry.push_back(&mesh);
             out.Entities.push_back(e);
+            out.SubmeshIndices.push_back(submeshIndex);
         });
 
     return out;

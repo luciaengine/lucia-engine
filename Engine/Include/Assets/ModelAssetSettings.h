@@ -29,8 +29,15 @@ enum class ModelRigKind : uint8
 struct ModelAssetSettings
 {
     ModelRigKind RigKind = ModelRigKind::Auto;
+    // Far away, the model draws a baked impostor card (docs/rendering/impostors.mdx). For trees,
+    // large foliage and props seen from far; off for everything else.
+    bool Impostor = false;
+    // 0 uses the default for the view. Other values bound the card's screen height.
+    uint32 ImpostorScreenHeightPercent = 0;
+    static constexpr uint32 kMaxImpostorScreenHeightPercent = 100;
 
     static constexpr const char* kRigKindKey = kModelRigKindMetaKey;
+    static constexpr const char* kImpostorKey = kModelImpostorMetaKey;
 
     static ModelAssetSettings Load(const AssetRegistry& registry,
                                    const std::filesystem::path& assetPath);

@@ -228,6 +228,7 @@ void RenderServices::ClearForwardCommands()
             pv.LateForwardCommands.clear();
             pv.SortedTransparentCommands.clear();
             pv.FrameForwardEmittedFor = {};
+            pv.FormattedForwardEmittedFor = {};
             pv.ForwardSampledRG.clear();
             pv.ForwardSampledBufferRG.clear();
             pv.ForwardSampledFor = {};
@@ -294,6 +295,7 @@ void RenderServices::EmitProducerForwardCommandsForView(Rendering::ViewId viewId
     pv.ForwardSampledBufferRG.clear();
     pv.ForwardSampledFor = {};
     pv.FrameForwardEmittedFor = {};
+    pv.FormattedForwardEmittedFor = {};
     pv.ForwardDrawsWritingDepth = 0;
     // The prepass heads ride with the forward draws they belong to.
     pv.DepthCommands[static_cast<size_t>(DepthPassType::Prepass)].clear();
@@ -371,13 +373,20 @@ void RenderServices::EmitSortedTransparentCommand(Rendering::ViewId viewId,
 
 void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame, ViewId viewId)
 {
+    EmitFrameForwardCommandsForView(frame, viewId, false);
+}
+
+void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame, ViewId viewId,
+                                                            bool worldPassFormatsReady)
+{
     if (!Spine().BindWorldGeometry(frame))
         return;
 
     auto& pv = m_ViewRegistry.PerView(viewId);
-    if (pv.FrameForwardEmittedFor.IsFor(frame))
+    auto& stamp = worldPassFormatsReady ? pv.FormattedForwardEmittedFor : pv.FrameForwardEmittedFor;
+    if (stamp.IsFor(frame))
         return;
-    pv.FrameForwardEmittedFor.Stamp(frame);
+    stamp.Stamp(frame);
     ForwardEmitContext context{};
     context.Device = m_Device;
     context.Services = this;
@@ -386,7 +395,7 @@ void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame
     context.ViewId = viewId;
     context.Purpose = ForwardEmitPurpose::World;
     for (const auto& entry : m_DrawProducers->Forward)
-        if (entry.Options.RequiresFrame)
+        if (entry.Options.RequiresFrame && entry.Options.NeedsWorldPassFormats == worldPassFormatsReady)
         {
             const size_t emittedBefore = pv.ForwardCommands.size();
             entry.Fn(context);

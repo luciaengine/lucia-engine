@@ -40,7 +40,10 @@ void Evict(ECS::World& world, Rendering::GPUScene& scene, ECS::EntityHandle enti
 void Restore(ECS::World& world, ECS::EntityHandle entity)
 {
     if (auto* gpu = world.GetComponentForWrite<Components::MeshGPUData>(entity))
+    {
         gpu->clusterEvicted = false;
+        gpu->clusterSplitOwner = false;
+    }
 }
 } // namespace
 

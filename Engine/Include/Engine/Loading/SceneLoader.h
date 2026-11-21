@@ -5,6 +5,8 @@
 #include "SceneLoadTracker/SceneLoadTracker.h"
 
 #include <chrono>
+#include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -68,6 +70,7 @@ class SceneLoader
     void Advance();
     void StartRead(const std::shared_ptr<SceneLoadState>& state);
     void Instantiate();
+    void RecoverHlodAfterDeviceRebuild();
     // Sets WorldDrawingPaused on each camera of the primary world that draws, and records it.
     void PauseWorldDrawing();
     // Clears WorldDrawingPaused on the recorded cameras that still exist, and empties the record.
@@ -95,6 +98,11 @@ class SceneLoader
     std::vector<std::shared_ptr<SceneLoadState>> m_Draining; // cancelled, their read still in flight
     // The primary world's cameras that the current load paused or took over. Every end of the load resumes them.
     std::vector<ECS::EntityHandle> m_PausedCameras;
+    // Only replacement loads bind a sidecar. Keep its source for device recovery.
+    std::filesystem::path m_HlodSceneFile;
+    std::uint64_t m_HlodWorldId = 0;
+    std::uint64_t m_HlodWorldEpoch = 0;
+    std::uint64_t m_HlodDeviceGeneration = 0;
     std::chrono::steady_clock::time_point m_LastTick{};
     std::chrono::microseconds m_LastTickWork{0};
     bool m_BudgetActive = false;

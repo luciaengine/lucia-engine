@@ -16,6 +16,7 @@
 #include "AnimationClipSchema.h"
 #include "Assets/AssetDecodeInputFiles.h"
 #include "Assets/FbxLoaderOptions.h"
+#include "Assets/ImportedMaterialCache.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/ModelExtras.h"
 #include "Engine/Rendering/ModelMaterialBridge.h"
@@ -1689,6 +1690,22 @@ TEST(GltfImport, SparseNormalAndTexcoordImportTheAppliedValues)
     EXPECT_EQ(Vector<float>(vertices[2].TexCoords, vertices[2].TexCoords + 2), (Vector<float>{0.5f, 0.25f}));
 }
 
+TEST(GltfImport, SecondaryTexcoordSlotsSupportSparseAttributesWithoutFillingGaps)
+{
+    std::string source(kSparseNormalAndTexcoord);
+    constexpr std::string_view attribute = R"("TEXCOORD_0": 2)";
+    const size_t position = source.find(attribute);
+    ASSERT_NE(position, std::string::npos);
+    source.replace(position, attribute.size(), R"("TEXCOORD_0": 2, "TEXCOORD_6": 2, "TEXCOORD_7": 2)");
+    const Mesh mesh = LoadOnlyMesh(source, "secondary_sparse_texcoords.gltf");
+    ASSERT_EQ(mesh.ExtraTexCoords.size(), 6u);
+    for (size_t channel = 0; channel < 4; ++channel)
+        EXPECT_TRUE(mesh.ExtraTexCoords[channel].empty());
+    const Vector<float> expected{0.0f, 0.0f, 0.0f, 0.0f, 0.5f, 0.25f};
+    EXPECT_EQ(mesh.ExtraTexCoords[4], expected);
+    EXPECT_EQ(mesh.ExtraTexCoords[5], expected);
+}
+
 // A triangle with normals and UVs and no TANGENT, under a material that is `materialJson`. U runs
 // along +X in the file, V along +Y, the normal is +Z.
 std::string TriangleWithoutTangents(std::string_view materialJson)
@@ -1815,6 +1832,27 @@ TEST(GltfImport, BaseAttributeOfTheWrongTypeIsRefused)
     EXPECT_FALSE(load.Loaded);
     const std::string refusal = TestLog::FirstLineContaining(load.Lines, "texcoord_of_three_components.gltf");
     EXPECT_NE(refusal.find("accessor for TEXCOORD_0 that is not VEC2"), std::string::npos) << refusal;
+}
+
+TEST(GltfImport, CookedForestCanopyCoverageSurvivesMaterialEncoding)
+{
+    using Engine::Renderer::ModelMaterialBridge;
+    const ImportedMaterialData canopy = ImportOnlyMaterial(R"({
+        "alphaMode": "MASK",
+        "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+        "extras": {"luciaForestCanopyCoverage": true}
+    })");
+    const auto restored = DeserializeImportedMaterials(SerializeImportedMaterials({canopy}));
+    ASSERT_TRUE(restored);
+    ASSERT_EQ(restored->size(), 1u);
+    EXPECT_EQ(ModelMaterialBridge::SurfaceShaderOf(restored->front()), "Surfaces/forest_canopy.glsl");
+
+    const ImportedMaterialData standard = ImportOnlyMaterial(R"({
+        "alphaMode": "MASK",
+        "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+        "extras": {"luciaForestCanopyCoverage": "true"}
+    })");
+    EXPECT_EQ(ModelMaterialBridge::SurfaceShaderOf(standard), "Surfaces/standard_pbr.glsl");
 }
 
 TEST(GltfImport, MaterialWithoutEmissionImportsNone)

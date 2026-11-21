@@ -177,6 +177,7 @@ float TemporalAANode::HistoryClipMode(bool hasMovers, bool contentChanged, bool 
 bool TemporalAANode::Initialize(std::string nodeId, std::string nodeJson, std::string* /*outError*/)
 {
     m_Id = std::move(nodeId);
+    InitializePostWorldDepthResolve(m_ForwardDepth, m_Id + ".ForwardDepthResolve");
     try
     {
         auto j = nlohmann::json::parse(nodeJson);
@@ -451,7 +452,19 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
         paramsSize = sizeof(TaaResolveParamsCPU);
     }
 
-    const RenderGraph::RGTexture depthResolved = d.ViewDepthResolved;
+    RenderGraph::RGTexture depthResolved = d.ViewDepthResolved;
+    const auto* viewResources = d.Services.Views().FindPerView(d.View.id);
+    if (depthResolved.Id != d.ViewDepth.Id && viewResources && viewResources->ForwardDrawsWritingDepth != 0 &&
+        d.ResolveTexture(Names::View::EffectiveColor).IsValid())
+    {
+        // The camera prepass missed these surfaces. TAA must reject history
+        // against the depth that belongs to the color it is blending.
+        if (!d.ResolveTexture(Names::View::DepthResolvedPostOcean).IsValid())
+            if (auto* device = d.Services.GetDevice())
+                m_ForwardDepth.RequestPipeline(*device, d.Frame.Graph().ResourceDesc(d.ViewDepth.Id).SampleCount);
+        if (auto postWorld = DeclarePostWorldDepth(d, m_ForwardDepth); postWorld.IsValid())
+            depthResolved = postWorld;
+    }
     // The input is stored at this frame's pre-exposure and the history at the previous frame's:
     // the resolve rescales the history by their ratio.
     const PipelineBufferBindingRG exposure = ResolveViewExposureHistory(d);

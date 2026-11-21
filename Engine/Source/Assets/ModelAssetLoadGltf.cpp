@@ -20,6 +20,8 @@
 
 #include "ECSModules/Rendering/SkeletonStore.h"
 
+#include <nlohmann/json.hpp>
+
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
@@ -112,8 +114,9 @@ void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view mode
         // morph/non-triangle meshes: the merge concatenates only LOD0 geometry,
         // so merging such a submesh would silently drop its
         // ExtraLODVertices/ExtraLODs chain. A mesh drawn by several nodes stays
-        // too: merging bakes one placement into the vertices.
-        if (m.IsSkinned() || m.HasMorphTargets() || !m.ExtraPlacements.empty()
+        // too: merging bakes one placement into the vertices. Extra channels may
+        // contain object-space attributes that must keep the original placement.
+        if (m.IsSkinned() || m.HasMorphTargets() || !m.ExtraPlacements.empty() || !m.ExtraTexCoords.empty()
             || m.PrimitiveTopology != MeshPrimitiveTopology::Triangles
             || m.HasAuthoredLODs() || m.HasOwnVertexLODs())
             skinned.push_back(std::move(m));
@@ -184,14 +187,12 @@ void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view mode
         size_t outIndexCount = 0;
         bool outHasColor0 = false;
         bool outHasTexCoords1 = false;
-        size_t outExtraUvCount = 0;
         for (size_t gi : group)
         {
             outVertCount += staticMeshes[gi].Vertices.size();
             outIndexCount += staticMeshes[gi].Indices.size();
             outHasColor0 = outHasColor0 || staticMeshes[gi].HasColor0();
             outHasTexCoords1 = outHasTexCoords1 || staticMeshes[gi].HasTexCoords1();
-            outExtraUvCount = std::max(outExtraUvCount, staticMeshes[gi].ExtraTexCoords.size());
         }
 
         // The merged indices are each source index plus the vertices merged before it: past
@@ -211,12 +212,6 @@ void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view mode
             out.Color0.reserve(outVertCount * 4u);
         if (outHasTexCoords1)
             out.TexCoords1.reserve(outVertCount * 2u);
-        if (outExtraUvCount > 0)
-        {
-            out.ExtraTexCoords.resize(outExtraUvCount);
-            for (auto& uvSet : out.ExtraTexCoords)
-                uvSet.reserve(outVertCount * 2u);
-        }
 
         for (size_t gi : group)
         {
@@ -317,19 +312,6 @@ void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view mode
                         out.TexCoords1.insert(out.TexCoords1.end(), {0.0f, 0.0f});
                     }
                 }
-                for (size_t uvi = 0; uvi < outExtraUvCount; ++uvi)
-                {
-                    if (uvi < src.ExtraTexCoords.size()
-                        && src.ExtraTexCoords[uvi].size() == src.Vertices.size() * 2u)
-                    {
-                        const float* uv = src.ExtraTexCoords[uvi].data() + svi * 2u;
-                        out.ExtraTexCoords[uvi].insert(out.ExtraTexCoords[uvi].end(), uv, uv + 2u);
-                    }
-                    else
-                    {
-                        out.ExtraTexCoords[uvi].insert(out.ExtraTexCoords[uvi].end(), {0.0f, 0.0f});
-                    }
-                }
             }
 
             // Indices: rebase + optional winding flip.
@@ -360,7 +342,6 @@ void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view mode
             Vector<uint32>().swap(src.Indices);
             Vector<float>().swap(src.Color0);
             Vector<float>().swap(src.TexCoords1);
-            Vector<Vector<float>>().swap(src.ExtraTexCoords);
             Vector<uint16>().swap(src.Joints0);
             Vector<float>().swap(src.Weights0);
             Vector<uint16>().swap(src.Joints1);
@@ -777,7 +758,7 @@ std::string PrimitiveAccessorRefusal(size_t primitiveIndex, size_t meshIndex, co
 }
 
 // The glTF type LoadGLTF reads base attribute `attribute` as: VEC3 for POSITION and NORMAL, VEC2 for
-// TEXCOORD_0 and TEXCOORD_1, VEC4 for TANGENT, JOINTS_0 and WEIGHTS_0, and for COLOR_0 its accessor's own type when that is
+// TEXCOORD_0 through TEXCOORD_7, VEC4 for TANGENT, JOINTS_0 and WEIGHTS_0, and for COLOR_0 its accessor's own type when that is
 // VEC3 or VEC4 (the one base attribute with two legal types; VEC4 otherwise, which refuses it);
 // cgltf_type_invalid for an attribute it does not read.
 cgltf_type BaseAttributeType(const cgltf_attribute& attribute)
@@ -787,7 +768,7 @@ cgltf_type BaseAttributeType(const cgltf_attribute& attribute)
     case cgltf_attribute_type_normal:
         return cgltf_type_vec3;
     case cgltf_attribute_type_texcoord:
-        return attribute.index <= 1 ? cgltf_type_vec2 : cgltf_type_invalid;
+        return attribute.index >= 0 && attribute.index < 8 ? cgltf_type_vec2 : cgltf_type_invalid;
     case cgltf_attribute_type_tangent:
     case cgltf_attribute_type_joints:
     case cgltf_attribute_type_weights:
@@ -859,7 +840,7 @@ std::string ChargeMorphTargets(const cgltf_mesh& mesh, size_t meshIndex, const c
 
 // Charges `budget` with the arrays LoadGLTF keeps for triangle primitive `primitiveIndex` of mesh
 // `meshIndex`: its indices; JOINTS_0, WEIGHTS_0 and COLOR_0 as four components each (an RGB COLOR_0
-// takes alpha 1); one Vertex per element of its widest attribute with data, and one index per vertex
+// takes alpha 1); the separate UV channels; one Vertex per element of its widest attribute with data, and one index per vertex
 // when it has no indices; and its morph targets. The first charge that does not fit, described for a
 // refusal; empty when every one fits.
 std::string ChargePrimitiveArrays(const cgltf_mesh& mesh, size_t meshIndex, size_t primitiveIndex,
@@ -875,10 +856,15 @@ std::string ChargePrimitiveArrays(const cgltf_mesh& mesh, size_t meshIndex, size
 
     for (size_t attributeIndex = 0; attributeIndex < primitive.attributes_count; ++attributeIndex) {
         const cgltf_attribute& attribute = primitive.attributes[attributeIndex];
-        if (!AccessorHasData(attribute.data) || attribute.index != 0)
+        if (!AccessorHasData(attribute.data))
             continue;
         size_t bytesPerElement = 0;
-        if (attribute.type == cgltf_attribute_type_joints)
+        if (attribute.type == cgltf_attribute_type_texcoord && attribute.index > 0 &&
+            BaseAttributeType(attribute) != cgltf_type_invalid)
+            bytesPerElement = 2u * sizeof(float);
+        else if (attribute.index != 0)
+            continue;
+        else if (attribute.type == cgltf_attribute_type_joints)
             bytesPerElement = 4u * sizeof(uint16);
         else if (attribute.type == cgltf_attribute_type_weights || attribute.type == cgltf_attribute_type_color)
             bytesPerElement = 4u * sizeof(float);
@@ -1617,6 +1603,11 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
                 } else if (a.type == cgltf_attribute_type_texcoord && a.index == 1) {
                     // UV1 (the lightmap channel) reads the same unpacked accessor as UV0, sparse values included.
                     mesh.TexCoords1.assign(attributeFloats.begin(), attributeFloats.end());
+                } else if (a.type == cgltf_attribute_type_texcoord) {
+                    const size_t channel = static_cast<size_t>(a.index) - 2u;
+                    if (mesh.ExtraTexCoords.size() <= channel)
+                        mesh.ExtraTexCoords.resize(channel + 1u);
+                    mesh.ExtraTexCoords[channel].assign(attributeFloats.begin(), attributeFloats.end());
                 } else if (a.type == cgltf_attribute_type_tangent) {
                     haveTangents = true;
                     for (size_t i = 0; i < count; ++i) {
@@ -1676,6 +1667,9 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
             // A UV1 accessor with a vertex count other than the positions' is dropped, not read past.
             if (!mesh.HasTexCoords1())
                 mesh.TexCoords1.clear();
+            for (auto& coords : mesh.ExtraTexCoords)
+                if (coords.size() != positionVertexCount * 2u)
+                    coords.clear();
 
             // Morph targets keep the file's order, empty ones included, so the engine's target i,
             // default weight i and name i are the file's target i, mesh.weights[i] and
@@ -2065,6 +2059,15 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
                 default:                      mat.AlphaMode = AlphaMode::Opaque; break;
             }
             mat.AlphaCutoff = (float)m.alpha_cutoff;
+            if (mat.AlphaMode == AlphaMode::Mask) {
+                const std::string_view extras = ExtrasText(*gltf, m.extras);
+                // This cooker marker is small. Leave arbitrary authored extras to the model extras API.
+                if (!extras.empty() && extras.size() <= 256) {
+                    const auto data = nlohmann::json::parse(extras, nullptr, false);
+                    const auto found = data.find("luciaForestCanopyCoverage");
+                    mat.ForestCanopyCoverage = found != data.end() && found->is_boolean() && *found == true;
+                }
+            }
 
             // Populate basic PBR parameters from glTF metallic-roughness block
             const cgltf_pbr_metallic_roughness& pbr = m.pbr_metallic_roughness;

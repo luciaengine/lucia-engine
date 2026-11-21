@@ -90,6 +90,7 @@ inline constexpr uint32_t kInstanceFlagShadowsOnly = 1u << 7;
 /// (CpuDrawStreamBuilder's camera and caster sets, the sorted transparent collect, the
 /// motion-vector movers).
 inline constexpr uint32_t kInstanceFlagEditorHidden = 1u << 8;
+inline constexpr uint32_t kInstanceFlagImpostorPlacement = 1u << 9;
 
 /// Whether a color pass draws an instance with these flags: never a shadows-only one, and in a view
 /// that drops what the Scene View eye hides, never an editor-hidden one. The CPU twin of the color

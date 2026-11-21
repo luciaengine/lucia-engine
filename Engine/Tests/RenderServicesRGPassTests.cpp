@@ -2924,6 +2924,17 @@ TEST(RenderServicesRGPassTests, SortedArtworkWithoutMeshSubmissionsKeepsItsDrain
         sprite.Sorting.Order = 3;
         sprite.Entity.id = 1;
         uint32 calls = 0;
+        uint32 formattedCalls = 0;
+        const auto formattedProducer = f.Rs.RegisterForwardEmit(
+            [&](ForwardEmitContext& context)
+            {
+                if (context.ViewId != f.View)
+                    return;
+                ++formattedCalls;
+                EXPECT_EQ(context.Frame, &frame);
+                EXPECT_EQ(f.Rs.Views().GetViewWorldColorFormatKey(f.View).ColorCount, 1u);
+                EXPECT_TRUE(f.Rs.Views().GetViewDeclaredWorldPassKeywords(f.View).has_value());
+            }, {.WritesDepth = false, .RequiresFrame = true, .NeedsWorldPassFormats = true});
         const auto ordinaryProducer = f.Rs.RegisterForwardEmit(
             [&](ForwardEmitContext& context)
             {
@@ -2943,6 +2954,7 @@ TEST(RenderServicesRGPassTests, SortedArtworkWithoutMeshSubmissionsKeepsItsDrain
         f.Rs.BeginWorldDrawFrame();
         f.Rs.BuildWorldBatchKeys();
         EXPECT_EQ(calls, 0u);
+        EXPECT_EQ(formattedCalls, 0u);
         ASSERT_TRUE(f.Rs.GetEntityBatchKeys(f.View).empty());
         Pipeline::ViewDeclare declaration(frame, *f.Rs.Views().FindViewDesc(f.View), f.Rs, "World");
         declaration.ViewColor = color;
@@ -2952,6 +2964,7 @@ TEST(RenderServicesRGPassTests, SortedArtworkWithoutMeshSubmissionsKeepsItsDrain
         ASSERT_TRUE(node.Initialize("World", "{}", nullptr));
         node.DeclareForView(declaration);
         EXPECT_EQ(calls, 1u);
+        EXPECT_EQ(formattedCalls, 1u);
         EXPECT_TRUE(f.Rs.IsSortedTransparentActive(f.View));
         EXPECT_TRUE(f.Rs.GetForwardCommands(f.View).empty());
         ASSERT_EQ(f.Rs.Views().PerView(f.View).SortedTransparentCommands.size(), 2u);
@@ -2963,6 +2976,7 @@ TEST(RenderServicesRGPassTests, SortedArtworkWithoutMeshSubmissionsKeepsItsDrain
         frame.BeginFrame(1);
         f.Rs.EmitFrameForwardCommandsForView(frame, f.View);
         EXPECT_EQ(calls, 2u);
+        EXPECT_EQ(formattedCalls, 1u);
         EXPECT_EQ(f.Rs.Views().PerView(f.View).SortedTransparentCommands.size(), 1u);
     }
     f.Down();

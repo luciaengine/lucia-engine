@@ -18,12 +18,12 @@ struct ImpostorAtlasKey
     Mathematics::OctahedralLayout Layout = Mathematics::OctahedralLayout::Hemisphere;
     uint32 FramesPerSide = 8; // The atlas holds FramesPerSide^2 frames.
     uint32 FrameSize = 128;   // Pixels per frame side.
+    bool BakeDiffuseTransmission = false;
 
     auto operator<=>(const ImpostorAtlasKey&) const = default;
 };
 
-/// GPU bytes of one atlas: an RGBA8 base colour layer and an RGBA16F normal and depth layer
-/// per frame.
+/// GPU bytes of all resident atlas layers, including optional diffuse transmission.
 uint64 ImpostorAtlasBytes(const ImpostorAtlasKey& key);
 
 /// Which atlases live inside a byte budget. An atlas is requested when an instance first needs
@@ -42,14 +42,20 @@ public:
     explicit ImpostorAtlasCache(uint64 budgetBytes);
 
     State GetState(const ImpostorAtlasKey& key) const;
+    bool HasRecentPendingRequest(const ImpostorAtlasKey& key, uint64 frame) const;
 
     /// Holds `key` and marks it used in `frame`. An absent atlas becomes Pending when it fits the
-    /// budget after evicting atlases unused in this frame; the evicted keys go to `outEvicted`.
+    /// budget after evicting atlases unused in both the current and previous frame.
+    /// Failed admissions retain the existing atlases. Evicted keys go to `outEvicted`.
+    /// All callers share one frame epoch.
     /// Returns the state after the request: Absent when the atlas does not fit.
     State Request(const ImpostorAtlasKey& key, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted);
 
     /// The bake of a Pending atlas finished.
     void MarkReady(const ImpostorAtlasKey& key);
+
+    /// Return a failed bake's reservation to the budget.
+    void ReleasePending(const ImpostorAtlasKey& key);
 
     /// Drops every atlas, for a device rebuild that freed their textures.
     void Clear();
@@ -64,7 +70,7 @@ private:
         uint64 LastUsedFrame = 0;
     };
 
-    void EvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted);
+    bool TryEvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted);
 
     uint64 m_BudgetBytes = 0;
     uint64 m_UsedBytes = 0;

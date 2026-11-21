@@ -1918,6 +1918,8 @@ void TerrainGrassRenderFeature::FlushDeferredDestroys()
 
 void TerrainGrassRenderFeature::DestroyGpuResources()
 {
+    // A pending diagnostic ticket must release its buffer while the device is alive.
+    m_PlacementDebug.clear();
     if (!m_Device)
         return;
 
@@ -1977,6 +1979,7 @@ void TerrainGrassRenderFeature::OnDeviceRebuilt(Rendering::IDevice* device)
 {
     if (!device)
         return;
+    m_PlacementDebug.clear();
     m_PlacementStats.OnDeviceRebuilt(device);
 }
 

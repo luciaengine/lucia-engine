@@ -193,7 +193,7 @@ void PopulateScene(GPUScene& scene, uint32_t instanceCount)
         inst.transform = Matrix4x4::Identity();
         inst.prevTransform = Matrix4x4::Identity();
         inst.normalMatrixCol0 = Vector3(1, 0, 0);
-        inst.normalMatrixCol1 = Vector4(0, 1, 0, 0);
+        inst.normalMatrixCol1 = Vector3(0, 1, 0);
         inst.normalMatrixCol2 = Vector4(0, 0, 1, 0);
         inst.meshIndex = 0;
         inst.materialIndex = 0;

@@ -208,3 +208,40 @@ TEST(MaterialMipStepPlanner, ASettledSetHasNoStep)
     EXPECT_FALSE(planner.Plan(streams, Used(streams)).has_value());
     EXPECT_FALSE(planner.Plan({}, 0).has_value());
 }
+
+TEST(MaterialMipStepPlanner, ActiveImpostorOpacityReceivesTheAvailableFinerLevel)
+{
+    const Texture texture(1024);
+    std::array streams{texture.At(texture.Tail, 0.02f, kIdA), texture.At(texture.Tail, 1.0f, kIdB)};
+    streams[0].ImpostorOpacity = true;
+    const uint64 oneGain = texture.SuffixBytes[texture.Tail - 1] - texture.SuffixBytes[texture.Tail];
+
+    MaterialMipStepPlanner planner;
+    const auto step = planner.Plan(streams, Used(streams) + oneGain);
+    ASSERT_TRUE(step.has_value());
+    EXPECT_EQ(step->StreamIndex, 0u);
+    EXPECT_EQ(step->TargetMip, texture.Tail - 1);
+    EXPECT_TRUE(step->ForImpostorOpacity);
+}
+
+TEST(MaterialMipStepPlanner, OpacityPriorityDoesNotExceedTheBudgetAndCanBeReleased)
+{
+    const Texture texture(1024);
+    std::array streams{texture.At(1, 0.02f, kIdA), texture.At(2, 1.0f, kIdB)};
+    streams[0].ImpostorOpacity = true;
+    const uint64 budget = Used(streams);
+
+    MaterialMipStepPlanner planner;
+    EXPECT_FALSE(planner.Plan(streams, budget).has_value());
+
+    streams[0].ImpostorOpacity = false;
+    const auto loss = planner.Plan(streams, budget);
+    ASSERT_TRUE(loss.has_value());
+    EXPECT_EQ(loss->StreamIndex, 0u);
+    EXPECT_EQ(loss->TargetMip, 2u);
+    streams[0].FirstMip = loss->TargetMip;
+    const auto gain = planner.Plan(streams, budget);
+    ASSERT_TRUE(gain.has_value());
+    EXPECT_EQ(gain->StreamIndex, 1u);
+    EXPECT_EQ(gain->TargetMip, 1u);
+}

@@ -26,6 +26,8 @@ struct MeshClusterLODConfig
     // A mesh whose levels simplify badly (sharp, boxy shapes) keeps a finer LOD0, or its source.
     float ResidentRatio = 0.25f;
     float ResidentRelativeError = 0.02f;
+    // Cutout coverage depends on the UVs. Use only attribute-aware simplification for those meshes.
+    bool AllowPositionOnlyReduction = true;
 };
 
 /// The group value of a unit made from source triangles.

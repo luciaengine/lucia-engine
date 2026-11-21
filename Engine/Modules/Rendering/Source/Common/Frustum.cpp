@@ -55,11 +55,13 @@ namespace GameEngine { namespace Rendering {
 
 bool TestSphereFrustum(const Vector3& center, float radius, const Vector4* planes)
 {
-    // Conservative test: if the sphere is completely outside any plane,
-    // consider it culled. We allow a small inflation factor to avoid
-    // flickering at the frustum edges.
-    const float kInflation = 1.5f;
-    const float inflatedRadius = radius * kInflation;
+    // Keep the default draw-culling guard band.
+    return TestSphereFrustum(center, radius, planes, 1.5f);
+}
+
+bool TestSphereFrustum(const Vector3& center, float radius, const Vector4* planes, float radiusScale)
+{
+    const float inflatedRadius = radius * radiusScale;
 
     for (int i = 0; i < 6; ++i)
     {

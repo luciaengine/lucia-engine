@@ -107,12 +107,14 @@ struct DrawCommand
     // Per-draw resource bindings forwarded to MaterialBinder::PrepareMaterialForDraw.
     DrawBindings Bindings{};
 
-    // Optional GPU-driven draw source. When enabled, IndexCount/InstanceCount
-    // are ignored and the pass records DrawIndexedIndirectCount instead.
+    // Optional GPU-driven draw source. When enabled, IndexCount and InstanceCount
+    // are read from the command buffer.
     bool UseIndirect = false;
     // The registered producer of this command (Rendering::DrawProducerRegistry); its name is the
     // command's profiler scope inside a shared pass. It fills padding after UseIndirect.
     ::GameEngine::Rendering::DrawProducerId Producer = ::GameEngine::Rendering::DrawProducerRegistry::kOther;
+    // The producer supplies exactly IndirectMaxDrawCount records from byte zero.
+    bool FixedIndirectCount = false;
     ::GameEngine::Rendering::BufferHandle IndirectCommandBuffer{};
     ::GameEngine::Rendering::BufferHandle IndirectCountBuffer{};
     uint32_t IndirectMaxDrawCount = 0;
@@ -125,6 +127,15 @@ struct DrawCommand
     // producers pack many per-run counts into one buffer (the sorted
     // transparent drain emits one count per run).
     size_t IndirectCountOffset = 0;
+
+    void RecordIndirect(::GameEngine::Rendering::CommandList& commands) const
+    {
+        if (FixedIndirectCount)
+            commands.DrawIndexedIndirect(IndirectCommandBuffer, IndirectMaxDrawCount, IndirectStride);
+        else
+            commands.DrawIndexedIndirectCount(IndirectCommandBuffer, IndirectCountBuffer, IndirectMaxDrawCount,
+                                              IndirectStride, IndirectCommandOffset, IndirectCountOffset);
+    }
 
     // When non-empty the primary DrawIndexed is suppressed and each SubDraw
     // emits its own DrawIndexed with the same pipeline / descriptor sets /

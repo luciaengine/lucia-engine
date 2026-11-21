@@ -1,33 +1,104 @@
 ---
 title: Impostors
-description: How far trees draw as baked impostor cards, and what the bake costs.
+description: How far trees, plants and props draw as baked impostor cards, how to turn them on for a model, and what the bake costs.
 ---
 
 # Impostors
 
-An impostor is a flat card that shows a picture of an object, baked from the object itself. Far away, the card looks like the object and costs much less to draw. Generated trees (the Tree Generator package) use impostors automatically.
+An impostor is a flat card that shows a picture of an object, baked from the object itself. At a distance, a card can replace the triangles of a detailed tree with one quad. Generated trees (the Tree Generator package) use impostors automatically. Other models opt in through their asset settings.
 
-## How trees switch to impostors
+## Turn impostors on for a model
 
-Each tree measures how much of the screen it covers, from the camera. When the tree's sphere is under about 128 pixels across at 1080p, it draws its impostor card instead of its bark and leaf meshes. At that size the card shows about one atlas pixel per screen pixel. A margin above that point stops the tree from switching back and forth. A tree switches only when its atlas is baked and its card material is ready. Until then it draws its mesh.
+Select the model asset, open the **LOD** tab of the inspector, and turn on **Far impostor**. The setting is saved with the asset (`assets.model.impostor`), and every entity that draws a part of the model gets the impostor.
 
-Trees with equal options share one tree variant, and a variant has one atlas. A forest that reuses a few variants therefore bakes a few atlases.
+Use it for trees, large plants, and props that the camera sees from far away. Small meshes such as grass blades can be cheaper than a card because the card reprojects and blends multiple atlas views per pixel.
+
+All parts of a complete placement switch together. A model with a bark part and a leaf part draws one card in place of both. Keep its parts at the same pose and in the same render layers, and assign the same material to each submesh across instances of the model.
+
+## How objects switch to impostors
+
+The GPU measures the projected size of the object's bounding sphere. An object switches to its card only after every submesh reaches its coarsest mesh LOD and the card is ready. A small margin reduces switching when the camera moves near the threshold.
+
+Use **Impostor Screen Height (%)** to set the maximum screen height at which an opted-in model can switch. A value of 0 uses the renderer profile's automatic handoff threshold, 128 pixels across the sphere in the standard profile or 96 in the compact profile. The mesh LOD error budget still controls when each submesh reaches its coarsest LOD.
+
+Trees with equal options share one tree variant and its atlas. Instances with matching model geometry and material assignments also share an atlas. A forest that reuses a few variants or models therefore bakes a few atlases.
+
+When a view requires refined Cluster LOD geometry, the renderer keeps that geometry. After streaming returns the placement to its whole-model cut, it can switch to an impostor. An HLOD proxy made from coarse source meshes waits until every participating view can use the baked mesh levels and active cluster splits have ended. It then replaces its members, so those members release atlas demand. Another resident placement can keep using the same atlas.
+
+If a model reload changes geometry used by an HLOD proxy, the engine restores the source meshes. Run **Bake HLOD** again to restore the proxy. Sidecars baked before resolved geometry was included in the cache key also need a fresh bake.
+
+For the mesh materials that feed the bake, see the [virtual material texture design](../development/virtual-material-textures.mdx).
+
+## Stream packed forest placements
+
+Use `ForestPlacementCook` to turn one species' tree transforms into a `.geforest` archive. Supply a CSV with the header `page,x,y,z,yawDegrees,scale`, the output path, and the tree's root radius in meters. At unit scale, the radius must reach the farthest card corner and the farthest mesh vertex, including their maximum wind displacement. Group the rows by page, starting at page 0 in the same order as the overview mesh. Each page holds up to 144 trees at one root elevation. The format stores horizontal offsets up to 655.35 meters to the nearest centimeter, yaw around the vertical axis, and a uniform scale between 0.75 and 1.25.
+
+```sh title="Cook tree placements"
+ForestPlacementCook placements.csv Assets/Forests/Forest.geforest 12
+```
+
+Add `--spatial-order` after the root radius to group nearby pages together for culling. Generate the overview from the resulting archive so its index order matches the reordered pages. For an existing hand-authored overview, use the default order.
+
+To generate the matching overview mesh, supply a top-down RGBA canopy projection. Give its bounds in the imported tree's local XZ plane and a representative canopy height above the root, all in meters. The first image row corresponds to the minimum Z. Choose 16 to 64 pixels per page tile. Larger tiles preserve more canopy detail and use more graphics memory.
+
+```sh title="Cook an overview mesh from an archive"
+ForestPlacementCook --overview Assets/Forests/Forest.geforest canopy.png Assets/Forests/Canopy.glb -5 -6 5 6 9 32
+```
+
+The cooker uses the archive's packed positions, yaw, and scale. It embeds an alpha-masked texture in the model and keeps each page's canopy in its own tile. At distance, the material uses the filtered alpha as coverage so the canopy remains visible when its leaf detail becomes smaller than a pixel. The canopy also follows the scene's autumn tint and snow settings. Import with the default glTF axis settings and a single mesh LOD. Place the overview entity at the world origin with identity rotation and scale. Regenerate the model when the placements change.
+
+For a Player scene with a packed `.geforest` placement archive and its matching overview mesh, add `forestStand` to `game.config`. The overview mesh has one quad per archive page in archive order. Name its scene entity with `entity` and set that entity's render layers to `none`. The forest renderer draws it from the archive's visible page ranges. Leave the entity's material empty to use the material embedded by the cooker.
+
+```json title="Packed forest in game.config"
+{
+  "forestStand": {
+    "archive": "Forests/Forest.geforest",
+    "entity": "Canopy",
+    "impostorModel": "Models/Forest/StandingTree.glb",
+    "detailDistance": 275,
+    "nearMeshBudget": 96
+  }
+}
+```
+
+Enable **Far impostor** on `impostorModel` and include every submesh with its bake material in the startup scene. Source entities used only for the bake can have render layers set to `none`. Visible pages within `detailDistance` meters request individual tree cards. A cold forest can begin baking its atlas from 1.4 times that distance for visible pages. The overview mesh covers a page while its placements or the atlas are loading, and covers everything outside the detail range. Omit `impostorModel` for overview-only rendering. The default detail distance is 400 meters.
+
+Set `nearMeshBudget` to draw up to that many nearby trees as meshes in the streamed view. The renderer chooses the closest eligible placements. Each source part uses its own mesh LOD and material. A tree uses its card while the source mesh variants are loading. A small overlap between the switch distances keeps the current representation as the camera moves near the boundary. The setting defaults to zero and the hardware profile caps a positive budget.
+
+Desktop export reads `forestStand` from the project root's `game.config` and stages the archive at the same relative path under `Assets`. Keep the archive under the project's `Assets` folder and include the configured overview entity in the exported startup scene.
+
+## Foliage shading
+
+Use an opaque bark material and an alpha-masked leaf material. For thin leaves that transmit light, enable **Diffuse Transmission** on the Standard PBR material and set its strength. The card uses a per-texel bake of that response, so the bark remains opaque on the same card.
+
+Add a `FoliageSeason` component to the scene to drive autumn tint and snow in the entire world. When several are enabled, the highest priority supplies the settings. For Standard PBR materials, set `impostorLeafTintWeight` and `impostorSnowWeight` in the material properties. For example, use a leaf tint weight of 1 on foliage and 0 on bark. Snow also uses the shaded normal, so upward-facing surfaces receive more. Changing the scene's season updates mesh and card shading without rebaking the atlas.
+
+Use the bundled `VertexModifiers/foliage_wind.glsl` modifier on both leaf and bark materials. Give every part the same base, height range, and sway amplitude so the leaves follow the trunk and branches.
+
+For individual leaf flutter, author a pivot where each leaf attaches to its stem or branch. Give all vertices of that leaf the same mesh-local pivot in UV6.xy and UV7.x. Store the distance from the pivot to the farthest vertex in UV7.y. Enable **Use Authored Leaf Pivots** on the leaf material and set the second value in **Foliage Sway and Leaf Flutter (m)** to control the tip displacement. The shader rotates each leaf about its pivot using a hinge axis derived from the wind direction. The pivot follows branch sway, including when the flutter displacement is zero. Vertices without pivot channels or with a zero radius use whole-tree sway.
+
+The impostor atlas captures the rest pose. After the switch to the card, the tree uses live whole-tree sway.
 
 ## The atlas
 
-The engine bakes the atlas of a variant on the GPU, a few views in each frame, when a tree of that variant first comes near the switch point. The atlas holds 8 x 8 views of the tree over the upper hemisphere, 128 pixels each, each view fitted to the tightest sphere around the tree's vertices. The outer views look from the horizon. Each view stores the base color, the opacity, the normal and the depth. A card blends the 3 views nearest to its viewing direction. It uses the depth to line the views up on the tree's surface, and it leaves out a view that sees leaves in front of that surface.
+The engine bakes the atlas on the GPU, a few views in each frame. A model bakes when it is first drawn, and a tree variant bakes when its first tree is drawn. The atlas holds 8 x 8 views of the object over the upper hemisphere, each fitted to the object's sphere. The outer views look from the horizon. Each view stores the base color, the opacity, the normal, and the depth. A card blends the 3 views nearest to its viewing direction. It uses the depth to line the views up on the object's surface, and it leaves out a view that sees a surface in front of that point.
 
-- The bake draws the tree's own materials without wind, so the card shows the rest pose.
-- An atlas uses 12 MB of GPU memory. All atlases together stay under 256 MB. Past that, the atlas drawn least recently goes, and its trees draw their meshes.
+- The bake draws each part with its assigned material, including alpha-masked leaves. A model keeps drawing its meshes while a part or its textures are loading, or if instances assign different materials to the same part. Alpha-blended, refractive, subsurface, skinned, and morphing models keep drawing their meshes.
+- Tree variants bake without wind, so the card shows the rest pose.
+- The default profile uses 128-pixel views and a 256 MiB residency budget. An atlas uses 14 MiB including the seasonal masks, or 18 MiB with thin-surface transmission. Devices reporting 4 GiB or less of graphics memory use 64-pixel views and a 64 MiB budget, so each atlas takes one quarter of the memory. Compatibility uses the same compact atlas and handoff policy. The atlas tile size and automatic handoff threshold are independent. Under pressure the renderer can evict an unused atlas and draw its instances as meshes until it bakes the atlas again.
 
 ## Limits
 
-- The card turns to face the camera. In shadow passes the card faces the camera too, not the light, so the shadow of a far tree shows the camera's view of the tree.
-- A tree switches between mesh and card without a fade.
-- The card writes a flat depth, not the depth of the baked tree.
-- The card uses a fixed roughness of 0.9, so far trees have no leaf highlight.
+- The card turns to face the camera. In a directional shadow cascade it faces the light, so a far object casts the shadow of the light's view of the object.
+- In shadows, the switch has no margin. Close to the switch point an object can cast the shadow of its mesh while it draws its card, or the reverse.
+- An object switches between mesh and card without a fade.
+- The card writes a flat depth, not the depth of the baked object.
+- The card uses a fixed roughness of 0.9, so far objects have no highlight.
+- The card turns its normals with the object's rotation around the vertical axis only. A tilted object gets slightly wrong lighting on its card.
+- Virtual shadow maps always draw the meshes.
+- A compatibility device that lacks the required atlas texture formats keeps drawing the source geometry.
 
 ## Debug switches
 
-- `GE_IMPOSTORS=0` keeps every tree on its mesh, for a comparison against the impostors.
-- `GE_IMPOSTOR_DEBUG_TINT=1` tints the impostor cards red, to show which trees draw cards.
+- `GE_IMPOSTORS=0` keeps every object on its meshes, for a comparison against the impostors.
+- `GE_IMPOSTOR_DEBUG_TINT=1` tints the impostor cards red, to show which objects draw cards.

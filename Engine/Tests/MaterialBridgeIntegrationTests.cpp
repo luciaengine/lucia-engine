@@ -3510,7 +3510,7 @@ TEST_F(MaterialPipelineCompilationTest, SceneWarm_CompilesTheDrawsVariantAndRequ
     const VertexAttributeFlags vf = VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasColor;
     const MaterialKeyword passKw = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced | MaterialKeyword::Shadows;
 
-    variants.WarmColorVariant(*mat, vf, PrimitiveTopology::TriangleList, passKw, FrontFace::CounterClockwise, fk);
+    EXPECT_FALSE(variants.WarmColorVariant(*mat, vf, PrimitiveTopology::TriangleList, passKw, FrontFace::CounterClockwise, fk));
     EXPECT_EQ(variants.PendingVariantCompileCount(), 1u) << "the warm queues the variant's compile";
     EXPECT_TRUE(held.Jobs.empty()) << "no pipeline can build before its variant has compiled";
     variants.SubmitPendingVariantCompiles();
@@ -3524,7 +3524,9 @@ TEST_F(MaterialPipelineCompilationTest, SceneWarm_CompilesTheDrawsVariantAndRequ
     ASSERT_TRUE(id.IsValid());
     ASSERT_EQ(held.Jobs.size(), 1u) << "the published variant's pipeline build was not requested for the pass";
     EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(id, fk).IsValid()) << "the build ran on the calling thread";
+    EXPECT_FALSE(variants.WarmColorVariant(*mat, vf, PrimitiveTopology::TriangleList, passKw, FrontFace::CounterClockwise, fk));
     held.RunAll();
+    EXPECT_TRUE(variants.WarmColorVariant(*mat, vf, PrimitiveTopology::TriangleList, passKw, FrontFace::CounterClockwise, fk));
     EXPECT_TRUE(m_device->TryGetWarmGraphicsPipeline(id, fk).IsValid())
         << "the warmed pipeline is not the one the pass draws with";
 }

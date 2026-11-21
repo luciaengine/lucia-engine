@@ -733,6 +733,12 @@ bool GPUScene::ReadReleasedSlotsSince(uint64_t cursor, std::vector<uint32_t>& ou
     return true;
 }
 
+void GPUScene::RequestInstanceHistoryReset(uint32_t instanceIndex)
+{
+    if (instanceIndex < m_InstanceSlotFree.size() && m_InstanceSlotFree[instanceIndex] == 0u)
+        m_PrevVisibleResetSlots.push_back(instanceIndex);
+}
+
 void GPUScene::DrainPrevVisibleResetSlots(std::vector<uint32_t>& outSlots)
 {
     // Ping-pong the buffers so neither side reallocates in steady state: outSlots
@@ -781,6 +787,9 @@ uint32_t GPUScene::AddMesh(const GPUMesh& mesh)
     {
         m_Meshes.push_back(mesh);
     }
+    m_Meshes[index].impostorCard = 0u;
+    m_Meshes[index].nextImpostorPart = 0u;
+    m_Meshes[index].impostorSwitchCoverage = 0.0f;
 
     m_MeshCount++;
     m_MeshesDirty = true;
@@ -797,7 +806,77 @@ void GPUScene::UpdateMesh(uint32_t meshIndex, const GPUMesh& mesh)
         return;
     }
 
+    const uint32_t impostorCard = m_Meshes[meshIndex].impostorCard;
+    const uint32_t nextImpostorPart = m_Meshes[meshIndex].nextImpostorPart;
+    const float switchCoverage = m_Meshes[meshIndex].impostorSwitchCoverage;
     m_Meshes[meshIndex] = mesh;
+    m_Meshes[meshIndex].impostorCard = impostorCard;
+    m_Meshes[meshIndex].nextImpostorPart = nextImpostorPart;
+    m_Meshes[meshIndex].impostorSwitchCoverage = switchCoverage;
+    m_MeshesDirty = true;
+    for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
+}
+
+bool GPUScene::SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t cardMaterialIndex,
+                                    uint32_t cardMeshIndex, float switchCoverage, bool requiresPlacement)
+{
+    if (parts.empty() || cardMeshIndex >= m_Meshes.size() || m_Meshes[cardMeshIndex].indexCount == 0u
+        || cardMaterialIndex >= kGPUMeshImpostorMaterialMask
+        || !(switchCoverage >= 0.0f && switchCoverage <= 1.0f))
+        return false;
+
+    const uint32_t material = (cardMaterialIndex + 1u)
+                              | (requiresPlacement ? kGPUMeshImpostorPlacementBit : 0u);
+    bool needsLink = false;
+    bool needsCoverageUpdate = false;
+    for (size_t i = 0; i < parts.size(); ++i)
+    {
+        const uint32_t index = parts[i];
+        const auto previousParts = parts.first(i);
+        if (index >= m_Meshes.size() || index == cardMeshIndex || m_Meshes[index].indexCount == 0u
+            || std::ranges::find(previousParts, index) != previousParts.end())
+            return false;
+        const GPUMesh& mesh = m_Meshes[index];
+        const uint32_t word = material | (i == 0 ? kGPUMeshImpostorPrimaryBit : 0u);
+        if (mesh.impostorCard == 0u)
+            needsLink = true;
+        else if (mesh.impostorCard != word || mesh.nextImpostorPart != parts[(i + 1u) % parts.size()])
+            return false;
+        needsCoverageUpdate |= mesh.impostorSwitchCoverage != switchCoverage;
+    }
+    if (!needsLink && !needsCoverageUpdate)
+        return true;
+
+    for (size_t i = 0; i < parts.size(); ++i)
+    {
+        GPUMesh& mesh = m_Meshes[parts[i]];
+        mesh.impostorCard = material | (i == 0 ? kGPUMeshImpostorPrimaryBit : 0u);
+        mesh.nextImpostorPart = parts[(i + 1u) % parts.size()];
+        mesh.impostorSwitchCoverage = switchCoverage;
+    }
+    if (needsLink)
+        m_BatchRegistry.SetMeshCardRow(parts.front(), cardMaterialIndex, cardMeshIndex);
+    m_MeshesDirty = true;
+    for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
+    return true;
+}
+
+void GPUScene::ClearMeshImpostorGroup(uint32_t meshIndex)
+{
+    if (meshIndex >= m_Meshes.size() || m_Meshes[meshIndex].impostorCard == 0u)
+        return;
+    uint32_t part = meshIndex;
+    do
+    {
+        GPUMesh& mesh = m_Meshes[part];
+        const uint32_t next = mesh.nextImpostorPart;
+        if ((mesh.impostorCard & kGPUMeshImpostorPrimaryBit) != 0u)
+            m_BatchRegistry.ClearMeshCardRow(part);
+        mesh.impostorCard = 0u;
+        mesh.nextImpostorPart = 0u;
+        mesh.impostorSwitchCoverage = 0.0f;
+        part = next;
+    } while (part != meshIndex);
     m_MeshesDirty = true;
     for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
 }
@@ -815,6 +894,7 @@ void GPUScene::RemoveMesh(uint32_t meshIndex)
     // count fields are already zero as already-freed.
     if (m_Meshes[meshIndex].indexCount == 0 && m_Meshes[meshIndex].vertexCount == 0)
         return;
+    ClearMeshImpostorGroup(meshIndex);
     m_Meshes[meshIndex] = GPUMesh{};
 
     FreeMeshSlot(meshIndex);

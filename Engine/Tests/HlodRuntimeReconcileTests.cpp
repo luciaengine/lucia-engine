@@ -69,9 +69,9 @@ Mesh MakeBox(float extent) {
 }
 
 struct ModelBank {
-    std::unordered_map<GUID, std::unique_ptr<ModelAsset>> Models;
+    std::unordered_map<GUID, SharedPtr<ModelAsset>> Models;
     const ModelAsset* Add(const GUID& guid, uint64 contentHash) {
-        auto a = std::make_unique<ModelAsset>(guid, std::filesystem::path{});
+        auto a = std::make_shared<ModelAsset>(guid, std::filesystem::path{});
         a->SetMeshesForTest({MakeBox(1.0f)});
         a->SetSourceContentHashForTest(contentHash);
         const ModelAsset* raw = a.get();
@@ -79,9 +79,9 @@ struct ModelBank {
         return raw;
     }
     Hlod::ModelResolver Resolver() {
-        return [this](const GUID& g) -> const ModelAsset* {
+        return [this](const GUID& g) -> SharedPtr<const ModelAsset> {
             auto it = Models.find(g);
-            return it == Models.end() ? nullptr : it->second.get();
+            return it == Models.end() ? nullptr : it->second;
         };
     }
 };
@@ -110,12 +110,13 @@ Components::LocalBounds BoxBounds(float extent) {
 // The near and culling range of the CameraAt() cameras.
 constexpr Rendering::CameraRanges kCameraAtRanges{0.1f, 1000.0f};
 
-// A camera at (x,y,z) with an identity projection (projScaleY = proj[1][1] = 1).
+// A perspective LOD probe at (x,y,z) with a vertical projection scale of one.
 Rendering::CameraData CameraAt(float x, float y, float z) {
     Rendering::CameraData cam{};
     cam.view = Mathematics::Matrix4x4::Identity();
     cam.proj = Mathematics::Matrix4x4::Identity();
-    cam.viewProj = Mathematics::Matrix4x4::Identity();
+    cam.proj[3][3] = 0.0f;
+    cam.viewProj = cam.proj;
     cam.cameraPos.x = x;
     cam.cameraPos.y = y;
     cam.cameraPos.z = z;
@@ -253,6 +254,59 @@ void ExpectDestroyedMemberMakesClusterStale(Rendering::IDevice* device, bool par
 }
 
 } // namespace
+
+TEST(HlodRuntimeReconcile, FreshSceneResolvesParentedMembersBeforeValidation) {
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device.get()));
+    ModelBank bank;
+    const GUID material = GUID::Derive(GUID::Null(), "reconcile/fresh-scene");
+    const auto populate = [&bank, material](ECS::World& world)
+    {
+        AddVolume(world);
+        SpawnCluster(world, bank, kMemberCount, 0.0f, material);
+        auto parent = world.Create();
+        parent.Set(Transform::FromTRS(Mathematics::WorldPosition{40.0, 0.0, 65.0},
+                                     Mathematics::Quaternion{}, Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
+        world.ProcessCommands();
+        for (int i = 0; i < kMemberCount; ++i)
+        {
+            const auto member = FindTagged(world, "member_" + std::to_string(i));
+            ASSERT_TRUE(member.IsValid());
+            world.AddComponent(member, Parent{parent.GetHandle()});
+            world.AddComponent(member, Transform::FromTRS(Mathematics::WorldPosition{i * 2.0, 0.0, 0.0},
+                                                          Mathematics::Quaternion{},
+                                                          Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
+        }
+        world.ProcessCommands();
+    };
+    const auto out = TempPath("hlod_reconcile_fresh_scene.gehlod");
+    std::filesystem::remove(out);
+    {
+        auto authored = std::make_unique<ECS::World>(nullptr);
+        populate(*authored);
+        TransformHierarchySystem hierarchy;
+        hierarchy.Update(*authored, 0.0f);
+        ASSERT_EQ(Hlod::BakeHlodForWorld(*authored, bank.Resolver(), out).Outcome, Hlod::BakeOutcome::Wrote);
+    }
+
+    auto loaded = std::make_unique<ECS::World>(nullptr);
+    populate(*loaded);
+    const auto member = FindTagged(*loaded, "member_0");
+    ASSERT_EQ(loaded->GetComponent<WorldTransform>(member)->Version, 0u);
+    auto& runtime = rs.GetHlodRuntime();
+    const uint32 clusters = runtime.ReconcileScene(*loaded, rs.GetMeshGPURegistry(), out, "test", bank.Resolver());
+    std::filesystem::remove(out);
+    ASSERT_EQ(clusters, 1u);
+    const auto& cluster = runtime.GetClusters().front();
+    EXPECT_FALSE(cluster.Stale);
+    EXPECT_FALSE(cluster.Proxies.empty());
+    EXPECT_EQ(loaded->GetComponent<WorldTransform>(member)->Position.Z, 65.0);
+    runtime.Retire(*loaded, rs.GetMeshGPURegistry());
+}
 
 TEST(HlodRuntimeReconcile, ReconcileSpawnsEvictedProxiesAndTagsMembers) {
     auto device = CreateVulkanDeviceFast();
@@ -429,11 +483,225 @@ TEST(HlodRuntimeReconcile, SelectSystemFlipsResidencyByCoverage) {
         EXPECT_TRUE(gpu->hlodEvicted) << "near cluster: proxy evicted";
     }
 
+    rs.Views().SetCameraData(cam, ::GameEngine::Tests::TestCameraWithEye(CameraAt(0.0f, 0.0f, -2000.0f)),
+                             kCameraAtRanges);
+    select.Update(*world, kDt);
+    ASSERT_TRUE(runtime.GetClusters()[0].ProxyActive);
+    const auto members = runtime.GetClusters()[0].Members;
     runtime.Retire(*world, rs.GetMeshGPURegistry());
+    EXPECT_FALSE(runtime.HasClusters());
+    for (ECS::EntityHandle member : members)
+        EXPECT_FALSE(world->GetComponent<MeshGPUData>(member)->hlodEvicted);
     world.reset();
     rs.Shutdown();
     std::error_code ec;
     std::filesystem::remove(out, ec);
+}
+
+TEST(HlodRuntimeReconcile, LosingADrawableProxyRestoresMembersAtTheSamePose)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto world = std::make_unique<ECS::World>(nullptr);
+    ModelBank models;
+    auto& runtime = services.GetHlodRuntime();
+    const GUID material = GUID::Derive(GUID::Null(), "reconcile/lost-proxy");
+    BakeAndReconcile(services, *world, models, runtime, material, 0.0f, "hlod_lost_proxy.gehlod");
+    ASSERT_EQ(runtime.GetClusters().size(), 1u);
+    auto& cluster = runtime.GetClusters().front();
+    ASSERT_FALSE(cluster.ProxyMeshKeys.empty());
+
+    const auto camera = services.Views().AllocateCamera("HLOD fallback");
+    services.Views().SetViewpointCamera(camera);
+    services.Views().SetCameraData(camera, ::GameEngine::Tests::TestCameraWithEye(CameraAt(0.0f, 0.0f, -2000.0f)),
+                                   kCameraAtRanges);
+    HLODSelectSystem select(&services);
+    select.Update(*world, 0.0f);
+    ASSERT_TRUE(cluster.ProxyActive);
+    services.GetMeshGPURegistry().UnregisterSubmesh(cluster.ProxyMeshKeys.front());
+    select.Update(*world, 0.0f);
+
+    EXPECT_FALSE(cluster.ProxyActive);
+    for (const auto member : cluster.Members)
+    {
+        const auto* gpu = world->GetComponent<MeshGPUData>(member);
+        ASSERT_NE(gpu, nullptr);
+        EXPECT_FALSE(gpu->hlodEvicted);
+    }
+    runtime.Retire(*world, services.GetMeshGPURegistry());
+    world.reset();
+    services.Shutdown();
+}
+
+TEST(HlodRuntimeReconcile, ProxyWaitsForTheBakedMemberLodAndWholeGeometry)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto world = std::make_unique<ECS::World>(nullptr);
+    ModelBank bank;
+    const GUID material = GUID::Derive(GUID::Null(), "reconcile/member-lod");
+    AddVolume(*world);
+    SpawnCluster(*world, bank, kMemberCount, 0.0f, material);
+    world->ProcessCommands();
+    for (auto& [guid, model] : bank.Models)
+    {
+        Mesh mesh = MakeBox(1.0f);
+        mesh.AuthoredLODs = true;
+        mesh.ExtraLODs = {mesh.Indices, mesh.Indices};
+        mesh.ExtraLODCoverage = {0.25f, 0.004f};
+        model->SetMeshesForTest({std::move(mesh)});
+        ASSERT_EQ(services.GetMeshGPURegistry().RegisterModelMeshes(guid, *model).size(), 1u);
+    }
+    auto& runtime = services.GetHlodRuntime();
+    const auto sidecar =
+        BakeAndReconcileWorld(services, *world, bank, runtime, "hlod_member_lod_envelope.gehlod");
+    ASSERT_EQ(runtime.GetClusters().size(), 1u);
+    auto& cluster = runtime.GetClusters().front();
+    EXPECT_FALSE(cluster.Stale);
+
+    auto& views = services.Views();
+    const auto camera = views.AllocateCamera("HLOD member LOD");
+    views.SetViewpointCamera(camera);
+    HLODSelectSystem select(&services);
+    const auto pose = [&](float distance)
+    {
+        views.SetCameraData(camera, Tests::TestCameraWithEye(CameraAt(9.0f, 0.0f, -distance)),
+                            kCameraAtRanges);
+        select.Update(*world, 0.0f);
+    };
+    pose(200.0f);
+    EXPECT_FALSE(cluster.ProxyActive);
+
+    auto* memberGpu = world->GetComponentForWrite<MeshGPUData>(cluster.Members.front());
+    ASSERT_NE(memberGpu, nullptr);
+    memberGpu->clusterSplitOwner = true;
+    pose(2000.0f);
+    EXPECT_FALSE(cluster.ProxyActive);
+    memberGpu->clusterSplitOwner = false;
+    pose(2000.0f);
+    EXPECT_TRUE(cluster.ProxyActive);
+
+    services.SetLODForceLevel(1);
+    pose(2000.0f);
+    EXPECT_FALSE(cluster.ProxyActive);
+    services.SetLODForceLevel(2);
+    pose(2000.0f);
+    EXPECT_TRUE(cluster.ProxyActive);
+    services.SetLODForceLevel(0xFFFFFFFFu);
+    pose(200.0f);
+    EXPECT_FALSE(cluster.ProxyActive);
+
+    runtime.Retire(*world, services.GetMeshGPURegistry());
+    std::filesystem::remove(sidecar);
+    services.Shutdown();
+    device->Shutdown();
+}
+
+TEST(HlodRuntimeReconcile, ChangedCookedGeometryRestoresSourceMeshes)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device.get()));
+    auto world = std::make_unique<ECS::World>(nullptr);
+    ModelBank bank;
+    AssetEventDispatcher events;
+    HLODSelectSystem select(&rs, &events);
+    auto& runtime = rs.GetHlodRuntime();
+    const GUID material = GUID::Derive(GUID::Null(), "reconcile/live-recook-material");
+    const auto file = BakeAndReconcile(rs, *world, bank, runtime, material, 0.0f, "hlod_reconcile_recook.gehlod");
+    ASSERT_EQ(runtime.GetClusters().size(), 1u);
+    const auto& cluster = runtime.GetClusters().front();
+    ASSERT_FALSE(cluster.Stale);
+    ASSERT_FALSE(cluster.MemberMeshSources.empty());
+
+    const auto cam = rs.Views().AllocateCamera("HlodRecookCamera");
+    rs.Views().SetViewpointCamera(cam);
+    rs.Views().SetCameraData(cam, ::GameEngine::Tests::TestCameraWithEye(CameraAt(0.0f, 0.0f, -2000.0f)),
+                             kCameraAtRanges);
+    select.Update(*world, 0.0f);
+    ASSERT_TRUE(cluster.ProxyActive);
+    EXPECT_TRUE(rs.ConsumeResidencyExtractionPending());
+
+    const GUID edited = cluster.MemberMeshSources.front().Model;
+    events.DispatchEvent(AssetEvent{AssetEventType::AssetReloaded, GUID::Generate(), AssetType::Model, ""});
+    events.DispatchEvent(AssetEvent{AssetEventType::AssetReloaded, edited, AssetType::Model, ""});
+    select.Update(*world, 0.0f);
+    EXPECT_TRUE(cluster.ProxyActive);
+    EXPECT_FALSE(cluster.Stale);
+    EXPECT_FALSE(rs.ConsumeResidencyExtractionPending());
+
+    ModelAsset& model = *bank.Models.at(edited);
+    auto mesh = model.GetMesh(0);
+    mesh.Vertices[0].Position[0] += 1.0f;
+    model.SetMeshesForTest({std::move(mesh)});
+    events.DispatchEvent(AssetEvent{AssetEventType::AssetReloaded, edited, AssetType::Model, ""});
+    select.Update(*world, 0.0f);
+    EXPECT_TRUE(cluster.Stale);
+    EXPECT_FALSE(cluster.ProxyActive);
+    EXPECT_TRUE(rs.ConsumeResidencyExtractionPending());
+    for (auto entity : cluster.Members)
+        EXPECT_FALSE(world->GetComponent<MeshGPUData>(entity)->hlodEvicted);
+    runtime.Retire(*world, rs.GetMeshGPURegistry());
+    std::filesystem::remove(file);
+    rs.Shutdown();
+    device->Shutdown();
+}
+
+TEST(HlodRuntimeReconcile, ASecondViewCanKeepTheMembersResident)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto world = std::make_unique<ECS::World>(nullptr);
+    ModelBank models;
+    auto& runtime = services.GetHlodRuntime();
+    const GUID material = GUID::Derive(GUID::Null(), "reconcile/near-second-view");
+    BakeAndReconcile(services, *world, models, runtime, material, 0.0f, "hlod_second_view.gehlod");
+    ASSERT_EQ(runtime.GetClusters().size(), 1u);
+    const auto& cluster = runtime.GetClusters().front();
+
+    auto& views = services.Views();
+    const auto overview = views.AllocateCamera("HLOD overview");
+    views.SetViewpointCamera(overview);
+    views.SetCameraData(overview, ::GameEngine::Tests::TestCameraWithEye(CameraAt(0.0f, 0.0f, -2000.0f)),
+                        kCameraAtRanges);
+    const auto mainView = views.AllocateView("HLOD overview", overview);
+    views.SetViewWorldId(mainView, world->GetWorldId());
+    const auto detail = views.AllocateCamera("HLOD detail");
+    views.SetCameraData(detail, ::GameEngine::Tests::TestCameraWithEye(CameraAt(9.0f, 0.0f, -12.0f)),
+                        kCameraAtRanges);
+    const auto secondView = views.AllocateView("HLOD detail", detail);
+    views.SetViewWorldId(secondView, world->GetWorldId() + 1u);
+
+    HLODSelectSystem select(&services);
+    select.Update(*world, 0.0f);
+    EXPECT_TRUE(cluster.ProxyActive) << "a view of another world has no demand";
+
+    views.SetViewWorldId(secondView, world->GetWorldId());
+    views.SetViewRenderLayerMask(secondView, Rendering::RenderLayerMask::None());
+    select.Update(*world, 0.0f);
+    EXPECT_TRUE(cluster.ProxyActive) << "a view excluding the cluster's layers has no demand";
+
+    views.SetViewRenderLayerMask(secondView, cluster.RenderLayers);
+    select.Update(*world, 0.0f);
+    EXPECT_FALSE(cluster.ProxyActive) << "the near view must see the members";
+    ASSERT_TRUE(views.ReleaseView(secondView));
+    select.Update(*world, 0.0f);
+    EXPECT_TRUE(cluster.ProxyActive) << "the overview alone can use the proxy again";
+
+    runtime.Retire(*world, services.GetMeshGPURegistry());
+    world.reset();
+    services.Shutdown();
 }
 
 // S1 (stale HLOD proxies): the production reconcile recomputes the expected
@@ -472,6 +740,59 @@ TEST(HlodRuntimeReconcile, StaleConfigHashBakeIsRejectedAtReconcile) {
     rs.Shutdown();
     std::error_code ec;
     std::filesystem::remove(out, ec);
+}
+
+TEST(HlodRuntimeReconcile, OnlyEditsToMemberSourcesInvalidateAnActiveProxy)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto world = std::make_unique<ECS::World>(nullptr);
+    ModelBank bank;
+    auto& runtime = services.GetHlodRuntime();
+    const GUID material = GUID::Derive(GUID::Null(), "reconcile/changed-member-material");
+    const auto file = BakeAndReconcile(services, *world, bank, runtime, material, 0.0f,
+                                       "hlod_reconcile_changed_member_material.gehlod");
+    ASSERT_EQ(runtime.GetClusters().size(), 1u);
+    auto& cluster = runtime.GetClusters().front();
+    const ECS::EntityHandle member = cluster.Members.front();
+
+    // Workspace edits may affect the same component types without affecting an HLOD member.
+    const auto unrelated = world->Create().Set(WorldAt(500.0f, 0.0f, 0.0f)).Set(MeshRenderer{}).GetHandle();
+    world->ProcessCommands();
+    const auto camera = services.Views().AllocateCamera("HlodMemberMaterialCam");
+    services.Views().SetViewpointCamera(camera);
+    services.Views().SetCameraData(camera,
+        ::GameEngine::Tests::TestCameraWithEye(CameraAt(0.0f, 0.0f, -2000.0f)), kCameraAtRanges);
+    HLODSelectSystem select(&services);
+    constexpr float kDt = 1.0f / 60.0f;
+    select.Update(*world, kDt);
+    ASSERT_TRUE(cluster.ProxyActive);
+
+    const auto structure = world->GetStructuralChangeVersion();
+    const GUID editedMaterial = GUID::Derive(GUID::Null(), "reconcile/edited-material");
+    auto* unrelatedRenderer = world->GetComponentForWrite<MeshRenderer>(unrelated);
+    ASSERT_NE(unrelatedRenderer, nullptr);
+    unrelatedRenderer->materialAssetGuid.Set(editedMaterial);
+    select.Update(*world, kDt);
+    EXPECT_TRUE(cluster.ProxyActive);
+    EXPECT_FALSE(cluster.Stale);
+
+    auto* memberRenderer = world->GetComponentForWrite<MeshRenderer>(member);
+    ASSERT_NE(memberRenderer, nullptr);
+    memberRenderer->materialAssetGuid.Set(editedMaterial);
+    EXPECT_EQ(world->GetStructuralChangeVersion(), structure);
+    select.Update(*world, kDt);
+    EXPECT_TRUE(cluster.Stale);
+    EXPECT_FALSE(cluster.ProxyActive);
+
+    runtime.Retire(*world, services.GetMeshGPURegistry());
+    world.reset();
+    services.Shutdown();
+    std::filesystem::remove(file);
 }
 
 TEST(HlodRuntimeReconcile, MovedMemberFallsBackToMembersOnlyAndStaysStale) {
