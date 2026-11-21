@@ -45,6 +45,9 @@ double ClusterDistance(const ViewLod& view, const float sphereCenter[3]);
 // is disabled (ProjScaleY <= 0) so the caller keeps members.
 float ClusterCoverage(const ViewLod& view, const float sphereCenter[3], float sphereRadius);
 
+/// Project the sphere with a positive projection scale and a resolved LOD bias multiplier.
+float SphereCoverageAtDistance(double distance, float sphereRadius, float projectionScale, float biasScale);
+
 // Coverage returned when LOD is disabled — above any EnterCoverage, so the
 // cluster stays on members.
 inline constexpr float kAlwaysMembersCoverage = 1.0e9f;

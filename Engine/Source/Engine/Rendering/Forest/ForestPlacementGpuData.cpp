@@ -73,7 +73,7 @@ bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, const 
         }
         const auto roots = runtime.ReadyRootBounds(detail.Ticket);
         const uint32 inside = roots && RootsInsideFrustum(*roots, local, view.Planes) ? 1u : 0u;
-        pages.push_back({{detail.FirstPlacement, detail.PlacementCount, inside, 0}, {local.x, local.y, local.z, 0}, {}});
+        pages.push_back({{detail.FirstPlacement, detail.PlacementCount, inside, 0}, {local, 0.0f}, {}});
     }
     // EmitDraws keeps detail pages in page order. Resolve a mesh claim against
     // its complete ticket so an old mesh cannot suppress a replacement slot.
@@ -88,9 +88,9 @@ bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, const 
         page.MeshOwned[owner.LocalPlacement / 32] |= 1u << (owner.LocalPlacement % 32);
     }
     const Mathematics::Vector3 eye = CameraEyeRelativeToOrigin(camera);
-    std::copy_n(camera.viewProjRel.Data(), view.ViewProjectionRelative.size(), view.ViewProjectionRelative.begin());
-    view.EyeRelativeAndRadius = {eye.x, eye.y, eye.z, rootRadius};
-    view.AtlasBounds = {atlasBounds.x, atlasBounds.y, atlasBounds.z, atlasBounds.w};
+    view.ViewProjectionRelative = camera.viewProjRel;
+    view.EyeRelativeAndRadius = {eye, rootRadius};
+    view.AtlasBounds = atlasBounds;
     return true;
 }
 

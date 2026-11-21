@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
+#include "Mathematics/Matrix4x4.h"
+#include "Mathematics/Vector4.h"
 #include "Rendering/Camera/CameraTypes.h"
 
 namespace GameEngine::Engine::Renderer
@@ -9,11 +11,12 @@ namespace GameEngine::Engine::Renderer
 struct alignas(16) ForestPlacementGpuPage
 {
     std::array<uint32, 4> Range; // First slot, count, roots fully inside the frustum, padding.
-    std::array<float, 4> OriginRelative;
+    Mathematics::Vector4 OriginRelative;
     // One bit per page-local placement. Only a mesh already submitted for this
     // view can claim a bit. The shader reads five of these eight words.
     std::array<uint32, 8> MeshOwned;
 };
+static_assert(offsetof(ForestPlacementGpuPage, OriginRelative) == 16);
 static_assert(offsetof(ForestPlacementGpuPage, MeshOwned) == 32);
 static_assert(sizeof(ForestPlacementGpuPage) == 64);
 
@@ -26,11 +29,14 @@ struct ForestMeshOwnedPlacement
 
 struct alignas(16) ForestPlacementGpuView
 {
-    std::array<float, 16> ViewProjectionRelative;
+    Mathematics::Matrix4x4 ViewProjectionRelative;
     std::array<Mathematics::Vector4, 6> Planes;
-    std::array<float, 4> EyeRelativeAndRadius;
-    std::array<float, 4> AtlasBounds;
+    Mathematics::Vector4 EyeRelativeAndRadius;
+    Mathematics::Vector4 AtlasBounds;
 };
+static_assert(offsetof(ForestPlacementGpuView, Planes) == 64);
+static_assert(offsetof(ForestPlacementGpuView, EyeRelativeAndRadius) == 160);
+static_assert(offsetof(ForestPlacementGpuView, AtlasBounds) == 176);
 static_assert(sizeof(ForestPlacementGpuView) == 192);
 
 struct ForestPlacementGpuVisible

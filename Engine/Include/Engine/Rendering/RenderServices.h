@@ -275,9 +275,11 @@ inline constexpr uint32 kMaxSecondaryDirectionals = kMaxDirectionalLights - 1;
 // size/offset from THIS struct.
 struct alignas(16) FoliageSeasonGPU
 {
-    float AutumnTint[4]{1.0f, 1.0f, 1.0f, 0.0f}; // linear RGB multiplier and blend amount
-    float Snow[4]{}; // x is the snow amount
+    Mathematics::Vector4 AutumnTint{1.0f, 1.0f, 1.0f, 0.0f}; // linear RGB multiplier and blend amount
+    Mathematics::Vector4 Snow{}; // x is the snow amount
 };
+static_assert(sizeof(FoliageSeasonGPU) == 32);
+static_assert(offsetof(FoliageSeasonGPU, Snow) == 16);
 
 struct alignas(16) ForwardLightUBO
 {

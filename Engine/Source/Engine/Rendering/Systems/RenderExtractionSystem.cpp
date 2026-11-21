@@ -2709,13 +2709,13 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
         if (selected)
         {
             const auto tint = [](float value) { return std::isfinite(value) ? std::max(value, 0.0f) : 1.0f; };
-            const auto amount = [](float value) { return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : 0.0f; };
+            const auto amount = [](float value) { return std::isfinite(value) ? Math::Clamp01(value) : 0.0f; };
             FoliageSeasonGPU season{};
-            season.AutumnTint[0] = tint(selected->AutumnTint.x);
-            season.AutumnTint[1] = tint(selected->AutumnTint.y);
-            season.AutumnTint[2] = tint(selected->AutumnTint.z);
-            season.AutumnTint[3] = amount(selected->AutumnAmount);
-            season.Snow[0] = amount(selected->SnowAmount);
+            season.AutumnTint = {tint(selected->AutumnTint.x),
+                                 tint(selected->AutumnTint.y),
+                                 tint(selected->AutumnTint.z),
+                                 amount(selected->AutumnAmount)};
+            season.Snow.x = amount(selected->SnowAmount);
             rs->SetWorldFoliageSeason(worldId, season);
         }
     }

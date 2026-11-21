@@ -1026,10 +1026,13 @@ TEST_F(PackedPlacementStoreTest, BuildsPackedGpuPagesInTheCamerasRenderOrigin)
     ASSERT_TRUE(BuildForestPlacementGpuInputs(*planner, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
     ASSERT_EQ(pages.size(), 1u);
     EXPECT_EQ(pages[0].Range, (std::array<uint32, 4>{0, 2, 1, 0}));
-    EXPECT_FLOAT_EQ(pages[0].OriginRelative[0] - gpu.EyeRelativeAndRadius[0], 1.0f);
-    EXPECT_FLOAT_EQ(pages[0].OriginRelative[2] - gpu.EyeRelativeAndRadius[2], 12.0f);
-    EXPECT_FLOAT_EQ(gpu.EyeRelativeAndRadius[3], 15.0f);
-    EXPECT_EQ(gpu.AtlasBounds, (std::array{0.0f, 7.0f, 0.0f, 8.0f}));
+    EXPECT_FLOAT_EQ(pages[0].OriginRelative.x - gpu.EyeRelativeAndRadius.x, 1.0f);
+    EXPECT_FLOAT_EQ(pages[0].OriginRelative.z - gpu.EyeRelativeAndRadius.z, 12.0f);
+    EXPECT_FLOAT_EQ(gpu.EyeRelativeAndRadius.w, 15.0f);
+    EXPECT_FLOAT_EQ(gpu.AtlasBounds.x, 0.0f);
+    EXPECT_FLOAT_EQ(gpu.AtlasBounds.y, 7.0f);
+    EXPECT_FLOAT_EQ(gpu.AtlasBounds.z, 0.0f);
+    EXPECT_FLOAT_EQ(gpu.AtlasBounds.w, 8.0f);
     auto missing = plan;
     ++missing.DetailedDraws.front().Ticket.Generation;
     ASSERT_TRUE(BuildForestPlacementGpuInputs(*planner, missing, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));

@@ -123,9 +123,7 @@ void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
         std::max(1.0e-4, modelSphere.w * PageStreaming::PackedPlacement::kMaxScale *
             view.ProjectionScaleY * std::exp2(static_cast<double>(view.GlobalLodBias)) /
             view.ImpostorCoverage) * kCoverageMargin;
-    Hlod::ViewLod coverageView{};
-    coverageView.ProjScaleY = view.ProjectionScaleY;
-    coverageView.LodBiasGlobal = view.GlobalLodBias;
+    const float coverageBias = std::exp2(view.GlobalLodBias);
     const float meshEnterCoverage = view.ImpostorCoverage * (1.0f + ImpostorStage::kSwitchHysteresis);
     for (const auto& detail : frame.DetailedDraws)
     {
@@ -146,9 +144,11 @@ void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
                 modelSphere.x * cosYaw + modelSphere.z * sinYaw, modelSphere.y,
                 -modelSphere.x * sinYaw + modelSphere.z * cosYaw};
             const Mathematics::Vector3 center = root - eye + centerOffset * scale;
-            const float point[3]{center.x, center.y, center.z};
+            const double distanceSquared = static_cast<double>(center.x) * center.x +
+                static_cast<double>(center.y) * center.y + static_cast<double>(center.z) * center.z;
             const float radius = scale * modelSphere.w;
-            const float coverage = Hlod::ClusterCoverage(coverageView, point, radius);
+            const float coverage = Hlod::SphereCoverageAtDistance(
+                std::sqrt(distanceSquared), radius, view.ProjectionScaleY, coverageBias);
             const float frustumRadius = scale * (modelSphere.w + view.DeformationMargin);
             if (coverage < view.ImpostorCoverage ||
                 (coverage < meshEnterCoverage &&
@@ -156,8 +156,7 @@ void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
                 !Rendering::TestSphereFrustum(center, frustumRadius, view.PlacementView.EyeRelativePlanes.data()))
                 continue;
             const ForestNearMeshCandidate candidate{detail.Ticket, row, root, yaw, scale,
-                static_cast<double>(center.x) * center.x + static_cast<double>(center.y) * center.y +
-                static_cast<double>(center.z) * center.z, coverage};
+                                                     distanceSquared, coverage};
             if (output.size() < maxCandidates)
             {
                 output.push_back(candidate);

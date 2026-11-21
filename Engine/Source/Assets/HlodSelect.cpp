@@ -25,11 +25,15 @@ float ClusterCoverage(const ViewLod& view, const float sphereCenter[3], float sp
     if (view.ProjScaleY <= 0.0f)
         return kAlwaysMembersCoverage; // LOD disabled (ortho/shadow) -> keep members
 
-    const float dist = static_cast<float>(std::max(ClusterDistance(view, sphereCenter), 1.0e-4));
+    return SphereCoverageAtDistance(ClusterDistance(view, sphereCenter), sphereRadius,
+                                    view.ProjScaleY, std::exp2(view.LodBiasGlobal));
+}
 
-    float coverage = sphereRadius * view.ProjScaleY / dist;
-    coverage *= std::exp2(view.LodBiasGlobal);
-    return coverage;
+float SphereCoverageAtDistance(double distance, float sphereRadius, float projectionScale, float biasScale)
+{
+    constexpr double kMinimumDistance = 1.0e-4;
+    const float clampedDistance = static_cast<float>(std::max(distance, kMinimumDistance));
+    return (sphereRadius * projectionScale / clampedDistance) * biasScale;
 }
 
 bool UpdateProxyActive(bool wasProxyActive, float coverage, const SwitchConfig& config) {

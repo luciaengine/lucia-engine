@@ -86,23 +86,23 @@ TEST(ViewLightBufferWriter, FoliageSeasonIsWorldScopedAndClearsBetweenFrames)
     constexpr uint64 forest = 17u;
     constexpr uint64 otherWorld = 21u;
     FoliageSeasonGPU autumn{};
-    autumn.AutumnTint[0] = 1.5f;
-    autumn.AutumnTint[3] = 0.7f;
-    autumn.Snow[0] = 0.25f;
+    autumn.AutumnTint.x = 1.5f;
+    autumn.AutumnTint.w = 0.7f;
+    autumn.Snow.x = 0.25f;
     services.SetWorldFoliageSeason(forest, autumn);
 
     const auto forestLight = services.BuildViewLightUBO(view, forest);
-    EXPECT_FLOAT_EQ(forestLight.FoliageSeason.AutumnTint[0], 1.5f);
-    EXPECT_FLOAT_EQ(forestLight.FoliageSeason.AutumnTint[3], 0.7f);
-    EXPECT_FLOAT_EQ(forestLight.FoliageSeason.Snow[0], 0.25f);
+    EXPECT_FLOAT_EQ(forestLight.FoliageSeason.AutumnTint.x, 1.5f);
+    EXPECT_FLOAT_EQ(forestLight.FoliageSeason.AutumnTint.w, 0.7f);
+    EXPECT_FLOAT_EQ(forestLight.FoliageSeason.Snow.x, 0.25f);
     const auto unrelated = services.BuildViewLightUBO(view, otherWorld);
-    EXPECT_FLOAT_EQ(unrelated.FoliageSeason.AutumnTint[3], 0.0f);
-    EXPECT_FLOAT_EQ(unrelated.FoliageSeason.Snow[0], 0.0f);
+    EXPECT_FLOAT_EQ(unrelated.FoliageSeason.AutumnTint.w, 0.0f);
+    EXPECT_FLOAT_EQ(unrelated.FoliageSeason.Snow.x, 0.0f);
 
     services.BeginWorldDrawFrame();
     const auto cleared = services.BuildViewLightUBO(view, forest);
-    EXPECT_FLOAT_EQ(cleared.FoliageSeason.AutumnTint[3], 0.0f);
-    EXPECT_FLOAT_EQ(cleared.FoliageSeason.Snow[0], 0.0f);
+    EXPECT_FLOAT_EQ(cleared.FoliageSeason.AutumnTint.w, 0.0f);
+    EXPECT_FLOAT_EQ(cleared.FoliageSeason.Snow.x, 0.0f);
     services.Shutdown();
     device->Shutdown();
 }
