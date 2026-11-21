@@ -66,10 +66,14 @@ foreach(_form IN ITEMS "SHELL:-s STACK_SIZE=96kb" "-sSTACK_SIZE=96kb")
     endif()
 endforeach()
 
-# A target without link options is accepted and stays without them.
-configure_probe(none "" "set_target_properties(KTX::ktx PROPERTIES INTERFACE_LINK_OPTIONS \"\")
+# A target without the property is accepted and stays without it.
+configure_probe(none "" "set_property(TARGET KTX::ktx PROPERTY INTERFACE_LINK_OPTIONS)
 ge_wasm_drop_link_setting(KTX::ktx STACK_SIZE)
-ge_wasm_require_no_link_setting(KTX::ktx STACK_SIZE)" _rc _text)
+ge_wasm_require_no_link_setting(KTX::ktx STACK_SIZE)
+get_property(_isSet TARGET KTX::ktx PROPERTY INTERFACE_LINK_OPTIONS SET)
+if(_isSet)
+    message(FATAL_ERROR \"the functions set link options on a target that had none\")
+endif()" _rc _text)
 if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "none: the configure failed: ${_text}")
 endif()

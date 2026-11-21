@@ -615,11 +615,9 @@ ge_check_overlay_port_freshness()
 ge_check_vcpkg_install_set_unchanged(
     "${VCPKG_INSTALLED_DIR}" "${VCPKG_TARGET_TRIPLET}" "${CMAKE_BINARY_DIR}")
 
-# KTX exports "-s STACK_SIZE=96kb" to each executable that links the engine.
-# emcc takes the last -s, so it replaces GE_WASM_STACK_SIZE. Keep this block
-# after verify_dependencies(): before that call, KTX is not installed in a tree
-# where the toolchain does not install the packages. Keep it at the root scope,
-# so each subdirectory gets the target without the setting.
+# KTX exports "-s STACK_SIZE=96kb"; emcc takes the last -s, so it replaces GE_WASM_STACK_SIZE.
+# Keep this after verify_dependencies() (KTX is not installed before it when the toolchain
+# does not install packages) and at the root scope, before the first subdirectory.
 if(EMSCRIPTEN)
     include(cmake/WasmLinkSettings.cmake)
     find_package(Ktx CONFIG QUIET)
