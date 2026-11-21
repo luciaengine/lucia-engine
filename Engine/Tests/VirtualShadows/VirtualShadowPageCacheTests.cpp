@@ -267,8 +267,8 @@ TEST(VirtualShadowPageCacheTests, ARefreshedPageKeepsItsTileContentAndANewPageDo
     }
 }
 
-// The plan of the cache before the per-call stamps: a set of the demand and a map lookup per tile.
-// The equivalence test runs it beside VirtualShadowPageCache and requires the same rows.
+// A cache that plans with a set of the demand and one map lookup per tile. The equivalence test
+// runs it beside VirtualShadowPageCache and requires the same rows.
 class ReferencePageCache
 {
 public:
@@ -283,8 +283,8 @@ public:
             if (IsValid(page) && demanded.insert(page).second)
                 work.push_back({.Page = page});
         const auto residentCount = std::min(work.size(), m_Tiles.size());
-        for (std::size_t i = residentCount; i < work.size(); ++i)
-            demanded.erase(work[i].Page);
+        for (std::size_t index = residentCount; index < work.size(); ++index)
+            demanded.erase(work[index].Page);
 
         std::vector<uint32_t> available;
         for (uint32_t index = 0; index < m_Tiles.size(); ++index)
