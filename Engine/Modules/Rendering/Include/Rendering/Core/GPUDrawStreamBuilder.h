@@ -209,7 +209,7 @@ class GPUDrawStreamBuilder
         // enabled the dwell band. A view that leaves this false allocates
         // nothing and binds the never-read stand-in, which is every view today.
         bool     renderedLevelHistoryRequested = false;
-        // Impostor stage (GPUScene::SetMeshImpostorCard). The card quad's mesh index;
+        // Impostor stage (GPUScene::SetMeshImpostorGroup). The card quad's mesh index;
         // 0xFFFFFFFF leaves every linked mesh on its mesh in this slice. A linked instance draws
         // its card below impostorSwitchCoverage (Hlod::ClusterCoverage on its instance sphere)
         // and, in a camera slice with history, keeps it until

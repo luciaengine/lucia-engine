@@ -221,7 +221,7 @@ struct GPUMesh
     // Convert conservative culling-sphere coverage to the LOD0 reference metric.
     // The centers agree; instance scale cancels. Ordinary meshes use 1.
     float lodCoverageScale = 1.0f; // 16
-    // Impostor link of the mesh (GPUScene::SetMeshImpostorCard): 0 = none, otherwise the
+    // Impostor link of the mesh (GPUScene::SetMeshImpostorGroup): 0 = none, otherwise the
     // card material's GPU-scene index + 1 in bits 0..23 and kGPUMeshImpostorPrimaryBit for
     // the part that draws the card. GPUScene owns these links.
     uint32_t impostorCard;  // 20
