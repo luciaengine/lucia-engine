@@ -2428,6 +2428,7 @@ endif()
             # the feature registry, device recovery, views and cameras, project settings,
             # frame clocks, lights, reflection probes and IBL, DDGI, sky and sun, ocean.
             ge_add_render_services_test(EngineRenderServicesTests
+                Tests/ForestPlacementShadowTests.cpp
                 Tests/RenderServicesFeatureRegistryConcurrencyTests.cpp
                 Tests/LodProjectSettingsTests.cpp
                 Tests/RenderLayerMaskTests.cpp
