@@ -434,7 +434,10 @@ namespace GameEngine.Scripting.Runtime
         /// Called on play-mode enter or standalone app startup.
         /// Discovers GameSystem subclasses, sorts all systems by order, and calls OnCreate/OnEnable.
         /// </summary>
-        public static void Initialize(ulong worldHandle)
+        public static void Initialize(ulong worldHandle) => Initialize(worldHandle, null);
+
+        /// <summary>Limit reflection fallback to the assembly for this play session.</summary>
+        internal static void Initialize(ulong worldHandle, Assembly? scriptAssembly)
         {
             ISystemEntry[] created;
             lock (s_lock)
@@ -472,7 +475,7 @@ namespace GameEngine.Scripting.Runtime
                     }
                 }
 
-                DiscoverGameSystems();
+                DiscoverGameSystems(scriptAssembly);
                 SortSystemsLocked();
                 created = s_executionOrder;
                 s_initialized = true;
@@ -630,7 +633,7 @@ namespace GameEngine.Scripting.Runtime
             Justification = "User script assemblies are fully rooted in AOT builds (TrimmerRootAssembly in the generated csproj); CoreCLR paths never trim.")]
         [UnconditionalSuppressMessage("Trimming", "IL2067",
             Justification = "Activator.CreateInstance targets types from the rooted user scripts assembly; their public parameterless constructors are preserved by the assembly-level root.")]
-        private static void DiscoverGameSystems()
+        private static void DiscoverGameSystems(Assembly? scriptAssembly = null)
         {
             // Build a set of already-registered names so reflection fallback skips them.
             var registeredNames = new HashSet<string>(s_gameSystemRegistrations.Count);
@@ -653,7 +656,7 @@ namespace GameEngine.Scripting.Runtime
             // load order wins so the fresh copy is the one instantiated.
             var candidates = new Dictionary<string, Type>(StringComparer.Ordinal);
 
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            foreach (var asm in scriptAssembly == null ? AppDomain.CurrentDomain.GetAssemblies() : new[] { scriptAssembly })
             {
                 if (asm == null) continue;
                 if (!IsCandidateAssembly(asm)) continue;

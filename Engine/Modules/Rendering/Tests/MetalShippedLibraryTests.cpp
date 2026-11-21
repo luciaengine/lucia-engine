@@ -111,7 +111,7 @@ std::vector<uint8_t> CompileOfflineLibrary(const Kernel& kernel, uint32_t value,
         return {};
     const std::filesystem::path source = dir / "stage.metal";
     std::ofstream(source) << outTranslation.Msl;
-    if (!CompileWithToolchain({source, dir / "stage.metallib"}, MetalLibraryCompileFlags(MetalFastMathEnabled())))
+    if (!CompileWithToolchain({source, dir / "stage.metallib"}, MetalLibraryCompileFlags(MetalFastMathEnabled(), MetalShaderStage::Compute)))
         return {};
     std::ifstream library(dir / "stage.metallib", std::ios::binary);
     return {std::istreambuf_iterator<char>(library), std::istreambuf_iterator<char>()};
@@ -452,7 +452,7 @@ TEST(MetalShippedLibraries, DeviceAndExportCompileUnderOneLanguageVersion)
                                           kMetalLanguageMajor, kMetalLanguageMinor);
     MTL::Device* device = MTL::CreateSystemDefaultDevice();
     ASSERT_NE(device, nullptr);
-    MTL::CompileOptions* options = MakeMetalCompileOptions();
+    MTL::CompileOptions* options = MakeMetalCompileOptions(MetalShaderStage::Compute);
     NS::Error* error = nullptr;
     MTL::Library* library = device->newLibrary(NS::String::string(probe.c_str(), NS::UTF8StringEncoding), options, &error);
     EXPECT_NE(library, nullptr) << (error != nullptr ? error->localizedDescription()->utf8String() : "");
@@ -466,7 +466,21 @@ TEST(MetalShippedLibraries, DeviceAndExportCompileUnderOneLanguageVersion)
     const std::filesystem::path dir = TestDirectory("language");
     std::ofstream(dir / "probe.metal") << probe;
     EXPECT_TRUE(CompileWithToolchain({dir / "probe.metal", dir / "probe.metallib"},
-                                     MetalLibraryCompileFlags(kShippedFastMath)));
+                                     MetalLibraryCompileFlags(kShippedFastMath, MetalShaderStage::Compute)));
+}
+
+TEST(MetalShippedLibraries, RasterPositionInvarianceMatchesOfflineCompiler)
+{
+    for (const auto stage : {MetalShaderStage::Vertex, MetalShaderStage::Fragment, MetalShaderStage::Compute,
+                             MetalShaderStage::Mesh, MetalShaderStage::Object})
+    {
+        const bool expected = stage == MetalShaderStage::Vertex || stage == MetalShaderStage::Mesh;
+        auto* options = MakeMetalCompileOptions(stage);
+        EXPECT_EQ(options->preserveInvariance(), expected);
+        options->release();
+        const auto flags = MetalLibraryCompileFlags(kShippedFastMath, stage);
+        EXPECT_EQ(std::ranges::find(flags, "-fpreserve-invariance") != flags.end(), expected);
+    }
 }
 
 namespace
@@ -507,6 +521,47 @@ std::shared_ptr<const std::vector<uint8_t>> CompileStage(const char* source, sha
 }
 
 } // namespace
+
+TEST(MetalShippedLibraries, BakeUsesPositionInvariantFlagsForRasterStages)
+{
+    const std::filesystem::path dir = TestDirectory("mixed-raster-invariance");
+    const auto vertex = CompileStage(kVertex, shaderc_vertex_shader, "invariant.vert");
+    const auto fragment = CompileStage(kFragment, shaderc_fragment_shader, "unconstrained.frag");
+    ASSERT_FALSE(vertex->empty());
+    ASSERT_FALSE(fragment->empty());
+    const std::filesystem::path shaderRoot = dir / "Shaders";
+    std::filesystem::create_directories(shaderRoot);
+    std::ofstream(shaderRoot / "invariant.vert.spv", std::ios::binary)
+        .write(reinterpret_cast<const char*>(vertex->data()), static_cast<std::streamsize>(vertex->size()));
+    std::ofstream(shaderRoot / "unconstrained.frag.spv", std::ios::binary)
+        .write(reinterpret_cast<const char*>(fragment->data()), static_cast<std::streamsize>(fragment->size()));
+    const std::filesystem::path record = dir / "ShaderStages.txt";
+    std::ofstream(record)
+        << FormatShaderStageRecord(MakeShaderStageRecord(*fragment, "frag", {}, nullptr)) << '\n'
+        << FormatShaderStageRecord(MakeShaderStageRecord(*vertex, "vert", {}, nullptr)) << '\n';
+
+    const std::string vertexName = std::format("{:016x}.metal",
+                                               ComputeTranslationHash(*vertex, MetalShaderStage::Vertex, {}, nullptr));
+    const std::string fragmentName = std::format("{:016x}.metal",
+                                                 ComputeTranslationHash(*fragment, MetalShaderStage::Fragment, {}, nullptr));
+    std::vector<std::string> compiled;
+    const std::filesystem::path roots[] = {shaderRoot};
+    const MetalLibraryBake bake = BakeMetalLibraries(
+        record, roots, dir / "Work",
+        [&compiled, &vertexName, &fragmentName](std::span<const MetalLibraryCompileJob> jobs, std::span<const std::string> flags) {
+            for (const auto& job : jobs)
+            {
+                const auto name = job.Source.filename().string();
+                ASSERT_TRUE(name == vertexName || name == fragmentName);
+                EXPECT_EQ(std::ranges::find(flags, "-fpreserve-invariance") != flags.end(), name == vertexName);
+                compiled.push_back(name);
+                std::ofstream(job.Library, std::ios::binary) << "stand-in";
+            }
+        });
+    EXPECT_EQ(compiled.size(), 2u);
+    EXPECT_EQ(bake.ResolvedStages, 2u);
+    EXPECT_EQ(bake.CompiledStages, 2u);
+}
 
 // A development run records every stage of a graphics pipeline: vertex and fragment, and mesh and task.
 TEST(MetalShippedLibraries, DevelopmentRunRecordsEveryGraphicsStage)

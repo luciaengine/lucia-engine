@@ -87,6 +87,7 @@ enum class RGTextureRead : uint8_t
 enum class RGBufferRead : uint8_t
 {
     Storage, // default
+    MeshStorage, // consumed by the mesh shader stage
     Uniform,
     Indirect,
     Index,
@@ -303,6 +304,8 @@ class RGPrepareContext
     IDevice* GetDevice() const { return m_Context.GetDevice(); }
     /// Whether this preparation belongs to the stamped graph incarnation.
     bool IsFor(const RGFrameStamp& frame) const;
+    /// True when this graph declares a write to the imported physical texture.
+    bool HasDeclaredTextureWrite(TextureHandle texture) const;
     /// Select a realized depth target's format on this graphics preparation context.
     /// Call on a copy; this does not declare a graph dependency or record a pass.
     bool UseDepthTarget(RGTexture depth, uint32_t expectedSamples);
@@ -861,6 +864,18 @@ class RGFrame
     // actually reaches the device; the per-layer cascade contract depends
     // on it).
     void BuildRenderPassDesc(uint32_t attFirst, uint32_t attCount, RenderPassDesc& out) const;
+    // The graph registered this persistent root attachment through its own
+    // pool. An external import that won dedup retains external provenance.
+    bool IsPoolBackedTexture(RGTexture texture) const
+    {
+        if (!texture.IsValid() || texture.Id >= m_HasPhysical.size() ||
+            !m_HasPhysical[texture.Id] || m_Physical[texture.Id] == 0)
+            return false;
+        for (const auto& import : m_Imports)
+            if (import.Id == texture.Id && import.Kind == RGResourceKind::Texture)
+                return import.PoolBacked;
+        return false;
+    }
     TextureHandle PhysicalTexture(RGTexture t) const
     {
         return TextureHandle(PhysicalOf(t.Id));
@@ -873,6 +888,7 @@ class RGFrame
     void MaintainPools();
     friend class RGPassBuilder;
     friend class RGContext;
+    friend class RGPrepareContext;
 
     template <class SetupFn, class ExecFn>
     RGPass AddPassImpl(const char* name, int32_t phase, RGQueue queue, SetupFn&& setup,

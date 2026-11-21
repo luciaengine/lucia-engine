@@ -11,8 +11,8 @@
 //     environment declares none; a changed sky declares it again; and a readback created after
 //     the last bake gets one copy of the resting cube without a bake.
 //
-// The sky's own LUTs are computed by the pipeline's sky node, which this file does not run, so
-// the bake's numbers are not asserted here; the device half asserts the numbers on known texels.
+// Executed sky bakes use the production sky node to generate their LUTs.
+// The readback value test uses known texels.
 
 #include <gtest/gtest.h>
 
@@ -20,6 +20,8 @@
 #include "EngineLogCapture.h"
 #include "Engine/Rendering/IEnvironmentSource.h" // complete type for ImageBasedLightingFeature's unique_ptr
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
+#include "Engine/Rendering/Pipeline/Nodes/SkyRenderNode.h"
+#include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"
 #include "Engine/Rendering/SkyEnvironmentSource.h"
@@ -41,16 +43,35 @@
 #include <numbers>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 using Engine::Renderer::ImageBasedLightingFeature;
+using Engine::Renderer::Pipeline::RenderPipelineBlueprint;
+using Engine::Renderer::Pipeline::RenderPipelineInstance;
+using Engine::Renderer::Pipeline::RenderPipelineNodeRegistry;
+using Engine::Renderer::Pipeline::Nodes::SkyRenderNode;
 using Engine::Renderer::RenderServices;
 using Engine::Renderer::SkyEnvironmentSource;
 using Engine::Renderer::IrradianceReadbackFeature;
 using Engine::Renderer::SkyRenderFeature;
 using Mathematics::Vector3;
+
+namespace GameEngine::Engine::Renderer
+{
+struct SceneReflectionProbeTestAccess
+{
+    static void SetFiltering(SceneReflectionProbeEnvironmentSource& probe, uint64_t completedBakes)
+    {
+        probe.m_LastBaseDigest = probe.BaseDigest();
+        probe.m_CaptureDesc = probe.m_Desc;
+        probe.m_CaptureState = SceneReflectionProbeEnvironmentSource::CaptureState::Filtering;
+        probe.m_CompletedBakes = completedBakes;
+    }
+};
+} // namespace GameEngine::Engine::Renderer
 
 namespace
 {
@@ -116,6 +137,7 @@ class IrradianceReadbackTest : public ::testing::Test
     void TearDown() override
     {
         m_Frame.reset();
+        m_SkyPipeline.reset();
         m_Pools.reset();
         if (m_Services)
             m_Services->Shutdown();
@@ -170,17 +192,37 @@ class IrradianceReadbackTest : public ::testing::Test
         m_Device->WaitForIdle();
     }
 
-    // Schedules and executes one frame of the sky's bake (the schedule ticks the frames since the
-    // last bake); returns whether a bake was declared.
+    void InitializeSkyBake()
+    {
+        auto& sky = m_Services->EnsureFeature<SkyRenderFeature>();
+        ASSERT_TRUE(sky.Initialize(m_Device.get()));
+        sky.SetSettings(SkySettings{}, SkySunState{});
+
+        ASSERT_TRUE(m_SkyRegistry.Register("SkyRender", [] { return std::make_unique<SkyRenderNode>(); }, true));
+        RenderPipelineBlueprint blueprint;
+        blueprint.pipelineName = "IrradianceReadbackTest";
+        RenderPipelineBlueprint::Pass pass;
+        pass.id = "Sky";
+        pass.type = "SkyRender";
+        pass.perView = true;
+        pass.passJson = R"({"id":"Sky","type":"SkyRender"})";
+        blueprint.passes.push_back(std::move(pass));
+        m_SkyPipeline = std::make_unique<RenderPipelineInstance>(*m_Services, m_SkyRegistry);
+        m_SkyPipeline->SetBlueprint(std::move(blueprint));
+    }
+
+    void DeclareSkyBake(SkyEnvironmentSource& source)
+    {
+        m_SkyPipeline->Declare(*m_Frame, {}, {});
+        source.ScheduleBake({.Frame = m_Frame.get(), .Device = m_Device.get(), .Feature = &Ibl()});
+    }
+
+    // Submit a sky frame and return whether it declared an IBL bake.
     bool RunSkyBakeFrame(SkyEnvironmentSource& source, uint64_t frameIndex)
     {
         RenderGraph::RGFrame& frame = *m_Frame;
         frame.BeginFrame(frameIndex);
-        Engine::Renderer::EnvironmentBakeContext ctx{};
-        ctx.Frame = &frame;
-        ctx.Device = m_Device.get();
-        ctx.Feature = &Ibl();
-        source.ScheduleBake(ctx);
+        DeclareSkyBake(source);
         const bool bakes = FindPass(frame.Graph(), kConvolvePass) != RenderGraph::kInvalidId;
         frame.Execute();
         m_Device->WaitForIdle();
@@ -190,6 +232,8 @@ class IrradianceReadbackTest : public ::testing::Test
     std::unique_ptr<IDevice> m_Device;
     std::unique_ptr<RenderServices> m_Services;
     std::unique_ptr<FramePools> m_Pools;
+    RenderPipelineNodeRegistry m_SkyRegistry;
+    std::unique_ptr<RenderPipelineInstance> m_SkyPipeline;
     std::unique_ptr<RenderGraph::RGFrame> m_Frame;
 };
 
@@ -311,10 +355,9 @@ TEST_F(IrradianceReadbackTest, TheSkyDeclaresTheCopyOnlyWithItsBake)
 // capture views' culling and extraction, which a bare RenderServices does not run.)
 TEST_F(IrradianceReadbackTest, AnExecutedSkyBakeCountsOnceAndRestartsTheFramesSinceBake)
 {
-    auto& sky = m_Services->EnsureFeature<SkyRenderFeature>();
-    ASSERT_TRUE(sky.Initialize(m_Device.get()));
-    sky.SetSettings(SkySettings{}, SkySunState{});
+    ASSERT_NO_FATAL_FAILURE(InitializeSkyBake());
     SkyEnvironmentSource source(*m_Services);
+    const auto validationErrors = m_Device->GetValidationStats().ErrorCount;
     EXPECT_EQ(Ibl().GetBakeCount(), 0u);
 
     ASSERT_TRUE(RunSkyBakeFrame(source, 0)) << "the first frame with a sky must bake; the check is void";
@@ -324,6 +367,7 @@ TEST_F(IrradianceReadbackTest, AnExecutedSkyBakeCountsOnceAndRestartsTheFramesSi
     ASSERT_FALSE(RunSkyBakeFrame(source, 1)) << "a steady sky must not bake again";
     EXPECT_EQ(Ibl().GetBakeCount(), 1u);
     EXPECT_EQ(Ibl().GetFramesSinceBake(), 1u);
+    EXPECT_EQ(m_Device->GetValidationStats().ErrorCount, validationErrors);
 }
 
 // With async compute on, the sky's convolve writes the cube on the compute queue and the copy
@@ -333,9 +377,7 @@ TEST_F(IrradianceReadbackTest, ACopyAfterAnAsyncComputeBakeReadsTheFaceInItsGrap
 {
     if (m_Device->GetComputeQueueFamilyIndex() == m_Device->GetGraphicsQueueFamilyIndex())
         GTEST_SKIP() << "No separate compute queue family: the graph records every transition on one list";
-    auto& sky = m_Services->EnsureFeature<SkyRenderFeature>();
-    ASSERT_TRUE(sky.Initialize(m_Device.get()));
-    sky.SetSettings(SkySettings{}, SkySunState{});
+    ASSERT_NO_FATAL_FAILURE(InitializeSkyBake());
     SkyEnvironmentSource source(*m_Services);
     IrradianceReadbackFeature& readback = m_Services->EnsureFeature<IrradianceReadbackFeature>();
 
@@ -345,11 +387,7 @@ TEST_F(IrradianceReadbackTest, ACopyAfterAnAsyncComputeBakeReadsTheFaceInItsGrap
     {
         GameEngine::TestLog::ScopedEngineLogCapture capture(&log, Logger::LogLevel::Warning);
         frame.BeginFrame(0);
-        Engine::Renderer::EnvironmentBakeContext ctx{};
-        ctx.Frame = &frame;
-        ctx.Device = m_Device.get();
-        ctx.Feature = &Ibl();
-        source.ScheduleBake(ctx);
+        DeclareSkyBake(source);
         const RenderGraph::RGGraph& graph = frame.Graph();
         const RenderGraph::RGPassId convolve = FindPass(graph, kConvolvePass);
         const RenderGraph::RGPassId copy = FindPass(graph, kCopyPass);
@@ -446,6 +484,39 @@ TEST_F(IrradianceReadbackTest, AReflectionProbeCopiesTheRestingCubeOnce)
     EXPECT_TRUE(declaresCopy(0)) << "a readback that arrives between bakes must get a reading";
     for (uint64_t i = 1; i < 4; ++i)
         EXPECT_FALSE(declaresCopy(i)) << "frame " << i << ": the resting cube is copied once";
+}
+
+TEST_F(IrradianceReadbackTest, SupersededOnceCaptureRetainsThePublishedCubeAndCanRetryItsOriginalInputs)
+{
+    using namespace Engine::Renderer;
+    SceneReflectionProbeEnvironmentSource probe(*m_Services);
+    SceneReflectionProbeEnvironmentDesc desc{};
+    desc.SourceKey = 1;
+    desc.UpdateMode = SceneReflectionProbeUpdateMode::Once;
+    desc.SceneEditDigest = 2;
+    probe.SetProbe(desc);
+    SceneReflectionProbeTestAccess::SetFiltering(probe, 1);
+    Ibl().SetLastBakedDigest(5);
+
+    desc.SceneEditDigest = 3;
+    probe.SetProbe(desc);
+    m_Frame->BeginFrame(0);
+    EnvironmentBakeContext bakeContext{};
+    bakeContext.Frame = m_Frame.get();
+    bakeContext.Device = m_Device.get();
+    bakeContext.Feature = &Ibl();
+    probe.ScheduleBake(bakeContext);
+
+    EXPECT_FALSE(probe.IsBaking());
+    EXPECT_EQ(probe.GetDiagnostics().CompletedBakes, 1u);
+    EXPECT_EQ(Ibl().GetLastBakedDigest(), 5u);
+
+    desc.SceneEditDigest = 2;
+    probe.SetProbe(desc);
+    EXPECT_TRUE(probe.NeedsBake());
+    m_Frame->BeginFrame(1);
+    probe.ScheduleBake(bakeContext);
+    EXPECT_STREQ(probe.GetDiagnostics().Stage, "Capturing face");
 }
 
 // A box probe hands the image-based lighting its position, box center, half-extents and each

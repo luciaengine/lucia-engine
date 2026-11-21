@@ -2505,6 +2505,8 @@ bool VulkanDevice::CreateLogicalDevice()
 
     VkPhysicalDeviceFeatures deviceFeatures{};
     deviceFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
+    // PrimitiveId in an indexed fragment module declares SPIR-V Geometry.
+    deviceFeatures.geometryShader = supportedFeatures.geometryShader;
     // Enable depth-bounds test feature if supported (allows vkCmdSetDepthBounds and pipeline depthBoundsTestEnable)
     deviceFeatures.depthBounds = supportedFeatures.depthBounds;
 
@@ -2631,13 +2633,21 @@ bool VulkanDevice::CreateLogicalDevice()
                                                      : "both transfer bits regardless");
     VkPhysicalDeviceVulkan13Features enabled13{};
     enabled13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    // Chain mesh shader features only when extension is supported
     VkPhysicalDeviceMeshShaderFeaturesEXT meshFeatures{};
+    meshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
     if (CheckExtensionSupport(VK_EXT_MESH_SHADER_EXTENSION_NAME))
     {
+        VkPhysicalDeviceFeatures2 meshQuery{};
+        meshQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        meshQuery.pNext = &meshFeatures;
+        vkGetPhysicalDeviceFeatures2(m_PhysicalDevice, &meshQuery);
+    }
+    bool meshShaderEnabled = meshFeatures.meshShader == VK_TRUE;
+    if (meshShaderEnabled)
+    {
+        meshFeatures = {};
         meshFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
         meshFeatures.meshShader = VK_TRUE;
-        meshFeatures.taskShader = VK_FALSE;
         enabled13.pNext = &meshFeatures;
     }
 
@@ -2945,7 +2955,7 @@ bool VulkanDevice::CreateLogicalDevice()
     {
         deviceExtensions.push_back(VK_KHR_SEPARATE_DEPTH_STENCIL_LAYOUTS_EXTENSION_NAME);
     }
-    if (m_Capabilities.supportsMeshShaders)
+    if (meshShaderEnabled)
     {
         deviceExtensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
     }
@@ -3012,8 +3022,10 @@ bool VulkanDevice::CreateLogicalDevice()
     createInfo.ppEnabledLayerNames = nullptr;
 
     VkResult result = vkCreateDevice(m_PhysicalDevice, &createInfo, nullptr, &m_Device);
+    m_FragmentPrimitiveIdEnabledAtInit = result == VK_SUCCESS && deviceFeatures.geometryShader == VK_TRUE;
     if (result != VK_SUCCESS)
     {
+        meshShaderEnabled = false;
         Logger::Log::Error("Failed to create logical device: {} ({})", VkResultToString(result), (int)result);
         Logger::Log::Error("API version: {}.{}.{}",
                            (int)VK_VERSION_MAJOR(m_DeviceProperties.apiVersion),
@@ -3222,11 +3234,13 @@ bool VulkanDevice::CreateLogicalDevice()
     if (const char* value = std::getenv("GE_VK_NO_DYNAMIC_DEPTH_WRITE"); value && value[0] == '1')
         m_FpCmdSetDepthWriteEnable = nullptr;
 
-    if (m_Capabilities.supportsMeshShaders)
-    {
-        m_FpCmdDrawMeshTasksEXT = reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(m_Device, "vkCmdDrawMeshTasksEXT"));
-        m_SupportsMeshShaderEXT = (m_FpCmdDrawMeshTasksEXT != nullptr);
-    }
+    m_FpCmdDrawMeshTasksEXT = meshShaderEnabled
+        ? reinterpret_cast<PFN_vkCmdDrawMeshTasksEXT>(vkGetDeviceProcAddr(m_Device, "vkCmdDrawMeshTasksEXT"))
+        : nullptr;
+    m_SupportsMeshShaderEXT = (m_FpCmdDrawMeshTasksEXT != nullptr);
+    m_FpCmdDrawMeshTasksIndirectEXT = m_SupportsMeshShaderEXT
+        ? reinterpret_cast<PFN_vkCmdDrawMeshTasksIndirectEXT>(vkGetDeviceProcAddr(m_Device, "vkCmdDrawMeshTasksIndirectEXT"))
+        : nullptr;
 #ifdef VK_EXT_HDR_METADATA_EXTENSION_NAME
     m_FpSetHdrMetadataEXT = m_HdrMetadataExtEnabled
         ? reinterpret_cast<PFN_vkSetHdrMetadataEXT>(vkGetDeviceProcAddr(m_Device, "vkSetHdrMetadataEXT"))
@@ -3593,7 +3607,30 @@ void VulkanDevice::QueryDeviceCapabilities()
     }
 
     // Basic capabilities - check for extensions
-    m_Capabilities.supportsMeshShaders = CheckExtensionSupport("VK_EXT_mesh_shader");
+    m_Capabilities.supportsMeshShaders = m_SupportsMeshShaderEXT;
+    if (m_FragmentPrimitiveIdEnabledAtInit && m_SupportsDrawIndirectCount &&
+        m_DeviceFeatures.drawIndirectFirstInstance && m_Capabilities.supportsBufferDeviceAddress &&
+        m_DeviceProperties.apiVersion >= VK_API_VERSION_1_3 &&
+        m_DeviceProperties.limits.maxDrawIndirectCount >= 65535u)
+    {
+        VkPhysicalDeviceSubgroupProperties subgroup{};
+        subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+        VkPhysicalDeviceProperties2 properties{};
+        properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties.pNext = &subgroup;
+        vkGetPhysicalDeviceProperties2(m_PhysicalDevice, &properties);
+        constexpr VkSubgroupFeatureFlags requiredOps = VK_SUBGROUP_FEATURE_BASIC_BIT |
+            VK_SUBGROUP_FEATURE_VOTE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+        constexpr VkFormatFeatureFlags requiredFormat = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+            VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+        VkFormatProperties ownerFormat{};
+        vkGetPhysicalDeviceFormatProperties(m_PhysicalDevice, VK_FORMAT_R32_UINT, &ownerFormat);
+        m_Capabilities.supportsIndexedDepthOwnerReplay =
+            (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u &&
+            (subgroup.supportedOperations & requiredOps) == requiredOps &&
+            (ownerFormat.optimalTilingFeatures & requiredFormat) == requiredFormat;
+    }
+    m_Capabilities.supportsIndirectMeshTasks = m_FpCmdDrawMeshTasksIndirectEXT != nullptr;
     m_Capabilities.supportsRayTracing = CheckExtensionSupport("VK_KHR_ray_tracing_pipeline");
     // Enabled-at-init stash, not detection: true only when acceleration
     // structures + ray query were actually enabled on the logical device
@@ -3913,17 +3950,30 @@ void VulkanDevice::QueryDeviceCapabilities()
         }
     }
 
-    // Query mesh shader properties if supported
-    if (m_Capabilities.supportsMeshShaders)
+    if (m_Capabilities.supportsIndexedDepthOwnerReplay && m_Capabilities.supportsMeshShaders &&
+        m_Capabilities.supportsIndirectMeshTasks && m_Capabilities.supportsBufferDeviceAddress)
     {
-        VkPhysicalDeviceMeshShaderPropertiesEXT meshShaderProps{};
-        meshShaderProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
+        VkPhysicalDeviceMeshShaderPropertiesEXT meshProperties{};
+        meshProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT;
+        VkPhysicalDeviceProperties2 properties{};
+        properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties.pNext = &meshProperties;
+        vkGetPhysicalDeviceProperties2(m_PhysicalDevice, &properties);
 
-        VkPhysicalDeviceProperties2 props2{};
-        props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        props2.pNext = &meshShaderProps;
-
-        vkGetPhysicalDeviceProperties2(m_PhysicalDevice, &props2);
+        // The mesh compactor stores three uvec4s per workgroup. It pads the final row.
+        constexpr uint32_t kMeshGroupsPerRow = 1024;
+        constexpr uint32_t kMaximumMeshRows = (65535u / 3u + kMeshGroupsPerRow - 1u) / kMeshGroupsPerRow;
+        constexpr uint32_t kMeshMaskBytes = 65535u * 256u * sizeof(uint32_t);
+        constexpr uint32_t kMeshShaderOutputBytes = 8192;
+        m_Capabilities.supportsIndexedDepthMeshReplay =
+            meshProperties.maxMeshWorkGroupInvocations >= 32u && meshProperties.maxMeshWorkGroupSize[0] >= 32u &&
+            meshProperties.maxMeshOutputVertices >= 48u && meshProperties.maxMeshOutputPrimitives >= 16u &&
+            meshProperties.maxMeshOutputComponents >= 25u &&
+            meshProperties.maxMeshOutputMemorySize >= kMeshShaderOutputBytes &&
+            meshProperties.maxMeshWorkGroupCount[0] >= kMeshGroupsPerRow &&
+            meshProperties.maxMeshWorkGroupCount[1] >= kMaximumMeshRows &&
+            meshProperties.maxMeshWorkGroupTotalCount >= kMeshGroupsPerRow * kMaximumMeshRows &&
+            m_DeviceProperties.limits.maxStorageBufferRange >= kMeshMaskBytes;
     }
 
     // Published, not derived: SelectPhysicalDevice owns the derivation so the
@@ -5174,7 +5224,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         }
         if (colorBlendAttachments.empty())
         {
-            uint32_t colorCountHint = desc.colorAttachmentFormats.empty() ? 1u : static_cast<uint32_t>(desc.colorAttachmentFormats.size());
+            const uint32_t colorCountHint = static_cast<uint32_t>(desc.colorAttachmentFormats.size());
             for (uint32_t i = 0; i < colorCountHint; ++i)
             {
                 VkPipelineColorBlendAttachmentState a{};
@@ -5207,17 +5257,19 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         // Dynamic rendering
         VkPipelineRenderingCreateInfo renderingInfo{};
         renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-        std::vector<VkFormat> safeColorFormats; // Temp storage to avoid strict aliasing violation
-        if (!desc.colorAttachmentFormats.empty())
+        const auto mapFormat = [](uint32_t format)
         {
-            safeColorFormats.reserve(desc.colorAttachmentFormats.size());
-            for (uint32_t fmt : desc.colorAttachmentFormats)
-                safeColorFormats.push_back(static_cast<VkFormat>(fmt));
-            renderingInfo.colorAttachmentCount = static_cast<uint32_t>(safeColorFormats.size());
-            renderingInfo.pColorAttachmentFormats = safeColorFormats.data();
-        }
-        if (desc.depthAttachmentFormat)
-            renderingInfo.depthAttachmentFormat = static_cast<VkFormat>(desc.depthAttachmentFormat);
+            const auto mapped = VulkanResourceUtils::GetVulkanFormat(static_cast<TextureFormat>(format));
+            return mapped == VK_FORMAT_UNDEFINED ? static_cast<VkFormat>(format) : mapped;
+        };
+        auto& colorFormats = vulkanPipeline.colorAttachmentFormats;
+        colorFormats.reserve(desc.colorAttachmentFormats.size());
+        for (uint32_t format : desc.colorAttachmentFormats)
+            colorFormats.push_back(mapFormat(format));
+        renderingInfo.colorAttachmentCount = static_cast<uint32_t>(colorFormats.size());
+        renderingInfo.pColorAttachmentFormats = colorFormats.data();
+        renderingInfo.depthAttachmentFormat = mapFormat(desc.depthAttachmentFormat);
+        renderingInfo.stencilAttachmentFormat = mapFormat(desc.stencilAttachmentFormat);
 
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -5282,6 +5334,7 @@ PipelineHandle VulkanDevice::CreatePipelineInternal(const PipelineDesc& desc)
         vulkanPipeline.layout = pipelineLayout;
         vulkanPipeline.renderPass = m_SwapchainRenderPass; // may be null when dynamic rendering used
         vulkanPipeline.type = PipelineType::Mesh;
+        vulkanPipeline.rasterizationSamples = resolvedRasterSamples;
         vulkanPipeline.depthWriteEnable = desc.depthStencilState.depthWriteEnable;
         vulkanPipeline.pushConstantSize = desc.pushConstantSize;
         vulkanPipeline.pushConstantStagesMask = desc.pushConstantStagesMask

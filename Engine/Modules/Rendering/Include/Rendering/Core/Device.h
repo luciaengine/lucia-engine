@@ -865,6 +865,10 @@ constexpr GpuVendor ClassifyGpuVendor(uint32_t vendorId) noexcept
 struct RenderingDeviceCapabilities
 {
     bool supportsMeshShaders = false;
+    // Indexed ownership requires fragment PrimitiveId, counted draws and the compute replay path.
+    bool supportsIndexedDepthOwnerReplay = false;
+    bool supportsIndexedDepthMeshReplay = false;
+    bool supportsIndirectMeshTasks = false;
     bool supportsRayTracing = false;
     // True when the backend's acceleration-structure and ray-query extensions
     // (plus the deferred-host-operations support they need) are ENABLED on the
@@ -1275,6 +1279,7 @@ SamplerDesc ResolveSamplerPreset(SamplerPreset preset, const RendererProfile& pr
 static constexpr uint32_t kShaderStageVertex = 0x00000001u;
 static constexpr uint32_t kShaderStageFragment = 0x00000010u;
 static constexpr uint32_t kShaderStageCompute = 0x00000020u;
+static constexpr uint32_t kShaderStageMesh = 0x00000080u;
 
 // Descriptor binding flags (map onto the backend's binding-flag bits)
 static constexpr uint32_t kDescriptorBindingUpdateAfterBind = 0x00000001u;

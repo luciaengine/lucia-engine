@@ -1,0 +1,12 @@
+include_guard(GLOBAL)
+
+function(ge_stage_browser_shader_compiler target)
+    set(glue "${GE_WEB_SHADER_COMPILER_DIR}/editor-compiler.js")
+    target_link_options(${target} PRIVATE "SHELL:--extern-pre-js '${glue}'")
+    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${glue}")
+    foreach(tool glslc.wasm spirv-opt.wasm naga-browser.wasm)
+        set(asset "${GE_WEB_SHADER_COMPILER_DIR}/${tool}")
+        target_link_options(${target} PRIVATE "SHELL:--preload-file '${asset}@/WebShaderCompiler/${tool}'")
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${asset}")
+    endforeach()
+endfunction()

@@ -25,6 +25,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -97,6 +98,38 @@ ShaderProgramCompileRequest MakeInlineRequest(const fs::path& cacheRoot,
     } while (0)
 
 } // namespace
+
+TEST(ShaderCompileCacheKey, MeshStageCompilesAndCachesAtSpirv16)
+{
+    constexpr char kMesh[] = R"(
+#version 460
+#extension GL_EXT_mesh_shader : require
+layout(local_size_x = 1) in;
+layout(triangles, max_vertices = 3, max_primitives = 1) out;
+void main()
+{
+    SetMeshOutputsEXT(0, 0);
+}
+)";
+    TempTree tree("ge_cachekey_mesh");
+    auto req = MakeInlineRequest(tree.Root / "Cache", tree.Root / "probe.mesh.glsl", "MeshStage", kMesh, "ms");
+    req.Target.Spirv = SpirvTarget::Spirv_1_5;
+    ShaderProgramCompileResult first{};
+    COMPILE_OR_SKIP(req, first);
+    const auto& bytes = first.stageBytes.at("ms");
+    ASSERT_GE(bytes.size(), 2 * sizeof(uint32_t));
+    uint32_t version = 0;
+    std::memcpy(&version, bytes.data() + sizeof(uint32_t), sizeof(version));
+    EXPECT_EQ(version, 0x00010600u);
+    EXPECT_TRUE(first.meta.Stages.contains("ms"));
+
+    const auto compiles = ShaderCompileService::GetTotalCompilations();
+    ShaderProgramCompileResult second{};
+    std::string error;
+    ASSERT_TRUE(ShaderCompileService::CompileProgramToCache(req, ShaderSourceKind::SpirV, second, &error)) << error;
+    EXPECT_EQ(second.stageBytes.at("ms"), bytes);
+    EXPECT_EQ(ShaderCompileService::GetTotalCompilations(), compiles);
+}
 
 TEST(ShaderCompileCacheKey, DebugNameStaysOutOfKey)
 {

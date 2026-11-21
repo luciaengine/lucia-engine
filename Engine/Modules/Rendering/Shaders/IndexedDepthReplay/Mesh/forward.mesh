@@ -1,0 +1,84 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_GOOGLE_include_directive : require
+#define GE_INSTANCED
+#define GE_INDEXED_DEPTH_OWNER_MESH_FORWARD
+#include "Includes/instance_io.glsl"
+layout(set=0,binding=5) uniform CameraUBO
+{
+#include "Includes/camera_ubo_fields.glsl"
+} Cam;
+#include "Includes/camera_relative.glsl"
+
+layout(local_size_x=32) in;
+layout(triangles,max_vertices=48,max_primitives=16) out;
+out gl_MeshPerVertexEXT { invariant vec4 gl_Position; } gl_MeshVerticesEXT[];
+layout(location=0) out vec2 vUV0[];
+layout(location=1) out vec3 vNormalWS[];
+layout(location=2) out vec3 vPosWS[];
+#ifdef HAS_COLOR
+layout(location=4) out vec4 vColor[];
+#endif
+layout(location=6) flat out uint vMaterialIndex[];
+layout(location=7) flat out vec4 vCustom0[];
+layout(location=14) flat out uint vInstanceFlags[];
+layout(location=15) out vec3 vPosRel[];
+
+layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer UInts {uint data[];};
+layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer Floats {float data[];};
+layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer Colors {vec4 data[];};
+layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer Work {uvec4 data[];};
+
+uint indexAt(uint index)
+{
+    UInts indices = UInts(pc_inst.ge_indexAddress);
+    if (pc_inst.ge_index16 == 0u)
+        return indices.data[index];
+    return (indices.data[index >> 1u] >> ((index & 1u) * 16u)) & 65535u;
+}
+
+void main()
+{
+    uint work = gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+    if (work >= UInts(pc_inst.ge_countsAddress).data[1])
+    {
+        SetMeshOutputsEXT(0,0);
+        return;
+    }
+    Work workItems = Work(pc_inst.ge_workAddress);
+    uint groupBase=3u*work;
+    uvec4 row = workItems.data[groupBase];
+    uint triangles = row.w;
+    SetMeshOutputsEXT(3u * triangles, triangles);
+    InstanceData inst = ge_FetchInstanceData(row.z);
+    uint lane=gl_LocalInvocationID.x;
+    for (uint vertexSlot=lane; vertexSlot<3u*triangles; vertexSlot+=gl_WorkGroupSize.x)
+    {
+        uint localTriangle = vertexSlot / 3u;
+        uint lanePair = localTriangle >> 1u;
+        uint pair = lanePair < 4u ? workItems.data[groupBase+1u][lanePair] : workItems.data[groupBase+2u][lanePair-4u];
+        uint primitive = (pair >> ((localTriangle & 1u)*16u)) & 65535u;
+        uint vertex = uint(int(indexAt(row.x + primitive*3u + vertexSlot%3u)) + int(row.y));
+        Floats core = Floats(pc_inst.ge_coreAddress);
+        uint f = vertex*8u;
+        vec3 pos = vec3(core.data[f],core.data[f+1u],core.data[f+2u]);
+        vec3 normal = vec3(core.data[f+3u],core.data[f+4u],core.data[f+5u]);
+        vec4 world = inst.modelMatrix * vec4(pos,1.0);
+        vec3 full, relative;
+        gl_MeshVerticesEXT[vertexSlot].gl_Position = GE_ClipFromSectorLocal(world.xyz,inst.sector,full,relative);
+        vUV0[vertexSlot] = vec2(core.data[f+6u],core.data[f+7u]);
+        vNormalWS[vertexSlot] = normalize(inst.normalMatrix * normal);
+        vPosWS[vertexSlot] = full;
+        vPosRel[vertexSlot] = relative;
+        vMaterialIndex[vertexSlot] = inst.materialIndex;
+        vCustom0[vertexSlot] = inst.custom0;
+        vInstanceFlags[vertexSlot] = inst.flags;
+#ifdef HAS_COLOR
+        vColor[vertexSlot] = Colors(pc_inst.ge_colorAddress).data[vertex];
+#endif
+    }
+    if (lane < triangles)
+        gl_PrimitiveTriangleIndicesEXT[lane] = uvec3(3u*lane,3u*lane+1u,3u*lane+2u);
+}

@@ -58,12 +58,12 @@
 #include "Docking/WindowDockingController.h"
 #include "Packages/PackageManagerController.h"
 #include "Assets/Packages/PackageCodeModules.h"
-#include "Assets/Packages/PackageNativeCache.h"
 #include "Core/Application.h"
 #include "Core/ApplicationPaths.h"
 #include "Core/CpuProfiler.h"
 #include "Editor/Shortcuts/DiagnosticShortcuts.h"
 #include "Core/Engine.h"
+#include "Engine/Build/GameConfig.h"
 #include "Core/Time.h"
 #include "Core/WindowInputRouter.h"
 // A2.4-P0-R: full JobSystem headers to build the RGFrame fork-join primitive
@@ -1937,6 +1937,29 @@ void EditorApplication::BeginMainWindowAndDevice(JobSystem::JobChannel& startupC
     m_StartupMainWindow = std::move(mainCtx);
 }
 
+namespace
+{
+std::filesystem::path ResolveProjectRenderPipeline(const std::filesystem::path& projectRoot)
+{
+    auto pipeline = Editor::LoadActiveRenderPipelinePathFromProjectSettings(projectRoot);
+#if defined(__EMSCRIPTEN__)
+    std::error_code error;
+    const auto configPath = projectRoot / "game.config";
+    if (pipeline.empty() && std::filesystem::is_regular_file(configPath, error))
+    {
+        const auto configuredPath = std::filesystem::path(LoadGameConfig(configPath).renderPipeline);
+        if (configuredPath.is_relative() && configuredPath.extension() == ".rendergraph")
+        {
+            bool wasMigrated = false;
+            pipeline = Editor::NormalizeConfiguredRenderPipelinePath(
+                configuredPath, EngineCore::GetInstance().GetAssetManager(), wasMigrated);
+        }
+    }
+#endif
+    return pipeline;
+}
+} // namespace
+
 bool EditorApplication::Initialize()
 {
     const auto tEditorStart = std::chrono::high_resolution_clock::now();
@@ -2603,7 +2626,7 @@ bool EditorApplication::Initialize()
         {
             const auto& wsRoot = engine.GetWorkspaceRoot();
             Logger::Log::Info("Editor: loading render pipeline settings (workspace root: '{}')", wsRoot.string());
-            const std::filesystem::path pipelinePath = Editor::LoadActiveRenderPipelinePathFromProjectSettings(wsRoot);
+            const std::filesystem::path pipelinePath = ResolveProjectRenderPipeline(wsRoot);
             Editor::ApplyProjectRenderSettings(*rs, wsRoot);
             if (!pipelinePath.empty())
             {
@@ -5349,7 +5372,7 @@ void EditorApplication::FinishProjectFolderSwitch(const ProjectSwitch& pending)
         // were populated during initial startup.
         Engine::Renderer::PrimitiveGenerator::RegisterAll(*rs);
 
-        const std::filesystem::path pipelinePath = Editor::LoadActiveRenderPipelinePathFromProjectSettings(projectPath);
+        const std::filesystem::path pipelinePath = ResolveProjectRenderPipeline(projectPath);
         if (!pipelinePath.empty())
         {
             Logger::Log::Info("Editor: loaded active render pipeline from project settings after switch: {}",
@@ -5556,26 +5579,12 @@ void EditorApplication::WireNativeScriptingForProject(const std::filesystem::pat
     // of packages it can't see.
     {
         std::vector<GameEngine::NativeScripting::NativeBuildConfig> packageConfigs;
-        for (const GameEngine::PackageCodeModule& module : m_Packages->GetCodeModules())
+        for (const GameEngine::PackageCodeModule* nativeModule :
+             m_Packages->PrepareNativeModules(!cfg.EditorImportLib.empty()))
         {
-            if (module.Lang != GameEngine::PackageModuleRecord::ModuleLang::Cpp)
-                continue;
+            const GameEngine::PackageCodeModule& module = *nativeModule;
             const bool isEditorModule =
                 module.Kind == GameEngine::PackageModuleRecord::ModuleKind::Editor;
-            if (isEditorModule && cfg.EditorImportLib.empty())
-            {
-                Logger::Log::Error("Editor: package '{}' has a native Editor-kind module but the staged "
-                                   "SDK carries no EditorSDK interface (editorimportlib); module skipped",
-                                   module.PackageName);
-                continue;
-            }
-            if (module.UsesManagedNativeCache &&
-                !RetainPackageNativeCache(module.CacheDir, EngineCore::GetInstance().GetStartupChannel()))
-            {
-                Logger::Log::Error("Editor: cannot lease native cache '{}' for package '{}'; module skipped",
-                                   module.CacheDir.string(), module.PackageName);
-                continue;
-            }
             GameEngine::NativeScripting::NativeBuildConfig pkgCfg = cfg;
             pkgCfg.SourceDir = module.RootDir;
             pkgCfg.PackageRootDir = module.PackageRootDir;

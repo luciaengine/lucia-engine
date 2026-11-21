@@ -19,7 +19,7 @@ enum class ShaderSourceKind : uint8_t;
 // Inputs for compiling a multi-stage shader \"program\" (typically from a .shader asset).
 struct ShaderStageCompileSpec
 {
-    // Stage key: \"vs\",\"fs\",\"cs\",\"gs\",\"ms\" (mesh may be unsupported by shaderc in v1).
+    // Stage key: \"vs\",\"fs\",\"cs\",\"gs\",\"ms\".
     std::string stage;
     std::filesystem::path sourcePath;  // source file path (logical name even when inlineSource is set)
     std::string entryPoint = "main";   // meaningful for HLSL
@@ -43,6 +43,10 @@ struct ShaderProgramCompileRequest
     std::vector<std::filesystem::path> includeDirs;
     std::vector<ShaderStageCompileSpec> stages;
     ShaderCompileTarget Target = CurrentShaderCompileTarget();
+    // A composed rigid StandardPBR mask may record its compiled defines in the
+    // package when this engine surface is present in the actual include trace.
+    std::filesystem::path stockMaskSurface;
+    uint64_t stockMaskSurfaceHash = 0;
 };
 
 struct ShaderProgramCompileResult

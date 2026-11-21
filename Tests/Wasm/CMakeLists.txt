@@ -14,6 +14,9 @@ if(BUILD_TESTING)
         add_test(NAME WebEnginePack
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tools/Web/test_engine_pack.py)
         set_tests_properties(WebEnginePack PROPERTIES TIMEOUT 30)
+        add_test(NAME WebManagedEditorPreload
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tools/Web/test_link_managed_editor.py)
+        set_tests_properties(WebManagedEditorPreload PROPERTIES TIMEOUT 30)
     endif()
     if(Python3_Interpreter_FOUND AND GE_WEB_TEST_NODE)
         add_test(NAME WebMailboxPatch
@@ -41,6 +44,19 @@ endif()
 # patch checks above available to native builds.
 if(NOT EMSCRIPTEN)
     return()
+endif()
+
+if(GE_WEB_SHADER_COMPILER_DIR)
+    include("${CMAKE_SOURCE_DIR}/cmake/BrowserShaderCompiler.cmake")
+    add_executable(WebShaderCompilerSmoke WebShaderCompilerSmoke.cpp)
+    target_link_libraries(WebShaderCompilerSmoke PRIVATE GameEngineRendering FileSystemObjects Platform Logger AssetCore)
+    set_target_properties(WebShaderCompilerSmoke PROPERTIES SUFFIX ".js")
+    target_link_options(WebShaderCompilerSmoke PRIVATE
+        "SHELL:-s ENVIRONMENT=web,worker"
+        "SHELL:-s WASMFS"
+        "SHELL:-s FORCE_FILESYSTEM"
+        "SHELL:-s INITIAL_MEMORY=128MB")
+    ge_stage_browser_shader_compiler(WebShaderCompilerSmoke)
 endif()
 
 # Headless engine-core smoke for the wasm target (web platform plan, Phase 4).

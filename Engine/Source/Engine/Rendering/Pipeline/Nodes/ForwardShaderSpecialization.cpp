@@ -14,11 +14,11 @@ namespace
 {
 constexpr uint32_t kLocalLightsConstant = 300;
 constexpr uint32_t kLocalProbesConstant = 301;
-constexpr uint32_t kHexTilingConstant = 302;
 constexpr uint32_t kShadowFilterConstant = 303;
 constexpr uint32_t kShadowDebugConstant = 304;
 constexpr uint32_t kSecondaryLightsConstant = 305;
 constexpr int32_t kRuntimeShadowFilter = -1;
+constexpr int32_t kPcssWithPoissonFallback = -2;
 
 bool MayUseHexTiling(const Material& material)
 {
@@ -78,8 +78,11 @@ std::shared_ptr<const Rendering::SpecializationConstants> ForwardShaderSpecializ
     int32_t shadowDebug = 1;
     if (auto* shadows = services.GetFeature<ShadowMapRenderFeature>())
     {
-        if (shadows->ResolveEffectiveFilterQuality(services, view.id) == ShadowFilterQuality::Grid5x5)
+        const auto quality = shadows->ResolveEffectiveFilterQuality(services, view.id);
+        if (quality == ShadowFilterQuality::Grid5x5)
             shadowFilter = static_cast<int32_t>(ShadowFilterQuality::Grid5x5);
+        else if (quality == ShadowFilterQuality::PCSS)
+            shadowFilter = kPcssWithPoissonFallback;
         shadowDebug = shadows->GetDebugMode() != ShadowDebugMode::Off ? 1 : 0;
     }
     const std::array<int32_t, 6> state{
@@ -91,7 +94,7 @@ std::shared_ptr<const Rendering::SpecializationConstants> ForwardShaderSpecializ
         // Vulkan specialization booleans occupy four bytes.
         constants->AddConstant(kLocalLightsConstant, static_cast<uint32_t>(state[0]));
         constants->AddConstant(kLocalProbesConstant, static_cast<uint32_t>(state[1]));
-        constants->AddConstant(kHexTilingConstant, static_cast<uint32_t>(state[2]));
+        constants->AddConstant(kForwardHexTilingConstant, static_cast<uint32_t>(state[2]));
         constants->AddConstant(kShadowFilterConstant, state[3]);
         constants->AddConstant(kShadowDebugConstant, static_cast<uint32_t>(state[4]));
         constants->AddConstant(kSecondaryLightsConstant, static_cast<uint32_t>(state[5]));

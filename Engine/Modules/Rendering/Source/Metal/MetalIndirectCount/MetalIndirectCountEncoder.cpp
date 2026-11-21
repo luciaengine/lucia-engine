@@ -146,7 +146,7 @@ void MetalIndirectCountEncoder::EncodeTranslation(MTL::CommandBuffer* commandBuf
     m_State = TranslationState::Open;
 }
 
-void MetalIndirectCountEncoder::EncodeDraw(MTL::RenderCommandEncoder* encoder, const Draw& draw)
+bool MetalIndirectCountEncoder::EncodeDraw(MTL::RenderCommandEncoder* encoder, const Draw& draw)
 {
     if (m_State == TranslationState::None)
     {
@@ -157,7 +157,7 @@ void MetalIndirectCountEncoder::EncodeDraw(MTL::RenderCommandEncoder* encoder, c
                                "pass (indirect command resources unavailable); the draw is skipped");
             s_Logged = true;
         }
-        return;
+        return false;
     }
     if (!m_EncoderExecutedCommands)
     {
@@ -178,7 +178,7 @@ void MetalIndirectCountEncoder::EncodeDraw(MTL::RenderCommandEncoder* encoder, c
             m_Arena->AllocateUpload(static_cast<size_t>(draw.MaxDrawCount) * kDrawRecordBytes);
         if (arguments.Buffer == nullptr)
         {
-            return;
+            return false;
         }
         MetalIndirectCountSegment segment{};
         segment.RecordsAddress = draw.Records->buffer->gpuAddress() + draw.RecordsOffset;
@@ -194,7 +194,7 @@ void MetalIndirectCountEncoder::EncodeDraw(MTL::RenderCommandEncoder* encoder, c
                                            arguments.Buffer,
                                            arguments.Offset + static_cast<size_t>(i) * kDrawRecordBytes);
         }
-        return;
+        return true;
     }
     // One execute per page-sized run of records; the translation writes each
     // run's range, so runs past the count execute nothing.
@@ -207,7 +207,7 @@ void MetalIndirectCountEncoder::EncodeDraw(MTL::RenderCommandEncoder* encoder, c
             m_Arena->AllocateUpload(sizeof(MTL::IndirectCommandBufferExecutionRange));
         if (commands.CommandBuffer == nullptr || range.Buffer == nullptr)
         {
-            return;
+            return false;
         }
         // Overwritten by the translation; an empty range until then.
         const MTL::IndirectCommandBufferExecutionRange emptyRange{commands.FirstCommand, 0};
@@ -232,6 +232,7 @@ void MetalIndirectCountEncoder::EncodeDraw(MTL::RenderCommandEncoder* encoder, c
         encoder->executeCommandsInBuffer(commands.CommandBuffer, range.Buffer, range.Offset);
         firstRecord += commands.CommandCount;
     }
+    return true;
 }
 
 void MetalIndirectCountEncoder::EndRenderEncoder(MTL::RenderCommandEncoder* encoder)

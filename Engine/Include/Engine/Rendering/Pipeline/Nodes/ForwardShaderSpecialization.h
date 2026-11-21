@@ -15,6 +15,9 @@ namespace GameEngine::Engine::Renderer
 {
 class RenderServices;
 
+inline constexpr uint32_t kForwardHexTilingConstant = 302;
+inline constexpr uint32_t kForwardMaterialRowConstant = 306;
+
 /// Derives forward pipeline constants from live scene and material state.
 class ForwardShaderSpecialization
 {

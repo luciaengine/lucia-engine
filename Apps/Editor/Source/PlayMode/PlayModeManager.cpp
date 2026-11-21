@@ -28,8 +28,87 @@
 #include "Scripting/PathResolver.h"
 #include "Scripting/ScriptManager.h"
 
+#if defined(__EMSCRIPTEN__)
+#include "Types/PathUtils.h"
+
+#include <cstdint>
+#include <fstream>
+#include <iterator>
+#include <memory>
+
+#include <emscripten/emscripten.h>
+#include <nlohmann/json.hpp>
+
+EM_JS_DEPS(BrowserPlayScripts, "$UTF8ToString");
+EM_JS(int, BrowserPlayScriptsAvailable, (), {
+    return typeof Module.webScriptSession?.start === 'function';
+});
+EM_JS(void, QueueBrowserPlayStart, (int world, const char* sources), {
+    Module.webScriptSession.start(world, UTF8ToString(sources));
+});
+EM_JS(void, QueueBrowserPlayTick, (float delta), {
+    Module.webScriptSession.tick(delta);
+});
+EM_JS(int, RequestBrowserPlayStop, (), {
+    return Module.webScriptSession.requestStop();
+});
+#endif
+
 namespace GameEngine::Editor
 {
+
+#if defined(__EMSCRIPTEN__)
+namespace
+{
+int32_t BrowserScriptsEnter()
+{
+    auto& engine = EngineCore::GetInstance();
+    const auto& root = engine.GetResolvedAssetRoot();
+    std::error_code error;
+    nlohmann::json sources = nlohmann::json::object();
+    for (std::filesystem::recursive_directory_iterator entry(root, error), end;
+         !error && entry != end; entry.increment(error))
+    {
+        if (!entry->is_regular_file(error) || LowerCaseExtension(entry->path()) != ".cs")
+            continue;
+        std::ifstream file(entry->path(), std::ios::binary);
+        std::string source{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        if (!file || file.bad())
+        {
+            Logger::Log::Error("C# scripts: unable to read '{}'", entry->path().string());
+            return 1;
+        }
+        if (source.starts_with("\xef\xbb\xbf"))
+            source.erase(0, 3);
+        const auto name = entry->path().lexically_relative(root).generic_string();
+        sources[name] = std::move(source);
+    }
+    if (error)
+    {
+        Logger::Log::Error("C# scripts: unable to enumerate project sources: {}", error.message());
+        return 1;
+    }
+    if (sources.empty())
+        return 0;
+    const auto world = reinterpret_cast<std::uintptr_t>(engine.GetPrimaryWorld());
+    const auto request = sources.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+    QueueBrowserPlayStart(static_cast<int>(world), request.c_str());
+    return 0;
+}
+
+int32_t BrowserScriptsTick(float delta)
+{
+    QueueBrowserPlayTick(delta);
+    return 0;
+}
+} // namespace
+
+extern "C" EMSCRIPTEN_KEEPALIVE void GeReportBrowserScriptError(const char* diagnostic)
+{
+    Logger::Log::Error("C# scripts: {}", diagnostic);
+}
+#endif
+
 static void SetRuntimeAudioSystemsEnabled(bool enabled)
 {
     // Audio ECS systems (names come from Engine::Audio::AddAudioSystemsToSchedule).
@@ -127,6 +206,12 @@ void PlayModeManager::EnsureManagedPlayModeBindings()
     m_ManagedPlayMode.enter = enterPtr;
     m_ManagedPlayMode.exit = exitPtr;
     m_ManagedPlayMode.tick = tickPtr;
+#elif defined(__EMSCRIPTEN__)
+    if (BrowserPlayScriptsAvailable())
+    {
+        m_ManagedPlayMode.enter = reinterpret_cast<void*>(BrowserScriptsEnter);
+        m_ManagedPlayMode.tick = reinterpret_cast<void*>(BrowserScriptsTick);
+    }
 #endif
 }
 
@@ -448,6 +533,16 @@ void PlayModeManager::ExitPlayMode()
     }
     if (m_State == PlayModeState::ChangeReview)
         return;
+
+#if defined(__EMSCRIPTEN__)
+    // Let the host finish OnDestroy between frames, while the play world is
+    // still live. Tick retries the exit before updating that world again.
+    if (BrowserPlayScriptsAvailable() && !RequestBrowserPlayStop())
+    {
+        m_ExitRequested = true;
+        return;
+    }
+#endif
 
     if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
         m_UndoRedo->DiscardPendingEdit();

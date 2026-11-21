@@ -3,14 +3,17 @@
 #include "Assets/Packages/PackageGitSource.h"
 #include "Assets/Packages/PackageManagementActions.h"
 #include "Assets/Packages/PackageMounts.h"
+#include "Assets/Packages/PackageNativeCache.h"
 #include "Assets/Packages/ProjectPackagesManifest.h"
 #include "Core/Engine.h"
+#include "Logger/Logger.h"
 #include "Panels/PackageManagerPanel.h"
 #include "Platform/Shell.h"
 #include "Scripting/ScriptManager.h"
 #include "Types/PathUtils.h"
 
 #include <algorithm>
+#include <format>
 #include <set>
 #include <system_error>
 #include <utility>
@@ -57,6 +60,7 @@ void PackageManagerController::MountForProject(const std::filesystem::path& proj
     m_MountedAliases = MountResolvedPackages(am, resolution, EngineCore::GetInstance().GetAssetDbCacheRoot());
     m_Resolution = resolution;
     m_ManifestFile = projectRoot / "Packages" / "manifest.json";
+    m_NativeModuleErrors.clear();
 
     // What each mounted package pointed at when it mounted: the panel compares
     // this against the CURRENT resolution to show re-pin/relocate drift.
@@ -109,6 +113,7 @@ void PackageManagerController::MountForProject(const std::filesystem::path& proj
 
 void PackageManagerController::UnmountAll(Function<void()> onUnmounted)
 {
+    m_NativeModuleErrors.clear();
     if (m_MountedAliases.empty())
     {
         if (onUnmounted)
@@ -129,6 +134,46 @@ void PackageManagerController::UnmountAll(Function<void()> onUnmounted)
     m_Resolution = PackageResolution{};
     EngineCore::GetInstance().GetScriptManager().SetPackageCodeModules({}, {});
     UnmountPackageSources(am, aliases, std::move(onUnmounted));
+}
+
+std::vector<const PackageCodeModule*> PackageManagerController::PrepareNativeModules(bool hasEditorSdk)
+{
+    const bool hadErrors = !m_NativeModuleErrors.empty();
+    m_NativeModuleErrors.clear();
+    std::vector<const PackageCodeModule*> modules;
+    for (const PackageCodeModule& module : m_CodeModules)
+    {
+        if (module.Lang != PackageModuleRecord::ModuleLang::Cpp)
+            continue;
+        if (module.Kind == PackageModuleRecord::ModuleKind::Editor && !hasEditorSdk)
+        {
+            Logger::Log::Error("Editor: package '{}' requires the Editor SDK; native module '{}' skipped",
+                               module.PackageName, module.AssemblyName);
+            m_NativeModuleErrors.push_back(std::format(
+                "Could not load the editor module for '{}'. Use an editor installation that includes the Editor SDK.",
+                module.PackageName));
+            continue;
+        }
+        if (module.UsesManagedNativeCache &&
+            !RetainPackageNativeCache(module.CacheDir, EngineCore::GetInstance().GetStartupChannel()))
+        {
+            Logger::Log::Error("Editor: cannot lease native cache '{}' for package '{}'; "
+                               "module '{}' skipped",
+                               PathToUtf8(module.CacheDir), module.PackageName, module.AssemblyName);
+            m_NativeModuleErrors.push_back(std::format(
+                "Skipped '{}' from '{}'. Its native code cache could not be opened. Check the cache path "
+                "shown in the Log and make sure it is writable, then reopen the project.",
+                module.AssemblyName, module.PackageName));
+            continue;
+        }
+        modules.push_back(&module);
+    }
+
+    if ((hadErrors || !m_NativeModuleErrors.empty()) && m_Deps.GetPackageManagerPanels)
+        for (PackageManagerPanel* panel : m_Deps.GetPackageManagerPanels())
+            if (panel)
+                panel->RefreshList();
+    return modules;
 }
 
 void PackageManagerController::RefreshResolution()
@@ -296,6 +341,7 @@ void PackageManagerController::WirePanels()
         }
 
         snapshot.Errors = std::move(unclaimedErrors);
+        snapshot.Errors.insert(snapshot.Errors.end(), m_NativeModuleErrors.begin(), m_NativeModuleErrors.end());
         snapshot.Warnings = m_Resolution.Warnings;
         return snapshot;
     };

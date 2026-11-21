@@ -364,6 +364,14 @@ class CommandList
     virtual void Draw(uint32_t vertexCount, uint32_t instanceCount = 1) = 0;
     virtual void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1) = 0;
     virtual void DrawMeshTasks(uint32_t taskCount) = 0;
+    /// Record one GPU-written mesh dispatch on this command list.
+    /// The IndirectArgs buffer holds three uint32 workgroup counts at argsOffsetBytes.
+    /// Check supportsIndirectMeshTasks before recording.
+    virtual void DrawMeshTasksIndirect(BufferHandle argsBuffer, size_t argsOffsetBytes = 0)
+    {
+        (void)argsBuffer;
+        (void)argsOffsetBytes;
+    }
 
     // Preferred subrange overloads (backends should override). Base versions fall back to legacy forms.
     virtual void Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance = 0)

@@ -3808,16 +3808,16 @@ bool AssetRegistry::RegisterAsset(const std::filesystem::path& path)
     std::filesystem::path healedRemapPath;
     {
         std::unique_lock<std::shared_mutex> writeLock(m_RegistryMutex);
-        // Another thread may have registered this asset while we were parsing
-        // metadata. If it committed the same GUID we adopted, this is a plain
-        // idempotent re-register. Otherwise converge the maps on our resolved
-        // GUID (with the S10 claim, a disagreement here means a deliberate
-        // rebind — relink/reconcile — landed mid-flight; racing fresh mints
-        // already converged at the claim).
+        // A conflicting binding can name a remap published while this
+        // registration was resolving metadata. Preserve that path's live
+        // identity when the incoming GUID already aliases it.
         if (const GUID* existingBinding = FindPathGuidLocked(normKey))
         {
             m_PathClaims.erase(normKey);
             if (*existingBinding == metadata.Guid)
+                return true;
+            if (const AssetMetadata* resolved = FindAssetLocked(metadata.Guid);
+                resolved && resolved->Guid == *existingBinding && resolved->Path == normPath)
                 return true;
             ptrdiff_t occupancyDelta = 0;
             const GUID staleGuid = *existingBinding;
@@ -4659,6 +4659,14 @@ void AssetRegistry::CommitMetadataToMapsLocked(const AssetMetadata& md)
     // pending first-mint claim for it is settled.
     if (!m_PathClaims.empty())
         m_PathClaims.erase(PathMapKey(md.Path));
+
+    // A scan may refresh the alias target without claiming the incoming GUID.
+    if (m_GuidRemaps.find(md.Guid) != m_GuidRemaps.end())
+    {
+        const AssetMetadata* primary = FindAssetPrimaryLocked(md.Guid);
+        if (!primary || primary->Path != md.Path)
+            return;
+    }
     RetireStaleAliasesOnRegistrationLocked(md.Guid);
 }
 
@@ -4677,16 +4685,14 @@ ptrdiff_t AssetRegistry::CommitToGlobalMapsLocked(AssetMetadata md)
     // path-eviction below destroys the derived mapping that consumers (e.g.
     // the UI stylesheet cascade) captured moments earlier, and their GUIDs
     // resolve to nothing for the rest of the session.
-    if (!m_GuidRemaps.empty())
+    if (m_GuidRemaps.find(md.Guid) != m_GuidRemaps.end())
     {
-        auto remapIt = m_GuidRemaps.find(md.Guid);
-        if (remapIt != m_GuidRemaps.end() && remapIt->second != md.Guid)
+        if (const AssetMetadata* resolved = FindAssetLocked(md.Guid);
+            resolved && resolved->Guid != md.Guid && resolved->Path == md.Path)
         {
-            const std::string staleKey = PathMapKey(md.Path);
-            PathShardMap& staleShard = PathShard(staleKey);
-            auto itStale = staleShard.find(staleKey);
-            if (itStale != staleShard.end() && itStale->second == remapIt->second)
-                md.Guid = remapIt->second;
+            if (const GUID* bound = FindPathGuidLocked(PathMapKey(md.Path));
+                bound && *bound == resolved->Guid)
+                md.Guid = *bound;
         }
     }
 

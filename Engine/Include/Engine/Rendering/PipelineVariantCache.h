@@ -159,6 +159,12 @@ class PipelineVariantCache
         // still names its own generation, not the replacement's.
         uint32_t MaterialVersion = 0;
     };
+    struct PreparedVariant
+    {
+        PipelineHandle Pipeline{};
+        const VariantServeUnit* Unit = nullptr;
+        GraphicsPipelineId ConcreteId{};
+    };
     struct InstancedVariantEntry
     {
         // The freshness check compares Current.MaterialVersion against the
@@ -192,7 +198,7 @@ class PipelineVariantCache
     /// Select a warm unit during graph preparation; cold builds are queued for frame begin.
     /// The returned unit is borrowed until the next serial material-frame begin.
     /// Copy its generation into the draw packet and stamp it only after recording that draw.
-    std::pair<PipelineHandle, const VariantServeUnit*> PrepareColorVariant(
+    PreparedVariant PrepareColorVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
@@ -200,10 +206,17 @@ class PipelineVariantCache
         FrontFace frontFace,
         const RenderGraph::RGPrepareContext& context);
 
+    /// Prepare an Equal-depth pipeline for a certified masked draw from its served shader metadata.
+    /// Cold pipelines join the frame-begin warm queue. A warm per-instance row remains usable.
+    PreparedVariant PrepareIndexedDepthEqual(const Material& material, const Rendering::ShaderMeta& shader,
+                                            Rendering::GraphicsPipelineId base,
+                                            const Rendering::GraphicsPipelineDesc& desc,
+                                            const Rendering::PipelineFormatKey& formatKey, bool useWhiteMaps);
+
     /// Select a warm unit during graph preparation; cold builds are queued for frame begin.
     /// The returned unit is borrowed until the next serial material-frame begin.
     /// Copy its generation into the draw packet and stamp it only after recording that draw.
-    std::pair<PipelineHandle, const VariantServeUnit*> PrepareDepthInstancedVariant(
+    PreparedVariant PrepareDepthInstancedVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
@@ -212,7 +225,8 @@ class PipelineVariantCache
         bool depthBiasEnable,
         bool depthClampEnable,
         FrontFace frontFace,
-        const RenderGraph::RGPrepareContext& context);
+        const RenderGraph::RGPrepareContext& context,
+        bool withoutHexTiling = false);
 
     // The published camera-prepass variant a draw producer pins on a head it
     // emits while the frame is declared (DrawCommand::InternedPipeline and
@@ -446,14 +460,14 @@ class PipelineVariantCache
     InstancedVariantKey MakeColorVariantKey(const Material& material, VertexAttributeFlags vertexFlags,
                                             uint32_t sampleCount, MaterialKeyword passKeywords,
                                             PrimitiveTopology topology, FrontFace frontFace) const;
-    std::pair<PipelineHandle, const VariantServeUnit*> ResolveColorVariant(
+    PreparedVariant ResolveColorVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
         MaterialKeyword passKeywords,
         FrontFace frontFace,
         const RenderGraph::RGPrepareContext& context);
-    std::pair<PipelineHandle, const VariantServeUnit*> ResolveDepthVariant(
+    PreparedVariant ResolveDepthVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
@@ -467,8 +481,8 @@ class PipelineVariantCache
     bool EnsureSharedDepthShaderLoaded(bool isSkinned);
 
     // Prefer specialized Current, then unspecialized Current and Previous, without backend builds.
-    // Queue cold current IDs; each returned handle retains its own unit's metadata and generation.
-    std::pair<PipelineHandle, const VariantServeUnit*> ResolveWarmPipeline(
+    // Queue cold current IDs and preserve the concrete ID, metadata and generation of the selected handle.
+    PreparedVariant ResolveWarmPipeline(
         const Material& material, const InstancedVariantEntry& entry,
         const Rendering::PipelineFormatKey& formatKey, const RenderGraph::RGPrepareContext& context);
 

@@ -306,6 +306,23 @@ TEST_F(PackageNativeCacheTest, ALeaseWaitsForTheOrphanSweepsScopeLock)
     EXPECT_NE(lease, nullptr) << "a lease asked for while the sweep held the scope lock failed";
 }
 
+TEST_F(PackageNativeCacheTest, ALeaseWaitsForAnEvictionOfItsGeneration)
+{
+    // Another build's maintenance holds the sidecar exclusively while it removes the generation.
+    Populate(1, 1);
+    auto eviction =
+        std::make_unique<FileSystem::ScopedFileLock>(LockFile(Entry(2)), FileSystem::ScopedFileLock::Mode::Exclusive, false);
+    ASSERT_TRUE(eviction->IsLocked());
+    std::thread release([&eviction]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        eviction.reset();
+    });
+    auto lease = Acquire(Entry(2));
+    release.join();
+    EXPECT_NE(lease, nullptr) << "a lease asked for during an eviction of its generation failed";
+    EXPECT_TRUE(fs::is_directory(Entry(2)));
+}
+
 TEST_F(PackageNativeCacheTest, RepeatedEngineBuildsRetainFourGenerations)
 {
     Populate(1, 20);

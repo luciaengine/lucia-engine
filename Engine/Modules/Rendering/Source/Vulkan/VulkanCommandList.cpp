@@ -1390,13 +1390,27 @@ void VulkanCommandList::DrawMeshTasks(uint32_t taskCount)
     ApplyRasterState();
     if (m_Device && m_Device->SupportsMeshShadersEXT() && m_Device->GetCmdDrawMeshTasksEXT())
     {
-        m_Device->GetCmdDrawMeshTasksEXT()(m_CommandBuffer, taskCount, 0, 0);
+        m_Device->GetCmdDrawMeshTasksEXT()(m_CommandBuffer, taskCount, 1, 1);
     }
     else
     {
         // Fallback: issue a normal draw if a vertex pipeline is bound (dev convenience)
         vkCmdDraw(m_CommandBuffer, taskCount * 3, 1, 0, 0);
     }
+}
+
+void VulkanCommandList::DrawMeshTasksIndirect(BufferHandle argsBuffer, size_t argsOffsetBytes)
+{
+    if (m_CommandBuffer == VK_NULL_HANDLE || !m_IsRecording || !m_Device)
+        return;
+    const auto dispatch = m_Device->GetCmdDrawMeshTasksIndirectEXT();
+    const VkBuffer buffer = m_Device->GetVkBuffer(argsBuffer);
+    if (!dispatch || buffer == VK_NULL_HANDLE)
+        return;
+
+    ApplyRasterState();
+    MaybeCaptureDescriptorState();
+    dispatch(m_CommandBuffer, buffer, argsOffsetBytes, 1, sizeof(VkDrawMeshTasksIndirectCommandEXT));
 }
 
 void VulkanCommandList::DrawIndirect(BufferHandle commandBuffer, uint32_t drawCount, uint32_t stride)
@@ -3411,7 +3425,7 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
         {
             return VulkanMappings::TranslateResourceStateToStage(s);
         }
-        return VulkanMappings::TranslatePipelineStageMask(explicitMask);
+        return VulkanMappings::TranslatePipelineStageMask(explicitMask, m_Device->SupportsMeshShadersEXT());
     };
     auto resolveAccess = [&](ResourceState s, uint64_t explicitMask) -> VkAccessFlags
     {

@@ -21,8 +21,10 @@
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Materials/Shader/ShaderPropertyTable.h"
+#include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Types/StringId.h"
 
 #include "ScopedCompatShaderProfile.h"
@@ -135,6 +137,50 @@ TEST(MaterialPrewarmVariantsTest, EveryGlassWarmKeyCompiles)
     std::filesystem::remove_all(cacheRoot, ec);
 }
 
+TEST(MaterialPrewarmVariantsTest, FixedMaterialRowIsReflectedOnlyForDesktopForward)
+{
+    const auto shaderDirectory = TestPaths::StagedRenderingShadersDir();
+    ASSERT_TRUE(std::filesystem::is_directory(shaderDirectory));
+    if (!ShaderCompileService::IsCompilerAvailable())
+        GTEST_SKIP() << "No shader compiler available";
+
+    const auto cacheRoot = std::filesystem::temp_directory_path() /
+        ("ge-fixed-material-row-" + GUID::Generate().ToString());
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = shaderDirectory;
+    context.CacheRoot = cacheRoot / "Shaders";
+    MaterialDocument document{};
+    document.materialName = "FixedMaterialRow";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    document.alphaMode = MaterialAlphaMode::Mask;
+
+    auto target = Rendering::CurrentShaderCompileTarget();
+    TestSupport::ScopedShaderCompileTarget restore{target};
+    for (const bool compatibility : {false, true})
+    {
+        target.Compatibility = compatibility;
+        Rendering::ApplyShaderCompileProfile(target);
+        for (const bool depthOnly : {false, true})
+        {
+            const auto keywords = MaterialKeyword::Instanced |
+                (depthOnly ? MaterialKeyword::DepthOnlyFragment : MaterialKeyword::ForwardPlus);
+            const auto result = BuildMaterialToShaderPackage(document, cacheRoot / "FixedMaterialRow.material",
+                "FixedMaterialRow", context, ShaderSourceKind::SpirV, keywords, VertexAttributeFlags::StandardMesh);
+            ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
+            ASSERT_NE(result.package, nullptr);
+            const auto& constants = result.package->meta.SpecConstants;
+            constexpr uint32_t kForwardMaterialRowConstant = 306;
+            const auto found = std::find_if(constants.begin(), constants.end(), [](const auto& constant) {
+                return constant.Id == kForwardMaterialRowConstant;
+            });
+            EXPECT_EQ(found != constants.end(), !compatibility && !depthOnly);
+        }
+    }
+    std::error_code error;
+    std::filesystem::remove_all(cacheRoot, error);
+}
+
 // A height map bound on the standard surface compiles the relief march into every shading key the
 // warm-up requests, on the desktop arm and on the compat arm (the WebGPU-class fold with its fixed
 // low budget), for opaque and masked materials. The depth-only and motion shapes decide coverage on
@@ -155,6 +201,46 @@ std::string KeywordsLabel(MaterialKeyword keywords)
     char buffer[40];
     std::snprintf(buffer, sizeof(buffer), "keywords 0x%llx", static_cast<unsigned long long>(keywords));
     return buffer;
+}
+
+TEST(MaterialPrewarmVariantsTest, IndexedDepthOwnerRequiresVerifiedStockCoverage)
+{
+    const auto shaderDir = TestPaths::StagedRenderingShadersDir();
+    ASSERT_TRUE(std::filesystem::is_directory(shaderDir));
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = shaderDir;
+    MaterialDocument document{};
+    document.materialName = "IndexedDepthOwnerProbe";
+    document.alphaMode = MaterialAlphaMode::Mask;
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+
+    using K = MaterialKeyword;
+    ShaderVariantKey key{};
+    key.vertexFlags = VertexAttributeFlags::StandardMesh;
+    key.materialKeywords = K::AlphaTest | K::Instanced | K::DepthOnlyFragment | K::IndexedDepthOwner;
+    const auto composesOwner = [&](const ShaderCompileTarget& target)
+    {
+        std::vector<std::string> errors;
+        const auto composed = ShaderComposer::Compose(document, key, {}, context, &errors, target);
+        EXPECT_TRUE(errors.empty());
+        return std::find(composed.defines.begin(), composed.defines.end(), "GE_INDEXED_DEPTH_OWNER") !=
+               composed.defines.end();
+    };
+
+    ShaderCompileTarget target{};
+    ASSERT_TRUE(composesOwner(target));
+    key.materialKeywords |= K::LodCrossfade;
+    EXPECT_TRUE(composesOwner(target));
+    key.materialKeywords = key.materialKeywords & ~K::LodCrossfade;
+    target.Compatibility = true;
+    EXPECT_FALSE(composesOwner(target));
+    target.Compatibility = false;
+    key.materialKeywords = key.materialKeywords & ~K::DepthOnlyFragment;
+    EXPECT_FALSE(composesOwner(target));
+    key.materialKeywords |= K::DepthOnlyFragment;
+    document.surfaceShader = "Surfaces/standard_surface.glsl";
+    EXPECT_FALSE(composesOwner(target));
 }
 
 void ExpectEveryParallaxWarmKeyCompiles(MaterialAlphaMode alphaMode)
@@ -1677,6 +1763,64 @@ TEST_F(MaterialShaderIdentityTest, InFlightDepthPublicationKeepsTheCapturedMetad
     services.Shutdown();
     std::error_code error;
     std::filesystem::remove_all(context.CacheRoot, error);
+}
+
+TEST_F(MaterialShaderIdentityTest, DepthHexSpecializationFollowsTheCompiledSurface)
+{
+    namespace fs = std::filesystem;
+    using K = Rendering::MaterialKeyword;
+    const fs::path root = fs::temp_directory_path() / ("ge-depth-hex-" + GUID::Generate().ToString());
+    for (const bool projectOverride : {false, true})
+    {
+        RenderServices services;
+        ASSERT_TRUE(services.Initialize(m_device.get()));
+        Rendering::MaterialBuildContext context{};
+        context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();
+        context.IncludeDirs = {context.AdapterShaderDir};
+        context.CacheRoot = root / (projectOverride ? "override-cache" : "stock-cache");
+        const fs::path ref = "Surfaces/standard_pbr.glsl";
+        if (projectOverride)
+        {
+            const fs::path project = root / "project";
+            fs::create_directories((project / ref).parent_path());
+            ASSERT_TRUE(fs::copy_file(context.AdapterShaderDir / ref, project / ref));
+            context.ProjectRoots = {project};
+        }
+        services.Materials().SetMaterialBuildContext(context);
+        auto document = MakeTestPBRDocument("CapturedDepthHexSource");
+        document.surfaceShader = ref.generic_string();
+        document.alphaMode = MaterialAlphaMode::Mask;
+        auto* material = services.Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+        ASSERT_NE(material, nullptr);
+        ASSERT_EQ(material->GetAlphaMode(), MaterialAlphaMode::Mask);
+        auto& variants = services.Materials().Variants();
+        const auto flags = Rendering::VertexAttributeFlags::StandardMesh;
+        const auto topology = Rendering::PrimitiveTopology::TriangleList;
+        const auto winding = Rendering::FrontFace::CounterClockwise;
+        for (const auto tail : {K::None, K::LodCrossfade})
+        {
+            const auto keywords = K::Instanced | K::DepthOnlyFragment | tail;
+            variants.EnqueueDepthVariantCompileForTesting(
+                *material, flags, topology, keywords, 0u, false, false, winding);
+            variants.SubmitPendingVariantCompiles();
+            services.Materials().FlushAsyncMaterialCompiles();
+            variants.ApplyPendingVariantPublishes();
+            const auto* unit = variants.FindOrRequestPrepassVariant(*material, flags, topology, keywords, winding);
+            ASSERT_NE(unit, nullptr);
+            ASSERT_NE(unit->VariantMeta, nullptr);
+            const auto& defines = unit->VariantMeta->RequiredDefines;
+            const auto certified = std::find(defines.begin(), defines.end(), Rendering::kStockMaskCoverageDefine) != defines.end();
+            EXPECT_EQ(certified, !projectOverride);
+            if (certified)
+            {
+                const auto fading = std::find(defines.begin(), defines.end(), "GE_LOD_CROSSFADE") != defines.end();
+                EXPECT_EQ(fading, tail == K::LodCrossfade);
+            }
+        }
+        services.Shutdown();
+    }
+    std::error_code error;
+    fs::remove_all(root, error);
 }
 
 TEST_F(MaterialShaderIdentityTest, FailedInlineRecompileCannotRestoreAnotherTarget)

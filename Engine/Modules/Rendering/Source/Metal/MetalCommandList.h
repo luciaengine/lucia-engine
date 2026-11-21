@@ -54,6 +54,7 @@ class MetalCommandList : public CommandList
     void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1) override;
     void DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) override;
     void DrawMeshTasks(uint32_t taskCount) override;
+    void DrawMeshTasksIndirect(BufferHandle argsBuffer, size_t argsOffsetBytes) override;
     void DrawIndirect(BufferHandle commandBuffer, uint32_t drawCount, uint32_t stride) override;
     void DrawIndexedIndirect(BufferHandle commandBuffer, uint32_t drawCount, uint32_t stride) override;
     void DrawIndexedIndirectCount(BufferHandle commandBuffer, BufferHandle countBuffer, uint32_t maxDrawCount,
@@ -143,6 +144,9 @@ class MetalCommandList : public CommandList
     void ApplyRenderState();
     void ApplyPushConstants();
     void BindDirectDescriptorSet(uint32_t setIndex, MetalDescriptorSet& descriptors, const MetalPipeline& pipeline);
+    void BindMeshDescriptorSet(uint32_t setIndex, const MetalDescriptorSet& descriptors);
+    void CollectDescriptorResidents(const MetalDescriptorSet& descriptors,
+                                    FastHashMap<MTL::Resource*, MTL::ResourceUsage>& cache);
     std::array<uint32_t, 31> m_DirectBufferSizes{};
 
     // Claims start/end boundary samples for a new encoder and binds pending
@@ -171,6 +175,8 @@ class MetalCommandList : public CommandList
     // fresh (stateless) encoder always re-applies; lets ApplyRenderState skip
     // the ~6 redundant Metal calls when the same PSO is re-set within a pass.
     PipelineHandle m_AppliedRenderPipeline{};
+    bool m_AppliedMeshPipeline = false;
+    bool m_MeshDeviceAddressesDeclared = false;
     BufferHandle m_IndexBuffer{};
     MTL::IndexType m_IndexType = MTL::IndexTypeUInt16;
 
@@ -226,9 +232,11 @@ class MetalCommandList : public CommandList
         size_t Offset = 0;
     };
     std::array<BoundArgumentTable, kMaxDescriptorSets> m_EncoderBoundSets{};
+    std::array<BoundArgumentTable, kMaxDescriptorSets> m_EncoderMeshBoundSets{};
     // The usage that the open encoder declares for each resource. A new encoder clears the map, and the
     // map keeps its storage. A bind allocates only when an encoder holds more residents than any before.
     FastHashMap<MTL::Resource*, MTL::ResourceUsage> m_EncoderResidents;
+    FastHashMap<MTL::Resource*, MTL::ResourceUsage> m_EncoderMeshResidents;
     std::vector<MTL::Resource*> m_ScratchReadResidents;
     std::vector<MTL::Resource*> m_ScratchWriteResidents;
 

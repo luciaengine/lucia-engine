@@ -133,6 +133,12 @@ class TextureService
 
     bool IsBindlessEnabled() const { return m_BindlessEnabled.load(std::memory_order_relaxed); }
     DescriptorSetHandle BindlessTextureSet() const { return m_BindlessTextureSet; }
+    bool HasPublishedBindlessSampler(uint32_t index) const
+    {
+        return m_BindlessTextureSet.IsValid() &&
+               index < static_cast<uint32_t>(Rendering::SamplerPreset::kCount) &&
+               (m_BindlessSamplerMask & (uint32_t{1} << index)) != 0;
+    }
     static Rendering::DescriptorSetLayoutDesc GetBindlessTextureSetLayout();
     static Rendering::DescriptorSetLayoutDesc GetBindlessTextureSetLayout(uint32_t maxTextures);
     uint32_t ResolveDefaultBindlessIndex(StringId slotName) const;
@@ -154,6 +160,8 @@ class TextureService
     // per-draw shader-side from the shared sampler array, so it's not part of the key.
     // Returns 0 on failure (bindless disabled, invalid handle).
     uint32_t GetBindlessIndex(TextureHandle tex);
+    /// True when the bindless slot serves the current resident authored texture.
+    bool MatchesPublishedAssetTexture(const GUID& material, StringId slot, TextureHandle texture, uint32_t index) const;
     // Advanced: full BindlessTextureDesc (array slices, mip levels, aspect).
     uint32_t GetBindlessIndex(const BindlessTextureDesc& desc);
 
@@ -542,8 +550,15 @@ class TextureService
     // The level source of a prepared container. Null when a file of it gives no level range.
     std::shared_ptr<const MaterialMipStreamSource> CreateMaterialMipSource(const PreparedTextureUpload& prepared) const;
 
+    // The bytes of the new streams whose first levels are in a read (m_ReleasedUploadReads). Render thread.
+    uint64_t ParkedMaterialMipBytes() const;
+    // The first level of a new stream of `source`: the largest level that fits the budget with the
+    // resident streams, the gain step in flight, the first-level reads in flight and `stagedBytes`,
+    // the streams that this flush staged. The tail when no larger level fits. Render thread.
+    uint32_t FirstMaterialMipLevel(const MaterialMipStreamSource& source, uint64_t stagedBytes) const;
+
     // The read of the levels that the upload of a released container needs (ReleaseLevelPixels):
-    // the tail for a new stream, all levels for a full upload. Render thread.
+    // the first levels of a new stream, all levels for a full upload. Render thread.
     struct ReleasedUploadRead
     {
         std::shared_ptr<const MaterialMipStreamSource> Source;
@@ -553,11 +568,12 @@ class TextureService
     };
     // Stages the upload of a released container from its file. Nullopt while its read is in
     // flight: the upload stays queued. An invalid entry, with `refusal` set, when it fails.
-    // `streamSource` becomes the source that the staged levels came from.
+    // `streamSource` becomes the source that the staged levels came from, and `streamFirstMip` their
+    // first level. A new read of a stream takes FirstMaterialMipLevel with `stagedStreamBytes`.
     std::optional<TextureGPUCache::Entry> StageReleasedUpload(
         const GUID& guid, uint32_t epoch, const PreparedTextureUpload& prepared,
-        std::shared_ptr<const MaterialMipStreamSource>& streamSource,
-        std::vector<Rendering::StagedTextureUpload>& batch, const char*& refusal);
+        std::shared_ptr<const MaterialMipStreamSource>& streamSource, uint64_t stagedStreamBytes,
+        uint32_t& streamFirstMip, std::vector<Rendering::StagedTextureUpload>& batch, const char*& refusal);
     void CancelReleasedUploadRead(const GUID& guid);
     // Finishes the step in flight when its read is done, then plans the next step and starts its read.
     void AdvanceMaterialMipStreams();
@@ -565,6 +581,9 @@ class TextureService
     void FinishMaterialMipStep();
     void CancelMaterialMipStep();
     TextureGPUCache::Entry RemoveMaterialMipStreamLocked(const GUID& guid);
+    // Writes the bytes that the streams hold now to the "Rendering.MaterialMipStreams" stats record.
+    // Call after each change to m_MaterialMipStreams.
+    void ReportMaterialMipBytesLocked();
 
     struct PendingGpuUpload
     {
@@ -691,6 +710,7 @@ class TextureService
     MaterialBindingCache m_MaterialBindings;
     // Global bindless texture descriptor set (persistent, holds all registered textures).
     DescriptorSetHandle m_BindlessTextureSet{};
+    uint32_t m_BindlessSamplerMask = 0;
     // Bindless index cache keyed by (texture, array slice, mip level, aspect). The
     // sampler is NOT part of the key: post image/sampler split a texture occupies
     // one SAMPLED_IMAGE slot regardless of filter.
@@ -794,6 +814,7 @@ class TextureService
     // Material images have a separate lifetime from full-resolution handles returned to callers.
     uint64_t m_MaterialMipBudgetBytes = 0;
     FlatMap<GUID, MaterialMipStream> m_MaterialMipStreams;
+    uint64_t m_ReportedMaterialMipBytes = 0; // what ReportMaterialMipBytesLocked wrote last; render thread
     MaterialMipStep m_MaterialMipStep;
     FlatMap<GUID, ReleasedUploadRead> m_ReleasedUploadReads;
     // Screen coverage by GPUScene material index (UpdateMaterialMipDemand). Empty without demand data.

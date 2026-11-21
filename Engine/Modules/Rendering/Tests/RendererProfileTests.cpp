@@ -68,6 +68,17 @@ TEST(RendererProfile, ForcedCompatibilityTakesNoInterpolationFunctions)
     EXPECT_FALSE(RendererProfile::FromCapabilities(caps).UseInterpolationFunctions);
 }
 
+TEST(RendererProfile, ForcedCompatibilityTakesNoMeshWorkgroups)
+{
+    RenderingDeviceCapabilities caps = DesktopCapabilities();
+    caps.supportsMeshShaders = true;
+    caps.supportsIndirectMeshTasks = true;
+    ScopedForceCompat forced;
+    ASSERT_TRUE(ApplyForceCompatOverride(caps));
+    EXPECT_FALSE(caps.supportsMeshShaders);
+    EXPECT_FALSE(caps.supportsIndirectMeshTasks);
+}
+
 TEST(RendererProfile, ForcedCompatibilityTakesNoShaderFloat64)
 {
     RenderingDeviceCapabilities caps = DesktopCapabilities();

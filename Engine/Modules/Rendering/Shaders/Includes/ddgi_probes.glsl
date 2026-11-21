@@ -43,7 +43,7 @@
 #ifndef GE_DDGI_PROBES_GLSL
 #define GE_DDGI_PROBES_GLSL
 
-#include "frame_samplers.glsl"
+#include "frame_linear_clamp_sampler.glsl"
 
 #include "ddgi_common.glsl"
 

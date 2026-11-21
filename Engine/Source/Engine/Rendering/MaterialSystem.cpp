@@ -916,6 +916,22 @@ void MaterialSystem::FinalizeFrameBuffers()
     PackMaterialSSBO();
 }
 
+bool MaterialSystem::IsCurrentPackedMaterialRow(const Material& material, PackedSSBO bound) const
+{
+    if (!m_FramePool || !bound.Buffer.IsValid() || bound.Buffer == m_MaterialParamsSSBOFallback ||
+        bound.Buffer != m_MaterialParamsSSBOBuffer || bound.Offset != m_MaterialParamsSSBOOffset ||
+        bound.Size != m_MaterialParamsSSBOSize)
+        return false;
+
+    const auto& slot = m_PackedMaterialSlots[m_FramePool->GetCurrentSlot(FrameWriteUsage::MaterialParams)];
+    const auto row = material.GetGpuSceneMaterialIndex();
+    const auto revision = material.GetContentRevision();
+    return revision != 0 && slot.Buffer == bound.Buffer && slot.Offset == bound.Offset &&
+        slot.MappingGeneration == m_MaterialSSBOGeneration && row < bound.Size / kMaterialEntryStride &&
+        row < slot.RowRevisions.size() && row < m_MaterialsBySSBOIndex.size() &&
+        m_MaterialsBySSBOIndex[row] == &material && slot.RowRevisions[row] == revision;
+}
+
 void MaterialSystem::EnsureFallbackRowSeeded()
 {
     if (m_FallbackRowSeeded || !m_Device || !m_MaterialParamsSSBOFallback.IsValid())
@@ -1079,6 +1095,7 @@ void MaterialSystem::PackMaterialSSBO()
     packedSlot.Offset = alloc.offset;
     packedSlot.Stamp = stamp;
     packedSlot.ContentEpoch = contentEpoch;
+    packedSlot.MappingGeneration = m_MaterialSSBOGeneration;
 }
 
 Material* MaterialSystem::RegisterMaterialFromDocument(

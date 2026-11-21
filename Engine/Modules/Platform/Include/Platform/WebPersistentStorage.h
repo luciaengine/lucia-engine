@@ -31,6 +31,12 @@ inline constexpr const char* kProjectsMount = "/project";
 inline constexpr const char* kUserDataDir = "/project/.user-data";
 inline constexpr const char* kUserCacheDir = "/project/.cache";
 
+/// Start mounting on a worker. Call from the browser main thread before loading a project.
+void PreparePersistentStorage(const std::filesystem::path& mountPoint);
+
+/// Poll on the browser main thread before calling MountPersistentStorage for the same path.
+bool IsPersistentStoragePrepared();
+
 /**
  * @brief Mount the origin's persistent storage at @p mountPoint.
  *

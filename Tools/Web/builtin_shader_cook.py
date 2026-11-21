@@ -360,19 +360,25 @@ kEditorStageShaders: dict[str, tuple[str, list[str]]] = {
 # falls behind the enum cooks a short set, and the failure surfaces at terrain bring-up as
 # one pipeline that will not load — far from the edit that caused it. Parsing turns that
 # into a cook-time error naming the file.
-def CBTKernelCount() -> int:
+def CBTKernelValue(name: str) -> int:
     header = kRepoRoot / "Engine" / "Modules" / "CBTTerrain" / "Include" / "CBTTerrain" / \
         "CBTKernelSet.h"
-    match = re.search(r"Count\s*=\s*(\d+)\s*[,}]", header.read_text())
+    match = re.search(r"\b" + re.escape(name) + r"\s*=\s*(\d+)\s*[,}]", header.read_text())
     if match is None:
-        raise RuntimeError(f"cannot read CBTKernel::Count from {header}")
+        raise RuntimeError(f"cannot read CBTKernel::{name} from {header}")
     return int(match.group(1))
 
 
 kEditorStageShaders.update({
     f"CBT/cbt_kernels_{i}.comp": ("CBT/cbt_kernels.comp", ["GE_CBT_HEAP32", f"KERNEL={i}u"])
-    for i in range(CBTKernelCount())
+    for i in range(CBTKernelValue("Count"))
 })
+
+# Naga rejects the optimized grass planner's expression scope and the CBT allocator's atomic operand.
+kUnoptimizedStageShaders = {
+    "TerrainGrass/terrain_grass_plan.comp",
+    f"CBT/cbt_kernels_{CBTKernelValue('Allocate')}.comp",
+}
 
 kStageNames = {"vs": "vertex", "fs": "fragment", "cs": "compute"}
 kStageByExtension = {".vert": "vertex", ".frag": "fragment", ".comp": "compute"}
@@ -589,7 +595,8 @@ def CookStageShaders(shaderSourceDir: Path, outDir: Path, validate: bool = True,
                 shadercook.CookFile(source, stage, glslc, naga, tint, validate,
                                     kWebDefines + extraDefines,
                                     [shaderSourceDir, source.parent] + kSharedShaderRoots,
-                                    cooked, scratch)
+                                    cooked, scratch,
+                                    optimize_spirv=name not in kUnoptimizedStageShaders)
                 # A name may carry a subdirectory (CBT/…), mirroring the staged layout the
                 # runtime probes.
                 target = outDir / f"{name}.wgsl"

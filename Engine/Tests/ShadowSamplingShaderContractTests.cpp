@@ -262,6 +262,24 @@ TEST(PenumbraWorldClampContract, FloorRemainsOneTexel)
         << "the one-texel floor is a sampling limit and must stay";
 }
 
+TEST(PenumbraWorldClampContract, BlockerSearchOnlyRunsForVariableRadius)
+{
+    const std::string source = ShadowSamplingSource();
+    ASSERT_FALSE(source.empty());
+
+    const auto minimumRadius = source.find("float penumbraTexels = pcfCapTexels;");
+    ASSERT_NE(minimumRadius, std::string::npos);
+    const auto branch = source.find("if (effectiveCapWorld > worldPerTexel)", minimumRadius);
+    ASSERT_NE(branch, std::string::npos);
+    const auto branchEnd = source.find('}', branch);
+    ASSERT_NE(branchEnd, std::string::npos);
+    EXPECT_LT(source.find("GE_BlockerSearch(", branch), branchEnd);
+    EXPECT_LT(source.find("GE_PcssPenumbraTexels(", branch), branchEnd);
+    const auto filter = source.find("float filterRadius", branch);
+    ASSERT_NE(filter, std::string::npos);
+    EXPECT_GT(filter, branchEnd);
+}
+
 TEST(ShadowDitherBasisShaderContract, ScreenBasisExpressionIsPreserved)
 {
     const std::string src = ShadowSamplingSource();
@@ -422,9 +440,9 @@ TEST(PcssLitExitContract, LitOnlyFromTheKernelProof)
 {
     const std::string src = ShadowSamplingSource();
     ASSERT_FALSE(src.empty()) << "shadow_sampling.glsl not found via GE_RENDERER_REPO_ROOT";
-    const auto pcss = src.find("if (quality == 3 && int(ge_shadowDebug.y) != 0)");
+    const auto pcss = src.find("if ((pcssWithFallback || quality == 3) && int(ge_shadowDebug.y) != 0)");
     ASSERT_NE(pcss, std::string::npos);
-    const auto poisson = src.find("if (quality == 2)", pcss);
+    const auto poisson = src.find("if (pcssWithFallback || quality == 2)", pcss);
     ASSERT_NE(poisson, std::string::npos);
     const std::string block = src.substr(pcss, poisson - pcss);
     const auto proof = block.find("GE_PcssKernelProvesLit(");
@@ -440,6 +458,20 @@ TEST(PcssLitExitContract, LitOnlyFromTheKernelProof)
     const auto search = block.find("GE_BlockerSearch(");
     ASSERT_NE(search, std::string::npos);
     EXPECT_GT(search, litReturns[0]) << "the search runs only once the proof failed";
+}
+
+TEST(PcssLitExitContract, SpecializedFilterKeepsThePoissonFallbackWithoutRawDepth)
+{
+    const std::string src = ShadowSamplingSource();
+    ASSERT_FALSE(src.empty());
+    const auto resolver = src.find("int GE_ResolveForwardShadowFilter()");
+    const auto sampler = src.find("float GE_SampleCascade(");
+    ASSERT_NE(resolver, std::string::npos);
+    ASSERT_NE(sampler, std::string::npos);
+    EXPECT_NE(src.find("return ge_shadowDebug.y > 0.5 ? 3 : 2;", resolver), std::string::npos);
+    const auto raw = src.find("if ((pcssWithFallback || quality == 3) && int(ge_shadowDebug.y) != 0)", sampler);
+    ASSERT_NE(raw, std::string::npos);
+    EXPECT_NE(src.find("if (pcssWithFallback || quality == 2)", raw), std::string::npos);
 }
 
 // The lit proof is safe only over the widest kernel the filter can pick, so the

@@ -23,7 +23,7 @@ def main():
     spec.loader.exec_module(cook)
     packages = {name: cook.kPackages.get(name, cook.kEditorPackages.get(name)) for name in (
         "volumetric_clouds_march", "ffx_dof_tile", "ffx_dof_dilate", "ffx_dof_composite",
-        "ddgi_glossy_resolve_blur", "screen_space_shadow_prepare",
+        "ddgi_glossy_resolve", "ddgi_glossy_resolve_blur", "screen_space_shadow_prepare",
         "screen_space_shadow", "screen_space_shadow_resolve", "screen_space_shadow_match",
         # Cook only: atomics on values a loop carries out are a shape naga 29.x rejects.
         "depth_reduce", "depth_reduce_ms",
@@ -100,6 +100,14 @@ def main():
                 errors.append(f"cloud march: WGSL lacks read-only storage for {name}")
         if not meta["pushConstants"]:
             errors.append("cloud march: metadata lost the engine push-constant declaration")
+        _, bindings, wgsl = read("ddgi_glossy_resolve")
+        for name in ("ge_shadowCompareSampler", "ge_pointClampSampler"):
+            if name in bindings:
+                errors.append(f"DDGI resolve: layout requires unused sampler {name}")
+        linear_sampler = bindings.get("ge_linearClampSampler")
+        if not linear_sampler or not re.search(
+                rf"@group\(0\)\s*@binding\({linear_sampler['binding']}\)\s*var\s+\w+\s*:\s*sampler\b", wgsl):
+            errors.append("DDGI resolve: shared linear sampler is missing from reflection or WGSL")
         _, bindings, wgsl = read("ddgi_glossy_resolve_blur")
         for name in ("uRoughIn", "uGlossyIn", "uIrradianceIn", "uHistoryIrr"):
             if not bindings[name].get("image", {}).get("filtered", False):

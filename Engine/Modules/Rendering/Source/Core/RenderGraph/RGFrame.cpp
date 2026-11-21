@@ -34,6 +34,7 @@ RGAccess MapRead(RGBufferRead a)
     switch (a)
     {
         case RGBufferRead::Storage: return RGAccess::StorageRead;
+        case RGBufferRead::MeshStorage: return RGAccess::MeshStorageRead;
         case RGBufferRead::Uniform: return RGAccess::UniformRead;
         case RGBufferRead::Indirect: return RGAccess::IndirectRead;
         case RGBufferRead::Index: return RGAccess::IndexRead;
@@ -788,6 +789,20 @@ const RGFrame::ImportRec* RGFrame::FindImport(uint64_t physical, RGResourceKind 
         if (imp.Kind == kind && m_Physical[imp.Id] == physical)
             return &imp;
     return nullptr;
+}
+
+bool RGPrepareContext::HasDeclaredTextureWrite(TextureHandle texture) const
+{
+    if (!m_Context.m_Frame || !texture.IsValid())
+        return false;
+    const auto& frame = *m_Context.m_Frame;
+    const auto* import = frame.FindImport(static_cast<uint64_t>(texture), RGResourceKind::Texture);
+    if (!import)
+        return false;
+    const auto& accesses = frame.Graph().Accesses();
+    return std::any_of(accesses.begin(), accesses.end(), [resource = import->Id](const RGAccessRecord& access) {
+        return access.Resource == resource && IsWrite(access.Access);
+    });
 }
 
 RGTexture RGFrame::ImportExternalTexture(const char* name, TextureHandle handle,

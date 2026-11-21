@@ -43,6 +43,23 @@ TEST(ShaderMetaJson, UnsignedMaskSurvivesPackagingAndBothLayoutPaths) {
     EXPECT_FALSE(legacy.get<DescriptorBindingMeta>().Image->UnsignedInteger);
 }
 
+TEST(ShaderMetaJson, UnusedSharedShadowSamplerKeepsComparisonLayout) {
+    DescriptorBindingMeta shadow{};
+    shadow.Name = "ge_shadowCompareSampler";
+    shadow.Type = ShaderMetaBindingType::kSampler;
+    shadow.Binding = 141;
+    shadow.StagesMask = ShaderMetaStage::kFragment;
+    shadow.Image.emplace();
+    ASSERT_FALSE(shadow.Image->Depth);
+
+    DescriptorSetMeta set{};
+    set.Bindings.push_back(shadow);
+    const auto material = MaterialBuilder::BuildSetLayout(set);
+    ASSERT_EQ(material.bindings.size(), 1u);
+    EXPECT_EQ(material.bindings[0].type, DescriptorType::Sampler);
+    EXPECT_TRUE(material.bindings[0].imageIsDepth);
+}
+
 TEST(ShaderMetaJson, RoundTripComplexSchema) {
     ShaderMeta m{};
     m.Version = 1;

@@ -242,12 +242,9 @@ Rendering::Vector4 ImpostorCardData(const Components::WorldTransform& worldTrans
     return Rendering::Vector4(code.x, code.y, axisX.x / yawLength, -axisX.z / yawLength);
 }
 
-// Impostor atlas of a tree variant: hemi-octahedral, 8 x 8 frames of 128 pixels.
-constexpr uint32 kImpostorFramesPerSide = 8u;
-constexpr uint32 kImpostorFrameSize = 128u;
 // Screen coverage (Hlod::ClusterCoverage: radius * proj[1][1] / distance, with the impostor's
-// sphere) under which a tree draws its impostor. A frame spans the sphere over kImpostorFrameSize
-// pixels, so at 1080 lines this is about one atlas texel per screen pixel.
+// sphere) under which a tree draws its impostor. A frame of the default atlas key spans the sphere
+// over 128 pixels, so at 1080 lines this is about one atlas texel per screen pixel.
 constexpr float kImpostorSwitchCoverage = 0.12f;
 constexpr float kImpostorSwitchHysteresis = 0.15f;
 // A tree requests its atlas a little before it switches, so the bake is ready when it is needed.
@@ -260,8 +257,6 @@ Engine::Renderer::ImpostorBakeRequest MakeImpostorBakeRequest(const TreeVariant&
     request.Key.MeshHash = variant.Hash;
     request.Key.MaterialHash = variant.Hash;
     request.Key.Layout = Mathematics::OctahedralLayout::Hemisphere;
-    request.Key.FramesPerSide = kImpostorFramesPerSide;
-    request.Key.FrameSize = kImpostorFrameSize;
     request.Center = variant.Bounds.center;
     request.Radius = variant.ImpostorRadius;
     if (variant.Branches.IsValid())
@@ -392,7 +387,8 @@ void EZTreeExtractionSystem::RequestImpostors(FrameContext& frame)
         {
             RegisterImpostorMaterial(*m_RenderServices, variant->Materials.Impostor, atlas, variant->Bounds.center,
                                      variant->ImpostorRadius,
-                                     kImpostorFramesPerSide, Mathematics::OctahedralLayout::Hemisphere);
+                                     Engine::Renderer::ImpostorAtlasKey{}.FramesPerSide,
+                                     Mathematics::OctahedralLayout::Hemisphere);
             material->Color = atlas.Color;
         }
         // A card whose pipeline is not built yet would draw nothing: the tree keeps its mesh until then.

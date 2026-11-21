@@ -162,6 +162,12 @@ flat layout(location = 7) out vec4 vCustom0;
 // Per-instance flags (bit0=castShadows, bit1=receiveShadows). location 8..13 are
 // the conditional vUV2..vUV7, so this sits above them at 14.
 #ifdef GE_LOD_CROSSFADE
+// WGSL requires one varying per location.
+#if defined(GE_COMPAT_PROFILE)
+flat layout(location = 14) out uvec2 vInstanceFlagsAndLod;
+#define vInstanceFlags vInstanceFlagsAndLod.x
+#define vLodFadeCode vInstanceFlagsAndLod.y
+#else
 flat layout(location = 14, component = 0) out uint vInstanceFlags;
 // Packed LOD-crossfade code (lod_crossfade.glsl). It shares location 14 rather
 // than taking a slot of its own: 0..15 are all occupied and 15 is the last
@@ -169,8 +175,13 @@ flat layout(location = 14, component = 0) out uint vInstanceFlags;
 // prototype feature. Same `flat uint` interpolation as the flags it sits
 // beside, which is what makes two variables on one location legal.
 flat layout(location = 14, component = 1) out uint vLodFadeCode;
+#endif
 #else
 flat layout(location = 14) out uint vInstanceFlags;
+#endif
+
+#ifdef GE_INDEXED_DEPTH_OWNER
+flat layout(location = 14, component = 2) out uint vDepthOwnerSlot;
 #endif
 
 // Render-origin-relative world position (Earth-scale precision): PRECISE small-
@@ -648,6 +659,9 @@ void main()
 
     // Per-instance flags to the fragment stage (receiveShadows gate). Both paths.
     vInstanceFlags = inst.flags;
+#ifdef GE_INDEXED_DEPTH_OWNER
+    vDepthOwnerSlot = uint(gl_InstanceIndex);
+#endif
 #ifdef GE_LOD_CROSSFADE
     vLodFadeCode = inst.lodFadeCode;
 #endif

@@ -32,6 +32,7 @@ namespace Rendering
 namespace RenderGraph
 {
 class RGPrepareContext;
+class RGPassBuilder;
 class RGFrame;
 }
 class GPUScene;
@@ -42,6 +43,7 @@ namespace Engine::Renderer
 {
 class CpuDrawStreamBuilder;
 class WorldDrawBuilder;
+class Material;
 class MaterialSystem;
 class ViewRegistry;
 class TextureService;
@@ -458,6 +460,11 @@ bool PrepassSharedDepthEnabled();
 // Frame-owned state is opaque: selection, pipelines and descriptors are prepared
 // before any command list records; replay emits only the accepted draws.
 struct PreparedDepthOnlyPass;
+struct IndexedDepthDraw;
+bool HasMatchingIndexedDepthViewParams(const PreparedDepthOnlyPass& pass, const PassBindingContext& color);
+Rendering::GraphicsPipelineId FindPreparedIndexedDepthPipeline(
+    const PreparedDepthOnlyPass& pass, const IndexedDepthDraw& source, const Material& material,
+    Rendering::FrontFace winding, bool vertexAlpha, const Rendering::RenderGraph::RGPrepareContext& context);
 PreparedDepthOnlyPass* AllocatePreparedDepthOnlyPass(Rendering::RenderGraph::RGFrame& frame,
                                                     DepthOnlyPassParamsRG params);
 bool PrepareDepthOnlyPass(Rendering::RenderGraph::RGPrepareContext& c,
@@ -467,6 +474,23 @@ DepthProducerState GetPreparedDepthProducerState(const PreparedDepthOnlyPass& da
                                                 CascadeCasters casters);
 void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                                   const PreparedDepthOnlyPass& data);
+struct IndexedOwnerReplay
+{
+    Rendering::BufferHandle Draws{};
+    Rendering::BufferHandle Counts{};
+    uint32_t DrawLimit = 0;
+    uint64_t MeshWorkAddress = 0;
+    uint64_t MeshStateAddress = 0;
+};
+bool PrepareIndexedDepthOwners(Rendering::RenderGraph::RGPrepareContext& context, PreparedDepthOnlyPass& data, size_t count);
+void RecordIndexedDepthOwner(Rendering::RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data, size_t slot);
+void RecordIndexedDepthBetweenOwners(Rendering::RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data);
+void RecordIndexedDepthRemainder(Rendering::RenderGraph::RGContext& context, const PreparedDepthOnlyPass& data);
+void DeclareIndexedOwnerCompaction(Rendering::RenderGraph::RGFrame& frame, Rendering::IDevice& device,
+    PreparedDepthOnlyPass& data, const Rendering::GPUDrawStreamBuilder& streams,
+    Rendering::RenderGraph::RGTexture owners, Rendering::RenderGraph::RGBuffer ordering, size_t slot);
+void ReadIndexedOwnerCompaction(Rendering::RenderGraph::RGPassBuilder& pass, const PreparedDepthOnlyPass& data);
+IndexedOwnerReplay MatchIndexedOwnerCompaction(const PreparedDepthOnlyPass& data, const IndexedDepthDraw& source);
 // Primary command list, inside the cascade's Load pass. A failed rigid restore
 // clears the layer and replays all prepared casters instead of omitting rigids.
 void RecordPreparedCascadeDepth(Rendering::RenderGraph::RGContext& c,

@@ -1,6 +1,6 @@
 // Surface shader: Standard PBR (unified).
-// Always samples textures. When no texture is assigned, 1x1 default
-// textures yield identity values so the material params control the result.
+// When no texture is assigned, 1x1 default textures yield identity values
+// so the material params control the result.
 // Texture names (albedoMap, normalMap, …) are provided by the adapter's
 // bindless slot macros.
 //
@@ -127,6 +127,12 @@ vec3 GE_StandardSampleHexNormal(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 s
 #define GE_STANDARD_UV1_CROSSFADE
 #endif
 
+#if defined(FORWARD_PLUS) && defined(ALPHA_TEST) && !defined(GE_COMPAT_PROFILE) && !defined(GE_WGSL_COOK) \
+    && !defined(GE_PARALLAX_MARCH) && !defined(GE_STANDARD_UV1_CROSSFADE)
+#define GE_STANDARD_WHITE_MAP_SPECIALIZATION
+layout(constant_id = 308) const uint GE_STANDARD_WHITE_MAPS = 0u;
+#endif
+
 #if defined(GE_STANDARD_UV1_CROSSFADE) && defined(HAS_TANGENT)
 // The world normal of tangent-space `tn` in the frame of uv1: T is the rise of uv1.x from screen
 // derivatives, B = cross(N, T) times the mesh's handedness. Where the derivatives read zero (the
@@ -220,11 +226,22 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec3 emissiveTex =
         GE_StandardSampleAt(emissiveMap, sIn.textureST[3], sIn.textureST2[3], reliefUv0, sIn.uvFootprint).rgb;
 #else
-    o.ao = GE_StandardSampleHex(aoMap, sIn.uv0, sIn.textureST[4], sIn.textureST2[4]).r;
-  #ifdef GE_STANDARD_UV1_CROSSFADE
-    o.ao = mix(o.ao, GE_StandardSampleHex(aoMap, sIn.uv1, sIn.textureST[4], sIn.textureST2[4]).r, uv1Weight);
+    vec3 emissiveTex;
+  #ifdef GE_STANDARD_WHITE_MAP_SPECIALIZATION
+    if (GE_STANDARD_WHITE_MAPS != 0u)
+    {
+        o.ao = 1.0;
+        emissiveTex = vec3(1.0);
+    }
+    else
   #endif
-    vec3 emissiveTex = GE_StandardSampleHex(emissiveMap, sIn.uv0, sIn.textureST[3], sIn.textureST2[3]).rgb;
+    {
+        o.ao = GE_StandardSampleHex(aoMap, sIn.uv0, sIn.textureST[4], sIn.textureST2[4]).r;
+  #ifdef GE_STANDARD_UV1_CROSSFADE
+        o.ao = mix(o.ao, GE_StandardSampleHex(aoMap, sIn.uv1, sIn.textureST[4], sIn.textureST2[4]).r, uv1Weight);
+  #endif
+        emissiveTex = GE_StandardSampleHex(emissiveMap, sIn.uv0, sIn.textureST[3], sIn.textureST2[3]).rgb;
+    }
 #endif
     // Emission authored in nits: texture x colour x luminance, scaled into scene-linear by the
     // reference-white anchor (OpenPBR emission_color x emission_luminance; an unbound texture

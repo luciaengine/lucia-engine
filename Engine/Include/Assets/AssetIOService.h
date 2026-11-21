@@ -6,12 +6,15 @@
 #include "Assets/AssetDecodeInputFiles.h"
 #include "Types/ByteBuffer.h"
 #include "Types/FunctionRef.h"
+#include "Types/MoveOnlyFunction.h"
 #include "Types/Types.h"
 #include <atomic>
 #include <condition_variable>
 #include <deque>
-#include <memory>
+#include <filesystem>
 #include <limits>
+#include <memory>
+#include <memory_resource>
 #include <mutex>
 #include <span>
 #include <thread>
@@ -63,9 +66,8 @@ class AssetIOService
         AssetMetadata Metadata;
         AssetLoadPriority Priority = AssetLoadPriority::Normal;
 
-        // A byte range of Metadata.Path to read instead of the whole file: RangeBytes bytes from
-        // RangeOffset (a page of a page store). The range must lie inside the file; a short read
-        // fails the request. RangeBytes 0 reads the whole file.
+        // Read RangeBytes from RangeOffset (a page of a page store). The range must lie inside
+        // the file; a short read fails the request. RangeBytes 0 reads the whole of Metadata.Path.
         uint64 RangeOffset = 0;
         uint64 RangeBytes = 0;
         uint64 MaximumBytes = std::numeric_limits<uint64>::max();
@@ -80,31 +82,41 @@ class AssetIOService
         // Parses and registers the asset from the raw file bytes. Runs as a
         // JobPriority::Background pool job; the return value becomes the
         // continuation handle's result (null = processing failure).
-        Function<SharedPtr<Asset>(ByteBuffer)> ProcessData;
+        MoveOnlyFunction<SharedPtr<Asset>(ByteBuffer)> ProcessData;
 
         // The files ProcessData reads besides Metadata.Path (a texture's cooked artifact, a
         // glTF's external buffers), resolved from the read bytes. Runs on the reader thread
         // after the read; the reader reads each file and ProcessData's call tree takes them
         // through ReadAssetDecodeInputFile (Assets/AssetDecodeInputFiles.h), and the plan the
         // resolver returns with them through CurrentAssetDecodePlan. Null = none.
-        Function<AssetDecodeInputs(std::span<const uint8>)> ResolveDecodeInputs;
+        MoveOnlyFunction<AssetDecodeInputs(std::span<const uint8>)> ResolveDecodeInputs;
 
         // The files that let ProcessData run without the bytes of Metadata.Path (a texture's cooked
         // artifact), named from the path before the read. When it names files and the reader reads every
         // one, the reader does not read Metadata.Path and ProcessData gets no bytes. Otherwise the reader
         // reads the path and resolves ResolveDecodeInputs. Null = none.
-        Function<AssetDecodeInputs()> ResolveDecodeInputsWithoutBytes;
+        MoveOnlyFunction<AssetDecodeInputs()> ResolveDecodeInputsWithoutBytes;
 
         // Invoked on the reader thread right after the continuation is
         // submitted, with its TaskHandle — the caller's cancellation surface.
-        Function<void(const JobSystem::TaskHandle&)> OnSubmitted;
+        MoveOnlyFunction<void(const JobSystem::TaskHandle&)> OnSubmitted;
 
         // Invoked when no continuation will ever be submitted: read failure
         // (reader thread), pool shutdown gate (reader thread), queue
         // abandonment during Stop() (stopping thread), or SubmitRead on a
         // stopped service (calling thread). The owner must resolve the load
         // here.
-        Function<void(const String& error)> OnFailure;
+        MoveOnlyFunction<void(const String& error)> OnFailure;
+
+        // Range reads may share an immutable path instead of copying it into Metadata.
+        std::shared_ptr<const std::filesystem::path> SharedRangePath;
+
+        const std::filesystem::path& ReadPath() const
+        {
+            if (RangeBytes > 0 && SharedRangePath)
+                return *SharedRangePath;
+            return Metadata.Path;
+        }
     };
 
     AssetIOService() = default;
@@ -190,9 +202,14 @@ class AssetIOService
     // after this service during teardown.
     struct Admission
     {
+        using ReadQueue = std::pmr::deque<ReadRequest>;
+
         std::mutex Mutex;
-        std::condition_variable Changed;                 // a request queued, a slot released, or Stop
-        std::deque<ReadRequest> Queues[kPriorityLevels]; // indexed by AssetLoadPriority
+        std::condition_variable Changed; // a request queued, a slot released, or Stop
+        // Reuses deque blocks across read batches. The admission mutex protects all queues and their pool.
+        std::pmr::unsynchronized_pool_resource QueueBlocks;
+        ReadQueue Queues[kPriorityLevels]{
+            ReadQueue(&QueueBlocks), ReadQueue(&QueueBlocks), ReadQueue(&QueueBlocks), ReadQueue(&QueueBlocks)};
         bool Running = false;
         bool InlineMode = false; // set in Start(); no reader threads, reads run inline
     };

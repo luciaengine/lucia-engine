@@ -154,7 +154,7 @@ void ReadStorePage(AssetIOService& io, const PageFetchHolder& holder)
         return;
     }
     AssetIOService::ReadRequest read;
-    read.Metadata.Path = store.File();
+    read.SharedRangePath = store.ShareFilePath();
     read.Priority = AssetLoadPriority::High;
     read.RangeOffset = store.BaseOffset() + entry->Offset;
     read.RangeBytes = store.Layout().StoredBytes(*entry);

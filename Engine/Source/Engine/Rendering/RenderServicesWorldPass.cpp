@@ -4,6 +4,9 @@
 // RenderServices class; shared file-scope helpers live in RenderServicesDetail.h.
 #include "Engine/Rendering/RenderServices.h"
 #include "Core/CpuProfiler.h"
+#include "DepthPrepassLineage.h"
+#include "Engine/Rendering/DepthDrawRecorder.h"
+#include "IndexedDepthDraw.h"
 #include "Engine/Rendering/IRenderFeature.h"
 
 #include "Core/DebugMetrics.h"
@@ -213,6 +216,15 @@ std::span<const DrawCommand> CaptureForwardCommands(RenderGraph::RGFrame& frame,
     return storage->Commands;
 }
 
+struct OrderedOwnerMeshPush
+{
+    ComposedPCInstanced Instances{};
+    uint64_t Core = 0, Color = 0, Index = 0, Work = 0, State = 0;
+    uint32_t Index16 = 0;
+};
+static_assert(sizeof(OrderedOwnerMeshPush) == 64);
+static_assert(offsetof(OrderedOwnerMeshPush, Index16) == 56);
+
 struct PreparedForwardDraw
 {
     const DrawCommand* Source = nullptr;
@@ -221,6 +233,10 @@ struct PreparedForwardDraw
     DrawSubCommand Direct;
     std::optional<uint32_t> ServedVersion;
     uint32_t MaterialIndex = 0;
+    bool IndexedDepthEqual = false;
+    IndexedOwnerReplay OwnerReplay{};
+    PreparedDrawBindings OwnerMeshBindings{};
+    OrderedOwnerMeshPush OwnerMeshConstants{};
 };
 
 // The command and its spans belong to the frame's declaration snapshot.
@@ -261,11 +277,11 @@ std::optional<PreparedForwardDraw> PrepareForwardDrawCommand(
             ContributorColorKeywords(pass.PassKeywords, command.PassKeywords,
                                      meshEntry != nullptr);
         // Contributor draws use the view's base winding (not parity-split).
-        auto [servedPipeline, unit] = variants.PrepareColorVariant(
+        const auto variant = variants.PrepareColorVariant(
             *material, effectiveFlags, ContributorTopology(meshEntry),
             contributorKeywords, winding, context);
-        pipeline = servedPipeline;
-        served = unit;
+        pipeline = variant.Pipeline;
+        served = variant.Unit;
         if (served)
         {
             variantMeta = served->VariantMeta.get();
@@ -312,6 +328,112 @@ std::optional<PreparedForwardDraw> PrepareForwardDrawCommand(
     return result;
 }
 
+struct IndexedOwnerMeshShader
+{
+    std::shared_ptr<const std::vector<uint8_t>> Bytes;
+    Rendering::StageMeta Interface;
+};
+
+IndexedOwnerMeshShader LoadIndexedOwnerMeshShader(const char* path)
+{
+    Rendering::ShaderPackage package;
+    if (!Rendering::LoadShaderPkg(path, Rendering::ShaderSourceKind::SpirV, package))
+        return {};
+    auto binary = package.stageBytes.find("ms");
+    auto stage = package.meta.Stages.find("ms");
+    if (binary == package.stageBytes.end() || binary->second.empty() || stage == package.meta.Stages.end())
+        return {};
+    return {std::make_shared<const std::vector<uint8_t>>(std::move(binary->second)), std::move(stage->second)};
+}
+
+const IndexedOwnerMeshShader& GetIndexedOwnerMeshShader(bool color)
+{
+    if (color)
+    {
+        static const auto s_Color = LoadIndexedOwnerMeshShader("Shaders/indexed_depth_replay_mesh_forward_color.shaderpkg");
+        return s_Color;
+    }
+    static const auto s_Plain = LoadIndexedOwnerMeshShader("Shaders/indexed_depth_replay_mesh_forward.shaderpkg");
+    return s_Plain;
+}
+
+void PrepareOrderedOwnerMesh(PreparedForwardDraw& prepared, const IndexedOwnerReplay& replay,
+                             const DrawCommand& command, const Material& material,
+                             const Rendering::ShaderMeta& sourceMeta, Rendering::GraphicsPipelineDesc pipeline,
+                             Rendering::IDevice& device, MaterialBinder& binder, const PassBindingContext& inputs,
+                             const RenderGraph::RGPrepareContext& context, Rendering::VertexAttributeFlags flags)
+{
+    if (!MatchesIndexedOwnerMeshVertexLayout(pipeline, flags) || pipeline.ColorBlend.alphaToCoverageEnable ||
+        pipeline.ColorBlend.logicOpEnable || command.Bindings.PushConstants.size() != sizeof(ComposedPCInstanced))
+        return;
+    const bool color = Rendering::HasFlag(flags, Rendering::VertexAttributeFlags::HasColor);
+    const uint64_t coreAddress = device.GetBufferDeviceAddress(prepared.Geometry.coreVB);
+    const uint64_t index = device.GetBufferDeviceAddress(prepared.Geometry.indexBuffer);
+    const uint64_t colors = color ? device.GetBufferDeviceAddress(prepared.Geometry.colorVB) : 0;
+    if (!coreAddress || !index || (color && !colors))
+        return;
+
+    const auto& shader = GetIndexedOwnerMeshShader(color);
+    const auto fragment = sourceMeta.Stages.find("fs");
+    if (!shader.Bytes || fragment == sourceMeta.Stages.end() ||
+        !MatchesIndexedOwnerMeshFragmentInputs(fragment->second, shader.Interface))
+        return;
+
+    for (auto& id : pipeline.DescriptorSetLayouts)
+    {
+        Rendering::DescriptorSetLayoutDesc layout;
+        if (!device.CopyDescriptorSetLayout(id, layout))
+            return;
+        for (auto& binding : layout.bindings)
+            if (binding.shaderStages & kShaderStageVertex)
+                binding.shaderStages = (binding.shaderStages & ~kShaderStageVertex) | kShaderStageMesh;
+        id = device.InternDescriptorSetLayout(layout);
+    }
+    auto metadata = sourceMeta;
+    for (auto& set : metadata.Sets)
+    {
+        for (auto& binding : set.Bindings)
+            if (binding.StagesMask & ShaderMetaStage::kVertex)
+                binding.StagesMask = (binding.StagesMask & ~ShaderMetaStage::kVertex) | ShaderMetaStage::kMesh;
+        Rendering::FinalizeSetLayout(set);
+    }
+    pipeline.Kind = GraphicsPipelineKind::MeshFragment;
+    pipeline.MeshShader = shader.Bytes;
+    pipeline.VertexShader.reset();
+    pipeline.VertexBindings.clear();
+    pipeline.VertexAttributes.clear();
+    pipeline.PushConstants.Size = sizeof(OrderedOwnerMeshPush);
+    pipeline.PushConstants.StageMask = kShaderStageMesh |
+                                       (pipeline.PushConstants.StageMask & kShaderStageFragment);
+    pipeline.NamedPushConstantRanges.clear();
+    pipeline.DepthStencil.depthCompareOp = CompareOp::Equal;
+    const auto pipelineId = device.InternGraphicsPipeline(pipeline);
+    if (!pipelineId.IsValid() || context.ResolveGraphicsPipelineId(pipelineId) != pipelineId)
+        return;
+    const auto handle = context.PreparePipeline(pipelineId);
+    if (!handle.IsValid())
+        return;
+
+    OrderedOwnerMeshPush mesh{};
+    std::memcpy(&mesh.Instances, command.Bindings.PushConstants.data(), sizeof(mesh.Instances));
+    mesh.Core = coreAddress;
+    mesh.Color = colors;
+    mesh.Index = index;
+    mesh.Work = replay.MeshWorkAddress;
+    mesh.State = replay.MeshStateAddress;
+    mesh.Index16 = prepared.Geometry.indexType == static_cast<uint32_t>(IndexType::Uint16) ? 1u : 0u;
+    DrawBindings bindings = command.Bindings;
+    bindings.PushConstants = std::as_bytes(std::span{&mesh, 1u});
+    const auto bound = binder.PrepareMaterialForDraw(inputs, material, handle, &metadata,
+        bindings, 0, pipeline.DescriptorSetLayouts);
+    if (bound.Pipeline.IsValid())
+    {
+        prepared.OwnerReplay = replay;
+        prepared.OwnerMeshBindings = bound;
+        prepared.OwnerMeshConstants = mesh;
+    }
+}
+
 void RecordForwardDrawCommand(const PreparedForwardDraw& prepared, RenderServices& services,
                               PassBindingContext& pass, DrawGeometryBindings& geometryBindings)
 {
@@ -328,17 +450,36 @@ void RecordForwardDrawCommand(const PreparedForwardDraw& prepared, RenderService
     for (uint32_t streamIndex = 0; streamIndex < mesh.extraUvVB.size(); ++streamIndex)
         geometryBindings.BindVertexBuffer(mesh.extraUvVB[streamIndex], 8u + streamIndex);
     geometryBindings.BindIndexBuffer(mesh.indexBuffer, static_cast<Rendering::IndexType>(mesh.indexType));
-    services.Materials().Binder().BindPreparedForDraw(pass, prepared.Bindings, command.Bindings.PushConstants);
+    auto& binder = services.Materials().Binder();
+    const auto& replay = prepared.OwnerReplay;
+    const bool meshReplay = prepared.OwnerMeshBindings.Pipeline.IsValid();
+    if (meshReplay)
+    {
+        constexpr size_t kMeshArgumentsOffset = 14u * sizeof(uint32_t);
+        binder.BindPreparedForDraw(pass, prepared.OwnerMeshBindings,
+            std::as_bytes(std::span{&prepared.OwnerMeshConstants, 1u}));
+        pass.Cmd->DrawMeshTasksIndirect(replay.Counts, kMeshArgumentsOffset);
+    }
+    binder.BindPreparedForDraw(pass, prepared.Bindings, command.Bindings.PushConstants);
+    if (!meshReplay && replay.Counts.IsValid())
+        pass.Cmd->DrawIndexedIndirectCount(replay.Draws, replay.Counts, replay.DrawLimit,
+                                          command.IndirectStride, 0, sizeof(uint32_t));
 
     if (command.UseIndirect && command.IndirectCommandBuffer.IsValid())
     {
         pass.Cmd->DrawIndexedIndirectCount(
             command.IndirectCommandBuffer,
-            command.IndirectCountBuffer,
+            replay.Counts.IsValid() ? replay.Counts : command.IndirectCountBuffer,
             command.IndirectMaxDrawCount,
             command.IndirectStride,
             command.IndirectCommandOffset,
-            command.IndirectCountOffset);
+            replay.Counts.IsValid() ? 0u : command.IndirectCountOffset);
+        if (prepared.IndexedDepthEqual && LogIndexedDepthReplayDiagnostics())
+        {
+            static std::atomic_flag logged = ATOMIC_FLAG_INIT;
+            if (!logged.test_and_set(std::memory_order_relaxed))
+                Logger::Log::Info("[IndexedDepthEqual] Recorded matched read-only forward draw");
+        }
     }
     else if (command.SubDraws.empty())
     {
@@ -479,6 +620,10 @@ struct WorldPassData
     std::vector<std::byte> PushConstants;
     size_t BaseTextureCount = 0;
     RenderGraph::RGTexture VolumetricFog{};
+    const PreparedDepthOnlyPass* IndexedReplayProducer = nullptr;
+    RenderGraph::RGPass IndexedReplayWorld{};
+    size_t IndexedReplayCandidates = 0;
+    size_t IndexedReplayMatches = 0;
     SamplerHandle FogSampler{};
     bool HasAnyDraws = false;
     size_t EntityBatchCount = 0;
@@ -1307,6 +1452,8 @@ class RenderServices::WorldPassPreparation
     {
         m_Data->Draws.clear();
         m_Data->PushConstants.clear();
+        m_Data->IndexedReplayCandidates = 0;
+        m_Data->IndexedReplayMatches = 0;
         m_Data->Inputs.PassResources.Textures.resize(m_Data->BaseTextureCount);
         BindVolumetricFogVolume(m_Context, m_Data->VolumetricFog, m_Data->FogSampler,
                                  m_Data->Inputs.PassResources);
@@ -1355,6 +1502,10 @@ class RenderServices::WorldPassPreparation
                                 { PrepareEntities(blendPhase); },
                                 [this](bool blendPhase)
                                 { PrepareContributors(blendPhase); });
+
+        if (m_Data->IndexedReplayProducer && LogIndexedDepthReplayDiagnostics())
+            Logger::Log::Info("[IndexedDepthReplay] view={} candidates={} match={}",
+                              m_ViewId, m_Data->IndexedReplayCandidates, m_Data->IndexedReplayMatches);
 
         // Vector growth is finished: install stable command/PC addresses once.
         for (auto& draw : m_Data->Draws)
@@ -1469,8 +1620,10 @@ class RenderServices::WorldPassPreparation
             assert(m_UploadedCompatListBytes == m_Services.m_CpuDrawStream.GetIndexList(m_ViewId).size_bytes() &&
                    "the view's instance list was rebuilt after its first pass declared");
 
-            auto [pipeline, variantEntry] = m_Services.m_MaterialSystem.Variants().PrepareColorVariant(
+            const auto variant = m_Services.m_MaterialSystem.Variants().PrepareColorVariant(
                 *material, effectiveFlags, entry->topology, entityKeywords, m_Services.m_FrontFace, m_Context);
+            const auto pipeline = variant.Pipeline;
+            const auto* variantEntry = variant.Unit;
             if (!pipeline.IsValid())
             {
                 LogMeshDrawSkipDiagnostic(
@@ -1582,13 +1735,13 @@ class RenderServices::WorldPassPreparation
         auto variant = m_Services.m_MaterialSystem.Variants().PrepareColorVariant(
             *batch.Material, batch.VertexFlags, batch.Mesh->topology, segmentKeywords, winding, m_Context);
         // A cold fade variant uses the head variant to preserve mesh coverage.
-        if (!variant.first.IsValid() && crossfading)
+        if (!variant.Pipeline.IsValid() && crossfading)
         {
             variant = m_Services.m_MaterialSystem.Variants().PrepareColorVariant(
                 *batch.Material, batch.VertexFlags, batch.Mesh->topology, batch.Keywords, winding,
                 m_Context);
         }
-        auto [pipeline, variantEntry] = variant;
+        const auto [pipeline, variantEntry, concreteId] = variant;
         if (!pipeline.IsValid())
         {
             LogMeshDrawSkipDiagnostic(
@@ -1627,6 +1780,56 @@ class RenderServices::WorldPassPreparation
         prepared.Geometry.indexType = batch.Mesh->indexType;
         if (variantEntry)
             prepared.ServedVersion = variantEntry->MaterialVersion;
+        if (m_Data->IndexedReplayProducer &&
+            batch.Material->GetAlphaMode() == MaterialAlphaMode::Mask)
+        {
+            ++m_Data->IndexedReplayCandidates;
+            const auto source = GetIndexedDepthDraw(command, prepared.Geometry);
+            const auto* meta = variantEntry ? variantEntry->VariantMeta.get() : nullptr;
+            const auto vertexAlpha = StockMaskVertexAlpha(meta, false, crossfading);
+            if (source && vertexAlpha && prepared.ServedVersion == batch.Material->GetVersion() &&
+                batch.Key.colorClassId == batch.Key.materialIndex &&
+                batch.Key.materialIndex == batch.Material->GetGpuSceneMaterialIndex() &&
+                HasBoundIndexedMaskSets(*meta, preparedBindings) &&
+                HasPublishedReplayAlbedo(*batch.Material, m_Services.Textures(), preparedBindings, m_Context) &&
+                m_Services.Materials().IsCurrentPackedMaterialRow(*batch.Material, BoundMaterialParams(m_Data->Inputs)))
+            {
+                const auto depthId = FindPreparedIndexedDepthPipeline(
+                    *m_Data->IndexedReplayProducer, *source, *batch.Material, winding, *vertexAlpha, m_Context);
+                Rendering::GraphicsPipelineDesc depth, color;
+                auto& device = *m_Services.m_Device;
+                const bool copied = depthId.IsValid() && device.CopyGraphicsPipeline(depthId, depth) &&
+                                    device.CopyGraphicsPipeline(concreteId, color);
+                if (copied)
+                {
+                    // IndexedReplayProducer requires a read-only depth attachment. Vulkan
+                    // disables writes for that attachment even when the material template enables them.
+                    color.DepthStencil.depthWriteEnable = false;
+                }
+                if (copied && MatchesIndexedDepthRaster(depth, color, *vertexAlpha) &&
+                    MatchesIndexedDepthHexTiling(depth, color, {batch.Material->GetCacheData(), batch.Material->GetCacheSize()}))
+                {
+                    ++m_Data->IndexedReplayMatches;
+                    const auto replay = MatchIndexedOwnerCompaction(*m_Data->IndexedReplayProducer, *source);
+                    const auto equal = m_Services.Materials().Variants().PrepareIndexedDepthEqual(
+                        *batch.Material, *meta, concreteId, color, m_Context.BuildCurrentFormatKey(),
+                        CanSpecializeWhiteMaps(*batch.Material, m_Services.Textures(), color));
+                    if (equal.Pipeline.IsValid())
+                    {
+                        prepared.Bindings.Pipeline = equal.Pipeline;
+                        prepared.IndexedDepthEqual = true;
+                        if (replay.MeshWorkAddress)
+                        {
+                            if (device.CopyGraphicsPipeline(equal.ConcreteId, color))
+                                PrepareOrderedOwnerMesh(prepared, replay, command, *batch.Material, *meta, std::move(color),
+                                    device, m_Services.Materials().Binder(), m_Data->Inputs, m_Context, batch.VertexFlags);
+                        }
+                        else
+                            prepared.OwnerReplay = replay;
+                    }
+                }
+            }
+        }
         Append(command, prepared, true, batch.Key.materialIndex, batch.Key.meshIndex,
                maxDrawCount, m_Services.m_DrawStreamBuilder->GetRangeCount());
     }
@@ -2142,6 +2345,11 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                               ? targets.VolumetricFog : RenderGraph::RGTexture{};
     data->FogSampler = m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp);
 
+    const auto* shadowFeature = GetFeature<ShadowMapRenderFeature>();
+    // Shadow diagnostics can return a color before applying the ordinary alpha cutoff.
+    const bool usesShadowDebug = shadowFeature && shadowFeature->GetDebugMode() != ShadowDebugMode::Off;
+    const bool reuseIndexedDepth = !isRecover && scope != WorldPassDrawScope::TransmissiveOnly &&
+        !usesShadowDebug && IndexedDepthReuseEnabled(*m_Device);
     result.Pass = frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kWorldRender,
         [&](RenderGraph::RGPassBuilder& p)
@@ -2150,6 +2358,8 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             // own viewport/scissor and binds per draw (CONC-F13), so its interior
             // may record into a worker secondary under GE_PARALLEL_RECORD.
             p.RecordInSecondary();
+            if (reuseIndexedDepth && depthReadOnly && vfr.IndexedReplayProducer)
+                ReadIndexedOwnerCompaction(p, *vfr.IndexedReplayProducer);
             // Slice-3 contract reads. SkinPaletteAtlas is the compute→VS
             // barrier (the VS binds it descriptor-direct, so only this
             // declared read orders skinning). DrawStreamOrdering is the
@@ -2359,8 +2569,76 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                               targets.DepthRange);
             }
             p.Prepare([this, data, viewId, passKeywords, reliefDepthSource, scope, phase,
-                       sliceCascadeIndex, prepassDepth, prepassDepthSampler](RenderGraph::RGPrepareContext& context)
+                       sliceCascadeIndex, prepassDepth, prepassDepthSampler, &frame,
+                       reuseIndexedDepth, hasDepthPrepass, depthReadOnly,
+                       replayProducer = vfr.IndexedReplayProducer, replayPrepass = vfr.IndexedReplayPrepass,
+                       replayCamera = vfr.IndexedReplayCamera,
+                       replayContinuations = vfr.IndexedReplayContinuations,
+                       replayExtentMatches = !letterbox.active && !flipViewportY && viewportW != 0 && viewportH != 0 &&
+                           viewportW == vfr.IndexedReplayViewportWidth && viewportH == vfr.IndexedReplayViewportHeight,
+                       worldCamera = cam.Valid() ? cam.Ptr : nullptr,
+                       depth = targets.Depth](RenderGraph::RGPrepareContext& context)
             {
+                data->IndexedReplayProducer = nullptr;
+                if (reuseIndexedDepth && (!hasDepthPrepass || !depthReadOnly || !replayProducer))
+                {
+                    if (LogIndexedDepthReplayDiagnostics())
+                        Logger::Log::Info("[IndexedDepthReplay] view={} attachment gate rejected: prepass={} readOnly={} producer={}",
+                                          viewId, hasDepthPrepass, depthReadOnly, replayProducer != nullptr);
+                }
+                else if (reuseIndexedDepth && (!replayExtentMatches || !replayCamera || !worldCamera ||
+                            std::memcmp(replayCamera, worldCamera, sizeof(CameraData)) != 0))
+                {
+                    if (LogIndexedDepthReplayDiagnostics())
+                        Logger::Log::Info("[IndexedDepthReplay] view={} camera raster rejected: matchingViewport={}",
+                                          viewId, replayExtentMatches);
+                }
+                else if (reuseIndexedDepth && !HasMatchingIndexedDepthViewParams(*replayProducer, data->Inputs))
+                {
+                    if (LogIndexedDepthReplayDiagnostics())
+                        Logger::Log::Info("[IndexedDepthReplay] view={} view params rejected", viewId);
+                }
+                else if (reuseIndexedDepth)
+                {
+                    const auto& attachments = frame.Attachments();
+                    const auto isDepthIn = [depth](const auto& entry, RenderGraph::RGPass pass) {
+                        return entry.Pass == pass.Id && entry.IsDepth && entry.Tex == depth.Id;
+                    };
+                    const auto before = std::find_if(attachments.begin(), attachments.end(),
+                        [&](const auto& entry) { return isDepthIn(entry, replayPrepass); });
+                    const auto after = std::find_if(attachments.begin(), attachments.end(),
+                        [&](const auto& entry) { return isDepthIn(entry, data->IndexedReplayWorld); });
+                    std::array<const RenderGraph::RGAttachmentRec*, std::tuple_size_v<decltype(replayContinuations)>> extensions{};
+                    size_t extensionCount = 0;
+                    bool missingExtension = false;
+                    for (const auto pass : replayContinuations)
+                    {
+                        if (!pass.IsValid())
+                            continue;
+                        const auto extension = std::find_if(attachments.begin(), attachments.end(),
+                            [&](const auto& entry) { return isDepthIn(entry, pass); });
+                        if (extension == attachments.end())
+                        {
+                            missingExtension = true;
+                            break;
+                        }
+                        extensions[extensionCount++] = &*extension;
+                    }
+                    const auto& graph = frame.Graph();
+                    const auto lineage = before != attachments.end() && after != attachments.end() && !missingExtension
+                        ? RenderGraph::CheckDepthPrepassLineage(graph, *before, *after, frame.IsPoolBackedTexture(depth),
+                                                               std::span(extensions.data(), extensionCount))
+                        : RenderGraph::DepthPrepassLineage{"missing attachment"};
+                    if (lineage)
+                        data->IndexedReplayProducer = replayProducer;
+                    else if (LogIndexedDepthReplayDiagnostics())
+                        Logger::Log::Info("[IndexedDepthReplay] view={} depth lineage rejected: reason={} pass={} resource={} producerPass={} worldPass={}",
+                                          viewId, lineage.Rejection,
+                                          lineage.BlockingPass != RenderGraph::kInvalidId
+                                              ? graph.PassName(lineage.BlockingPass) : "",
+                                          depth.Id, replayPrepass.Id, data->IndexedReplayWorld.Id);
+                }
+
                 return WorldPassPreparation(*this, *data, context, viewId, passKeywords, reliefDepthSource,
                     scope, phase, sliceCascadeIndex, prepassDepth, prepassDepthSampler).Prepare();
             });
@@ -2428,6 +2706,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             binder.EndPass(pass);
         });
 
+    data->IndexedReplayWorld = result.Pass;
     if (canResolveColor && result.Pass.IsValid())
     {
         const Rendering::Passes::MsaaResolveViewBuffers resolveView = PipelineMsaaResolveViewBuffers(
