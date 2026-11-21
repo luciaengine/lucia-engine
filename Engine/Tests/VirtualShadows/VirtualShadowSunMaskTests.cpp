@@ -412,8 +412,9 @@ void VirtualShadowSunMaskTest::CompareMaskWithLookup(float quality, float tanHal
         }
         commands->EndRenderPass();
     }
+    // A sampled depth image is read in the depth read-only layout (DepthSampled).
     commands->Barrier(ResourceBarrier::CreateTextureBarrier(atlas, ResourceState::DepthWrite,
-                                                            ResourceState::ShaderResource, 0, 1, 0, 3));
+                                                            ResourceState::DepthSampled, 0, 1, 0, 3));
     commands->CopyBufferToTextureSubresource(depthUpload, depth, 0, 0, kSide, kSide);
     commands->Barrier(ResourceBarrier::CreateTextureBarrier(depth, ResourceState::CopyDest,
                                                             ResourceState::ShaderResource));
