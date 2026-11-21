@@ -131,7 +131,7 @@ ScopedSubscription RegisterForestStandMesh(
             Rendering::MeshGPUEntryBindings bindings{};
             if (!mat || !geometry || geometry->vertexFlags != Rendering::VertexAttributeFlags::StandardMesh ||
                 geometry->topology != Rendering::PrimitiveTopology::TriangleList ||
-                geometry->indexCount != indexEnd || geometry->lodCount != 1 ||
+                geometry->indexCount != indexEnd ||
                 !mat->GetCompileSpec().vertexModifierPath.empty() || mat->GetCompileSpec().customVertexShader ||
                 (mat->GetAlphaMode() != MaterialAlphaMode::Mask && mat->GetAlphaMode() != MaterialAlphaMode::Opaque) ||
                 geometry->vertexOffset > static_cast<uint32>(std::numeric_limits<int32>::max()) ||
@@ -146,6 +146,7 @@ ScopedSubscription RegisterForestStandMesh(
             color.VertexFlags = Rendering::VertexAttributeFlags::StandardMesh;
             color.Geometry.AltGeom = {
                 bindings.coreVB, bindings.indexBuffer, static_cast<Rendering::IndexType>(bindings.indexType)};
+            // The packed page ranges address the overview mesh's original LOD0 indices.
             color.IndexCount = geometry->indexCount;
             color.FirstIndex = geometry->firstIndex;
             color.VertexOffset = static_cast<int32>(geometry->vertexOffset);
