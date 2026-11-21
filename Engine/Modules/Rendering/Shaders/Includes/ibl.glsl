@@ -52,8 +52,8 @@ vec3 ge_iblGrabThroughput = vec3(0.0);
 
 // Scaled glossy-reflection resolve (Shaders/ddgi_glossy_resolve.comp): the
 // probe reflection gather pre-evaluated per view at
-// DDGIVolume.GlossyResolveScale of the render extent, one texture per baked
-// lobe (rough = roughLobeMix 1, glossy = roughLobeMix 0), each
+// DDGIVolume.GlossyResolveScale of the render extent, with one array layer per
+// baked lobe (rough = layer 0, glossy = layer 1), each
 // coverage-premultiplied radiance in rgb / coverage in a. Every fragment reads
 // these; there is no per-fragment gather (see the consume below for why).
 // The resolve's reflection direction is the previous frame's SHADING normal
@@ -64,21 +64,16 @@ vec3 ge_iblGrabThroughput = vec3(0.0);
 // environment sample.
 // Declared HERE, not in ddgi_probes.glsl: the resolve kernel itself includes
 // that file and must not grow its layout with outputs it never binds.
-layout(set = 0, binding = 41) uniform texture2D ge_ddgiResolveRoughTex;
-#define ge_ddgiResolveRough sampler2D(ge_ddgiResolveRoughTex, ge_linearClampSampler)
-layout(set = 0, binding = 42) uniform texture2D ge_ddgiResolveGlossyTex;
-#define ge_ddgiResolveGlossy sampler2D(ge_ddgiResolveGlossyTex, ge_linearClampSampler)
+layout(set = 0, binding = 41) uniform texture2DArray ge_ddgiResolveLobesTex;
+#define ge_ddgiResolveLobes sampler2DArray(ge_ddgiResolveLobesTex, ge_linearClampSampler)
 // Diffuse irradiance from the same resolve pass, looked up along the same
 // normal as the reflection — a per-fragment 8-probe loop it removes entirely.
 layout(set = 0, binding = 43) uniform texture2D ge_ddgiResolveIrradianceTex;
 #define ge_ddgiResolveIrradiance sampler2D(ge_ddgiResolveIrradianceTex, ge_linearClampSampler)
-#if !defined(GE_COMPAT_PROFILE)
-// The world normal each irradiance texel was gathered for: the normal guide of the upsample below. The compat
-// profile has no sampled-texture slot for it and keeps the depth guide alone.
+// The world normal each irradiance texel was gathered for: the normal guide of the upsample below.
 layout(set = 0, binding = 67) uniform texture2D ge_ddgiResolveGatherNormalTex;
 #define ge_ddgiResolveGatherNormal sampler2D(ge_ddgiResolveGatherNormalTex, ge_linearClampSampler)
 #define GE_DDGI_UPSAMPLE_GATHER_NORMAL ge_ddgiResolveGatherNormal
-#endif
 #define GE_DDGI_UPSAMPLE_IRRADIANCE ge_ddgiResolveIrradiance
 #include "ddgi_resolve_upsample.glsl"
 #endif
@@ -420,15 +415,15 @@ vec3 GE_EvaluateIBL(SurfaceOutput so, vec3 V, vec3 positionWS)
             // tent) instead of one: a single magnified bilinear tap keeps the
             // resolve grid's square texel steps visible on curved reflectors.
             vec2 resolveUV = gl_FragCoord.xy * ge_screenSize.zw;
-            vec2 resolveTexel = 1.0 / vec2(textureSize(ge_ddgiResolveRough, 0));
+            vec2 resolveTexel = 1.0 / vec2(textureSize(ge_ddgiResolveLobes, 0).xy);
             vec4 roughTap = vec4(0.0);
             vec4 glossyTap = vec4(0.0);
             for (int tap = 0; tap < 4; ++tap)
             {
                 vec2 o = vec2((tap & 1) != 0 ? 0.5 : -0.5, (tap & 2) != 0 ? 0.5 : -0.5);
                 vec2 uvTap = resolveUV + o * resolveTexel;
-                roughTap += textureLod(ge_ddgiResolveRough, uvTap, 0.0);
-                glossyTap += textureLod(ge_ddgiResolveGlossy, uvTap, 0.0);
+                roughTap += textureLod(ge_ddgiResolveLobes, vec3(uvTap, 0.0), 0.0);
+                glossyTap += textureLod(ge_ddgiResolveLobes, vec3(uvTap, 1.0), 0.0);
             }
             ddgiReflection = mix(glossyTap, roughTap, roughLobeMix) * 0.25;
         }
