@@ -56,6 +56,7 @@ kPackages: dict[str, dict[str, str | tuple[str, list[str]]]] = {
     "clear_color_backdrop": {"vs": "fullscreen_noinput.vert", "fs": "clear_color_backdrop.frag"},
     "solidcolor": {"vs": "fullscreen_noinput.vert", "fs": "solidcolor.frag"},
     "clustered_light_cull": {"cs": "clustered_light_cull.comp"},
+    "forest_placement_cull": {"cs": "forest_placement_cull.comp"},
     "cluster_depth_minmax": {"cs": "cluster_depth_minmax.comp"},
     # The same kernel at 16 and 8 threads per axis, for devices below 1024 invocations per
     # workgroup: a phone's WebGPU grants 256 (the DepthMinMax pass picks the largest that fits).

@@ -733,6 +733,12 @@ bool GPUScene::ReadReleasedSlotsSince(uint64_t cursor, std::vector<uint32_t>& ou
     return true;
 }
 
+void GPUScene::RequestInstanceHistoryReset(uint32_t instanceIndex)
+{
+    if (instanceIndex < m_InstanceSlotFree.size() && m_InstanceSlotFree[instanceIndex] == 0u)
+        m_PrevVisibleResetSlots.push_back(instanceIndex);
+}
+
 void GPUScene::DrainPrevVisibleResetSlots(std::vector<uint32_t>& outSlots)
 {
     // Ping-pong the buffers so neither side reallocates in steady state: outSlots
@@ -812,14 +818,15 @@ void GPUScene::UpdateMesh(uint32_t meshIndex, const GPUMesh& mesh)
 }
 
 bool GPUScene::SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t cardMaterialIndex,
-                                    uint32_t cardMeshIndex, float switchCoverage)
+                                    uint32_t cardMeshIndex, float switchCoverage, bool requiresPlacement)
 {
     if (parts.empty() || cardMeshIndex >= m_Meshes.size() || m_Meshes[cardMeshIndex].indexCount == 0u
         || cardMaterialIndex >= kGPUMeshImpostorMaterialMask
         || !(switchCoverage >= 0.0f && switchCoverage <= 1.0f))
         return false;
 
-    const uint32_t material = cardMaterialIndex + 1u;
+    const uint32_t material = (cardMaterialIndex + 1u)
+                              | (requiresPlacement ? kGPUMeshImpostorPlacementBit : 0u);
     bool needsLink = false;
     bool needsCoverageUpdate = false;
     for (size_t i = 0; i < parts.size(); ++i)

@@ -1180,6 +1180,24 @@ uint32 AddColocatedWedge(Mesh& mesh, float nx, float ny, float nz,
 
 } // namespace
 
+TEST(WedgeNormalRepoint, RepointKeepsTheLeafPivotWhenSeamsSharePositions) {
+    if (!IsMeshLODGenerationAvailable()) GTEST_SKIP() << "meshoptimizer not compiled in";
+    Mesh mesh = MakeRepointTriangle();
+    const uint32 wrongLeaf = AddColocatedWedge(mesh, 0.0f, 1.0f, 0.0f);
+    const uint32 sameLeaf = AddColocatedWedge(mesh, 0.0f, 0.8f, 0.6f);
+    mesh.ExtraTexCoords.resize(6);
+    mesh.ExtraTexCoords[4].resize(mesh.Vertices.size() * 2u);
+    mesh.ExtraTexCoords[5].resize(mesh.Vertices.size() * 2u);
+    for (size_t i = 0; i < mesh.Vertices.size(); ++i)
+        mesh.ExtraTexCoords[5][i * 2u + 1u] = 1.0f;
+    mesh.ExtraTexCoords[4][static_cast<size_t>(wrongLeaf) * 2u] = 0.5f;
+    Vector<uint32> indices = mesh.Indices;
+
+    RepointCornersForTest(mesh, indices);
+
+    EXPECT_EQ(indices[0], sameLeaf);
+}
+
 // A zero-length shading normal has no direction to match. The raw dot scored
 // it 0.0 — beating any backwards corner, i.e. preferred exactly where the
 // re-point repairs — so the match must be a true cosine with zero-length

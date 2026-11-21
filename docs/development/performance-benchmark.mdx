@@ -53,6 +53,10 @@ The result keeps the median, the 99th percentile, the mean, the minimum and the 
 
 The runner refuses a scene, and marks it not valid, when the Player exits with an error, the swapchain is not the manifest's resolution, the swapchain presents with FIFO, a pose has no resolved GPU timings, a pass that the scene must run is absent, or the log says that scene content or a feature did not load (an unknown component type, a missing asset, cluster LOD pages off). A scene whose feature did not run cannot give a fast number.
 
+### Time a moving camera
+
+An optional `timingPath` array supplies one camera pose per timing frame. Use exactly one entry in `poses` to set the warm-up camera. Each path entry has the same `position`, `yawDeg`, and `pitchDeg` fields as a held pose. The Player walks the path in array order during timing and holds its final pose for the GPU profiling window. The JSON output records how many path frames set the camera in `timingPathAppliedFrames`. Each pose also records its observed swapchain pixel dimensions, sample count, and whether the dimensions changed during timing.
+
 ## Run the benchmark
 
 The reference machine is the Steam Machine (12 cores, RADV). Run nothing else on it during a run: the runner refuses to start above a 1-minute load average of 1.5, and marks a scene not valid when the load average is above 6 at its end.

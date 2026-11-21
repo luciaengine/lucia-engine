@@ -108,6 +108,24 @@ GameConfig LoadGameConfig(const std::filesystem::path& path)
     if (doc.contains("waitForSplineRecipes") && doc["waitForSplineRecipes"].is_boolean())
         cfg.waitForSplineRecipes = doc["waitForSplineRecipes"].get<bool>();
 
+    if (const auto stand = doc.find("forestStand"); stand != doc.end() && stand->is_object())
+    {
+        const auto archive = stand->find("archive");
+        const auto entity = stand->find("entity");
+        if (archive != stand->end() && archive->is_string() && entity != stand->end() && entity->is_string())
+        {
+            auto& forest = cfg.forestStand.emplace();
+            forest.archive = archive->get<std::string>();
+            forest.entity = entity->get<std::string>();
+            if (const auto model = stand->find("impostorModel"); model != stand->end() && model->is_string())
+                forest.impostorModel = model->get<std::string>();
+            if (const auto distance = stand->find("detailDistance"); distance != stand->end() && distance->is_number())
+                forest.detailDistance = distance->get<float>();
+            if (const auto budget = stand->find("nearMeshBudget"); budget != stand->end() && budget->is_number_unsigned())
+                forest.nearMeshBudget = static_cast<uint32_t>(std::min(budget->get<uint64_t>(), uint64_t{256}));
+        }
+    }
+
     if (doc.contains("scriptAssemblyPath") && doc["scriptAssemblyPath"].is_string())
         cfg.scriptAssemblyPath = doc["scriptAssemblyPath"].get<std::string>();
 
@@ -218,6 +236,17 @@ bool SaveGameConfig(const std::filesystem::path& path, const GameConfig& cfg)
     doc["startupScene"] = cfg.startupScene;
     doc["renderPipeline"] = cfg.renderPipeline;
     doc["waitForSplineRecipes"] = cfg.waitForSplineRecipes;
+    if (cfg.forestStand)
+    {
+        doc["forestStand"] = {{"archive", cfg.forestStand->archive}, {"entity", cfg.forestStand->entity}};
+        if (!cfg.forestStand->impostorModel.empty())
+        {
+            doc["forestStand"]["impostorModel"] = cfg.forestStand->impostorModel;
+            doc["forestStand"]["detailDistance"] = cfg.forestStand->detailDistance;
+            if (cfg.forestStand->nearMeshBudget != 0)
+                doc["forestStand"]["nearMeshBudget"] = cfg.forestStand->nearMeshBudget;
+        }
+    }
     doc["scriptAssemblyPath"] = cfg.scriptAssemblyPath;
 
     if (!cfg.appIconPath.empty())

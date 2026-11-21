@@ -273,6 +273,12 @@ inline constexpr uint32 kMaxSecondaryDirectionals = kMaxDirectionalLights - 1;
 // lock the byte layout the shaders index. Single definition site — the
 // per-view writer (WriteViewLightBuffer) and the zero fallback buffer both
 // size/offset from THIS struct.
+struct alignas(16) FoliageSeasonGPU
+{
+    float AutumnTint[4]{1.0f, 1.0f, 1.0f, 0.0f}; // linear RGB multiplier and blend amount
+    float Snow[4]{}; // x is the snow amount
+};
+
 struct alignas(16) ForwardLightUBO
 {
     float uLightVP[16];        // identity unless a legacy single-shadow path writes it
@@ -289,8 +295,9 @@ struct alignas(16) ForwardLightUBO
     float uSecondaryDirs[kMaxSecondaryDirectionals][4];   // xyz=light->surface direction
     float uSecondaryColors[kMaxSecondaryDirectionals][4]; // rgb=color*intensity (premultiplied)
     WeatherWindGPU WeatherWind{};
+    FoliageSeasonGPU FoliageSeason{};
 };
-static_assert(sizeof(ForwardLightUBO) == 3840, "LightUBO layout drifted from the GLSL block");
+static_assert(sizeof(ForwardLightUBO) == 3872, "LightUBO layout drifted from the GLSL block");
 static_assert(offsetof(ForwardLightUBO, uLightDirWorld) == 64);
 static_assert(offsetof(ForwardLightUBO, uLightColorWorld) == 80);
 static_assert(offsetof(ForwardLightUBO, uAmbient) == 96);
@@ -299,6 +306,7 @@ static_assert(offsetof(ForwardLightUBO, uSecondaryCount) == 128);
 static_assert(offsetof(ForwardLightUBO, uSecondaryDirs) == 144);
 static_assert(offsetof(ForwardLightUBO, uSecondaryColors) == 192);
 static_assert(offsetof(ForwardLightUBO, WeatherWind) == 240);
+static_assert(offsetof(ForwardLightUBO, FoliageSeason) == 3840);
 
 // The directionals the forward pass shades, from a finalized (strongest-first) world light list:
 // the primary (SelectPrimaryDirectional) in out[0], then up to kMaxSecondaryDirectionals
@@ -466,6 +474,7 @@ class RenderServices
     // RenderExtractionSystem consumes the request when it evaluates fast-path
     // preconditions, so neither system holds a pointer to the other.
     void RequestResidencyExtraction() { m_ResidencyExtractionPending.store(true, std::memory_order_relaxed); }
+    bool HasPendingResidencyExtraction() const { return m_ResidencyExtractionPending.load(std::memory_order_relaxed); }
     bool ConsumeResidencyExtractionPending() { return m_ResidencyExtractionPending.exchange(false, std::memory_order_relaxed); }
 
     // L1a point-shadow whole-light on-dirty caching signal. A per-world monotonic
@@ -911,6 +920,7 @@ class RenderServices
         // with MSAA off the pass renders STRAIGHT into Resolve so the post-FX
         // chain never samples an uninitialized texture.
         bool ResolveFromPipeline = false;
+        bool EmitFrameContributors = false;
     };
     struct WorldPassRG
     {
@@ -973,6 +983,13 @@ class RenderServices
     // pass so no contributor material's depthWriteEnable can write (without the
     // extension the guarantee rests on the pipelines' own static state), and the
     // graph records a depth READ rather than a write (no WAW edge, no store).
+    // Optional state owned by the RG frame. A tracked pass only records if every draw is ready.
+    struct ForwardCommandPassCompletion
+    {
+        bool WarmupOnly = false;
+        bool Recorded = false;
+    };
+
     Rendering::RenderGraph::RGPass AddForwardCommandPassForView(
         Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
         const WorldPassTargetsRG& targets,
@@ -982,7 +999,8 @@ class RenderServices
         const char* passName = "ForwardCommands",
         std::span<const ForwardBufferReadRG> sampledBuffers = {},
         Rendering::RenderGraph::RGDepthAccess depthAccess =
-            Rendering::RenderGraph::RGDepthAccess::ReadWrite);
+            Rendering::RenderGraph::RGDepthAccess::ReadWrite,
+        ForwardCommandPassCompletion* completion = nullptr);
 
     // True when any of the view's entity batches uses a Transmission-keyword material.
     // Drives whether the scene-colour grab + the dedicated transmissive pass declare.
@@ -1648,6 +1666,10 @@ class RenderServices
     // for ECS worlds and directly by isolated renderers (e.g. thumbnails).
     void SubmitLight(uint64 worldId, const ExtractedLight& light);
     void SetWorldWeatherWind(uint64 worldId, const WeatherWindGPU& wind) { m_WorldWeatherWind.InsertOrAssign(worldId, wind); }
+    void SetWorldFoliageSeason(uint64 worldId, const FoliageSeasonGPU& season)
+    {
+        m_WorldFoliageSeason.InsertOrAssign(worldId, season);
+    }
     void PackViewWeather(Rendering::ViewId viewId, uint64 worldId, ForwardLightUBO& ubo) const;
 
     // Sort a world's submitted lights strongest-first (view-independent
@@ -1875,6 +1897,8 @@ class RenderServices
                             ForwardDrawDepth depth, const DrawCommand* prepassHead = nullptr);
     void EmitSortedTransparentCommand(Rendering::ViewId viewId, const SortedTransparentCommand& command);
     void EmitFrameForwardCommandsForView(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId);
+    void EmitFrameForwardCommandsForView(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
+                                         bool worldPassFormatsReady);
     void EmitLateForwardCommand(::GameEngine::Rendering::ViewId viewId, const DrawCommand& cmd);
     // Declared-read side channel for EmitForwardCommand: a producer whose
     // emitted draw samples a render-graph-written texture descriptor-direct
@@ -2247,6 +2271,7 @@ class RenderServices
 
     // Per-world extracted light lists (cleared at start of each frame).
     FlatMap<uint64, WeatherWindGPU> m_WorldWeatherWind;
+    FlatMap<uint64, FoliageSeasonGPU> m_WorldFoliageSeason;
     std::unordered_map<uint64, std::vector<ExtractedLight>> m_WorldLights;
     // Worlds that already warned about carrying more directional lights than
     // kMaxDirectionalLights (the overflow lights contribute nothing; see

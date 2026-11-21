@@ -41,7 +41,7 @@ inline constexpr uint32 kHlodCacheFormatVersion = 2u;
 // Bump when the baker changes produced proxy geometry for an unchanged input +
 // config. Folded into ConfigHash so a baker change makes every prior cook a miss.
 // v2 preserves the selected authored LOD's RGBA instead of baking white.
-inline constexpr uint32 kHlodBakerVersion = 2u;
+inline constexpr uint32 kHlodBakerVersion = 3u; // The source key includes resolved geometry.
 
 // Whole-file cache identity, persisted in the header.
 struct HlodCacheKey {

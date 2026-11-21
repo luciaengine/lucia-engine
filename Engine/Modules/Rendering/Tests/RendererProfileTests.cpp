@@ -50,6 +50,36 @@ struct ScopedForceCompat
 };
 } // namespace
 
+TEST(RendererProfile, KnownConstrainedMemoryReducesImpostorTilesAndResidentBytes)
+{
+    RenderingDeviceCapabilities caps = DesktopCapabilities();
+    const auto unknown = RendererProfile::FromCapabilities(caps);
+    caps.dedicatedVideoMemory = 8ull << 30;
+    const auto fullMemory = RendererProfile::FromCapabilities(caps);
+    caps.dedicatedVideoMemory = 4ull << 30;
+    const auto compact = RendererProfile::FromCapabilities(caps);
+
+    EXPECT_EQ(unknown.ImpostorSwitchPixels, 128u);
+    EXPECT_EQ(fullMemory.ImpostorSwitchPixels, 128u);
+    EXPECT_EQ(compact.ImpostorSwitchPixels, 96u);
+    EXPECT_EQ(unknown.ImpostorFramePixels, fullMemory.ImpostorFramePixels);
+    EXPECT_EQ(unknown.ImpostorAtlasBudgetBytes, fullMemory.ImpostorAtlasBudgetBytes);
+    EXPECT_EQ(compact.ImpostorFramePixels * 2, fullMemory.ImpostorFramePixels);
+    EXPECT_EQ(compact.ImpostorAtlasBudgetBytes * 4, fullMemory.ImpostorAtlasBudgetBytes);
+    EXPECT_TRUE(compact.UseGpuDrivenDraws);
+}
+
+TEST(RendererProfile, CompatibilityUsesCompactImpostorMemoryWithoutAnEstimate)
+{
+    RenderingDeviceCapabilities caps = DesktopCapabilities();
+    caps.supportsBindlessResources = false;
+    const auto profile = RendererProfile::FromCapabilities(caps);
+    EXPECT_TRUE(profile.IsCompat());
+    EXPECT_EQ(profile.ImpostorSwitchPixels, 96u);
+    EXPECT_EQ(profile.ImpostorFramePixels, 64u);
+    EXPECT_EQ(profile.ImpostorAtlasBudgetBytes, 64ull << 20);
+}
+
 TEST(RendererProfile, InterpolationFunctionsFollowEnabledShaderCapability)
 {
     RenderingDeviceCapabilities caps = DesktopCapabilities();

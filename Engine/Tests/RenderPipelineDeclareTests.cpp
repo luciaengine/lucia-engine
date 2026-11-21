@@ -1258,6 +1258,48 @@ TEST(RenderPipelineDeclareTests, APausedViewRecordsTheWorldPassWarmKeysOfItsCurr
     }
 }
 
+TEST(RenderPipelineDeclareTests, SplitOpaqueWorldPassPublishesItsWarmKeys)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device));
+    const CameraId camera = rs.Views().AllocateCamera("OpaqueWarmCam");
+    const ViewId view = rs.Views().AllocateView("OpaqueWarmView", camera);
+    Rendering::ViewClearConfig clear{};
+    clear.clearColor = true;
+    clear.clearDepth = true;
+    rs.Views().SetViewTargets(view, 0, 0, 0, clear);
+    rs.Views().SetViewRenderLayerMask(view, Rendering::RenderLayerMask::Default());
+
+    FramePools pools(device);
+    RenderGraph::RGFrame frame(device, &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    RenderServices::WorldPassTargetsRG opaque{};
+    opaque.Color = frame.ImportPersistentTexture("OpaqueWarm.Color", ColorTargetDesc());
+    opaque.Depth = frame.ImportPersistentTexture("OpaqueWarm.Depth", DepthTargetDesc());
+    rs.BeginWorldDrawFrame();
+    rs.BuildWorldBatchKeys();
+
+    const auto keywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced;
+    ASSERT_TRUE(rs.AddWorldPassForView(frame, view, opaque, keywords,
+        RenderServices::WorldPassDrawScope::OpaqueOnly).Pass.IsValid());
+    const auto published = rs.Views().GetViewDeclaredWorldPassKeywords(view);
+    ASSERT_TRUE(published.has_value());
+    EXPECT_EQ(*published, keywords);
+    const auto formats = rs.Views().GetViewWorldColorFormatKey(view);
+    ASSERT_EQ(formats.ColorCount, 1u);
+    EXPECT_EQ(formats.ColorFormats[0], static_cast<Rendering::TextureFormat>(ColorTargetDesc().format));
+
+    ASSERT_TRUE(rs.AddWorldPassForView(frame, view, opaque, keywords | MaterialKeyword::Transmission,
+        RenderServices::WorldPassDrawScope::TransmissiveOnly).Pass.IsValid());
+    EXPECT_EQ(rs.Views().GetViewDeclaredWorldPassKeywords(view), published);
+    EXPECT_TRUE(rs.Views().GetViewWorldColorFormatKey(view) == formats);
+    rs.Shutdown();
+}
+
 // A view paused from its first frame records the screen-space shadow keyword while the shadow settings,
 // a DepthPrepass ahead of the world pass and a shadow-casting sun give its world pass the mask.
 TEST(RenderPipelineDeclareTests, APausedViewThatNeverDrewRecordsTheScreenSpaceShadowKeyword)
@@ -2178,6 +2220,116 @@ TEST(RenderPipelineDeclareTests, TaaHistoryValidityIgnoresInternalExtent)
     EXPECT_FALSE(
         TemporalAANode::ComputeHistoryValid(~0ull, 0u, 0u, 0u, 1920u, 1080u, true, kResident))
         << "first frame for a view";
+}
+
+TEST(RenderPipelineDeclareTests, TaaReadsWorldDepthAfterAColorPassContributor)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        RenderServices rs;
+        ASSERT_TRUE(rs.Initialize(device.get()));
+        const CameraId camera = rs.Views().AllocateCamera("TaaForwardDepthCamera");
+        CameraData cameraData{};
+        cameraData.view = Mathematics::Matrix4x4::Identity();
+        cameraData.proj = Mathematics::Matrix4x4::Identity();
+        cameraData.viewProj = Mathematics::Matrix4x4::Identity();
+        rs.Views().SetCameraData(camera, ::GameEngine::Tests::TestCameraWithEye(cameraData), kTestCameraRanges);
+        const ViewId view = rs.Views().AllocateView("TaaForwardDepthView", camera);
+        rs.Views().SetViewRenderLayerMask(view, RenderLayerMask::Default());
+        ViewClearConfig clear{};
+        clear.clearColor = true;
+        clear.clearDepth = true;
+        rs.Views().SetViewTargets(view, 0, 0, 0, clear);
+        rs.Views().SetViewAntiAliasing(view, true, AntiAliasingMode::TAA, 8u);
+
+        RenderPipelineNodeRegistry registry;
+        ASSERT_TRUE(registry.Register("DepthResolve",
+            [] { return std::make_unique<Nodes::DepthResolveNode>(); }, true));
+        ASSERT_TRUE(registry.Register("WorldRender",
+            [] { return std::make_unique<Nodes::WorldRenderNode>(); }, true));
+        ASSERT_TRUE(registry.Register("TemporalAA",
+            [] { return std::make_unique<Nodes::TemporalAANode>(); }, true));
+        RenderPipelineBlueprint blueprint;
+        blueprint.pipelineName = "TaaForwardDepthTest";
+        auto add = [&](std::string id, std::string type, std::string json)
+        {
+            RenderPipelineBlueprint::Pass pass;
+            pass.id = std::move(id);
+            pass.type = std::move(type);
+            pass.enabled = true;
+            pass.perView = true;
+            pass.passJson = std::move(json);
+            blueprint.passes.push_back(std::move(pass));
+        };
+        add("DepthResolve", "DepthResolve", R"({"id":"DepthResolve","type":"DepthResolve"})");
+        add("World", "WorldRender", R"({"id":"World","type":"WorldRender"})");
+        add("Taa", "TemporalAA", R"({"id":"Taa","type":"TemporalAA","input":"View.Color","output":"TaaColor"})");
+        blueprint.outputs.push_back({"FinalColor", "TaaColor"});
+        RenderPipelineInstance instance(rs, registry);
+        instance.SetBlueprint(std::move(blueprint));
+
+        FramePools pools(device.get());
+        RenderGraph::RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        bool lateDepth = false;
+        const auto producer = rs.RegisterForwardEmit(
+            [&](const ForwardEmitContext& context)
+            {
+                if (lateDepth && context.ViewId == view)
+                    rs.EmitForwardCommand(view, DrawCommand{}, ForwardDrawDepth::ColourPass);
+            }, {.WritesDepth = true, .RequiresFrame = true, .NeedsWorldPassFormats = true});
+
+        for (uint64_t index = 0; index < 2; ++index)
+        {
+            SCOPED_TRACE(index);
+            lateDepth = index != 0;
+            ASSERT_TRUE(device->BeginFrame());
+            frame.BeginFrame(index);
+            rs.BeginWorldDrawFrame();
+            TextureDesc colorDesc = ColorTargetDesc();
+            colorDesc.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
+            const auto color = frame.CreateTexture("TaaForwardDepth.Color", colorDesc);
+            const auto depth = frame.CreateTexture("TaaForwardDepth.Depth", DepthTargetDesc());
+            frame.AddPass("TaaForwardDepth.Prepass", 0,
+                [depth](RenderGraph::RGPassBuilder& builder)
+                {
+                    RenderGraph::RGAttachmentOps ops{};
+                    ops.Load = RenderGraph::RGLoadOp::Clear;
+                    builder.AttachDepth(depth, ops);
+                }, [](RenderGraph::RGContext&) {});
+            const ViewTargetsRG target{view, color, depth, {}};
+            instance.Declare(frame, std::span(&target, 1), rs.Views().GetViews());
+
+            const auto output = instance.GetOutputRG(view, "FinalColor");
+            ASSERT_TRUE(output.IsValid());
+            ASSERT_NE(output.Id, color.Id);
+            const auto* resources = instance.FrameResourcesFor(&frame);
+            ASSERT_NE(resources, nullptr);
+            const auto early = resources->Textures.find({view, Names::View::DepthResolved});
+            const auto post = resources->Textures.find({view, Names::View::DepthResolvedPostOcean});
+            ASSERT_NE(early, resources->Textures.end());
+            ASSERT_NE(early->second.Id, depth.Id);
+            EXPECT_EQ(post != resources->Textures.end(), lateDepth);
+            bool foundResolve = false;
+            for (RenderGraph::RGPassId id = 0; id < frame.Graph().PassCount(); ++id)
+            {
+                if (!frame.Graph().HasWriteAccess(id, output.Id))
+                    continue;
+                foundResolve = true;
+                EXPECT_EQ(frame.Graph().HasReadAccess(id, early->second.Id), !lateDepth);
+                if (post != resources->Textures.end())
+                    EXPECT_TRUE(frame.Graph().HasReadAccess(id, post->second.Id));
+            }
+            EXPECT_TRUE(foundResolve);
+            frame.MarkOutput(output);
+            frame.Execute();
+            device->FinalizeFrame();
+            device->WaitForIdle();
+        }
+        rs.Shutdown();
+    }
+    device->Shutdown();
 }
 
 TEST(RenderPipelineDeclareTests, TaaHistoryAdvancesOnlyWhenTheResolveSubmits)

@@ -6,6 +6,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "StagedTestPaths.h"
@@ -34,13 +35,13 @@ MaterialDocument ImpostorDocument()
     return doc;
 }
 
-MaterialBuildResult Build(MaterialKeyword keywords)
+MaterialBuildResult Build(const MaterialDocument& document, MaterialKeyword keywords)
 {
     MaterialBuildContext context{};
     context.AdapterShaderDir = Tests::GetAdapterShaderDir();
     context.CacheRoot = TestUtils::MakeUniqueTempDirectory("ge_impostor_surface");
     auto result = BuildMaterialToShaderPackage(
-        ImpostorDocument(), TestPaths::StagedEngineAssetsDir() / "Materials" / "ImpostorCardProbe.material",
+        document, TestPaths::StagedEngineAssetsDir() / "Materials" / "ImpostorCardProbe.material",
         "ImpostorCardProbe", context, ShaderSourceKind::SpirV, keywords);
     std::error_code error;
     fs::remove_all(context.CacheRoot, error);
@@ -55,9 +56,9 @@ bool ShadercMissing(const MaterialBuildResult& result)
     return false;
 }
 
-void ExpectCompiles(MaterialKeyword keywords, const char* label)
+void ExpectCompiles(const MaterialDocument& document, MaterialKeyword keywords, const char* label)
 {
-    const auto result = Build(keywords);
+    const auto result = Build(document, keywords);
     if (ShadercMissing(result))
         GTEST_SKIP() << "shaderc not built into this target";
     for (const auto& error : result.errors)
@@ -69,10 +70,31 @@ void ExpectCompiles(MaterialKeyword keywords, const char* label)
 
 TEST(ImpostorSurfaceCompose, TheCardComposesOnTheInstancedWorldPass)
 {
-    ExpectCompiles(MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows, "world pass");
+    ExpectCompiles(ImpostorDocument(), MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows,
+                   "world pass");
 }
 
 TEST(ImpostorSurfaceCompose, TheCardComposesInTheDepthPrepass)
 {
-    ExpectCompiles(MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment, "depth prepass");
+    ExpectCompiles(ImpostorDocument(), MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment, "depth prepass");
+}
+
+TEST(ImpostorSurfaceCompose, ThePackedForestCardComposesForColorAndDepth)
+{
+    struct RestoreProfile
+    {
+        bool Previous = IsCompatShaderProfile();
+        ~RestoreProfile() { SetCompatShaderProfile(Previous); }
+    } restore;
+    MaterialDocument card = ImpostorDocument();
+    card.vertexModifier = "VertexModifiers/forest_impostor.glsl";
+    card.customVertexShader = true;
+    for (bool compatibility : {false, true})
+    {
+        SCOPED_TRACE(compatibility);
+        SetCompatShaderProfile(compatibility);
+        ExpectCompiles(card, MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::DiffuseTransmission,
+                       "packed forest color");
+        ExpectCompiles(card, MaterialKeyword::DepthOnlyFragment, "packed forest depth");
+    }
 }

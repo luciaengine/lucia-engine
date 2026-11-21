@@ -20,15 +20,32 @@ namespace Hlod {
 
 std::filesystem::path ResolveHlodCacheFile(AssetManager& assetManager,
                                            const std::filesystem::path& scenePath) {
-    const std::string name = scenePath.stem().string() + ".gehlod";
-    if (std::optional<std::filesystem::path> cacheRoot =
-            assetManager.GetRegistry().TryGetCacheRoot(scenePath)) {
-        return *cacheRoot / "Hlod" / name;
-    }
     const std::filesystem::path assetRoot = assetManager.GetAssetRoot();
+    const auto& registry = assetManager.GetRegistry();
+    const GUID scene = registry.GetAssetGUID(scenePath);
+    const std::string key = scene.IsNull() ? scenePath.stem().string() : scene.ToString();
+    if (const auto cacheRoot = registry.TryGetCacheRoot(scenePath))
+        return *cacheRoot / "Hlod" / (key + ".gehlod");
     if (!assetRoot.empty())
-        return assetRoot / ".hlod" / name;
+        return assetRoot / ".hlod" / (key + ".gehlod");
     return {};
+}
+
+std::filesystem::path ResolveExistingHlodCacheFile(AssetManager& assetManager,
+                                                  const std::filesystem::path& scenePath)
+{
+    const auto path = ResolveHlodCacheFile(assetManager, scenePath);
+    std::error_code error;
+    if (path.empty() || std::filesystem::is_regular_file(path, error))
+        return path;
+    return path.parent_path() / (scenePath.stem().string() + ".gehlod");
+}
+
+std::filesystem::path PackagedHlodCacheFile(const std::filesystem::path& assetRoot, const GUID& scene)
+{
+    if (assetRoot.empty() || scene.IsNull())
+        return {};
+    return assetRoot / ".hlod" / (scene.ToString() + ".gehlod");
 }
 
 namespace {
@@ -67,7 +84,7 @@ BakeDriverResult BakeHlodForWorld(GameEngine::ECS::World& world,
     result.GatheredMembers = static_cast<uint32>(gathered.Members.size());
     result.SkippedMembers = gathered.SkippedSkinned + gathered.SkippedMorph +
                             gathered.SkippedNoModel + gathered.SkippedNoMaterial +
-                            gathered.SkippedNonTriangle + gathered.SkippedDisabled +
+                            gathered.SkippedNonTriangle + gathered.SkippedExtraVertexStreams + gathered.SkippedDisabled +
                             gathered.SkippedShadowsOnly;
     if (gathered.Members.empty()) {
         result.Outcome = BakeOutcome::NoMembers;
@@ -98,8 +115,8 @@ bool BakeHlodForScene(AssetManager& assets, GameEngine::ECS::World& world,
     std::error_code ec;
     std::filesystem::create_directories(outPath.parent_path(), ec);
 
-    const ModelResolver resolver = [&assets](const GUID& guid) -> const ModelAsset* {
-        return dynamic_cast<const ModelAsset*>(assets.GetAsset(guid).get());
+    const ModelResolver resolver = [&assets](const GUID& guid) -> SharedPtr<const ModelAsset> {
+        return std::dynamic_pointer_cast<const ModelAsset>(assets.GetAsset(guid));
     };
 
     const BakeDriverResult result = BakeHlodForWorld(world, resolver, outPath);

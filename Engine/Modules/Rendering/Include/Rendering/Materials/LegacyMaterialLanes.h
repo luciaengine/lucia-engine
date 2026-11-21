@@ -46,7 +46,7 @@ constexpr uint32_t LegacyLaneByteSize(const LegacyMaterialLane& lane)
 // Lane placements of every legacy name, grouped by the surface family that owns
 // them. Families that no shipped surface uses together deliberately overlap:
 // each addresses the block privately, and a material only ever runs one of them.
-inline constexpr std::array<LegacyMaterialLane, 108> kLegacyMaterialLanes = {{
+inline constexpr auto kLegacyMaterialLanes = std::to_array<LegacyMaterialLane>({
     {"baseColor", 0, 0, 4},
     {"metallic", 1, 0, 1},
     {"roughness", 1, 1, 1},
@@ -124,6 +124,7 @@ inline constexpr std::array<LegacyMaterialLane, 108> kLegacyMaterialLanes = {{
     {"specularIor", 15, 0, 1}, // uParams14.x
     {"clearCoatIor", 15, 1, 1}, // uParams14.y
     {"diffuseRoughness", 15, 2, 1}, // uParams14.z
+    {"diffuseTransmission", 15, 3, 1}, // uParams14.w, thin-surface diffuse transmission share
 
     // Transmission (refractive glass) lives in uParams15: rgb=transmissionColor, w=transmissionWeight.
     // transmissionColor is a vec3 (size 12) so a color write never clobbers weight in .w.
@@ -132,8 +133,10 @@ inline constexpr std::array<LegacyMaterialLane, 108> kLegacyMaterialLanes = {{
     // Thick (two-surface) refraction path length in world units (uParams16.x).
     {"refractionDistance", 17, 0, 1}, // uParams16.x
     // Relief depth of the standard surface's height map, a fraction of one height repeat
-    // (0 disables the march); zw reserved.
+    // (0 disables the march). The remaining two lanes hold foliage season weights.
     {"reliefDepth", 17, 1, 1}, // uParams16.y
+    {"impostorLeafTintWeight", 17, 2, 1}, // uParams16.z
+    {"impostorSnowWeight", 17, 3, 1}, // uParams16.w
     // Thin-film iridescence (uParams17): x=thinFilmThickness (nm), y=thinFilmIor, z=thinFilmWeight.
     {"thinFilmThickness", 18, 0, 1}, // uParams17.x
     {"thinFilmIor", 18, 1, 1}, // uParams17.y
@@ -206,7 +209,7 @@ inline constexpr std::array<LegacyMaterialLane, 108> kLegacyMaterialLanes = {{
     {"userVec1", 27, 0, 4}, // uUser1
     {"userVec2", 28, 0, 4}, // uUser2
     {"userVec3", 29, 0, 4}, // uUser3
-}};
+});
 
 // The first of the four generic lanes (uUser0..uUser3) — the ones a surface can
 // address without declaring anything, and the only legacy lanes that carry no

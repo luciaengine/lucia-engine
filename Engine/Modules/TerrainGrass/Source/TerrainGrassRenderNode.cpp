@@ -276,7 +276,7 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
     // the same main thread the debug-server handler polls on.
     if (kDbg)
     {
-        static uint32 s_LastPlaced = 0xFFFFFFFFu;
+        auto& debug = grass.m_PlacementDebug[static_cast<uint32>(viewId)];
         grass.PlacementStats().Poll(device);
         uint32 placed = 0xFFFFFFFFu;
         for (const auto& row : grass.PlacementStats().LatchedPlacements())
@@ -287,9 +287,9 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
                 break;
             }
         }
-        if (placed != 0xFFFFFFFFu && placed != s_LastPlaced)
+        if (placed != 0xFFFFFFFFu && placed != debug.LastPlaced)
         {
-            s_LastPlaced = placed;
+            debug.LastPlaced = placed;
             for (const auto& row : grass.PlacementStats().LatchedPlacements())
             {
                 if (row.View != viewId)
@@ -315,45 +315,43 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
         // placed == 0 prints its own line (on state change), and an unresolved count prints nothing.
         constexpr uint32 kFloats = kGrassBladeInstanceBytes / sizeof(float);
         constexpr uint32 kRootsReadbackBytes = kGrassBladeInstanceBytes * 3u;
-        static std::shared_ptr<Rendering::RGBufferReadbackTicket> s_RootTicket;
-        static float s_LastRootY = -1e9f;
-        static bool s_RootsIdle = false;
-        if (s_RootTicket)
+        if (debug.Roots)
         {
             Rendering::BufferReadbackResult res{};
-            if (s_RootTicket->TryGet(res) && res.bytes.size() >= kRootsReadbackBytes)
+            if (debug.Roots->TryGet(res) && res.bytes.size() >= kRootsReadbackBytes)
             {
-                if (s_LastPlaced == 0)
+                if (debug.LastPlaced == 0)
                 {
-                    if (!s_RootsIdle)
+                    if (!debug.RootsIdle)
                     {
-                        s_RootsIdle = true;
-                        s_LastRootY = -1e9f; // re-arm so live roots reprint when placement resumes
+                        debug.RootsIdle = true;
+                        debug.LastRootY = -1e9f;
                         Logger::Log::Info(
                             "TerrainGrass.Roots view={} placed=0 (instance buffer not rewritten; "
                             "roots readback idle)",
                             static_cast<uint32>(viewId));
                     }
                 }
-                else if (s_LastPlaced != 0xFFFFFFFFu)
+                else if (debug.LastPlaced != 0xFFFFFFFFu)
                 {
-                    s_RootsIdle = false;
+                    debug.RootsIdle = false;
                     const float* f = reinterpret_cast<const float*>(res.bytes.data());
-                    if (f[2] != s_LastRootY)
+                    if (f[2] != debug.LastRootY)
                     {
-                        s_LastRootY = f[2];
+                        debug.LastRootY = f[2];
                         Logger::Log::Info(
                             "TerrainGrass.Roots view={} i0=({},{},{}) i1=({},{},{}) i2=({},{},{})",
                             static_cast<uint32>(viewId), f[0], f[1], f[2], f[kFloats], f[kFloats + 1],
                             f[kFloats + 2], f[2 * kFloats], f[2 * kFloats + 1], f[2 * kFloats + 2]);
                     }
                 }
-                s_RootTicket.reset();
             }
+            if (debug.Roots->IsConsumed())
+                debug.Roots.reset();
         }
-        if (!s_RootTicket)
-            s_RootTicket = Rendering::RequestBufferReadbackRG(device, d.Frame, instancesRG, 0u,
-                                                             kRootsReadbackBytes, "TerrainGrass.Roots");
+        if (!debug.Roots)
+            debug.Roots = Rendering::RequestBufferReadbackRG(device, d.Frame, instancesRG, 0u,
+                                                            kRootsReadbackBytes, "TerrainGrass.Roots");
     }
 }
 

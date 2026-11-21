@@ -43,7 +43,7 @@ constexpr const char kProbeVertex[] = R"(#version 450
 #define GE_INSTANCED
 #define GE_COMPAT_PROFILE
 #include "instance_io.glsl"
-layout(location = 0) flat out float vShade;
+layout(location = 0) flat out vec2 vShade;
 void main()
 {
     InstanceData inst = ge_FetchInstanceData();
@@ -52,16 +52,16 @@ void main()
     vec2 corners[3] = vec2[3](vec2(centre - 0.5 * column, -1.0), vec2(centre + 0.5 * column, -1.0),
                               vec2(centre, 3.0));
     gl_Position = vec4(corners[gl_VertexIndex], 0.0, 1.0);
-    vShade = inst.custom0.x;
+    vShade = vec2(inst.custom0.x, float(inst.materialIndex) / 255.0);
 }
 )";
 
 constexpr const char kProbeFragment[] = R"(#version 450
-layout(location = 0) flat in float vShade;
+layout(location = 0) flat in vec2 vShade;
 layout(location = 0) out vec4 outColor;
 void main()
 {
-    outColor = vec4(vShade, 1.0, 0.0, 1.0);
+    outColor = vec4(vShade, 0.0, 1.0);
 }
 )";
 
@@ -124,6 +124,7 @@ BufferHandle CreateFilledStorage(IDevice& device, const void* data, size_t bytes
 struct Batch
 {
     uint32_t First;
+    uint32_t MaterialOverride;
     uint32_t Count;
 };
 
@@ -175,10 +176,14 @@ TEST(CompatInstanceListFetch, EachBatchDrawsItsOwnListedSceneInstances)
     // Scene instance i carries custom0.x = (i + 1) / 255, its column's red.
     std::vector<GPUInstance> instances(kColumns);
     for (uint32_t i = 0; i < kColumns; ++i)
+    {
         instances[i].custom0 = Vector4(static_cast<float>(i + 1u) / 255.0f, 0.0f, 0.0f, 0.0f);
+        instances[i].materialIndex = i + 2u;
+    }
     // Entry 0 is padding no batch reads; batch A is entries [1, 4), batch B [4, 6).
     const std::vector<uint32_t> list = {63u, 40u, 7u, 21u, 33u, 2u};
-    const Batch batches[] = {{1u, 3u}, {4u, 2u}};
+    constexpr uint32_t kCardMaterial = 101u;
+    const Batch batches[] = {{1u, 0xFFFFFFFFu, 3u}, {4u, kCardMaterial, 2u}};
     const std::vector<uint32_t> drawn = {40u, 7u, 21u, 33u, 2u};
 
     const size_t instanceBytes = instances.size() * sizeof(GPUInstance);
@@ -222,7 +227,8 @@ TEST(CompatInstanceListFetch, EachBatchDrawsItsOwnListedSceneInstances)
     cl->SetScissor(0, 0, kColumns, 1);
     for (const Batch& batch : batches)
     {
-        cl->SetConstants(0, 0, sizeof(batch.First), &batch.First);
+        const uint32_t constants[] = {batch.First, batch.MaterialOverride};
+        cl->SetConstants(0, 0, sizeof(constants), constants);
         cl->Draw(3, batch.Count, 0, 0);
     }
     cl->EndRenderPass();
@@ -241,7 +247,12 @@ TEST(CompatInstanceListFetch, EachBatchDrawsItsOwnListedSceneInstances)
         const bool listed = std::find(drawn.begin(), drawn.end(), column) != drawn.end();
         const uint32_t red = pixels[column * 4u];
         if (listed)
+        {
             EXPECT_EQ(red, column + 1u) << "scene instance " << column << " drew the wrong record";
+            const uint32_t expectedMaterial = column == 33u || column == 2u ? kCardMaterial : column + 2u;
+            EXPECT_EQ(pixels[column * 4u + 1u], expectedMaterial)
+                << "scene instance " << column << " drew the wrong material";
+        }
         else
             EXPECT_EQ(red, 0u) << "scene instance " << column << " is in no batch but drew";
     }

@@ -14,14 +14,18 @@ SwitchConfig MakeSwitchConfig(float switchCoverage, float switchHysteresis) {
     return config;
 }
 
+double ClusterDistance(const ViewLod& view, const float sphereCenter[3]) {
+    const double dx = view.CameraPos[0] - sphereCenter[0];
+    const double dy = view.CameraPos[1] - sphereCenter[1];
+    const double dz = view.CameraPos[2] - sphereCenter[2];
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
 float ClusterCoverage(const ViewLod& view, const float sphereCenter[3], float sphereRadius) {
     if (view.ProjScaleY <= 0.0f)
         return kAlwaysMembersCoverage; // LOD disabled (ortho/shadow) -> keep members
 
-    const float dx = view.CameraPos[0] - sphereCenter[0];
-    const float dy = view.CameraPos[1] - sphereCenter[1];
-    const float dz = view.CameraPos[2] - sphereCenter[2];
-    const float dist = std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 1e-4f);
+    const float dist = static_cast<float>(std::max(ClusterDistance(view, sphereCenter), 1.0e-4));
 
     float coverage = sphereRadius * view.ProjScaleY / dist;
     coverage *= std::exp2(view.LodBiasGlobal);

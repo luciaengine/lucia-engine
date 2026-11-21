@@ -30,12 +30,14 @@ public:
         uint32 Tail = 0;                     ///< The coarsest first resident level. A stream keeps Tail and below.
         uint32 TopExtent = 1;                ///< The longest edge of level 0, in texels.
         float32 ScreenCoverage = 0.0f;       ///< MaterialScreenDemand coverage. 0 without demand data.
+        bool ImpostorOpacity = false;        ///< An active atlas bake samples this cutout texture.
     };
 
     struct Step
     {
         size_t StreamIndex = 0; ///< An index into the planned span.
         uint32 TargetMip = 0; ///< The new first resident level of that stream.
+        bool ForImpostorOpacity = false; ///< This step improves the active bake's source opacity.
     };
 
     /// The next step for `streams` under `budgetBytes`. Nullopt when no step improves the set.

@@ -1,5 +1,6 @@
 #include "Rendering/Materials/Shader/ShaderPropertyTable.h"
 
+#include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
 #include "Rendering/Materials/MaterialPropertyBinding.h"
 #include "Rendering/ShaderGraph/SgTagParser.h"
@@ -495,10 +496,10 @@ const char* OriginName(ShaderPropertyOrigin origin)
 // first three components of a lane (its .w stays free for a scalar), a vec2 an
 // 8-byte-aligned pair, a scalar any free component.
 bool PlaceProperty(ShaderProperty& prop, std::array<std::array<bool, kComponentsPerLane>,
-                                                    kMaterialParamLaneCount>& used)
+                                                    kMaterialParamLaneCount>& used, uint32_t firstLane)
 {
     const uint32_t n = prop.ComponentCount();
-    for (uint32_t lane = 0; lane < kMaterialParamLaneCount; ++lane)
+    for (uint32_t lane = firstLane; lane < kMaterialParamLaneCount; ++lane)
     {
         for (uint32_t c = 0; c + n <= kComponentsPerLane; ++c)
         {
@@ -599,6 +600,7 @@ ShaderPropertyTable ParseDeclaredProperties(const ShaderPropertySource& source)
 ShaderPropertyTable BuildShaderPropertyTable(const std::vector<ShaderPropertySource>& sources)
 {
     ShaderPropertyTable table{};
+    bool surfaceDeclaresProperties = false;
     std::vector<bool> declaredBySurface; // parallel to table.Properties
 
     for (const ShaderPropertySource& source : sources)
@@ -608,6 +610,7 @@ ShaderPropertyTable BuildShaderPropertyTable(const std::vector<ShaderPropertySou
         ShaderPropertyTable parsed = ParseDeclaredProperties(source);
         table.Errors.insert(table.Errors.end(), parsed.Errors.begin(), parsed.Errors.end());
         const bool fromSurface = source.Origin != ShaderPropertyOrigin::Adapter;
+        surfaceDeclaresProperties |= source.Origin == ShaderPropertyOrigin::Surface && !parsed.Properties.empty();
         for (ShaderProperty& prop : parsed.Properties)
         {
             if (fromSurface)
@@ -640,6 +643,7 @@ ShaderPropertyTable BuildShaderPropertyTable(const std::vector<ShaderPropertySou
 
     if (table.Rejected())
         return table;
+    table.UsesLegacySurfaceLanes = table.HasSurfaceDeclarations && !surfaceDeclaresProperties;
     ValidateDeformationEnvelopeScale(table.DeformationEnvelope, table);
 
     std::array<std::array<bool, kComponentsPerLane>, kMaterialParamLaneCount> used{};
@@ -649,10 +653,31 @@ ShaderPropertyTable BuildShaderPropertyTable(const std::vector<ShaderPropertySou
         ShaderProperty& prop = table.Properties[i];
         if (!declaredBySurface[i])
             continue; // an adapter read no producer stores: a compile-time constant, no lane
-        floatsRequested += prop.ComponentCount();
-        if (!PlaceProperty(prop, used))
+        if (table.UsesLegacySurfaceLanes)
         {
-            const uint32_t totalFloats = kMaterialParamLaneCount * kComponentsPerLane;
+            if (const LegacyMaterialLane* lane = FindLegacyMaterialLane(prop.Name); lane && lane->Lane < kGenericLaneFirst)
+            {
+                if (prop.ComponentCount() != lane->Components || prop.Type == ShaderPropertyType::Int ||
+                    prop.Type == ShaderPropertyType::Enum)
+                {
+                    table.Errors.push_back({prop.SourceFile, prop.SourceLine,
+                        "property '" + prop.Name + "' must keep its legacy float layout"});
+                    return table;
+                }
+                prop.HasLane = true;
+                prop.Lane = lane->Lane;
+                prop.Component = lane->Component;
+                prop.ByteOffset = LegacyLaneByteOffset(*lane);
+                prop.ByteSize = LegacyLaneByteSize(*lane);
+                table.LanesUsed = std::max(table.LanesUsed, prop.Lane + 1);
+                continue;
+            }
+        }
+        const uint32_t firstLane = table.UsesLegacySurfaceLanes ? kGenericLaneFirst : 0;
+        floatsRequested += prop.ComponentCount();
+        if (!PlaceProperty(prop, used, firstLane))
+        {
+            const uint32_t totalFloats = (kMaterialParamLaneCount - firstLane) * kComponentsPerLane;
             const std::string reason =
                 floatsRequested > totalFloats
                     ? "the declared properties need more than the " + std::to_string(totalFloats) +

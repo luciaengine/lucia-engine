@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/Pipeline/DepthUpsamplePass.h"
+#include "Engine/Rendering/Pipeline/Nodes/DepthResolveNode.h"
 #include "Engine/Rendering/Pipeline/ViewContentStamp.h"
 #include "Engine/Rendering/Pipeline/ViewMotionVectors.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
@@ -125,6 +126,7 @@ class TemporalAANode final : public IRenderPipelineNode
     bool m_WarnedTaauUnstaged = false;
 
     ViewMotionVectors m_MotionVectors;
+    DepthResolveNode m_ForwardDepth;
 
     SamplerHandle m_LinearClampSampler{};
     // The device the sampler above was created on, so the destructor can

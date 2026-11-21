@@ -52,15 +52,30 @@ void GE_ImpostorBlendFrames(vec2 viewCode, vec4 impostorAtlas, out vec2 frames[3
     }
 }
 
+struct GE_ImpostorFrameBasis
+{
+    vec3 direction;
+    vec3 right;
+    vec3 up;
+};
+
+GE_ImpostorFrameBasis GE_ImpostorBuildFrameBasis(vec2 frame, vec4 impostorAtlas)
+{
+    GE_ImpostorFrameBasis basis;
+    basis.direction = GE_ImpostorFrameDirection(frame, impostorAtlas);
+    GE_ImpostorFrameAxes(basis.direction, basis.right, basis.up);
+    return basis;
+}
+
 // The atlas UV of object-space point `offset` (from the sphere center, in sphere radii) seen by
 // `frame`: the frame camera's orthographic projection into its tile. UV (0,0) is the tile's
 // top-left; the top of the baked image is the frame camera's up.
-vec2 GE_ImpostorFrameUv(vec2 frame, vec3 offset, vec4 impostorAtlas)
+vec2 GE_ImpostorFrameUv(vec2 frame, GE_ImpostorFrameBasis basis, vec3 offset, vec4 impostorAtlas, vec2 halfTexel)
 {
-    vec3 right;
-    vec3 up;
-    GE_ImpostorFrameAxes(GE_ImpostorFrameDirection(frame, impostorAtlas), right, up);
-    vec2 tile = clamp(vec2(dot(offset, right) * 0.5 + 0.5, 0.5 - dot(offset, up) * 0.5), vec2(0.0), vec2(1.0));
+    // Linear filtering at a tile edge must stay inside that frame. Keep the original
+    // projection in the interior, where baked depth and reprojection agree.
+    vec2 tile = clamp(vec2(dot(offset, basis.right) * 0.5 + 0.5, 0.5 - dot(offset, basis.up) * 0.5),
+                      halfTexel, vec2(1.0) - halfTexel);
     return (frame + tile) / max(impostorAtlas.x, 1.0);
 }
 

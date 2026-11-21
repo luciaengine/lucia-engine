@@ -4,6 +4,7 @@
 // through HlodCache to confirm the round trip.
 
 #include "Assets/HlodBakeDriver.h"
+#include "Assets/AssetManager.h"
 #include "Assets/HlodCache.h"
 #include "Assets/ModelAsset.h"
 
@@ -24,6 +25,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -52,18 +54,18 @@ Mesh MakeBox(float extent) {
 }
 
 struct ModelBank {
-    std::unordered_map<GUID, std::unique_ptr<ModelAsset>> Models;
+    std::unordered_map<GUID, SharedPtr<ModelAsset>> Models;
     const ModelAsset* Add(const GUID& guid, Vector<Mesh> meshes) {
-        auto a = std::make_unique<ModelAsset>(guid, std::filesystem::path{});
+        auto a = std::make_shared<ModelAsset>(guid, std::filesystem::path{});
         a->SetMeshesForTest(std::move(meshes));
         const ModelAsset* raw = a.get();
         Models[guid] = std::move(a);
         return raw;
     }
     ModelResolver Resolver() {
-        return [this](const GUID& g) -> const ModelAsset* {
+        return [this](const GUID& g) -> SharedPtr<const ModelAsset> {
             auto it = Models.find(g);
-            return it == Models.end() ? nullptr : it->second.get();
+            return it == Models.end() ? nullptr : it->second;
         };
     }
 };
@@ -120,6 +122,44 @@ void SpawnGrid(ECS::World& world, ModelBank& bank, int count, float spacing) {
 
 } // namespace
 
+TEST(HlodBakeDriver, SameNamedScenesUseDistinctCacheAndPackagePaths)
+{
+    namespace fs = std::filesystem;
+    const fs::path project = TempPath("scene_identity");
+    const fs::path root = project / "Assets";
+    const fs::path cache = project / ".Cache";
+    const fs::path forest = root / "Forest" / "Overview.scene";
+    const fs::path mountains = root / "Mountains" / "Overview.scene";
+    fs::create_directories(forest.parent_path());
+    fs::create_directories(mountains.parent_path());
+    std::ofstream(forest) << "# Forest";
+    std::ofstream(mountains) << "# Mountains";
+
+    AssetManager assets;
+    ASSERT_TRUE(assets.Initialize(root, nullptr, project / "AssetDatabase.assetdb", cache));
+    assets.WaitForStartupScan();
+    const auto& registry = assets.GetRegistry();
+    const GUID forestId = registry.GetAssetGUID(forest);
+    const GUID mountainsId = registry.GetAssetGUID(mountains);
+    ASSERT_FALSE(forestId.IsNull());
+    ASSERT_FALSE(mountainsId.IsNull());
+    ASSERT_NE(forestId, mountainsId);
+
+    const auto forestBake = ResolveHlodCacheFile(assets, forest);
+    const auto mountainsBake = ResolveHlodCacheFile(assets, mountains);
+    EXPECT_NE(forestBake, mountainsBake);
+    EXPECT_NE(PackagedHlodCacheFile(root, forestId), PackagedHlodCacheFile(root, mountainsId));
+    EXPECT_TRUE(PackagedHlodCacheFile(root, GUID::Null()).empty());
+
+    fs::create_directories(forestBake.parent_path());
+    const auto oldBake = forestBake.parent_path() / "Overview.gehlod";
+    std::ofstream(oldBake) << "legacy";
+    EXPECT_EQ(ResolveExistingHlodCacheFile(assets, forest), oldBake);
+    std::ofstream(forestBake) << "current";
+    EXPECT_EQ(ResolveExistingHlodCacheFile(assets, forest), forestBake);
+    assets.Shutdown();
+}
+
 TEST(HlodBakeDriver, NoVolumeWritesNothing) {
     ECS::World world(nullptr);
     ModelBank bank;
@@ -170,6 +210,40 @@ TEST(HlodBakeDriver, BakesAndWritesGehlodRoundTrip) {
 
     std::error_code ec;
     std::filesystem::remove(out, ec);
+}
+
+TEST(HlodBakeDriver, SameSourceWithDifferentCookedLodChangesBakeIdentity) {
+    auto world = std::make_unique<ECS::World>(nullptr);
+    ModelBank bank;
+    const GUID model = GUID::Derive(GUID::Null(), "bake/cooked-lod-model");
+    const GUID material = GUID::Derive(GUID::Null(), "bake/cooked-lod-material");
+    ECS::Entity entity = world->Create();
+    entity.Set(WorldAt(0.0f, 0.0f, 0.0f));
+    entity.Set(Tag("cooked_lod_identity"));
+    MeshRenderer renderer{};
+    renderer.modelAssetGuid.Set(model);
+    renderer.materialAssetGuid.Set(material);
+    entity.Set(renderer);
+    world->ProcessCommands();
+
+    Mesh mesh = MakeBox(1.0f);
+    mesh.Vertices[2].Position[1] = 1.0f;
+    Vertex corner = mesh.Vertices[0];
+    corner.Position[2] = 1.0f;
+    mesh.Vertices.push_back(corner);
+    mesh.Indices = {0, 1, 2, 0, 2, 3};
+    mesh.ExtraLODs.push_back({0, 1, 2});
+    bank.Add(model, {mesh});
+    const auto original = Hlod::GatherHlodMembers(*world, bank.Resolver());
+
+    mesh.ExtraLODs[0] = {0, 2, 3};
+    bank.Add(model, {mesh});
+    const auto recooked = Hlod::GatherHlodMembers(*world, bank.Resolver());
+    ASSERT_EQ(original.Members.size(), 1u);
+    ASSERT_EQ(recooked.Members.size(), 1u);
+    EXPECT_EQ(original.Members[0].ChosenLod, recooked.Members[0].ChosenLod);
+    EXPECT_EQ(original.Members[0].MeshHandleKey, recooked.Members[0].MeshHandleKey);
+    EXPECT_NE(original.Members[0].MeshContentHash, recooked.Members[0].MeshContentHash);
 }
 
 TEST(HlodBakeDriver, DisabledVolumeIsInert) {

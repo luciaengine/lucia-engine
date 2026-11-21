@@ -106,7 +106,7 @@ void PlayerBenchmark::EnterPhase(Phase phase, Rendering::RenderGraph::RGFrame* f
                       phase == Phase::Timing ? "timing" : (phase == Phase::ProfileLead ? "profiling" : "profiled window"));
 }
 
-void PlayerBenchmark::ApplyPose(ECS::World& world) const
+void PlayerBenchmark::ApplyPose(ECS::World& world)
 {
     const std::optional<Engine::Renderer::Camera> camera = Engine::Renderer::FindActiveCamera(world);
     if (!camera)
@@ -114,8 +114,15 @@ void PlayerBenchmark::ApplyPose(ECS::World& world) const
     auto* transform = world.GetComponentForWrite<Components::Transform>(camera->entity);
     if (!transform)
         return;
-    const PlayerBenchmarkPose& pose = m_Plan.Poses[m_PoseIndex];
-    *transform = Components::Transform::FromTRS(pose.Position, pose.Rotation(), Mathematics::Vector3(1.0f, 1.0f, 1.0f));
+    const PlayerBenchmarkPose* pose = &m_Plan.Poses[m_PoseIndex];
+    if (m_Phase != Phase::Warmup && !m_Plan.TimingPath.empty())
+    {
+        const size_t index = m_Phase == Phase::Timing ? m_PhaseFrames : m_Plan.TimingPath.size() - 1;
+        pose = &m_Plan.TimingPath[index];
+        if (m_Phase == Phase::Timing)
+            ++m_TimingPathAppliedFrames;
+    }
+    *transform = Components::Transform::FromTRS(pose->Position, pose->Rotation(), Mathematics::Vector3(1.0f, 1.0f, 1.0f));
     // A root camera: its world transform is its transform. Write both, as the camera controller does.
     if (auto* worldTransform = world.GetComponentForWrite<Components::WorldTransform>(camera->entity))
     {
@@ -135,6 +142,16 @@ void PlayerBenchmark::RecordTimingFrame(double frameMs, const Rendering::IDevice
     record.FrameMs.push_back(frameMs);
     record.WaitMs.push_back(waitMs);
     record.CpuMs.push_back(std::max(0.0, frameMs - waitMs));
+
+    std::array<uint32_t, 2> pixels{};
+    if (device && device->GetSwapchainSize(pixels[0], pixels[1]) && pixels[0] != 0 && pixels[1] != 0)
+    {
+        if (record.SwapchainSamples == 0)
+            record.SwapchainPixels = pixels;
+        else
+            record.SwapchainSizeChanged |= record.SwapchainPixels != pixels;
+        ++record.SwapchainSamples;
+    }
 }
 
 void PlayerBenchmark::RecordProfiledFrame(const Rendering::RenderGraph::RGFrame& frame)
@@ -183,11 +200,15 @@ void PlayerBenchmark::WriteResult()
                          {"frameMs", record.FrameMs},
                          {"cpuMs", record.CpuMs},
                          {"waitMs", record.WaitMs},
+                         {"swapchain", {{"pixels", record.SwapchainPixels},
+                                        {"samples", record.SwapchainSamples},
+                                        {"sizeChanged", record.SwapchainSizeChanged}}},
                          {"monitorPeaks", std::move(monitorPeaks)},
                          {"profiledFrames", std::move(profiled)}});
     }
     const nlohmann::json result = {{"warmupFrames", m_Plan.WarmupFrames},
                                    {"timingFrames", m_Plan.TimingFrames},
+                                   {"timingPathAppliedFrames", m_TimingPathAppliedFrames},
                                    {"profiledFrames", m_Plan.ProfiledFrames},
                                    {"poses", std::move(poses)}};
 

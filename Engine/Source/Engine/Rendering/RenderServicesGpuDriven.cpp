@@ -130,6 +130,22 @@ static Rendering::GPUDrawStreamBuilder::ViewLODParams StableShadowSliceLod()
     return lod;
 }
 
+static CpuDrawStreamBuilder::LodPolicy CompatViewLodPolicy(const RenderServices& services, Rendering::ViewId view)
+{
+    const auto scales = services.ComputeViewSseScales(view);
+    CpuDrawStreamBuilder::LodPolicy policy{services.GetLODGlobalBias(), scales.Default, scales.Tight,
+        services.GetSmallObjectCullCoverage(), services.ResolveViewForceLOD(view)};
+    if (const auto* stage = services.GetFeature<ImpostorStage>())
+    {
+        Rendering::GPUDrawStreamBuilder::ViewLODParams params;
+        stage->ApplyToSlice(params, services, view);
+        policy.CardMesh = params.impostorCardMesh;
+        policy.CardCoverage = params.impostorSwitchCoverage;
+        policy.CardHysteresis = params.impostorSwitchHysteresis;
+    }
+    return policy;
+}
+
 RenderServices::ViewSseScales RenderServices::ComputeViewSseScales(
     Rendering::ViewId viewId) const
 {
@@ -238,7 +254,8 @@ void RenderServices::BuildWorldBatchKeys()
     if (m_Profile.IsCompat() && m_GpuScene)
     {
         m_CpuDrawStream.Build(m_WorldDrawBuilder, GetMeshGPURegistry(), *m_GpuScene, m_ViewRegistry,
-                              &GameEngine::EngineCore::GetInstance().GetJobSystem());
+                              &GameEngine::EngineCore::GetInstance().GetJobSystem(),
+                              [this](Rendering::ViewId view) { return CompatViewLodPolicy(*this, view); });
     }
 
     const uint64_t frameIdx = m_GpuScene ? static_cast<uint64_t>(m_GpuScene->GetFrameIndex()) : 0ull;
@@ -618,6 +635,9 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
     // a transient descriptor set + a full-N filter dispatch).
     // lodOverride replaces the camera-derived params entirely (point-shadow faces,
     // which select from their light — see MakePointFaceLodParams).
+    const auto* impostors = GetFeature<ImpostorStage>();
+    std::optional<bool> directionalCardsReady;
+    std::optional<bool> punctualCardsReady;
     auto registerViewBatches = [&](Rendering::ViewId viewId, uint8_t cascadeIdx,
                                    const Rendering::GPUDrawStreamBuilder::ViewLODParams*
                                        lodOverride = nullptr)
@@ -667,8 +687,20 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
         // cascade.
         if (!isShadowBucket)
             s.lod.renderedLevelHistoryRequested = true;
-        if (const auto* impostors = GetFeature<ImpostorStage>())
-            impostors->ApplyToSlice(s.lod, *this, viewId);
+        if (impostors && s.lod.forceLod == 0xFFFFFFFFu && s.lod.projScaleY > 0.0f)
+        {
+            bool canUseCards = true;
+            if (isShadowBucket)
+            {
+                const bool directional = cascadeIdx < kMaxShadowCascades;
+                auto& readiness = directional ? directionalCardsReady : punctualCardsReady;
+                if (!readiness.has_value())
+                    readiness = impostors->AreShadowCardsReady(*this, viewId, directional);
+                canUseCards = *readiness;
+            }
+            if (canUseCards)
+                impostors->ApplyToSlice(s.lod, *this, viewId);
+        }
         // Fit-freeze lane: a directional cascade slice selects LODs with the
         // FROZEN camera captured at that cascade's last refit (the value the
         // static-cache key holds via CullCameraViewProj), so a retained layer
@@ -703,6 +735,8 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
         if (view.ActiveRenderLayerMask() == Rendering::RenderLayerMask::None())
             continue;
 
+        directionalCardsReady.reset();
+        punctualCardsReady.reset();
         // Main-view / thumbnail / picking slice (cascadeIndex = none).
         registerViewBatches(view.id,
                             Rendering::GPUDrawStreamBuilder::kCascadeIndexNone);
@@ -883,6 +917,9 @@ bool RenderServices::ScheduleBucketerDispatchesForViewSlices(
         m_SmallObjectCullCoverage, ComputeViewSseScales(viewId), m_LODCrossfadeDuration, 0.0f);
     if (const auto* impostors = GetFeature<ImpostorStage>())
         impostors->ApplyToSlice(lod, *this, viewId);
+    // A utility draw can replace the camera's same-phase range. It must not
+    // consume that range's card claims as if it were a later HZB phase.
+    lod.renderedLevelHistoryRequested = false;
     const uint32_t viewWorldKey = WorldKeyForView(viewId);
     for (const uint8_t cascadeIdx : cascadeIndices)
     {
@@ -1438,7 +1475,8 @@ void RenderServices::BuildWorldBatchKeysForView(Rendering::ViewId viewId)
     {
         m_CpuDrawStream.BuildForView(viewId, m_WorldDrawBuilder, GetMeshGPURegistry(), *m_GpuScene,
                                      m_ViewRegistry,
-                                     &GameEngine::EngineCore::GetInstance().GetJobSystem());
+                                     &GameEngine::EngineCore::GetInstance().GetJobSystem(),
+                                     [this](Rendering::ViewId view) { return CompatViewLodPolicy(*this, view); });
     }
 
     const uint64_t frameIdx = m_GpuScene ? static_cast<uint64_t>(m_GpuScene->GetFrameIndex()) : 0ull;

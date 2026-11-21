@@ -277,6 +277,14 @@ struct ComposedPCInstanced
 static_assert(std::is_trivially_copyable_v<ComposedPCInstanced>, "ComposedPCInstanced must be trivially copyable");
 static_assert(sizeof(ComposedPCInstanced) == 24, "ComposedPCInstanced must be 24 bytes to match GLSL InstancedPC layout");
 
+// The compatibility version of InstancedPC in instance_io.glsl has no device addresses.
+struct ComposedPCCompatInstanced
+{
+    uint32_t ListFirst;
+    uint32_t MaterialOverride = ComposedPCInstanced::kNoMaterialOverride;
+};
+static_assert(sizeof(ComposedPCCompatInstanced) == 8);
+
 // Maximum number of textures in the global bindless descriptor array.
 // Must match the descriptor set created in Initialize() and the pipeline
 // layout patching in CompileMaterialPipeline().

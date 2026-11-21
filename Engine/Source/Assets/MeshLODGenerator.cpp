@@ -884,6 +884,49 @@ constexpr float kMinShadingNormalLengthSq = 1e-12f;
 // even to a backwards-facing wedge.
 constexpr float kNoShadingNormalMatch = -2.0f;
 
+bool HasSameExtraTexCoords(const Mesh& mesh, uint32 a, uint32 b)
+{
+    for (const auto& coordinates : mesh.ExtraTexCoords)
+    {
+        if (coordinates.size() == mesh.Vertices.size() * 2u &&
+            (coordinates[a * 2u] != coordinates[b * 2u] || coordinates[a * 2u + 1u] != coordinates[b * 2u + 1u]))
+            return false;
+    }
+    return true;
+}
+
+// Foliage authoring stores a common position and positive radius per rotating leaf.
+// A zero or negative radius opts a triangle out of flutter. Recognize that layout
+// on the source before enforcing it on generated levels, since UV6/UV7 can also
+// serve as ordinary texture coordinates.
+bool HasRigidLeafTriangles(const Mesh& mesh, const Vector<uint32>& indices)
+{
+    constexpr size_t pivotXY = 6u - 2u;
+    constexpr size_t pivotZRadius = 7u - 2u;
+    if (mesh.ExtraTexCoords.size() <= pivotZRadius)
+        return false;
+    const auto& xy = mesh.ExtraTexCoords[pivotXY];
+    const auto& zr = mesh.ExtraTexCoords[pivotZRadius];
+    if (xy.size() != mesh.Vertices.size() * 2u || zr.size() != xy.size())
+        return false;
+
+    for (size_t i = 0; i + 2 < indices.size(); i += 3)
+    {
+        const size_t a = size_t(indices[i]) * 2u;
+        const float radius = zr[a + 1u];
+        for (size_t corner = 1; corner < 3; ++corner)
+        {
+            const size_t b = size_t(indices[i + corner]) * 2u;
+            const float otherRadius = zr[b + 1u];
+            if (radius <= 0.0f && otherRadius <= 0.0f)
+                continue;
+            if (radius != otherRadius || xy[a] != xy[b] || xy[a + 1u] != xy[b + 1u] || zr[a] != zr[b])
+                return false;
+        }
+    }
+    return true;
+}
+
 void RepointCornersToBestMatchingWedge(const Mesh& mesh, const ColocatedWedges& groups,
                                        Vector<uint32>& indices) {
     const float uvThresholdSq = kChartProtectUvSpread * kChartProtectUvSpread;
@@ -939,6 +982,8 @@ void RepointCornersToBestMatchingWedge(const Mesh& mesh, const ColocatedWedges& 
                 const float dv = to.TexCoords[1] - from.TexCoords[1];
                 if (du * du + dv * dv > uvThresholdSq)
                     continue; // different chart: re-pointing would smear palette cells
+                if (!HasSameExtraTexCoords(mesh, current, candidate))
+                    continue; // extra coordinates may be per-leaf pivot data
                 if (to.Tangent[0] * from.Tangent[0] + to.Tangent[1] * from.Tangent[1] +
                             to.Tangent[2] * from.Tangent[2] <
                         0.0f ||
@@ -1289,6 +1334,7 @@ MeshLODs GenerateMeshLODs(const Mesh& mesh, const MeshLODConfig& config) {
     // optional parallel streams cannot carry them per-LOD yet (C3), so its far
     // levels simply skip instead of shipping a corrupt or LOD0-only shell.
     const bool canBuildShell = CanBuildOwnVertexShell(mesh);
+    const bool hasRigidLeafTriangles = HasRigidLeafTriangles(mesh, mesh.Indices);
     std::optional<UvIslandMap> islands;            // built lazily on first consumer
     std::optional<SilhouetteMasks> lod0Silhouette; // built lazily on first quality level
     std::optional<ColocatedWedges> colocated;      // built lazily on first quality level
@@ -1456,6 +1502,8 @@ MeshLODs GenerateMeshLODs(const Mesh& mesh, const MeshLODConfig& config) {
         if (!colocated)
             colocated = BuildColocatedWedges(simplifyPositions, vertexCount);
         RepointCornersToBestMatchingWedge(mesh, *colocated, lodIndices);
+        if (hasRigidLeafTriangles && !HasRigidLeafTriangles(mesh, lodIndices))
+            continue; // a simplification collapsed vertices across leaves with different pivots
 
         // Residual chart amalgamation folds into the achieved error so a level
         // that still interpolates across distant atlas regions (whatever the

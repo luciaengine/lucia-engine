@@ -43,26 +43,29 @@ struct ImpostorBakeRequest
     std::vector<ImpostorBakePart> Parts;
 };
 
-/// A baked atlas: FramesPerSide x FramesPerSide tiles of FrameSize pixels in two textures.
+/// A baked atlas: FramesPerSide x FramesPerSide tiles of FrameSize pixels.
 /// Color: RGB base colour, A coverage. NormalDepth: RGB object normal * 0.5 + 0.5, A the depth along
 /// the frame axis (1 at the bounding sphere's near side, 0 at its far side).
+/// SeasonMask: R leaf tint weight, G snow receptivity.
+/// DiffuseTransmission: RGB albedo multiplied by transmission share, A the share. Optional.
 struct ImpostorAtlas
 {
     Rendering::TextureHandle Color;
     Rendering::TextureHandle NormalDepth;
+    Rendering::TextureHandle SeasonMask;
+    Rendering::TextureHandle DiffuseTransmission;
 };
 
-/// Bakes impostor atlases on the GPU. Each frame it draws a few atlas frames of the oldest
-/// pending bake with the ImpostorBake pass keyword, through a view of its own that the render
-/// pipeline, culling and extraction skip. The atlases live inside a byte budget.
+/// Bakes impostor atlases within a byte budget. Each submitted frame advances one pending bake.
+/// A bake whose source pipelines are still building yields to the next job.
+/// The bake view runs independently of the render pipeline, culling and extraction.
 class ImpostorBaker final : public IRenderFeature
 {
 public:
-    static constexpr uint64 kDefaultBudgetBytes = 256ull << 20;
     // Atlas frames drawn per rendered frame: 64 frames bake in 16 frames.
     static constexpr uint32 kFramesPerRenderedFrame = 4;
 
-    ImpostorBaker();
+    explicit ImpostorBaker(uint64 budgetBytes);
     ~ImpostorBaker() override;
 
     /// The atlas of `request.Key` once it is baked; an atlas with invalid textures until then.
@@ -70,15 +73,27 @@ public:
     ImpostorAtlas Request(const ImpostorBakeRequest& request, uint64 frame);
 
     void DeclareFrameStage(Rendering::RenderGraph::RGFrame& frame, RenderServices& services) override;
+    void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
+                            const Rendering::IDevice::GpuSyncToken& token) override;
+    void OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame) override;
+    void OnFrameStreamRetiredRG(Rendering::RenderGraph::RGFrame& frame) override;
     void OnDeviceRebuilt(Rendering::IDevice* device) override;
 
 private:
     struct BakeJob
     {
         ImpostorBakeRequest Request;
+        std::vector<uint64> SourceRevisions{};
         uint32 NextFrame = 0;     // The next atlas frame to draw.
         uint32 SettledFrames = 0; // Frames in a row with no pipeline build in flight for its materials.
         bool Cleared = false;
+    };
+    struct PendingBake
+    {
+        const Rendering::RenderGraph::RGFrame* Frame = nullptr;
+        uint64 FrameIndex = 0;
+        std::array<const bool*, kFramesPerRenderedFrame> RecordedTiles{};
+        bool Yield = false;
     };
     struct AtlasTextures
     {
@@ -97,16 +112,21 @@ private:
     AtlasTextures& EnsureTextures(Rendering::IDevice& device, const ImpostorAtlasKey& key);
     void FreeTextures(Rendering::IDevice* device, const ImpostorAtlasKey& key);
     bool PartsSettled(RenderServices& services, BakeJob& job);
-    void DeclareAtlasFrame(Rendering::RenderGraph::RGFrame& frame, RenderServices& services, const BakeJob& job,
+    const bool* DeclareAtlasFrame(Rendering::RenderGraph::RGFrame& frame, RenderServices& services, const BakeJob& job,
                            Rendering::RenderGraph::RGTexture color, Rendering::RenderGraph::RGTexture normalDepth,
-                           Rendering::RenderGraph::RGTexture depth, uint32 atlasFrame, FrameSlot& slot);
+                           Rendering::RenderGraph::RGTexture seasonMask,
+                           Rendering::RenderGraph::RGTexture diffuseTransmission,
+                           Rendering::RenderGraph::RGTexture depth,
+                           uint32 atlasFrame, FrameSlot& slot, bool warmupOnly);
 
     std::mutex m_Mutex;
-    ImpostorAtlasCache m_Cache{kDefaultBudgetBytes};
+    ImpostorAtlasCache m_Cache;
     FlatMap<ImpostorAtlasKey, AtlasTextures> m_Textures;
+    FlatMap<ImpostorAtlasKey, uint64> m_AllocationRetryFrames;
     std::deque<BakeJob> m_Jobs;
     std::vector<ImpostorAtlasKey> m_Evicted;
-    std::vector<ImpostorAtlasKey> m_Finished; // Baked in a declared frame; ready once it ran.
+    PendingBake m_PendingBake;
+    std::vector<ImpostorAtlasKey> m_Finished; // Complete on the submitted graphics queue.
     std::array<FrameSlot, kFrameSlots> m_FrameSlots;
     Rendering::IDevice* m_Device = nullptr;
     Rendering::CameraId m_Camera{};

@@ -19,6 +19,7 @@
 #include <cstring>
 
 using namespace GameEngine;
+using GameEngine::Engine::Renderer::FoliageSeasonGPU;
 using GameEngine::Engine::Renderer::ForwardLightUBO;
 using GameEngine::Engine::Renderer::RenderServices;
 
@@ -70,5 +71,38 @@ TEST(ViewLightBufferWriter, BeginWorldDrawFrameDoesNotTouchThePerViewLightBuffer
                "fenced";
 
     rs.Shutdown();
+    device->Shutdown();
+}
+
+TEST(ViewLightBufferWriter, FoliageSeasonIsWorldScopedAndClearsBetweenFrames)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    const auto view = services.Views().AllocateView("Season light uniforms", Rendering::CameraId{});
+    constexpr uint64 forest = 17u;
+    constexpr uint64 otherWorld = 21u;
+    FoliageSeasonGPU autumn{};
+    autumn.AutumnTint[0] = 1.5f;
+    autumn.AutumnTint[3] = 0.7f;
+    autumn.Snow[0] = 0.25f;
+    services.SetWorldFoliageSeason(forest, autumn);
+
+    const auto forestLight = services.BuildViewLightUBO(view, forest);
+    EXPECT_FLOAT_EQ(forestLight.FoliageSeason.AutumnTint[0], 1.5f);
+    EXPECT_FLOAT_EQ(forestLight.FoliageSeason.AutumnTint[3], 0.7f);
+    EXPECT_FLOAT_EQ(forestLight.FoliageSeason.Snow[0], 0.25f);
+    const auto unrelated = services.BuildViewLightUBO(view, otherWorld);
+    EXPECT_FLOAT_EQ(unrelated.FoliageSeason.AutumnTint[3], 0.0f);
+    EXPECT_FLOAT_EQ(unrelated.FoliageSeason.Snow[0], 0.0f);
+
+    services.BeginWorldDrawFrame();
+    const auto cleared = services.BuildViewLightUBO(view, forest);
+    EXPECT_FLOAT_EQ(cleared.FoliageSeason.AutumnTint[3], 0.0f);
+    EXPECT_FLOAT_EQ(cleared.FoliageSeason.Snow[0], 0.0f);
+    services.Shutdown();
     device->Shutdown();
 }

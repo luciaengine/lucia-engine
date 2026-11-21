@@ -2,6 +2,7 @@
 
 #include "Benchmark/PlayerBenchmarkPlan.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -73,9 +74,12 @@ class PlayerBenchmark
         std::vector<double> WaitMs;
         std::vector<ProfiledFrame> Profiled;
         std::vector<float> MonitorPeaks;
+        std::array<uint32_t, 2> SwapchainPixels{};
+        uint32_t SwapchainSamples = 0;
+        bool SwapchainSizeChanged = false;
     };
 
-    void ApplyPose(ECS::World& world) const;
+    void ApplyPose(ECS::World& world);
     void RecordTimingFrame(double frameMs, const Rendering::IDevice* device);
     void RecordProfiledFrame(const Rendering::RenderGraph::RGFrame& frame);
     void EnterPhase(Phase phase, Rendering::RenderGraph::RGFrame* frame);
@@ -87,6 +91,7 @@ class PlayerBenchmark
     size_t m_PoseIndex = 0;
     Phase m_Phase = Phase::Warmup;
     uint32_t m_PhaseFrames = 0;
+    uint32_t m_TimingPathAppliedFrames = 0;
     std::optional<std::chrono::steady_clock::time_point> m_LastAdvance;
     bool m_Succeeded = false;
 };

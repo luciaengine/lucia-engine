@@ -175,7 +175,7 @@ PipelineVariantCache::InstancedVariantKey PipelineVariantCache::MakeColorVariant
             frontFace, false, false, target};
 }
 
-void PipelineVariantCache::WarmColorVariant(const Material& material, Rendering::VertexAttributeFlags vertexFlags,
+bool PipelineVariantCache::WarmColorVariant(const Material& material, Rendering::VertexAttributeFlags vertexFlags,
                                             Rendering::PrimitiveTopology topology,
                                             Rendering::MaterialKeyword passKeywords, Rendering::FrontFace frontFace,
                                             const Rendering::PipelineFormatKey& fk)
@@ -193,8 +193,14 @@ void PipelineVariantCache::WarmColorVariant(const Material& material, Rendering:
     }
     if (published.IsValid())
     {
-        RequestConcreteWarm(*key.material, published, fk);
-        return;
+        if (const auto* device = m_Materials->GetDevice())
+        {
+            if (device->TryGetWarmGraphicsPipeline(published, fk).IsValid())
+                return true;
+            RequestConcreteWarm(*key.material, published, fk);
+            return device->TryGetWarmGraphicsPipeline(published, fk).IsValid();
+        }
+        return false;
     }
     {
         std::lock_guard lock(m_PendingVariantMutex);
@@ -203,6 +209,7 @@ void PipelineVariantCache::WarmColorVariant(const Material& material, Rendering:
             formats.push_back(fk);
     }
     EnqueueVariantCompile(key, /*isDepth=*/false);
+    return false;
 }
 
 void PipelineVariantCache::RequestConcreteWarm(const Material& material,
@@ -429,6 +436,18 @@ Rendering::PipelineHandle PipelineVariantCache::PrepareIndexedDepthEqual(
     return pipeline;
 }
 
+PipelineVariantCache::InstancedVariantKey PipelineVariantCache::MakeDepthVariantKey(
+    const Material& material, Rendering::VertexAttributeFlags vertexFlags,
+    Rendering::PrimitiveTopology topology, Rendering::MaterialKeyword passKeywords,
+    uint32_t samples, bool depthBiasEnable, bool depthClampEnable, Rendering::FrontFace frontFace) const
+{
+    const Rendering::CullModeFlags cull = material.IsDoubleSided()
+        ? Rendering::CullModeFlags{Rendering::CullModeFlagBits::None}
+        : m_Materials->DebugCullMode();
+    return {&material, vertexFlags, samples, passKeywords, topology, cull, frontFace,
+            depthBiasEnable, depthClampEnable};
+}
+
 PipelineVariantCache::PreparedVariant
 PipelineVariantCache::ResolveDepthVariant(
     const Material& material,
@@ -443,12 +462,8 @@ PipelineVariantCache::ResolveDepthVariant(
 {
     const auto formatKey = context.BuildCurrentFormatKey();
     auto& cache = m_DepthInstancedVariantCache;
-    const Rendering::CullModeFlags depthCullMode = material.IsDoubleSided()
-        ? Rendering::CullModeFlags{Rendering::CullModeFlagBits::None}
-        : m_Materials->DebugCullMode();
-    InstancedVariantKey key{&material,     vertexFlags,      samples,
-                            passKeywords,  topology,         depthCullMode,
-                            frontFace,     depthBiasEnable,  depthClampEnable};
+    const auto key = MakeDepthVariantKey(material, vertexFlags, topology, passKeywords,
+                                         samples, depthBiasEnable, depthClampEnable, frontFace);
 
     const uint32_t materialVersion = material.GetVersion();
     const uint64_t epoch = m_CacheEpoch.load(std::memory_order_acquire);
@@ -548,19 +563,30 @@ const PipelineVariantCache::VariantServeUnit* PipelineVariantCache::FindOrReques
     Rendering::FrontFace frontFace)
 {
     // The key the camera prepass's own heads use: samples 0 (inherit the pass), no bias, no clamp.
-    const InstancedVariantKey key{&material,
-                                  vertexFlags,
-                                  0u,
-                                  passKeywords,
-                                  topology,
-                                  material.IsDoubleSided() ? Rendering::CullModeFlags{Rendering::CullModeFlagBits::None}
-                                                           : m_Materials->DebugCullMode(),
-                                  frontFace};
+    return FindOrRequestDepthVariant(MakeDepthVariantKey(
+        material, vertexFlags, topology, passKeywords, 0u, false, false, frontFace));
+}
+
+bool PipelineVariantCache::WarmShadowDepthVariant(
+    const Material& material, Rendering::VertexAttributeFlags vertexFlags,
+    Rendering::PrimitiveTopology topology, Rendering::MaterialKeyword passKeywords,
+    Rendering::FrontFace frontFace, bool depthClampEnable)
+{
+    const auto* unit = FindOrRequestDepthVariant(MakeDepthVariantKey(
+        material, vertexFlags, topology, passKeywords, 1u, true, depthClampEnable, frontFace));
+    Rendering::PipelineFormatKey format{};
+    format.DepthFormat = Rendering::TextureFormat::D32_FLOAT;
+    return unit && EnsureConcreteWarm(material, unit->PipelineId, format);
+}
+
+const PipelineVariantCache::VariantServeUnit* PipelineVariantCache::FindOrRequestDepthVariant(
+    const InstancedVariantKey& key)
+{
     {
         std::shared_lock lock(m_CacheMutex);
         if (auto it = m_DepthInstancedVariantCache.find(key);
             it != m_DepthInstancedVariantCache.end() && it->second.Current.PipelineId.IsValid() &&
-            it->second.Current.MaterialVersion == material.GetVersion())
+            it->second.Current.MaterialVersion == key.material->GetVersion())
             return &it->second.Current;
     }
     if (m_Materials->IsMaterialBuildContextReady())

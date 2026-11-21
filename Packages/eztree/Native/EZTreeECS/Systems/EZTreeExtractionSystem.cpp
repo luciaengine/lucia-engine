@@ -113,13 +113,15 @@ void SubmitPart(Engine::Renderer::RenderServices& renderServices,
     GameEngine::Rendering::PackSector(sector.X, sector.Y, sector.Z, instance.sectorPacked[0], instance.sectorPacked[1]);
     bool mirrored = false;
     Rendering::Vector4 normalColumn0;
+    Rendering::Vector4 normalColumn1;
     Rendering::MatrixUtils::ComputeNormalMatrixColumns(
         elements,
         normalColumn0,
-        instance.normalMatrixCol1,
+        normalColumn1,
         instance.normalMatrixCol2,
         &mirrored);
     instance.normalMatrixCol0 = Rendering::Vector3(normalColumn0.x, normalColumn0.y, normalColumn0.z);
+    instance.normalMatrixCol1 = Rendering::Vector3(normalColumn1.x, normalColumn1.y, normalColumn1.z);
     // EZTree draws on the default layer (layer 0), shared by CPU submission and GPU culling.
     constexpr Rendering::RenderLayerMask kRenderLayers = Rendering::RenderLayerMask::Default();
     instance.renderLayerMask = kRenderLayers.Bits;
@@ -213,12 +215,13 @@ std::vector<Rendering::MeshGPUHandle> ImpostorParts(const TreeVariant& variant)
     return parts;
 }
 
-Engine::Renderer::ImpostorBakeRequest MakeImpostorBakeRequest(const TreeVariant& variant)
+Engine::Renderer::ImpostorBakeRequest MakeImpostorBakeRequest(const TreeVariant& variant, uint32 framePixels)
 {
     Engine::Renderer::ImpostorBakeRequest request{};
     // The options hash fixes the meshes and the materials alike.
     request.Key.MeshHash = variant.Hash;
     request.Key.MaterialHash = variant.Hash;
+    request.Key.FrameSize = framePixels;
     request.Key.Layout = Mathematics::OctahedralLayout::Hemisphere;
     request.Center = variant.Bounds.center;
     request.Radius = variant.ImpostorRadius;
@@ -321,20 +324,22 @@ void EZTreeExtractionSystem::RequestImpostors(FrameContext& frame)
 {
     // A variant this pass did not read is released: its meshes, and their links, are gone.
     m_ImpostorLinks.EraseIf([&frame](uint64 hash, const ImpostorLink&) { return frame.Variants.Find(hash) == nullptr; });
-    if (frame.Variants.Empty())
+    if (frame.Variants.Empty() || !Engine::Renderer::ImpostorStage::IsEnabled(*m_RenderServices))
         return;
     auto& stage = m_RenderServices->EnsureFeature<Engine::Renderer::ImpostorStage>();
     stage.EnsureCardMesh(*m_RenderServices);
-    auto& baker = m_RenderServices->EnsureFeature<Engine::Renderer::ImpostorBaker>();
+    const auto& profile = m_RenderServices->GetProfile();
+    auto& baker = m_RenderServices->EnsureFeature<Engine::Renderer::ImpostorBaker>(profile.ImpostorAtlasBudgetBytes);
+    const uint64 frameEpoch = m_RenderServices->Spine().WorldFrameEpoch();
     std::vector<const Engine::Renderer::Material*> cards;
     for (const auto& [hash, variant] : frame.Variants)
     {
         // A request each frame keeps the atlas in the baker's least-recently-used budget.
-        const Engine::Renderer::ImpostorAtlas atlas = baker.Request(MakeImpostorBakeRequest(variant), m_UpdateStamp);
+        const auto request = MakeImpostorBakeRequest(variant, profile.ImpostorFramePixels);
+        const Engine::Renderer::ImpostorAtlas atlas = baker.Request(request, frameEpoch);
         const Engine::Renderer::Material* card = Engine::Renderer::ImpostorStage::RegisterCardMaterial(
             *m_RenderServices, variant.Materials.Impostor, "Tree Generator Impostor", atlas, variant.Bounds.center,
-            variant.ImpostorRadius, Engine::Renderer::ImpostorAtlasKey{}.FramesPerSide,
-            Mathematics::OctahedralLayout::Hemisphere);
+            variant.ImpostorRadius, request.Key.FramesPerSide, request.Key.Layout);
         ImpostorLink& link = m_ImpostorLinks.GetOrInsert(hash);
         const std::vector<uint32> meshes =
             card ? Engine::Renderer::ImpostorStage::PartMeshIndices(*m_RenderServices, ImpostorParts(variant))

@@ -47,6 +47,22 @@ GUID Mat(const char* s) { return GUID::Derive(GUID::Null(), s); }
 
 } // namespace
 
+TEST(HlodMeshMerge, RefusesMergeThatWouldLoseExtraVertexStreams) {
+    Mesh bark = MakeMergeTriangle();
+    Mesh leaves = MakeMergeTriangle();
+    leaves.ExtraTexCoords.resize(6);
+    leaves.ExtraTexCoords[4] = {0, 0, 0, 0, 0, 0};
+    leaves.ExtraTexCoords[5] = {0, 2, 0, 2, 0, 2};
+    float transform[16];
+    MakeTranslation(10.0f, 20.0f, 30.0f, transform);
+    const MergeMember members[] = {
+        Member(bark, Mat("m/bark"), transform),
+        Member(leaves, Mat("m/leaves"), transform),
+    };
+
+    EXPECT_TRUE(MergeClusterMembers(members).Submeshes.empty());
+}
+
 TEST(HlodMeshMerge, BakesTranslatedPositions) {
     Mesh tri = MakeMergeTriangle();
     float xf[16];

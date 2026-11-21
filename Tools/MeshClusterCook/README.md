@@ -1,6 +1,6 @@
 # MeshClusterCook
 
-Cook a supported static, opaque triangle model into a self-contained coarse
+Cook a static triangle model with opaque or alpha-cutout materials into a self-contained coarse
 `.gecluster` model plus immutable fine pages. Run the staged tool without an editor:
 
 ```text
@@ -36,6 +36,10 @@ mesh. The output contains geometry and materials; animation, skinning and morph
 targets are refused. Non-manifold sources cook: an edge of more than two
 triangles, a duplicate face, inconsistent winding and a non-manifold vertex are
 locked, so every level keeps them.
+
+Alpha-cutout materials keep their cutoff, sidedness, and texture references.
+The cook uses UV-aware reductions for those meshes. Vertex streams used to
+store leaf pivots require the regular mesh path.
 
 Embedded textures are copied into the coarse model. External textures require
 their published asset identities:

@@ -9,6 +9,7 @@
 #include "UI/UIScaleSettings.h"
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -39,6 +40,15 @@ struct LodImportConfig
     uint32_t borderRule = 0;
 };
 
+struct ForestStandConfig
+{
+    std::string archive; // Asset-relative .geforest file.
+    std::string entity;  // Name of the startup scene's stand mesh entity, on no render layers.
+    std::string impostorModel; // Opted-in model with source submeshes in the startup scene.
+    float detailDistance = 400.0f;
+    uint32_t nearMeshBudget = 0; // Opt-in preparation budget clamped by the device profile.
+};
+
 struct GameConfig
 {
     std::string gameName = "My Game";
@@ -46,6 +56,7 @@ struct GameConfig
     std::string renderPipeline;     // asset-relative, e.g. "RenderPipelines/ForwardPlus.rendergraph"
     // The Player waits for startup spline recipes before its ready line and screenshot.
     bool waitForSplineRecipes = true;
+    std::optional<ForestStandConfig> forestStand;
 
     LodImportConfig lod;
 

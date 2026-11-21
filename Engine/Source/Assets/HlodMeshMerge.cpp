@@ -125,6 +125,11 @@ MergedProxy MergeClusterMembers(std::span<const MergeMember> members) {
     std::map<GUID, Vector<size_t>> byMaterial;
     for (size_t i = 0; i < members.size(); ++i) {
         if (members[i].Source != nullptr) {
+            if (!members[i].Source->ExtraTexCoords.empty()) {
+                Logger::Log::Warning("HLOD: mesh '{}' uses UV2 through UV7; retaining source geometry.",
+                                     members[i].Source->Name);
+                return {};
+            }
             if (members[i].Source->HasOwnVertexLODs() && !members[i].Source->HasValidLODColor0()) {
                 Logger::Log::Warning("HLOD: mesh '{}' has invalid per-level RGBA; refusing proxy merge.",
                                      members[i].Source->Name);

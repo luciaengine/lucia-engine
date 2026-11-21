@@ -9,8 +9,11 @@
 // cascade draws the card that the light sees.
 //
 // @property vec4 impostorBounds "Impostor Bounds" default=0,0,0,1 group=Impostor
+// @property vec2 foliageWindHeight "Foliage Base and Height" default=0,1 group=Wind
+// @property float foliageWindSway "Foliage Sway (m)" default=0 group=Wind
 
 #include "Includes/impostor_frame.glsl"
+#include "Includes/foliage_sway.glsl"
 
 #define GE_VERTEX_MODIFIER_INSTANCE 1
 
@@ -71,5 +74,6 @@ vec3 ModifyVertex(vec3 position, InstanceData inst)
 #else
     vec2 corner = vec2(0.0);
 #endif
-    return Props.impostorBounds.xyz + (right * corner.x + up * corner.y) * Props.impostorBounds.w;
+    vec3 restPosition = Props.impostorBounds.xyz + (right * corner.x + up * corner.y) * Props.impostorBounds.w;
+    return GE_ApplyFoliageSway(restPosition, inst, Props.foliageWindHeight, Props.foliageWindSway);
 }

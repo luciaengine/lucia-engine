@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -51,8 +52,25 @@ struct MemberMeshSource {
 // Members resident when !ProxyActive, proxies resident when ProxyActive — never
 // both, never neither, driven by the single ProxyActive boolean (§5.4).
 struct RuntimeCluster {
+    struct MemberLod
+    {
+        ECS::EntityHandle Entity;
+        GameEngine::Rendering::MeshGPUKey Mesh;
+        uint32 BakedLevel = 0;
+    };
+    struct LodEnvelope
+    {
+        uint64 MeshRevision = 0;
+        uint64 InputRevision = 0;
+        float DefaultSseScale = 0.0f;
+        float TightSseScale = 0.0f;
+        float MaxCenterOffset = 0.0f;
+        float RequiredDistanceAtUnitProjection = 0.0f;
+        bool Initialized = false;
+    };
     float SphereCenter[3] = {0.0f, 0.0f, 0.0f};
     float SphereRadius = 0.0f;
+    GameEngine::Rendering::RenderLayerMask RenderLayers = GameEngine::Rendering::RenderLayerMask::All();
     std::vector<GameEngine::ECS::EntityHandle> Members;
     std::vector<GameEngine::ECS::EntityHandle> Proxies;
     // Synthetic mesh keys registered for this cluster's proxy submeshes; retire
@@ -64,12 +82,26 @@ struct RuntimeCluster {
     std::vector<uint32> MemberTransformVersion;
     std::vector<MemberMeshSource> MemberMeshSources;
     std::vector<GUID>   MemberMaterialGuid;
+    std::vector<uint64> MemberMeshContentHashes;
+    std::vector<MemberLod> CoarsenedMembers;
+    uint32 MaxBakedLevel = 0;
+    std::vector<LodEnvelope> MemberLodEnvelopes;
     bool ProxyActive = false; // hysteresis residency state (members resident when false)
     bool Stale = false;       // members-only fallback: never goes proxy-active
 };
 
 class HlodRuntime {
 public:
+    struct MemberLocation
+    {
+        GameEngine::ECS::EntityHandle Entity;
+        uint32 ClusterIndex;
+        uint32 MemberIndex;
+    };
+
+    std::span<const MemberLocation> FindMemberLocations(GameEngine::ECS::EntityHandle member) const;
+    uint64 GetReconcileRevision() const { return m_ReconcileRevision; }
+
     // Retire any prior cluster set, then reconcile `world` against the sidecar at
     // `cacheFile`. The read validates format + bounds AND the bake's ConfigHash
     // against one recomputed from the live HLODVolume + current cook-semantics
@@ -95,10 +127,17 @@ public:
     const std::vector<RuntimeCluster>& GetClusters() const { return m_Clusters; }
     bool HasClusters() const { return !m_Clusters.empty(); }
     uint64 GetBoundWorldId() const { return m_BoundWorldId; }
+    bool IsBoundTo(const GameEngine::ECS::World& world) const;
+    bool ReloadedGeometryChanged(const GameEngine::ECS::World& world, const RuntimeCluster& cluster,
+                                 std::span<const GUID> reloadedModels) const;
 
 private:
     std::vector<RuntimeCluster> m_Clusters;
+    std::vector<MemberLocation> m_MemberLocations;
+    uint64 m_ReconcileRevision = 0;
+    ModelResolver m_ResolveModel;
     uint64 m_BoundWorldId = 0;
+    uint64 m_BoundWorldEpoch = 0;
 };
 
 } // namespace Hlod

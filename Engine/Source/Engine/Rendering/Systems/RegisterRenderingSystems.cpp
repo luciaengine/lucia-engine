@@ -116,11 +116,6 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     // extraction (kExtract depends on it).
     schedule.Add<HLODSelectSystem>(kHlodSelect, SystemPhase::Extraction, 5, {kHierarchy}, renderServices);
 
-    // Impostor links of the opted-in models. It writes GPUScene mesh rows and batch counts, so it
-    // runs apart from every other GPUScene writer and before extraction.
-    schedule.Add<MeshImpostorSystem>(kMeshImpostor, SystemPhase::Extraction, 5,
-                                     {kMorph, kHlodSelect, OptionalDependency("EZTreeExtraction")}, renderServices);
-
     // The systems that write WorldTransform after the hierarchy. The wave
     // solver orders by declared edges only (phase and order sort within a
     // wave), so anything that must see this frame's movement names them.
@@ -156,6 +151,11 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
             schedule.Add<ClusterLODPrepareSystem>(kClusterPrepare, SystemPhase::Extraction, 6,
                 std::vector<SystemDependency>{kHierarchy, kMorph, kHlodSelect, kNativePostSimulation, kCamera}, &feature);
     }
+
+    // Validate placement from final transforms, residency and cameras before extraction.
+    schedule.Add<MeshImpostorSystem>(kMeshImpostor, SystemPhase::Extraction, 6,
+        afterMovementWriters({kNativePostSimulation, kHlodSelect, kCamera, OptionalDependency(kClusterPrepare),
+                              OptionalDependency("EZTreeExtraction")}), renderServices);
 
     // Extraction reads this frame's WorldTransforms, so it runs after the
     // movement writers and after the native hook that derives presentation

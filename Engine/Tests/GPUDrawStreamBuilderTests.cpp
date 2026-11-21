@@ -953,11 +953,11 @@ TEST(GPUDrawStreamCrossfadeTail, NoTailCapableSliceClaimsTheUndoubledStride)
 
 // ---- Scatter descriptor layout + push-constant shape -----------------------
 
-TEST(GPUDrawStreamScatterLayout, HasFourteenStorageBufferBindings)
+TEST(GPUDrawStreamScatterLayout, HasFifteenStorageBufferBindings)
 {
     const auto layout = GPUDrawStreamBuilder::MakeScatterDescriptorSetLayout();
-    ASSERT_EQ(layout.bindings.size(), 14u);
-    for (uint32_t i = 0; i < 14u; ++i)
+    ASSERT_EQ(layout.bindings.size(), 15u);
+    for (uint32_t i = 0; i < 15u; ++i)
     {
         EXPECT_EQ(layout.bindings[i].binding, i);
         EXPECT_EQ(layout.bindings[i].type, DescriptorType::StorageBuffer);

@@ -17,6 +17,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Common/Utils.h"
+#include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
@@ -937,6 +938,28 @@ TEST_F(MaterialRegistryTest, Register_UnauthoredEmissiveExposureWeightIsPhysical
     EXPECT_EQ(mat->GetFloat("emissiveExposureWeight"_sid), kDefaultEmissiveExposureWeight);
 }
 
+TEST_F(MaterialRegistryTest, FoliagePropertiesKeepTheirDefaultsOnDocumentReload)
+{
+    const GUID guid = GUID::Generate();
+    MaterialDocument doc = MakeTestPBRDocument();
+    doc.properties["diffuseTransmission"] = 0.65f;
+    doc.properties["impostorLeafTintWeight"] = 1.0f;
+    doc.properties["impostorSnowWeight"] = 0.5f;
+    Material* mat = m_registry.Register(guid, doc);
+    ASSERT_NE(mat, nullptr);
+    EXPECT_FLOAT_EQ(mat->GetFloat("diffuseTransmission"_sid, -1.0f), 0.65f);
+    EXPECT_FLOAT_EQ(mat->GetFloat("impostorLeafTintWeight"_sid, -1.0f), 1.0f);
+    EXPECT_FLOAT_EQ(mat->GetFloat("impostorSnowWeight"_sid, -1.0f), 0.5f);
+
+    doc.properties.erase("diffuseTransmission");
+    doc.properties.erase("impostorLeafTintWeight");
+    doc.properties.erase("impostorSnowWeight");
+    ASSERT_EQ(m_registry.Register(guid, doc), mat);
+    EXPECT_FLOAT_EQ(mat->GetFloat("diffuseTransmission"_sid, -1.0f), 0.35f);
+    EXPECT_FLOAT_EQ(mat->GetFloat("impostorLeafTintWeight"_sid, -1.0f), 0.0f);
+    EXPECT_FLOAT_EQ(mat->GetFloat("impostorSnowWeight"_sid, -1.0f), 0.0f);
+}
+
 TEST_F(MaterialRegistryTest, Unregister_RemovesMaterial)
 {
     GUID guid = GUID::Generate();
@@ -1196,6 +1219,61 @@ TEST_F(MaterialRegistryTest, Register_UserLanes_WireTheGraphPreviewKeysToGpuOffs
 // each declared name lands at its packed offset with the declared type, that a
 // document override wins over the declared default, and that a re-Register with
 // the key removed reverts to the declared default.
+TEST_F(MaterialRegistryTest, DeclaredFoliageModifierPreservesLegacyCutoutAndSeasonValues)
+{
+    const auto table = std::make_shared<const ShaderPropertyTable>(BuildShaderPropertyTable({
+        {"// @property float alphaCutoff default=0.5\n", "adapter_forward.glsl",
+         ShaderPropertyOrigin::Adapter},
+        {"vec3 Shade() { return Mat.uBaseColor.rgb; }", "standard_pbr.glsl",
+         ShaderPropertyOrigin::Surface},
+        {"// @property vec2 foliageWindHeight default=0,1\n"
+         "// @property vec2 foliageWindMotion default=0,0\n"
+         "// @property float foliageLeafPivots default=0\n"
+         "// @deformationEnvelope 1.414214 scaledBy=foliageWindMotion\n",
+         "foliage_wind.glsl", ShaderPropertyOrigin::VertexModifier}}));
+    ASSERT_FALSE(table->Rejected());
+
+    MaterialDocument doc;
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    doc.alphaMode = MaterialAlphaMode::Mask;
+    doc.properties["baseColor"] = std::vector<float>{0.25f, 0.5f, 0.75f, 1.0f};
+    doc.properties["alphaCutoff"] = 0.45f;
+    doc.properties["roughness"] = 0.82f;
+    doc.properties["impostorLeafTintWeight"] = 0.9f;
+    doc.properties["foliageWindHeight"] = std::vector<float>{0.0f, 14.0f};
+    doc.properties["foliageWindMotion"] = std::vector<float>{0.0f, 0.18f};
+
+    const GUID guid = GUID::Generate();
+    Material* mat = m_registry.Register(guid, doc);
+    ASSERT_NE(mat, nullptr);
+    m_registry.ApplyPropertyTable(*mat, table);
+    const auto* motion = table->Find("foliageWindMotion");
+    ASSERT_NE(motion, nullptr);
+    EXPECT_GE(motion->Lane, kGenericLaneFirst);
+
+    const auto raw = [mat](const LegacyMaterialLane& lane)
+    {
+        float values[4]{};
+        std::memcpy(values, mat->GetCacheData() + LegacyLaneByteOffset(lane), LegacyLaneByteSize(lane));
+        return std::array{values[0], values[1], values[2], values[3]};
+    };
+    const auto& base = *FindLegacyMaterialLane("baseColor");
+    EXPECT_EQ(raw(base), (std::array{0.25f, 0.5f, 0.75f, 1.0f}));
+    EXPECT_FLOAT_EQ(raw(*FindLegacyMaterialLane("alphaCutoff"))[0], 0.45f);
+    EXPECT_FLOAT_EQ(raw(*FindLegacyMaterialLane("roughness"))[0], 0.82f);
+    EXPECT_FLOAT_EQ(raw(*FindLegacyMaterialLane("impostorLeafTintWeight"))[0], 0.9f);
+    float motionValues[2]{};
+    ASSERT_TRUE(mat->GetVector(HashStringId("foliageWindMotion"), motionValues, 2));
+    EXPECT_FLOAT_EQ(motionValues[1], 0.18f);
+
+    doc.properties.erase("baseColor");
+    doc.properties.erase("foliageWindMotion");
+    ASSERT_EQ(m_registry.Register(guid, doc), mat);
+    EXPECT_EQ(raw(base), (std::array{1.0f, 1.0f, 1.0f, 1.0f}));
+    ASSERT_TRUE(mat->GetVector(HashStringId("foliageWindMotion"), motionValues, 2));
+    EXPECT_FLOAT_EQ(motionValues[1], 0.0f);
+}
+
 TEST_F(MaterialRegistryTest, Register_DeclaredSurface_WiresNamedPropertiesToPackedLanes)
 {
     const auto table = std::make_shared<const ShaderPropertyTable>(BuildShaderPropertyTable({
@@ -1372,6 +1450,7 @@ TEST(MaterialVariantKeyDerivation, LobeEnableBoolCompilesItsDefine)
         {"enableCoatNormal",   MaterialKeyword::CoatNormal,   "GE_COAT_NORMAL_ENABLED"},
         {"enableAnisotropy",   MaterialKeyword::Anisotropy,   "GE_ANISOTROPY_ENABLED"},
         {"enableSubsurface",   MaterialKeyword::Subsurface,   "GE_SUBSURFACE_ENABLED"},
+        {"enableDiffuseTransmission", MaterialKeyword::DiffuseTransmission, "GE_DIFFUSE_TRANSMISSION_ENABLED"},
         {"enableTransmission", MaterialKeyword::Transmission, "GE_TRANSMISSION_ENABLED"},
         {"enableIridescence",  MaterialKeyword::Iridescence,  "GE_IRIDESCENCE_ENABLED"},
         {"enableUV1Crossfade", MaterialKeyword::UV1Crossfade, "GE_UV1_CROSSFADE"},
@@ -1677,6 +1756,52 @@ TEST_F(MaterialShaderIdentityTest, InFlightDepthPublicationKeepsTheCapturedMetad
     services.Shutdown();
     std::error_code error;
     std::filesystem::remove_all(context.CacheRoot, error);
+}
+
+TEST_F(MaterialShaderIdentityTest, ShadowDepthWarmRequestsDoNotReuseTheCameraPrepass)
+{
+    using K = Rendering::MaterialKeyword;
+    const auto cache = std::filesystem::temp_directory_path() / ("ge-shadow-depth-target-" + GUID::Generate().ToString());
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(m_device.get()));
+    Rendering::MaterialBuildContext context{};
+    context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();
+    context.CacheRoot = cache;
+    context.IncludeDirs = {context.AdapterShaderDir};
+    services.Materials().SetMaterialBuildContext(context);
+    auto document = MakeTestPBRDocument("ShadowDepthWarm");
+    document.surfaceShader = "Surfaces/impostor.glsl";
+    document.vertexModifier = "VertexModifiers/impostor_card.glsl";
+    document.doubleSided = true;
+    document.alphaMode = MaterialAlphaMode::Mask;
+    const auto* material = services.Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+    ASSERT_NE(material, nullptr);
+    services.Materials().FlushAsyncMaterialCompiles();
+    auto& variants = services.Materials().Variants();
+    const auto flags = Rendering::VertexAttributeFlags::StandardMesh;
+    const auto topology = Rendering::PrimitiveTopology::TriangleList;
+    const auto keywords = K::Instanced | K::DepthOnlyFragment;
+    const auto winding = Rendering::FrontFace::CounterClockwise;
+    variants.FindOrRequestPrepassVariant(*material, flags, topology, keywords, winding);
+    variants.SubmitPendingVariantCompiles();
+    services.Materials().FlushAsyncMaterialCompiles();
+    variants.ApplyPendingVariantPublishes();
+    ASSERT_NE(variants.FindOrRequestPrepassVariant(*material, flags, topology, keywords, winding), nullptr);
+    for (bool clamp : {false, true})
+        EXPECT_FALSE(variants.WarmShadowDepthVariant(*material, flags, topology, keywords, winding, clamp));
+    variants.SubmitPendingVariantCompiles();
+    services.Materials().FlushAsyncMaterialCompiles();
+    variants.ApplyPendingVariantPublishes();
+    for (bool clamp : {false, true})
+    {
+        const auto key = variants.EnqueueDepthVariantCompileForTesting(
+            *material, flags, topology, keywords, 1u, true, clamp, winding);
+        EXPECT_TRUE(variants.HasDepthVariantForTesting(key));
+        EXPECT_TRUE(variants.WarmShadowDepthVariant(*material, flags, topology, keywords, winding, clamp));
+    }
+    services.Shutdown();
+    std::error_code error;
+    std::filesystem::remove_all(cache, error);
 }
 
 TEST_F(MaterialShaderIdentityTest, DepthHexSpecializationFollowsTheCompiledSurface)

@@ -119,7 +119,8 @@ struct GPUInstance
     // directly instead of paying 9 muls + 9 adds + divide per vertex.
     Vector3 normalMatrixCol0; // 12 B
     uint32_t renderLayerMask = 0xFFFFFFFFu;
-    Vector4 normalMatrixCol1; // 16 B
+    Vector3 normalMatrixCol1;
+    uint32_t impostorPlacementPrimaryPlusOne = 0; // 0 = not in a multipart placement
     Vector4 normalMatrixCol2; // 16 B
     uint32_t meshIndex;      // Index into mesh buffer
     uint32_t materialIndex;  // Index into MaterialSystem's per-material tables
@@ -141,6 +142,7 @@ struct GPUInstance
 static_assert(offsetof(GPUInstance, normalMatrixCol0) == 128, "GPUInstance.normalMatrixCol0 offset drift");
 static_assert(offsetof(GPUInstance, renderLayerMask) == 140, "GPUInstance.renderLayerMask offset drift");
 static_assert(offsetof(GPUInstance, normalMatrixCol1) == 144, "GPUInstance.normalMatrixCol1 offset drift");
+static_assert(offsetof(GPUInstance, impostorPlacementPrimaryPlusOne) == 156);
 static_assert(offsetof(GPUInstance, custom0) == 224,
               "GPUInstance.custom0 must match the GLSL std430 layout");
 static_assert(sizeof(GPUInstance) == 240,
@@ -267,6 +269,7 @@ inline constexpr uint32_t kGPUMeshLodTightClassBit = 1u << 4;
 // GPUMesh.impostorCard layout (mirrored in draw_command_scatter.comp).
 inline constexpr uint32_t kGPUMeshImpostorMaterialMask = 0xFFFFFFu;
 inline constexpr uint32_t kGPUMeshImpostorPrimaryBit   = 1u << 31;
+inline constexpr uint32_t kGPUMeshImpostorPlacementBit = 1u << 30;
 static_assert(offsetof(GPUMesh, impostorCard) == 20, "GPUMesh.impostorCard offset drift");
 static_assert(offsetof(GPUMesh, nextImpostorPart) == 44, "GPUMesh.nextImpostorPart offset drift");
 static_assert(offsetof(GPUMesh, impostorSwitchCoverage) == 48, "GPUMesh.impostorSwitchCoverage offset drift");
@@ -525,9 +528,12 @@ class GPUScene
     // reset-on-free: a freed-but-not-trimmed tombstone slot stays in the cull
     // candidate range, so phase B keeps rewriting its prevVisible every frame
     // until the slot is actually reused, which would clobber a reset-on-free.
-    // Empty in steady state (no removes → no recycled adds), so a churn-free
-    // frame schedules no reset work.
+    // Explicit resets of live slots travel through the same queue. This queue
+    // stays empty while slots and their visibility domains are stable.
     void DrainPrevVisibleResetSlots(std::vector<uint32_t>& outSlots);
+
+    /// Reset culling and LOD history before the next draw of an existing instance.
+    void RequestInstanceHistoryReset(uint32_t instanceIndex);
 
     // Mesh management
     uint32_t AddMesh(const GPUMesh& mesh);
@@ -546,7 +552,8 @@ class GPUScene
      * capacity to its batch. Invalid or conflicting groups leave the existing links in place.
      */
     bool SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t cardMaterialIndex,
-                              uint32_t cardMeshIndex, float switchCoverage = 0.0f);
+                              uint32_t cardMeshIndex, float switchCoverage = 0.0f,
+                              bool requiresPlacement = false);
     /// Clear the group that contains this mesh, if any.
     void ClearMeshImpostorGroup(uint32_t meshIndex);
 

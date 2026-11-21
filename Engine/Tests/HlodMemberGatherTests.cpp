@@ -64,10 +64,10 @@ SceneEntityTag MakeTag(const char* id) {
 // A model registry the resolver reads from. Owns the assets so the Mesh
 // pointers the gather returns stay valid across the whole test.
 struct ModelBank {
-    std::unordered_map<GUID, std::unique_ptr<ModelAsset>> Models;
+    std::unordered_map<GUID, SharedPtr<ModelAsset>> Models;
 
     const ModelAsset* Add(const GUID& guid, Vector<Mesh> meshes) {
-        auto asset = std::make_unique<ModelAsset>(guid, std::filesystem::path{});
+        auto asset = std::make_shared<ModelAsset>(guid, std::filesystem::path{});
         asset->SetMeshesForTest(std::move(meshes));
         const ModelAsset* raw = asset.get();
         Models[guid] = std::move(asset);
@@ -75,9 +75,9 @@ struct ModelBank {
     }
 
     ModelResolver Resolver() {
-        return [this](const GUID& g) -> const ModelAsset* {
+        return [this](const GUID& g) -> SharedPtr<const ModelAsset> {
             auto it = Models.find(g);
-            return it == Models.end() ? nullptr : it->second.get();
+            return it == Models.end() ? nullptr : it->second;
         };
     }
 };
@@ -97,6 +97,39 @@ LocalBounds UnitBounds() {
 }
 
 } // namespace
+
+TEST(HlodMemberGather, KeepsAllPartsOfPivotModelOnSourcePath) {
+    ECS::World world(nullptr);
+    ModelBank bank;
+    const GUID tree = GUID::Derive(GUID::Null(), "model/pivot-tree");
+    const GUID staticModel = GUID::Derive(GUID::Null(), "model/static-neighbor");
+    const GUID material = GUID::Derive(GUID::Null(), "material/forest");
+    Mesh leaves = MakeTriangle();
+    leaves.ExtraTexCoords.resize(6);
+    leaves.ExtraTexCoords[4] = {0, 0, 0, 0, 0, 0};
+    leaves.ExtraTexCoords[5] = {0, 2, 0, 2, 0, 2};
+    bank.Add(tree, {MakeTriangle(), std::move(leaves)});
+    bank.Add(staticModel, {MakeTriangle()});
+
+    const auto addRenderer = [&](const GUID& model, uint32 submesh) {
+        auto entity = world.Create();
+        entity.Set(WorldAt(10, 0, 20));
+        MeshRenderer renderer{};
+        renderer.materialAssetGuid.Set(material);
+        renderer.modelAssetGuid.Set(model);
+        renderer.meshId = submesh;
+        entity.Set(renderer);
+        return entity.GetHandle();
+    };
+    addRenderer(tree, 0);
+    addRenderer(tree, 1);
+    const ECS::EntityHandle neighbor = addRenderer(staticModel, 0);
+    world.ProcessCommands();
+
+    const auto gathered = GatherHlodMembers(world, bank.Resolver());
+    ASSERT_EQ(gathered.Entities.size(), 1u);
+    EXPECT_EQ(gathered.Entities.front(), neighbor);
+}
 
 TEST(HlodMemberGather, GathersEligibleStaticMember) {
     ECS::World world(nullptr);

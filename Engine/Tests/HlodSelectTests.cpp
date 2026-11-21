@@ -12,7 +12,7 @@ using namespace GameEngine::Hlod;
 
 namespace {
 
-ViewLod MakeView(float camZ, float projScaleY, float bias = 0.0f) {
+ViewLod MakeView(double camZ, float projScaleY, float bias = 0.0f) {
     ViewLod v;
     v.CameraPos[0] = 0.0f;
     v.CameraPos[1] = 0.0f;
@@ -39,6 +39,21 @@ TEST(HlodSelect, CoverageMatchesGeSelectLODFormula) {
     // Global bias scales by exp2.
     ViewLod biased = MakeView(0.0f, 1.5f, 1.0f); // exp2(1) = 2
     EXPECT_NEAR(ClusterCoverage(biased, center, radius), expected * 2.0f, 1e-5f);
+}
+
+TEST(HlodSelect, CameraKeepsSubsectorPrecisionAtLargeWorldCoordinates) {
+    const auto config = MakeSwitchConfig(0.10f, 0.25f);
+    constexpr float radius = 3.0f;
+    constexpr double origin = 1.0e9;
+    for (bool worldOffset : {false, true}) {
+        const double z = worldOffset ? origin : 0.0;
+        const float center[3] = {0.0f, 0.0f, static_cast<float>(z)};
+        const auto near = MakeView(z + 16.0, 1.0f);
+        const auto far = MakeView(z + 32.0, 1.0f);
+        EXPECT_FLOAT_EQ(ClusterCoverage(near, center, radius), radius / 16.0f);
+        EXPECT_TRUE(UpdateProxyActive(false, ClusterCoverage(far, center, radius), config));
+        EXPECT_FALSE(UpdateProxyActive(true, ClusterCoverage(near, center, radius), config));
+    }
 }
 
 TEST(HlodSelect, LodDisabledKeepsMembers) {

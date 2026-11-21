@@ -137,7 +137,8 @@ bool ValidTransform(std::span<const float, 16> transform)
 
 bool ValidMaterial(const ImportedMaterialData& material)
 {
-    return material.Name.size() <= kMaximumStringBytes && material.AlphaMode == AlphaMode::Opaque &&
+    return material.Name.size() <= kMaximumStringBytes &&
+        (material.AlphaMode == AlphaMode::Opaque || material.AlphaMode == AlphaMode::Mask) &&
         ValidFloats(material.DiffuseColor) && ValidFloats(material.SpecularColor) &&
         ValidFloats(material.EmissiveColor) &&
         ValidFloats(material.DiffuseTextureTransform) && ValidFloats(material.NormalTextureTransform) &&
@@ -179,7 +180,7 @@ bool RebaseTextures(const ModelAsset& source, Vector<ImportedMaterialData>& mate
     {
         if (!ValidMaterial(material))
         {
-            error = "Cluster models require finite opaque materials";
+            error = "Cluster models require finite opaque or alpha-cutout materials";
             return false;
         }
         for (const auto field : kTextureFields)
@@ -935,7 +936,10 @@ bool CookMeshClusterLODAsset(const ModelAsset& source, const std::filesystem::pa
             return false;
         }
         MeshClusterLODDag dag;
-        if (!GenerateMeshClusterLODDag(mesh, config, dag, error))
+        MeshClusterLODConfig meshConfig = config;
+        if (!materials.empty() && materials[mesh.MaterialIndex].AlphaMode == AlphaMode::Mask)
+            meshConfig.AllowPositionOnlyReduction = false;
+        if (!GenerateMeshClusterLODDag(mesh, meshConfig, dag, error))
             return false;
         // config.MaximumGroups bounds the DAG groups of the whole model, as it does each mesh.
         if (placements >= kMaximumGroups || mesh.ExtraPlacements.size() > kMaximumGroups - placements - 1 ||

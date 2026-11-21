@@ -100,6 +100,8 @@ struct ShaderPropertyTable
     // True when the surface or the vertex modifier declared at least one
     // property. False for a legacy surface that still reads lanes by name.
     bool HasSurfaceDeclarations = false;
+    // A modifier may declare properties while its surface still reads fixed lanes.
+    bool UsesLegacySurfaceLanes = false;
     uint32_t LanesUsed = 0;
     // The vertex modifier's @deformationEnvelope, its scaledBy checked against
     // this table. Read whether or not the surface declares properties.

@@ -71,7 +71,7 @@ void FloatsFromJson(const nlohmann::json& value, std::span<float> out)
 
 nlohmann::json MaterialToJson(const ImportedMaterialData& material)
 {
-    return {
+    nlohmann::json record{
         {"name", material.Name},
         {"diffuseTexture", material.DiffuseTexture},
         {"normalTexture", material.NormalTexture},
@@ -99,6 +99,9 @@ nlohmann::json MaterialToJson(const ImportedMaterialData& material)
         {"alphaModeInferred", material.AlphaModeInferred},
         {"ignoresVertexColor", material.IgnoresVertexColor},
     };
+    if (material.ForestCanopyCoverage)
+        record["forestCanopyCoverage"] = true;
+    return record;
 }
 
 ImportedMaterialData MaterialFromJson(const nlohmann::json& value)
@@ -133,6 +136,7 @@ ImportedMaterialData MaterialFromJson(const nlohmann::json& value)
     material.AlphaCutoff = FloatFromJson(value.at("alphaCutoff"));
     material.AlphaModeInferred = value.at("alphaModeInferred").get<bool>();
     material.IgnoresVertexColor = value.at("ignoresVertexColor").get<bool>();
+    material.ForestCanopyCoverage = value.value("forestCanopyCoverage", false);
     return material;
 }
 

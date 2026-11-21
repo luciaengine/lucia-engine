@@ -311,6 +311,11 @@ class TextureService
     // first and loses it last. An empty table removes the order. Any thread.
     void UpdateMaterialMipDemand(std::span<const float> coverageByMaterialIndex);
 
+    /// Prioritize these masked materials' opacity textures for the active impostor bake.
+    /// Returns true when the source mips reached level zero or the planner has no more
+    /// affordable upgrades. An empty request releases the priority. Render thread only.
+    bool PrepareImpostorOpacityMips(std::span<const GUID> materials);
+
     // ── Material texture binding ──────────────────────────────────────────
     // Assign a texture + its bindless index to a material slot in one call. An
     // invalid handle is a texture that failed to upload: the slot takes its
@@ -819,6 +824,8 @@ class TextureService
     FlatMap<GUID, ReleasedUploadRead> m_ReleasedUploadReads;
     // Screen coverage by GPUScene material index (UpdateMaterialMipDemand). Empty without demand data.
     std::vector<float> m_MaterialCoverage;
+    std::vector<GUID> m_ImpostorOpacityTextures;
+    bool m_ImpostorOpacityStepAvailable = false;
     bool m_MaterialMipCoverageStale = false;
     // True while no step improves the streams. A change to a stream, the demand or the budget clears it.
     bool m_MaterialMipStreamsSettled = false;

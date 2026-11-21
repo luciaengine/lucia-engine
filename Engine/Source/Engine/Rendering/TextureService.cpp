@@ -490,6 +490,8 @@ void TextureService::ReprovisionAfterDeviceRebuild()
         m_TextureLoadsKicked.clear();
         m_MaterialTextureRefs.clear();
         m_TextureToMaterialBindings.clear();
+        m_ImpostorOpacityTextures.clear();
+        m_ImpostorOpacityStepAvailable = false;
         m_MaterialMipStreams.Clear();
         ReportMaterialMipBytesLocked();
         CancelMaterialMipStep();
@@ -1881,6 +1883,44 @@ void TextureService::UpdateMaterialMipDemand(std::span<const float> coverageByMa
     InvalidateMaterialMipCoverageLocked();
 }
 
+bool TextureService::PrepareImpostorOpacityMips(std::span<const GUID> materials)
+{
+    if (!m_MaterialMipBudgetBytes)
+        return true;
+
+    const StringId albedo = HashStringId("albedoMap");
+    std::lock_guard lock(m_PendingTexturesMutex);
+    std::vector<GUID> textures;
+    for (const GUID& material : materials)
+    {
+        const auto refs = m_MaterialTextureRefs.find(material);
+        if (refs == m_MaterialTextureRefs.end())
+            continue;
+        const auto opacity = refs->second.find(albedo);
+        if (opacity != refs->second.end())
+            textures.push_back(opacity->second);
+    }
+    std::sort(textures.begin(), textures.end());
+    textures.erase(std::unique(textures.begin(), textures.end()), textures.end());
+    if (textures != m_ImpostorOpacityTextures)
+    {
+        m_ImpostorOpacityTextures = std::move(textures);
+        m_ImpostorOpacityStepAvailable = !m_ImpostorOpacityTextures.empty();
+        InvalidateMaterialMipCoverageLocked();
+    }
+
+    bool wantsFinerMip = false;
+    for (const GUID& guid : m_ImpostorOpacityTextures)
+    {
+        const MaterialMipStream* stream = m_MaterialMipStreams.Find(guid);
+        if ((!stream && m_TextureLoadsKicked.contains(guid)) ||
+            (m_MaterialMipStep.Read && m_MaterialMipStep.Texture == guid))
+            return false;
+        wantsFinerMip |= stream && stream->FirstMip != 0u && !stream->KeepsLevel;
+    }
+    return !wantsFinerMip || !m_ImpostorOpacityStepAvailable;
+}
+
 void TextureService::InvalidateMaterialMipCoverageLocked()
 {
     m_MaterialMipCoverageStale = true;
@@ -2063,7 +2103,9 @@ void TextureService::AdvanceMaterialMipStreams()
                                                   stream.ScreenCoverage});
             else
                 m_MaterialMipPlanInput.push_back({guid, source.SuffixBytes(), stream.FirstMip, source.Tail(),
-                                                  source.TopExtent(), stream.ScreenCoverage});
+                                                  source.TopExtent(), stream.ScreenCoverage,
+                                                  std::binary_search(m_ImpostorOpacityTextures.begin(),
+                                                                     m_ImpostorOpacityTextures.end(), guid)});
         }
         m_MaterialMipCoverageStale = false;
         // A new stream whose first levels are in a read holds its part of the budget.
@@ -2071,6 +2113,7 @@ void TextureService::AdvanceMaterialMipStreams()
         const auto planned = m_MaterialMipPlanner.Plan(
             m_MaterialMipPlanInput, m_MaterialMipBudgetBytes > parkedBytes ? m_MaterialMipBudgetBytes - parkedBytes : 0);
         m_MaterialMipStreamsSettled = !planned.has_value();
+        m_ImpostorOpacityStepAvailable = planned && planned->ForImpostorOpacity;
         if (!planned)
             return;
         step.Texture = m_MaterialMipPlanInput[planned->StreamIndex].Id;
@@ -2145,7 +2188,9 @@ void TextureService::FinishMaterialMipStep()
             if (Material* material = m_Materials->Find(materialGuid);
                 material && material->GetTexture(slotName) == candidate.Resident.Texture)
             {
+                const uint32_t revisionBefore = material->GetContentRevision();
                 ApplyMaterialSlotBinding(material, slotName, replacement, index);
+                material->m_MipResidencyRevisionDelta += material->GetContentRevision() - revisionBefore;
             }
         }
         entry->Resident = replacement;

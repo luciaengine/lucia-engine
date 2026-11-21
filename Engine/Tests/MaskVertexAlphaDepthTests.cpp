@@ -285,7 +285,7 @@ uint32_t AddInstance(RenderServices& rs, const MeshGPUEntry& entry, const Materi
     instance.transform = Matrix4x4::Identity();
     instance.prevTransform = Matrix4x4::Identity();
     instance.normalMatrixCol0 = Vector3(1.0f, 0.0f, 0.0f);
-    instance.normalMatrixCol1 = Vector4(0.0f, 1.0f, 0.0f, 0.0f);
+    instance.normalMatrixCol1 = Vector3(0.0f, 1.0f, 0.0f);
     instance.normalMatrixCol2 = Vector4(0.0f, 0.0f, 1.0f, 0.0f);
     instance.renderLayerMask = 1u;
     instance.meshIndex = entry.gpuMeshIndex;

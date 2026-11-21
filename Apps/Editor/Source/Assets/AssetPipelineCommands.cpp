@@ -5,7 +5,9 @@
 #include "Automation/UiReplayCommandIds.h"
 #include "Core/Engine.h"
 #include "Editor/Registries/EditorMenuRegistry.h"
+#include "SceneLoadTracker/SceneLoadTracker.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -22,7 +24,8 @@ bool InvokeReimportProjectLods(std::string*)
 
 bool InvokeBakeHlodProject(const ActiveScenePathProvider& activeScenePath, std::string* outError)
 {
-    ECS::World* world = EngineCore::GetInstance().GetPrimaryWorld();
+    auto& engine = EngineCore::GetInstance();
+    ECS::World* world = engine.GetPrimaryWorld();
     if (!world)
     {
         if (outError)
@@ -37,8 +40,15 @@ bool InvokeBakeHlodProject(const ActiveScenePathProvider& activeScenePath, std::
             *outError = "no active scene (save the scene first)";
         return false;
     }
-    return Hlod::BakeHlodForScene(EngineCore::GetInstance().GetAssetManager(), *world, *scenePath,
-                                  outError);
+    const auto& categories = engine.GetSceneLoadTracker().GetStatus().Categories;
+    if (std::ranges::any_of(categories, [](const auto& category)
+        { return category.Id == "scene.resolve" && category.HoldsReady(); }))
+    {
+        if (outError)
+            *outError = "Scene models and materials are still loading. Wait for them before baking HLOD.";
+        return false;
+    }
+    return Hlod::BakeHlodForScene(engine.GetAssetManager(), *world, *scenePath, outError);
 }
 
 } // namespace

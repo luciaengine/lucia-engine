@@ -66,6 +66,12 @@ struct MeshGPUData {
     // Cluster LOD residency suppression, owned by ClusterLODSplits: set on a split instance,
     // whose parts draw instead, and on a part until its instance activates. Extraction skips it.
     bool clusterEvicted { false };
+
+    // A cluster split is preparing or drawing. Its owner remains on geometry until the split ends.
+    bool clusterSplitOwner { false };
+
+    // Primary GPUScene slot plus one, assigned only to complete impostor placements.
+    uint32 impostorPlacementPrimaryPlusOne { 0 };
 };
 
 } } // namespace GameEngine::Components

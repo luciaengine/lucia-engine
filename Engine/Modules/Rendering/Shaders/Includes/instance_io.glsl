@@ -150,6 +150,63 @@ InstanceData ge_FetchInstanceData()
     return inst;
 }
 
+#elif defined(GE_INSTANCED) && defined(GE_FOREST_MESH_INSTANCES)
+
+// Mesh parts share the same placement transform. The draw provides its own material and
+// instance base, so it can batch a (part, LOD) run without relying on baseInstance.
+struct ForestMeshTransform
+{
+    vec4 localAndScale;
+    vec2 yawSinCos;
+    uvec2 sectorPacked;
+};
+
+layout(std430, set = 0, binding = 68) readonly buffer ForestMeshTransforms
+{
+    ForestMeshTransform transforms[];
+} forestMesh;
+
+layout(push_constant) uniform ForestMeshDraw
+{
+    uint firstTransform;
+    uint materialIndex;
+} pc_forestMesh;
+
+InstanceData ge_FetchInstanceData()
+{
+    uint index = pc_forestMesh.firstTransform + uint(gl_InstanceIndex);
+    ForestMeshTransform transform = forestMesh.transforms[index];
+    float s = transform.yawSinCos.x;
+    float c = transform.yawSinCos.y;
+    mat3 basis = mat3(vec3(c, 0.0, -s), vec3(0.0, 1.0, 0.0), vec3(s, 0.0, c));
+    float scale = transform.localAndScale.w;
+    InstanceData inst;
+    inst.modelMatrix = mat4(vec4(basis[0] * scale, 0.0), vec4(basis[1] * scale, 0.0),
+                           vec4(basis[2] * scale, 0.0), vec4(transform.localAndScale.xyz, 1.0));
+    inst.normalMatrix = basis / scale;
+    inst.instanceIndex = index;
+    inst.materialIndex = pc_forestMesh.materialIndex;
+    inst.skinPaletteOffset = 0u;
+    inst.flags = 2u;
+    inst.custom0 = vec4(1.0);
+    inst.sector = ge_UnpackInstanceSector(transform.sectorPacked.x, transform.sectorPacked.y);
+#ifdef GE_LOD_CROSSFADE
+    inst.lodFadeCode = 0u;
+#endif
+#ifdef GE_VERTEX_DEFORMATION
+    ge_StampDeformationClock(inst);
+#endif
+    return inst;
+}
+
+#ifdef GE_MOTION_VECTORS
+// Placements are static. The previous endpoint changes only the deformation clock.
+mat4 ge_FetchPreviousModelMatrix(uint sceneIdx)
+{
+    return ge_FetchInstanceData().modelMatrix;
+}
+#endif
+
 #elif defined(GE_INSTANCED) && defined(GE_COMPAT_PROFILE)
 
 #ifdef GE_USER_PARTICLE_BUFFER
@@ -204,6 +261,8 @@ layout(std430, set = 0, binding = 50) readonly buffer CompatInstanceListSSBO
 layout(push_constant) uniform CompatInstancePC
 {
     uint ge_compatListFirst;
+    // A card uses the source instance's transform and the draw's material.
+    uint ge_materialOverride;
 } pc_compat;
 
 InstanceData ge_FetchInstanceData()
@@ -218,7 +277,8 @@ InstanceData ge_FetchInstanceData()
                              gpuInst.normalMatrixCol1.xyz,
                              gpuInst.normalMatrixCol2.xyz);
     inst.instanceIndex = sceneIdx;
-    inst.materialIndex = gpuInst.materialIndex;
+    inst.materialIndex = pc_compat.ge_materialOverride != 0xFFFFFFFFu ? pc_compat.ge_materialOverride
+                                                                      : gpuInst.materialIndex;
     inst.skinPaletteOffset = gpuInst.skinPaletteOffset;
     inst.flags = gpuInst.flags;
     inst.custom0 = gpuInst.custom0;

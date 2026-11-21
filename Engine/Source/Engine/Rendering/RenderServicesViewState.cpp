@@ -444,6 +444,8 @@ void RenderServices::PackViewWeather(ViewId viewId, uint64 worldId, ForwardLight
     ubo.WeatherWind = wind ? *wind : WeatherWindGPU{};
     ubo.WeatherWind.Count[1] = std::clamp(settings.WaterDropSize, 0.25f, 2.0f);
     ubo.WeatherWind.Count[2] = std::clamp(settings.WaterRippleSpeed, 0.0f, 4.0f);
+    const auto* season = m_WorldFoliageSeason.Find(worldId);
+    ubo.FoliageSeason = season ? *season : FoliageSeasonGPU{};
 }
 
 ForwardLightUBO RenderServices::BuildViewLightUBO(ViewId viewId, uint64 worldId)

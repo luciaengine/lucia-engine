@@ -121,6 +121,7 @@ void WorldRenderNode::DeclareForView(ViewDeclare& d)
     t.GTAO = d.ResolveTexture(Names::View::GTAO);
     t.SkyBackdrop = d.ResolveTexture(Names::Res::SkyBackdrop);
     t.ResolveFromPipeline = d.ResolveFromPipeline;
+    t.EmitFrameContributors = true;
     // Peel transmissive glass into the dedicated post-grab transmissive pass when this view has any
     // AND this pipeline actually has that pass; otherwise glass renders inline here via the env-cube
     // fallback (thumbnails, single-material previews, or any pipeline without the transmissive node)

@@ -13,6 +13,7 @@
 // @texture aoMap linear
 // @texture coatNormalMap linear
 // @texture heightMap linear
+#include "Includes/foliage_season.glsl"
 //
 // Parallax (GE_PARALLAX_MARCH): a bound height map displaces uv0 by the relief
 // march, and every map samples at the displaced UV through its own tiling with
@@ -25,6 +26,14 @@
 // emission as emission x exposure^weight, so 1 is physical and 0 shows it at its authored brightness
 // whatever the view's exposure (Adapters/adapter_forward.glsl).
 #define GE_SURFACE_EMISSIVE_EXPOSURE_WEIGHT Mat.uParams19.w
+
+// Source texture mips can filter thin cutouts below the material cutoff.
+#if defined(GE_IMPOSTOR_BAKE) && defined(ALPHA_TEST)
+#define GE_STANDARD_BAKE_CUTOUT
+const bool kStandardBakeCutout = true;
+#else
+const bool kStandardBakeCutout = false;
+#endif
 
 #ifdef GE_PARALLAX_MARCH
 float GE_ParallaxSampleHeight(vec2 uvHeight, float lod)
@@ -94,19 +103,28 @@ GE_StandardRelief GE_StandardParallax(SurfaceInput sIn)
 
 // One map at uv0 through its own tiling, with the tiling's linear part applied to
 // the undisplaced footprint: the transforms are affine, so the gradients are exact.
-vec4 GE_StandardSampleAt(GE_MaterialTexture map, vec4 st, vec4 st2, vec2 uv0, vec4 uvFootprint)
+vec4 GE_StandardSampleAt(GE_MaterialTexture map, vec4 st, vec4 st2, vec2 uv0, vec4 uvFootprint, bool sampleSourceMip)
 {
+    vec2 uv = GE_TransformUV(uv0, st, st2);
+#ifdef GE_STANDARD_BAKE_CUTOUT
+    if (sampleSourceMip)
+        return textureLod(map, uv, 0.0);
+#endif
     vec2 uvPerPixelX = vec2(dot(uvFootprint.xy, st.xy), dot(uvFootprint.xy, st2.xy));
     vec2 uvPerPixelY = vec2(dot(uvFootprint.zw, st.xy), dot(uvFootprint.zw, st2.xy));
-    return textureGrad(map, GE_TransformUV(uv0, st, st2), uvPerPixelX, uvPerPixelY);
+    return textureGrad(map, uv, uvPerPixelX, uvPerPixelY);
 }
 #else
 // One map at `uv` through its own tiling and the material's hex blend.
-vec4 GE_StandardSampleHex(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 st2)
+vec4 GE_StandardSampleHex(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 st2, bool sampleSourceMip)
 {
     vec2 uvA, uvB;
     float blend = 0.0;
     GE_ComputeHexBlendUV(uv, st, st2, Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x, uvA, uvB, blend);
+#ifdef GE_STANDARD_BAKE_CUTOUT
+    if (sampleSourceMip)
+        return mix(textureLod(map, uvA, 0.0), textureLod(map, uvB, 0.0), blend);
+#endif
     return mix(texture(map, uvA), texture(map, uvB), blend);
 }
 
@@ -170,20 +188,20 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
   #ifdef GE_PARALLAX_READS_DEPTH
     o.reliefHidden = relief.hidden;
   #endif
-    vec4 albedo = GE_StandardSampleAt(albedoMap, sIn.textureST[0], sIn.textureST2[0], reliefUv0, sIn.uvFootprint);
+    vec4 albedo = GE_StandardSampleAt(albedoMap, sIn.textureST[0], sIn.textureST2[0], reliefUv0, sIn.uvFootprint, kStandardBakeCutout);
 #else
     // Albedo: texture * UBO tint
-    vec4 albedo = GE_StandardSampleHex(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
+    vec4 albedo = GE_StandardSampleHex(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0], kStandardBakeCutout);
   #ifdef GE_STANDARD_UV1_CROSSFADE
     float uv1Weight = sIn.vertexColor.a;
-    albedo = mix(albedo, GE_StandardSampleHex(albedoMap, sIn.uv1, sIn.textureST[0], sIn.textureST2[0]), uv1Weight);
+    albedo = mix(albedo, GE_StandardSampleHex(albedoMap, sIn.uv1, sIn.textureST[0], sIn.textureST2[0], kStandardBakeCutout), uv1Weight);
   #endif
 #endif
     o.baseColor = albedo.rgb * Mat.uBaseColor.rgb * sIn.vertexColor.rgb;
 #if defined(GE_PARALLAX_MARCH) && defined(ALPHA_TEST)
     // Coverage stays on the polygon in every pass (see GE_PARALLAX_MARCH): the cutout is read at
     // the undisplaced UV, exactly where the depth prepass and the cascades read it.
-    o.opacity = GE_StandardSampleAt(albedoMap, sIn.textureST[0], sIn.textureST2[0], sIn.uv0, sIn.uvFootprint).a
+    o.opacity = GE_StandardSampleAt(albedoMap, sIn.textureST[0], sIn.textureST2[0], sIn.uv0, sIn.uvFootprint, kStandardBakeCutout).a
               * Mat.uBaseColor.a * sIn.vertexColor.a;
 #elif defined(GE_STANDARD_UV1_CROSSFADE)
     o.opacity = albedo.a * Mat.uBaseColor.a;
@@ -194,11 +212,11 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // Metallic-roughness (glTF convention: G=roughness, B=metallic)
 #ifdef GE_PARALLAX_MARCH
     vec4 mr = GE_StandardSampleAt(metallicRoughnessMap, sIn.textureST[2], sIn.textureST2[2], reliefUv0,
-                                  sIn.uvFootprint);
+                                  sIn.uvFootprint, false);
 #else
-    vec4 mr = GE_StandardSampleHex(metallicRoughnessMap, sIn.uv0, sIn.textureST[2], sIn.textureST2[2]);
+    vec4 mr = GE_StandardSampleHex(metallicRoughnessMap, sIn.uv0, sIn.textureST[2], sIn.textureST2[2], false);
   #ifdef GE_STANDARD_UV1_CROSSFADE
-    mr = mix(mr, GE_StandardSampleHex(metallicRoughnessMap, sIn.uv1, sIn.textureST[2], sIn.textureST2[2]), uv1Weight);
+    mr = mix(mr, GE_StandardSampleHex(metallicRoughnessMap, sIn.uv1, sIn.textureST[2], sIn.textureST2[2], false), uv1Weight);
   #endif
 #endif
     o.roughness = mr.g * Mat.uParams0.y;
@@ -216,15 +234,15 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // these maps is driven by its parameters; the adapter consumes o.ao (ambient) and adds
     // o.emissive.
 #ifdef GE_PARALLAX_MARCH
-    o.ao = GE_StandardSampleAt(aoMap, sIn.textureST[4], sIn.textureST2[4], reliefUv0, sIn.uvFootprint).r;
+    o.ao = GE_StandardSampleAt(aoMap, sIn.textureST[4], sIn.textureST2[4], reliefUv0, sIn.uvFootprint, false).r;
     vec3 emissiveTex =
-        GE_StandardSampleAt(emissiveMap, sIn.textureST[3], sIn.textureST2[3], reliefUv0, sIn.uvFootprint).rgb;
+        GE_StandardSampleAt(emissiveMap, sIn.textureST[3], sIn.textureST2[3], reliefUv0, sIn.uvFootprint, false).rgb;
 #else
-    o.ao = GE_StandardSampleHex(aoMap, sIn.uv0, sIn.textureST[4], sIn.textureST2[4]).r;
+    o.ao = GE_StandardSampleHex(aoMap, sIn.uv0, sIn.textureST[4], sIn.textureST2[4], false).r;
   #ifdef GE_STANDARD_UV1_CROSSFADE
-    o.ao = mix(o.ao, GE_StandardSampleHex(aoMap, sIn.uv1, sIn.textureST[4], sIn.textureST2[4]).r, uv1Weight);
+    o.ao = mix(o.ao, GE_StandardSampleHex(aoMap, sIn.uv1, sIn.textureST[4], sIn.textureST2[4], false).r, uv1Weight);
   #endif
-    vec3 emissiveTex = GE_StandardSampleHex(emissiveMap, sIn.uv0, sIn.textureST[3], sIn.textureST2[3]).rgb;
+    vec3 emissiveTex = GE_StandardSampleHex(emissiveMap, sIn.uv0, sIn.textureST[3], sIn.textureST2[3], false).rgb;
 #endif
     // Emission authored in nits: texture x colour x luminance, scaled into scene-linear by the
     // reference-white anchor (OpenPBR emission_color x emission_luminance; an unbound texture
@@ -236,7 +254,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 #ifdef HAS_TANGENT
   #ifdef GE_PARALLAX_MARCH
     vec3 tn = GE_DecodeTangentNormal(
-        GE_StandardSampleAt(normalMap, sIn.textureST[1], sIn.textureST2[1], reliefUv0, sIn.uvFootprint));
+        GE_StandardSampleAt(normalMap, sIn.textureST[1], sIn.textureST2[1], reliefUv0, sIn.uvFootprint, false));
   #else
     vec3 tn = GE_StandardSampleHexNormal(normalMap, sIn.uv0, sIn.textureST[1], sIn.textureST2[1]);
   #endif
@@ -257,7 +275,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
   #ifdef HAS_TANGENT
     #ifdef GE_PARALLAX_MARCH
     vec3 ctn = GE_DecodeTangentNormal(
-        GE_StandardSampleAt(coatNormalMap, sIn.textureST[5], sIn.textureST2[5], reliefUv0, sIn.uvFootprint));
+        GE_StandardSampleAt(coatNormalMap, sIn.textureST[5], sIn.textureST2[5], reliefUv0, sIn.uvFootprint, false));
     #else
     vec3 ctn = GE_StandardSampleHexNormal(coatNormalMap, sIn.uv0, sIn.textureST[5], sIn.textureST2[5]);
     #endif
@@ -315,5 +333,18 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     o.fuzzRoughness = Mat.uParams20.w; // floored in the BRDF (GE_MIN_SHEEN_ROUGHNESS)
 #endif
 
+#ifdef GE_DIFFUSE_TRANSMISSION_ENABLED
+    o.diffuseTransmission = clamp(Mat.uParams14.w, 0.0, 1.0);
+    o.diffuseTransmissionAlbedo = o.baseColor;
+#endif
+
+#ifdef GE_IMPOSTOR_BAKE
+    o.impostorSeasonMask = Mat.uParams16.zw;
+#elif !defined(GE_DEPTH_ONLY_FRAGMENT) && !defined(GE_MOTION_VECTORS)
+    if (any(greaterThan(Mat.uParams16.zw, vec2(0.0))) &&
+        (Light.uFoliageAutumnTint.a > 0.0 || Light.uFoliageSnow.x > 0.0))
+        o.baseColor = GE_ApplyFoliageSeason(o.baseColor, o.normalWS, Mat.uParams16.zw,
+                                           Light.uFoliageAutumnTint, Light.uFoliageSnow.x);
+#endif
     return o;
 }

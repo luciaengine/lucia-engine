@@ -10,7 +10,6 @@
 #include "Assets/HlodBakeDriver.h"
 #include "Assets/ModelAsset.h"
 #include "Core/Engine.h"
-#include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
 #include "Engine/Rendering/DeviceLostEcsRecovery.h"
 #include "Engine/Rendering/HlodRuntime.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
@@ -626,21 +625,13 @@ void SceneDocumentManager::ReconcileHlodForScene(const std::filesystem::path& sc
     if (!m_World)
         return;
 
-    // WorldTransform is derived (not serialized); on a fresh load no frame has
-    // ticked yet, so seed it with one hierarchy pass first — the reconcile gathers
-    // member world positions and recomputes the C3 staleness hash from them, and
-    // they must match the values the bake stored.
     auto& assetManager = EngineCore::GetInstance().GetAssetManager();
     Hlod::HlodRuntime& hlod = renderServices.GetHlodRuntime();
-    const std::filesystem::path hlodFile = Hlod::ResolveHlodCacheFile(assetManager, scenePath);
+    const std::filesystem::path hlodFile = Hlod::ResolveExistingHlodCacheFile(assetManager, scenePath);
     if (!hlodFile.empty() && std::filesystem::exists(hlodFile))
     {
-        Engine::Renderer::TransformHierarchySystem hierarchy;
-        hierarchy.Update(*m_World, 0.0f);
-        m_World->ProcessCommands();
-
-        Hlod::ModelResolver modelResolver = [&assetManager](const GUID& guid) -> const ModelAsset* {
-            return dynamic_cast<const ModelAsset*>(assetManager.GetAsset(guid).get());
+        Hlod::ModelResolver modelResolver = [&assetManager](const GUID& guid) -> SharedPtr<const ModelAsset> {
+            return std::dynamic_pointer_cast<const ModelAsset>(assetManager.GetAsset(guid));
         };
         hlod.ReconcileScene(*m_World, renderServices.GetMeshGPURegistry(), hlodFile,
                             scenePath.stem().string(), modelResolver);

@@ -516,6 +516,8 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
                                              renderedCount * sizeof(uint32_t));
         m_Device->UpdateStorageBufferBinding(ds, 13, m_Rendered[m_RenderedCurrentIndex], 0,
                                              renderedCount * sizeof(uint32_t));
+        m_Device->UpdateStorageBufferBinding(ds, 14, m_Scene->GetInstanceBufferForFrame(frameIndex), 0,
+                                             std::max<size_t>(instanceCount, 1u) * sizeof(GPUInstance));
 
         GPUDrawStreamBuilder::ScatterPushConstants pc{};
         pc.instanceCount   = instanceCount;
@@ -2932,6 +2934,8 @@ class GroupCompactComputeTest : public BatchScatterComputeTest
                                              0, historyCount * sizeof(uint32_t));
         m_Device->UpdateStorageBufferBinding(scatterDS, 13, m_Rendered[m_RenderedCurrentIndex], 0,
                                              historyCount * sizeof(uint32_t));
+        m_Device->UpdateStorageBufferBinding(scatterDS, 14, m_Scene->GetInstanceBufferForFrame(frameIndex), 0,
+                                             std::max<size_t>(instanceCount, 1u) * sizeof(GPUInstance));
 
         DescriptorSetDesc compactDesc{};
         compactDesc.layout    = GPUDrawStreamBuilder::MakeGroupCompactDescriptorSetLayout();
@@ -4540,6 +4544,139 @@ TEST_P(BatchScatterComputeTest, ImpostorPastTheSwitchDrawsTheCardForThePrimaryPa
         EXPECT_EQ(InstancesInRows(table, near.cursors, near.records, near.indirection, secondary,
                                   kImpostorSecondaryIndices).size(), 2u);
     }
+}
+
+TEST_P(BatchScatterComputeTest, AFilteredCardBatchKeepsBothMeshParts)
+{
+    const uint32_t primary = AddMeshRow(kImpostorPrimaryIndices);
+    const uint32_t secondary = AddMeshRow(kImpostorSecondaryIndices);
+    const uint32_t card = AddMeshRow(kImpostorCardIndices);
+    constexpr uint32_t kBarkMaterial = 1u;
+    constexpr uint32_t kLeafMaterial = 2u;
+    constexpr uint32_t kCardMaterial = 3u;
+    const uint32_t bark = m_Scene->AddInstance(MakeInstance(kBarkMaterial, primary));
+    const uint32_t leaves = m_Scene->AddInstance(
+        MakeInstance(kLeafMaterial, secondary, kInstanceFlagDepthMaterialDependent));
+
+    // Capture the slice's mesh rows before publishing the impostor group.
+    uint32_t total = 0u;
+    const auto table = BatchTableTesting::Build(m_Scene->GetBatchRegistry(), {}, &total);
+    ASSERT_EQ(total, 2u);
+    const uint32_t parts[] = {primary, secondary};
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, kCardMaterial, card));
+
+    const auto result = Dispatch(table, total, 0u, 0u, static_cast<uint32_t>(table.size()), total,
+                                 GPUDrawStreamBuilder::kClassModeOff, {}, 0xFFFFFFFFu, {}, 0u,
+                                 ImpostorLod(kImpostorFarDist, card, false));
+    EXPECT_EQ(result.stats.tableMisses, 0u);
+    EXPECT_EQ(InstancesInRows(table, result.cursors, result.records, result.indirection, primary,
+                              kImpostorPrimaryIndices), std::multiset<uint32_t>{bark});
+    EXPECT_EQ(InstancesInRows(table, result.cursors, result.records, result.indirection, secondary,
+                              kImpostorSecondaryIndices), std::multiset<uint32_t>{leaves});
+}
+
+TEST_P(BatchScatterComputeTest, IncompletePlacementKeepsItsLeavesWhenAnotherPlacementDrawsACard)
+{
+    const uint32_t primary = AddMeshRow(kImpostorPrimaryIndices);
+    const uint32_t secondary = AddMeshRow(kImpostorSecondaryIndices);
+    const uint32_t card = AddMeshRow(kImpostorCardIndices);
+    constexpr uint32_t kBarkMaterial = 1u;
+    constexpr uint32_t kLeafMaterial = 2u;
+    constexpr uint32_t kCardMaterial = 3u;
+    const uint32_t bark = m_Scene->AddInstance(MakeInstance(kBarkMaterial, primary,
+                                                            kInstanceFlagImpostorPlacement));
+    GPUInstance barkInstance = m_Scene->GetInstances()[bark];
+    barkInstance.impostorPlacementPrimaryPlusOne = bark + 1u;
+    m_Scene->UpdateInstance(bark, barkInstance);
+    GPUInstance leafInstance = MakeInstance(kLeafMaterial, secondary, kInstanceFlagImpostorPlacement);
+    leafInstance.impostorPlacementPrimaryPlusOne = bark + 1u;
+    m_Scene->AddInstance(leafInstance);
+    const uint32_t independentLeaves = m_Scene->AddInstance(MakeInstance(kLeafMaterial, secondary));
+    const uint32_t parts[] = {primary, secondary};
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, kCardMaterial, card, 0.0f, true));
+
+    uint32_t total = 0u;
+    const auto table = BatchTableTesting::Build(m_Scene->GetBatchRegistry(), {}, &total);
+    const auto result = Dispatch(table, total, 0u, 0u, static_cast<uint32_t>(table.size()), total,
+                                 GPUDrawStreamBuilder::kClassModeOff, {}, 0xFFFFFFFFu, {}, 0u,
+                                 ImpostorLod(kImpostorFarDist, card, false));
+    EXPECT_EQ(result.stats.tableMisses, 0u);
+    EXPECT_EQ(InstancesInRows(table, result.cursors, result.records, result.indirection, card,
+                              kImpostorCardIndices), std::multiset<uint32_t>{bark});
+    EXPECT_EQ(InstancesInRows(table, result.cursors, result.records, result.indirection, secondary,
+                              kImpostorSecondaryIndices), std::multiset<uint32_t>{independentLeaves});
+}
+
+TEST_P(BatchScatterComputeTest, MultipartImpostorSharesItsPrimaryHistoryAcrossOcclusionPhases)
+{
+    const uint32_t primary = AddMeshRow(kImpostorPrimaryIndices);
+    const uint32_t secondary = AddMeshRow(kImpostorSecondaryIndices);
+    const uint32_t card = AddMeshRow(kImpostorCardIndices);
+    GPUInstance barkInstance = MakeInstance(1u, primary, kInstanceFlagImpostorPlacement);
+    const uint32_t bark = m_Scene->AddInstance(barkInstance);
+    barkInstance.impostorPlacementPrimaryPlusOne = bark + 1u;
+    m_Scene->UpdateInstance(bark, barkInstance);
+    GPUInstance leafInstance = MakeInstance(2u, secondary, kInstanceFlagImpostorPlacement);
+    leafInstance.impostorPlacementPrimaryPlusOne = bark + 1u;
+    const uint32_t leaves = m_Scene->AddInstance(leafInstance);
+    const uint32_t parts[] = {primary, secondary};
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 3u, card, 0.0f, true));
+
+    uint32_t total = 0u;
+    const auto table = BatchTableTesting::Build(m_Scene->GetBatchRegistry(), {}, &total);
+    const uint32_t rows = static_cast<uint32_t>(table.size());
+    auto lod = ImpostorLod(kImpostorBandDist, card, true);
+    lod.renderedHistory = true;
+    const auto dispatch = [&](bool barkVisible, bool leavesVisible)
+    {
+        lod.visibility.assign(m_Scene->GetInstanceCount(), 0u);
+        lod.visibility[bark] = barkVisible ? 1u : 0u;
+        lod.visibility[leaves] = leavesVisible ? 1u : 0u;
+        return Dispatch(table, total, 0u, 0u, rows, total, 0u, {}, 0xFFFFFFFFu, {}, 0u, lod);
+    };
+    const auto instances = [&](const DispatchResult& result, uint32_t mesh, uint32_t indices)
+    {
+        return InstancesInRows(table, result.cursors, result.records, result.indirection, mesh, indices);
+    };
+    const uint32_t noHistory = GPUDrawStreamBuilder::kLodNoHistory;
+    const uint32_t previousCard = GPUDrawStreamBuilder::kRenderedHistoryLevelMask;
+    const uint32_t oldCard = GPUDrawStreamBuilder::kImpostorHistory;
+
+    SeedPrevLod({noHistory, oldCard});
+    SeedRenderedHistory({noHistory, previousCard});
+    const auto firstBark = dispatch(true, false);
+    EXPECT_EQ(instances(firstBark, primary, kImpostorPrimaryIndices), std::multiset<uint32_t>{bark});
+    const auto lateLeaves = dispatch(false, true);
+    EXPECT_EQ(instances(lateLeaves, secondary, kImpostorSecondaryIndices), std::multiset<uint32_t>{leaves});
+
+    SeedPrevLod({oldCard, noHistory});
+    SeedRenderedHistory({previousCard, noHistory});
+    const auto earlyLeaves = dispatch(false, true);
+    EXPECT_TRUE(instances(earlyLeaves, secondary, kImpostorSecondaryIndices).empty());
+    EXPECT_EQ(instances(earlyLeaves, card, kImpostorCardIndices), std::multiset<uint32_t>{bark});
+    EXPECT_EQ(earlyLeaves.renderedCurrent[bark], MakeRenderedEntry(previousCard, false, true));
+    const auto lateBark = dispatch(true, false);
+    EXPECT_TRUE(instances(lateBark, card, kImpostorCardIndices).empty());
+    EXPECT_TRUE(instances(lateBark, primary, kImpostorPrimaryIndices).empty());
+
+    ClearRenderedCurrent();
+    const auto earlyBark = dispatch(true, false);
+    EXPECT_EQ(instances(earlyBark, card, kImpostorCardIndices), std::multiset<uint32_t>{bark});
+    const auto lateCanopy = dispatch(false, true);
+    EXPECT_TRUE(instances(lateCanopy, card, kImpostorCardIndices).empty());
+    EXPECT_TRUE(instances(lateCanopy, secondary, kImpostorSecondaryIndices).empty());
+
+    // Standalone depth slices have no shared history. They keep surviving
+    // geometry when the primary is absent from the slice.
+    lod = ImpostorLod(kImpostorFarDist, card, false);
+    const auto standalone = dispatch(false, true);
+    EXPECT_TRUE(instances(standalone, card, kImpostorCardIndices).empty());
+    EXPECT_EQ(instances(standalone, secondary, kImpostorSecondaryIndices), std::multiset<uint32_t>{leaves});
+
+    leafInstance.impostorPlacementPrimaryPlusOne = leaves + 1u;
+    m_Scene->UpdateInstance(leaves, leafInstance);
+    const auto invalidPrimary = dispatch(false, true);
+    EXPECT_EQ(instances(invalidPrimary, secondary, kImpostorSecondaryIndices), std::multiset<uint32_t>{leaves});
 }
 
 // With a history the card stays until the exit coverage and every part records the card state, so

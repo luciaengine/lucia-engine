@@ -19,6 +19,10 @@ namespace
 // detail eye-height views keep along the view direction. WebGPU clamps a request
 // to the platform the same way, so the compatibility tier takes the same value.
 constexpr float kMaterialSamplerAnisotropy = 16.0f;
+constexpr uint64_t kConstrainedGpuMemoryBytes = 4ull << 30;
+constexpr uint32_t kCompactImpostorSwitchPixels = 96;
+constexpr uint32_t kCompactImpostorFramePixels = 64;
+constexpr uint64_t kCompactImpostorAtlasBudgetBytes = 64ull << 20;
 } // namespace
 
 RendererProfile RendererProfile::FromCapabilities(const RenderingDeviceCapabilities& caps)
@@ -43,6 +47,16 @@ RendererProfile RendererProfile::FromCapabilities(const RenderingDeviceCapabilit
         std::clamp(caps.maxSamplerAnisotropy, 1.0f, kMaterialSamplerAnisotropy);
     profile.UseInterpolationFunctions = caps.supportsShaderInterpolationFunctions;
     profile.UseClipDistance = caps.supportsShaderClipDistance;
+    // Metal publishes its recommended working set in this field. Vulkan
+    // publishes the visible device-local heap. Zero means no estimate.
+    const bool constrainedMemory = caps.dedicatedVideoMemory > 0 &&
+                                   caps.dedicatedVideoMemory <= kConstrainedGpuMemoryBytes;
+    if (profile.IsCompat() || constrainedMemory)
+    {
+        profile.ImpostorSwitchPixels = kCompactImpostorSwitchPixels;
+        profile.ImpostorFramePixels = kCompactImpostorFramePixels;
+        profile.ImpostorAtlasBudgetBytes = kCompactImpostorAtlasBudgetBytes;
+    }
     return profile;
 }
 
@@ -58,6 +72,9 @@ void RendererProfile::LogResolved() const
     Logger::Log::Info("  material anisotropy   : {}x", MaterialSamplerAnisotropy);
     Logger::Log::Info("  interpolation funcs   : {}", UseInterpolationFunctions ? "on" : "off");
     Logger::Log::Info("  clip distance         : {}", UseClipDistance ? "on" : "off");
+    Logger::Log::Info("  impostor atlas        : {}px tiles, {} MiB residency budget",
+                      ImpostorFramePixels, ImpostorAtlasBudgetBytes >> 20);
+    Logger::Log::Info("  impostor handoff      : {}px projected diameter", ImpostorSwitchPixels);
 }
 
 bool ApplyForceCompatOverride(RenderingDeviceCapabilities& caps)

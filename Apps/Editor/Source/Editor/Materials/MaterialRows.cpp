@@ -73,6 +73,8 @@ const std::vector<std::string>& BuiltInPropertyOrder()
         "enableAnisotropy",
         "anisotropy",
         "anisotropyRotation",
+        "enableDiffuseTransmission",
+        "diffuseTransmission",
         "enableSubsurface",
         "subsurfaceColor",
         "thickness",
@@ -126,6 +128,8 @@ const std::unordered_set<std::string>& BuiltInPropertyNames()
         "fuzzRoughness",
         "enableAnisotropy",
         "anisotropy",
+        "enableDiffuseTransmission",
+        "diffuseTransmission",
         "enableSubsurface",
         "subsurfaceColor",
         "thickness",
@@ -251,6 +255,10 @@ bool IsPropertyVisible(const std::string& key, const MaterialDocument& doc)
         const bool* on = (it != doc.properties.end()) ? std::get_if<bool>(&it->second) : nullptr;
         return on && *on;
     };
+    if (key == "enableDiffuseTransmission")
+        return !unlit && !shadowOnly;
+    if (key == "diffuseTransmission")
+        return !unlit && !shadowOnly && boolPropOn("enableDiffuseTransmission");
     if (key == "subsurfaceColor")
     {
         // subsurfaceColor contains "color" so it would be auto-visible by the default
@@ -345,7 +353,7 @@ bool IsSlider01Property(const std::string& name)
            name == "clearCoat" || name == "clearCoatRoughness" || name == "coatDarkening" ||
            name == "sheenRoughness" || name == "fuzzRoughness" ||
            name == "thickness" || name == "specularWeight" || name == "diffuseRoughness" ||
-           name == "transmissionWeight" || name == "thinFilmWeight";
+           name == "transmissionWeight" || name == "diffuseTransmission" || name == "thinFilmWeight";
 }
 
 std::string TextureSlotLabel(const std::string& slot)

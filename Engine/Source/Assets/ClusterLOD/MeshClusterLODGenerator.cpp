@@ -568,7 +568,7 @@ bool DagBuilder::Simplify(std::span<const uint32> merged, Vector<uint32>& output
     // only that triangle could break the locked shared border, so such a result is not used.
     if (!std::isfinite(error) || error < 0.0f || !IsValidReduction(merged, output))
         output.clear();
-    if (output.empty() || output.size() > target)
+    if (m_Config.AllowPositionOnlyReduction && (output.empty() || output.size() > target))
     {
         Vector<uint32> sloppy;
         float sloppyError = 0.0f;

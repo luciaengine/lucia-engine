@@ -118,6 +118,7 @@ bool BuildPipeline::PrepareMobileContent(const BuildSettings& settings, std::fil
     if (!CookStagedContent(contentRoot, manifest, assets.GetRegistry(), assets.GetParserRegistry(),
         assets.GetTextureCookWorkers(), &EngineCore::GetInstance().GetJobSystem(), [this] { return IsCancelled(); }, stats, error)) return false;
     CookMeshLODs(contentRoot, manifest);
+    StageHlodBakes(contentRoot, manifest);
     const TerrainPageExportResult pages = ExportTerrainPages(
         settings.projectRoot, contentRoot, manifest, assets.GetRegistry(), &EngineCore::GetInstance().GetJobSystem(),
         &m_CancelRequested);

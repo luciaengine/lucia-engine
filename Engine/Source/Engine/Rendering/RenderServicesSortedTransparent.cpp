@@ -384,7 +384,7 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
             list[index] = holder.Records[holder.CompositionMeshOrder[index]].InstanceIndex;
         holder.CompositionIndices = {HashStringId(CpuDrawStreamBuilder::kIndexListBindingName),
                                      indices.Buffer, indices.Offset, bytes};
-        holder.PcBytes.resize(holder.Partition.RunCount.size() * sizeof(uint32_t));
+        holder.PcBytes.resize(holder.Partition.RunCount.size() * sizeof(ComposedPCCompatInstanced));
         holder.Commands.clear();
         holder.Commands.reserve(holder.CompositionSlots.size());
         for (const auto& slot : holder.CompositionSlots)
@@ -397,8 +397,9 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
             const uint32_t first = holder.Partition.RunStart[slot.Index];
             const auto& record = holder.Records[holder.CompositionMeshOrder[first]];
             const auto& run = holder.Runs[holder.Partition.GroupOfSlot[slot.Index]];
-            auto* push = holder.PcBytes.data() + slot.Index * sizeof(uint32_t);
-            std::memcpy(push, &first, sizeof(first));
+            const ComposedPCCompatInstanced constants{first};
+            auto* push = holder.PcBytes.data() + slot.Index * sizeof(constants);
+            std::memcpy(push, &constants, sizeof(constants));
             DrawCommand command{};
             command.Material = run.Representative;
             command.Geometry.Mesh = run.Mesh;
@@ -407,7 +408,7 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
             command.VertexOffset = record.VertexOffset;
             command.InstanceCount = holder.Partition.RunCount[slot.Index];
             command.Bindings.Buffers = std::span(&holder.CompositionIndices, 1);
-            command.Bindings.PushConstants = std::span<const std::byte>(push, sizeof(first));
+            command.Bindings.PushConstants = std::span<const std::byte>(push, sizeof(constants));
             holder.Commands.push_back(command);
         }
         holder.WarnedDrainBail = false;

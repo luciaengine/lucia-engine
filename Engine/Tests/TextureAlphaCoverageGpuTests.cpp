@@ -591,6 +591,11 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     m_Textures.FlushPendingUploads();
     EXPECT_TRUE(Access::MipStreamsSettled(m_Textures));
 
+    const uint32 firstBakeRevision = streamed[0].BoundMaterial->GetBakeContentRevision();
+    const uint32 secondBakeRevision = streamed[1].BoundMaterial->GetBakeContentRevision();
+    const uint32 firstBindingRevision = streamed[0].BoundMaterial->GetContentRevision();
+    const uint32 secondBindingRevision = streamed[1].BoundMaterial->GetContentRevision();
+
     // The demand moves: the first texture takes the level that the second one held.
     coverage[streamed[0].MaterialIndex] = 0.9f;
     coverage[streamed[1].MaterialIndex] = 0.01f;
@@ -598,6 +603,13 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     SettleMipStreams();
     EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 512u);
     EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 256u);
+    EXPECT_NE(streamed[0].BoundMaterial->GetContentRevision(), firstBindingRevision);
+    EXPECT_NE(streamed[1].BoundMaterial->GetContentRevision(), secondBindingRevision);
+    EXPECT_EQ(streamed[0].BoundMaterial->GetBakeContentRevision(), firstBakeRevision);
+    EXPECT_EQ(streamed[1].BoundMaterial->GetBakeContentRevision(), secondBakeRevision);
+
+    streamed[0].BoundMaterial->SetFloat(HashStringId("alphaCutoff"), 0.25f);
+    EXPECT_NE(streamed[0].BoundMaterial->GetBakeContentRevision(), firstBakeRevision);
 
     for (const Streamed& entry : streamed)
     {

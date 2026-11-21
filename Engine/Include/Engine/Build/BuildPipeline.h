@@ -263,6 +263,7 @@ private:
     bool WriteGameConfig(const std::filesystem::path& stagingDir, const BuildSettings& s);
     bool StageAssetManifest(const std::filesystem::path& contentRoot, const AssetManifest& manifest);
     bool CookMeshLODs(const std::filesystem::path& contentRoot, const AssetManifest& manifest);
+    void StageHlodBakes(const std::filesystem::path& contentRoot, const AssetManifest& manifest);
     bool RunCustomSteps(BuildStep::Phase phase, BuildContext& ctx);
     bool FinalizeOutput(const std::filesystem::path& stagingDir, const std::filesystem::path& outputDir);
 

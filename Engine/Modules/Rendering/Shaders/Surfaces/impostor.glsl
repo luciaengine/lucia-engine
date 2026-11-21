@@ -4,21 +4,28 @@
 // zw the cosine and sine of its yaw, which turn the object normal into world space. The card blends
 // the three frames around the view direction at the surface point that the baked depth gives.
 //
+// @texture albedoMap srgb
+// @texture normalMap linear
+// @texture impostorSeasonMaskMap linear
+// @texture impostorDiffuseTransmissionMap linear
+// @property vec4 impostorAutumnTint "Impostor Autumn Tint" default=1,1,1,0 group=Impostor
+// @property float impostorSnowAmount "Impostor Snow Amount" default=0 group=Impostor
 // @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
 // impostorAtlas.z = 1 tints the cards red (GE_IMPOSTOR_DEBUG_TINT), to show which trees are cards.
 
 #include "Includes/impostor_frame.glsl"
+#include "Includes/foliage_season.glsl"
 
 // The object-space surface point (in sphere radii from the center) that `frame` sees through card
 // point `offset`. The bake camera is orthographic and reverse-Z, with near at 1 radius in front of
 // the center and far at 1 radius behind it, so window depth d is at 2d - 1 radii along the frame
 // direction. The atlas holds depth premultiplied by coverage; a texel with no surface keeps `offset`.
-vec3 GE_ImpostorSurfacePoint(vec2 frame, vec3 offset, vec4 impostorAtlas)
+vec3 GE_ImpostorSurfacePoint(vec2 frame, GE_ImpostorFrameBasis basis, vec3 offset, vec4 impostorAtlas, vec2 halfTexel)
 {
-    vec2 uv = GE_ImpostorFrameUv(frame, offset, impostorAtlas);
-    float coverage = texture(albedoMap, uv).a;
-    vec3 direction = GE_ImpostorFrameDirection(frame, impostorAtlas);
-    float depth = texture(normalMap, uv).w / max(coverage, 0.0001);
+    vec2 uv = GE_ImpostorFrameUv(frame, basis, offset, impostorAtlas, halfTexel);
+    float coverage = textureLod(albedoMap, uv, 0.0).a;
+    vec3 direction = basis.direction;
+    float depth = textureLod(normalMap, uv, 0.0).w / max(coverage, 0.0001);
     vec3 surface = offset - direction * dot(offset, direction) + direction * (2.0 * depth - 1.0);
     // An edge texel blends toward the card point, so the point does not jump at a silhouette.
     return mix(offset, surface, smoothstep(0.25, 0.75, coverage));
@@ -38,6 +45,9 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec2 frames[3];
     vec3 weights;
     GE_ImpostorBlendFrames(sIn.custom0.xy, Props.impostorAtlas, frames, weights);
+    // These atlases have one mip and no gutters. Explicit base-level samples
+    // avoid a derivative-driven footprint that can cross into a different frame.
+    vec2 halfTexel = min(vec2(0.5), 0.5 * Props.impostorAtlas.x / vec2(textureSize(albedoMap, 0)));
 
     // Atlas texels outside the tree hold 0 in every channel, so a filtered sample at a leaf edge is
     // already premultiplied by its coverage. Divide by the summed coverage; never multiply by it.
@@ -45,8 +55,12 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // the point moves smoothly when the view crosses from one frame to the next. The frames then
     // sample that point, so their texels line up instead of each showing the card plane.
     vec3 surface = vec3(0.0);
+    GE_ImpostorFrameBasis frameBases[3];
     for (int i = 0; i < 3; ++i)
-        surface += GE_ImpostorSurfacePoint(frames[i], offset, Props.impostorAtlas) * weights[i];
+    {
+        frameBases[i] = GE_ImpostorBuildFrameBasis(frames[i], Props.impostorAtlas);
+        surface += GE_ImpostorSurfacePoint(frames[i], frameBases[i], offset, Props.impostorAtlas, halfTexel) * weights[i];
+    }
 
     // A frame that has a surface in front of the surface point sees an occluder there (the leaves
     // above a trunk, seen from a higher frame). Its weight fades out over kOccluderFade, down to
@@ -57,12 +71,21 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec4 color = vec4(0.0);
     vec3 objectNormal = vec3(0.0);
     float weightSum = 0.0;
+#if !defined(GE_DEPTH_ONLY_FRAGMENT) && !defined(GE_MOTION_VECTORS)
+    vec4 autumnTint = Light.uFoliageAutumnTint.a > 0.0 ? Light.uFoliageAutumnTint : Props.impostorAutumnTint;
+    float snowAmount = max(Light.uFoliageSnow.x, Props.impostorSnowAmount);
+    bool shadeSeason = autumnTint.a > 0.0 || snowAmount > 0.0;
+    vec2 seasonMask = vec2(0.0);
+  #ifdef GE_DIFFUSE_TRANSMISSION_ENABLED
+    vec4 diffuseTransmission = vec4(0.0);
+  #endif
+#endif
     for (int i = 0; i < 3; ++i)
     {
-        vec2 uv = GE_ImpostorFrameUv(frames[i], surface, Props.impostorAtlas);
-        vec4 sampleColor = texture(albedoMap, uv);
-        vec4 sampleNormalDepth = texture(normalMap, uv);
-        float expectedDepth = dot(surface, GE_ImpostorFrameDirection(frames[i], Props.impostorAtlas)) * 0.5 + 0.5;
+        vec2 uv = GE_ImpostorFrameUv(frames[i], frameBases[i], surface, Props.impostorAtlas, halfTexel);
+        vec4 sampleColor = textureLod(albedoMap, uv, 0.0);
+        vec4 sampleNormalDepth = textureLod(normalMap, uv, 0.0);
+        float expectedDepth = dot(surface, frameBases[i].direction) * 0.5 + 0.5;
         float storedDepth = sampleNormalDepth.w / max(sampleColor.a, 0.0001);
         float occluded = smoothstep(kOccluderDepth, kOccluderDepth + kOccluderFade, storedDepth - expectedDepth) *
                          smoothstep(0.25, 0.75, sampleColor.a);
@@ -70,6 +93,13 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         color += sampleColor * weight;
         objectNormal += (sampleNormalDepth.xyz * 2.0 - sampleColor.a) * weight;
         weightSum += weight;
+#if !defined(GE_DEPTH_ONLY_FRAGMENT) && !defined(GE_MOTION_VECTORS)
+        if (shadeSeason)
+            seasonMask += textureLod(GE_USER_TEXTURE(impostorSeasonMaskMap), uv, 0.0).rg * weight;
+  #ifdef GE_DIFFUSE_TRANSMISSION_ENABLED
+        diffuseTransmission += textureLod(GE_USER_TEXTURE(impostorDiffuseTransmissionMap), uv, 0.0) * weight;
+  #endif
+#endif
     }
     color /= weightSum;
     objectNormal /= weightSum;
@@ -85,5 +115,20 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
                                 -s * objectNormal.x + c * objectNormal.z));
     o.roughness = 0.9;
     o.metallic = 0.0;
+#if !defined(GE_DEPTH_ONLY_FRAGMENT) && !defined(GE_MOTION_VECTORS)
+    if (shadeSeason && color.a > 0.0001)
+    {
+        // Coverage also filters the mask. Normalize it independently of the weather amounts.
+        seasonMask /= weightSum * color.a;
+        o.baseColor = GE_ApplyFoliageSeason(o.baseColor, o.normalWS, seasonMask, autumnTint, snowAmount);
+    }
+  #ifdef GE_DIFFUSE_TRANSMISSION_ENABLED
+    if (color.a > 0.0001 && diffuseTransmission.a > 0.0001)
+    {
+        o.diffuseTransmission = clamp(diffuseTransmission.a / (weightSum * color.a), 0.0, 1.0);
+        o.diffuseTransmissionAlbedo = diffuseTransmission.rgb / diffuseTransmission.a;
+    }
+  #endif
+#endif
     return o;
 }

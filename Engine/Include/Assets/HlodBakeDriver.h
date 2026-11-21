@@ -22,13 +22,16 @@ namespace ECS { class World; }
 
 namespace Hlod {
 
-// Resolve the sidecar .gehlod path for a scene, shared by the editor bake command
-// and the scene-load reconcile so they always agree. Editor: a loose file under
-// the project derived-artifact cache root (<cacheRoot>/Hlod/<scene>.gehlod).
-// Packaged Player: a GUID-free sibling of the manifest (<assetRoot>/.hlod/
-// <scene>.gehlod). Empty when neither root is available (raw test host).
+// Destination for an editor bake. Registered scenes are keyed by asset GUID.
 std::filesystem::path ResolveHlodCacheFile(AssetManager& assetManager,
                                             const std::filesystem::path& scenePath);
+
+// Reads also accept existing name-keyed editor bakes. Reconcile checks their members.
+std::filesystem::path ResolveExistingHlodCacheFile(AssetManager& assetManager,
+                                                 const std::filesystem::path& scenePath);
+
+// Staged artifact shared by the export and the runtime scene loader.
+std::filesystem::path PackagedHlodCacheFile(const std::filesystem::path& assetRoot, const GUID& scene);
 
 // Resolve the grid + admission config from the scene's first enabled HLODVolume
 // (v1: presence of one enabled volume is the scene-level opt-in; the first one

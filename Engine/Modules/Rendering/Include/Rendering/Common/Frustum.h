@@ -20,6 +20,9 @@ void ExtractFrustumPlanes(const Matrix4x4& viewProj, Vector4* outPlanes);
 // The planes are expected to come from ExtractFrustumPlanes.
 bool TestSphereFrustum(const Vector3& center, float radius, const Vector4* planes);
 
+// Uses a caller-supplied guard factor for an already conservative sphere.
+bool TestSphereFrustum(const Vector3& center, float radius, const Vector4* planes, float radiusScale);
+
 // Exact-per-plane axis-aligned box vs. frustum test. Returns false only when
 // the box lies entirely outside one plane; a box that straddles a frustum
 // corner can still report true. The planes are expected to come from

@@ -170,6 +170,7 @@ class MaterialRegistry
     // texture transforms. Shared by fresh registration and the hot-reload
     // refresh path so a re-Register correctly propagates edits.
     void ApplyDocumentToMaterial(Material& mat, const MaterialDocument& doc);
+    void ApplyLegacySurfaceProperties(Material& mat, const MaterialDocument& doc);
 
     // The hand-typed name->offset table for surfaces that read lanes by name.
     static void InstallLegacyPropertyLayouts(Material& mat);

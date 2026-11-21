@@ -1588,6 +1588,11 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                 constexpr float kTwoPi = 6.28318530718f;
                 AddMaterialSliderRow(content, "Anisotropy Rotation", cur, 0.0f, kTwoPi, root, mat, key, openPicker, undo, inlineEmbed, openAsset);
             }
+            else if (key == "enableDiffuseTransmission" && std::holds_alternative<bool>(val))
+            {
+                AddMaterialToggleRow(content, "Diffuse Transmission", std::get<bool>(val), root, mat, key,
+                                     openPicker, undo, inlineEmbed, openAsset);
+            }
             else if (key == "enableSubsurface" && std::holds_alternative<bool>(val))
             {
                 AddMaterialToggleRow(content, "Subsurface", std::get<bool>(val), root, mat,

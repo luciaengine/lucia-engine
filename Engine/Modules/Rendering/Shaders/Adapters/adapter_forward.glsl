@@ -213,7 +213,7 @@ vec4 ge_DeformationMotionPayload()
 }
 #elif defined(GE_IMPOSTOR_BAKE)
 #ifdef GE_DEPTH_ONLY_FRAGMENT
-#error "GE_IMPOSTOR_BAKE and GE_DEPTH_ONLY_FRAGMENT are different attachment shapes: a depth-only variant attaches NO colour target and a bake variant attaches two. Compose the bake variant without GE_DEPTH_ONLY_FRAGMENT - it already runs the alpha cutoff."
+#error "GE_IMPOSTOR_BAKE and GE_DEPTH_ONLY_FRAGMENT are different attachment shapes: a depth-only variant attaches NO colour target and a bake variant attaches colour targets. Compose the bake variant without GE_DEPTH_ONLY_FRAGMENT - it already runs the alpha cutoff."
 #endif
 #ifdef GE_GLASS_SHADOW_COLOR
 #error "GE_IMPOSTOR_BAKE and GE_GLASS_SHADOW_COLOR both claim the colour output at location 0. The glass tint is a light-space cascade write and a bake is never drawn into a cascade; compose them as separate variants."
@@ -222,6 +222,10 @@ vec4 ge_DeformationMotionPayload()
 // the mesh untransformed) and the depth along the frame axis.
 layout(location = 0) out vec4 oBakeColor;
 layout(location = 1) out vec4 oBakeNormalDepth;
+layout(location = 2) out vec2 oBakeSeasonMask;
+#ifdef GE_IMPOSTOR_BAKE_TRANSMISSION
+layout(location = 3) out vec4 oBakeDiffuseTransmission;
+#endif
 #else
 #ifndef GE_DEPTH_ONLY_FRAGMENT
 layout(location = 0) out vec4 oColor;
@@ -325,6 +329,8 @@ layout(set = 0, binding = 6) uniform LightUBO {
     vec4 uSecondaryDirs[3];   // xyz=light->surface direction
     vec4 uSecondaryColors[3]; // rgb=color*intensity (premultiplied)
 #include "../Includes/weather_wind_fields.glsl"
+    vec4 uFoliageAutumnTint;
+    vec4 uFoliageSnow;
 } Light;
 
 #include "../Includes/view_params.glsl"
@@ -920,6 +926,15 @@ void main()
     // The bake camera is orthographic, so the window depth is linear along the frame axis.
     oBakeColor = vec4(so.baseColor, 1.0);
     oBakeNormalDepth = vec4(bakeNormal * 0.5 + 0.5, gl_FragCoord.z);
+    oBakeSeasonMask = clamp(so.impostorSeasonMask, vec2(0.0), vec2(1.0));
+#ifdef GE_IMPOSTOR_BAKE_TRANSMISSION
+  #ifdef GE_DIFFUSE_TRANSMISSION_ENABLED
+    float share = clamp(so.diffuseTransmission, 0.0, 1.0);
+    oBakeDiffuseTransmission = vec4(clamp(so.diffuseTransmissionAlbedo, vec3(0.0), vec3(1.0)) * share, share);
+  #else
+    oBakeDiffuseTransmission = vec4(0.0);
+  #endif
+#endif
 #else // the shading path — the only one that declares oColor
 
     so.normalWS = normalize(so.normalWS);

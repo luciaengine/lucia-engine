@@ -37,6 +37,9 @@ struct PlayerBenchmarkPlan
     uint32_t TimingFrames = 600;
     uint32_t ProfiledFrames = 120;
     std::vector<PlayerBenchmarkPose> Poses;
+    /// Optional camera pose per timed frame. With a path, the single authored pose is the
+    /// warm-up pose and the last path pose is held while GPU pass timings are collected.
+    std::vector<PlayerBenchmarkPose> TimingPath;
     /// Named debug monitors sampled for their peak positive value in each profiled pose.
     std::vector<std::string> ActiveMonitors;
 };

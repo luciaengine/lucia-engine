@@ -334,6 +334,8 @@ struct ImportedMaterialData {
     // for custom shaders, and multiplying it in paints baked masks (black,
     // zero-alpha) over the model. glTF materials multiply COLOR_0 by spec.
     bool IgnoresVertexColor = false;
+    // Cooked canopy tiles have padded alpha coverage mips through mip 3.
+    bool ForestCanopyCoverage = false;
 };
 
 struct ImportedCameraData {
