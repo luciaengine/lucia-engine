@@ -27,6 +27,7 @@ namespace
 using namespace GameEngine::Rendering;
 
 constexpr int kHeartbeatFrames = 60;
+constexpr int kPreRecordYieldMs = 35;
 
 // Clip-space triangle from the vertex index; solid orange. Entry points are
 // "main" to match the backend's shared entry-point convention.
@@ -104,6 +105,13 @@ void Frame()
     if (!backbuffer.IsValid())
     {
         return;
+    }
+
+    if (!s.FirstFramePresented)
+    {
+        // Run the first draw in a later browser task, as a terrain GPU wait can.
+        emscripten_sleep(kPreRecordYieldMs);
+        std::printf("SMOKE: resumed before recording\n");
     }
 
     auto commandList = s.Device->CreateCommandList(IDevice::QueueType::Graphics);

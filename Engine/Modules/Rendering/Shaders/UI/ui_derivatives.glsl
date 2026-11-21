@@ -7,14 +7,8 @@
 // vUV vary LINEARLY over a primitive, so their screen derivatives are the same
 // wherever inside main they are taken. Sampling then uses explicit gradients
 // (textureGrad), which keeps mip selection and anisotropy intact — an explicit
-// LOD 0 would have thrown both away.
-//
-// The remaining sites differentiate a computed distance field. For a
-// unit-gradient SDF expressed in vLocal units, that screen gradient IS
-// LocalPerPixel — which is the substitution the rect and line paths already
-// make deliberately, because a field's own quad finite-difference collapses
-// along its ridges (see pixelFootprint in sdf_functions.glsl). The compat arms
-// therefore do not lose a term; they take the better one.
+// LOD 0 would have thrown both away. No site differentiates a computed
+// distance field: each takes the footprint px from main (pixelFootprint).
 #ifndef UI_DERIVATIVES_GLSL
 #define UI_DERIVATIVES_GLSL
 
@@ -22,7 +16,6 @@
 
 struct UiDerivatives
 {
-    float LocalPerPixel; // vLocal units spanned by one screen pixel
     vec2  UvDdx;         // dFdx(vUV) — texture gradient / subpixel stripe basis
     vec2  UvDdy;         // dFdy(vUV) — texture gradient
 };
