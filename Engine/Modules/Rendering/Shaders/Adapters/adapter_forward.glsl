@@ -500,10 +500,21 @@ const uint kPerInstanceMaterialRow = 0xffffffffu;
 layout(constant_id = 306) const uint GE_FORWARD_MATERIAL_ROW = kPerInstanceMaterialRow;
 #endif
 
+// The mip bias of every material sample. An impostor bake draws a whole object into one atlas
+// frame, so a coarse mip would merge each leaf with its gaps and the alpha test would drop it. The
+// bake samples near mip 0 instead: each atlas texel then passes the alpha test with the leaf
+// coverage at its center, so the atlas keeps the leaf density of the mesh.
+#ifdef GE_IMPOSTOR_BAKE
+const float kImpostorBakeMipBias = -8.0;
+#define GE_MATERIAL_MIP_BIAS kImpostorBakeMipBias
+#else
+#define GE_MATERIAL_MIP_BIAS ge_mipBiasParams.x
+#endif
+
 #if defined(GE_COMPAT_PROFILE)
 vec4 texture(GE_MaterialTexture t, vec2 uv)
 {
-    return ge_CompatSampleSlot(t.Slot, uv, ge_mipBiasParams.x);
+    return ge_CompatSampleSlot(t.Slot, uv, GE_MATERIAL_MIP_BIAS);
 }
 #else
 vec4 texture(GE_MaterialTexture t, vec2 uv)
@@ -511,11 +522,11 @@ vec4 texture(GE_MaterialTexture t, vec2 uv)
 #ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
     if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
         return texture(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]),
-                       uv, ge_mipBiasParams.x);
+                       uv, GE_MATERIAL_MIP_BIAS);
 #endif
     return texture(sampler2D(ge_BindlessTextures[nonuniformEXT(t.TexIdx)],
                              ge_BindlessSamplers[nonuniformEXT(t.SamplerIdx)]),
-                   uv, ge_mipBiasParams.x);
+                   uv, GE_MATERIAL_MIP_BIAS);
 }
 #endif
 
@@ -526,13 +537,13 @@ vec4 texture(GE_MaterialTexture t, vec2 uv)
 #if defined(GE_COMPAT_PROFILE)
 vec4 textureGrad(GE_MaterialTexture t, vec2 uv, vec2 uvPerPixelX, vec2 uvPerPixelY)
 {
-    float biasScale = exp2(ge_mipBiasParams.x);
+    float biasScale = exp2(GE_MATERIAL_MIP_BIAS);
     return ge_CompatSampleSlotGrad(t.Slot, uv, uvPerPixelX * biasScale, uvPerPixelY * biasScale);
 }
 #else
 vec4 textureGrad(GE_MaterialTexture t, vec2 uv, vec2 uvPerPixelX, vec2 uvPerPixelY)
 {
-    float biasScale = exp2(ge_mipBiasParams.x);
+    float biasScale = exp2(GE_MATERIAL_MIP_BIAS);
 #ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
     if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
         return textureGrad(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]),
