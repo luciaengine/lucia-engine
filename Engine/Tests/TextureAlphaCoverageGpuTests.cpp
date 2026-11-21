@@ -2,27 +2,34 @@
 #include "Assets/TextureCook.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
+#include "ECS/World.h"
+#include "ECSModules/Rendering/Systems/MaterialMipDemandSystem.h"
 #include "EngineLogCapture.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialMipStreaming/MaterialMipBudget.h"
 #include "Engine/Rendering/MaterialRegistry.h"
+#include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/TextureService.h"
+#include "Mathematics/MatrixOps.h"
 #include "Memory/StatsSnapshot.h"
 #include "Rendering/Core/CommandList.h"
+#include "Rendering/Core/GPUScene.h"
 #include "StagedTestPaths.h"
+#include "TestCameraEye.h"
 #include "TestDeviceHelper.h"
+
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
-#include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <gtest/gtest.h>
 #include <iostream>
 #include <thread>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -76,6 +83,11 @@ struct TextureCoverageUploadTestAccess
     {
         service.m_MaterialMipBudgetBytes = bytes;
         service.m_MaterialMipStreamsSettled = false;
+    }
+    static std::vector<float> MipCoverage(TextureService& service)
+    {
+        std::lock_guard lock(service.m_PendingTexturesMutex);
+        return service.m_MaterialCoverage;
     }
     static bool MipStreamsSettled(TextureService& service)
     {
@@ -271,6 +283,22 @@ class TextureCoverageGPU : public testing::Test
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
         ADD_FAILURE() << "the material mip streams did not settle";
+    }
+
+    static ViewId AddMipDemandView(Engine::Renderer::ViewRegistry& views, const char* name, const ECS::World& world)
+    {
+        constexpr float kNear = 0.1f;
+        constexpr float kFar = 100.0f;
+        CameraData camera{};
+        camera.view = Mathematics::Matrix4x4::Identity();
+        camera.proj = Mathematics::MakeOrthographicLH_ZO_ReverseZ(-8.0f, 8.0f, -4.0f, 4.0f, kNear, kFar);
+        camera.viewProj = camera.proj;
+
+        const CameraId cameraId = views.AllocateCamera(name);
+        views.SetCameraData(cameraId, GameEngine::Tests::TestCameraWithEye(camera), {kNear, kFar});
+        const ViewId view = views.AllocateView(name, cameraId);
+        views.SetViewWorldId(view, world.GetWorldId());
+        return view;
     }
 
     Engine::Renderer::Material* RegisterStreamingMaterial(const GUID& materialGuid, const char* name)
@@ -482,6 +510,56 @@ TEST_F(TextureCoverageGPU, ANewTextureServiceStreamsMaterialMipsUnderThePlatform
     ASSERT_NE(budget, 0u);
     EXPECT_EQ(Access::MipBudget(m_Textures), budget);
     EXPECT_TRUE(m_Textures.StreamsMaterialMips());
+}
+
+TEST_F(TextureCoverageGPU, MaterialMipDemandPublishesOnlyAfterTheMainCameraWorldSweeps)
+{
+    using Engine::Renderer::MaterialMipDemandSystem;
+    using Engine::Renderer::RenderServices;
+    using Engine::Renderer::TextureService;
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+
+    RenderServices services;
+    struct Shutdown
+    {
+        RenderServices& Services;
+        ~Shutdown() { Services.Shutdown(); }
+    } shutdown{services};
+    ASSERT_TRUE(services.Initialize(m_Device.get()));
+    TextureService& textures = services.Textures();
+    Access::SetMipBudget(textures, 2u * 1024u * 1024u);
+    MaterialMipDemandSystem demand(&services);
+    ASSERT_TRUE(demand.IsEnabled());
+
+    ECS::World mainWorld, otherWorld;
+    auto& views = services.Views();
+    const ViewId mainView = AddMipDemandView(views, "MipDemand.Main", mainWorld);
+    AddMipDemandView(views, "MipDemand.Other", otherWorld);
+
+    GPUInstance instance{};
+    instance.materialIndex = 1;
+    instance.boundingCenter = {0.0f, 0.0f, 5.0f};
+    instance.boundingRadius = 2.0f;
+    services.GetGPUScene()->AddInstance(instance);
+
+    constexpr int kUpdatesPerSweep = 30;
+    for (int update = 0; update < kUpdatesPerSweep; ++update)
+        demand.Update(otherWorld, 0.0f);
+    EXPECT_TRUE(Access::MipCoverage(textures).empty());
+
+    for (int update = 1; update < kUpdatesPerSweep; ++update)
+        demand.Update(mainWorld, 0.0f);
+    EXPECT_TRUE(Access::MipCoverage(textures).empty());
+    demand.Update(mainWorld, 0.0f);
+    const auto coverage = Access::MipCoverage(textures);
+    ASSERT_EQ(coverage.size(), 2u);
+    EXPECT_FLOAT_EQ(coverage[0], 0.0f);
+    EXPECT_FLOAT_EQ(coverage[1], 0.5f);
+
+    const CameraId pendingCamera = views.AllocateCamera("MipDemand.Pending");
+    views.SetViewCamera(mainView, pendingCamera);
+    demand.Update(mainWorld, 0.0f);
+    EXPECT_TRUE(Access::MipCoverage(textures).empty());
 }
 
 TEST_F(TextureCoverageGPU, MaterialMipStreamingRespectsBudgetAndKeepsDirectTextureSeparate)

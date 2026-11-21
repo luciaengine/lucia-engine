@@ -20,13 +20,13 @@ constexpr float32 kMinSurfaceDistance = 0.01f;
 
 std::optional<MaterialScreenDemand::View> MaterialScreenDemand::ViewOf(const Rendering::CameraData& camera)
 {
-    const bool hasEye = camera.renderOriginSector[3] != 0;
-    if (!hasEye)
+    const float32 projectionScale = std::abs(camera.proj[1][1]);
+    if (camera.renderOriginSector[3] == 0 || !std::isfinite(projectionScale) || projectionScale <= 0.0f)
         return std::nullopt;
     View view;
     view.OriginSector = CameraRenderOriginSector(camera);
     view.Eye = CameraEyeRelativeToOrigin(camera);
-    view.ProjScaleY = std::abs(camera.proj[1][1]);
+    view.ProjScaleY = projectionScale;
     view.Orthographic = IsOrthographicProjectionLH_ZO(camera.proj);
     return view;
 }
