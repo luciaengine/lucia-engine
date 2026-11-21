@@ -41,6 +41,12 @@ ForestBenchmarkMode GetForestBenchmarkMode()
     return mode;
 }
 
+bool ForestSplatHandoffEnabled()
+{
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_FOREST_SPLAT_FADE", true);
+    return enabled && GetForestBenchmarkMode() == ForestBenchmarkMode::Splats;
+}
+
 struct ForestPlacementCountSample
 {
     std::shared_ptr<RGBufferReadbackTicket> Ticket;
@@ -488,7 +494,8 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
 } // namespace
 
 bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
-    const CameraData& camera, ForestPlacementView view, std::vector<DrawSubCommand>& standRanges)
+    const CameraData& camera, ForestPlacementView view, std::vector<DrawSubCommand>& standRanges,
+    std::vector<ForestStandFadeDraw>& standFades)
 {
     auto& frame = *context.Frame;
     auto& services = *context.Services;
@@ -506,6 +513,9 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     }
 
     view.DetailDistance = session.DetailDistance;
+    constexpr float kSplatHandoffWidth = 64.0f;
+    const bool fade = ForestSplatHandoffEnabled();
+    view.DetailFadeWidth = fade ? std::min(kSplatHandoffWidth, view.DetailDistance) : 0.0f;
     if (!session.Stream && !session.Placements->CanRequestDetails(view))
     {
         session.WantsCard = session.Placements->CanPrefetchAtlas(view);
@@ -535,6 +545,7 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     if (!pass || format.ColorCount == 0)
         return false;
 
+    const auto fadeKeyword = fade ? MaterialKeyword::LodCrossfade : MaterialKeyword::None;
     const Material* material = nullptr;
     if (!meshOnly)
     {
@@ -556,7 +567,7 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
                 guid, doc, MaterialKeyword::None, MaterialSystem::BaseCompileMode::Async);
         }
         if (!material || !services.Materials().Variants().WarmColorVariant(*material, VertexAttributeFlags::None,
-                PrimitiveTopology::TriangleList, *pass & ~MaterialKeyword::Instanced,
+                PrimitiveTopology::TriangleList, (*pass & ~MaterialKeyword::Instanced) | fadeKeyword,
                 services.GetFrontFace(), format))
             return false;
     }
@@ -591,7 +602,7 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
             session.Placements->SlotCount(), gpuView, session.Pages, useSplats ? session.Splats.IndexCount : 6u,
             useSplats ? &wind : nullptr);
         if (!buffers || !EmitForestImpostorDraw(context, *buffers, session.Indices, card->Sway,
-                DrawCommand{.Material = material}, nullptr, useSplats ? &session.Splats : nullptr))
+                DrawCommand{.Material = material, .PassKeywords = fadeKeyword}, nullptr, useSplats ? &session.Splats : nullptr))
             return false;
         ObservePlacementCounts(session, context, &*buffers, near);
     }
@@ -621,6 +632,7 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
                  meshOnly ? "mesh LOD" : (useSplats ? "animated splat" : "impostor"), session.Plan.DetailedDraws.size());
     }
     standRanges.swap(session.Plan.StandDraws);
+    standFades.swap(session.Plan.StandFades);
     return true;
 }
 

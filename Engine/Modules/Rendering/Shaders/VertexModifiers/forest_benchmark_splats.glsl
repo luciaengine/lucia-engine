@@ -49,6 +49,9 @@ void ModifyVertex(inout VertexOutput vertex, inout InstanceData instance)
     float s = sin(yaw);
     mat3 rotation = mat3(vec3(c, 0, -s), vec3(0, 1, 0), vec3(s, 0, c));
 
+#ifdef GE_LOD_CROSSFADE
+    instance.lodFadeCode = forestPages[row.page].range.w;
+#endif
     instance.materialIndex = forestCard.material.x;
     instance.flags = 2u;
     instance.sector = Cam.uRenderOriginSector.xyz;

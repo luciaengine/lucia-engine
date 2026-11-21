@@ -35,6 +35,13 @@ struct ForestDetailDraw
     ForestPageTicket Ticket;
     uint32 FirstPlacement;
     uint32 PlacementCount;
+    uint32 FadeCode = 0;
+};
+
+struct ForestStandFadeDraw
+{
+    DrawSubCommand Range;
+    uint32 FadeCode;
 };
 
 struct ForestPlacementView
@@ -42,12 +49,14 @@ struct ForestPlacementView
     Mathematics::WorldPosition Eye;
     std::array<Mathematics::Vector4, 6> EyeRelativePlanes;
     float DetailDistance = 0;
+    float DetailFadeWidth = 0;
 };
 
 struct ForestPlacementFrame
 {
     std::vector<DrawSubCommand> StandDraws;
     std::vector<ForestDetailDraw> DetailedDraws;
+    std::vector<ForestStandFadeDraw> StandFades;
     std::vector<ForestPageTicket> Reads;
     std::vector<ForestPageTicket> CancelReads;
     uint32 VisibleCells = 0;
@@ -144,7 +153,7 @@ private:
     void GatherDemand(const ForestPlacementView& view);
     void ReleaseIfRetired(uint32 slot);
     void AppendReads(std::vector<ForestPageTicket>& reads);
-    void EmitDraws(uint64 frame, ForestPlacementFrame& out);
+    void EmitDraws(const ForestPlacementView& view, uint64 frame, ForestPlacementFrame& out);
     void EmitStand(uint32 first, uint32 end, std::vector<DrawSubCommand>& draws) const;
 
     PageStreaming::PackedPlacementStore m_Store;

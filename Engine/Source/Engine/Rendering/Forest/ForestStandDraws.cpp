@@ -9,6 +9,7 @@
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
+#include <cstring>
 #include <limits>
 
 namespace GameEngine::Engine::Renderer
@@ -85,12 +86,41 @@ ScopedSubscription RegisterForestStandDraws(
                  heads->Depth->IndexCount != heads->Color.IndexCount))
                 return;
 
+            std::vector<ForestStandFadeDraw> fades;
             if (details)
             {
                 auto* detailFeature = ctx.Services->GetFeature<ForestPlacementFeature>();
-                if (!detailFeature || !ctx.Frame->RequireExecutionLifetime(details) ||
-                    !detailFeature->EmitDetails(*details, ctx, *camera, placementView, *draws))
+                bool fadeReady = true;
+                if (ForestSplatHandoffEnabled())
+                {
+                    const auto pass = views.GetViewDeclaredWorldPassKeywords(ctx.ViewId);
+                    const auto format = views.GetViewWorldColorFormatKey(ctx.ViewId);
+                    fadeReady = pass && format.ColorCount != 0 && !heads->Depth && heads->Color.Material &&
+                        heads->Color.Bindings.PushConstants.size() == sizeof(IdentityMeshDrawConstants) &&
+                        ctx.Services->Materials().Variants().WarmColorVariant(*heads->Color.Material,
+                            heads->Color.VertexFlags, Rendering::PrimitiveTopology::TriangleList,
+                            (*pass & ~Rendering::MaterialKeyword::Instanced) | Rendering::MaterialKeyword::LodCrossfade,
+                            ctx.Services->GetFrontFace(), format);
+                }
+                if (!detailFeature || !fadeReady || !ctx.Frame->RequireExecutionLifetime(details) ||
+                    !detailFeature->EmitDetails(*details, ctx, *camera, placementView, *draws, fades))
                     placements->GatherStand(placementView, *draws);
+            }
+            for (auto& fade : fades)
+            {
+                auto color = heads->Color;
+                auto ranges = std::span(&fade.Range, 1);
+                if (!ApplyStandIndexRange(color, ranges))
+                    continue;
+                auto* range = ctx.Frame->AllocatePassData<DrawSubCommand>(fade.Range);
+                auto* constants = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(0u);
+                std::memcpy(constants, color.Bindings.PushConstants.data(), sizeof(*constants));
+                constants->Reserved0 = fade.FadeCode;
+                color.Bindings.PushConstants = std::as_bytes(std::span(constants, 1));
+                color.PassKeywords |= Rendering::MaterialKeyword::LodCrossfade;
+                color.Producer = producer;
+                color.SubDraws = std::span(range, 1);
+                ctx.Services->EmitForwardCommand(ctx.ViewId, color, ForwardDrawDepth::ColourPass);
             }
             if (draws->empty() || !ApplyStandIndexRange(heads->Color, *draws))
                 return;

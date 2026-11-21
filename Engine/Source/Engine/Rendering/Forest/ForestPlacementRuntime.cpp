@@ -1,6 +1,7 @@
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
 
 #include "Rendering/Common/Frustum.h"
+#include "Rendering/Core/GPUDrawStreamBuilder.h"
 
 #include <algorithm>
 #include <cassert>
@@ -346,6 +347,7 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
 {
     out.StandDraws.clear();
     out.DetailedDraws.clear();
+    out.StandFades.clear();
     out.Reads.clear();
     out.CancelReads.clear();
     out.VisibleCells = 0;
@@ -385,7 +387,7 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
             ReleaseIfRetired(i);
     }
     AppendReads(out.Reads);
-    EmitDraws(frame, out);
+    EmitDraws(view, frame, out);
     return true;
 }
 
@@ -527,7 +529,7 @@ void ForestPlacementRuntime::EmitStand(uint32 first, uint32 end, std::vector<Dra
     draws.push_back({.IndexCount = m_IndexOffsets[end] - offset, .FirstIndex = offset});
 }
 
-void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
+void ForestPlacementRuntime::EmitDraws(const ForestPlacementView& view, uint64 frame, ForestPlacementFrame& out)
 {
     m_Ready.clear();
     for (uint32 i = 0; i < m_Slots.size(); ++i)
@@ -550,8 +552,30 @@ void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
         {
             const auto [page, slot] = *ready++;
             assert(cursor <= page);
+            uint32 fadeCode = 0;
+            if (view.DetailFadeWidth > 0.0f)
+            {
+                const auto& bounds = m_Leaves[page];
+                const double distance = std::sqrt(DistanceSquared(bounds.Min, bounds.Max,
+                    {view.Eye.X, view.Eye.Y, view.Eye.Z}));
+                const double weight = std::clamp((view.DetailDistance - distance) / view.DetailFadeWidth, 0.0, 1.0);
+                const uint32 steps = static_cast<uint32>(std::round(weight * 16.0));
+                if (steps == 0)
+                    continue;
+                if (steps < 16)
+                {
+                    // Choose an encoded threshold strictly between two adjacent Bayer samples.
+                    using Fade = Rendering::GPUDrawStreamBuilder;
+                    const uint32 quantized = ((steps - 1u) * Fade::kLodFadeMaxWeight) / 16u + 1u;
+                    fadeCode = quantized << Fade::kLodFadeWeightShift;
+                    const uint32 first = m_IndexOffsets[page];
+                    out.StandFades.push_back({{.IndexCount = m_IndexOffsets[page + 1] - first,
+                                              .FirstIndex = first}, fadeCode | Fade::kLodFadePhaseBit});
+                }
+            }
             EmitStand(cursor, page, out.StandDraws);
-            out.DetailedDraws.push_back({m_Slots[slot].Ticket, slot * kPlacementsPerSlot, m_Store.Pages()[page].Count});
+            out.DetailedDraws.push_back({m_Slots[slot].Ticket, slot * kPlacementsPerSlot,
+                                        m_Store.Pages()[page].Count, fadeCode});
             cursor = page + 1;
         }
         EmitStand(cursor, end, out.StandDraws);

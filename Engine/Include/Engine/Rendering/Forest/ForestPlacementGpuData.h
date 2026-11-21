@@ -11,7 +11,7 @@ namespace GameEngine::Engine::Renderer
 
 struct alignas(16) ForestPlacementGpuPage
 {
-    std::array<uint32, 4> Range; // First slot, count, roots fully inside the frustum, padding.
+    std::array<uint32, 4> Range; // First slot, count, roots fully inside the frustum, fade code.
     Mathematics::Vector4 OriginRelative;
     // One bit per page-local placement. Only a mesh already submitted for this
     // view can claim a bit. The shader reads five of these eight words.

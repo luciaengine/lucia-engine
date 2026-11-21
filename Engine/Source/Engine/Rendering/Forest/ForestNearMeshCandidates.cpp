@@ -127,6 +127,8 @@ void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
     const float meshEnterCoverage = view.ImpostorCoverage * (1.0f + ImpostorStage::kSwitchHysteresis);
     for (const auto& detail : frame.DetailedDraws)
     {
+        if (detail.FadeCode != 0)
+            continue;
         const auto records = runtime.ReadyPlacements(detail.Ticket);
         if (records.empty() || PageDistanceSquared(archive[detail.Ticket.Page], eye) > maxDistance * maxDistance)
             continue;

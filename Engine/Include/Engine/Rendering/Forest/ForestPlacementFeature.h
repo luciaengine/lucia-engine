@@ -14,6 +14,7 @@ namespace GameEngine::Engine::Renderer
 
 enum class ForestBenchmarkMode { Impostor, Mesh, Splats };
 ForestBenchmarkMode GetForestBenchmarkMode();
+bool ForestSplatHandoffEnabled();
 
 struct ForwardEmitContext;
 struct ForestPlacementSession;
@@ -42,7 +43,7 @@ public:
     /// Return true when standRanges accounts for all visible cells not drawn by the packed stream.
     bool EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
                      const Rendering::CameraData& camera, ForestPlacementView view,
-                     std::vector<DrawSubCommand>& standRanges);
+                     std::vector<DrawSubCommand>& standRanges, std::vector<ForestStandFadeDraw>& standFades);
 
     void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
                             const Rendering::IDevice::GpuSyncToken& token) override;

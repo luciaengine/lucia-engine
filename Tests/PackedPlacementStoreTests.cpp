@@ -290,6 +290,46 @@ TEST_F(PackedPlacementStoreTest, KeepsFallbackThroughUploadAndProtectsRetiringSl
     EXPECT_FALSE(planner->CompleteRead(second, kSecondPage));
 }
 
+TEST_F(PackedPlacementStoreTest, ReadySplatPagesFadeBothRepresentationsAcrossDetailRange)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "fade.geforest";
+    WriteStore(file);
+    std::string error;
+    auto planner = ForestPlacementRuntime::OpenQuadStand(file, error, 1, 1);
+    ASSERT_TRUE(planner) << error;
+
+    ForestPlacementView view{{511'999'918.0, 8.0, 512'000'001.0}, {}, 100.0f, 40.0f};
+    ForestPlacementFrame plan;
+    ASSERT_TRUE(planner->Prepare(view, 1, 0, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    EXPECT_TRUE(plan.StandFades.empty());
+    const auto ticket = plan.Reads.front();
+    ASSERT_TRUE(planner->CompleteRead(ticket, kFirstPage));
+    ASSERT_TRUE(planner->CompleteUpload(ticket, true));
+
+    ASSERT_TRUE(planner->Prepare(view, 2, 1, plan));
+    ASSERT_EQ(plan.StandFades.size(), 1u);
+    ASSERT_EQ(plan.DetailedDraws.size(), 1u);
+    EXPECT_EQ(plan.StandFades[0].Range.FirstIndex, 0u);
+    EXPECT_EQ(plan.StandFades[0].Range.IndexCount, 6u);
+    EXPECT_EQ(plan.StandFades[0].FadeCode ^ plan.DetailedDraws[0].FadeCode, 0x80000000u);
+    EXPECT_EQ(plan.DetailedDraws[0].FadeCode >> 24u, 56u);
+
+    view.Eye.X = 511'999'898.25;
+    ASSERT_TRUE(planner->Prepare(view, 3, 2, plan));
+    EXPECT_TRUE(plan.StandFades.empty());
+    EXPECT_TRUE(plan.DetailedDraws.empty());
+    ASSERT_EQ(plan.StandDraws.size(), 1u);
+    EXPECT_EQ(plan.StandDraws[0].IndexCount, 12u);
+
+    view.Eye.X = 511'999'950.0;
+    ASSERT_TRUE(planner->Prepare(view, 4, 3, plan));
+    EXPECT_TRUE(plan.StandFades.empty());
+    ASSERT_EQ(plan.DetailedDraws.size(), 1u);
+    EXPECT_EQ(plan.DetailedDraws[0].FadeCode, 0u);
+}
+
 TEST_F(PackedPlacementStoreTest, ReturningViewReusesAReadyPageAndExtendsItsReaderFence)
 {
     using namespace Engine::Renderer;

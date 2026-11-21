@@ -73,7 +73,7 @@ bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, const 
         }
         const auto roots = runtime.ReadyRootBounds(detail.Ticket);
         const uint32 inside = roots && RootsInsideFrustum(*roots, local, view.Planes) ? 1u : 0u;
-        pages.push_back({{detail.FirstPlacement, detail.PlacementCount, inside, 0}, {local, 0.0f}, {}});
+        pages.push_back({{detail.FirstPlacement, detail.PlacementCount, inside, detail.FadeCode}, {local, 0.0f}, {}});
     }
     // EmitDraws keeps detail pages in page order. Resolve a mesh claim against
     // its complete ticket so an old mesh cannot suppress a replacement slot.
