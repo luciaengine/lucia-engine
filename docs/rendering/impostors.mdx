@@ -78,7 +78,9 @@ Enable **Far impostor** on `impostorModel` and include every submesh with its ba
 
 Set `nearMeshBudget` to draw up to that many nearby trees as meshes in the streamed view. The renderer chooses the closest eligible placements. Each source part uses its own mesh LOD and material. A tree uses its card while the source mesh variants are loading. A small overlap between the switch distances keeps the current representation as the camera moves near the boundary. The setting defaults to zero and the hardware profile caps a positive budget.
 
-Desktop export reads `forestStand` from the project root's `game.config` and stages the archive at the same relative path under `Assets`. Keep the archive under the project's `Assets` folder and include the configured overview entity in the exported startup scene.
+To stream more than one stand, put the stand objects in a `forestStands` array in `game.config`. Give each stand its own overview entity. Each detailed stand has its own page residency and near-mesh budget. Use `forestStand` for a single stand. If both keys are present, a `forestStands` array supplies the complete list.
+
+Desktop export reads the configured stands from the project root's `game.config` and stages each archive at the same relative path under `Assets`. Keep the archives under the project's `Assets` folder and include their overview entities in the exported startup scene.
 
 ## Foliage shading
 

@@ -92,16 +92,47 @@ TEST(PlayerStartupReadiness, ForestStandArchiveAndEntityRoundTrip)
     const auto configPath = root.Path() / "game.config";
     GameConfig config;
     ASSERT_TRUE(SaveGameConfig(configPath, config));
-    EXPECT_FALSE(LoadGameConfig(configPath).forestStand);
-    config.forestStand = ForestStandConfig{"Forests/Forest.geforest", "Canopy", "Trees/Tree.glb", 275.0f, 64u};
+    EXPECT_TRUE(LoadGameConfig(configPath).forestStands.empty());
+    config.forestStands.push_back({"Forests/Forest.geforest", "Canopy", "Trees/Tree.glb", 275.0f, 64u});
     ASSERT_TRUE(SaveGameConfig(configPath, config));
     const auto loaded = LoadGameConfig(configPath);
-    ASSERT_TRUE(loaded.forestStand);
-    EXPECT_EQ(loaded.forestStand->archive, "Forests/Forest.geforest");
-    EXPECT_EQ(loaded.forestStand->entity, "Canopy");
-    EXPECT_EQ(loaded.forestStand->impostorModel, "Trees/Tree.glb");
-    EXPECT_FLOAT_EQ(loaded.forestStand->detailDistance, 275.0f);
-    EXPECT_EQ(loaded.forestStand->nearMeshBudget, 64u);
+    ASSERT_EQ(loaded.forestStands.size(), 1u);
+    EXPECT_EQ(loaded.forestStands.front().archive, "Forests/Forest.geforest");
+    EXPECT_EQ(loaded.forestStands.front().entity, "Canopy");
+    EXPECT_EQ(loaded.forestStands.front().impostorModel, "Trees/Tree.glb");
+    EXPECT_FLOAT_EQ(loaded.forestStands.front().detailDistance, 275.0f);
+    EXPECT_EQ(loaded.forestStands.front().nearMeshBudget, 64u);
+}
+
+TEST(PlayerStartupReadiness, ForestStandsRoundTripWithIndependentArchiveSettings)
+{
+    const TestUtils::ScopedTempDir root(TestUtils::MakeUniqueTempDirectory("PlayerStartupForestStands"));
+    const auto configPath = root.Path() / "game.config";
+    {
+        std::ofstream file(configPath);
+        file << R"({
+            "forestStand": {"archive": "Forests/Old.geforest", "entity": "Old"},
+            "forestStands": [
+                {"archive": "Forests/Pines.geforest", "entity": "Pines", "impostorModel": "Trees/Pine.glb",
+                 "detailDistance": 175, "nearMeshBudget": 24},
+                {"archive": "Forests/Oaks.geforest", "entity": "Oaks"}
+            ]
+        })";
+    }
+    auto config = LoadGameConfig(configPath);
+    ASSERT_EQ(config.forestStands.size(), 2u);
+    ASSERT_TRUE(SaveGameConfig(configPath, config));
+    const auto loaded = LoadGameConfig(configPath);
+    ASSERT_EQ(loaded.forestStands.size(), 2u);
+    EXPECT_EQ(loaded.forestStands[0].archive, "Forests/Pines.geforest");
+    EXPECT_EQ(loaded.forestStands[0].entity, "Pines");
+    EXPECT_EQ(loaded.forestStands[0].impostorModel, "Trees/Pine.glb");
+    EXPECT_FLOAT_EQ(loaded.forestStands[0].detailDistance, 175.0f);
+    EXPECT_EQ(loaded.forestStands[0].nearMeshBudget, 24u);
+    EXPECT_EQ(loaded.forestStands[1].archive, "Forests/Oaks.geforest");
+    EXPECT_EQ(loaded.forestStands[1].entity, "Oaks");
+    EXPECT_TRUE(loaded.forestStands[1].impostorModel.empty());
+    EXPECT_EQ(loaded.forestStands[1].nearMeshBudget, 0u);
 }
 
 } // namespace

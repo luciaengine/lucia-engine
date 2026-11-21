@@ -502,7 +502,7 @@ bool PlayerApplication::Initialize()
 
 void PlayerApplication::Shutdown()
 {
-    m_ForestStand.Reset();
+    m_ForestStands.clear();
     // Stop user C++ systems (OnDestroy) while the world is still alive. A Player that exits
     // before its startup scene is instantiated never started them.
     if (auto* world = EngineCore::GetInstance().GetPrimaryWorld();
@@ -662,16 +662,11 @@ void PlayerApplication::OnStartupSceneInstantiated(SceneLoadInstantiated& instan
         RegisterManagedSystemBridge();
 }
 
-bool PlayerApplication::AttachStartupForest(SceneLoadInstantiated& instantiated)
+static ScopedSubscription AttachForestStand(SceneLoadInstantiated& instantiated,
+                                             Engine::Renderer::RenderServices& services,
+                                             const ForestStandConfig& config)
 {
-    m_ForestStand.Reset();
-    auto& engine = EngineCore::GetInstance();
-    auto* services = engine.GetRenderServices();
-    if (!m_GameConfig.forestStand || !services)
-        return true;
-
     auto& world = instantiated.World();
-    const auto& config = *m_GameConfig.forestStand;
     ECS::EntityHandle stand{};
     std::optional<Components::MeshRenderer> source;
     uint32 matches = 0;
@@ -688,13 +683,13 @@ bool PlayerApplication::AttachStartupForest(SceneLoadInstantiated& instantiated)
     if (matches != 1 || source->modelAssetGuid.IsNull() ||
         source->RenderLayers != Rendering::RenderLayerMask::None() || source->MeshNameId != 0)
     {
-        instantiated.Fail("forestStand.entity must name one stand with a mesh asset and no render layers");
-        return false;
+        instantiated.Fail("Forest stand entity '" + config.entity + "' must name one stand with a mesh asset and no render layers");
+        return {};
     }
 
-    auto& assets = engine.GetAssetManager();
+    auto& assets = EngineCore::GetInstance().GetAssetManager();
     const auto archive = assets.ResolveAssetPath(config.archive);
-    const auto& profile = services->GetProfile();
+    const auto& profile = services.GetProfile();
     const bool constrained = profile.IsCompat() || profile.ImpostorAtlasBudgetBytes <= (64ull << 20u);
     const bool detailEnabled = !config.impostorModel.empty() && config.detailDistance > 0.0f;
     const uint32 slots = detailEnabled ? (constrained ? 128u : 512u) : 0u;
@@ -705,7 +700,7 @@ bool PlayerApplication::AttachStartupForest(SceneLoadInstantiated& instantiated)
     if (!placements)
     {
         instantiated.Fail("Forest stand archive '" + config.archive + "': " + error);
-        return false;
+        return {};
     }
     const auto worldId = world.GetWorldId();
     const auto epoch = world.GetEntityHandleEpoch();
@@ -714,13 +709,13 @@ bool PlayerApplication::AttachStartupForest(SceneLoadInstantiated& instantiated)
     {
         const auto model = assets.ResolveAssetGuid(config.impostorModel);
         if (!model.IsNull())
-            details = services->EnsureFeature<Engine::Renderer::ForestPlacementFeature>().Attach(
+            details = services.EnsureFeature<Engine::Renderer::ForestPlacementFeature>().Attach(
                 placements, assets, worldId, model, config.detailDistance, nearBudget);
     }
-    Logger::Log::Info("Player: forest stand attached to '{}' with {} cells and {} placements",
-                      config.entity, placements->Store().Pages().size(), placements->Store().PlacementCount());
-    m_ForestStand = Engine::Renderer::RegisterForestStandMesh(
-        *services, worldId, Rendering::RenderLayerMask::Default(), std::move(placements),
+    const auto cells = placements->Store().Pages().size();
+    const auto count = placements->Store().PlacementCount();
+    auto registration = Engine::Renderer::RegisterForestStandMesh(
+        services, worldId, Rendering::RenderLayerMask::Default(), std::move(placements),
         Rendering::MeshGPUKey{source->modelAssetGuid.ToGuid(), source->meshId},
         [worldId, epoch, stand, model = source->modelAssetGuid, meshId = source->meshId]() -> GUID
         {
@@ -734,6 +729,38 @@ bool PlayerApplication::AttachStartupForest(SceneLoadInstantiated& instantiated)
                 return {};
             return renderer->materialAssetGuid.ToGuid();
         }, std::move(details));
+    if (!registration)
+        instantiated.Fail("Could not register forest stand entity '" + config.entity + "'");
+    else
+        Logger::Log::Info("Player: forest stand attached to '{}' with {} cells and {} placements", config.entity, cells, count);
+    return registration;
+}
+
+bool PlayerApplication::AttachStartupForest(SceneLoadInstantiated& instantiated)
+{
+    m_ForestStands.clear();
+    auto* services = EngineCore::GetInstance().GetRenderServices();
+    if (!services || m_GameConfig.forestStands.empty())
+        return true;
+
+    // Keep the registrations local until every stand has attached. A later failure
+    // releases all earlier registrations along with the rejected startup scene.
+    const auto& configs = m_GameConfig.forestStands;
+    std::vector<ScopedSubscription> stands;
+    stands.reserve(configs.size());
+    for (const auto& config : configs)
+    {
+        if (std::ranges::count(configs, config.entity, &ForestStandConfig::entity) != 1)
+        {
+            instantiated.Fail("Forest stand entity '" + config.entity + "' is configured more than once");
+            return false;
+        }
+        auto stand = AttachForestStand(instantiated, *services, config);
+        if (!stand)
+            return false;
+        stands.push_back(std::move(stand));
+    }
+    m_ForestStands = std::move(stands);
     return true;
 }
 

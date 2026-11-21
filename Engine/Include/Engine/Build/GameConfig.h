@@ -9,9 +9,9 @@
 #include "UI/UIScaleSettings.h"
 #include <cstdint>
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace GameEngine {
 
@@ -56,7 +56,7 @@ struct GameConfig
     std::string renderPipeline;     // asset-relative, e.g. "RenderPipelines/ForwardPlus.rendergraph"
     // The Player waits for startup spline recipes before its ready line and screenshot.
     bool waitForSplineRecipes = true;
-    std::optional<ForestStandConfig> forestStand;
+    std::vector<ForestStandConfig> forestStands;
 
     LodImportConfig lod;
 

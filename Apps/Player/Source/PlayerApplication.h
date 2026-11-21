@@ -119,7 +119,7 @@ private:
 #endif
 
     GameConfig m_GameConfig;
-    ScopedSubscription m_ForestStand;
+    std::vector<ScopedSubscription> m_ForestStands;
     // True when C# GameSystems must tick each frame (NativeAOT library staged, or
     // CoreCLR with a loadable script assembly). See PlayerNeedsManagedSystemBridge.
     bool m_TickManagedSystems = false;

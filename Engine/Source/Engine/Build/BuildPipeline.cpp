@@ -452,12 +452,12 @@ bool BuildPipeline::Execute(const BuildSettings& settings, ProgressCallback prog
     {
         const fs::path gameConfig = settings.projectRoot / "game.config";
         std::error_code configError;
-        if (!settings.playerConfig.forestStand && !settings.projectRoot.empty() && fs::is_regular_file(gameConfig, configError))
+        if (settings.playerConfig.forestStands.empty() && !settings.projectRoot.empty() && fs::is_regular_file(gameConfig, configError))
         {
-            if (auto forest = LoadGameConfig(gameConfig).forestStand)
+            if (auto forests = LoadGameConfig(gameConfig).forestStands; !forests.empty())
             {
                 BuildSettings configured = settings;
-                configured.playerConfig.forestStand = std::move(forest);
+                configured.playerConfig.forestStands = std::move(forests);
                 return ExecuteImpl(configured);
             }
         }
@@ -972,9 +972,9 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
         return false;
     }
 
-    if (settings.playerConfig.forestStand)
+    for (const auto& forest : settings.playerConfig.forestStands)
     {
-        const std::string error = StageForestPlacementArchive(*settings.playerConfig.forestStand,
+        const std::string error = StageForestPlacementArchive(forest,
             EngineCore::GetInstance().GetResolvedAssetRoot(), contentRoot / "Assets", shipRules);
         if (!error.empty())
         {

@@ -190,7 +190,7 @@ TEST_F(PackagedAssetManifestTest, ExportKeepsSeparateHlodBakesForSameNamedScenes
     playerAssets.Shutdown();
 }
 
-TEST_F(PackagedAssetManifestTest, ForestArchiveAndNearBudgetSurviveDesktopExport)
+TEST_F(PackagedAssetManifestTest, ForestStandsAndNearBudgetsSurviveDesktopExport)
 {
     const std::string archive = "Forests/StandingTrees.geforest";
     const auto sourceArchive = Assets / archive;
@@ -202,10 +202,17 @@ TEST_F(PackagedAssetManifestTest, ForestArchiveAndNearBudgetSurviveDesktopExport
         .First = 0, .Count = static_cast<uint32>(records.size())}};
     ASSERT_EQ(PageStreaming::WritePackedPlacementStore(sourceArchive, pages, records), "");
 
+    const std::string secondArchive = "Forests/OtherTrees.geforest";
+    auto secondPage = pages.front();
+    secondPage.Count = 1;
+    ASSERT_EQ(PageStreaming::WritePackedPlacementStore(Assets / secondArchive, std::span(&secondPage, 1u),
+                                                        std::span(records).first(1)), "");
+
     GameConfig sourceConfig;
-    sourceConfig.forestStand = ForestStandConfig{
+    sourceConfig.forestStands.push_back({
         .archive = archive, .entity = "ForestOverview", .impostorModel = "Model.obj",
-        .detailDistance = 275.0f, .nearMeshBudget = 96};
+        .detailDistance = 275.0f, .nearMeshBudget = 96});
+    sourceConfig.forestStands.push_back({.archive = secondArchive, .entity = "OtherOverview"});
     ASSERT_TRUE(SaveGameConfig(Project / "game.config", sourceConfig));
 
     BuildSettings build;
@@ -222,15 +229,21 @@ TEST_F(PackagedAssetManifestTest, ForestArchiveAndNearBudgetSurviveDesktopExport
         << progress.statusMessage << '\n' << testing::PrintToString(progress.errors);
 
     const auto packaged = LoadGameConfig(Output / "game.config");
-    ASSERT_TRUE(packaged.forestStand);
-    EXPECT_EQ(packaged.forestStand->archive, archive);
-    EXPECT_EQ(packaged.forestStand->entity, "ForestOverview");
-    EXPECT_EQ(packaged.forestStand->impostorModel, "Model.obj");
-    EXPECT_FLOAT_EQ(packaged.forestStand->detailDistance, 275.0f);
-    EXPECT_EQ(packaged.forestStand->nearMeshBudget, 96u);
+    ASSERT_EQ(packaged.forestStands.size(), 2u);
+    EXPECT_EQ(packaged.forestStands[1].archive, secondArchive);
+    EXPECT_EQ(packaged.forestStands[1].entity, "OtherOverview");
+    EXPECT_EQ(packaged.forestStands[1].nearMeshBudget, 0u);
+    PageStreaming::PackedPlacementStore exportedSecond;
+    ASSERT_EQ(exportedSecond.Open(Output / "Assets" / secondArchive), "");
+    EXPECT_EQ(exportedSecond.PlacementCount(), 1u);
+    EXPECT_EQ(packaged.forestStands.front().archive, archive);
+    EXPECT_EQ(packaged.forestStands.front().entity, "ForestOverview");
+    EXPECT_EQ(packaged.forestStands.front().impostorModel, "Model.obj");
+    EXPECT_FLOAT_EQ(packaged.forestStands.front().detailDistance, 275.0f);
+    EXPECT_EQ(packaged.forestStands.front().nearMeshBudget, 96u);
 
     PageStreaming::PackedPlacementStore store;
-    ASSERT_EQ(store.Open(Output / "Assets" / packaged.forestStand->archive), "");
+    ASSERT_EQ(store.Open(Output / "Assets" / packaged.forestStands.front().archive), "");
     ASSERT_EQ(store.Pages().size(), 1u);
     EXPECT_EQ(store.PlacementCount(), records.size());
     EXPECT_EQ(store.Pages().front().Origin, pages.front().Origin);
