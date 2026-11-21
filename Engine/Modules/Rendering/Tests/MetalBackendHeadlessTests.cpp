@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -2002,6 +2003,7 @@ TEST(MetalDeviceCapabilities, DepthOwnerReplayRequiresNativeResources)
 namespace
 {
 enum class MeshTriangleInput { None, Mesh, Object };
+enum class MeshTriangleDraw { Direct, Indirect, Empty };
 
 void ExpectMeshTriangle(MeshTriangleInput input)
 {
@@ -2163,27 +2165,91 @@ void main()
 
     constexpr size_t kArgumentOffset = sizeof(uint32_t);
     constexpr size_t kGridBytes = 3u * sizeof(uint32_t);
-    BufferHandle arguments{};
-    if (!withObject)
+    constexpr size_t kPlacementOffset = kArgumentOffset + kGridBytes;
+    BufferDesc argumentDesc{};
+    argumentDesc.size = kPlacementOffset;
+    argumentDesc.usage = static_cast<uint32_t>(BufferUsage::Indirect | BufferUsage::TransferDst);
+    PipelineHandle gridWriter{};
+    uint64_t gridAddress = 0;
+    if (withObject)
     {
-        BufferDesc argumentDesc{};
-        argumentDesc.size = kArgumentOffset + kGridBytes;
-        argumentDesc.usage = static_cast<uint32_t>(BufferUsage::Indirect | BufferUsage::TransferDst);
-        arguments = device->CreateBuffer(argumentDesc);
-        ASSERT_TRUE(arguments.IsValid());
+        argumentDesc.size += sizeof(float);
+        argumentDesc.usage |= static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::ShaderDeviceAddress);
+    }
+    const BufferHandle arguments = device->CreateBuffer(argumentDesc);
+    ASSERT_TRUE(arguments.IsValid());
+
+    struct GridWriterConstants
+    {
+        uint64_t Address;
+        uint32_t GroupsX;
+        uint32_t Reserved = 0;
+    };
+    if (withObject)
+    {
+        static const char* kWriteGrid = R"(
+#version 450
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 1) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Grid
+{
+    uint x;
+    uint y;
+    uint z;
+    float offsetX;
+};
+layout(push_constant) uniform GridWriter
+{
+    Grid grid;
+    uint groupsX;
+} constants;
+void main()
+{
+    constants.grid.x = constants.groupsX;
+    constants.grid.y = 1;
+    constants.grid.z = 1;
+    constants.grid.offsetX = 0.75;
+}
+)";
+        PipelineDesc computeDesc{};
+        computeDesc.type = PipelineType::Compute;
+        computeDesc.computeShader = CompileGlsl(kWriteGrid, shaderc_compute_shader, "write-object-grid.comp");
+        ASSERT_FALSE(computeDesc.computeShader.empty());
+        computeDesc.pushConstantSize = sizeof(GridWriterConstants);
+        computeDesc.pushConstantStagesMask = kShaderStageCompute;
+        computeDesc.debugName = "WriteMetalObjectGrid";
+        gridWriter = device->CreatePipeline(computeDesc);
+        ASSERT_TRUE(gridWriter.IsValid());
+        const uint64_t argumentAddress = device->GetBufferDeviceAddress(arguments);
+        ASSERT_NE(argumentAddress, 0u);
+        gridAddress = argumentAddress + kArgumentOffset;
     }
 
-    constexpr std::array kDrawModes{false, true};
-    for (const bool indirect : std::span{kDrawModes}.first(withObject ? 1u : kDrawModes.size()))
+    constexpr std::array kDrawModes{MeshTriangleDraw::Direct, MeshTriangleDraw::Indirect, MeshTriangleDraw::Empty};
+    for (const MeshTriangleDraw mode : std::span{kDrawModes}.first(withObject ? 3u : 2u))
     {
-        SCOPED_TRACE(indirect ? "GPU-written indirect grid" : "direct grid");
+        const bool indirect = mode != MeshTriangleDraw::Direct;
+        const bool empty = mode == MeshTriangleDraw::Empty;
+        SCOPED_TRACE(empty ? "empty indirect object grid" : indirect ? "indirect grid" : "direct grid");
         auto commandList = device->CreateCommandList(IDevice::QueueType::Graphics);
         commandList->Begin();
         if (indirect)
         {
             EXPECT_TRUE(device->GetCapabilities().supportsIndirectMeshTasks);
             commandList->FillBuffer(arguments, 0, kArgumentOffset, 0u);
-            commandList->FillBuffer(arguments, kArgumentOffset, kGridBytes, 1u);
+            commandList->FillBuffer(arguments, kArgumentOffset, kGridBytes, withObject && !empty ? 0u : 1u);
+            if (withObject)
+            {
+                // Seed the opposite grid size and placement before the compute pass.
+                const uint32_t initialPlacement = std::bit_cast<uint32_t>(empty ? 0.75f : 0.0f);
+                commandList->FillBuffer(arguments, kPlacementOffset, sizeof(float), initialPlacement);
+                const GridWriterConstants constants{gridAddress, empty ? 0u : 1u};
+                commandList->SetPipeline(gridWriter);
+                commandList->SetConstants(0, sizeof(constants), &constants);
+                commandList->Dispatch(1, 1, 1);
+                commandList->Barrier(ResourceBarrier::CreateBufferBarrier(
+                    arguments, ResourceState::UnorderedAccess, ResourceState::IndirectArgs));
+            }
         }
         RenderPassDesc pass{};
         pass.colorTargets[0] = rt;
@@ -2197,7 +2263,10 @@ void main()
         pass.clearDepth = false;
         commandList->BeginRenderPass(pass);
         if (withInputs)
-            commandList->SetConstants(0, sizeof(positionAddress), &positionAddress);
+        {
+            const uint64_t address = indirect && withObject ? gridAddress + kGridBytes : positionAddress;
+            commandList->SetConstants(0, sizeof(address), &address);
+        }
         commandList->SetPipeline(pipeline);
         if (withMeshInputs)
             commandList->BindDescriptorSet(0, inputs, pipeline);
@@ -2218,8 +2287,8 @@ void main()
         // Center pixel (NDC 0,0) lies inside the triangle. BGRA: green fill.
         const uint8_t* center = mapped + ((kRtDim / 2) * kRtDim + kRtDim / 2) * 4;
         EXPECT_EQ(center[0], 0u) << "B";
-        EXPECT_NEAR(center[1], 255, 2) << "G (mesh-shader triangle fill)";
-        EXPECT_EQ(center[2], 0u) << "R (proves the triangle overdrew the red clear)";
+        EXPECT_EQ(center[1], empty ? 0u : 255u) << "G (mesh-shader triangle fill)";
+        EXPECT_EQ(center[2], empty ? 255u : 0u) << "R (clear color)";
         EXPECT_EQ(center[3], 255u) << "A";
         device->UnmapBuffer(readback);
     }
@@ -2231,8 +2300,9 @@ void main()
     }
     if (withInputs)
         device->DestroyBuffer(position);
-    if (arguments.IsValid())
-        device->DestroyBuffer(arguments);
+    if (gridWriter.IsValid())
+        device->DestroyPipeline(gridWriter);
+    device->DestroyBuffer(arguments);
     device->DestroyBuffer(readback);
     device->DestroyTexture(rt);
     device->Shutdown();
