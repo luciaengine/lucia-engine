@@ -490,32 +490,27 @@ void RenderServices::WriteViewLightBuffer(ViewId viewId)
 
     // The unwrapped counter rotates the whole ring; GetFrameIndex() names only the pacing's slots.
     auto& perView = m_ViewRegistry.PerView(viewId);
-    auto& buf = perView.SelectLightBuffer(static_cast<uint32_t>(
+    auto& lightBuffer = perView.SelectLightBuffer(static_cast<uint32_t>(
         m_LightRingFrameCounter.Tick(m_Device->GetFrameIndex()) % m_Device->GetFrameRingDepth()));
-    if (!buf.IsValid())
+    if (!lightBuffer.IsValid())
     {
-        Rendering::BufferDesc bd{};
-        bd.size = sizeof(ForwardLightUBO);
-        bd.usage = static_cast<uint32_t>(Rendering::BufferUsage::Uniform);
-        bd.memoryUsage = Rendering::BufferMemoryUsage::Upload;
+        Rendering::BufferDesc bufferDescription{};
+        bufferDescription.size = sizeof(ForwardLightUBO);
+        bufferDescription.usage = static_cast<uint32_t>(Rendering::BufferUsage::Uniform);
+        bufferDescription.memoryUsage = Rendering::BufferMemoryUsage::Upload;
         // FrameSlotted: one slot of the per-view ring indexed above, so a host
         // write outside an acquired frame races whichever frame still holds it.
-        bd.flags = Rendering::BufferCreateFlags::PersistentlyMapped |
+        bufferDescription.flags = Rendering::BufferCreateFlags::PersistentlyMapped |
                    Rendering::BufferCreateFlags::FrameSlotted;
-        bd.debugName = "RenderServices.ViewLightUBO";
-        buf = m_Device->CreateBuffer(bd);
-        if (!buf.IsValid())
+        bufferDescription.debugName = "RenderServices.ViewLightUBO";
+        lightBuffer = m_Device->CreateBuffer(bufferDescription);
+        if (!lightBuffer.IsValid())
             return;
     }
 
-    const ForwardLightUBO ubo = BuildViewLightUBO(viewId, view->worldId);
+    const ForwardLightUBO lightData = BuildViewLightUBO(viewId, view->worldId);
 
-    void* mapped = m_Device->MapBuffer(buf);
-    if (mapped)
-    {
-        std::memcpy(mapped, &ubo, sizeof(ubo));
-        m_Device->UnmapBuffer(buf);
-    }
+    m_Device->UpdateBuffer(lightBuffer, 0, sizeof(lightData), &lightData);
 }
 
 } // namespace Engine::Renderer

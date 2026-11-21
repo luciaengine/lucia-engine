@@ -1,4 +1,5 @@
 #include "Inspectors/RenderPipeline/RenderPipelineInspector.h"
+#include "AssetCore/AssetEvents.h"
 #include "AssetCore/SharedFileRead.h"
 
 #include "InspectorRegistry.h"
@@ -502,6 +503,17 @@ static bool SaveJsonToDisk(RenderPipelineAsset& pipe, const nlohmann::json& docu
     return true;
 }
 
+// A direct Reload raises no event. An undo or a redo writes text that the tree does not show, so it
+// tells the listeners at once; the Inspector panel then rebuilds the tree before the next frame.
+static void DispatchPipelineReloaded(const RenderPipelineAsset& pipe)
+{
+    EngineCore& engine = EngineCore::GetInstance();
+    if (!engine.IsInitialized())
+        return;
+    engine.GetAssetManager().GetEventDispatcher().DispatchEvent(
+        AssetEvents::AssetReloaded(pipe.GetGUID(), pipe.GetType(), pipe.GetPath().string()));
+}
+
 static Editor::UndoRedoService::SnapshotTarget MakeRenderPipelineSnapshotTarget(RenderPipelineAsset* pipe,
                                                                                 const std::string& label)
 {
@@ -543,7 +555,8 @@ static Editor::UndoRedoService::SnapshotTarget MakeRenderPipelineSnapshotTarget(
             return false;
         }
 
-        (void)pipe->Reload();
+        if (pipe->Reload() == ReloadOutcome::Reloaded)
+            DispatchPipelineReloaded(*pipe);
         if (auto* vcs = Editor::EditorVcsProviderRegistry::Get().ActiveIntegration())
             vcs->RefreshStatus();
         return true;

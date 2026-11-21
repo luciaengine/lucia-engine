@@ -11,6 +11,8 @@
 #include "InspectorRegistry.h"
 #include "Inspectors/RenderPipeline/RenderPipelineInspector.h"
 
+#include "AssetCore/AssetEvents.h"
+#include "Assets/AssetManager.h"
 #include "Assets/RenderPipelineAsset.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/Pipeline/Nodes/ShadowMapNode.h"
@@ -19,6 +21,7 @@
 #include "UI/Controls/Toggle.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
+#include "UndoRedo/UndoRedoService.h"
 
 #include <nlohmann/json.hpp>
 
@@ -72,7 +75,7 @@ class RenderPipelineInspectorTest : public ::testing::Test
 // the rebuild it posts runs after, as in the editor.
 struct MountedPipelineInspector
 {
-    explicit MountedPipelineInspector(RenderPipelineAsset& pipe)
+    explicit MountedPipelineInspector(RenderPipelineAsset& pipe, Editor::UndoRedoService* undo = nullptr)
     {
         auto root = std::make_unique<UIElement>("div");
         Root = root.get();
@@ -84,6 +87,7 @@ struct MountedPipelineInspector
         ctx.Parent = Root;
         ctx.Object = &pipe;
         ctx.AssetReloadedCallbacks = &ReloadCallbacks;
+        ctx.Undo = undo;
         if (fn)
             (*fn)(ctx);
     }
@@ -368,6 +372,39 @@ TEST_F(RenderPipelineInspectorTest, OnlyAReloadOfOtherTextRebuildsTheTree)
     WriteTextFile(pipePath, MakeShadowMapPipeline(R"(, "resolution": 1024)"));
     ASSERT_EQ(pipe.Reload(), ReloadOutcome::Reloaded);
     EXPECT_FALSE(inspector.KeepsTreeAfterReload()) << "the tree keeps showing a document that is not loaded";
+}
+
+// An undo and a redo announce the reload of the file they write, so the Inspector panel rebuilds the
+// tree at once and does not wait for the file watcher to see the write.
+TEST_F(RenderPipelineInspectorTest, AnUndoAndARedoAnnounceTheReloadOfThePipeline)
+{
+    const TestUtils::ScopedTempDir tmpDir{TestUtils::MakeUniqueTempDirectory("ge_editor_tests")};
+    const std::filesystem::path pipePath = tmpDir.Path() / "ShadowPipe.rendergraph";
+    WriteTextFile(pipePath, MakeShadowMapPipeline(R"(, "resolution": 2048)"));
+    RenderPipelineAsset pipe(GUID::Generate(), pipePath);
+    ASSERT_TRUE(pipe.Load());
+
+    int reloadEvents = 0;
+    AssetEventDispatcher& events = EngineCore::GetInstance().GetAssetManager().GetEventDispatcher();
+    const auto callback = events.AddCallback(
+        [&reloadEvents, guid = pipe.GetGUID()](const AssetEvent& event)
+        { reloadEvents += event.EventType == AssetEventType::AssetReloaded && event.AssetGuid == guid ? 1 : 0; });
+
+    Editor::UndoRedoService undo;
+    MountedPipelineInspector inspector(pipe, &undo);
+    auto* resolution = dynamic_cast<Dropdown*>(inspector.Root->FindById("rp-pass-0-resolution"_sid));
+    ASSERT_NE(resolution, nullptr);
+    inspector.EditAsUser([resolution] { resolution->SetSelectedValue("4096"); });
+    ASSERT_TRUE(undo.CanUndo());
+    EXPECT_EQ(reloadEvents, 0) << "the edit's own reload keeps the tree and needs no event";
+
+    undo.Undo();
+    EXPECT_EQ(reloadEvents, 1);
+    EXPECT_FALSE(inspector.KeepsTreeAfterReload()) << "the tree still shows the edit that the undo removed";
+
+    undo.Redo();
+    EXPECT_EQ(reloadEvents, 2);
+    events.RemoveCallback(callback);
 }
 
 // A save that cannot write the file keeps the fields of the loaded pass. The tree does not show an

@@ -148,8 +148,7 @@ void WorldRenderNode::DeclareForView(ViewDeclare& d)
             // Published so the phase-B recover pass (ScatterBNode) binds the
             // same textures.
             const auto viewParams = d.ResolveBuffer(Names::Res::ViewParams);
-            Rendering::RenderGraph::RGTexture resolveRough{};
-            Rendering::RenderGraph::RGTexture resolveGlossy{};
+            Rendering::RenderGraph::RGTexture resolveLobes{};
             Rendering::RenderGraph::RGTexture resolveIrradiance{};
             Rendering::RenderGraph::RGTexture resolveGatherNormal{};
             // For the DDGIVolume debug overlay ONLY. The overlay writes
@@ -164,15 +163,13 @@ void WorldRenderNode::DeclareForView(ViewDeclare& d)
                     d.Frame, d.Services, viewParams.Buffer, viewParams.Offset, viewParams.Size,
                     d.ViewDepthResolved, d.RenderWidth, d.RenderHeight,
                     static_cast<uint32_t>(d.View.id), viewExposureScale,
-                    d.PassName("DDGIGlossyResolve").c_str(), resolveRough, resolveGlossy,
+                    d.PassName("DDGIGlossyResolve").c_str(), resolveLobes,
                     resolveIrradiance, resolveGatherNormal, shadingNormal))
             {
-                t.DDGIResolveRough = resolveRough;
-                t.DDGIResolveGlossy = resolveGlossy;
+                t.DDGIResolveLobes = resolveLobes;
                 t.DDGIResolveIrradiance = resolveIrradiance;
                 t.DDGIResolveGatherNormal = resolveGatherNormal;
-                d.PublishTexture(Names::View::DDGIResolveRough, resolveRough);
-                d.PublishTexture(Names::View::DDGIResolveGlossy, resolveGlossy);
+                d.PublishTexture(Names::View::DDGIResolveLobes, resolveLobes);
                 d.PublishTexture(Names::View::DDGIResolveIrradiance, resolveIrradiance);
                 d.PublishTexture(Names::View::DDGIResolveGatherNormal, resolveGatherNormal);
             }

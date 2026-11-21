@@ -138,6 +138,27 @@ def split_editor_data(source, archive, framework):
     return source[:start] + json.dumps(startup_metadata) + source[end:end + 2] + shader_call + source[end + 2:]
 
 
+def defer_script_compiler(boot):
+    """Move the C# compiler and its reference archive out of the boot download."""
+    start = boot.index("/*json-start*/") + len("/*json-start*/")
+    end = boot.index("/*json-end*/", start)
+    config = json.loads(boot[start:end])
+    resources = config["resources"]
+    script_assemblies = (
+        "Microsoft.CodeAnalysis.wasm",
+        "Microsoft.CodeAnalysis.CSharp.wasm",
+        "EntitySystemGenerator.wasm",
+        "GameEngine.Scripting.Web.wasm",
+    )
+    eager = resources["assembly"]
+    compiler = {asset["virtualPath"]: asset for asset in eager if asset["virtualPath"] in script_assemblies}
+    if compiler.keys() != set(script_assemblies):
+        raise ValueError("The .NET boot configuration is missing a browser script compiler assembly")
+    resources["assembly"] = [asset for asset in eager if asset["virtualPath"] not in compiler]
+    config["luciaScriptCompiler"] = [compiler[name] for name in script_assemblies]
+    return boot[:start] + json.dumps(config, indent=2) + boot[end:]
+
+
 def patch_glue(framework, archive):
     loader = framework / "dotnet.js"
     boot = loader.read_text()
@@ -172,15 +193,34 @@ def patch_glue(framework, archive):
                            'var REMOTE_PACKAGE_BASE = deferredPackage ?? "dotnet.native.data";')
     patched = replace_once(patched, "if (!fetched) {\n      // Note that",
                            "if (!fetched && !deferredPackage) {\n      // Note that")
-    patched = replace_once(patched, "        fetched = await fetchPromise;", """        fetched = await (fetchPromise ?? fetchRemotePackage(REMOTE_PACKAGE_NAME));
-      }
-      if (fetched.byteLength !== REMOTE_PACKAGE_SIZE) {
-        throw new Error("Editor data size does not match this build.");""")
-    patched = re.sub(
+    # Fetch outside the frame, then publish the cache between native calls.
+    patched = replace_once(patched, "async function runWithFS(Module) {",
+                           "async function prepareWithFS(Module) {")
+    first_directory = patched.index('      Module["FS_createPath"](')
+    process_signature = "      async function processPackageData(arrayBuffer) {\n"
+    process = patched.index(process_signature, first_directory)
+    directories = patched[first_directory:process]
+    directories = re.sub(
         r'(?m)^      (Module\["FS_createPath"\]\("/\.Cache/Shaders.*)$',
         r'      if (deferredPackage) \1',
-        patched,
+        directories,
     )
+    patched = (
+        patched[:first_directory]
+        + "      function processPackageData(arrayBuffer) {\n"
+        + "".join("  " + line for line in directories.splitlines(keepends=True))
+        + patched[process + len(process_signature):]
+    )
+    patched = replace_once(patched, """      if (!fetched) {
+        fetched = await fetchPromise;
+      }
+      await processPackageData(fetched);""", """      const bytes = fetched ?? await (fetchPromise ?? fetchRemotePackage(REMOTE_PACKAGE_NAME));
+      fetched = undefined;
+      fetchPromise = undefined;
+      if (bytes.byteLength !== REMOTE_PACKAGE_SIZE) {
+        throw new Error("Editor data size does not match this build.");
+      }
+      return () => processPackageData(bytes);""")
     # The picker can compile a shader before opening a project. Preserve that
     # cache entry when the cooked archive contains the same path.
     patched = replace_once(
@@ -197,9 +237,9 @@ def patch_glue(framework, archive):
     start = patched.index("    // Detect whether the module JS file has already been loaded.")
     end = patched.index("\n  }\n  loadPackage", start)
     patched = patched[:start] + """    if (deferredPackage)
-      globalThis.geInstallEditorShaders = activeModule => runWithFS(activeModule);
+      globalThis.gePrepareEditorShaders = activeModule => prepareWithFS(activeModule);
     else
-      globalThis.geInstallEditorAssets = activeModule => runWithFS(activeModule);""" + patched[end:]
+      globalThis.geInstallEditorAssets = async activeModule => (await prepareWithFS(activeModule))();""" + patched[end:]
     patched, count = re.subn(
         r'(?m)^\s*Module\["(?:add|remove)RunDependency"\]\("datafile_[^\n]+\n', "\n", patched
     )
@@ -236,11 +276,13 @@ def patch_glue(framework, archive):
         "if(n.info.isLoaded)return e.unusedWorkers.splice(t,1),n",
     )
     runtime.write_text(patched)
-    write_file(loader, boot.replace(digest(source), digest(patched)))
+    boot = boot.replace(digest(source), digest(patched))
+    write_file(loader, defer_script_compiler(boot))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--keep-symbols", action="store_true")
     parser.add_argument("--dotnet", required=True)
     parser.add_argument("--project", required=True, type=Path)
     parser.add_argument("--shaderpkg-dir", required=True, type=Path)
@@ -273,7 +315,7 @@ def main():
             "-p:LuciaEditorNativeReferences=" + str(references),
             "-p:ArtifactsPath=" + str(build / "artifacts"),
             "-p:WasmCachePath=" + str((build / "emscripten-cache").resolve()),
-            "-p:WasmRunWasmOpt=false",
+            "-p:WasmRunWasmOpt=" + ("false" if config.keep_symbols else "true"),
         ],
         check=True,
     )

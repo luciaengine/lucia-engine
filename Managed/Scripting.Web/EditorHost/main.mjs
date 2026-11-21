@@ -11,14 +11,26 @@ try {
     const installEditorAssets = globalThis.geInstallEditorAssets;
     delete globalThis.geInstallEditorAssets;
     await installEditorAssets(Module);
-    const installEditorShaders = globalThis.geInstallEditorShaders;
-    delete globalThis.geInstallEditorShaders;
-    Module.webEditorShaders = createShaderDownload(() => installEditorShaders(Module));
+    const prepareEditorShaders = globalThis.gePrepareEditorShaders;
+    delete globalThis.gePrepareEditorShaders;
+    const prepareShaders = () => prepareEditorShaders(Module);
+    const shaders = createShaderDownload(prepareShaders);
+    Module.webEditorShaders = shaders;
     if (new URLSearchParams(location.search).get('project'))
-        await Module.webEditorShaders.install();
-    const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
-    const scripts = exports.Lucia.Web.Editor.BrowserPlayMode;
-    const scriptSession = createScriptSession(Module, scripts);
+        shaders.mount(await prepareShaders());
+    const prepareScripts = async () => {
+        const assets = getConfig().luciaScriptCompiler;
+        const images = await Promise.all(assets.map(downloadCompilerAssembly));
+        return async () => {
+            const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
+            const { Program, BrowserPlayMode } = exports.Lucia.Web.Editor;
+            // Threaded Mono requires asynchronous JavaScript calls into managed code.
+            for (const [index, asset] of assets.entries())
+                await Program.LoadCompilerAssembly(asset.virtualPath.replace(/\.wasm$/, ''), images[index]);
+            return BrowserPlayMode;
+        };
+    };
+    const scriptSession = createScriptSession(Module, prepareScripts);
     Module.webScriptSession = scriptSession;
     globalThis.Module = Module;
     await prepareStorage(Module);
@@ -30,6 +42,7 @@ try {
     async function frame() {
         try {
             const keepRunning = await Module.ccall('GeTickEditor', 'boolean', [], [], { async: true });
+            shaders.mountReady();
             await scriptSession.runPending();
             if (keepRunning)
                 scheduleFrame();
@@ -49,40 +62,63 @@ try {
     report(error);
 }
 
-function createShaderDownload(load) {
-    let downloaded = false;
-    let pending;
-    let failed = false;
-    function install() {
-        pending ??= load().then(() => {
-            downloaded = true;
-        }).catch(error => {
-            pending = undefined;
-            throw error;
-        });
-        return pending;
+function createShaderDownload(prepare) {
+    let state = 0;
+    let downloading = false;
+    let ready;
+
+    function mount(install) {
+        install();
+        state = 1;
+    }
+
+    function fail(error) {
+        console.error('Could not load the editor shader cache', error);
+        downloading = false;
+        state = -1;
     }
 
     return {
-        install,
+        mount,
+        mountReady() {
+            if (!ready)
+                return;
+            const install = ready;
+            ready = undefined;
+            try {
+                mount(install);
+            } catch (error) {
+                fail(error);
+            }
+        },
         poll() {
-            if (downloaded)
-                return 1;
-            if (failed) {
-                failed = false;
+            if (state < 0) {
+                state = 0;
                 return -1;
             }
-            if (!pending)
-                void install().catch(error => {
-                    console.error('Could not download the editor shader cache', error);
-                    failed = true;
-                });
-            return 0;
+            if (!state && !downloading) {
+                downloading = true;
+                void prepare().then(install => {
+                    ready = install;
+                }, fail);
+            }
+            return state;
         },
     };
 }
 
-function createScriptSession(module, scripts) {
+async function downloadCompilerAssembly(asset) {
+    const url = new URL(`./_framework/${asset.name}`, import.meta.url);
+    const response = await fetch(url, { integrity: asset.hash });
+    if (!response.ok)
+        throw new Error(`Could not download ${asset.virtualPath} (HTTP ${response.status}).`);
+    return new Uint8Array(await response.arrayBuffer());
+}
+
+function createScriptSession(module, prepareScripts) {
+    let scripts;
+    let compilerDownload;
+    let preparingStart;
     let pending;
     let running = false;
     const reportScriptError = diagnostic =>
@@ -92,18 +128,44 @@ function createScriptSession(module, scripts) {
     // stack. All managed calls run after that frame has returned to JavaScript.
     return {
         start(world, sources) {
-            pending = async () => {
+            const start = async () => {
+                if (!scripts) {
+                    const install = await compilerDownload;
+                    scripts = await install();
+                    compilerDownload = undefined;
+                }
                 const diagnostic = await scripts.Start(world, sources);
                 running = !diagnostic;
                 if (diagnostic)
                     reportScriptError(diagnostic);
             };
+            if (scripts) {
+                pending = start;
+                return;
+            }
+
+            // Fetch off the frame loop. Queue managed loading only when the download is ready.
+            preparingStart = start;
+            const download = compilerDownload ??= prepareScripts();
+            void download.then(() => {
+                if (preparingStart === start)
+                    pending = start;
+            }, error => {
+                if (compilerDownload === download)
+                    compilerDownload = undefined;
+                if (preparingStart === start)
+                    pending = () => { throw error; };
+            });
         },
         tick(delta) {
             if (running && !pending)
                 pending = () => scripts.Tick(delta);
         },
         requestStop() {
+            if (preparingStart) {
+                preparingStart = undefined;
+                pending = undefined;
+            }
             if (!running && !pending)
                 return true;
             pending = async () => {
@@ -117,6 +179,7 @@ function createScriptSession(module, scripts) {
             pending = undefined;
             if (!operation)
                 return;
+            preparingStart = undefined;
             try {
                 await operation();
             } catch (error) {

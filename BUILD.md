@@ -198,7 +198,7 @@ Choosing one:
 - Visual Studio, Xcode and Ninja Multi-Config trees list DebugFast first, so the IDE opens on it and `cmake --build --preset <preset>` builds it. Pass `--config Debug`, `--config Release` or another configuration to build that one instead.
 - A build that names neither a preset nor `--config` (`cmake --build build/<preset>`) builds Debug in a Visual Studio tree: CMake picks Debug there, not the project.
 - Single-configuration trees (Ninja: Linux, `macos-arm64-ninja`, `macos-x64-ninja`) fix the configuration at configure time: DebugFast unless `-DCMAKE_BUILD_TYPE=Debug`, `Release` or another one is passed.
-- `vs2026-x64-local-asan` builds Debug, the configuration AddressSanitizer instruments. `wasm-debug` builds Debug, `wasm-release` Release and the `steamdeck` presets RelWithDebInfo.
+- `vs2026-x64-local-asan` builds Debug, the configuration AddressSanitizer instruments. `macos-arm64-local-tsan` builds Debug, the configuration ThreadSanitizer instruments. `wasm-debug` builds Debug, `wasm-release` Release and the `steamdeck` presets RelWithDebInfo.
 
 `GE_VK_VALIDATION=1` forces the Vulkan validation layers on in any configuration, `GE_VK_NO_VALIDATION=1` forces them off, and `GE_VK_VALIDATION_VERBOSE=1` turns on the verbose messenger.
 
@@ -278,6 +278,17 @@ For memory bugs (use-after-free, heap corruption, shutdown-order crashes), a sep
 cmake --preset vs2026-x64-local-asan
 cmake --build --preset vs2026-x64-local-asan --config Debug --target <Target> -j 12
 ```
+
+## ThreadSanitizer
+
+For data races on macOS, a separate Ninja tree with `-fsanitize=thread` on the **Debug** configuration; tests are on in this preset:
+
+```bash
+cmake --preset macos-arm64-local-tsan
+cmake --build --preset macos-arm64-local-tsan --target <Target> -j 12
+```
+
+Run one suite from the build directory. The runtime options and the suppressions for the system libraries are compiled into each test executable (`Tests/ThreadSanitizerOptions.cpp`).
 
 ## Build options
 

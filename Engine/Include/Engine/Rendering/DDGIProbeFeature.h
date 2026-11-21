@@ -318,29 +318,9 @@ class DDGIProbeFeature final : public IRenderFeature
     };
     GatherReadsRG ImportGatherReads(Rendering::RenderGraph::RGFrame& frame) const;
 
-    // Per-view scaled glossy-reflection resolve (Shaders/ddgi_glossy_resolve.comp,
-    // consumed by Includes/ibl.glsl): declares one compute pass that evaluates
-    // the probe reflection gather at GlossyResolveScale x the view's render
-    // extent from the 1-sample view depth, writing one RGBA16F texture per
-    // baked lobe (coverage-premultiplied radiance in rgb, coverage in a).
-    // Returns true and fills outRough/outGlossy when the pass was declared;
-    // false (and declares nothing) when the resolve is inactive for this
-    // frame (GlossyResolveConsumeActive()) or the view cannot feed it (no
-    // 1-sample depth, zero extent). Callers bind the outputs as
-    // ge_ddgiResolveRough/ge_ddgiResolveGlossy (set 0, b41/b42) on the same
-    // view's DDGI-keyword world passes. outIrradiance (b43) stays at resolve
-    // extent; outGatherNormal (b67) holds the normal each of its texels was
-    // gathered for, the guide of the forward upsample (ddgi_resolve_upsample.glsl).
-    //
-    // The reflection direction takes the SHADING normal from the previous
-    // frame's forward-MRT normal slice (Adapters/adapter_forward.glsl under
-    // MaterialKeyword::SSSRNormalRoughness), reprojected; this pass runs
-    // before the world pass that would write this frame's. outShadingNormal
-    // is the per-view persistent render target the caller must hand to the
-    // world pass as that slice (ReflectionsProvider::ContributeWorldPassTargets)
-    // and, when the pass actually attached it, report back through
-    // MarkGlossyResolveNormalWritten — the kernel reads the history only for
-    // a frame that follows a reported write. Implemented in DDGIGlossyResolve.cpp.
+    /// Declares the scaled DDGI resolve and blur. Returns false if the view cannot use the resolve.
+    /// The outputs carry both reflection layers, irradiance, its gather normal, and the shading normal target.
+    /// Call MarkGlossyResolveNormalWritten after the world pass writes outShadingNormal.
     bool DeclareGlossyResolveForView(Rendering::RenderGraph::RGFrame& frame,
                                      RenderServices& services,
                                      Rendering::BufferHandle viewParams, uint64_t viewParamsOffset,
@@ -349,8 +329,7 @@ class DDGIProbeFeature final : public IRenderFeature
                                      uint32_t renderWidth, uint32_t renderHeight,
                                      uint32_t viewId, float viewExposureScale,
                                      const char* passName,
-                                     Rendering::RenderGraph::RGTexture& outRough,
-                                     Rendering::RenderGraph::RGTexture& outGlossy,
+                                     Rendering::RenderGraph::RGTexture& outLobes,
                                      Rendering::RenderGraph::RGTexture& outIrradiance,
                                      Rendering::RenderGraph::RGTexture& outGatherNormal,
                                      Rendering::RenderGraph::RGTexture& outShadingNormal);
