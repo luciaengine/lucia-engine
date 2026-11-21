@@ -175,6 +175,7 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     // both Apple7 and Metal3 capability imply the drawMeshThreadgroups API.
     m_Capabilities.supportsMeshShaders =
         m_Device->supportsFamily(MTL::GPUFamilyApple7) || m_Device->supportsFamily(MTL::GPUFamilyMetal3);
+    m_Capabilities.supportsIndirectMeshTasks = m_Capabilities.supportsMeshShaders;
     // Plain 64-bit integer math is available on Apple GPU family 3 and newer.
     // CBT terrain uses non-atomic ulong load/store and arithmetic for HeapID;
     // its atomics remain 32-bit and do not require Metal's 64-bit atomics.
@@ -184,6 +185,14 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     // (an indirect command buffer run over a GPU-written execution range; see
     // MetalIndirectCountEncoder), so producers need not zero-fill the rest.
     m_Capabilities.supportsDrawIndirectCountNative = m_IndirectCountResources != nullptr;
+    constexpr NS::UInteger kOwnerReplayScratchBytes = 64u * 1024u * 1024u;
+    m_Capabilities.supportsIndexedDepthOwnerReplay =
+        tier2ArgumentBuffers && m_Capabilities.supportsBufferDeviceAddress &&
+        m_Capabilities.supportsShaderInt64 && m_Capabilities.supportsDrawIndirectCountNative &&
+        m_Device->supportsFamily(MTL::GPUFamilyApple7);
+    m_Capabilities.supportsIndexedDepthMeshReplay =
+        m_Capabilities.supportsIndexedDepthOwnerReplay && m_Capabilities.supportsIndirectMeshTasks &&
+        m_Device->maxBufferLength() >= kOwnerReplayScratchBytes;
     // Ray query: MTLAccelerationStructure plus MSL's intersection_query.
     // supportsRaytracing is Metal's own answer for exactly that pair, so it is
     // the gate rather than a GPU-family proxy. It is an API gate, not a
@@ -1190,7 +1199,8 @@ MTL::SamplerState* MetalDevice::GetMipBlitSampler()
 }
 
 void MetalDevice::DeclareDeviceAddressResidency(MTL::RenderCommandEncoder* encoder,
-                                                FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache)
+                                                FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache,
+                                                MTL::RenderStages stages)
 {
     // Residency-set path declares residency once per frame on the queue and
     // orders compute->draw with the fence; the per-encoder blanket is skipped.
@@ -1208,8 +1218,7 @@ void MetalDevice::DeclareDeviceAddressResidency(MTL::RenderCommandEncoder* encod
     // Declaring Write here makes the hazard tracker serialize every render
     // encoder against every other encoder touching these buffers.
     encoder->useResources(reinterpret_cast<const MTL::Resource* const*>(m_DeviceAddressBuffers.data()),
-                          m_DeviceAddressBuffers.size(), MTL::ResourceUsageRead,
-                          MTL::RenderStageVertex | MTL::RenderStageFragment);
+                          m_DeviceAddressBuffers.size(), MTL::ResourceUsageRead, stages);
     for (MTL::Buffer* buffer : m_DeviceAddressBuffers)
     {
         residentCache[buffer] = MTL::ResourceUsageRead;

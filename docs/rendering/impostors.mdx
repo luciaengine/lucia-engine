@@ -15,7 +15,7 @@ Trees with equal options share one tree variant, and a variant has one atlas. A 
 
 ## The atlas
 
-The engine bakes the atlas of a variant on the GPU, a few views in each frame, when a tree of that variant first comes near the switch point. The atlas holds 8 x 8 views of the tree over the upper hemisphere, 128 pixels each, each view fitted to the tightest sphere around the tree's vertices. Each view stores the base color, the opacity, the normal and the depth. A card blends the 3 views nearest to its viewing direction, and the outer views look from the horizon.
+The engine bakes the atlas of a variant on the GPU, a few views in each frame, when a tree of that variant first comes near the switch point. The atlas holds 8 x 8 views of the tree over the upper hemisphere, 128 pixels each, each view fitted to the tightest sphere around the tree's vertices. The outer views look from the horizon. Each view stores the base color, the opacity, the normal and the depth. A card blends the 3 views nearest to its viewing direction. It uses the depth to line the views up on the tree's surface, and it leaves out a view that sees leaves in front of that surface.
 
 - The bake draws the tree's own materials without wind, so the card shows the rest pose.
 - An atlas uses 12 MB of GPU memory. All atlases together stay under 256 MB. Past that, the atlas drawn least recently goes, and its trees draw their meshes.

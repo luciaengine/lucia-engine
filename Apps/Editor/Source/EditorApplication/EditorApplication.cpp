@@ -58,7 +58,6 @@
 #include "Docking/WindowDockingController.h"
 #include "Packages/PackageManagerController.h"
 #include "Assets/Packages/PackageCodeModules.h"
-#include "Assets/Packages/PackageNativeCache.h"
 #include "Core/Application.h"
 #include "Core/ApplicationPaths.h"
 #include "Core/CpuProfiler.h"
@@ -5580,26 +5579,12 @@ void EditorApplication::WireNativeScriptingForProject(const std::filesystem::pat
     // of packages it can't see.
     {
         std::vector<GameEngine::NativeScripting::NativeBuildConfig> packageConfigs;
-        for (const GameEngine::PackageCodeModule& module : m_Packages->GetCodeModules())
+        for (const GameEngine::PackageCodeModule* nativeModule :
+             m_Packages->PrepareNativeModules(!cfg.EditorImportLib.empty()))
         {
-            if (module.Lang != GameEngine::PackageModuleRecord::ModuleLang::Cpp)
-                continue;
+            const GameEngine::PackageCodeModule& module = *nativeModule;
             const bool isEditorModule =
                 module.Kind == GameEngine::PackageModuleRecord::ModuleKind::Editor;
-            if (isEditorModule && cfg.EditorImportLib.empty())
-            {
-                Logger::Log::Error("Editor: package '{}' has a native Editor-kind module but the staged "
-                                   "SDK carries no EditorSDK interface (editorimportlib); module skipped",
-                                   module.PackageName);
-                continue;
-            }
-            if (module.UsesManagedNativeCache &&
-                !RetainPackageNativeCache(module.CacheDir, EngineCore::GetInstance().GetStartupChannel()))
-            {
-                Logger::Log::Error("Editor: cannot lease native cache '{}' for package '{}'; module skipped",
-                                   module.CacheDir.string(), module.PackageName);
-                continue;
-            }
             GameEngine::NativeScripting::NativeBuildConfig pkgCfg = cfg;
             pkgCfg.SourceDir = module.RootDir;
             pkgCfg.PackageRootDir = module.PackageRootDir;

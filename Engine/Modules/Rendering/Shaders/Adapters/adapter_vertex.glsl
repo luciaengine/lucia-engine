@@ -180,6 +180,10 @@ flat layout(location = 14, component = 1) out uint vLodFadeCode;
 flat layout(location = 14) out uint vInstanceFlags;
 #endif
 
+#ifdef GE_INDEXED_DEPTH_OWNER
+flat layout(location = 14, component = 2) out uint vDepthOwnerSlot;
+#endif
+
 // Render-origin-relative world position (Earth-scale precision): PRECISE small-
 // magnitude position the fragment shadow receiver projects through the rebased
 // ge_shadowVP. Equals vPosWS when the render origin is sector (0,0,0) (near-origin
@@ -655,6 +659,9 @@ void main()
 
     // Per-instance flags to the fragment stage (receiveShadows gate). Both paths.
     vInstanceFlags = inst.flags;
+#ifdef GE_INDEXED_DEPTH_OWNER
+    vDepthOwnerSlot = uint(gl_InstanceIndex);
+#endif
 #ifdef GE_LOD_CROSSFADE
     vLodFadeCode = inst.lodFadeCode;
 #endif

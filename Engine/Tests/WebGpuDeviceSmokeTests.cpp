@@ -4,8 +4,10 @@
 // Everything here runs without a window or swapchain.
 
 #include "EngineLogCapture.h"
+#include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/QueryPool.h"
 #include "Rendering/Core/WebGpuPushConstantRing.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
@@ -114,6 +116,68 @@ TEST(WebGpuDeviceSmoke, FactoryCreatesDeviceWithCompatCaps)
     EXPECT_FALSE(caps.supportsAliasedStorageTextureBindings);
     // The granted storage-binding limit is logged by the device at init (the
     // elevated-limit request); the caps struct has no field for it yet.
+    device->Shutdown();
+}
+
+TEST(WebGpuDeviceSmoke, EncoderTimestampsSubmitAndReadBack)
+{
+    auto device = CreateWebGpuDevice();
+    ASSERT_NE(device, nullptr);
+    auto* pool = device->GetQueryPool();
+    if (pool == nullptr)
+    {
+        GTEST_SKIP() << "Native WebGPU adapter has no encoder timestamp query pool";
+    }
+
+    ASSERT_TRUE(device->BeginFrame());
+    auto commandList = device->CreateCommandList(IDevice::QueueType::Graphics);
+    ASSERT_NE(commandList, nullptr);
+    commandList->Begin();
+    const uint32_t begin = pool->WriteTimestamp(commandList.get(), TimestampPoint::SpanBegin);
+    const uint32_t end = pool->WriteTimestamp(commandList.get(), TimestampPoint::SpanEnd);
+    commandList->End();
+
+    device->ExecuteCommandLists({commandList.get()});
+    pool->EndFrame();
+    device->WaitForIdle();
+
+    QueryResult beginResult{};
+    QueryResult endResult{};
+    ASSERT_TRUE(pool->GetTimestampResult(begin, beginResult));
+    ASSERT_TRUE(pool->GetTimestampResult(end, endResult));
+    EXPECT_GE(endResult.Value, beginResult.Value);
+
+    commandList.reset();
+    device->Shutdown();
+    EXPECT_EQ(device->GetQueryPool(), nullptr);
+}
+
+TEST(WebGpuDeviceSmoke, EmptyForwardLightingBuffersIncludeARecordForEveryStorageArray)
+{
+    auto device = CreateWebGpuDevice();
+    ASSERT_NE(device, nullptr);
+
+    GameEngine::Engine::Renderer::RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+
+    uint64_t clusterBytes = 0;
+    uint64_t lightBytes = 0;
+    uint64_t lightIndexBytes = 0;
+    device->DebugEnumerateResources([&](const DebugResourceInfo& info)
+    {
+        if (info.Name == "RenderServices.Fallback.ClusterBuffer")
+            clusterBytes = info.Bytes;
+        if (info.Name == "RenderServices.Fallback.LightBuffer")
+            lightBytes = info.Bytes;
+        if (info.Name == "RenderServices.Fallback.LightIndexBuffer")
+            lightIndexBytes = info.Bytes;
+    });
+
+    EXPECT_EQ(clusterBytes, 32u);
+    EXPECT_EQ(lightBytes, 160u);
+    EXPECT_EQ(lightIndexBytes, 4u);
+
+    services.Shutdown();
     device->Shutdown();
 }
 

@@ -287,6 +287,21 @@ std::vector<VariantRequest> VariantsFor(const CookTarget& target, const Material
     GameEngine::Tools::MaterialCook::ExpandSceneColorGrabVariants(
         rows, HasKeyword(materialKeywords, MaterialKeyword::Transmission));
     GameEngine::Tools::MaterialCook::AddMaterialKeywords(rows, materialKeywords);
+    // The stock provenance check in ShaderComposer decides whether these rows
+    // actually export ownership. Custom surfaces served through a project mount
+    // can resolve to an ordinary depth package under the requested key.
+    if (!web && document.alphaMode == MaterialAlphaMode::Mask &&
+        document.surfaceShader == "Surfaces/standard_pbr.glsl" &&
+        document.vertexModifier.empty() && document.vertexModifierGuid.empty() && !document.customVertexShader)
+    {
+        const auto owner = GameEngine::Tools::MaterialCook::kDepthMask |
+                           MaterialKeyword::IndexedDepthOwner | materialKeywords;
+        rows.push_back({"depth-mask+owner", owner, VertexAttributeFlags::StandardMesh});
+        rows.push_back({"depth-mask+tangent+owner", owner, VertexAttributeFlags::StandardMeshWithTangent});
+        const auto fadeOwner = owner | MaterialKeyword::LodCrossfade;
+        rows.push_back({"depth-mask+fade+owner", fadeOwner, VertexAttributeFlags::StandardMesh});
+        rows.push_back({"depth-mask+tangent+fade+owner", fadeOwner, VertexAttributeFlags::StandardMeshWithTangent});
+    }
     // A web cook keeps its declared rows: a browser's cook translates every row to WGSL.
     if (!web && target.Prewarmed)
         AddPrewarmVariants(rows, target, context, worldPasses);
