@@ -189,10 +189,10 @@ struct MetalPipeline
     // MeshFragment pipeline: DrawMeshTasks dispatches mesh threadgroups using
     // localSize{X,Y,Z} (the mesh stage's workgroup size) as threads-per-mesh.
     bool isMeshPipeline = false;
-    // Fragment texture reads use native indirect draws: ICB execution can
-    // return zero from otherwise valid scene-color textures on Apple GPUs.
-    // Such a pipeline is built without indirect command buffer support.
-    bool fragmentSamplesTextures = false;
+    // Some textured pipelines need padded native calls because ICB execution
+    // can return zero for sampled scene-color textures.
+    bool FragmentSamplesTextures = false;
+    bool UsesPaddedCountedDraws = false;
 
     // Attachment formats the PSO was specialized for. Vulkan tolerates a
     // stale pipeline bind carried across render passes (only draws validate);

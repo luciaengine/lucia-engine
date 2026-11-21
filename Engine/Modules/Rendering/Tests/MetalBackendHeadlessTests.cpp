@@ -15,6 +15,7 @@
 #include "Mathematics/HalfFloat.h"
 #include "Mathematics/Vector4.h"
 #include "Memory/AllocationCountScope.h"
+#include "Platform/Environment.h"
 
 #include "../Source/Metal/MetalArgumentBufferLayout.h"
 #include "../Source/Metal/MetalCommandList.h"
@@ -1722,18 +1723,18 @@ void main() { outColor = texture(uTex, gl_FragCoord.xy) * uTint.tint; }
 }
 } // namespace
 
-// A pipeline whose fragment stage samples textures draws counted draws natively, so Metal builds it
-// without indirect command buffer support: the GPU compiler fails on large fragment stages built for
-// them (the ocean surface). A pipeline with no fragment texture keeps the support its ICB draws need.
-TEST(MetalSpirvPipeline, OnlyPipelinesThatRunInIndirectCommandBuffersSupportThem)
+TEST(MetalSpirvPipeline, TexturedPipelineRequiresOptInForIndirectCommandBuffers)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
         GTEST_SKIP() << "Metal backend unavailable";
     const auto& caps = device->GetCapabilities();
-    EXPECT_FALSE(PipelineSupportsIndirectCommandBuffers(*device, true));
-    EXPECT_EQ(PipelineSupportsIndirectCommandBuffers(*device, false),
-              caps.supportsDrawIndirectCountNative && caps.supportsBindlessResources);
+    const bool supportsIndirectCommands = caps.supportsDrawIndirectCountNative && caps.supportsBindlessResources;
+    const bool tryTexturedIndirectCommands = GameEngine::Platform::EnvironmentSwitchEnabled(
+        "GE_METAL_TRY_TEXTURED_ICB", false);
+    EXPECT_EQ(PipelineSupportsIndirectCommandBuffers(*device, true),
+              supportsIndirectCommands && tryTexturedIndirectCommands);
+    EXPECT_EQ(PipelineSupportsIndirectCommandBuffers(*device, false), supportsIndirectCommands);
     device->Shutdown();
 }
 
