@@ -15,8 +15,10 @@
 #include "TestTempDir.h"
 #include "TestUtils.h"
 
+#include <cstring>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #ifndef EZTREE_PACKAGE_SHADERS_DIR
 #error "EZTREE_PACKAGE_SHADERS_DIR must be defined by CMake (target_compile_definitions)"
@@ -31,7 +33,8 @@ namespace fs = std::filesystem;
 
 constexpr MaterialKeyword kBakePass = MaterialKeyword::Instanced | MaterialKeyword::ImpostorBake;
 
-MaterialBuildResult Build(const MaterialDocument& doc, MaterialKeyword keywords)
+MaterialBuildResult Build(const MaterialDocument& doc, MaterialKeyword keywords,
+                          VertexAttributeFlags attributes = VertexAttributeFlags::None)
 {
     MaterialBuildContext context{};
     context.AdapterShaderDir = Tests::GetAdapterShaderDir();
@@ -39,7 +42,7 @@ MaterialBuildResult Build(const MaterialDocument& doc, MaterialKeyword keywords)
     context.CacheRoot = TestUtils::MakeUniqueTempDirectory("ge_impostor_bake_variant");
     auto result = BuildMaterialToShaderPackage(
         doc, TestPaths::StagedEngineAssetsDir() / "Materials" / "ImpostorBakeProbe.material",
-        "ImpostorBakeProbe", context, ShaderSourceKind::SpirV, keywords);
+        "ImpostorBakeProbe", context, ShaderSourceKind::SpirV, keywords, attributes);
     std::error_code error;
     fs::remove_all(context.CacheRoot, error);
     return result;
@@ -81,6 +84,27 @@ const StageMeta* FragmentStage(const MaterialBuildResult& result)
         return nullptr;
     const auto it = result.package->meta.Stages.find("fs");
     return it == result.package->meta.Stages.end() ? nullptr : &it->second;
+}
+
+bool HasWindSine(const MaterialBuildResult& result)
+{
+    constexpr size_t kSpirvHeaderWords = 5;
+    constexpr uint32_t kOpExtInst = 12;
+    constexpr uint32_t kGlslStd450Sin = 13;
+    const auto& bytes = result.package->stageBytes.at("vs");
+    std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
+    std::memcpy(words.data(), bytes.data(), words.size() * sizeof(uint32_t));
+    for (size_t at = kSpirvHeaderWords; at < words.size();)
+    {
+        const uint32_t instruction = words[at];
+        const size_t count = instruction >> 16u;
+        if (count == 0 || count > words.size() - at)
+            return false;
+        if ((instruction & 0xFFFFu) == kOpExtInst && count >= 5 && words[at + 4] == kGlslStd450Sin)
+            return true;
+        at += count;
+    }
+    return false;
 }
 
 void ExpectTheTwoBakeTargets(const MaterialBuildResult& result, const char* label)
@@ -138,4 +162,38 @@ TEST(ImpostorBakeVariant, TheAdapterRefusesTheBakeWithTheDepthOnlyShape)
     for (const auto& error : refused.errors)
         named = named || error.find("GE_IMPOSTOR_BAKE and GE_DEPTH_ONLY_FRAGMENT") != std::string::npos;
     EXPECT_TRUE(named) << "the refusal names the two shapes";
+}
+
+
+TEST(ImpostorBakeVariant, FoliageWindKeepsAuthoredLeafPivotsAndBakesTheRestPose)
+{
+    auto leaves = BarkDocument();
+    leaves.alphaMode = MaterialAlphaMode::Mask;
+    leaves.vertexModifier = "VertexModifiers/foliage_wind.glsl";
+    leaves.properties["foliageLeafPivots"] = 1.0f;
+    leaves.properties["foliageWindMotion"] = std::vector<float>{0.30f, 0.18f};
+    constexpr auto leafAttributes = VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasTangent |
+                                    VertexAttributeFlags::HasUV6 | VertexAttributeFlags::HasUV7;
+    const auto bake = Build(leaves, kBakePass, leafAttributes);
+    if (ShadercMissing(bake))
+        GTEST_SKIP() << "shaderc not built into this target";
+    ExpectTheTwoBakeTargets(bake, "foliage bake");
+    ASSERT_TRUE(bake.success);
+    EXPECT_FALSE(HasWindSine(bake));
+
+    for (const auto pass : {MaterialKeyword::None, MaterialKeyword::DepthOnlyFragment,
+                            MaterialKeyword::MotionVectors})
+    {
+        SCOPED_TRACE(static_cast<uint64_t>(pass));
+        const auto live = Build(leaves, MaterialKeyword::Instanced | pass, leafAttributes);
+        ASSERT_TRUE(live.success) << (live.errors.empty() ? "" : live.errors.front());
+        EXPECT_TRUE(HasWindSine(live));
+    }
+
+    auto bark = BarkDocument();
+    bark.vertexModifier = leaves.vertexModifier;
+    bark.properties["foliageWindMotion"] = std::vector<float>{0.30f, 0.0f};
+    const auto sway = Build(bark, MaterialKeyword::Instanced, VertexAttributeFlags::StandardMesh);
+    ASSERT_TRUE(sway.success) << (sway.errors.empty() ? "" : sway.errors.front());
+    EXPECT_TRUE(HasWindSine(sway));
 }

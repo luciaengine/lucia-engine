@@ -128,6 +128,12 @@ A vertex modifier that moves vertices declares the largest distance it can move 
 - A modifier with no declaration culls on its mesh bounds alone. For a modifier that moves positions, `vec3 ModifyVertex(vec3 position, InstanceData inst)`, the log and the material inspector's **Deformation Envelope** row say so. A modifier that writes the whole vertex output belongs to a draw path that culls its own geometry, so neither reports it. A declaration that is negative, not a number, declared twice, or scaled by a `bool`, `int` or `enum` property or by a property the shader does not declare is refused with the fix in the message, and culling uses the mesh bounds alone. The shader still compiles.
 - The envelope changes culling only. Level-of-detail selection keeps using the mesh bounds.
 
+### Foliage wind
+
+Select `VertexModifiers/foliage_wind.glsl` on bark and leaf materials and add a Wind Volume to the scene. **Foliage Base and Height** defines the mesh-local height range over which sway reaches its full strength. **Foliage Sway and Leaf Flutter** sets the two motion distances in meters. Bark can sway with the leaf flutter distance set to zero.
+
+Enable **Use Authored Leaf Pivots** on the leaf material. Give all vertices of each leaf the same mesh-local pivot and radius. Put pivot X and Y in `TEXCOORD_6` and pivot Z and radius in `TEXCOORD_7`. The radius must reach the leaf's farthest vertex. A nonpositive radius leaves that geometry on height-based sway. The leaf hinge rotates positions, normals, and tangents together. The impostor atlas captures the rest pose.
+
 ## 5 · Keywords (static variants)
 
 A material enables named keywords; the surface consumes them as `GE_USER_<NAME>` defines:
