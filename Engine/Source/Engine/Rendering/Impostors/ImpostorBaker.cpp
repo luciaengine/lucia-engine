@@ -119,7 +119,14 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
 
     AtlasTextures& textures = EnsureTextures(*device, job.Request.Key);
     if (!textures.Atlas.Color.IsValid() || !textures.Atlas.NormalDepth.IsValid())
+    {
+        if (job.Request.Key.FilterMips && m_Jobs.size() > 1)
+        {
+            m_Jobs.push_back(std::move(job));
+            m_Jobs.pop_front();
+        }
         return;
+    }
 
     FrameSlot& slot = m_FrameSlots[frame.FrameIndex() % kFrameSlots];
     slot.Commands.clear();
@@ -255,8 +262,11 @@ bool ImpostorBaker::EnsureBakeView(RenderServices& services)
 
 ImpostorBaker::AtlasTextures& ImpostorBaker::EnsureTextures(Rendering::IDevice& device, const ImpostorAtlasKey& key)
 {
-    if (AtlasTextures* existing = m_Textures.Find(key))
+    AtlasTextures* existing = m_Textures.Find(key);
+    if (existing && (!key.FilterMips ||
+        (existing->Atlas.Color.IsValid() && existing->Atlas.NormalDepth.IsValid())))
         return *existing;
+
     const uint32 side = AtlasSide(key);
     Rendering::TextureDesc desc{};
     desc.width = side;
@@ -265,16 +275,26 @@ ImpostorBaker::AtlasTextures& ImpostorBaker::EnsureTextures(Rendering::IDevice& 
                  static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
     desc.initialState = Rendering::ResourceState::ShaderResource;
     AtlasTextures textures{};
-    const uint32 requestedMipCount = ImpostorAtlasMipCount(key);
+    // After a failed allocation, request only base levels. The backend retires
+    // released resources between attempts.
+    const uint32 requestedMipCount = existing ? 1u : ImpostorAtlasMipCount(key);
     if (requestedMipCount > 1 && EnsureMipPipeline(device))
         textures.MipCount = requestedMipCount;
     desc.mipLevels = textures.MipCount;
     desc.format = static_cast<uint32_t>(Rendering::TextureFormat::RGBA8_UNORM);
     desc.debugName = "Impostor.Color";
     textures.Atlas.Color = device.CreateTexture(desc);
-    desc.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
-    desc.debugName = "Impostor.NormalDepth";
-    textures.Atlas.NormalDepth = device.CreateTexture(desc);
+    if (textures.Atlas.Color.IsValid())
+    {
+        desc.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
+        desc.debugName = "Impostor.NormalDepth";
+        textures.Atlas.NormalDepth = device.CreateTexture(desc);
+    }
+    if (!textures.Atlas.Color.IsValid() || !textures.Atlas.NormalDepth.IsValid())
+    {
+        DestroyAtlas(device, textures);
+        textures.Atlas = {};
+    }
     return m_Textures.InsertOrAssign(key, std::move(textures));
 }
 
