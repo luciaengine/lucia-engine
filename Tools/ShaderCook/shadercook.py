@@ -403,7 +403,12 @@ def CookFile(source: Path, stage: str, glslc: Path, naga: Path, tint: Path | Non
     if spirv_opt is None:
         raise CookError("spirv-opt not found (Vulkan SDK) - required for the "
                         "combined-image-sampler split")
-    result = Run([spirv_opt, "--split-combined-image-sampler", spv, "-o", split])
+    passes = ["--split-combined-image-sampler"]
+    if not optimize_spirv:
+        # Remove unused bindings after folding constant branches. Keep the code shape
+        # that Naga needs for the remaining atomic operations.
+        passes.extend(["--eliminate-dead-branches", "--eliminate-dead-code-aggressive"])
+    result = Run([spirv_opt, *passes, spv, "-o", split])
     if result.returncode != 0:
         raise CookError(f"spirv-opt split failed for {source}:\n{result.stderr}")
 
