@@ -4,6 +4,7 @@
 #include "Core/Engine.h"
 #include "EngineLogCapture.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MaterialMipStreaming/MaterialMipBudget.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/TextureService.h"
 #include "Memory/StatsSnapshot.h"
@@ -70,6 +71,7 @@ struct TextureCoverageUploadTestAccess
         std::lock_guard lock(service.m_PendingTexturesMutex);
         ++service.m_TextureEpochByGuid[texture];
     }
+    static uint64 MipBudget(const TextureService& service) { return service.m_MaterialMipBudgetBytes; }
     static void SetMipBudget(TextureService& service, uint64 bytes)
     {
         service.m_MaterialMipBudgetBytes = bytes;
@@ -472,6 +474,15 @@ TEST_F(TextureCoverageGPU, RawUploadAndWorkerCookMatchEveryTexelThroughOneByOne)
 }
 
 #endif
+
+TEST_F(TextureCoverageGPU, ANewTextureServiceStreamsMaterialMipsUnderThePlatformBudget)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    const uint64 budget = Engine::Renderer::MaterialMipBudget::ForPlatform(m_Device->GetCapabilities());
+    ASSERT_NE(budget, 0u);
+    EXPECT_EQ(Access::MipBudget(m_Textures), budget);
+    EXPECT_TRUE(m_Textures.StreamsMaterialMips());
+}
 
 TEST_F(TextureCoverageGPU, MaterialMipStreamingRespectsBudgetAndKeepsDirectTextureSeparate)
 {
