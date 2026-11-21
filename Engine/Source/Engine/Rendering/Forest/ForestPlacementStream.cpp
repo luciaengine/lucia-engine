@@ -11,6 +11,7 @@ namespace GameEngine::Engine::Renderer
 
 ForestPlacementStream::ForestPlacementStream(std::shared_ptr<ForestPlacementRuntime> placements)
     : m_Placements(std::move(placements))
+    , m_ArchivePath(m_Placements ? std::make_shared<const std::filesystem::path>(m_Placements->Store().File()) : nullptr)
 {
 }
 
@@ -35,7 +36,7 @@ void ForestPlacementStream::Submit(AssetManager& assets, std::span<const ReadPag
     m_Reads.push_back({std::vector<ReadPage>(pages.begin(), pages.end()), cancel, result->get_future()});
 
     AssetIOService::ReadRequest request;
-    request.Metadata.Path = m_Placements->Store().File();
+    request.SharedRangePath = m_ArchivePath;
     request.Priority = AssetLoadPriority::High;
     request.RangeOffset = first;
     request.RangeBytes = request.MaximumBytes = bytes;

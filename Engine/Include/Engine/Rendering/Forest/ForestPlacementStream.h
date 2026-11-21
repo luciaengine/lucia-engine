@@ -4,7 +4,9 @@
 #include "Types/ByteBuffer.h"
 
 #include <atomic>
+#include <filesystem>
 #include <future>
+#include <memory>
 
 namespace GameEngine
 {
@@ -59,6 +61,7 @@ private:
     void Submit(AssetManager& assets, std::span<const ReadPage> pages);
 
     std::shared_ptr<ForestPlacementRuntime> m_Placements;
+    const std::shared_ptr<const std::filesystem::path> m_ArchivePath;
     std::vector<Read> m_Reads;
     std::vector<ReadPage> m_NextReads;
     std::vector<ReadRun> m_Runs;
