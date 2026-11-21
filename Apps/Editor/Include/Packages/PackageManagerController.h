@@ -52,6 +52,10 @@ class PackageManagerController
     /// (Re)wire every Package Manager panel's snapshot provider and actions.
     void WirePanels();
 
+    /// On the editor thread, lease the caches for this project's C++ modules
+    /// and report skipped modules in Packages. Pointers are valid until unmount or remount.
+    std::vector<const PackageCodeModule*> PrepareNativeModules(bool hasEditorSdk);
+
     // P1 package code modules, collected at mount time (editor context:
     // Editor-kind modules included). C# modules feed the ScriptManager
     // immediately; Cpp modules are consumed by the native-scripting wiring,
@@ -78,6 +82,7 @@ class PackageManagerController
     std::vector<std::string> m_MountedAliases;
     std::vector<PackageCodeModule> m_CodeModules;
     std::vector<std::string> m_Defines;
+    std::vector<std::string> m_NativeModuleErrors;
 
     // P3 Package Manager panel data: the CURRENT resolution (re-resolved after
     // every panel action) and the manifest the panel's actions edit.

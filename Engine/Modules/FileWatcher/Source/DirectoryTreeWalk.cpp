@@ -1,5 +1,7 @@
 #include "DirectoryTreeWalk.h"
 
+#include <sys/stat.h>
+
 #include <cerrno>
 #include <system_error>
 
@@ -8,7 +10,7 @@ namespace GameEngine
 
 namespace
 {
-DirectoryTreeWalk::EntryType EntryTypeOf(unsigned char directoryEntryType, const std::filesystem::path& path)
+DirectoryTreeWalk::EntryType EntryTypeOf(unsigned char directoryEntryType, const char* path)
 {
     switch (directoryEntryType)
     {
@@ -25,13 +27,14 @@ DirectoryTreeWalk::EntryType EntryTypeOf(unsigned char directoryEntryType, const
     }
 
     // Some file systems do not report the type in the directory entry.
-    std::error_code error;
-    const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
-    if (std::filesystem::is_directory(status))
+    struct stat status{};
+    if (lstat(path, &status) != 0)
+        return DirectoryTreeWalk::EntryType::Other;
+    if (S_ISDIR(status.st_mode))
         return DirectoryTreeWalk::EntryType::Directory;
-    if (std::filesystem::is_regular_file(status))
+    if (S_ISREG(status.st_mode))
         return DirectoryTreeWalk::EntryType::RegularFile;
-    if (std::filesystem::is_symlink(status))
+    if (S_ISLNK(status.st_mode))
         return DirectoryTreeWalk::EntryType::Symlink;
     return DirectoryTreeWalk::EntryType::Other;
 }
@@ -77,8 +80,7 @@ bool DirectoryTreeWalk::Next()
         AppendSeparatorIfNeeded();
         m_NameStart = m_PathText.size();
         m_PathText.append(name);
-        m_CurrentPath = m_PathText;
-        m_CurrentType = EntryTypeOf(entry->d_type, m_CurrentPath);
+        m_CurrentType = EntryTypeOf(entry->d_type, m_PathText.c_str());
         return true;
     }
     return false;

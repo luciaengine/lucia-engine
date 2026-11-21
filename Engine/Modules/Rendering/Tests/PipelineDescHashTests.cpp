@@ -3,6 +3,7 @@
 
 #include "Rendering/Core/Pipeline/PipelineCache.h"
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/ReverseZ.h"
 
 #include <gtest/gtest.h>
 
@@ -202,6 +203,37 @@ TEST(PipelineCache_Intern, GraphicsSpecializationKeepsUnchangedConstants)
 
     cache.Clear();
     EXPECT_FALSE(cache.SpecializeGraphicsPipeline(base, overrides).IsValid());
+}
+
+TEST(PipelineCache_Intern, ReadOnlyDepthEqualPreservesTheRestOfTheDescriptor)
+{
+    PipelineCache cache;
+    auto desc = MakeMinimalGraphicsDesc();
+    desc.DepthStencil.depthTestEnable = true;
+    desc.DepthStencil.depthWriteEnable = true;
+    desc.DepthStencil.depthCompareOp = ReverseZ::kNearerOrEqual;
+    desc.Specialization.emplace();
+    desc.Specialization->AddConstant(2, 20u);
+    const auto base = cache.InternGraphicsPipeline(desc);
+
+    const auto equal = cache.InternReadOnlyDepthEqualPipeline(base);
+    ASSERT_TRUE(equal.IsValid());
+    EXPECT_NE(equal, base);
+    EXPECT_EQ(cache.InternReadOnlyDepthEqualPipeline(base), equal);
+    EXPECT_EQ(cache.InternGraphicsPipeline(desc), base);
+
+    desc.DepthStencil.depthWriteEnable = false;
+    desc.DepthStencil.depthCompareOp = CompareOp::Equal;
+    EXPECT_EQ(cache.InternGraphicsPipeline(desc), equal);
+
+    SpecializationConstants row;
+    row.AddConstant(306, 7u);
+    const auto specialized = cache.SpecializeGraphicsPipeline(equal, row);
+    desc.Specialization->AddConstant(306, 7u);
+    EXPECT_EQ(cache.InternGraphicsPipeline(desc), specialized);
+
+    cache.Clear();
+    EXPECT_FALSE(cache.InternReadOnlyDepthEqualPipeline(base).IsValid());
 }
 
 TEST(PipelineCache_Intern, GraphicsIdempotent)

@@ -106,6 +106,27 @@ GraphicsPipelineId PipelineCache::SpecializeGraphicsPipeline(
     return specialized;
 }
 
+GraphicsPipelineId PipelineCache::InternReadOnlyDepthEqualPipeline(GraphicsPipelineId base)
+{
+    std::scoped_lock lock(m_Mutex);
+    if (!base.IsValid() || base.Value > m_GraphicsEntries.size() ||
+        !m_GraphicsEntries[base.Value - 1].Live)
+        return {};
+    if (const auto* cached = m_ReadOnlyDepthEqualPipelines.Find(base.Value))
+    {
+        if (m_GraphicsEntries[cached->Value - 1].Live)
+            return *cached;
+    }
+
+    auto desc = m_GraphicsEntries[base.Value - 1].Desc;
+    desc.DepthStencil.depthWriteEnable = false;
+    desc.DepthStencil.depthCompareOp = CompareOp::Equal;
+    const uint64_t hash = desc.ContentHash();
+    const auto id = InternGraphicsPipeline_NoLock(std::move(desc), hash);
+    m_ReadOnlyDepthEqualPipelines.InsertOrAssign(base.Value, id);
+    return id;
+}
+
 GraphicsPipelineId PipelineCache::InternGraphicsPipeline(GraphicsPipelineDesc desc)
 {
     const uint64_t hash = desc.ContentHash();
@@ -508,6 +529,7 @@ size_t PipelineCache::InvalidateByTag(uint64_t tag)
     if (removed > 0)
     {
         m_GraphicsSpecializations.Clear();
+        m_ReadOnlyDepthEqualPipelines.Clear();
         m_CacheEpoch.store(NextCacheEpoch(), std::memory_order_release);
         m_InvalidationEpoch.fetch_add(1, std::memory_order_release);
     }
@@ -523,6 +545,7 @@ size_t PipelineCache::InvalidateByTags(const std::vector<uint64_t>& tags)
     if (total > 0)
     {
         m_GraphicsSpecializations.Clear();
+        m_ReadOnlyDepthEqualPipelines.Clear();
         m_CacheEpoch.store(NextCacheEpoch(), std::memory_order_release);
         m_InvalidationEpoch.fetch_add(1, std::memory_order_release);
     }
@@ -551,6 +574,7 @@ void PipelineCache::Clear()
 {
     std::scoped_lock lock(m_Mutex);
     m_GraphicsSpecializations.Clear();
+    m_ReadOnlyDepthEqualPipelines.Clear();
     m_Concrete.clear();
     m_LruList.clear();
     m_KeyToTags.clear();
@@ -596,6 +620,7 @@ void PipelineCache::ClearConcreteOnly()
 {
     std::scoped_lock lock(m_Mutex);
     m_GraphicsSpecializations.Clear();
+    m_ReadOnlyDepthEqualPipelines.Clear();
     // The concrete PipelineHandles are already dead after an in-place device
     // rebuild — forget them without touching the device (no DestroyPipeline).
     m_Concrete.clear();

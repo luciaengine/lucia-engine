@@ -110,6 +110,12 @@ flat layout(location = 14, component = 1) in uint vLodFadeCode;
 flat layout(location = 14) in uint vInstanceFlags;
 #endif
 
+#ifdef GE_INDEXED_DEPTH_OWNER
+flat layout(location = 14, component = 2) in uint vDepthOwnerSlot;
+layout(location = 0) out uint oDepthOwner;
+layout(constant_id = 307) const uint GE_OWNER_MESH_ENCODING = 0u;
+#endif
+
 // Render-origin-relative world position (Earth-scale precision). The shadow
 // receiver projects THIS through the rebased ge_shadowVP so caster and receiver
 // agree at fp32-of-small-magnitude far from the origin (no self-shadow acne).
@@ -487,6 +493,13 @@ struct GE_MaterialTexture
 // cubes, and shadow maps resolve to the builtins unbiased. nonuniformEXT is
 // applied here, at the descriptor access, so the NonUniform decoration lands
 // on the sampled operand regardless of the call shape.
+#if (defined(FORWARD_PLUS) || defined(GE_INDEXED_DEPTH_OWNER)) && defined(ALPHA_TEST) && \
+    !defined(GE_COMPAT_PROFILE) && !defined(GE_WGSL_COOK)
+#define GE_CAN_SPECIALIZE_MATERIAL_ROW 1
+const uint kPerInstanceMaterialRow = 0xffffffffu;
+layout(constant_id = 306) const uint GE_FORWARD_MATERIAL_ROW = kPerInstanceMaterialRow;
+#endif
+
 #if defined(GE_COMPAT_PROFILE)
 vec4 texture(GE_MaterialTexture t, vec2 uv)
 {
@@ -495,6 +508,11 @@ vec4 texture(GE_MaterialTexture t, vec2 uv)
 #else
 vec4 texture(GE_MaterialTexture t, vec2 uv)
 {
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
+        return texture(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]),
+                       uv, ge_mipBiasParams.x);
+#endif
     return texture(sampler2D(ge_BindlessTextures[nonuniformEXT(t.TexIdx)],
                              ge_BindlessSamplers[nonuniformEXT(t.SamplerIdx)]),
                    uv, ge_mipBiasParams.x);
@@ -515,6 +533,11 @@ vec4 textureGrad(GE_MaterialTexture t, vec2 uv, vec2 uvPerPixelX, vec2 uvPerPixe
 vec4 textureGrad(GE_MaterialTexture t, vec2 uv, vec2 uvPerPixelX, vec2 uvPerPixelY)
 {
     float biasScale = exp2(ge_mipBiasParams.x);
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
+        return textureGrad(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]),
+                           uv, uvPerPixelX * biasScale, uvPerPixelY * biasScale);
+#endif
     return textureGrad(sampler2D(ge_BindlessTextures[nonuniformEXT(t.TexIdx)],
                                  ge_BindlessSamplers[nonuniformEXT(t.SamplerIdx)]),
                        uv, uvPerPixelX * biasScale, uvPerPixelY * biasScale);
@@ -530,6 +553,10 @@ ivec2 textureSize(GE_MaterialTexture t, int lod)
 #else
 ivec2 textureSize(GE_MaterialTexture t, int lod)
 {
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
+        return textureSize(ge_BindlessTextures[t.TexIdx], lod);
+#endif
     return textureSize(ge_BindlessTextures[nonuniformEXT(t.TexIdx)], lod);
 }
 #endif
@@ -544,6 +571,10 @@ vec4 textureLod(GE_MaterialTexture t, vec2 uv, float lod)
 #else
 vec4 textureLod(GE_MaterialTexture t, vec2 uv, float lod)
 {
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
+        return textureLod(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]), uv, lod);
+#endif
     return textureLod(sampler2D(ge_BindlessTextures[nonuniformEXT(t.TexIdx)],
                                 ge_BindlessSamplers[nonuniformEXT(t.SamplerIdx)]),
                       uv, lod);
@@ -692,9 +723,15 @@ void main()
     oSpecularWeight = vec4(0.0);
     oSpecularRadiance = vec4(0.0);
 #endif
+#ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
+    const uint materialRow = GE_FORWARD_MATERIAL_ROW == kPerInstanceMaterialRow ? vMaterialIndex : GE_FORWARD_MATERIAL_ROW;
+    ge_MatData = MaterialParams.ge_Materials[GE_MATERIAL_ROW_INDEX(
+        MaterialParams.ge_Materials, materialRow)];
+#else
     // Fetch material data from shared SSBO using per-instance material index.
     ge_MatData = MaterialParams.ge_Materials[GE_MATERIAL_ROW_INDEX(
         MaterialParams.ge_Materials, vMaterialIndex)];
+#endif
     GE_LoadDeclaredProperties();
 
 #ifdef GE_GLASS_SHADOW_COLOR
@@ -896,6 +933,19 @@ void main()
     // main() and never evaluated the surface.
     if (!GE_LodCrossfadeKeep(vLodFadeCode, gl_FragCoord.xy))
         discard;
+  #endif
+  #ifdef GE_INDEXED_DEPTH_OWNER
+    // Zero is clear. The all-ones marker requires replay of the original packet.
+    uint primitive = uint(gl_PrimitiveID);
+    if (GE_OWNER_MESH_ENCODING != 0u)
+        oDepthOwner = primitive < 7936u ? ((primitive + 1u) << 16u) | (vDepthOwnerSlot & 65535u) : 0xffffffffu;
+    else
+    {
+        uint block = primitive >> 5u;
+        oDepthOwner = vDepthOwnerSlot < 0x3ffffeu && block < 1024u
+            ? ((vDepthOwnerSlot + 1u) << 10u) | block
+            : 0xffffffffu;
+    }
   #endif
   #ifdef GE_MOTION_VECTORS
     // Masked motion draw: the payload is exported after the same cutoff the

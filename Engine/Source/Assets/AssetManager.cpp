@@ -2685,12 +2685,7 @@ std::future<SharedPtr<Asset>> AssetManager::LoadAssetSynchronous(const AssetMeta
 
         asset->PostLoad();
 
-        const bool transient = IsInFlightLoadTransient(metadata.Guid);
-        {
-            const GUID key = m_Registry.ResolveSessionAlias(metadata.Guid);
-            std::unique_lock<std::shared_mutex> lock(m_LoadedAssetsMutex);
-            m_LoadedAssets.insert_or_assign(key, LoadedAssetEntry{asset, transient});
-        }
+        RegisterLoadedAsset(metadata.Guid, asset);
 
         Logger::Log::Debug("Loaded asset synchronously: {}", metadata.Name);
 
@@ -2730,11 +2725,6 @@ std::future<Vector<SharedPtr<Asset>>> AssetManager::LoadAssetsSequential(const V
 
 void AssetManager::RegisterLoadedAsset(const GUID& guid, SharedPtr<Asset> asset)
 {
-    // E5: a decode pipeline launched before a remap registers with the GUID
-    // it captured; resolve so the asset lands under the current identity.
-    // Once a new file has claimed the captured GUID this stores the old
-    // document under the re-claimed primary (see OnGuidRemapped).
-    const GUID key = m_Registry.ResolveSessionAlias(guid);
     // Residency is decided before the asset becomes visible; after this it can
     // only be pinned (a pinned request that joins the load later is pinned by
     // the load's completion).
@@ -2745,6 +2735,10 @@ void AssetManager::RegisterLoadedAsset(const GUID& guid, SharedPtr<Asset> asset)
             : AssetDbProfiler::Bucket::LockLoadedAssetsWorker);
         std::unique_lock<std::shared_mutex> lock(m_LoadedAssetsMutex);
         profileLock.OnAcquired();
+        // Hold the cache lock across alias resolution and insertion.
+        // The registry releases its lock before notification, and
+        // OnGuidRemapped re-keys entries under this same cache lock.
+        const GUID key = m_Registry.ResolveSessionAlias(guid);
         m_LoadedAssets.insert_or_assign(key, LoadedAssetEntry{asset, transient});
     }
 }

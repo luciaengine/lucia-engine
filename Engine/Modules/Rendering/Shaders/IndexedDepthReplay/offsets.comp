@@ -1,0 +1,107 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define STATE_BINDING 1
+#include "state.glsl"
+
+layout(local_size_x=128) in;
+layout(std430, set=0, binding=0) buffer Offsets { uint offsets[]; } runs;
+
+struct Draw
+{
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+layout(std430, set=0, binding=2) readonly buffer Source { Draw records[]; } source;
+
+shared uint prefix[128];
+shared uint lastSlot[128];
+
+void findSlotSpan(uint lane, uint first, uint last)
+{
+    uint begin = 0xffffffffu;
+    uint end = 0u;
+    for (uint n=first; n<last; ++n)
+    {
+        Draw draw = source.records[packet.recordBase + n];
+        if (draw.instanceCount == 0u)
+            continue;
+        if (draw.firstInstance > 0xffffffffu - draw.instanceCount)
+        {
+            atomicOr(state.flags, 4u);
+            continue;
+        }
+        begin = min(begin, draw.firstInstance);
+        end = max(end, draw.firstInstance + draw.instanceCount);
+    }
+    prefix[lane] = begin;
+    lastSlot[lane] = end;
+    barrier();
+    for (uint distance=64u; distance!=0u; distance >>= 1u)
+    {
+        if (lane < distance)
+        {
+            prefix[lane] = min(prefix[lane], prefix[lane + distance]);
+            lastSlot[lane] = max(lastSlot[lane], lastSlot[lane + distance]);
+        }
+        barrier();
+    }
+    if (lane == 0u)
+    {
+        state.slotBegin = prefix[0];
+        state.slotEnd = lastSlot[0];
+        if (lastSlot[0] > prefix[0] && lastSlot[0] - prefix[0] > 65535u)
+            atomicOr(state.flags, 4u);
+    }
+}
+void main()
+{
+    uint i = gl_LocalInvocationID.x;
+    uint live = state.originalCount;
+    uint batch = (live + 127u) / 128u;
+    uint first = min(i * batch, live);
+    uint last = min(first + batch, live);
+
+    if (packet.emit == 2u)
+    {
+        findSlotSpan(i, first, last);
+        return;
+    }
+    if ((state.flags & 4u) != 0u)
+    {
+        if (i == 0u)
+            state.fallbackCount = live;
+        return;
+    }
+    uint count = 0u;
+    for (uint n=first; n<last; ++n)
+        count += runs.offsets[n];
+    prefix[i] = count;
+    barrier();
+    for (uint distance=1u; distance<128u; distance <<= 1u)
+    {
+        uint prior = i >= distance ? prefix[i - distance] : 0u;
+        barrier();
+        prefix[i] += prior;
+        barrier();
+    }
+    uint total = prefix[127];
+    if (state.flags != 0u || total > 65535u)
+    {
+        if (i == 0u)
+            state.fallbackCount = live;
+        return;
+    }
+    uint offset = prefix[i] - count;
+    for (uint n=first; n<last; ++n)
+    {
+        uint next = runs.offsets[n];
+        runs.offsets[n] = offset;
+        offset += next;
+    }
+    if (i == 0u)
+        state.selectedCount = total;
+}

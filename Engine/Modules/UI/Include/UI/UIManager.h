@@ -2693,6 +2693,13 @@ public:
             bool MayAffectInheritedLayout = false;
         };
         PseudoInfo Hover{};
+        // The compounds that carry :hover before a rule's subject (`checkbox:hover` in `checkbox:hover .box`).
+        // A hover change can restyle the descendants, or the following siblings, of an element only when the
+        // element matches one of them.
+        std::vector<CompoundSelector> HoverDescendantAnchors;
+        std::vector<CompoundSelector> HoverSiblingAnchors;
+        // True when such a :hover sits inside :is, :where or :not; the anchor lists are then incomplete.
+        bool HoverAnchorsIncomplete = false;
         PseudoInfo Active{};
         PseudoInfo Focus{};
         PseudoInfo FocusVisible{};

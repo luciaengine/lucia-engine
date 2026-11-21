@@ -3263,6 +3263,31 @@ uint64 RunFramesUntil(PageResidencyManager& residency, uint64 frame, Done done)
 
 } // namespace
 
+TEST_F(PageStoreTest, AQueuedRangeKeepsItsPathWhenTheReaderReopens)
+{
+    const std::filesystem::path source = m_Dir / "steady.r32";
+    const std::filesystem::path first = m_Dir / "first.gepage";
+    const std::filesystem::path second = m_Dir / "second.gepage";
+    WriteR32(source, 128, 128, Relief);
+    ASSERT_EQ(Cook(source, 128, 128, first).Error, "");
+    ASSERT_TRUE(std::filesystem::copy_file(first, second));
+
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(first, PageFieldKind::Height), "");
+    AssetIOService::ReadRequest queued;
+    queued.RangeBytes = 1;
+    queued.SharedRangePath = reader.ShareFilePath();
+    ASSERT_TRUE(queued.SharedRangePath);
+
+    ASSERT_EQ(reader.Open(second, PageFieldKind::Height), "");
+    EXPECT_EQ(reader.File(), second);
+    EXPECT_EQ(queued.ReadPath(), first);
+
+    queued.Metadata.Path = second;
+    queued.RangeBytes = 0;
+    EXPECT_EQ(queued.ReadPath(), second);
+}
+
 // A camera that pans between two halves of a store streams the level-0 pages of each half in and out
 // through the asset reader threads. Once each half streamed twice, a page that streams in again
 // allocates only in its asset read: its fetch, its decode and its landing reuse what the first pages left.
@@ -3334,9 +3359,8 @@ TEST_F(PageStoreTest, AStorePageThatStreamsInAgainAllocatesOnlyInItsAssetRead)
         allocations = std::min(allocations, scope.Count());
         ASSERT_EQ(loads, uint32(levels[0].PagesX * levels[0].PagesZ)) << "each level-0 page streams in once";
     }
-    // The asset read's four a page: the file path that ReadStorePage copies, the ReadFileRange buffer,
-    // the read job and the job's task data. Below Debug level, the read's Debug log line formats nothing.
-    // The count is process-wide, so a slack of 8 lets another thread allocate: far below one a page (32).
+    // Allow four allocations per asset read and eight process-wide allocations for unrelated work.
+    // One extra allocation per page exceeds that allowance.
     EXPECT_LE(allocations, 4u * loads + 8) << "over " << loads << " pages";
     io.Stop();
     pool.Shutdown();

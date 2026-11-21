@@ -262,6 +262,14 @@ layout(push_constant) uniform InstancedPC
 {
     uint64_t ge_indirectionAddr;   // instance-indirection buffer (any offset already folded in)
     uint64_t ge_gpuInstancesAddr;  // GPUScene per-frame instance buffer base
+#ifdef GE_INDEXED_DEPTH_OWNER_MESH_FORWARD
+    uint64_t ge_coreAddress;
+    uint64_t ge_colorAddress;
+    uint64_t ge_indexAddress;
+    uint64_t ge_workAddress;
+    uint64_t ge_countsAddress;
+    uint ge_index16;
+#endif
 } pc_inst;
 
 // Instance indirection buffer: maps gl_InstanceIndex to GPUScene instance
@@ -292,11 +300,11 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Pa
 };
 #endif
 
-InstanceData ge_FetchInstanceData()
+InstanceData ge_FetchInstanceData(uint slot)
 {
 #ifdef GE_USER_PARTICLE_BUFFER
     InstanceIndirectionBuffer indices = InstanceIndirectionBuffer(pc_inst.ge_indirectionAddr);
-    uint index = indices.ge_instanceIndirection[gl_InstanceIndex];
+    uint index = indices.ge_instanceIndirection[slot];
     ParticleInstancesBuffer data = ParticleInstancesBuffer(pc_inst.ge_gpuInstancesAddr);
     return ge_ParticleInstanceData(data.particles[index], index);
 #else
@@ -307,7 +315,7 @@ InstanceData ge_FetchInstanceData()
     // high byte carries the LOD-crossfade code and is zero on every other
     // record. Masking is unconditional so the index stays correct in variants
     // compiled without the keyword — they simply ignore the code.
-    uint indirWord = indirBuf.ge_instanceIndirection[gl_InstanceIndex];
+    uint indirWord = indirBuf.ge_instanceIndirection[slot];
     uint sceneIdx = indirWord & kLodFadeIndexMask;
     GPUInstanceData gpuInst = gpuInstBuf.ge_instances[sceneIdx];
 
@@ -331,6 +339,13 @@ InstanceData ge_FetchInstanceData()
     return inst;
 #endif
 }
+
+#ifndef GE_INDEXED_DEPTH_OWNER_MESH_FORWARD
+InstanceData ge_FetchInstanceData()
+{
+    return ge_FetchInstanceData(uint(gl_InstanceIndex));
+}
+#endif
 
 #ifdef GE_MOTION_VECTORS
 // The scene index comes from the caller's already-fetched endpoint, so the

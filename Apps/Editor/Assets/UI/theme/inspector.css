@@ -3,6 +3,11 @@
 	--inspector-row-gap: 4px;
 }
 
+/* The Inspector hides its horizontal bar, so the scroll view does not scan text widths for it. */
+.inspector-scrollview {
+	--ui_scrollview_measure_horizontal: 0;
+}
+
 /* Inspector scrollview content margins; min-width: 0 so flex children (e.g. Vector3) can shrink without clipping */
 .inspector-scrollview .scroll-content {
 	padding: 8px;
@@ -2539,6 +2544,15 @@ button.inspector-button.inspector-new-material-button,
 }
 
 .rp-foldout .inspector-row .inspector-field {
+	flex: 1 1 0%;
+	min-width: 0;
+	width: auto;
+	max-width: none;
+	margin-right: 0;
+	align-self: center;
+}
+
+.rp-foldout .inspector-row > .settings-row-field {
 	flex: 1 1 0%;
 	min-width: 0;
 	width: auto;

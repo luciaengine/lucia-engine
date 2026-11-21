@@ -2351,15 +2351,14 @@ bool MeshGPURegistry::CreateBucketStreamPool(std::vector<MeshGPUStreamPool>& poo
     const bool isIndex = (debugName && std::strstr(debugName, "IB") != nullptr);
     desc.usage       = static_cast<uint32_t>(isIndex ? BufferUsage::Index
                                                      : BufferUsage::Vertex);
-    // When ray query is available, pool VB/IB double as BLAS geometry input,
-    // read in place via device address (position leads the binding-0
-    // interleaved stream, so triangles read at suballocation offset + full
-    // stride — no copies). Gated: the AS usage bit is invalid on devices
-    // without VK_KHR_acceleration_structure enabled.
-    if (domain == MeshGPUStorageDomain::Shared && m_Device->GetCapabilities().supportsRayQuery)
+    // Shared streams give mesh replay and ray query the original geometry addresses.
+    const auto& capabilities = m_Device->GetCapabilities();
+    if (domain == MeshGPUStorageDomain::Shared)
     {
-        desc.usage |= static_cast<uint32_t>(BufferUsage::ShaderDeviceAddress
-                                            | BufferUsage::AccelerationStructureBuildInput);
+        if (capabilities.supportsIndexedDepthMeshReplay || capabilities.supportsRayQuery)
+            desc.usage |= static_cast<uint32_t>(BufferUsage::ShaderDeviceAddress);
+        if (capabilities.supportsRayQuery)
+            desc.usage |= static_cast<uint32_t>(BufferUsage::AccelerationStructureBuildInput);
     }
     // Pool bytes are written once by the CPU and then re-read by the GPU for
     // every frame the mesh is visible — depth prepass, four shadow cascades and

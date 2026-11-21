@@ -1,0 +1,55 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_vote : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+#define STATE_BINDING 3
+#include "state.glsl"
+
+layout(local_size_x=8, local_size_y=8) in;
+layout(r32ui, set=0, binding=0) uniform readonly uimage2D owners;
+layout(std430, set=0, binding=1) buffer Masks { uint words[]; } masks;
+layout(std430, set=0, binding=2) readonly buffer InputCount { uint cursors[]; } inputCount;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (packet.emit == 2u)
+    {
+        if (all(equal(pixel, ivec2(0))))
+        {
+            uint count = min(inputCount.cursors[packet.cursorIndex], packet.maxDrawCount);
+            state.dispatchX = count;
+            state.dispatchY = 1u;
+            state.dispatchZ = 1u;
+            state.originalCount = count;
+            state.mergeShift = packet.mergeShift;
+        }
+        return;
+    }
+    if (any(greaterThanEqual(pixel, imageSize(owners))))
+        return;
+    uint id = imageLoad(owners, pixel).x;
+    if (id == 0u)
+        return;
+
+    uint slot = (id >> 10u) - 1u;
+    uint block = (id & 1023u) >> packet.mergeShift;
+    if (id == 0xffffffffu || slot < state.slotBegin || slot >= state.slotEnd ||
+        slot - state.slotBegin >= uint(masks.words.length()) / wordsPerSlot())
+    {
+        atomicOr(state.flags, 1u);
+        return;
+    }
+    uint word = (slot - state.slotBegin) * wordsPerSlot() + (block >> 5u);
+    uint bit = 1u << (block & 31u);
+    if (subgroupAllEqual(word))
+    {
+        uint merged = subgroupOr(bit);
+        if (subgroupElect())
+            atomicOr(masks.words[word], merged);
+    }
+    else
+        atomicOr(masks.words[word], bit);
+}

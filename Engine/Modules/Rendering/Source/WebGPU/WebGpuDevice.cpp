@@ -416,14 +416,20 @@ bool WebGpuDevice::CreateLogicalDevice(const DeviceDesc& desc)
         features.push_back(WGPUFeatureName_Float32Filterable);
         m_SupportsFloat32Filterable = true;
     }
-    // GPU timings. Optional, and absent unless the browser is told to expose it
-    // (Chrome hides timestamps without --enable-webgpu-developer-features);
-    // without the feature the query pool simply never exists and the profiler
-    // shows CPU timings alone.
-    if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_TimestampQuery))
+    bool supportsTiming = wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_TimestampQuery);
+#if !defined(__EMSCRIPTEN__)
+    // Native timings write directly to the command encoder.
+    constexpr auto kEncoderTimestampFeature =
+        static_cast<WGPUFeatureName>(WGPUNativeFeature_TimestampQueryInsideEncoders);
+    supportsTiming = supportsTiming && wgpuAdapterHasFeature(m_Adapter, kEncoderTimestampFeature);
+#endif
+    m_SupportsTimestampQuery = supportsTiming;
+    if (m_SupportsTimestampQuery)
     {
         features.push_back(WGPUFeatureName_TimestampQuery);
-        m_SupportsTimestampQuery = true;
+#if !defined(__EMSCRIPTEN__)
+        features.push_back(kEncoderTimestampFeature);
+#endif
     }
 #if !defined(__EMSCRIPTEN__)
     // Engine push constants ride wgpu's immediates when the adapter has them.
@@ -665,6 +671,10 @@ void WebGpuDevice::Shutdown()
     {
         WaitForIdle();
     }
+#if !defined(__EMSCRIPTEN__)
+    // The native idle wait drains the readback callbacks before release.
+    m_QueryPool.reset();
+#endif
 
     {
         std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
