@@ -1096,6 +1096,8 @@ if(ENABLE_TSAN)
 	if(APPLE)
 		# A sanitizer link of Engine has 4 personality routines (C, C++, Objective-C, Rust). The compact
 		# unwind format of ld holds 3, so the format is off and unwinding uses the DWARF tables.
+		# On arm64 the compiler omits a DWARF entry by default; without one a C++ exception can terminate.
+		add_compile_options("$<$<CONFIG:Debug>:-femit-dwarf-unwind=always>")
 		add_link_options("$<$<CONFIG:Debug>:LINKER:-no_compact_unwind>")
 	endif()
 	# Every test executable starts with the runtime options in Tests/ThreadSanitizerOptions.cpp.
