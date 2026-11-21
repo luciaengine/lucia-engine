@@ -7,12 +7,18 @@
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/TextureService.h"
 #include "Engine/Rendering/ViewRegistry.h"
 #include "Rendering/Core/PassPhase.h"
+#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Core/RenderGraph/RGFullscreen.h"
+#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -62,15 +68,9 @@ ImpostorBaker::ImpostorBaker() = default;
 
 ImpostorBaker::~ImpostorBaker()
 {
-    for (auto& [key, textures] : m_Textures)
-    {
-        if (!m_Device)
-            break;
-        if (textures.Atlas.Color.IsValid())
-            m_Device->DestroyTexture(textures.Atlas.Color);
-        if (textures.Atlas.NormalDepth.IsValid())
-            m_Device->DestroyTexture(textures.Atlas.NormalDepth);
-    }
+    if (m_Device)
+        for (auto& [key, textures] : m_Textures)
+            DestroyAtlas(*m_Device, textures);
 }
 
 ImpostorAtlas ImpostorBaker::Request(const ImpostorBakeRequest& request, uint64 frame)
@@ -102,17 +102,13 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
 
     // The frame that declared a finished bake has executed by now.
     for (const ImpostorAtlasKey& key : m_Finished)
-    {
-        if (AtlasTextures* textures = m_Textures.Find(key))
-            textures->Ready = true;
         m_Cache.MarkReady(key);
-    }
     m_Finished.clear();
     for (const ImpostorAtlasKey& key : m_Evicted)
         FreeTextures(device, key);
     m_Evicted.clear();
 
-    if (m_Jobs.empty() || !EnsureBakeView(services))
+    if (m_PendingMip || m_Jobs.empty() || !EnsureBakeView(services))
         return;
     BakeJob& job = m_Jobs.front();
     if (m_Cache.GetState(job.Request.Key) == ImpostorAtlasCache::State::Absent)
@@ -134,10 +130,15 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
 
     const RenderGraph::RGTexture color = frame.ImportExternalTexture(
         "Impostor.Color", textures.Atlas.Color, Rendering::ResourceState::ShaderResource,
-        Rendering::TextureFormat::RGBA8_UNORM);
+        Rendering::TextureFormat::RGBA8_UNORM, textures.MipCount);
     const RenderGraph::RGTexture normalDepth = frame.ImportExternalTexture(
         "Impostor.NormalDepth", textures.Atlas.NormalDepth, Rendering::ResourceState::ShaderResource,
-        Rendering::TextureFormat::R16G16B16A16_FLOAT);
+        Rendering::TextureFormat::R16G16B16A16_FLOAT, textures.MipCount);
+    if (job.NextFrame == frameCount)
+    {
+        DeclareMip(frame, services, textures, job.Request.Key, {color, normalDepth});
+        return;
+    }
     // The world pass binds its depth target as ge_sceneDepth at declaration, so the depth must
     // come from the persistent pool, not a transient. Each atlas frame clears it.
     Rendering::TextureDesc depthDesc{};
@@ -158,8 +159,9 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
                       {
                           RenderGraph::RGAttachmentOps clear{};
                           clear.Load = RenderGraph::RGLoadOp::Clear;
-                          p.AttachColor(0, color, clear);
-                          p.AttachColor(1, normalDepth, clear);
+                          constexpr RenderGraph::RGRange baseMip{0, 1, 0, 1};
+                          p.AttachColor(0, color, clear, baseMip);
+                          p.AttachColor(1, normalDepth, clear, baseMip);
                       },
                       [](RenderGraph::RGContext&) {});
         job.Cleared = true;
@@ -178,11 +180,48 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
     frame.MarkOutput(color, RenderGraph::RGImageLayout::ShaderReadOnly);
     frame.MarkOutput(normalDepth, RenderGraph::RGImageLayout::ShaderReadOnly);
 
-    if (job.NextFrame >= frameCount)
+    if (job.NextFrame == frameCount && textures.MipCount == 1)
     {
         m_Finished.push_back(job.Request.Key);
         m_Jobs.pop_front();
     }
+}
+
+void ImpostorBaker::OnFrameSubmittedRG(RenderGraph::RGFrame& frame, const Rendering::IDevice::GpuSyncToken& token)
+{
+    std::lock_guard lock(m_Mutex);
+    if (!m_PendingMip || m_PendingMip->Frame.Frame != &frame)
+        return;
+    const auto pending = *m_PendingMip;
+    m_PendingMip.reset();
+    if (!pending.Frame.IsFor(frame) || !token.IsValid() || frame.Graph().Submissions().empty() ||
+        frame.Stats().SubmissionsMade != frame.Graph().Submissions().size() ||
+        m_Jobs.empty() || m_Jobs.front().Request.Key != pending.Key)
+        return;
+    if (!std::ranges::all_of(pending.Recorded, [](const bool* recorded) { return recorded && *recorded; }))
+        return;
+    auto* textures = m_Textures.Find(pending.Key);
+    if (!textures || textures->Atlas.HighestReadyMip + 1 != pending.Level)
+        return;
+
+    textures->Atlas.HighestReadyMip = pending.Level;
+    if (pending.Level + 1 == textures->MipCount)
+    {
+        m_Cache.MarkReady(pending.Key);
+        m_Jobs.pop_front();
+    }
+}
+
+void ImpostorBaker::OnFrameAbortedRG(RenderGraph::RGFrame& frame)
+{
+    std::lock_guard lock(m_Mutex);
+    if (m_PendingMip && m_PendingMip->Frame.Frame == &frame)
+        m_PendingMip.reset();
+}
+
+void ImpostorBaker::OnFrameStreamRetiredRG(RenderGraph::RGFrame& frame)
+{
+    OnFrameAbortedRG(frame);
 }
 
 void ImpostorBaker::OnDeviceRebuilt(Rendering::IDevice* device)
@@ -194,6 +233,9 @@ void ImpostorBaker::OnDeviceRebuilt(Rendering::IDevice* device)
     m_Jobs.clear();
     m_Finished.clear();
     m_Evicted.clear();
+    m_PendingMip.reset();
+    m_MipPipeline = {};
+    m_MipPipelineRequested = false;
     m_Device = device;
 }
 
@@ -223,13 +265,29 @@ ImpostorBaker::AtlasTextures& ImpostorBaker::EnsureTextures(Rendering::IDevice& 
                  static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
     desc.initialState = Rendering::ResourceState::ShaderResource;
     AtlasTextures textures{};
+    const uint32 requestedMipCount = ImpostorAtlasMipCount(key);
+    if (requestedMipCount > 1 && EnsureMipPipeline(device))
+        textures.MipCount = requestedMipCount;
+    desc.mipLevels = textures.MipCount;
     desc.format = static_cast<uint32_t>(Rendering::TextureFormat::RGBA8_UNORM);
     desc.debugName = "Impostor.Color";
     textures.Atlas.Color = device.CreateTexture(desc);
     desc.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
     desc.debugName = "Impostor.NormalDepth";
     textures.Atlas.NormalDepth = device.CreateTexture(desc);
-    return m_Textures.InsertOrAssign(key, textures);
+    return m_Textures.InsertOrAssign(key, std::move(textures));
+}
+
+void ImpostorBaker::DestroyAtlas(Rendering::IDevice& device, AtlasTextures& textures)
+{
+    for (const auto& views : textures.SampleViews)
+        for (auto view : views)
+            if (view.IsValid())
+                device.DestroyTextureView(view);
+    const auto& atlas = textures.Atlas;
+    for (auto texture : {atlas.Color, atlas.NormalDepth})
+        if (texture.IsValid())
+            device.DestroyTexture(texture);
 }
 
 void ImpostorBaker::FreeTextures(Rendering::IDevice* device, const ImpostorAtlasKey& key)
@@ -237,11 +295,112 @@ void ImpostorBaker::FreeTextures(Rendering::IDevice* device, const ImpostorAtlas
     AtlasTextures* textures = m_Textures.Find(key);
     if (!textures)
         return;
-    if (device && textures->Atlas.Color.IsValid())
-        device->DestroyTexture(textures->Atlas.Color);
-    if (device && textures->Atlas.NormalDepth.IsValid())
-        device->DestroyTexture(textures->Atlas.NormalDepth);
+    if (device)
+        DestroyAtlas(*device, *textures);
     m_Textures.Erase(key);
+}
+
+bool ImpostorBaker::EnsureMipPipeline(Rendering::IDevice& device)
+{
+    using namespace Rendering;
+    if (m_MipPipelineRequested)
+        return m_MipPipeline.IsValid();
+    m_MipPipelineRequested = true;
+    ShaderPackage package{};
+    if (!LoadShaderPkg("Shaders/impostor_mip.shaderpkg", device.PreferredShaderSource(), package))
+        return false;
+    const auto vertex = package.stageBytes.find("vs");
+    const auto fragment = package.stageBytes.find("fs");
+    if (vertex == package.stageBytes.end() || fragment == package.stageBytes.end() ||
+        vertex->second.empty() || fragment->second.empty())
+        return false;
+
+    m_MipLayout = {};
+    m_MipLayout.debugName = "Impostor.MipSet";
+    m_MipLayout.bindings = {{0, DescriptorType::CombinedImageSampler, 1, kShaderStageFragment}};
+    ApplyMetaImageShapeToLayout(package.meta, m_MipLayout);
+    auto pipeline = RenderGraph::MakeFullscreenPipelineDesc("Impostor.Mip");
+    pipeline.vertexShader = vertex->second;
+    pipeline.pixelShader = fragment->second;
+    pipeline.descriptorSetLayouts.push_back(m_MipLayout);
+    m_MipPipeline = PipelineDescTranslator::InternGraphics(device, pipeline);
+    return m_MipPipeline.IsValid();
+}
+
+bool ImpostorBaker::DeclareMip(RenderGraph::RGFrame& frame, RenderServices& services, AtlasTextures& textures,
+                              const ImpostorAtlasKey& key, const std::array<RenderGraph::RGTexture, 2>& resources)
+{
+    using namespace Rendering;
+    IDevice* device = services.GetDevice();
+    if (!device || !EnsureMipPipeline(*device))
+        return false;
+    const auto sampler = services.Textures().GetSampler(SamplerPreset::PointClamp);
+    if (!sampler.IsValid())
+        return false;
+    const uint32 mip = textures.Atlas.HighestReadyMip + 1;
+    const uint32 extent = AtlasSide(key) >> mip;
+    const auto& atlas = textures.Atlas;
+    const std::array images{atlas.Color, atlas.NormalDepth};
+    const RenderGraph::RGRange input{mip - 1, 1, 0, 1};
+    const RenderGraph::RGRange output{mip, 1, 0, 1};
+    for (uint32 layer = 0; layer < images.size(); ++layer)
+    {
+        if (!resources[layer].IsValid())
+            return false;
+        auto& views = textures.SampleViews[layer];
+        views.resize(mip);
+        auto& view = views.back();
+        if (!view.IsValid())
+            view = device->CreateTextureView(images[layer], {.baseMip = mip - 1, .levelCount = 1, .layerCount = 1});
+        if (!view.IsValid())
+            return false;
+    }
+
+    PendingMip pending{{}, key, mip, {}};
+    pending.Frame.Stamp(frame);
+    for (uint32 layer = 0; layer < images.size(); ++layer)
+    {
+        const auto image = resources[layer];
+        const auto view = textures.SampleViews[layer].back();
+        auto* recorded = frame.AllocatePassData<bool>(false);
+        const auto pass = frame.AddPass("Impostor.FilterMip", PassPhase::kFinalize,
+            [image, input, output](RenderGraph::RGPassBuilder& builder)
+            {
+                builder.Read(image, RenderGraph::RGTextureRead::Sampled, input);
+                RenderGraph::RGAttachmentOps ops{};
+                ops.Load = RenderGraph::RGLoadOp::DontCare;
+                builder.AttachColor(0, image, ops, output);
+            },
+            [this, view, sampler, extent, recorded](RenderGraph::RGContext& context)
+            {
+                auto* device = context.GetDevice();
+                if (!device || !context.Cmd)
+                    return;
+                const auto pipeline = context.GetOrCreatePipelineVariant(m_MipPipeline);
+                if (!pipeline.IsValid())
+                    return;
+                DescriptorSetDesc descriptor{};
+                descriptor.layout = m_MipLayout;
+                descriptor.transient = true;
+                descriptor.debugName = "Impostor.MipSet";
+                const auto set = device->CreateDescriptorSet(descriptor);
+                if (!set.IsValid())
+                    return;
+                device->UpdateCombinedImageSamplerBinding(set, 0, view, sampler);
+                context.Cmd->SetPipeline(pipeline);
+                context.Cmd->SetViewport(0.0f, 0.0f, static_cast<float>(extent), static_cast<float>(extent));
+                context.Cmd->SetScissor(0, 0, extent, extent);
+                context.Cmd->BindDescriptorSet(0, set, pipeline);
+                context.Cmd->Draw(3, 1);
+                *recorded = true;
+            });
+        if (!pass.IsValid())
+            return false;
+        pending.Recorded[layer] = recorded;
+        frame.MarkOutput(image, RenderGraph::RGImageLayout::ShaderReadOnly);
+    }
+    m_PendingMip = pending;
+    return true;
 }
 
 bool ImpostorBaker::PartsSettled(RenderServices& services, BakeJob& job)
@@ -304,7 +463,9 @@ void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderService
     targets.Color = color;
     targets.Depth = depth;
     RenderGraph::RGAttachmentOps keep{};
-    targets.AddExtraColor(1u, normalDepth, keep);
+    constexpr RenderGraph::RGRange baseMip{0, 1, 0, 1};
+    targets.ColorRange = baseMip;
+    targets.AddExtraColor(1u, normalDepth, keep, {}, baseMip);
     services.AddForwardCommandPassForView(frame, m_View, targets, kBakeKeywords,
                                           std::span<const DrawCommand>(slot.Commands).subspan(first), {},
                                           "Impostor.BakeFrame");

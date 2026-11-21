@@ -257,6 +257,7 @@ Engine::Renderer::ImpostorBakeRequest MakeImpostorBakeRequest(const TreeVariant&
     request.Key.MeshHash = variant.Hash;
     request.Key.MaterialHash = variant.Hash;
     request.Key.Layout = Mathematics::OctahedralLayout::Hemisphere;
+    request.Key.FilterMips = Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_FILTER_MIPS", false);
     request.Center = variant.Bounds.center;
     request.Radius = variant.ImpostorRadius;
     if (variant.Branches.IsValid())

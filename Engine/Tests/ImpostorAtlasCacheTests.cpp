@@ -26,6 +26,29 @@ TEST(ImpostorAtlasCache, AnAtlasOfEightByEightFramesAt128PixelsIsTwelveMegabytes
     EXPECT_EQ(ImpostorAtlasBytes(KeyFor(1)), 64ull * 128 * 128 * 12);
 }
 
+TEST(ImpostorAtlasCache, AFilteredAtlasChargesOnlyTileContainedLevels)
+{
+    auto key = KeyFor(1);
+    key.FilterMips = true;
+    EXPECT_EQ(ImpostorAtlasMipCount(key), 6u);
+    EXPECT_EQ(ImpostorAtlasBytes(key), 64ull * (128 * 128 + 64 * 64 + 32 * 32 + 16 * 16 + 8 * 8 + 4 * 4) * 12);
+    key.FrameSize = 96;
+    EXPECT_EQ(ImpostorAtlasMipCount(key), 1u);
+    EXPECT_EQ(ImpostorAtlasBytes(key), 64ull * 96 * 96 * 12);
+}
+
+TEST(ImpostorAtlasCache, FilteredAndSingleLevelRequestsHaveSeparateBudgetEntries)
+{
+    const auto single = KeyFor(1);
+    auto filtered = single;
+    filtered.FilterMips = true;
+    ImpostorAtlasCache cache(ImpostorAtlasBytes(single));
+    std::vector<ImpostorAtlasKey> evicted;
+    EXPECT_EQ(cache.Request(single, 1, evicted), ImpostorAtlasCache::State::Pending);
+    EXPECT_EQ(cache.Request(filtered, 1, evicted), ImpostorAtlasCache::State::Absent);
+    EXPECT_TRUE(evicted.empty());
+}
+
 TEST(ImpostorAtlasCache, ARequestThatFitsIsPendingUntilItsBakeIsReady)
 {
     ImpostorAtlasCache cache(ImpostorAtlasBytes(KeyFor(1)) * 2);

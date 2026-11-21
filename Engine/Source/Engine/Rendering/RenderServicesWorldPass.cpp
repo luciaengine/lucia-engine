@@ -114,7 +114,7 @@ void AttachExtraColors(RenderGraph::RGPassBuilder& builder,
         if (extra.Resolve.IsValid())
             builder.AttachColorResolve(extra.Location, extra.Texture, extra.Resolve, extra.Ops);
         else
-            builder.AttachColor(extra.Location, extra.Texture, extra.Ops);
+            builder.AttachColor(extra.Location, extra.Texture, extra.Ops, extra.Range);
     }
 }
 

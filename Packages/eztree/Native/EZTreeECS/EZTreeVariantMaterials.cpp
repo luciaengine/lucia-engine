@@ -360,7 +360,8 @@ void RegisterImpostorMaterial(Engine::Renderer::RenderServices& renderServices,
         std::vector<float>{center.x, center.y, center.z, radius};
     doc.properties["impostorAtlas"] = std::vector<float>{
         static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f,
-        Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f, 0.0f};
+        Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f,
+        static_cast<float>(atlas.HighestReadyMip)};
     doc.textures["albedoMap"] = std::string{};
     doc.textures["normalMap"] = std::string{};
     Engine::Renderer::Material* registered = renderServices.Materials().RegisterMaterialFromDocument(material, doc);
