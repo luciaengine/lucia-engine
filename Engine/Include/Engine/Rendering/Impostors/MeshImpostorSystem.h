@@ -13,6 +13,16 @@
 #include <cstddef>
 #include <vector>
 
+namespace GameEngine
+{
+class Asset;
+class AssetManager;
+namespace Components
+{
+struct MeshRenderer;
+}
+} // namespace GameEngine
+
 namespace GameEngine::Engine::Renderer
 {
 
@@ -61,8 +71,18 @@ private:
         std::vector<uint32> LinkedMeshes;
     };
 
+    // The models a scan has met: a null source records a model checked but not eligible.
+    struct ScanState
+    {
+        AssetManager* Assets = nullptr;
+        FlatMap<GUID, SharedPtr<Asset>> Sources;
+        FlatMap<GUID, ModelImpostor> Models;
+    };
+
     // Rebuilds the parts of the opted-in models from the world's mesh renderers.
     void Scan(ECS::World& world);
+    // Adds one mesh renderer to the scan: the model's eligibility on first sight, then its part.
+    static void AddRenderer(ScanState& scan, const Components::MeshRenderer& renderer);
     // Returns the card material once the parts are linked to it, else null.
     const Material* UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
                                 ImpostorStage& stage);

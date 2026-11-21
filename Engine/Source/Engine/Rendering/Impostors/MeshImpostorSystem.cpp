@@ -132,63 +132,64 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     stage.SubmitCards(*m_RenderServices, world.GetWorldId(), cards);
 }
 
+void MeshImpostorSystem::AddRenderer(ScanState& scan, const Components::MeshRenderer& renderer)
+{
+    if (renderer.meshGpuHandleId == 0u || renderer.modelAssetGuid.IsNull())
+        return;
+    const GUID modelGuid = renderer.modelAssetGuid.ToGuid();
+    const SharedPtr<Asset>* source = scan.Sources.Find(modelGuid);
+    if (!source)
+    {
+        SharedPtr<Asset> asset = scan.Assets->GetAsset(modelGuid);
+        const auto* model = dynamic_cast<const ModelAsset*>(asset.get());
+        if (model && model->IsImpostorEnabled() && model->GetMeshCount() > 0
+            && !model->GetClusterLODManifest()
+            && std::ranges::none_of(model->GetMeshes(), [](const Mesh& mesh)
+               { return mesh.IsSkinned() || mesh.HasMorphTargets(); }))
+        {
+            const Mathematics::BoundingBox box = ComputeModelBounds(*model).Box;
+            ModelImpostor& impostor = scan.Models.InsertOrAssign(modelGuid, ModelImpostor{});
+            impostor.Parts.resize(model->GetMeshCount());
+            impostor.Center = box.center;
+            impostor.Radius = box.Radius();
+            impostor.SwitchCoverage = model->GetImpostorSwitchCoverage();
+            impostor.MeshHash = Hashing::HashCombine(model->GetSourceContentHash(),
+                                                     std::hash<GUID>{}(modelGuid));
+        }
+        else
+        {
+            asset.reset();
+        }
+        source = &scan.Sources.InsertOrAssign(modelGuid, std::move(asset));
+    }
+    if (!*source)
+        return;
+    const auto& model = static_cast<const ModelAsset&>(**source);
+    ModelImpostor& impostor = *scan.Models.Find(modelGuid);
+    const uint32 submesh = ResolveSubmeshIndex(modelGuid, model, renderer);
+    const Part part{Rendering::MeshGPUHandle(renderer.meshGpuHandleId), renderer.materialAssetGuid.ToGuid()};
+    Part& existing = impostor.Parts[submesh];
+    // The mesh row is shared by its instances, so all of them must agree on the bake.
+    if (!existing.Mesh.IsValid())
+        existing = part;
+    else if (existing != part)
+        impostor.HasConflictingParts = true;
+}
+
 void MeshImpostorSystem::Scan(ECS::World& world)
 {
     // A null entry records a model checked but ineligible for a static bake.
-    FlatMap<GUID, SharedPtr<Asset>> sources;
-    FlatMap<GUID, ModelImpostor> models;
-    AssetManager* assets = EngineCore::GetInstance().TryGetAssetManager();
-    if (!assets)
+    ScanState scan;
+    scan.Assets = EngineCore::GetInstance().TryGetAssetManager();
+    if (!scan.Assets)
         return;
     world.Query<ECS::Read<Components::MeshRenderer>>().Each(
-        [&](ECS::EntityHandle, const Components::MeshRenderer& renderer)
-        {
-            if (renderer.meshGpuHandleId == 0u || renderer.modelAssetGuid.IsNull())
-                return;
-            const GUID modelGuid = renderer.modelAssetGuid.ToGuid();
-            const SharedPtr<Asset>* source = sources.Find(modelGuid);
-            if (!source)
-            {
-                SharedPtr<Asset> asset = assets->GetAsset(modelGuid);
-                const auto* model = dynamic_cast<const ModelAsset*>(asset.get());
-                if (model && model->IsImpostorEnabled() && model->GetMeshCount() > 0
-                    && !model->GetClusterLODManifest()
-                    && std::ranges::none_of(model->GetMeshes(), [](const Mesh& mesh)
-                       { return mesh.IsSkinned() || mesh.HasMorphTargets(); }))
-                {
-                    const Mathematics::BoundingBox box = ComputeModelBounds(*model).Box;
-                    ModelImpostor& impostor = models.InsertOrAssign(modelGuid, ModelImpostor{});
-                    impostor.Parts.resize(model->GetMeshCount());
-                    impostor.Center = box.center;
-                    impostor.Radius = box.Radius();
-                    impostor.SwitchCoverage = model->GetImpostorSwitchCoverage();
-                    impostor.MeshHash = Hashing::HashCombine(model->GetSourceContentHash(),
-                                                             std::hash<GUID>{}(modelGuid));
-                }
-                else
-                {
-                    asset.reset();
-                }
-                source = &sources.InsertOrAssign(modelGuid, std::move(asset));
-            }
-            if (!*source)
-                return;
-            const auto& model = static_cast<const ModelAsset&>(**source);
-            ModelImpostor& impostor = *models.Find(modelGuid);
-            const uint32 submesh = ResolveSubmeshIndex(modelGuid, model, renderer);
-            const Part part{Rendering::MeshGPUHandle(renderer.meshGpuHandleId), renderer.materialAssetGuid.ToGuid()};
-            Part& existing = impostor.Parts[submesh];
-            // The mesh row is shared by its instances, so all of them must agree on the bake.
-            if (!existing.Mesh.IsValid())
-                existing = part;
-            else if (existing != part)
-                impostor.HasConflictingParts = true;
-        });
+        [&scan](ECS::EntityHandle, const Components::MeshRenderer& renderer) { AddRenderer(scan, renderer); });
 
     // Keep the link of a model whose parts did not change; unlink every other model.
     for (auto& [model, previous] : m_Models)
     {
-        ModelImpostor* next = models.Find(model);
+        ModelImpostor* next = scan.Models.Find(model);
         const bool sameParts = next && !next->HasConflictingParts && next->SwitchCoverage == previous.SwitchCoverage
                                && next->MeshHash == previous.MeshHash && next->Parts == previous.Parts;
         if (sameParts)
@@ -201,7 +202,7 @@ void MeshImpostorSystem::Scan(ECS::World& world)
             UnlinkModel(previous);
         }
     }
-    m_Models = std::move(models);
+    m_Models = std::move(scan.Models);
 }
 
 const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,

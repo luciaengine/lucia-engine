@@ -4560,8 +4560,8 @@ TEST_P(BatchScatterComputeTest, ImpostorHysteresisKeepsTheCardUntilTheExitCovera
     const uint32_t rows = static_cast<uint32_t>(table.size());
     const auto dispatch = [&](float dist, uint32_t cardMesh, bool hysteresis)
     { return Dispatch(table, total, 0u, 0u, rows, total, 0u, {}, 0xFFFFFFFFu, {}, 0u, ImpostorLod(dist, cardMesh, hysteresis)); };
-    const auto cards = [&](const DispatchResult& r)
-    { return InstancesInRows(table, r.cursors, r.records, r.indirection, card, kImpostorCardIndices); };
+    const auto cards = [&](const DispatchResult& result)
+    { return InstancesInRows(table, result.cursors, result.records, result.indirection, card, kImpostorCardIndices); };
     const uint32_t kCard = GPUDrawStreamBuilder::kImpostorHistory;
 
     SeedPrevLod(2u, GPUDrawStreamBuilder::kLodNoHistory);
