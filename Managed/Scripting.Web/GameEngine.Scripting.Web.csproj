@@ -12,4 +12,22 @@
     <ProjectReference Include="../Scripting.Runtime/GameEngine.Scripting.Runtime.csproj" />
     <ProjectReference Include="../SourceGenerators/EntitySystemGenerator/EntitySystemGenerator.csproj" />
   </ItemGroup>
+  <Target Name="CollectScriptReferences" BeforeTargets="AssignTargetPaths"
+          DependsOnTargets="ResolveReferences">
+    <PropertyGroup>
+      <ScriptReferenceDirectory>$(IntermediateOutputPath)project-script-references/</ScriptReferenceDirectory>
+      <ScriptReferenceArchive>$(IntermediateOutputPath)project-script-references.zip</ScriptReferenceArchive>
+    </PropertyGroup>
+    <ItemGroup>
+      <ScriptReference Include="@(ReferencePath)"
+        Condition="'%(ReferencePath.FrameworkReferenceName)' == 'Microsoft.NETCore.App' Or
+          $([System.String]::Copy('%(ReferencePath.Filename)').StartsWith('GameEngine.'))" />
+      <EmbeddedResource Include="$(ScriptReferenceArchive)" LogicalName="Lucia.ScriptReferences" />
+    </ItemGroup>
+    <RemoveDir Directories="$(ScriptReferenceDirectory)" />
+    <MakeDir Directories="$(ScriptReferenceDirectory)" />
+    <Copy SourceFiles="@(ScriptReference)" DestinationFolder="$(ScriptReferenceDirectory)" />
+    <ZipDirectory SourceDirectory="$(ScriptReferenceDirectory)"
+                  DestinationFile="$(ScriptReferenceArchive)" Overwrite="true" />
+  </Target>
 </Project>
