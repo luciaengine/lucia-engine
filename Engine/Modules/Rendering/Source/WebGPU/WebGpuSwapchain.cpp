@@ -323,8 +323,13 @@ void WebGpuSwapchain::OnSubmittedWorkDone(WGPUQueueWorkDoneStatus /*status*/, WG
     }
 }
 
-void WebGpuSwapchain::DrainCompletedReleases()
+void WebGpuSwapchain::PrepareFrame([[maybe_unused]] WebGpuDevice& device)
 {
+#if defined(__EMSCRIPTEN__)
+    // An unpresented texture from an abandoned frame has expired.
+    if (m_CurrentTexture != nullptr)
+        ReleaseCurrent(device);
+#endif
     ++m_RetireEpoch;
     // Age floor matches WebGpuDevice::kFramesInFlight: the previous slot is
     // GPU-idle by then even when OnSubmittedWorkDone never runs.

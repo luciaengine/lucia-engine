@@ -19,24 +19,7 @@
     <ProjectReference Include="../GameEngine.Scripting.Web.csproj" />
     <EmccExportedRuntimeMethod Include="ccall" />
     <EmccExportedRuntimeMethod Include="FS" />
+    <!-- The linker patches readable JS. Strip native symbols after Emscripten emits it. -->
+    <WasmOptConfigurationFlags Include="--strip-debug" />
   </ItemGroup>
-  <Target Name="CollectScriptReferences" BeforeTargets="AssignTargetPaths"
-          DependsOnTargets="ResolveReferences">
-    <PropertyGroup>
-      <ScriptReferenceDirectory>$(IntermediateOutputPath)project-script-references/</ScriptReferenceDirectory>
-      <ScriptReferenceArchive>$(IntermediateOutputPath)project-script-references.zip</ScriptReferenceArchive>
-    </PropertyGroup>
-    <ItemGroup>
-      <ScriptReference Include="@(ReferencePath)"
-        Condition="'%(ReferencePath.FrameworkReferenceName)' == 'Microsoft.NETCore.App' Or
-          ($([System.String]::Copy('%(ReferencePath.Filename)').StartsWith('GameEngine.')) And
-           '%(ReferencePath.Filename)' != 'GameEngine.Scripting.Web')" />
-      <EmbeddedResource Include="$(ScriptReferenceArchive)" LogicalName="Lucia.ScriptReferences" />
-    </ItemGroup>
-    <RemoveDir Directories="$(ScriptReferenceDirectory)" />
-    <MakeDir Directories="$(ScriptReferenceDirectory)" />
-    <Copy SourceFiles="@(ScriptReference)" DestinationFolder="$(ScriptReferenceDirectory)" />
-    <ZipDirectory SourceDirectory="$(ScriptReferenceDirectory)"
-                  DestinationFile="$(ScriptReferenceArchive)" Overwrite="true" />
-  </Target>
 </Project>

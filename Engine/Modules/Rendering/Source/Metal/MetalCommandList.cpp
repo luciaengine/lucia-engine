@@ -829,7 +829,9 @@ void MetalCommandList::ApplyRenderState()
     }
     m_AppliedRenderPipeline = m_CurrentPipelineHandle;
     const bool restoreMeshConstants = !m_AppliedMeshPipeline && pipeline->isMeshPipeline;
+    const bool restoreObjectConstants = !m_AppliedObjectPipeline && pipeline->HasObjectShader;
     m_AppliedMeshPipeline = pipeline->isMeshPipeline;
+    m_AppliedObjectPipeline = pipeline->HasObjectShader;
     if (m_AppliedMeshPipeline && !m_MeshDeviceAddressesDeclared)
     {
         m_Device.DeclareDeviceAddressResidency(m_RenderEncoder, m_EncoderMeshResidents, MTL::RenderStageMesh);
@@ -837,7 +839,14 @@ void MetalCommandList::ApplyRenderState()
             m_RenderEncoder->waitForFence(m_Device.GpuDrivenFence(), MTL::RenderStageMesh);
         m_MeshDeviceAddressesDeclared = true;
     }
-    if (restoreMeshConstants)
+    if (m_AppliedObjectPipeline && !m_ObjectDeviceAddressesDeclared)
+    {
+        m_Device.DeclareDeviceAddressResidency(m_RenderEncoder, m_EncoderObjectResidents, MTL::RenderStageObject);
+        if (m_Device.UsesResidencySet() && m_GpuDrivenFenceSignaled)
+            m_RenderEncoder->waitForFence(m_Device.GpuDrivenFence(), MTL::RenderStageObject);
+        m_ObjectDeviceAddressesDeclared = true;
+    }
+    if (restoreMeshConstants || restoreObjectConstants)
         ApplyPushConstants();
 }
 
@@ -853,6 +862,8 @@ void MetalCommandList::ApplyPushConstants()
         m_RenderEncoder->setFragmentBytes(m_PushConstantData.data(), m_PushConstantDirtyBytes, kPushConstantBufferIndex);
         if (m_AppliedMeshPipeline)
             m_RenderEncoder->setMeshBytes(m_PushConstantData.data(), m_PushConstantDirtyBytes, kPushConstantBufferIndex);
+        if (m_AppliedObjectPipeline)
+            m_RenderEncoder->setObjectBytes(m_PushConstantData.data(), m_PushConstantDirtyBytes, kPushConstantBufferIndex);
     }
     if (m_ComputeEncoder != nullptr)
     {
@@ -1215,11 +1226,14 @@ void MetalCommandList::ResetEncoderBindingState()
     m_EncoderMeshBoundSets.fill({});
     m_EncoderResidents.clear();
     m_EncoderMeshResidents.clear();
+    m_EncoderObjectResidents.clear();
     // A fresh encoder carries no pipeline state — force the next ApplyRenderState
     // to re-apply rather than skip on a stale match.
     m_AppliedRenderPipeline = {};
     m_AppliedMeshPipeline = false;
+    m_AppliedObjectPipeline = false;
     m_MeshDeviceAddressesDeclared = false;
+    m_ObjectDeviceAddressesDeclared = false;
 }
 
 // ---------------------------------------------------------------------------

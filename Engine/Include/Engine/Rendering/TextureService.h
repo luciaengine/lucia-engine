@@ -208,6 +208,8 @@ class TextureService
     // rejects it. A 1x1 white one-layer 2D-array view, and a 1x1 black cube (a missing
     // environment adds no light).
     TextureHandle GetDefaultWhiteArrayTexture() const { return m_DefaultWhiteArrayTexture; }
+    /// Both layers contain transparent black.
+    TextureHandle GetDefaultTransparentArrayTexture() const { return m_DefaultTransparentArrayTexture; }
     TextureHandle GetDefaultBlackCubeTexture() const { return m_DefaultBlackCubeTexture; }
     // Bindless indices of the default textures (0 when bindless is disabled).
     uint32_t DefaultWhiteBindlessIndex() const { return m_DefaultWhiteBindlessIndex; }
@@ -304,7 +306,7 @@ class TextureService
     // Render thread only — called once per frame from BeginWorldDrawFrame.
     void FlushPendingUploads();
 
-    // True when material textures stream their mips under a budget (GE_MATERIAL_MIP_BUDGET_MB).
+    // True when material textures stream their mips under a budget (MaterialMipBudget::ForPlatform).
     bool StreamsMaterialMips() const { return m_MaterialMipBudgetBytes != 0; }
     // Gives the streams their order: the screen coverage of each material, by GPUScene material
     // index (MaterialScreenDemand). The stream with the most coverage per resident texel gains detail
@@ -754,6 +756,7 @@ class TextureService
     TextureHandle m_DefaultFlatNormalTexture{};
     TextureHandle m_DefaultLensFlareTexture{};
     TextureHandle m_DefaultWhiteArrayTexture{};
+    TextureHandle m_DefaultTransparentArrayTexture{};
     TextureHandle m_DefaultBlackCubeTexture{};
     TextureHandle m_IdentityLut3D{};
     TextureHandle m_IdentityLut1DStrip{};

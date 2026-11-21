@@ -1,4 +1,4 @@
-"""Verify the managed editor's deferred shader preload."""
+"""Verify the managed editor's deferred assets."""
 import json
 import tempfile
 import unittest
@@ -37,6 +37,29 @@ class EditorPreloadTests(unittest.TestCase):
         self.assertEqual([(f["start"], f["end"]) for f in shaders["files"]], [(0, 2), (2, 5)])
         self.assertEqual(startup["remote_package_size"], 4)
         self.assertEqual(shaders["remote_package_size"], 5)
+
+    def test_defer_preserves_browser_script_assembly_names_and_hashes(self):
+        compiler = [
+            {"virtualPath": name + ".wasm", "name": name + ".fingerprint.wasm", "hash": "sha256-test"}
+            for name in ("Microsoft.CodeAnalysis", "Microsoft.CodeAnalysis.CSharp",
+                         "EntitySystemGenerator", "GameEngine.Scripting.Web")
+        ]
+        host = {"virtualPath": "Lucia.Web.Editor.wasm", "name": "Lucia.Web.Editor.host.wasm"}
+        other = {"virtualPath": "Other.wasm", "name": "Other.fingerprint.wasm"}
+        resources = {"assembly": [host, *reversed(compiler)], "lazyAssembly": [other], "hash": "sha256-resources"}
+        config = json.dumps({"resources": resources})
+        prefix, suffix = "configure(/*json-start*/", "/*json-end*/);"
+        rewritten = linker.defer_script_compiler(prefix + config + suffix)
+        self.assertTrue(rewritten.startswith(prefix))
+        self.assertTrue(rewritten.endswith(suffix))
+        self.assertEqual(json.loads(rewritten[len(prefix):-len(suffix)]), {
+            "resources": {"assembly": [host], "lazyAssembly": [other], "hash": "sha256-resources"},
+            "luciaScriptCompiler": compiler,
+        })
+
+    def test_defer_refuses_an_incomplete_browser_script_compiler(self):
+        with self.assertRaisesRegex(ValueError, "missing a browser script compiler assembly"):
+            linker.defer_script_compiler('/*json-start*/{"resources":{"assembly":[]}}/*json-end*/')
 
     def test_refuses_wrong_archive_size(self):
         with tempfile.TemporaryDirectory() as temp:

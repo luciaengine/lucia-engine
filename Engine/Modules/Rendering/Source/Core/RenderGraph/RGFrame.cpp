@@ -738,6 +738,8 @@ RGBuffer RGFrame::ImportPersistentBuffer(const char* name, const BufferDesc& des
 {
     const BufferHandle handle =
         m_PersistentPool->GetOrCreateBuffer(name, desc, m_FrameIndex, outNeedsZeroInit);
+    if (!handle.IsValid())
+        return {};
     if (const ImportRec* existing = FindImport(static_cast<uint64_t>(handle), RGResourceKind::Buffer))
     {
 #ifndef NDEBUG

@@ -552,7 +552,7 @@ def main() -> int:
         # Matching only the word "validation" counted zero while 165 real errors
         # were on the console — match what the engine and Dawn actually print.
         kErrorMarkers = ("WebGPU error", "is invalid due to a previous error",
-                         "Validation", "validation error")
+                         "Validation", "validation error", "Destroyed texture")
         validation = [line for line in lines
                       if any(marker in line for marker in kErrorMarkers)]
         centre = CentrePixel(png)

@@ -148,8 +148,15 @@ BufferHandle RGResourcePool::GetOrCreateBuffer(const std::string& name, const Bu
                 *outNeedsZeroInit = e.NeedsZeroInit;
             return e.Handle;
         }
+        const BufferHandle replacement = m_Device->CreateBuffer(desc);
+        if (!replacement.IsValid())
+        {
+            if (outNeedsZeroInit)
+                *outNeedsZeroInit = false;
+            return replacement;
+        }
         m_DeferredBuf.push_back({e.Handle, frameIndex});
-        e.Handle = m_Device->CreateBuffer(desc);
+        e.Handle = replacement;
         e.Desc = desc;
         e.Desc.debugName = nullptr; // callers pass stack strings; never store the pointer
         e.Bytes = EstimateBytes(desc);
@@ -162,6 +169,12 @@ BufferHandle RGResourcePool::GetOrCreateBuffer(const std::string& name, const Bu
     }
     BufEntry e{};
     e.Handle = m_Device->CreateBuffer(desc);
+    if (!e.Handle.IsValid())
+    {
+        if (outNeedsZeroInit)
+            *outNeedsZeroInit = false;
+        return e.Handle;
+    }
     e.Desc = desc;
     e.Desc.debugName = nullptr; // callers pass stack strings; never store the pointer
     e.Bytes = EstimateBytes(desc);

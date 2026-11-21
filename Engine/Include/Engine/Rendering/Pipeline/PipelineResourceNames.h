@@ -68,8 +68,7 @@ inline constexpr const char* SSRSpecularRadianceWritten = "View.SSRSpecularRadia
 // published by WorldRenderNode on frames it declares the resolve pass
 // (DDGIProbeFeature::DeclareGlossyResolveForView) so the phase-B recover
 // pass (ScatterBNode) binds the same textures the phase-A world pass did.
-inline constexpr const char* DDGIResolveRough = "View.DDGIResolveRough";
-inline constexpr const char* DDGIResolveGlossy = "View.DDGIResolveGlossy";
+inline constexpr const char* DDGIResolveLobes = "View.DDGIResolveLobes";
 inline constexpr const char* DDGIResolveIrradiance = "View.DDGIResolveIrradiance";
 inline constexpr const char* DDGIResolveGatherNormal = "View.DDGIResolveGatherNormal";
 inline constexpr const char* EffectiveColor = "View.EffectiveColor";

@@ -42,7 +42,7 @@ TEST(InspectorEntityHeaderLayout, HistoryButtonsShareOneRowAndKeepTheHeaderCompa
     root->AddChild(std::move(header));
 
     InspectorLayoutTesting::InspectorLayoutFixture fixture;
-    fixture.ExtraSheets.push_back("Assets/UI/controls/Button.css");
+    fixture.ExtraSheets.push_back(GE_UI_MODULE_SOURCE_DIR "/Assets/UI/controls/Button.css");
     if (!fixture.Build(std::move(root)))
         GTEST_SKIP() << fixture.Diagnostic;
 

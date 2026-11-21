@@ -2624,9 +2624,9 @@ TEST(RenderServicesRGPassTests, MaterialParamsPastTheGrowCapFallBack)
 
 // The DDGI glossy resolve's declared set must cover its bound set on the arm
 // where the lobes are OFF. Both kernels are one variant with the lobe flag as a
-// UBO field / push constant, so the two passes bind Rough, Glossy, RoughBlur and
-// GlossyBlur on every frame; a storage image that is bound but declared by no
-// pass never leaves Undefined, and each dispatch binding it is a layout error.
+// UBO field / push constant, so on a non-aliasing backend the two passes
+// bind raw Rough and Glossy targets and a blurred lobe array on every frame.
+// A bound storage image without a graph write never leaves Undefined.
 // A default volume gives GlossyLobesActive() == false, which is exactly that arm
 // — and the default DDGI configuration.
 //
@@ -2685,14 +2685,13 @@ TEST(RenderServicesRGPassTests, GlossyResolveDeclaresTheLobeTargetsItBindsWithLo
         constexpr uint32_t kRenderHeight = 64;
         constexpr uint32_t kViewId = 0;
 
-        RenderGraph::RGTexture rough{};
-        RenderGraph::RGTexture glossy{};
+        RenderGraph::RGTexture lobes{};
         RenderGraph::RGTexture irradiance{};
         RenderGraph::RGTexture gatherNormal{};
         RenderGraph::RGTexture shadingNormal{};
         ASSERT_TRUE(ddgi.DeclareGlossyResolveForView(
             frame, f.Rs, viewParams, 0, viewParamsDesc.size, viewDepth, kRenderWidth, kRenderHeight,
-            kViewId, /*viewExposureScale=*/1.0f, "DDGIGlossyResolve", rough, glossy, irradiance,
+            kViewId, /*viewExposureScale=*/1.0f, "DDGIGlossyResolve", lobes, irradiance,
             gatherNormal, shadingNormal))
             << "the resolve declares unconditionally on a 1-sample depth; a decline here means "
                "a shaderpkg did not stage next to the test binary, not that lobes are off";
@@ -2708,18 +2707,14 @@ TEST(RenderServicesRGPassTests, GlossyResolveDeclaresTheLobeTargetsItBindsWithLo
             ResourceIdByName(g, "DDGIGlossyResolve.Rough" + suffix);
         const RenderGraph::RGResourceId glossyId =
             ResourceIdByName(g, "DDGIGlossyResolve.Glossy" + suffix);
-        const RenderGraph::RGResourceId roughBlurId =
-            ResourceIdByName(g, "DDGIGlossyResolve.RoughBlur" + suffix);
-        const RenderGraph::RGResourceId glossyBlurId =
-            ResourceIdByName(g, "DDGIGlossyResolve.GlossyBlur" + suffix);
+        const RenderGraph::RGResourceId lobesBlurId =
+            ResourceIdByName(g, "DDGIGlossyResolve.LobesBlur" + suffix);
         ASSERT_NE(roughId, RenderGraph::kInvalidId)
             << "Rough is bound as uResolveRough and uRoughIn but no pass declares it";
         ASSERT_NE(glossyId, RenderGraph::kInvalidId)
             << "Glossy is bound as uResolveGlossy and uGlossyIn but no pass declares it";
-        ASSERT_NE(roughBlurId, RenderGraph::kInvalidId)
-            << "RoughBlur is bound as uRoughOut but no pass declares it";
-        ASSERT_NE(glossyBlurId, RenderGraph::kInvalidId)
-            << "GlossyBlur is bound as uGlossyOut but no pass declares it";
+        ASSERT_NE(lobesBlurId, RenderGraph::kInvalidId)
+            << "LobesBlur is bound as uLobesOut but no pass declares it";
 
         EXPECT_TRUE(g.HasWriteAccess(resolvePass, roughId))
             << "the resolve binds uResolveRough as a storage image every frame";
@@ -2729,15 +2724,9 @@ TEST(RenderServicesRGPassTests, GlossyResolveDeclaresTheLobeTargetsItBindsWithLo
             << "the blur samples uRoughIn every frame";
         EXPECT_TRUE(g.HasReadAccess(blurPass, glossyId))
             << "the blur samples uGlossyIn every frame";
-        EXPECT_TRUE(g.HasWriteAccess(blurPass, roughBlurId))
-            << "the blur binds uRoughOut as a storage image every frame";
-        EXPECT_TRUE(g.HasWriteAccess(blurPass, glossyBlurId))
-            << "the blur binds uGlossyOut as a storage image every frame";
-
-        // What the world pass samples is the blurred pair, so the published
-        // handles must be the resources the blur declared its writes on.
-        EXPECT_EQ(rough.Id, roughBlurId);
-        EXPECT_EQ(glossy.Id, glossyBlurId);
+        EXPECT_TRUE(g.HasWriteAccess(blurPass, lobesBlurId))
+            << "the blur binds uLobesOut as a storage image every frame";
+        EXPECT_EQ(lobes.Id, lobesBlurId);
 
         f.Device->DestroyBuffer(viewParams);
     }
