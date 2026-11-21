@@ -13,6 +13,9 @@
 vec3 ModifyVertexFrame(vec3 position, InstanceData inst, out mat3 rotation)
 {
     rotation = mat3(1.0);
+    if (Props.foliageWindMotion.x <= 0.0 && Props.foliageWindMotion.y <= 0.0)
+        return position;
+
     // UV6 stores pivot XY. UV7 stores pivot Z and the farthest vertex's distance to it.
     if (Props.foliageLeafPivots <= 0.0 || aUV7.y <= 0.0)
         return GE_ApplyFoliageSway(position, inst, Props.foliageWindHeight, Props.foliageWindMotion.x);
