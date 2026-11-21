@@ -36,7 +36,8 @@ namespace Logger
 namespace
 {
 // Set once at startup by RedirectToSharedState; nullptr = this module owns its
-// own state (the standalone / single-module case). Atomic: a drain thread can read it during the set.
+// own state (the standalone / single-module case). Atomic: a test that shares the engine's Logger copy
+// sets it again, to the same state, while the drain thread reads it.
 std::atomic<Log::LoggerState*> s_RedirectedState{nullptr};
 
 // Upper bound on how long dispatched-but-unflushed output may sit in sink

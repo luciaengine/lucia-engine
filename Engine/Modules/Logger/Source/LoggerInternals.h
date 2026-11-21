@@ -40,7 +40,8 @@ struct Log::LoggerState
     std::thread DrainThread;
     std::atomic<bool> DrainRunning{false};
     std::atomic<bool> DrainThreadWaiting{false};
-    /// The drain thread sets it at its start and Shutdown clears it. Each thread that logs or flushes reads it.
+    /// The drain thread sets it at its start and Shutdown clears it. The flush functions and the synchronous
+    /// dispatch functions read it on other threads.
     std::atomic<std::thread::id> DrainThreadId{};
     std::vector<std::promise<void>> FlushPromises;
 
