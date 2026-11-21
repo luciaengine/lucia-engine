@@ -720,7 +720,7 @@ void MetalCommandList::BeginRenderPass(const RenderPassDesc& desc)
     }
 
     // Reapply sticky state on the fresh encoder.
-    for (uint32_t slot = 0; slot < kMaxVertexBufferSlots; ++slot)
+    for (uint32_t slot = 0; slot < m_VertexBuffers.size(); ++slot)
     {
         if (!m_VertexBuffers[slot].IsValid())
         {
@@ -897,7 +897,7 @@ void MetalCommandList::SetPipeline(PipelineHandle pipeline)
 
 void MetalCommandList::SetVertexBuffer(BufferHandle buffer, uint32_t slot)
 {
-    if (slot < kMaxVertexBufferSlots)
+    if (slot < m_VertexBuffers.size())
     {
         m_VertexBuffers[slot] = buffer;
     }
