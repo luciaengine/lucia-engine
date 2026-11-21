@@ -12,6 +12,9 @@ namespace GameEngine { class AssetManager; }
 namespace GameEngine::Engine::Renderer
 {
 
+enum class ForestBenchmarkMode { Impostor, Mesh, Splats };
+ForestBenchmarkMode GetForestBenchmarkMode();
+
 struct ForwardEmitContext;
 struct ForestPlacementSession;
 struct ImpostorBakePart;

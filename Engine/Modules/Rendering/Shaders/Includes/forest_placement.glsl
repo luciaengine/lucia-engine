@@ -17,6 +17,13 @@ struct ForestVisiblePlacement
     uint page;
 };
 
+struct ForestVisibleSplatTree
+{
+    uint placement;
+    uint page;
+    vec2 sway;
+};
+
 #ifdef GE_FOREST_CARD_DRAW
 #define GE_FOREST_SLOT_SET 2
 #define GE_FOREST_VIEW_SET 2

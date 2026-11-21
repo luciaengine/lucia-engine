@@ -9,13 +9,17 @@
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/MeshLODThresholds.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Core/Time.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
 #include "Rendering/Core/GPUScene.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <cstring>
 #include <limits>
 
@@ -23,6 +27,19 @@ namespace GameEngine::Engine::Renderer
 {
 using namespace Rendering;
 using namespace Rendering::RenderGraph;
+
+ForestBenchmarkMode GetForestBenchmarkMode()
+{
+    static const auto mode = [] {
+        const char* value = std::getenv("GE_FOREST_BENCHMARK_MODE");
+        if (value && std::string_view(value) == "mesh")
+            return ForestBenchmarkMode::Mesh;
+        if (value && std::string_view(value) == "splats")
+            return ForestBenchmarkMode::Splats;
+        return ForestBenchmarkMode::Impostor;
+    }();
+    return mode;
+}
 
 struct ForestPlacementCountSample
 {
@@ -59,6 +76,8 @@ struct ForestPlacementSession
     RGFrame* Graph = nullptr;
     BufferHandle Slots;
     BufferHandle Indices;
+    ForestSplatDrawData Splats;
+    bool FailedSplatLoad = false;
     ForestPlacementCull Cull;
     std::optional<ForestPlacementRenderState> Stream;
     ForestPlacementFrame Plan;
@@ -81,9 +100,13 @@ struct ForestPlacementSession
                 Device->DestroyBuffer(Indices);
             if (Slots.IsValid())
                 Device->DestroyBuffer(Slots);
+            if (Splats.Cells.IsValid())
+                Device->DestroyBuffer(Splats.Cells);
         }
         Indices = {};
         Slots = {};
+        Splats = {};
+        FailedSplatLoad = false;
         Cull = {};
         Graph = nullptr;
         Declared = {};
@@ -100,13 +123,61 @@ struct ForestPlacementSession
         Placements->ResetResidency();
     }
 
+    bool LoadSplatCells(IDevice& device)
+    {
+        const char* path = std::getenv("GE_FOREST_BENCHMARK_LVC");
+        if (!path || !*path)
+            return false;
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        const auto size = file.tellg();
+        std::array<uint32, 6> header{};
+        file.seekg(0);
+        if (!file.read(reinterpret_cast<char*>(header.data()), sizeof(header)) ||
+            header[0] != 0x3143564cu || header[1] == 0 || header[1] > 16384 ||
+            size != static_cast<std::streamoff>(sizeof(header) + header[1] * 12u))
+            return false;
+        for (size_t i = 0; i < Splats.Grid.size(); ++i)
+        {
+            Splats.Grid[i] = std::bit_cast<float>(header[i + 2]);
+            if (!std::isfinite(Splats.Grid[i]))
+                return false;
+        }
+        if (Splats.Grid[3] <= 0)
+            return false;
+        std::vector<uint32> cells(header[1] * 3u);
+        if (!file.read(reinterpret_cast<char*>(cells.data()), cells.size() * sizeof(uint32)))
+            return false;
+
+        std::vector<uint16> indices;
+        indices.reserve(header[1] * 6u);
+        for (uint32 i = 0; i < header[1]; ++i)
+            for (const uint32 corner : {0u, 1u, 2u, 0u, 2u, 3u})
+                indices.push_back(static_cast<uint16>(i * 4u + corner));
+        Splats.CellBytes = cells.size() * sizeof(uint32);
+        Splats.IndexCount = static_cast<uint32>(indices.size());
+        const BufferDesc cellDesc{.size = Splats.CellBytes,
+            .usage = static_cast<uint32>(BufferUsage::Storage | BufferUsage::TransferDst),
+            .memoryUsage = BufferMemoryUsage::DeviceLocal, .debugName = "Forest.SplatCells"};
+        const BufferDesc indexDesc{.size = indices.size() * sizeof(uint16),
+            .usage = static_cast<uint32>(BufferUsage::Index | BufferUsage::TransferDst),
+            .memoryUsage = BufferMemoryUsage::DeviceLocal, .debugName = "Forest.SplatIndices"};
+        Splats.Cells = device.CreateBuffer(cellDesc);
+        Indices = device.CreateBuffer(indexDesc);
+        if (!Splats.Cells.IsValid() || !Indices.IsValid())
+            return false;
+        device.UpdateBuffer(Splats.Cells, 0, cellDesc.size, cells.data());
+        device.UpdateBuffer(Indices, 0, indexDesc.size, indices.data());
+        LOG_INFO("Forest benchmark: loaded {} animated splat cells", header[1]);
+        return true;
+    }
+
     bool EnsureGpu(IDevice& device)
     {
         Device = &device;
         if (!ShaderRequested)
         {
             ShaderRequested = true;
-            ShaderAvailable = Cull.Initialize(device);
+            ShaderAvailable = Cull.Initialize(device, GetForestBenchmarkMode() == ForestBenchmarkMode::Splats);
         }
         if (!ShaderAvailable)
             return false;
@@ -119,7 +190,17 @@ struct ForestPlacementSession
                 .memoryUsage = BufferMemoryUsage::DeviceLocal, .debugName = "Forest.PlacementSlots"};
             Slots = device.CreateBuffer(desc);
         }
-        if (!Indices.IsValid())
+        if (GetForestBenchmarkMode() == ForestBenchmarkMode::Splats)
+        {
+            if (!Splats.Cells.IsValid() && !FailedSplatLoad && !LoadSplatCells(device))
+            {
+                FailedSplatLoad = true;
+                LOG_ERROR("Forest benchmark: cannot load GE_FOREST_BENCHMARK_LVC");
+            }
+            if (FailedSplatLoad)
+                return false;
+        }
+        else if (!Indices.IsValid())
         {
             constexpr std::array<uint16, 6> kIndices{0, 1, 2, 3, 4, 5};
             const BufferDesc desc{.size = sizeof(kIndices),
@@ -208,7 +289,7 @@ struct ForestNearDraw
 };
 
 void ObservePlacementCounts(ForestPlacementSession& session, const ForwardEmitContext& context,
-                            const ForestPlacementCull::DrawBuffers& buffers, const ForestNearDraw* near)
+                            const ForestPlacementCull::DrawBuffers* buffers, const ForestNearDraw* near)
 {
     static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_FOREST_STATS", false);
     if (!enabled)
@@ -234,19 +315,26 @@ void ObservePlacementCounts(ForestPlacementSession& session, const ForwardEmitCo
     if (sample.Ticket || !frame.ProfilingEnabled())
         return;
 
-    auto ticket = RequestBufferReadbackRG(context.Device, frame, buffers.Args,
-        offsetof(ForestPlacementIndirectDraw, InstanceCount), sizeof(ForestPlacementIndirectDraw::InstanceCount),
-        "Forest.PlacedCount");
-    if (!ticket)
-        return;
-
     uint32 placements = 0;
     for (const auto& page : session.Plan.DetailedDraws)
         placements += page.PlacementCount;
     const auto pages = static_cast<uint32>(session.Plan.DetailedDraws.size());
-    sample = {std::move(ticket), frame.FrameIndex(), context.ViewId, session.Plan.VisibleCells - pages, pages,
-              placements, near ? static_cast<uint32>(near->Owners.size()) : 0u,
-              near ? static_cast<uint32>(near->Commands.size()) : 0u};
+    const auto meshes = near ? static_cast<uint32>(near->Owners.size()) : 0u;
+    const auto batches = near ? static_cast<uint32>(near->Commands.size()) : 0u;
+    if (!buffers)
+    {
+        LOG_INFO("Forest.PlacedCount view={} frame={} standPages={} detailPages={} detailPlacements={} "
+                 "cards=0 meshes={} meshBatches={}", context.ViewId, frame.FrameIndex(),
+                 session.Plan.VisibleCells - pages, pages, placements, meshes, batches);
+        return;
+    }
+
+    auto ticket = RequestBufferReadbackRG(context.Device, frame, buffers->Args,
+        offsetof(ForestPlacementIndirectDraw, InstanceCount), sizeof(ForestPlacementIndirectDraw::InstanceCount),
+        "Forest.PlacedCount");
+    if (ticket)
+        sample = {std::move(ticket), frame.FrameIndex(), context.ViewId, session.Plan.VisibleCells - pages, pages,
+                  placements, meshes, batches};
 }
 
 struct ForestSourcePart
@@ -263,7 +351,8 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
 {
     RenderServices& services = *context.Services;
     const auto* scene = services.GetGPUScene();
-    if (session.NearBudget == 0 || session.SourceParts.empty() || !scene || camera.cameraPos.w == 1.0f)
+    const bool meshOnly = GetForestBenchmarkMode() == ForestBenchmarkMode::Mesh;
+    if ((!meshOnly && session.NearBudget == 0) || session.SourceParts.empty() || !scene || camera.cameraPos.w == 1.0f)
         return nullptr;
 
     const auto& card = *session.Card;
@@ -295,7 +384,7 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
         parts.push_back({mesh, &lod, surface, source.Mesh,
                          BoundStreamVertexFlags(*mesh, bindings, surface->IgnoresVertexColor())});
     }
-    if (force != 0xFFFFFFFFu || registry.GetLodSelectionMode() == LodSelectionMode::Off)
+    if (meshOnly || force != 0xFFFFFFFFu || registry.GetLodSelectionMode() == LodSelectionMode::Off)
         cutoff = 0.0f;
 
     const ForestNearMeshView nearView{view, std::abs(camera.proj[1][1]), services.GetLODGlobalBias(),
@@ -303,7 +392,9 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
     const std::span<const ForestMeshOwnedPlacement> previous = session.NearOwnerView == context.ViewId
         ? std::span<const ForestMeshOwnedPlacement>(session.NearOwners) : std::span<const ForestMeshOwnedPlacement>{};
     CollectForestNearMeshCandidates(*session.Placements, session.Plan, nearView, card.Bounds,
-                                    session.NearBudget, session.NearDemand, previous);
+                                    meshOnly ? session.Placements->SlotCount() *
+                                        PageStreaming::PackedPlacementStore::kPlacementsPerPage : session.NearBudget,
+                                    session.NearDemand, previous);
     if (session.NearDemand.empty())
         return nullptr;
 
@@ -436,31 +527,78 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     if (!card)
         return false;
 
-    const Material* material = services.Materials().Registry().Find(card->Material);
+    const auto mode = GetForestBenchmarkMode();
+    const bool meshOnly = mode == ForestBenchmarkMode::Mesh;
+    const bool useSplats = mode == ForestBenchmarkMode::Splats;
     const auto pass = services.Views().GetViewDeclaredWorldPassKeywords(context.ViewId);
     const auto format = services.Views().GetViewWorldColorFormatKey(context.ViewId);
-    if (!material || !pass || format.ColorCount == 0)
+    if (!pass || format.ColorCount == 0)
         return false;
-    const auto keywords = *pass & ~MaterialKeyword::Instanced;
-    if (!services.Materials().Variants().WarmColorVariant(*material, VertexAttributeFlags::None,
-            PrimitiveTopology::TriangleList, keywords, services.GetFrontFace(), format))
-        return false;
+
+    const Material* material = nullptr;
+    if (!meshOnly)
+    {
+        const GUID guid = useSplats ? GUID::Derive(session.Model, "forest-benchmark-splats") : card->Material;
+        material = services.Materials().Registry().Find(guid);
+        if (!material && useSplats)
+        {
+            MaterialDocument doc{};
+            doc.schemaVersion = 3;
+            doc.materialName = "Forest benchmark splats";
+            doc.lightingModel = "StandardPBR";
+            doc.surfaceShader = "Surfaces/forest_benchmark_splat.glsl";
+            doc.vertexModifier = "VertexModifiers/forest_benchmark_splats.glsl";
+            doc.customVertexShader = true;
+            doc.doubleSided = true;
+            doc.alphaMode = MaterialAlphaMode::Mask;
+            doc.properties["alphaCutoff"] = 0.5f;
+            material = services.Materials().RegisterMaterialFromDocument(
+                guid, doc, MaterialKeyword::None, MaterialSystem::BaseCompileMode::Async);
+        }
+        if (!material || !services.Materials().Variants().WarmColorVariant(*material, VertexAttributeFlags::None,
+                PrimitiveTopology::TriangleList, *pass & ~MaterialKeyword::Instanced,
+                services.GetFrontFace(), format))
+            return false;
+    }
 
     const ForestNearDraw* near = PrepareNearDraw(session, context, camera, view, *pass, format);
     const std::span<const ForestMeshOwnedPlacement> owners = near ? std::span(near->Owners) :
         std::span<const ForestMeshOwnedPlacement>{};
-    ForestPlacementGpuView gpuView{};
-    constexpr float kCardCornerRadiusScale = 1.414214f;
-    const Mathematics::Vector3 center{card->Bounds.x, card->Bounds.y, card->Bounds.z};
-    const float radius = center.Length() + card->Bounds.w * kCardCornerRadiusScale + card->Sway.MaxDisplacement;
-    if (!BuildForestPlacementGpuInputs(*session.Placements, session.Plan, camera, session.Placements->SlotCount(),
-            radius, card->Bounds, gpuView, session.Pages, owners))
+    if (meshOnly && !near)
         return false;
-    const auto buffers = session.Cull.Declare(frame, session.Scope, session.Slots, session.Placements->SlotCount(),
-                                              gpuView, session.Pages);
-    if (!buffers || !EmitForestImpostorDraw(context, *buffers, session.Indices, card->Sway,
-            DrawCommand{.Material = material}, nullptr))
-        return false;
+    if (!meshOnly)
+    {
+        ForestPlacementGpuView gpuView{};
+        constexpr float kCardCornerRadiusScale = 1.414214f;
+        const Mathematics::Vector3 center{card->Bounds.x, card->Bounds.y, card->Bounds.z};
+        const float radius = center.Length() + card->Bounds.w * kCardCornerRadiusScale +
+                             (useSplats ? std::max(0.65f, card->Sway.MaxDisplacement) : card->Sway.MaxDisplacement);
+        if (!BuildForestPlacementGpuInputs(*session.Placements, session.Plan, camera, session.Placements->SlotCount(),
+                radius, card->Bounds, gpuView, session.Pages, owners))
+            return false;
+        ForestSplatWindGpu wind{};
+        if (useSplats)
+        {
+            ForwardLightUBO weather{};
+            services.PackViewWeather(context.ViewId, desc->worldId, weather);
+            std::copy_n(camera.renderOriginSector, 4, wind.Sector.begin());
+            wind.TimeSeconds = services.TemporalHistory().ResolveDeformationClock(
+                Time::GetCumulativeSeconds()).TimeSeconds;
+            wind.MaxDisplacement = std::max(0.35f, card->Sway.MaxDisplacement);
+            wind.Weather = weather.WeatherWind;
+        }
+        const auto buffers = session.Cull.Declare(frame, session.Scope, session.Slots,
+            session.Placements->SlotCount(), gpuView, session.Pages, useSplats ? session.Splats.IndexCount : 6u,
+            useSplats ? &wind : nullptr);
+        if (!buffers || !EmitForestImpostorDraw(context, *buffers, session.Indices, card->Sway,
+                DrawCommand{.Material = material}, nullptr, useSplats ? &session.Splats : nullptr))
+            return false;
+        ObservePlacementCounts(session, context, &*buffers, near);
+    }
+    else
+    {
+        ObservePlacementCounts(session, context, nullptr, near);
+    }
     if (near)
     {
         session.PendingNearOwners.assign(owners.begin(), owners.end());
@@ -476,11 +614,11 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
                      near->Owners.size(), near->Commands.size());
         }
     }
-    ObservePlacementCounts(session, context, *buffers, near);
     if (!session.EmittedDetails)
     {
         session.EmittedDetails = true;
-        LOG_INFO("Forest: registered packed impostor draw with {} detail pages", session.Plan.DetailedDraws.size());
+        LOG_INFO("Forest: registered packed {} draw with {} detail pages",
+                 meshOnly ? "mesh LOD" : (useSplats ? "animated splat" : "impostor"), session.Plan.DetailedDraws.size());
     }
     standRanges.swap(session.Plan.StandDraws);
     return true;

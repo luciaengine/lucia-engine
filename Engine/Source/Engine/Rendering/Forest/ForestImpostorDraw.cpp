@@ -40,17 +40,21 @@ void BindForestCard(DrawCommand& command, Rendering::BufferHandle indices, Rende
 } // namespace
 
 bool EmitForestImpostorDraw(const ForwardEmitContext& context, const ForestPlacementCull::DrawBuffers& buffers,
-    Rendering::BufferHandle cardIndices, const ImpostorFoliageSway& sway, DrawCommand color, const DrawCommand* depth)
+    Rendering::BufferHandle cardIndices, const ImpostorFoliageSway& sway, DrawCommand color, const DrawCommand* depth,
+    const ForestSplatDrawData* splats)
 {
     using namespace Rendering::RenderGraph;
     if (!context.Frame || !context.Services || context.Purpose != ForwardEmitPurpose::World ||
         !cardIndices.IsValid() || !color.Material || !color.Material->GetCompileSpec().customVertexShader ||
-        color.Material->GetCompileSpec().vertexModifierPath != "VertexModifiers/forest_impostor.glsl" ||
+        color.Material->GetCompileSpec().vertexModifierPath != (splats
+            ? "VertexModifiers/forest_benchmark_splats.glsl" : "VertexModifiers/forest_impostor.glsl") ||
         color.Material->GetGpuSceneMaterialIndex() == 0xFFFFFFFFu)
         return false;
 
     ForestCardParameters params{};
-    if (!color.Material->GetVector(HashStringId("impostorAtlas"), params.Atlas.data(), params.Atlas.size()) ||
+    if (splats)
+        params.Atlas = splats->Grid;
+    else if (!color.Material->GetVector(HashStringId("impostorAtlas"), params.Atlas.data(), params.Atlas.size()) ||
         params.Atlas[0] < 1.0f)
         return false;
     params.Wind = {sway.BaseY, sway.Height, sway.MaxDisplacement, 0};
@@ -63,7 +67,7 @@ bool EmitForestImpostorDraw(const ForwardEmitContext& context, const ForestPlace
     std::memcpy(paramUpload.Ptr, &params, sizeof(params));
     const auto parameterBuffer = frame.ImportExternalBuffer("Forest.CardParameters", paramUpload.Buffer);
     const auto args = frame.PhysicalBuffer(buffers.Args);
-    auto& bindings = *frame.AllocatePassData<std::array<DrawBindings::BufferEntry, 5>>();
+    auto& bindings = *frame.AllocatePassData<std::array<DrawBindings::BufferEntry, 6>>();
     bindings = {{
         {HashStringId("ForestPlacementSlots"), frame.PhysicalBuffer(buffers.Slots), 0, buffers.SlotBytes},
         {HashStringId("ForestPlacementPages"), frame.PhysicalBuffer(buffers.Pages), buffers.PagesOffset, buffers.PagesBytes},
@@ -72,6 +76,9 @@ bool EmitForestImpostorDraw(const ForwardEmitContext& context, const ForestPlace
         {HashStringId("forestCard"), paramUpload.Buffer, paramUpload.Offset, sizeof(params)},
     }};
 
+    if (splats)
+        bindings[5] = {HashStringId("ForestSplatCells"), splats->Cells, 0, splats->CellBytes};
+    const auto entries = std::span(bindings).first(splats ? 6u : 5u);
     const auto readers = depth ? ForwardBufferReaders::WorldPassAndPrepass : ForwardBufferReaders::WorldPass;
     auto& services = *context.Services;
     services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Slots, RGBufferRead::Storage, readers);
@@ -80,11 +87,16 @@ bool EmitForestImpostorDraw(const ForwardEmitContext& context, const ForestPlace
     services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.View, RGBufferRead::Uniform, readers);
     services.EmitForwardSampledBufferRead(frame, context.ViewId, parameterBuffer, RGBufferRead::Uniform, readers);
     services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Args, RGBufferRead::Indirect, readers);
-    BindForestCard(color, cardIndices, args, bindings);
+    if (splats)
+    {
+        const auto geometry = frame.ImportExternalBuffer("Forest.SplatCells", splats->Cells, splats->CellBytes);
+        services.EmitForwardSampledBufferRead(frame, context.ViewId, geometry, RGBufferRead::Storage, readers);
+    }
+    BindForestCard(color, cardIndices, args, entries);
     if (depth)
     {
         DrawCommand head = *depth;
-        BindForestCard(head, cardIndices, args, bindings);
+        BindForestCard(head, cardIndices, args, entries);
         services.EmitForwardCommand(context.ViewId, color, ForwardDrawDepth::Prepass, &head);
     }
     else

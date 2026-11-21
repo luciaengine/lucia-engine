@@ -659,6 +659,18 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
         UnlinkModel(impostor);
         return nullptr;
     }
+    if (forest && GetForestBenchmarkMode() != ForestBenchmarkMode::Impostor)
+    {
+        forest->PublishCard(world, model, {GUID{},
+            {impostor.Center.x, impostor.Center.y, impostor.Center.z, impostor.Radius},
+            sharedSway.value_or(ImpostorFoliageSway{}), impostor.SwitchCoverage}, request.Parts);
+        forest = nullptr;
+        if (!impostor.WantsAtlas)
+        {
+            UnlinkModel(impostor);
+            return nullptr;
+        }
+    }
     // A request each frame keeps the atlas in the baker's least-recently-used budget.
     const ImpostorAtlas atlas = baker.Request(request, m_RenderServices->Spine().WorldFrameEpoch());
     const auto sway = sharedSway.value_or(ImpostorFoliageSway{});

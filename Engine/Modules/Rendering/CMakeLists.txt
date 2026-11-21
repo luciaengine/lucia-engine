@@ -378,6 +378,7 @@ if(GLSLC_EXECUTABLE)
         runtime_visibility_aggregate.comp
         draw_command_scatter.comp
         forest_placement_cull.comp
+        forest_splat_cull.comp
         compact_visible_transforms.comp
         minimal_test.comp
         pc_compute.comp
@@ -1605,6 +1606,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
         endforeach()
     endif()
     _ge_add_shaderpkg_compute(forest_placement_cull forest_placement_cull.comp)
+    _ge_add_shaderpkg_compute(forest_splat_cull forest_splat_cull.comp)
     _ge_add_shaderpkg_compute(draw_stream_group_compact draw_stream_group_compact.comp)
     _ge_add_shaderpkg_compute(draw_stream_instance_compact draw_stream_instance_compact.comp)
     _ge_add_shaderpkg_compute(draw_stream_late_shadow_lists draw_stream_late_shadow_lists.comp)

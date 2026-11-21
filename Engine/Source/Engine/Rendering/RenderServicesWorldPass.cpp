@@ -498,6 +498,16 @@ void RecordForwardDrawCommand(const PreparedForwardDraw& prepared, RenderService
                                   sub.FirstIndex, sub.VertexOffset, sub.FirstInstance);
         }
     }
+    static const bool traceForest = Platform::EnvironmentSwitchEnabled("GE_FOREST_TRACE_DRAWS", false);
+    if (traceForest)
+    {
+        const std::string_view producer = Rendering::DrawProducerRegistry::ScopeNames()[command.Producer].data();
+        static std::atomic_flag tracedMesh, tracedProxy;
+        if (producer == "ForestNearMeshes" && !tracedMesh.test_and_set(std::memory_order_relaxed))
+            Logger::Log::Info("Forest recorded indexed mesh draw with {} instances", prepared.Direct.InstanceCount);
+        if (producer == "ForestImpostor" && !tracedProxy.test_and_set(std::memory_order_relaxed))
+            Logger::Log::Info("Forest recorded indexed indirect proxy draw");
+    }
     if (prepared.ServedVersion)
         services.Materials().Variants().RecordServedGeneration(
             prepared.MaterialIndex, ServedPassClass::Color, *prepared.ServedVersion);

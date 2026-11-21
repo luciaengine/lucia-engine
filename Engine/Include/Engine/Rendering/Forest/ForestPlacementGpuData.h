@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
+#include "Engine/Rendering/WindVolumeResolver.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector4.h"
 #include "Rendering/Camera/CameraTypes.h"
@@ -45,6 +46,23 @@ struct ForestPlacementGpuVisible
     uint32 Page;
 };
 static_assert(sizeof(ForestPlacementGpuVisible) == 8);
+
+struct ForestVisibleSplatTree
+{
+    ForestPlacementGpuVisible Placement;
+    Mathematics::Vector2 Sway;
+};
+static_assert(sizeof(ForestVisibleSplatTree) == 16);
+
+struct alignas(16) ForestSplatWindGpu
+{
+    std::array<int32, 4> Sector;
+    float TimeSeconds;
+    float MaxDisplacement;
+    std::array<float, 2> Padding{};
+    WeatherWindGPU Weather;
+};
+static_assert(offsetof(ForestSplatWindGpu, Weather) == 32);
 
 struct ForestPlacementIndirectDraw
 {

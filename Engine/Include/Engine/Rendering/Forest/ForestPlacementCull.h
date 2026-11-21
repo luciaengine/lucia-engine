@@ -11,13 +11,14 @@ namespace GameEngine::Engine::Renderer
 
 struct ForestPlacementGpuPage;
 struct ForestPlacementGpuView;
+struct ForestSplatWindGpu;
 
 /// Compacts the primary view's resident placements on the graphics queue.
 class ForestPlacementCull
 {
 public:
     /// Load the packaged kernel for this device and request its pipeline.
-    bool Initialize(Rendering::IDevice& device);
+    bool Initialize(Rendering::IDevice& device, bool splats);
 
     struct DrawBuffers
     {
@@ -37,7 +38,7 @@ public:
     /// reads Args as indirect, Slots/Visible/Pages as storage and View as uniform.
     [[nodiscard]] std::optional<DrawBuffers> Declare(Rendering::RenderGraph::RGFrame& frame,
         std::string_view scope, Rendering::BufferHandle slots, uint32 slotCount, const ForestPlacementGpuView& view,
-        std::span<const ForestPlacementGpuPage> pages);
+        std::span<const ForestPlacementGpuPage> pages, uint32 indexCount, const ForestSplatWindGpu* wind);
 
 private:
     uint32 m_VisiblePageCapacity = 0;
