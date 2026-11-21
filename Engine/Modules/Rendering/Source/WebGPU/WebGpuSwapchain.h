@@ -42,15 +42,13 @@ class WebGpuSwapchain
 
     // Acquires the frame's surface texture and repoints the slot at it.
     bool Acquire(WebGpuDevice& device);
-    bool HasCurrentTexture() const { return m_CurrentTexture != nullptr; }
 
     // Presents the acquired texture and queues its release behind the current
     // submission.
     bool Present(WebGpuDevice& device);
 
-    // Releases every surface texture whose submission has completed. Called
-    // once per frame by the device after it drains wgpu's event loop.
-    void DrainCompletedReleases();
+    // Retire surface textures after the device processes completion callbacks.
+    void PrepareFrame(WebGpuDevice& device);
 
     void* GetWindow() const { return m_GlfwWindow; }
     uint32_t GetWidth() const { return m_Width; }

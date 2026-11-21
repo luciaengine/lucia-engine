@@ -1106,6 +1106,10 @@ void WebGpuCommandList::BeginRenderPass(const RenderPassDesc& desc)
         }
     }
 
+#if defined(__EMSCRIPTEN__)
+    if (colorAttachments.empty() && !hasDepth)
+        return;
+#endif
     WGPURenderPassDescriptor passDesc{};
     passDesc.label =
         WebGpu::MakeStringView(m_EncoderScopeLabel.empty() ? "RenderPass" : m_EncoderScopeLabel.c_str());
