@@ -1038,17 +1038,19 @@ bool WebGpuDevice::BeginFrame()
     {
         m_PushConstantOffset = static_cast<uint64_t>(m_FrameIndex) * m_PushConstantSliceBytes;
     }
-    m_WindowTargets.ForEach([](Handle, std::unique_ptr<WebGpuSwapchain>& swapchain) {
+    m_WindowTargets.ForEach([this](Handle, std::unique_ptr<WebGpuSwapchain>& swapchain) {
         if (swapchain)
         {
-            swapchain->DrainCompletedReleases();
+            swapchain->PrepareFrame(*this);
         }
     });
 
+#if !defined(__EMSCRIPTEN__)
     if (WebGpuSwapchain* swapchain = GetSwapchain(m_ActiveWindowTarget))
     {
         return swapchain->Acquire(*this);
     }
+#endif
     return true;
 }
 

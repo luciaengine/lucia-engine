@@ -54,10 +54,21 @@ fails to load is reported in the log with the fix, "rebuild the package": export
 
 ## Material mip streaming
 
-Set `GE_MATERIAL_MIP_BUDGET_MB` before starting the editor or game to enable GPU
-mip streaming for asynchronously loaded material textures with a cooked or container mip
-chain. The value is in MiB. Leave it unset or set it to zero to use full
-resolution at first upload.
+The engine streams the mips of material textures that have a cooked or container mip
+chain. The textures share one budget, which is a share of the memory that the GPU
+reports:
+
+| Device | Budget |
+| --- | --- |
+| Discrete GPU | One half of its video memory. |
+| Unified memory, where the CPU and the GPU share the RAM | One quarter of that memory, and not less than 1024 MiB. |
+| A Steam Deck build | 2048 MiB. |
+| A device that reports no memory size | 1024 MiB. |
+
+A scene whose material textures fit the budget loads each texture at full resolution.
+A scene that does not fit keeps the most detail where the textures are the largest on
+screen. A Debug or DebugFast build reads `GE_MATERIAL_MIP_BUDGET_MB`, a budget
+in MiB for tests. A value of zero there turns streaming off. Other builds do not read it.
 
 A texture with a level larger than 256 pixels on its longest edge is eligible.
 It starts at the largest level that fits the free budget. Textures take the
@@ -84,7 +95,7 @@ Normal maps stream their normal-variance companion at the matching mip offset.
 The budget counts resident streamed mip bytes for both images. The `get_memory_stats`
 debug tool shows that count as `Rendering.MaterialMipStreams`. Replacement images can coexist
 with their predecessors until GPU work finishes. Staging memory and other textures
-are separate costs. This mode uses a shared budget across material textures.
+are separate costs.
 
 A streamed texture keeps no copy of its mip chain in memory. The first load reads
 the whole cooked file and uploads the levels that the texture starts with. Each later change of level reads the
@@ -100,9 +111,3 @@ A direct request for the same asset receives a separate full-resolution image.
 An immediate re-upload, such as a texture filter edit, keeps the material
 available with a full-resolution image until the asset is evicted and loaded
 again.
-
-## Changelog
-
-- 2026-10-15: The export ships one cooked form per texture and fills the project cache.
-- 2026-10-14: The cache folder and the one-time recook after an encoder update.
-- 2026-10-14: First version: formats, Auto mapping and the encoders.

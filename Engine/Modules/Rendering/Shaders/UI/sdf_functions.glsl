@@ -113,41 +113,29 @@ float sdfCoverage(float sd, float w)
 
 // Gaussian shadow falloff (sigma = blurRadius / 2).
 //
-// The pixel term is the fragment's screen footprint expressed in the units sd
-// is measured in — the same quantity the coverage box filter uses, so the
-// compat arm reads it from the hoisted derivatives rather than re-differencing
-// a field whose quad gradient collapses along its own ridges.
-float gaussianShadowAlphaIntegrated(float sd, float blurRadius)
+// `px` is the fragment's footprint in the units of sd (pixelFootprint). The SDF
+// has unit gradient, so px is its screen gradient. Do not take a derivative of
+// sd: on a ridge it is 0 in some lanes of a quad, and a derivative taken after
+// a lane returns early is undefined.
+float gaussianShadowAlphaIntegrated(float sd, float blurRadius, float px)
 {
     float sigma = max(blurRadius * 0.5, 0.001);
-#if defined(GE_COMPAT_PROFILE)
-    float pixelSigma = max(0.5 * ge_UiDeriv.LocalPerPixel, 0.0);
-#else
-    float pixelSigma = max(0.5 * fwidth(sd), 0.0);
-#endif
+    float pixelSigma = max(0.5 * px, 0.0);
     float sigmaEff = sqrt(sigma * sigma + pixelSigma * pixelSigma);
     return 0.5 + 0.5 * GE_Erf(sd / (sigmaEff * 1.4142135));
 }
 
 // Symmetric taps around center sample for quality.
-float evaluateShadowAlpha(float sd, float blurRadius)
+float evaluateShadowAlpha(float sd, float blurRadius, float px)
 {
-    float center = gaussianShadowAlphaIntegrated(sd, blurRadius);
+    float center = gaussianShadowAlphaIntegrated(sd, blurRadius, px);
 
     if (!kEnableShadowTwoSampleQuality)
         return center;
 
-#if defined(GE_COMPAT_PROFILE)
-    float gradLen = ge_UiDeriv.LocalPerPixel;
-#else
-    float gradLen = length(vec2(dFdx(sd), dFdy(sd)));
-#endif
-    if (gradLen <= 1e-5)
-        return center;
-
-    float delta = gradLen * kShadowTwoSampleOffsetPx;
-    float minusA = gaussianShadowAlphaIntegrated(sd - delta, blurRadius);
-    float plusA = gaussianShadowAlphaIntegrated(sd + delta, blurRadius);
+    float delta = px * kShadowTwoSampleOffsetPx;
+    float minusA = gaussianShadowAlphaIntegrated(sd - delta, blurRadius, px);
+    float plusA = gaussianShadowAlphaIntegrated(sd + delta, blurRadius, px);
     return (center + minusA + plusA) / 3.0;
 }
 

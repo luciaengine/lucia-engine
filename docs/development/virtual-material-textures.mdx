@@ -1,0 +1,55 @@
+---
+title: Virtual material textures
+description: A design for streaming material texture tiles using the existing page cache and portable texture arrays.
+---
+
+This is a proposed design for general material textures.
+
+## Current implementation
+
+Lucia already pages terrain height and surface fields. `TerrainSurfacePages` requests visible surface pages through `PageResidencyManager`. `TerrainPageTableRing` binds the terrain page tables for the frame. The terrain renderer uses this path for its [terrain pages](../terrain/height-page-streaming.mdx).
+
+General materials use mip streaming in `TextureService` and `MaterialMipStreamSource`. For a streamable texture, the latter reads complete mip levels from the always-resident tail through a selected finer level. Publishing a finer mip replaces the resident image for each dependent material. General meshes and foliage cannot request one tile from a mip level today.
+
+## Scope
+
+Add an opt-in material binding for large texture bundles on meshes. Start with clamp-addressed color, normal, and ORM maps that share UV0 and its transform. Cook them into one virtual page layout. The current sampler remains available for ordinary materials, repeating or blended mappings, and devices that cannot bind the tile pool. Preserve the existing normal-variance filtering when cooking the bundle.
+
+Keep each leaf's alpha-cutout source texture on a conventional binding during this phase. Color, depth, shadows, and motion must use the same coverage texture and cutoff. Virtual color alpha must never change the silhouette. Leaf pivots and bark sway stay in vertex data and vertex modifiers. Season parameters still apply after material sampling.
+
+## Cook and address pages
+
+Generate the complete mip pyramid before splitting images into 128 by 128 texel pages. Copy a four-texel gutter from each neighboring region of the same mip. At the texture edge, extend the last texel. The gutter must be present before block compression. Package each page's planes together and place adjacent pages next to each other in Morton order. A directory entry identifies its material bundle, mip, tile coordinate, byte range, and content hash. Record each mip's extent so addressing works for odd sizes and partial edge pages. Keep the coarse mip tail resident before admitting the material.
+
+Reuse the PageStreaming range reader, integrity checks, cancellation, and slot generation rules. Keep UV page demand separate from the terrain camera-window demand. Use the existing page table ring as the publication model. The GPU looks up a physical layer and a resident mip in a versioned table. A missing entry climbs to a resident parent or the pinned tail. A failed read leaves that fallback in place. Discard a late completion when its bundle revision or slot generation has changed.
+
+Upload all planes before publishing one mapping. Keep table versions readable until the last frame using them completes. Eviction removes the mapping from future versions and waits for the last reader before the layer can hold another page. A device rebuild restores the tail and clears the high-detail mappings.
+
+## Sampling and device tiers
+
+Compute the virtual mip from UV derivatives before changing coordinates for a physical tile. Sample the resolved layer at explicit mip zero. Perform the mip blend between two virtual levels when both mappings resolve. If they resolve to the same parent, sample it once. Clamp the tile footprint to the valid interior and gutter. Start with bilinear filtering within a page and trilinear blending across levels. Add anisotropy only with taps that safely resolve across a page boundary.
+
+Use conventional sampled 2D texture arrays and a read-only page table. Full and Compatibility use the same coordinates and parent fallback. Check each required format and array layer limit on startup. A BC pool can use BC7 sRGB for color, BC5 for normals, and BC7 linear for ORM. A device without BC support can select a cooked RGBA8 pool with fewer layers or use the ordinary mip-streamed texture. Reserve tile memory from the device's existing material texture budget before allocating a pool. Charge the pool allocation, pinned tails, page tables, upload staging, and backend alignment to that budget. Apply the smaller of the device's array layer limit and the profile's layer cap. If the budget cannot hold the tail and a usable pool, use conventional mip streaming for that bundle.
+
+Count conventional and virtual allocations together while a material changes binding. Retire the old binding after the last frame that uses it. Reserve its bytes until that frame completes. A texture shared by ordinary and virtual materials can require both allocations. Include this duplication when deciding whether to admit the bundle.
+
+| Example pool | Physical layers | Bytes per page for all three maps | Tile payload |
+| --- | ---: | ---: | ---: |
+| BC formats at 8 bits per texel per map | 1,024 | 55,488 | 54.1875 MiB |
+| RGBA8 formats at 32 bits per texel per map | 128 | 221,952 | 27.09375 MiB |
+
+## Request and render
+
+Start with conservative CPU requests from visible mesh LOD or cluster UV bounds and projected texture footprint. Cook bounded UV ranges for those draws. Compute demand from the union of active views and deduplicate requests across instances of the same material. If the UV bounds cover too much of the texture for the request budget, request a coarser mip first. Rank the coarser missing ancestor first, then finer pages by projected coverage and proximity. Apply caps for reads, upload bytes, and table changes per frame. Cancel stale reads on camera changes. Keep the requested working set stable when a single view oscillates at a mip boundary.
+
+A later Full-profile refinement can use bounded GPU feedback from the visible color pass. Deduplicate at reduced resolution, consume feedback asynchronously, and keep the CPU policy when feedback is unavailable or overflows. Leave shadow and depth passes free of virtual-texture feedback.
+
+HLOD and Cluster LOD continue to own geometry selection. Active meshes request tiles for the materials they actually draw. Impostors and forest stands keep their own captured atlases. A transition to the card releases the fine mesh's tile demand when no other view uses it. For an impostor bake, use the conventional resolved source mip chain and keep its selected source quality consistent across all frames of the bake. A later bake path can pin a complete requested source snapshot before recording any tiles.
+
+## Verification
+
+1. Compare page-coordinate and mip calculations against a fully resident image. Include partial edge tiles, cross-page filtering, missing parents, and the tail.
+2. Saturate the pool, reverse camera direction, reload the source while uploads are pending, and rebuild the device. Verify that no frame reads a reused slot through an older table.
+3. Capture a Megascans tree's bark and canopy with the same camera, wind, and seasons on ordinary and virtual bindings. Compare color, normals, cutout coverage, shadows, motion, and the mesh-to-card handoff.
+4. Alternate whole-mip streaming and virtual tiles in Release on the same forest route. Match the camera, foliage, render size, device profile, and total material texture budget. Record CPU request time, GPU sampling time, peak resident bytes, upload bytes, and frames spent on a coarser mip. Include cold starts and a return to an area the scene has already shown.
+5. Use both the one-species million-tree fixture and a multi-species material set. The first isolates geometry and instance scaling. The second tests memory use for a diverse texture working set. Repeat on a physical low-end device and a Full-profile device. Record p99 frame time and frames above the 16.67 ms target.
