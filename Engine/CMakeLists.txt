@@ -1421,6 +1421,9 @@ message(STATUS "Texture-cook cache stbir version key: stbir-${GE_STBIR_VERSION_S
     # links KTX::ktx directly.
     find_package(Ktx CONFIG QUIET)
     if(TARGET KTX::ktx)
+        if(EMSCRIPTEN)
+            ge_wasm_require_no_link_setting(KTX::ktx STACK_SIZE)
+        endif()
         target_link_libraries(Engine PRIVATE KTX::ktx)
         target_compile_definitions(Engine PUBLIC GE_HAVE_KTX)
     else()
