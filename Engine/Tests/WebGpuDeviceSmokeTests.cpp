@@ -7,6 +7,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/QueryPool.h"
 #include "Rendering/Core/WebGpuPushConstantRing.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
@@ -116,6 +117,39 @@ TEST(WebGpuDeviceSmoke, FactoryCreatesDeviceWithCompatCaps)
     // The granted storage-binding limit is logged by the device at init (the
     // elevated-limit request); the caps struct has no field for it yet.
     device->Shutdown();
+}
+
+TEST(WebGpuDeviceSmoke, EncoderTimestampsSubmitAndReadBack)
+{
+    auto device = CreateWebGpuDevice();
+    ASSERT_NE(device, nullptr);
+    auto* pool = device->GetQueryPool();
+    if (pool == nullptr)
+    {
+        GTEST_SKIP() << "Native WebGPU adapter has no encoder timestamp query pool";
+    }
+
+    ASSERT_TRUE(device->BeginFrame());
+    auto commandList = device->CreateCommandList(IDevice::QueueType::Graphics);
+    ASSERT_NE(commandList, nullptr);
+    commandList->Begin();
+    const uint32_t begin = pool->WriteTimestamp(commandList.get(), TimestampPoint::SpanBegin);
+    const uint32_t end = pool->WriteTimestamp(commandList.get(), TimestampPoint::SpanEnd);
+    commandList->End();
+
+    device->ExecuteCommandLists({commandList.get()});
+    pool->EndFrame();
+    device->WaitForIdle();
+
+    QueryResult beginResult{};
+    QueryResult endResult{};
+    ASSERT_TRUE(pool->GetTimestampResult(begin, beginResult));
+    ASSERT_TRUE(pool->GetTimestampResult(end, endResult));
+    EXPECT_GE(endResult.Value, beginResult.Value);
+
+    commandList.reset();
+    device->Shutdown();
+    EXPECT_EQ(device->GetQueryPool(), nullptr);
 }
 
 TEST(WebGpuDeviceSmoke, EmptyForwardLightingBuffersIncludeARecordForEveryStorageArray)
