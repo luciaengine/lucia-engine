@@ -907,6 +907,64 @@ void ExpectCardHoverWorks(UIManager& ui, const char* cardId, float cardCenterX,
 
 } // namespace
 
+// A hover change restyles the subtree of a chain element only when a rule's :hover compound before its subject
+// matches that element. Here only `.card` anchors such a rule, so leaving the near button must not restyle a
+// button elsewhere that has a :hover rule of its own.
+TEST(UIManagerPseudoInvalidationTests, AHoverChangeDoesNotRestyleElementsOutsideAnAnchoredSubtree)
+{
+    auto* dev = SharedHeadlessDevice();
+    if (!dev)
+        GTEST_SKIP() << "Device init failed";
+
+    UIRegistration::RegisterBuiltInControls();
+
+    auto root = std::make_unique<UIElement>("root");
+    auto nearRow = std::make_unique<UIElement>("near-row");
+    auto nearButton = std::make_unique<UIElement>("near");
+    nearButton->AddClass("btn");
+    UIElement* nearPtr = nearButton.get();
+    nearRow->AddChild(std::move(nearButton));
+    auto farRow = std::make_unique<UIElement>("far-row");
+    auto farButton = std::make_unique<UIElement>("far");
+    farButton->AddClass("btn");
+    UIElement* farPtr = farButton.get();
+    farRow->AddChild(std::move(farButton));
+    root->AddChild(std::move(nearRow));
+    root->AddChild(std::move(farRow));
+
+    UIManager ui(dev);
+    ui.SetRoot(std::move(root));
+
+    const auto cssPath = MakeTempCssPath("ui_hover_anchor_walk");
+    {
+        std::ofstream f(cssPath);
+        f << R"(
+#root { display: flex; flex-direction: column; width: 600px; height: 100px; }
+#near-row { display: flex; width: 600px; height: 40px; }
+#far-row { display: flex; width: 600px; height: 40px; }
+.btn { width: 100px; height: 40px; background-color: #202020; }
+.btn:hover { background-color: #FF0000; }
+.card:hover .icon { background-color: #00FF00; }
+)";
+    }
+    ASSERT_TRUE(ui.AttachStyleFromFile(cssPath.string()));
+    for (int i = 0; i < 3; ++i)
+        ui.Update(0.0f, /*interactive=*/true);
+
+    ui.OnMouseMove(50.0f, 20.0f);
+    ui.Update(0.0f, /*interactive=*/true);
+    ui.Update(0.0f, /*interactive=*/true);
+    ASSERT_EQ(nearPtr->GetResolvedStyle().Visual.BackgroundColor, kOverlayHoverColor) << "the near button is hovered";
+
+    farPtr->ClearDirty(UIElement::StyleDirty | UIElement::LayoutDirty | UIElement::VisualDirty | UIElement::ChildrenDirty);
+    ui.OnMouseMove(-1000.0f, -1000.0f);
+    ui.Update(0.0f, /*interactive=*/true);
+
+    EXPECT_NE(nearPtr->GetResolvedStyle().Visual.BackgroundColor, kOverlayHoverColor) << "the near button left hover";
+    EXPECT_FALSE(farPtr->IsDirty(UIElement::StyleDirty | UIElement::VisualDirty))
+        << "leaving the near button restyled a button that no anchored rule reaches";
+}
+
 TEST(UIManagerPseudoInvalidationTests, HoverDescendantRuleAppliesToRuntimeAddedSubtree)
 {
     auto* dev = SharedHeadlessDevice();

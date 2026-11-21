@@ -151,6 +151,10 @@ public:
     // matches (rules currently matching).
     static bool IsRuleCacheEnabled();
 
+    /// True when `element` matches `compound` with every dynamic pseudo-class (:hover, :focus, :checked and
+    /// the others) treated as matching, as the rule cache matches.
+    static bool MatchesCompoundIgnoringState(const UIElement& element, const CompoundSelector& compound);
+
 #if GE_DEBUG_INSTRUMENTATION
     // Cache-correctness validator. Compiled only where the engine carries
     // its debug instrumentation; release builds compile the validator out

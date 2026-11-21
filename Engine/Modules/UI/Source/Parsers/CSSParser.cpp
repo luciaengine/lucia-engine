@@ -2170,13 +2170,16 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
                 continue;
             if (wantPredicate && cm.hasDynamicPseudo)
             {
+                const SelectorTerm* subject = cm.rule->Selector.Terms.empty() ? nullptr : &cm.rule->Selector.Terms.back();
                 for (const SelectorTerm& term : cm.rule->Selector.Terms)
                 {
                     for (const PseudoClass& pseudo : term.Selector.Pseudos)
                     {
                         switch (pseudo.PseudoKind)
                         {
-                            case PseudoClass::Kind::Hover:        matchedPseudoBits |= UIElement::HoverRules;        break;
+                            case PseudoClass::Kind::Hover:
+                                matchedPseudoBits |= &term == subject ? UIElement::HoverRules : UIElement::HoverContextRules;
+                                break;
                             case PseudoClass::Kind::Active:       matchedPseudoBits |= UIElement::ActiveRules;       break;
                             case PseudoClass::Kind::Focus:        matchedPseudoBits |= UIElement::FocusRules;        break;
                             case PseudoClass::Kind::FocusVisible: matchedPseudoBits |= UIElement::FocusVisibleRules; break;
@@ -2309,13 +2312,16 @@ void CSSParser::ComputeStyleInto(ResolvedStyle& out,
         // the caller didn't ask for the output.
         if (outMatchedPseudoStates)
         {
+            const SelectorTerm* subject = m.Rule->Selector.Terms.empty() ? nullptr : &m.Rule->Selector.Terms.back();
             for (const SelectorTerm& term : m.Rule->Selector.Terms)
             {
                 for (const PseudoClass& pseudo : term.Selector.Pseudos)
                 {
                     switch (pseudo.PseudoKind)
                     {
-                        case PseudoClass::Kind::Hover:        matchedPseudoBits |= UIElement::HoverRules;        break;
+                        case PseudoClass::Kind::Hover:
+                            matchedPseudoBits |= &term == subject ? UIElement::HoverRules : UIElement::HoverContextRules;
+                            break;
                         case PseudoClass::Kind::Active:       matchedPseudoBits |= UIElement::ActiveRules;       break;
                         case PseudoClass::Kind::Focus:        matchedPseudoBits |= UIElement::FocusRules;        break;
                         case PseudoClass::Kind::FocusVisible: matchedPseudoBits |= UIElement::FocusVisibleRules; break;
@@ -2423,6 +2429,11 @@ ResolvedStyle CSSParser::ComputeStyleFor(const UIElement& el,
     ResolvedStyle rs;
     ComputeStyleInto(rs, el, sheets, sheetIndices, state, parentStyle, hoverTarget);
     return rs;
+}
+
+bool CSSParser::MatchesCompoundIgnoringState(const UIElement& element, const CompoundSelector& compound)
+{
+    return MatchesCompoundStructural(element, compound);
 }
 
 bool CSSParser::IsRuleCacheEnabled()

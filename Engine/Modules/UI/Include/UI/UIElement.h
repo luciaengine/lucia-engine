@@ -2209,6 +2209,7 @@ protected:
     // catch-all bit (custom states are open-ended, so we can't enumerate).
     enum MatchedPseudoFlag : uint16_t
     {
+        // :hover on the rule's subject compound: the element's own hover state changes its style.
         HoverRules        = 1u << 0,
         ActiveRules       = 1u << 1,
         FocusRules        = 1u << 2,
@@ -2218,6 +2219,9 @@ protected:
         EnabledRules      = 1u << 6,
         CheckedRules      = 1u << 7,
         CustomStateRules  = 1u << 8,
+        // :hover on a compound before the subject (`.row:hover .icon`, `.a:hover + .b`): the hover state of an
+        // ancestor or a sibling changes the element's style.
+        HoverContextRules = 1u << 9,
     };
     uint16_t m_MatchedPseudoStates = 0;
 
