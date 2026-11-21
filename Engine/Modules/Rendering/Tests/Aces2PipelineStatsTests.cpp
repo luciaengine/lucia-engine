@@ -32,27 +32,55 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
 #include <vulkan/vulkan.h>
 
+#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "TestUtils.h"
+
 namespace
 {
 
-std::vector<uint32_t> LoadSpirv(const std::string& path)
+void ReflectTonemapLayout(const std::vector<uint32_t>& vertex, const std::vector<uint32_t>& fragment,
+                          std::vector<VkDescriptorSetLayoutBinding>& bindings, VkPushConstantRange& pushRange)
 {
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
-        return {};
-    std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    if (bytes.empty() || bytes.size() % 4 != 0)
-        return {};
-    std::vector<uint32_t> words(bytes.size() / 4);
-    std::memcpy(words.data(), bytes.data(), bytes.size());
-    return words;
+    using namespace GameEngine::Rendering;
+
+    StageReflectionResult vertexLayout{};
+    StageReflectionResult fragmentLayout{};
+    std::string error;
+    ASSERT_TRUE(ReflectSpirv(ShaderStageKind::Vertex, vertex.data(), vertex.size(), {}, vertexLayout, &error))
+        << error;
+    ASSERT_TRUE(ReflectSpirv(ShaderStageKind::Fragment, fragment.data(), fragment.size(), {}, fragmentLayout, &error))
+        << error;
+    ASSERT_TRUE(vertexLayout.Sets.empty());
+    ASSERT_TRUE(vertexLayout.Pcr.empty());
+    ASSERT_EQ(fragmentLayout.Sets.size(), 1u);
+    ASSERT_EQ(fragmentLayout.Sets.front().Set, 0u);
+    ASSERT_FALSE(fragmentLayout.Sets.front().Bindings.empty());
+    ASSERT_EQ(fragmentLayout.Pcr.size(), 1u);
+    ASSERT_GT(fragmentLayout.Pcr.front().Size, 0u);
+
+    for (const DescriptorBindingMeta& binding : fragmentLayout.Sets.front().Bindings)
+    {
+        VkDescriptorType type;
+        switch (binding.Type)
+        {
+        case ShaderMetaBindingType::kCombinedImageSampler:
+            type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            break;
+        case ShaderMetaBindingType::kStorageBuffer:
+            type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            break;
+        default:
+            FAIL() << "Unexpected tonemap descriptor type " << binding.Type << " at binding " << binding.Binding;
+        }
+        bindings.push_back({binding.Binding, type, binding.Count, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+    }
+    pushRange = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, fragmentLayout.Pcr.front().Size};
 }
 
 std::string ToLower(std::string s)
@@ -82,6 +110,22 @@ uint64_t StatValueAsU64(const VkPipelineExecutableStatisticKHR& s)
             return s.value.f64 < 0.0 ? 0u : static_cast<uint64_t>(s.value.f64);
         default: return 0u;
     }
+}
+
+TEST(Aces2PipelineStats, ReflectsTheStagedTonemapPipelineLayout)
+{
+    using GameEngine::Rendering::Tests::ReadSpirvWords;
+    std::vector<uint32_t> vertex;
+    std::vector<uint32_t> fragment;
+    ASSERT_TRUE(ReadSpirvWords("fullscreen_noinput.vert.spv", vertex));
+    ASSERT_TRUE(ReadSpirvWords("tonemap.frag.spv", fragment));
+
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    VkPushConstantRange pushRange{};
+    ASSERT_NO_FATAL_FAILURE(ReflectTonemapLayout(vertex, fragment, bindings, pushRange));
+    EXPECT_TRUE(std::any_of(bindings.begin(), bindings.end(), [](const VkDescriptorSetLayoutBinding& binding) {
+        return binding.binding == 2u && binding.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    })) << "the scratch guard requires the ACES 2 tier-table storage buffer";
 }
 
 // Everything raw-Vulkan and creation-only: the engine's VulkanDevice does not
@@ -154,11 +198,15 @@ TEST(Aces2PipelineStats, TierTablesDoNotSpillToScratchMemory)
     VkDevice device = VK_NULL_HANDLE;
     ASSERT_EQ(vkCreateDevice(gpu, &dci, nullptr, &device), VK_SUCCESS);
 
-    const std::string shaderDir = RENDERING_SHADER_OUTPUT_DIR;
-    const auto vsWords = LoadSpirv(shaderDir + "/fullscreen_noinput.vert.spv");
-    const auto fsWords = LoadSpirv(shaderDir + "/tonemap.frag.spv");
-    ASSERT_FALSE(vsWords.empty()) << "fullscreen_noinput.vert.spv missing — shaders not compiled";
-    ASSERT_FALSE(fsWords.empty()) << "tonemap.frag.spv missing — shaders not compiled";
+    using GameEngine::Rendering::Tests::ReadSpirvWords;
+    std::vector<uint32_t> vsWords;
+    std::vector<uint32_t> fsWords;
+    ASSERT_TRUE(ReadSpirvWords("fullscreen_noinput.vert.spv", vsWords));
+    ASSERT_TRUE(ReadSpirvWords("tonemap.frag.spv", fsWords));
+
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    VkPushConstantRange pushRange{};
+    ASSERT_NO_FATAL_FAILURE(ReflectTonemapLayout(vsWords, fsWords, bindings, pushRange));
 
     auto makeModule = [&](const std::vector<uint32_t>& words) {
         VkShaderModuleCreateInfo smci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -173,24 +221,17 @@ TEST(Aces2PipelineStats, TierTablesDoNotSpillToScratchMemory)
     ASSERT_NE(vs, VK_NULL_HANDLE);
     ASSERT_NE(fs, VK_NULL_HANDLE);
 
-    // Set 0 exactly as tonemap.frag declares it: uHDRColor, uExposure, Aces2Tables.
-    const VkDescriptorSetLayoutBinding bindings[] = {
-        {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-    };
     VkDescriptorSetLayoutCreateInfo dslci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    dslci.bindingCount = 3;
-    dslci.pBindings = bindings;
+    dslci.bindingCount = static_cast<uint32_t>(bindings.size());
+    dslci.pBindings = bindings.data();
     VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
     ASSERT_EQ(vkCreateDescriptorSetLayout(device, &dslci, nullptr, &dsl), VK_SUCCESS);
 
-    const VkPushConstantRange pcr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32};
     VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     plci.setLayoutCount = 1;
     plci.pSetLayouts = &dsl;
     plci.pushConstantRangeCount = 1;
-    plci.pPushConstantRanges = &pcr;
+    plci.pPushConstantRanges = &pushRange;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     ASSERT_EQ(vkCreatePipelineLayout(device, &plci, nullptr, &layout), VK_SUCCESS);
 
