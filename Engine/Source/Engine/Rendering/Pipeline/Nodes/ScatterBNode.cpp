@@ -46,10 +46,8 @@ void ScatterBNode::DeclareForView(ViewDeclare& d)
     t.OccluderDepthResolved = d.ViewOccluderDepthResolved;
     t.GTAO = d.ResolveTexture(Names::View::GTAO);
     t.SkyBackdrop = d.ResolveTexture(Names::Res::SkyBackdrop);
-    // The DDGI resolve outputs that the phase-A pass bound, published by WorldRenderNode on frames that declare the
-    // resolve. The binder binds them only when all 4 are valid, so recovered geometry gets the same probe light.
-    t.DDGIResolveRough = d.ResolveTexture(Names::View::DDGIResolveRough);
-    t.DDGIResolveGlossy = d.ResolveTexture(Names::View::DDGIResolveGlossy);
+    // WorldRenderNode publishes these resolve outputs for both scatter phases.
+    t.DDGIResolveLobes = d.ResolveTexture(Names::View::DDGIResolveLobes);
     t.DDGIResolveIrradiance = d.ResolveTexture(Names::View::DDGIResolveIrradiance);
     t.DDGIResolveGatherNormal = d.ResolveTexture(Names::View::DDGIResolveGatherNormal);
     t.ResolveFromPipeline = d.ResolveFromPipeline;

@@ -15,6 +15,7 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "TestDeviceHelper.h"
 
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -29,6 +30,7 @@ using namespace GameEngine::Rendering;
 namespace
 {
 constexpr uint32_t kSize = 8;
+constexpr uint32_t kLobeLayerCount = 2;
 constexpr uint32_t kTexels = kSize * kSize;
 constexpr uint32_t kPoisoned = 2 * kSize + 2;  // texel (2, 2)
 constexpr uint32_t kNeighbour = 3 * kSize + 2;  // texel (2, 3), inside (2, 2)'s blur footprint
@@ -140,11 +142,12 @@ class DDGIResolveBlurComputeTest : public ::testing::Test
 
     // An 8x8 texture uploaded from `texels` (RGBA16F when four channels, else R32F),
     // left in the shader-read state.
-    TextureHandle MakeTexture(CommandList& cl, const std::vector<float>& texels, bool rgba)
+    TextureHandle MakeTexture(CommandList& cl, const std::vector<float>& texels, bool rgba, uint32_t layers = 1)
     {
         TextureDesc desc{};
         desc.width = desc.height = kSize;
-        desc.depth = desc.mipLevels = desc.arrayLayers = desc.sampleCount = 1;
+        desc.depth = desc.mipLevels = desc.sampleCount = 1;
+        desc.arrayLayers = layers;
         desc.format = static_cast<uint32_t>(rgba ? TextureFormat::R16G16B16A16_FLOAT : TextureFormat::R32_FLOAT);
         desc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::UnorderedAccess |
                                            TextureUsage::TransferSrc | TextureUsage::TransferDst);
@@ -159,9 +162,12 @@ class DDGIResolveBlurComputeTest : public ::testing::Test
         else
             std::memcpy(mapped, texels.data(), bytes);
         m_Device->UnmapBuffer(upload);
-        cl.Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::Undefined, ResourceState::CopyDest));
-        cl.CopyBufferToTextureSubresource(upload, texture, 0, 0, kSize, kSize);
-        cl.Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::CopyDest, ResourceState::ShaderResource));
+        cl.Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::Undefined, ResourceState::CopyDest,
+                                                         0, 1, 0, layers));
+        for (uint32_t layer = 0; layer < layers; ++layer)
+            cl.CopyBufferToTextureSubresource(upload, texture, 0, layer, kSize, kSize);
+        cl.Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::CopyDest, ResourceState::ShaderResource,
+                                                         0, 1, 0, layers));
         return texture;
     }
 
@@ -190,19 +196,22 @@ class DDGIResolveBlurComputeTest : public ::testing::Test
     // history (0 never reads it) and returns the accumulated irradiance's rgb,
     // one float per channel.
     std::vector<float> RunBlur(const std::vector<float>& current, const std::vector<float>& history,
-                               float temporalAlpha = 0.5f, const BlurView& view = FlatView())
+                               float temporalAlpha = 0.5f, const BlurView& view = FlatView(),
+                               std::array<float, kLobeLayerCount>* lobeSamples = nullptr)
     {
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         cl->Begin();
         const TextureHandle irradianceIn = MakeTexture(*cl, current, true);
         const TextureHandle historyIn = MakeTexture(*cl, history, true);
         const TextureHandle depth = MakeTexture(*cl, view.Depth, false);
-        const TextureHandle lobeIn = MakeTexture(*cl, Rgba(0.0f, 0.0f), true);
+        const TextureHandle roughIn = MakeTexture(*cl, Rgba(0.25f, 0.5f), true);
+        const TextureHandle glossyIn = MakeTexture(*cl, Rgba(0.75f, 1.0f), true);
         const TextureHandle irradianceOut = MakeTexture(*cl, Rgba(0.0f, 0.0f), true);
-        const TextureHandle lobeOut = MakeTexture(*cl, Rgba(0.0f, 0.0f), true);
-        for (TextureHandle storage : {irradianceOut, lobeOut})
-            cl->Barrier(ResourceBarrier::CreateTextureBarrier(storage, ResourceState::ShaderResource,
-                                                              ResourceState::UnorderedAccess));
+        const TextureHandle lobeOut = MakeTexture(*cl, Rgba(0.0f, 0.0f), true, kLobeLayerCount);
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(irradianceOut, ResourceState::ShaderResource,
+                                                          ResourceState::UnorderedAccess));
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(lobeOut, ResourceState::ShaderResource,
+                                                          ResourceState::UnorderedAccess, 0, 1, 0, kLobeLayerCount));
 
         const ViewParamsUBO& params = view.Params;
         const BufferHandle viewParams = MakeBuffer(sizeof(params), BufferUsage::Uniform, BufferMemoryUsage::Upload);
@@ -214,22 +223,21 @@ class DDGIResolveBlurComputeTest : public ::testing::Test
         dsDesc.transient = true;
         const DescriptorSetHandle ds = m_Device->CreateDescriptorSet(dsDesc);
         NamedDescriptorWriter writer(m_Device.get(), ds, m_Meta, 0);
-        writer.AddCombinedImageSampler("uRoughIn", lobeIn, m_Sampler);
-        writer.AddCombinedImageSampler("uGlossyIn", lobeIn, m_Sampler);
+        writer.AddCombinedImageSampler("uRoughIn", roughIn, m_Sampler);
+        writer.AddCombinedImageSampler("uGlossyIn", glossyIn, m_Sampler);
         writer.AddCombinedImageSampler("uViewDepth", depth, m_Sampler);
         writer.AddCombinedImageSampler("uIrradianceIn", irradianceIn, m_Sampler);
         writer.AddCombinedImageSampler("uHistoryIrr", historyIn, m_Sampler);
         writer.AddUniformBuffer("ViewParams", viewParams, 0, sizeof(params));
         writer.Flush();
         using GameEngine::Engine::Renderer::Pipeline::Nodes::Detail::BindStorageImageByName;
-        BindStorageImageByName(m_Device.get(), ds, m_Meta, "uRoughOut", lobeOut);
-        BindStorageImageByName(m_Device.get(), ds, m_Meta, "uGlossyOut", lobeOut);
+        BindStorageImageByName(m_Device.get(), ds, m_Meta, "uLobesOut", lobeOut);
         BindStorageImageByName(m_Device.get(), ds, m_Meta, "uIrradianceOut", irradianceOut);
 
         cl->SetPipeline(m_Pipeline);
         cl->BindDescriptorSet(0, ds, m_Pipeline);
         NamedPushConstantWriter pc(m_Meta, m_Meta.PushConstants[0].Name);
-        pc.Add("lobesActive", 0u);
+        pc.Add("lobesActive", lobeSamples ? 1u : 0u);
         pc.Add("temporalAlpha", temporalAlpha);
         pc.Flush(cl.get());
         cl->Dispatch(1, 1, 1);
@@ -239,6 +247,18 @@ class DDGIResolveBlurComputeTest : public ::testing::Test
         cl->Barrier(ResourceBarrier::CreateTextureBarrier(irradianceOut, ResourceState::UnorderedAccess,
                                                           ResourceState::CopySource));
         cl->CopyTextureSubresourceToBuffer(irradianceOut, 0, 0, readback, kSize, kSize);
+        std::array<BufferHandle, kLobeLayerCount> lobeReadbacks{};
+        if (lobeSamples)
+        {
+            cl->Barrier(ResourceBarrier::CreateTextureBarrier(lobeOut, ResourceState::UnorderedAccess,
+                                                              ResourceState::CopySource, 0, 1, 0, kLobeLayerCount));
+            for (uint32_t layer = 0; layer < lobeReadbacks.size(); ++layer)
+            {
+                lobeReadbacks[layer] = m_Device->CreateReadbackBuffer(kTexels * 4 * sizeof(uint16_t));
+                m_Buffers.push_back(lobeReadbacks[layer]);
+                cl->CopyTextureSubresourceToBuffer(lobeOut, 0, layer, lobeReadbacks[layer], kSize, kSize);
+            }
+        }
         cl->End();
         std::vector<CommandList*> lists{cl.get()};
         m_Device->ExecuteCommandLists(lists);
@@ -250,6 +270,15 @@ class DDGIResolveBlurComputeTest : public ::testing::Test
             for (uint32_t c = 0; c < 3; ++c)
                 rgb.push_back(glm::unpackHalf1x16(halves[i * 4 + c]));
         m_Device->UnmapBuffer(readback);
+        if (lobeSamples)
+        {
+            for (uint32_t layer = 0; layer < lobeReadbacks.size(); ++layer)
+            {
+                const auto* lobe = static_cast<const uint16_t*>(m_Device->MapBuffer(lobeReadbacks[layer]));
+                (*lobeSamples)[layer] = glm::unpackHalf1x16(lobe[kPoisoned * 4]);
+                m_Device->UnmapBuffer(lobeReadbacks[layer]);
+            }
+        }
         return rgb;
     }
 
@@ -263,6 +292,15 @@ class DDGIResolveBlurComputeTest : public ::testing::Test
 };
 
 } // namespace
+
+TEST_F(DDGIResolveBlurComputeTest, WritesRoughAndGlossyToDistinctLayers)
+{
+    std::array<float, kLobeLayerCount> lobes{};
+    const auto irradiance = RunBlur(Rgba(kCurrent, kDepth), Rgba(kHistory, kDepth), 0.5f, FlatView(), &lobes);
+    EXPECT_NEAR(lobes[0], 0.25f, 1.0e-3f);
+    EXPECT_NEAR(lobes[1], 0.75f, 1.0e-3f);
+    EXPECT_NEAR(irradiance[kPoisoned * 3], 0.5f * (kCurrent + kHistory), 1.0e-3f);
+}
 
 // A neighbour brighter than the rest makes the poisoned texel's current blur
 // differ from its unblurred resolve, so keeping the blur is observable apart
