@@ -146,6 +146,9 @@ void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
             const Mathematics::Vector3 center = root - eye + centerOffset * scale;
             const double distanceSquared = static_cast<double>(center.x) * center.x +
                 static_cast<double>(center.y) * center.y + static_cast<double>(center.z) * center.z;
+            ForestNearMeshCandidate candidate{detail.Ticket, row, root, yaw, scale, distanceSquared, 0.0f};
+            if (output.size() == maxCandidates && !Nearer(candidate, output.front()))
+                continue;
             const float radius = scale * modelSphere.w;
             const float coverage = Hlod::SphereCoverageAtDistance(
                 std::sqrt(distanceSquared), radius, view.ProjectionScaleY, coverageBias);
@@ -155,14 +158,13 @@ void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
                  !std::ranges::binary_search(previousOwners, ForestMeshOwnedPlacement{detail.Ticket, row})) ||
                 !Rendering::TestSphereFrustum(center, frustumRadius, view.PlacementView.EyeRelativePlanes.data()))
                 continue;
-            const ForestNearMeshCandidate candidate{detail.Ticket, row, root, yaw, scale,
-                                                     distanceSquared, coverage};
+            candidate.Coverage = coverage;
             if (output.size() < maxCandidates)
             {
                 output.push_back(candidate);
                 std::push_heap(output.begin(), output.end(), Nearer);
             }
-            else if (Nearer(candidate, output.front()))
+            else
             {
                 std::pop_heap(output.begin(), output.end(), Nearer);
                 output.back() = candidate;
