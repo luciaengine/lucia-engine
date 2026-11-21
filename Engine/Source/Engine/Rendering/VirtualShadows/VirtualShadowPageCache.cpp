@@ -1,17 +1,17 @@
 #include "Engine/Rendering/VirtualShadows/VirtualShadowPageCache.h"
 
-#include "Types/Fnv1a.h"
-
 #include <algorithm>
 #include <bit>
 #include <tuple>
-#include <unordered_set>
 
 namespace GameEngine::Engine::Renderer
 {
 
 namespace
 {
+
+// Marks a row that repeats an earlier request. Plan removes it before it returns.
+constexpr uint32_t kRepeatedRow = kUnmappedShadowPage - 1;
 
 bool IsValidPage(const VirtualShadowPage& page)
 {
@@ -51,16 +51,6 @@ std::optional<Mathematics::Matrix4x4> CropVirtualShadowProjection(
     return crop * lightProjection;
 }
 
-std::size_t VirtualShadowPageCache::PageHash::operator()(const VirtualShadowPage& page) const noexcept
-{
-    auto hash = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, page.LightId);
-    hash = Hashing::Fnv1a64Value(hash, page.Family);
-    hash = Hashing::Fnv1a64Value(hash, page.Projection);
-    hash = Hashing::Fnv1a64Value(hash, page.Mip);
-    hash = Hashing::Fnv1a64Value(hash, page.X);
-    return static_cast<std::size_t>(Hashing::Fnv1a64Value(hash, page.Y));
-}
-
 VirtualShadowPageCache::VirtualShadowPageCache(uint32_t tileCount)
     : m_Tiles(tileCount)
 {
@@ -70,25 +60,85 @@ VirtualShadowPageCache::VirtualShadowPageCache(uint32_t tileCount)
 std::vector<VirtualShadowPageWork> VirtualShadowPageCache::Plan(
     std::span<const VirtualShadowPage> requests, uint64_t frame, uint64_t completedFrame)
 {
-    std::unordered_set<VirtualShadowPage, PageHash> demanded;
-    demanded.reserve(requests.size());
+    const uint64_t stamp = ++m_PlanStamp;
     std::vector<VirtualShadowPageWork> work;
     work.reserve(requests.size());
+    m_NewRows.clear();
     for (const auto& page : requests)
     {
-        if (IsValidPage(page) && demanded.insert(page).second)
-            work.push_back({.Page = page});
+        if (!IsValidPage(page))
+            continue;
+        if (const auto* found = m_Mappings.Find(page))
+        {
+            auto& tile = m_Tiles[*found];
+            if (tile.PlanStamp == stamp)
+                continue;
+            tile.PlanStamp = stamp;
+            work.push_back({.Page = page, .Tile = *found});
+            continue;
+        }
+        m_NewRows.push_back(static_cast<uint32_t>(work.size()));
+        work.push_back({.Page = page});
     }
-    const auto residentCount = std::min(work.size(), m_Tiles.size());
-    for (std::size_t i = residentCount; i < work.size(); ++i)
-        demanded.erase(work[i].Page);
+    RemoveRepeatedNewPages(work);
 
+    // A tile keeps the stamp only while a row in the resident part names its page.
+    const auto residentCount = std::min(work.size(), m_Tiles.size());
+    for (auto& row : std::span(work).subspan(residentCount))
+    {
+        if (row.Tile == kUnmappedShadowPage)
+            continue;
+        m_Tiles[row.Tile].PlanStamp = 0;
+        row.Tile = kUnmappedShadowPage;
+    }
+    const auto resident = std::span(work).first(residentCount);
+    MapNewPages(resident, stamp, completedFrame);
+
+    for (auto& row : resident)
+    {
+        if (row.Tile == kUnmappedShadowPage)
+            continue;
+        auto& tile = m_Tiles[row.Tile];
+        tile.LastUse = frame;
+        row.Revision = tile.Revision;
+        row.NeedsRender = !tile.Rendered;
+        if (row.NeedsRender)
+            tile.RenderFrame = frame;
+    }
+    RefreshDeformed(resident, frame);
+    return work;
+}
+
+void VirtualShadowPageCache::RemoveRepeatedNewPages(std::vector<VirtualShadowPageWork>& work)
+{
+    if (m_NewRows.size() < 2)
+        return;
+    std::ranges::sort(m_NewRows, [&work](uint32_t a, uint32_t b) {
+        return std::tie(work[a].Page, a) < std::tie(work[b].Page, b);
+    });
+    bool repeated = false;
+    for (std::size_t index = 1; index < m_NewRows.size(); ++index)
+    {
+        auto& row = work[m_NewRows[index]];
+        if (row.Page != work[m_NewRows[index - 1]].Page)
+            continue;
+        row.Tile = kRepeatedRow;
+        repeated = true;
+    }
+    if (repeated)
+        std::erase_if(work, [](const VirtualShadowPageWork& row) { return row.Tile == kRepeatedRow; });
+}
+
+void VirtualShadowPageCache::MapNewPages(std::span<VirtualShadowPageWork> rows, uint64_t stamp, uint64_t completedFrame)
+{
+    if (std::ranges::none_of(rows, [](const auto& row) { return row.Tile == kUnmappedShadowPage; }))
+        return;
     std::vector<uint32_t> available;
     available.reserve(m_Tiles.size());
     for (uint32_t index = 0; index < m_Tiles.size(); ++index)
     {
         const auto& tile = m_Tiles[index];
-        if (!tile.Page || (tile.LastUse <= completedFrame && !demanded.contains(*tile.Page)))
+        if (!tile.Page || (tile.LastUse <= completedFrame && tile.PlanStamp != stamp))
             available.push_back(index);
     }
     std::ranges::sort(available, {}, [this](uint32_t index) {
@@ -97,36 +147,21 @@ std::vector<VirtualShadowPageWork> VirtualShadowPageCache::Plan(
     });
 
     std::size_t next = 0;
-    for (auto& row : std::span(work).first(residentCount))
+    for (auto& row : rows)
     {
-        const auto& page = row.Page;
-        const auto* found = m_Mappings.Find(page);
-        if (found)
-        {
-            row.Tile = *found;
-        }
-        else if (next < available.size())
-        {
-            row.Tile = available[next++];
-            auto& tile = m_Tiles[row.Tile];
-            if (tile.Page)
-                m_Mappings.Erase(*tile.Page);
-            tile.Page = page;
-            Invalidate(tile);
-            m_Mappings.InsertOrAssign(page, row.Tile);
-        }
-        if (row.Tile == kUnmappedShadowPage)
+        if (row.Tile != kUnmappedShadowPage)
             continue;
-
+        if (next == available.size())
+            return;
+        row.Tile = available[next++];
         auto& tile = m_Tiles[row.Tile];
-        tile.LastUse = frame;
-        row.Revision = tile.Revision;
-        row.NeedsRender = !tile.Rendered;
-        if (row.NeedsRender)
-            tile.RenderFrame = frame;
+        if (tile.Page)
+            m_Mappings.Erase(*tile.Page);
+        tile.Page = row.Page;
+        tile.PlanStamp = stamp;
+        Invalidate(tile);
+        m_Mappings.InsertOrAssign(row.Page, row.Tile);
     }
-    RefreshDeformed(std::span(work).first(residentCount), frame);
-    return work;
 }
 
 void VirtualShadowPageCache::RefreshDeformed(std::span<VirtualShadowPageWork> rows, uint64_t frame)
