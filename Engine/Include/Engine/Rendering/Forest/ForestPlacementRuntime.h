@@ -68,9 +68,10 @@ public:
         uint32 slotCount, uint32 readsPerFrame, std::string& error);
 
     /// The cooked overview mesh stores one quad (six indices) per page.
+    /// Transition slots let demand start reads while previous detail draws still own their slots.
     static std::shared_ptr<ForestPlacementRuntime> OpenQuadStand(
         const std::filesystem::path& archive, std::string& error, uint32 slots = 0, uint32 readsPerFrame = 0,
-        bool retainPlacements = false);
+        bool retainPlacements = false, uint32 transitionSlots = 0);
 
     const PageStreaming::PackedPlacementStore& Store() const { return m_Store; }
     uint32 StandIndexEnd() const { return m_IndexOffsets.back(); }
@@ -78,8 +79,8 @@ public:
 
     /// Checks for a visible page within range before allocating the placement stream.
     bool CanRequestDetails(const ForestPlacementView& view) const;
-    /// Starts the atlas bake before the first detail read without admitting placements.
-    bool CanPrefetchAtlas(const ForestPlacementView& view) const;
+    /// Checks for visible pages in range of the atlas and placement read lookahead.
+    bool CanPrefetchDetails(const ForestPlacementView& view) const;
 
     /// Restart the stream after the owning graphics buffers have been replaced.
     void ResetResidency();
@@ -105,7 +106,8 @@ private:
     friend class ForestPlacementStream;
 
     ForestPlacementRuntime(PageStreaming::PackedPlacementStore store, std::span<const uint32> offsets,
-                           uint32 slots, uint32 readsPerFrame, bool retainPlacements = false);
+                           uint32 slots, uint32 readsPerFrame, bool retainPlacements = false,
+                           uint32 transitionSlots = 0);
 
     enum class Stage { Empty, Reading, Uploading, Ready };
     struct Slot
@@ -139,6 +141,7 @@ private:
                uint32 planeMask, double detailSquared, std::vector<CellRun>& visible);
     static void AppendVisible(uint32 first, uint32 count, std::vector<CellRun>& visible);
     void DelayRetry(uint32 page);
+    bool CanRequestWithin(const ForestPlacementView& view, double distance) const;
     bool HasVisibleDetailPage(uint32 index, const ForestPlacementView& view, const std::array<double, 3>& eye,
                               uint32 mask, double detailSquared) const;
     void GatherDemand(const ForestPlacementView& view);
@@ -164,6 +167,7 @@ private:
     std::vector<std::pair<double, uint32>> m_Candidates;
     std::vector<std::pair<uint32, uint32>> m_Ready;
     uint32 m_ReadsPerFrame;
+    uint32 m_DetailCapacity;
     bool m_RetainPlacements = false;
     std::vector<PageStreaming::PackedPlacement> m_PlacementMirror;
     uint64 m_Frame = 0;

@@ -15,6 +15,9 @@ namespace
 {
 constexpr uint32 kPlacementsPerSlot = PageStreaming::PackedPlacementStore::kPlacementsPerPage;
 constexpr uint64 kRetryDelayFrames = 30;
+constexpr float kDetailPrefetchDistanceScale = 1.4f;
+constexpr uint8 kDrawDetail = 1;
+constexpr uint8 kPrefetchDetail = 2;
 
 Mathematics::Vector3 Relative(const std::array<double, 3>& position, const std::array<double, 3>& eye)
 {
@@ -111,7 +114,8 @@ std::unique_ptr<ForestPlacementRuntime> ForestPlacementRuntime::Open(
 }
 
 std::shared_ptr<ForestPlacementRuntime> ForestPlacementRuntime::OpenQuadStand(
-    const std::filesystem::path& archive, std::string& error, uint32 slots, uint32 readsPerFrame, bool retainPlacements)
+    const std::filesystem::path& archive, std::string& error, uint32 slots, uint32 readsPerFrame,
+    bool retainPlacements, uint32 transitionSlots)
 {
     PageStreaming::PackedPlacementStore store;
     error = store.Open(archive);
@@ -121,21 +125,23 @@ std::shared_ptr<ForestPlacementRuntime> ForestPlacementRuntime::OpenQuadStand(
     std::vector<uint32> offsets(store.Pages().size() + 1);
     for (uint32 i = 1; i < offsets.size(); ++i)
         offsets[i] = i * kIndicesPerQuad;
-    slots = readsPerFrame == 0 ? 0 : std::min(slots, static_cast<uint32>(store.Pages().size()));
-    if (slots > std::numeric_limits<uint32>::max() / kPlacementsPerSlot)
+    const auto pages = static_cast<uint32>(store.Pages().size());
+    slots = readsPerFrame == 0 ? 0 : std::min(slots, pages);
+    transitionSlots = slots == 0 ? 0 : std::min(transitionSlots, pages - slots);
+    if (uint64{slots} + transitionSlots > std::numeric_limits<uint32>::max() / kPlacementsPerSlot)
     {
         error = "Forest detail slots exceed the indexed placement address range";
         return {};
     }
     return std::shared_ptr<ForestPlacementRuntime>(
-        new ForestPlacementRuntime(std::move(store), offsets, slots, readsPerFrame, retainPlacements));
+        new ForestPlacementRuntime(std::move(store), offsets, slots, readsPerFrame, retainPlacements, transitionSlots));
 }
 
 ForestPlacementRuntime::ForestPlacementRuntime(PageStreaming::PackedPlacementStore store,
-    std::span<const uint32> offsets, uint32 slots, uint32 readsPerFrame, bool retainPlacements)
-    : m_Store(std::move(store)), m_IndexOffsets(offsets.begin(), offsets.end()), m_Slots(slots),
+    std::span<const uint32> offsets, uint32 slots, uint32 readsPerFrame, bool retainPlacements, uint32 transitionSlots)
+    : m_Store(std::move(store)), m_IndexOffsets(offsets.begin(), offsets.end()), m_Slots(slots + transitionSlots),
       m_Wanted(slots != 0 ? m_Store.Pages().size() : 0), m_RetryAt(m_Wanted.size()),
-      m_ReadsPerFrame(std::min(slots, readsPerFrame)), m_RetainPlacements(retainPlacements)
+      m_ReadsPerFrame(std::min(slots, readsPerFrame)), m_DetailCapacity(slots), m_RetainPlacements(retainPlacements)
 {
     m_Leaves.reserve(m_Store.Pages().size());
     for (const auto& page : m_Store.Pages())
@@ -150,7 +156,7 @@ ForestPlacementRuntime::ForestPlacementRuntime(PageStreaming::PackedPlacementSto
     }
     BuildNodes(0, static_cast<uint32>(m_Leaves.size()));
     // ReleaseIfRetired already uses the completed draw fence. No additional frame-delay quarantine.
-    m_Residency.Initialize(slots, 0);
+    m_Residency.Initialize(static_cast<uint32>(m_Slots.size()), 0);
     m_Ready.reserve(slots);
     m_Priority.reserve(slots);
 }
@@ -171,19 +177,18 @@ void ForestPlacementRuntime::ResetResidency()
 
 bool ForestPlacementRuntime::CanRequestDetails(const ForestPlacementView& view) const
 {
-    if (m_Slots.empty() || !std::isfinite(view.DetailDistance) || view.DetailDistance <= 0)
-        return false;
-    const double distance = view.DetailDistance;
-    return HasVisibleDetailPage(0, view, {view.Eye.X, view.Eye.Y, view.Eye.Z}, 0x3fu, distance * distance);
+    return CanRequestWithin(view, view.DetailDistance);
 }
 
-bool ForestPlacementRuntime::CanPrefetchAtlas(const ForestPlacementView& view) const
+bool ForestPlacementRuntime::CanPrefetchDetails(const ForestPlacementView& view) const
 {
-    // Allow the default 64-tile atlas to start baking before the first page is needed.
-    constexpr float kAtlasPrefetchDistanceScale = 1.4f;
-    ForestPlacementView lookahead = view;
-    lookahead.DetailDistance *= kAtlasPrefetchDistanceScale;
-    return CanRequestDetails(lookahead);
+    return CanRequestWithin(view, static_cast<double>(view.DetailDistance) * kDetailPrefetchDistanceScale);
+}
+
+bool ForestPlacementRuntime::CanRequestWithin(const ForestPlacementView& view, double distance) const
+{
+    return !m_Slots.empty() && std::isfinite(distance) && distance > 0.0 &&
+           HasVisibleDetailPage(0, view, {view.Eye.X, view.Eye.Y, view.Eye.Z}, 0x3fu, distance * distance);
 }
 
 bool ForestPlacementRuntime::HasVisibleDetailPage(uint32 index, const ForestPlacementView& view,
@@ -319,14 +324,24 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
     m_Candidates.clear();
     const double detail = m_Slots.empty() || !std::isfinite(view.DetailDistance) ?
         0.0 : std::max(0.0f, view.DetailDistance);
-    Visit(0, view, {view.Eye.X, view.Eye.Y, view.Eye.Z}, 0x3fu, detail * detail, m_Visible);
+    const double distanceSquared = detail * detail;
+    const double prefetchDistance = detail * kDetailPrefetchDistanceScale;
+    Visit(0, view, {view.Eye.X, view.Eye.Y, view.Eye.Z}, 0x3fu,
+          prefetchDistance * prefetchDistance, m_Visible);
 
-    const size_t count = std::min(m_Candidates.size(), m_Slots.size());
+    const size_t count = std::min(m_Candidates.size(), static_cast<size_t>(m_DetailCapacity));
     std::partial_sort(m_Candidates.begin(), m_Candidates.begin() + count, m_Candidates.end());
+    // Distance order puts every draw request before speculative reads.
+    uint32 prefetchCount = 0;
     for (const auto& [distance, page] : std::span(m_Candidates).first(count))
     {
-        m_Wanted[page] = 1;
+        const bool prefetch = distance >= distanceSquared;
+        if (prefetch && prefetchCount == m_ReadsPerFrame)
+            break;
+        m_Wanted[page] = prefetch ? kPrefetchDetail : kDrawDetail;
         m_Priority.push_back(page);
+        if (prefetch)
+            ++prefetchCount;
     }
 }
 
@@ -398,7 +413,10 @@ void ForestPlacementRuntime::AppendReads(std::vector<ForestPageTicket>& reads)
         // A read reported corrupt bytes after this frame's priorities were built.
         if (m_Frame < m_RetryAt[page] || m_Residency.Find(page).IsResident())
             continue;
-        if (m_Residency.FreeCount() == 0)
+        const uint32 freeSlots = m_Residency.FreeCount();
+        if (m_Wanted[page] == kPrefetchDetail && freeSlots <= m_Slots.size() - m_DetailCapacity)
+            break; // Reserve slots for demand even when the previous view has readers in flight.
+        if (freeSlots == 0)
         {
             // Keep unused GPU pages warm until a visible page needs the slot.
             // Pending readers and wanted pages cannot be displaced.
@@ -533,7 +551,7 @@ void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
     for (uint32 i = 0; i < m_Slots.size(); ++i)
     {
         Slot& slot = m_Slots[i];
-        if (slot.Current == Stage::Ready && !slot.Retiring)
+        if (slot.Current == Stage::Ready && !slot.Retiring && m_Wanted[slot.Ticket.Page] == kDrawDetail)
         {
             slot.LastReader = frame;
             m_Ready.emplace_back(slot.Ticket.Page, i);

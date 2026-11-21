@@ -564,7 +564,7 @@ TEST_F(PackedPlacementStoreTest, AllowsStandOnlyAndRejectsInvalidIndexOffsets)
     EXPECT_FALSE(planner->CompleteUpload({0, 0, 0}, true));
 }
 
-TEST_F(PackedPlacementStoreTest, ColdDetailDemandRequiresAVisiblePageWithinRange)
+TEST_F(PackedPlacementStoreTest, ColdDetailDemandRequiresAVisiblePageWithinLookahead)
 {
     using namespace Engine::Renderer;
     const auto file = m_Scratch.Path() / "cold.geforest";
@@ -576,18 +576,18 @@ TEST_F(PackedPlacementStoreTest, ColdDetailDemandRequiresAVisiblePageWithinRange
     ForestPlacementView view{{512'000'032.0, 8.0, 512'000'001.0}, {}, 10.0f};
     // The root covers the middle of the gap. Neither page is within range.
     EXPECT_FALSE(runtime->CanRequestDetails(view));
-    EXPECT_FALSE(runtime->CanPrefetchAtlas(view));
-    view.DetailDistance = 11.0f;
-    EXPECT_TRUE(runtime->CanPrefetchAtlas(view));
-    EXPECT_FALSE(runtime->CanRequestDetails(view));
+    EXPECT_FALSE(runtime->CanPrefetchDetails(view));
     ForestPlacementFrame plan;
     ASSERT_TRUE(runtime->Prepare(view, 1, 0, plan));
     EXPECT_FALSE(plan.WantsDetails);
     EXPECT_TRUE(plan.Reads.empty());
     ASSERT_EQ(plan.StandDraws.size(), 1u);
     EXPECT_EQ(plan.StandDraws.front().IndexCount, 12u);
+    view.DetailDistance = 11.0f;
+    EXPECT_TRUE(runtime->CanPrefetchDetails(view));
+    EXPECT_FALSE(runtime->CanRequestDetails(view));
     view.EyeRelativePlanes[0] = {1, 0, 0, -15};
-    EXPECT_FALSE(runtime->CanPrefetchAtlas(view));
+    EXPECT_FALSE(runtime->CanPrefetchDetails(view));
     view.EyeRelativePlanes = {};
     view.DetailDistance = 25.0f;
     EXPECT_TRUE(runtime->CanRequestDetails(view));
@@ -598,6 +598,97 @@ TEST_F(PackedPlacementStoreTest, ColdDetailDemandRequiresAVisiblePageWithinRange
     view.EyeRelativePlanes[0] = {1, 0, 0, -100};
     view.DetailDistance = 100.0f;
     EXPECT_FALSE(runtime->CanRequestDetails(view));
+}
+
+TEST_F(PackedPlacementStoreTest, PrefetchKeepsTheStandUntilThePageEntersTheDetailRange)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "detail-lookahead.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::OpenQuadStand(file, error, 1, 1);
+    ASSERT_TRUE(runtime) << error;
+
+    ForestPlacementView view{{512'000'000.0 - 34.0, 8.0, 512'000'001.0}, {}, 25.0f};
+    ASSERT_FALSE(runtime->CanRequestDetails(view));
+    ASSERT_TRUE(runtime->CanPrefetchDetails(view));
+    auto wideView = view;
+    wideView.DetailDistance = std::numeric_limits<float>::max();
+    EXPECT_TRUE(runtime->CanPrefetchDetails(wideView));
+    ForestPlacementFrame frame;
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_EQ(frame.Reads.size(), 1u);
+    const auto ticket = frame.Reads.front();
+    ASSERT_EQ(ticket.Page, 0u);
+    EXPECT_TRUE(frame.DetailedDraws.empty());
+    ASSERT_EQ(frame.StandDraws.size(), 1u);
+    EXPECT_EQ(frame.StandDraws.front().IndexCount, 12u);
+    ASSERT_TRUE(runtime->CompleteRead(ticket, kFirstPage));
+    ASSERT_TRUE(runtime->CompleteUpload(ticket, true));
+
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    EXPECT_TRUE(frame.Reads.empty());
+    EXPECT_TRUE(frame.DetailedDraws.empty());
+    ASSERT_EQ(frame.StandDraws.size(), 1u);
+    EXPECT_EQ(frame.StandDraws.front().IndexCount, 12u);
+
+    view.Eye.X = 512'000'000.0;
+    ASSERT_TRUE(runtime->Prepare(view, 3, 2, frame));
+    EXPECT_TRUE(frame.Reads.empty());
+    ASSERT_EQ(frame.DetailedDraws.size(), 1u);
+    EXPECT_EQ(frame.DetailedDraws.front().Ticket, ticket);
+    ASSERT_EQ(frame.StandDraws.size(), 1u);
+    EXPECT_EQ(frame.StandDraws.front().FirstIndex, 6u);
+    EXPECT_EQ(frame.StandDraws.front().IndexCount, 6u);
+}
+
+TEST_F(PackedPlacementStoreTest, TransitionSlotStartsDemandWhilePreviousDetailDrawIsInFlight)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "transition.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::OpenQuadStand(file, error, 1, 1, false, 1);
+    ASSERT_TRUE(runtime) << error;
+    ASSERT_EQ(runtime->SlotCount(), 2u);
+
+    ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 25.0f};
+    ForestPlacementFrame frame;
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_EQ(frame.Reads.size(), 1u);
+    const auto first = frame.Reads.front();
+    ASSERT_EQ(first.Page, 0u);
+    ASSERT_TRUE(runtime->CompleteRead(first, kFirstPage));
+    ASSERT_TRUE(runtime->CompleteUpload(first, true));
+
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    ASSERT_EQ(frame.DetailedDraws.size(), 1u);
+    EXPECT_EQ(frame.DetailedDraws.front().Ticket, first);
+
+    view.Eye.X = 512'000'104.0;
+    ASSERT_TRUE(runtime->CanPrefetchDetails(view));
+    ASSERT_FALSE(runtime->CanRequestDetails(view));
+    ASSERT_TRUE(runtime->Prepare(view, 3, 1, frame));
+    EXPECT_TRUE(frame.Reads.empty()); // This request cannot occupy the transition slot.
+    EXPECT_TRUE(frame.DetailedDraws.empty());
+
+    view.Eye.X = 512'000'055.0;
+    ASSERT_TRUE(runtime->Prepare(view, 4, 1, frame));
+    ASSERT_EQ(frame.Reads.size(), 1u);
+    const auto second = frame.Reads.front();
+    EXPECT_EQ(second.Page, 1u);
+    EXPECT_NE(second.Slot, first.Slot);
+    EXPECT_TRUE(frame.DetailedDraws.empty());
+    ASSERT_EQ(frame.StandDraws.size(), 1u);
+    EXPECT_EQ(frame.StandDraws.front().IndexCount, 12u);
+    ASSERT_TRUE(runtime->CompleteRead(second, kSecondPage));
+    ASSERT_TRUE(runtime->CompleteUpload(second, true));
+
+    ASSERT_TRUE(runtime->Prepare(view, 5, 1, frame));
+    ASSERT_EQ(frame.DetailedDraws.size(), 1u);
+    EXPECT_EQ(frame.DetailedDraws.front().Ticket, second);
+    ASSERT_EQ(frame.StandDraws.size(), 1u);
+    EXPECT_EQ(frame.StandDraws.front().IndexCount, 6u);
 }
 
 TEST_F(PackedPlacementStoreTest, EmitsStandRangesAndMatchingDepthOnlyIntoEligibleViews)

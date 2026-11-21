@@ -415,10 +415,11 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     }
 
     view.DetailDistance = session.DetailDistance;
-    if (!session.Stream && !session.Placements->CanRequestDetails(view))
+    if (!session.Stream)
     {
-        session.WantsCard = session.Placements->CanPrefetchAtlas(view);
-        return false;
+        session.WantsCard = session.Placements->CanPrefetchDetails(view);
+        if (!session.WantsCard)
+            return false;
     }
     if (!session.EnsureGpu(*context.Device))
         return false;
