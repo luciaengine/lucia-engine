@@ -111,9 +111,10 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
                                                     std::string_view name, const ImpostorAtlas& atlas,
                                                     const Mathematics::Vector3& center, float radius,
                                                     uint32 framesPerSide, Mathematics::OctahedralLayout layout,
-                                                    const ImpostorFoliageSway& sway, bool packedPlacement)
+                                                    const ImpostorFoliageSway& sway, CardMaterialStyle style)
 {
-    if (!atlas.Color.IsValid() || !atlas.NormalDepth.IsValid() || !atlas.SeasonMask.IsValid())
+    const bool coverageOnly = style == CardMaterialStyle::ShadowCoverage;
+    if (!atlas.Color.IsValid() || (!coverageOnly && (!atlas.NormalDepth.IsValid() || !atlas.SeasonMask.IsValid())))
         return nullptr;
     Material* registered = services.Materials().Registry().Find(material);
     const StringId albedo = HashStringId("albedoMap");
@@ -121,15 +122,16 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
     const StringId seasonMask = HashStringId("impostorSeasonMaskMap");
     const StringId diffuseTransmission = HashStringId("impostorDiffuseTransmissionMap");
     if (!registered || registered->GetTexture(albedo) != atlas.Color ||
-        registered->GetTexture(diffuseTransmission) != atlas.DiffuseTransmission)
+        (!coverageOnly && registered->GetTexture(diffuseTransmission) != atlas.DiffuseTransmission))
     {
         MaterialDocument doc{};
         doc.schemaVersion = 3;
         doc.materialName = std::string(name);
         doc.lightingModel = "StandardPBR";
-        doc.surfaceShader = "Surfaces/impostor.glsl";
-        doc.vertexModifier = packedPlacement ? "VertexModifiers/forest_impostor.glsl" : "VertexModifiers/impostor_card.glsl";
-        doc.customVertexShader = packedPlacement;
+        doc.surfaceShader = coverageOnly ? "Surfaces/impostor_shadow.glsl" : "Surfaces/impostor.glsl";
+        doc.customVertexShader = style == CardMaterialStyle::PackedColor;
+        doc.vertexModifier = doc.customVertexShader ? "VertexModifiers/forest_impostor.glsl" :
+                                                    "VertexModifiers/impostor_card.glsl";
         doc.alphaMode = MaterialAlphaMode::Mask;
         doc.doubleSided = true;
         doc.properties["alphaCutoff"] = 0.5f;
@@ -141,13 +143,16 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
             Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f,
             static_cast<float>(atlas.HighestReadyMip)};
         doc.textures["albedoMap"] = std::string{};
-        doc.textures["normalMap"] = std::string{};
-        doc.textures["impostorSeasonMaskMap"] = std::string{};
         auto keywords = Rendering::MaterialKeyword::None;
-        if (atlas.DiffuseTransmission.IsValid())
+        if (!coverageOnly)
         {
-            doc.textures["impostorDiffuseTransmissionMap"] = std::string{};
-            keywords |= Rendering::MaterialKeyword::DiffuseTransmission;
+            doc.textures["normalMap"] = std::string{};
+            doc.textures["impostorSeasonMaskMap"] = std::string{};
+            if (atlas.DiffuseTransmission.IsValid())
+            {
+                doc.textures["impostorDiffuseTransmissionMap"] = std::string{};
+                keywords |= Rendering::MaterialKeyword::DiffuseTransmission;
+            }
         }
         // Source meshes or the forest stand remain drawable until the card pipeline publishes.
         registered = services.Materials().RegisterMaterialFromDocument(
@@ -157,15 +162,18 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
         // The atlas is a runtime texture: bound by handle, as a video frame is.
         registered->SetTexture(albedo, atlas.Color);
         registered->SetBindlessTextureIndex(albedo, services.Textures().GetBindlessIndex(atlas.Color));
-        registered->SetTexture(normal, atlas.NormalDepth);
-        registered->SetBindlessTextureIndex(normal, services.Textures().GetBindlessIndex(atlas.NormalDepth));
-        registered->SetTexture(seasonMask, atlas.SeasonMask);
-        registered->SetBindlessTextureIndex(seasonMask, services.Textures().GetBindlessIndex(atlas.SeasonMask));
-        if (atlas.DiffuseTransmission.IsValid())
+        if (!coverageOnly)
         {
-            registered->SetTexture(diffuseTransmission, atlas.DiffuseTransmission);
-            registered->SetBindlessTextureIndex(diffuseTransmission,
-                                                services.Textures().GetBindlessIndex(atlas.DiffuseTransmission));
+            registered->SetTexture(normal, atlas.NormalDepth);
+            registered->SetBindlessTextureIndex(normal, services.Textures().GetBindlessIndex(atlas.NormalDepth));
+            registered->SetTexture(seasonMask, atlas.SeasonMask);
+            registered->SetBindlessTextureIndex(seasonMask, services.Textures().GetBindlessIndex(atlas.SeasonMask));
+            if (atlas.DiffuseTransmission.IsValid())
+            {
+                registered->SetTexture(diffuseTransmission, atlas.DiffuseTransmission);
+                registered->SetBindlessTextureIndex(diffuseTransmission,
+                                                    services.Textures().GetBindlessIndex(atlas.DiffuseTransmission));
+            }
         }
     }
     return registered->GetGraphicsPipelineId().IsValid() ? registered : nullptr;

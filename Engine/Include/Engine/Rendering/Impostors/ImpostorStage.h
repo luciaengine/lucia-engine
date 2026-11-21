@@ -58,13 +58,16 @@ public:
     /// corresponding conventional shadow slices only when these heads are warm.
     bool AreShadowCardsReady(RenderServices& services, Rendering::ViewId viewId, bool directional) const;
 
+    enum class CardMaterialStyle { Model, PackedColor, ShadowCoverage };
+
     /// Registers (or points at a new atlas) the card material `material` of an atlas: the engine's
     /// Surfaces/impostor.glsl and VertexModifiers/impostor_card.glsl, fitted to the sphere
     /// (`center`, `radius`) in object space. Returns the material once its pipeline is built.
     static const Material* RegisterCardMaterial(RenderServices& services, const GUID& material, std::string_view name,
                                                 const ImpostorAtlas& atlas, const Mathematics::Vector3& center,
                                                 float radius, uint32 framesPerSide, Mathematics::OctahedralLayout layout,
-                                                const ImpostorFoliageSway& sway = {}, bool packedPlacement = false);
+                                                const ImpostorFoliageSway& sway = {},
+                                          CardMaterialStyle style = CardMaterialStyle::Model);
 
     /// The GPU-scene mesh indices of `parts`, in order; empty when a part is not resident yet.
     static std::vector<uint32> PartMeshIndices(const RenderServices& services,

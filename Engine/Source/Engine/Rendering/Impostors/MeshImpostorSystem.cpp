@@ -679,14 +679,25 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     {
         const GUID packedGuid = GUID::Derive(model, "forest-impostor-" + std::to_string(materialIdentity));
         if (ImpostorStage::RegisterCardMaterial(*m_RenderServices, packedGuid, "Forest Impostor", atlas,
-                impostor.Center, impostor.Radius, request.Key.FramesPerSide, kLayout, sway, true))
+                impostor.Center, impostor.Radius, request.Key.FramesPerSide, kLayout, sway,
+                ImpostorStage::CardMaterialStyle::PackedColor))
             forest->PublishCard(world, model, {packedGuid,
                 bounds, sway, impostor.SwitchCoverage},
                 request.Parts);
     }
     const bool useShadowCard = wantsForestAtlas && wantsForestShadowSources &&
                                ForestPlacementFeature::SunShadowCardsEnabled();
-    if (!impostor.WantsAtlas && !useShadowCard)
+    static const bool coverageOnly = Platform::EnvironmentSwitchEnabled("GE_PACKED_FOREST_SHADOW_FAST_ALPHA", false);
+    const bool useCoverageCard = useShadowCard && coverageOnly;
+    if (useCoverageCard)
+    {
+        const GUID shadowGuid = GUID::Derive(model, "forest-shadow-impostor-" + std::to_string(materialIdentity));
+        if (ImpostorStage::RegisterCardMaterial(*m_RenderServices, shadowGuid, "Forest Shadow Impostor", atlas,
+                impostor.Center, impostor.Radius, request.Key.FramesPerSide, kLayout, sway,
+                ImpostorStage::CardMaterialStyle::ShadowCoverage))
+            forest->PublishSunShadowCard(world, model, shadowGuid);
+    }
+    if (!impostor.WantsAtlas && (!useShadowCard || useCoverageCard))
     {
         UnlinkModel(impostor);
         return nullptr;
@@ -702,7 +713,7 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
         UnlinkModel(impostor);
         return nullptr;
     }
-    if (useShadowCard)
+    if (useShadowCard && !useCoverageCard)
         forest->PublishSunShadowCard(world, model, cardGuid);
     if (!impostor.WantsAtlas)
     {
