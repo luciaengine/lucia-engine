@@ -61,6 +61,19 @@ def main():
                         for b in group["bindings"]}
             return meta, bindings, wgsl
         errors = []
+        allocator = f"CBT/cbt_kernels_{cook.CBTKernelValue('Allocate')}.comp"
+        stages = {name: cook.kEditorStageShaders[name] for name in
+                  (allocator, "TerrainGrass/terrain_grass_plan.comp")}
+        failures = cook.CookStageShaders(cook.kRepoRoot / "Engine/Modules/Rendering/Shaders",
+                                        output, stages=stages)
+        for name, message in failures:
+            errors.append(f"{name}: {message}")
+        if not failures:
+            kernel = (output / f"{allocator}.wgsl").read_text()
+            storage = re.findall(r"@group\(0\)\s*@binding\((\d+)\)\s*var<storage\b", kernel)
+            # The allocator reads or writes the heap, allocation, bisector, and neighbor buffers.
+            if set(storage) != {"3", "4", "5", "6"}:
+                errors.append(f"CBT allocator: expected the four live storage bindings, got {storage}")
         for package in ("screen_space_shadow_prepare", "screen_space_shadow",
                         "screen_space_shadow_resolve", "screen_space_shadow_match"):
             if package not in cook.kPackages:
