@@ -43,6 +43,70 @@ struct FramePools
     explicit FramePools(IDevice* d) : Persistent(d), Transient(d), Ring(d, 2, 4096) {}
 };
 
+TEST(RGFrame, FailedPersistentBufferImportLeavesPoolEmpty)
+{
+    RG_REQUIRE_DEVICE(dev);
+    FramePools pools(dev.get());
+    RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+
+    BufferDesc desc{};
+    desc.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    desc.memoryUsage = BufferMemoryUsage::DeviceLocal;
+    bool needsZeroInit = true;
+    EXPECT_FALSE(frame.ImportPersistentBuffer("Forest.Visible", desc, &needsZeroInit).IsValid());
+    EXPECT_FALSE(needsZeroInit);
+    EXPECT_EQ(pools.Persistent.Size(), 0u);
+
+    desc.size = 256;
+    const RGBuffer recovered = frame.ImportPersistentBuffer("Forest.Visible", desc, &needsZeroInit);
+    ASSERT_TRUE(recovered.IsValid());
+    EXPECT_TRUE(frame.PhysicalBuffer(recovered).IsValid());
+    EXPECT_TRUE(needsZeroInit);
+    EXPECT_EQ(pools.Persistent.BytesInPool(), 256u);
+}
+
+TEST(RGFrame, FailedPersistentBufferReplacementPreservesExistingAllocation)
+{
+    RG_REQUIRE_DEVICE(dev);
+    FramePools pools(dev.get());
+    RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    BufferDesc desc{};
+    desc.size = 256;
+    desc.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    desc.memoryUsage = BufferMemoryUsage::DeviceLocal;
+
+    frame.BeginFrame(0);
+    const RGBuffer first = frame.ImportPersistentBuffer("Forest.Visible", desc);
+    ASSERT_TRUE(first.IsValid());
+    const BufferHandle original = frame.PhysicalBuffer(first);
+    ASSERT_TRUE(original.IsValid());
+    pools.Persistent.MarkBufferZeroFilled("Forest.Visible");
+    pools.Persistent.SetState("Forest.Visible", ResourceState::ShaderResource);
+
+    frame.BeginFrame(1);
+    BufferDesc invalid = desc;
+    invalid.size = 0;
+    bool needsZeroInit = true;
+    EXPECT_FALSE(frame.ImportPersistentBuffer("Forest.Visible", invalid, &needsZeroInit).IsValid());
+    EXPECT_FALSE(needsZeroInit);
+    EXPECT_EQ(pools.Persistent.DeferredCount(), 0u);
+    EXPECT_EQ(pools.Persistent.BytesInPool(), 256u);
+    EXPECT_EQ(pools.Persistent.GetState("Forest.Visible"), ResourceState::ShaderResource);
+    EXPECT_EQ(frame.PhysicalBuffer(frame.ImportPersistentBuffer("Forest.Visible", desc, &needsZeroInit)), original);
+    EXPECT_FALSE(needsZeroInit);
+
+    frame.BeginFrame(2);
+    desc.size = 512;
+    const RGBuffer grown = frame.ImportPersistentBuffer("Forest.Visible", desc, &needsZeroInit);
+    ASSERT_TRUE(grown.IsValid());
+    ASSERT_TRUE(frame.PhysicalBuffer(grown).IsValid());
+    EXPECT_NE(frame.PhysicalBuffer(grown), original);
+    EXPECT_TRUE(needsZeroInit);
+    EXPECT_EQ(pools.Persistent.DeferredCount(), 1u);
+    EXPECT_EQ(pools.Persistent.BytesInPool(), 512u);
+}
+
 TEST(RGFrame, ExecuteRunsLambdasInScheduledOrderWithRealizedResources)
 {
     RG_REQUIRE_DEVICE(dev);

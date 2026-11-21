@@ -59,6 +59,7 @@ class RGResourcePool
     // across declared-but-abandoned frames (swapchain-acquire failure, HDR
     // recheck): it is cleared only by MarkBufferZeroFilled, which RGFrame calls
     // after a frame that declared the fill actually executed.
+    // If allocation fails, return an invalid handle and keep the existing entry.
     BufferHandle GetOrCreateBuffer(const std::string& name, const BufferDesc& desc, uint64_t frameIndex,
                                    bool* outNeedsZeroInit = nullptr);
     void MarkBufferZeroFilled(const std::string& name)
