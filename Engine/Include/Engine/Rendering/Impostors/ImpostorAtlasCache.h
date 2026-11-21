@@ -52,8 +52,8 @@ public:
     /// Returns the state after the request: Absent when the atlas does not fit.
     State Request(const ImpostorAtlasKey& key, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted);
 
-    /// The bake of a Pending atlas finished.
-    void MarkReady(const ImpostorAtlasKey& key);
+    /// Marks a baked atlas ready and charges only its allocated mip levels.
+    void MarkReady(const ImpostorAtlasKey& key, uint32 allocatedMipCount);
 
     /// Drops every atlas, for a device rebuild that freed their textures.
     void Clear();
@@ -66,6 +66,7 @@ private:
     {
         State Status = State::Pending;
         uint64 LastUsedFrame = 0;
+        uint64 ReservedBytes = 0;
     };
 
     void EvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted);

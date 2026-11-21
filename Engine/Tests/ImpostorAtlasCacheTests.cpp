@@ -55,10 +55,37 @@ TEST(ImpostorAtlasCache, ARequestThatFitsIsPendingUntilItsBakeIsReady)
     std::vector<ImpostorAtlasKey> evicted;
     EXPECT_EQ(cache.GetState(KeyFor(1)), ImpostorAtlasCache::State::Absent);
     EXPECT_EQ(cache.Request(KeyFor(1), 1, evicted), ImpostorAtlasCache::State::Pending);
-    cache.MarkReady(KeyFor(1));
+    cache.MarkReady(KeyFor(1), 1u);
     EXPECT_EQ(cache.Request(KeyFor(1), 2, evicted), ImpostorAtlasCache::State::Ready);
     EXPECT_TRUE(evicted.empty());
     EXPECT_EQ(cache.GetUsedBytes(), ImpostorAtlasBytes(KeyFor(1)));
+}
+
+TEST(ImpostorAtlasCache, ABaseLevelFallbackReleasesTheUnusedMipBudget)
+{
+    auto filtered = KeyFor(1);
+    filtered.FilterMips = true;
+    const auto second = KeyFor(2);
+    const auto third = KeyFor(3);
+    const uint64 baseBytes = ImpostorAtlasBytes(second);
+    ImpostorAtlasCache cache(baseBytes * 2);
+    std::vector<ImpostorAtlasKey> evicted;
+
+    EXPECT_EQ(cache.Request(filtered, 1, evicted), ImpostorAtlasCache::State::Pending);
+    EXPECT_EQ(cache.GetUsedBytes(), ImpostorAtlasBytes(filtered));
+    EXPECT_EQ(cache.Request(second, 1, evicted), ImpostorAtlasCache::State::Absent);
+
+    cache.MarkReady(filtered, 1u);
+    EXPECT_EQ(cache.GetState(filtered), ImpostorAtlasCache::State::Ready);
+    EXPECT_EQ(cache.GetUsedBytes(), baseBytes);
+    EXPECT_EQ(cache.Request(second, 1, evicted), ImpostorAtlasCache::State::Pending);
+    EXPECT_TRUE(evicted.empty());
+
+    EXPECT_EQ(cache.Request(second, 2, evicted), ImpostorAtlasCache::State::Pending);
+    EXPECT_EQ(cache.Request(third, 2, evicted), ImpostorAtlasCache::State::Pending);
+    ASSERT_EQ(evicted.size(), 1u);
+    EXPECT_EQ(evicted.front(), filtered);
+    EXPECT_EQ(cache.GetUsedBytes(), baseBytes * 2);
 }
 
 TEST(ImpostorAtlasCache, PastTheBudgetTheLeastRecentlyUsedAtlasGoes)

@@ -103,7 +103,7 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
 
     // The frame that declared a finished bake has executed by now.
     for (const ImpostorAtlasKey& key : m_Finished)
-        m_Cache.MarkReady(key);
+        m_Cache.MarkReady(key, 1u);
     m_Finished.clear();
     for (const ImpostorAtlasKey& key : m_Evicted)
         FreeTextures(device, key);
@@ -238,7 +238,7 @@ void ImpostorBaker::OnFrameSubmittedRG(RenderGraph::RGFrame& frame, const Render
     textures->Atlas.HighestReadyMip = pending.Level;
     if (pending.Level + 1 == textures->MipCount)
     {
-        m_Cache.MarkReady(pending.Key);
+        m_Cache.MarkReady(pending.Key, textures->MipCount);
         m_Jobs.pop_front();
     }
 }
