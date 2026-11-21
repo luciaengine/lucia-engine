@@ -510,12 +510,7 @@ void RenderServices::WriteViewLightBuffer(ViewId viewId)
 
     const ForwardLightUBO ubo = BuildViewLightUBO(viewId, view->worldId);
 
-    void* mapped = m_Device->MapBuffer(buf);
-    if (mapped)
-    {
-        std::memcpy(mapped, &ubo, sizeof(ubo));
-        m_Device->UnmapBuffer(buf);
-    }
+    m_Device->UpdateBuffer(buf, 0, sizeof(ubo), &ubo);
 }
 
 } // namespace Engine::Renderer
