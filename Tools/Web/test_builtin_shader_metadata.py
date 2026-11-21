@@ -122,6 +122,13 @@ def main():
                 rf"@group\(0\)\s*@binding\({linear_sampler['binding']}\)\s*var\s+\w+\s*:\s*sampler\b", wgsl):
             errors.append("DDGI resolve: shared linear sampler is missing from reflection or WGSL")
         _, bindings, wgsl = read("ddgi_glossy_resolve_blur")
+        lobes = bindings.get("uLobesOut")
+        if not lobes or not lobes.get("image", {}).get("arrayed", False):
+            errors.append("DDGI blur: both reflection lobes must share a layered output")
+        elif not re.search(
+                rf"@group\(0\)\s*@binding\({lobes['binding']}\)\s*var\s+\w+\s*:\s*texture_storage_2d_array<rgba16float,\s*write>",
+                wgsl):
+            errors.append("DDGI blur: WGSL lacks the layered RGBA16F storage output")
         for name in ("uRoughIn", "uGlossyIn", "uIrradianceIn", "uHistoryIrr"):
             if not bindings[name].get("image", {}).get("filtered", False):
                 errors.append(f"DDGI blur: {name} lost linear filtering")

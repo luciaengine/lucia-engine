@@ -292,57 +292,55 @@ void TextureService::CreateBindlessResources()
     }
 }
 
-// A 1x1 RGBA8 cube, every face opaque black, in ShaderResource. Its default view is a cube
-// (CubeCompatible, six layers), the shape a textureCube slot declares.
-static Rendering::TextureHandle CreateBlackCube1x1(Rendering::IDevice* dev)
+static Rendering::TextureHandle CreateSolidTextureLayers1x1(
+    Rendering::IDevice* dev, const char* name, uint32_t layerCount, Rendering::TextureCreateFlags flags,
+    uint32_t pixel)
 {
-    constexpr uint32_t kFaceCount = 6;
     Rendering::TextureDesc td{};
     td.width = 1;
     td.height = 1;
     td.mipLevels = 1;
-    td.arrayLayers = kFaceCount;
+    td.arrayLayers = layerCount;
     td.format = static_cast<uint32_t>(Rendering::TextureFormat::RGBA8_UNORM);
     td.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource) |
                static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
-    td.flags = Rendering::TextureCreateFlags::CubeCompatible;
+    td.flags = flags;
     td.persistent = true;
-    td.debugName = "DefaultBlackCube1x1";
-    const Rendering::TextureHandle cube = dev->CreateTexture(td);
-    if (!cube.IsValid())
+    td.debugName = name;
+    const Rendering::TextureHandle texture = dev->CreateTexture(td);
+    if (!texture.IsValid())
     {
-        Logger::Log::Error("TextureService: the DefaultBlackCube1x1 slot default could not be created");
-        return cube;
+        Logger::Log::Error("TextureService: could not create {}", name);
+        return texture;
     }
 
-    // One staging row serves all six faces; its pitch is padded to the device's copy alignment
-    // (256 on WebGPU), and the padding is never read.
+    // One aligned staging row supplies every layer.
     const size_t rowPitch =
         std::max<size_t>(4u, dev->GetCapabilities().textureCopyRowPitchAlignment);
     std::vector<uint8_t> row(rowPitch, 0u);
-    row[3] = 0xFFu; // opaque black
-    const Rendering::BufferHandle staging = dev->CreateUploadBuffer(rowPitch, "DefaultBlackCubeStaging");
+    std::memcpy(row.data(), &pixel, sizeof(pixel));
+    const Rendering::BufferHandle staging = dev->CreateUploadBuffer(rowPitch, "DefaultTextureLayerStaging");
     auto cl = dev->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
     if (!staging.IsValid() || !cl)
     {
-        Logger::Log::Error("TextureService: the DefaultBlackCube1x1 slot default could not be seeded");
+        Logger::Log::Error("TextureService: could not seed {}", name);
         if (staging.IsValid())
             dev->DestroyBuffer(staging);
-        dev->DestroyTexture(cube);
+        dev->DestroyTexture(texture);
         return {};
     }
     dev->UpdateBuffer(staging, 0, rowPitch, row.data());
     cl->Begin();
     cl->Barrier(Rendering::ResourceBarrier::CreateTextureBarrier(
-        cube, Rendering::ResourceState::Undefined, Rendering::ResourceState::CopyDest, 0, 1, 0, kFaceCount));
-    for (uint32_t face = 0; face < kFaceCount; ++face)
-        cl->CopyBufferToTextureSubresource(staging, cube, 0, face, 1, 1, 0, rowPitch);
+        texture, Rendering::ResourceState::Undefined, Rendering::ResourceState::CopyDest, 0, 1, 0, layerCount));
+    for (uint32_t layer = 0; layer < layerCount; ++layer)
+        cl->CopyBufferToTextureSubresource(staging, texture, 0, layer, 1, 1, 0, rowPitch);
     cl->Barrier(Rendering::ResourceBarrier::CreateTextureBarrier(
-        cube, Rendering::ResourceState::CopyDest, Rendering::ResourceState::ShaderResource, 0, 1, 0, kFaceCount));
+        texture, Rendering::ResourceState::CopyDest, Rendering::ResourceState::ShaderResource, 0, 1, 0, layerCount));
     cl->End();
     dev->ExecuteCommandLists(std::vector<Rendering::CommandList*>{cl.get()});
     dev->DestroyBuffer(staging);
-    return cube;
+    return texture;
 }
 
 // Default fallback textures and identity LUTs.
@@ -375,7 +373,15 @@ void TextureService::CreateDefaultTexturesAndLuts(Rendering::IDevice* dev)
         // ForceArrayView: the one layer is sampled through a 2D-array view.
         m_DefaultWhiteArrayTexture =
             createDefaultTexture("DefaultWhite1x1Array", 1, 1, Rendering::TextureCreateFlags::ForceArrayView);
-        m_DefaultBlackCubeTexture = CreateBlackCube1x1(dev);
+        constexpr uint32_t kCubeFaces = 6;
+        constexpr uint32_t kTransparentArrayLayers = 2;
+        constexpr uint32_t kOpaqueBlack = 0xFF000000u;
+        constexpr uint32_t kTransparentBlack = 0u;
+        m_DefaultBlackCubeTexture = CreateSolidTextureLayers1x1(
+            dev, "DefaultBlackCube1x1", kCubeFaces, Rendering::TextureCreateFlags::CubeCompatible, kOpaqueBlack);
+        m_DefaultTransparentArrayTexture = CreateSolidTextureLayers1x1(
+            dev, "DefaultTransparent1x1Array", kTransparentArrayLayers,
+            Rendering::TextureCreateFlags::ForceArrayView, kTransparentBlack);
 
         // Batch-upload the default textures on the graphics queue: queue order makes them
         // visible to every later frame submit, which cannot wait on a transfer-queue token.
@@ -521,6 +527,7 @@ void TextureService::ReprovisionAfterDeviceRebuild()
         m_DefaultFlatNormalTexture = {};
         m_DefaultLensFlareTexture = {};
         m_DefaultWhiteArrayTexture = {};
+        m_DefaultTransparentArrayTexture = {};
         m_DefaultBlackCubeTexture = {};
         m_IdentityLut3D = {};
         m_IdentityLut1DStrip = {};
@@ -637,8 +644,11 @@ void TextureService::Shutdown()
             m_Device->DestroyTexture(m_DefaultLensFlareTexture);
         if (m_DefaultWhiteArrayTexture.IsValid())
             m_Device->DestroyTexture(m_DefaultWhiteArrayTexture);
-        if (m_DefaultBlackCubeTexture.IsValid())
-            m_Device->DestroyTexture(m_DefaultBlackCubeTexture);
+        for (const Rendering::TextureHandle texture : {m_DefaultTransparentArrayTexture, m_DefaultBlackCubeTexture})
+        {
+            if (texture.IsValid())
+                m_Device->DestroyTexture(texture);
+        }
         for (auto& entry : m_CubeLutGpuCache)
         {
             CubeLutGpuBindingState& lut = entry.second;
@@ -665,6 +675,7 @@ void TextureService::Shutdown()
         m_DefaultFlatNormalTexture = {};
         m_DefaultLensFlareTexture = {};
         m_DefaultWhiteArrayTexture = {};
+        m_DefaultTransparentArrayTexture = {};
         m_DefaultBlackCubeTexture = {};
         m_IdentityLut3D = {};
         m_IdentityLut1DStrip = {};

@@ -1,10 +1,5 @@
-// DDGIProbeFeature's per-view scaled glossy-reflection resolve
-// (Shaders/ddgi_glossy_resolve.comp): the probe reflection gather evaluated
-// once per resolve pixel instead of once per forward fragment, consumed by
-// Includes/ibl.glsl through ge_ddgiResolveRough/ge_ddgiResolveGlossy when the
-// C0 volume UBO's uParams2.w is set (GlossyResolveConsumeActive). Split out
-// of DDGIProbeFeature.cpp: this is the feature's only per-VIEW declaration —
-// everything there is view-independent field maintenance.
+// The per-view DDGI resolve gathers at reduced resolution. The forward pass
+// samples both reflection lobes from ge_ddgiResolveLobes.
 
 #include "Engine/Rendering/DDGIProbeFeature.h"
 
@@ -81,7 +76,7 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
     Rendering::BufferHandle viewParams, uint64_t viewParamsOffset, uint64_t viewParamsSize,
     Rendering::RenderGraph::RGTexture viewDepth, uint32_t renderWidth, uint32_t renderHeight,
     uint32_t viewId, float viewExposureScale, const char* passName,
-    Rendering::RenderGraph::RGTexture& outRough, Rendering::RenderGraph::RGTexture& outGlossy,
+    Rendering::RenderGraph::RGTexture& outLobes,
     Rendering::RenderGraph::RGTexture& outIrradiance, Rendering::RenderGraph::RGTexture& outGatherNormal,
     Rendering::RenderGraph::RGTexture& outShadingNormal)
 {
@@ -214,8 +209,6 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
         GlossyResolveNormalWrittenFrame(viewId) == frame.FrameIndex() - 1ull;
     RG::RGTexture rough = irradiance;
     RG::RGTexture glossy = irradiance;
-    RG::RGTexture roughBlur = irrHistoryWrite;
-    RG::RGTexture glossyBlur = irrHistoryWrite;
     if (separateLobeBindings)
     {
         if (!lobes)
@@ -229,15 +222,20 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
         const std::string glossyPool = "DDGIGlossyResolve.Glossy." + std::to_string(viewId);
         td.debugName = glossyPool.c_str();
         glossy = frame.ImportPersistentTexture(glossyPool.c_str(), td);
-        const std::string roughBlurPool = "DDGIGlossyResolve.RoughBlur." + std::to_string(viewId);
-        td.debugName = roughBlurPool.c_str();
-        roughBlur = frame.ImportPersistentTexture(roughBlurPool.c_str(), td);
-        const std::string glossyBlurPool = "DDGIGlossyResolve.GlossyBlur." + std::to_string(viewId);
-        td.debugName = glossyBlurPool.c_str();
-        glossyBlur = frame.ImportPersistentTexture(glossyBlurPool.c_str(), td);
-        if (!rough.IsValid() || !glossy.IsValid() || !roughBlur.IsValid() || !glossyBlur.IsValid())
+        if (!rough.IsValid() || !glossy.IsValid())
             return false;
     }
+
+    // The blur always binds the array as storage, even when the specular
+    // composite is off and the kernel skips the lobe writes.
+    td.width = lobes ? w : 1;
+    td.height = lobes ? h : 1;
+    td.arrayLayers = 2;
+    const std::string lobesBlurPool = "DDGIGlossyResolve.LobesBlur." + std::to_string(viewId);
+    td.debugName = lobesBlurPool.c_str();
+    const RG::RGTexture lobesBlur = frame.ImportPersistentTexture(lobesBlurPool.c_str(), td);
+    if (!lobesBlur.IsValid())
+        return false;
 
     // Everything the gather include (Includes/ddgi_probes.glsl) binds,
     // resolved with the SAME fallback contract RenderServicesWorldPass uses
@@ -409,18 +407,14 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
             // so it needs the same 1-sample depth the resolve reconstructed from.
             p.Read(viewDepth, RG::RGTextureRead::Sampled);
             p.Read(irradiance, RG::RGTextureRead::Sampled);
-            if (separateLobeBindings)
-            {
-                // Lobes take the spatial blur only (reflections would ghost).
-                p.Write(roughBlur, RG::RGTextureWrite::Storage);
-                p.Write(glossyBlur, RG::RGTextureWrite::Storage);
-            }
+            // Lobes take the spatial blur only (reflections would ghost).
+            p.Write(lobesBlur, RG::RGTextureWrite::Storage);
             // Reproject last frame's irradiance (read) into this frame's buffer
             // (write); the two are distinct so the read is race-free.
             p.Read(irrHistoryRead, RG::RGTextureRead::Sampled);
             p.Write(irrHistoryWrite, RG::RGTextureWrite::Storage);
         },
-        [rough, glossy, irradiance, roughBlur, glossyBlur, irrHistoryRead, irrHistoryWrite,
+        [rough, glossy, irradiance, lobesBlur, irrHistoryRead, irrHistoryWrite,
          viewParams, viewParamsOffset, viewParamsSize, viewDepth, depthSampler,
          blurPipelineId, blurSet0Layout, blurMeta, blurSampler, lobes, irrHistoryAbsent, w,
          h](RG::RGContext& ctx)
@@ -431,14 +425,13 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
                 return;
             const auto roughIn = ctx.GetTexture(rough);
             const auto glossyIn = ctx.GetTexture(glossy);
-            const auto roughOut = ctx.GetTexture(roughBlur);
-            const auto glossyOut = ctx.GetTexture(glossyBlur);
+            const auto lobesOut = ctx.GetTexture(lobesBlur);
             const auto depthTex = ctx.GetTexture(viewDepth);
             const auto irradianceIn = ctx.GetTexture(irradiance);
             const auto historyIn = ctx.GetTexture(irrHistoryRead);
             const auto irradianceOut = ctx.GetTexture(irrHistoryWrite);
-            if (!roughIn.IsValid() || !glossyIn.IsValid() || !roughOut.IsValid() ||
-                !glossyOut.IsValid() || !depthTex.IsValid() || !irradianceIn.IsValid() ||
+            if (!roughIn.IsValid() || !glossyIn.IsValid() || !lobesOut.IsValid() ||
+                !depthTex.IsValid() || !irradianceIn.IsValid() ||
                 !historyIn.IsValid() || !irradianceOut.IsValid())
                 return;
 
@@ -455,10 +448,7 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
             wd.AddCombinedImageSampler("uHistoryIrr", historyIn, blurSampler);
             wd.AddUniformBuffer("ViewParams", viewParams, viewParamsOffset, viewParamsSize);
             wd.Flush();
-            Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *blurMeta, "uRoughOut",
-                                                            roughOut);
-            Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *blurMeta, "uGlossyOut",
-                                                            glossyOut);
+            Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *blurMeta, "uLobesOut", lobesOut);
             Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *blurMeta, "uIrradianceOut",
                                                             irradianceOut);
 
@@ -477,8 +467,7 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
     // write is the buffer's full contents and discharges its fresh arm.
     frame.MarkPersistentTextureInitialized(irrHistoryWrite);
 
-    outRough = roughBlur;
-    outGlossy = glossyBlur;
+    outLobes = lobesBlur;
     outIrradiance = irrHistoryWrite;
     outGatherNormal = gatherNormal;
     outShadingNormal = normalWrite;

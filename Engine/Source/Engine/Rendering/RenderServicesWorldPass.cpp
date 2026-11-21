@@ -1362,38 +1362,25 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 glossyAtlasFineSampler = reflectionFallbackSampler;
             addTexture(HashStringId("ge_ddgiGlossyAtlasFineTex"), glossyAtlasFine, glossyAtlasFineSampler);
 
-            // Scaled glossy-resolve outputs (b41/b42, Includes/ibl.glsl).
-            // Same fallback contract as the atlases above: the DDGI keyword's
-            // layout always declares both, so a pass without resolve targets
-            // for this view (or GlossyResolveScale == Full, where the pass is
-            // never declared) still sees bound black textures — and the C0
-            // UBO's uParams2.w flag, not the binding, decides whether the
-            // shader reads them.
-            TextureHandle resolveRough = m_Textures->GetDefaultBlackTexture();
-            TextureHandle resolveGlossy = m_Textures->GetDefaultBlackTexture();
+            // A view without a resolve contributes zero coverage in both reflection lobes.
+            TextureHandle resolveLobes = m_Textures->GetDefaultTransparentArrayTexture();
             TextureHandle resolveIrradiance = m_Textures->GetDefaultBlackTexture();
             TextureHandle resolveGatherNormal = m_Textures->GetDefaultBlackTexture();
-            if (targets && targets->DDGIResolveRough.IsValid() &&
-                targets->DDGIResolveGlossy.IsValid() &&
+            if (targets && targets->DDGIResolveLobes.IsValid() &&
                 targets->DDGIResolveIrradiance.IsValid() && targets->DDGIResolveGatherNormal.IsValid())
             {
-                const TextureHandle roughPhys = frame.PhysicalTexture(targets->DDGIResolveRough);
-                const TextureHandle glossyPhys = frame.PhysicalTexture(targets->DDGIResolveGlossy);
-                const TextureHandle irrPhys =
-                    frame.PhysicalTexture(targets->DDGIResolveIrradiance);
+                const TextureHandle lobesPhys = frame.PhysicalTexture(targets->DDGIResolveLobes);
+                const TextureHandle irrPhys = frame.PhysicalTexture(targets->DDGIResolveIrradiance);
                 const TextureHandle gatherNormalPhys = frame.PhysicalTexture(targets->DDGIResolveGatherNormal);
-                if (roughPhys.IsValid() && glossyPhys.IsValid() && irrPhys.IsValid() && gatherNormalPhys.IsValid())
+                if (lobesPhys.IsValid() && irrPhys.IsValid() && gatherNormalPhys.IsValid())
                 {
-                    resolveRough = roughPhys;
-                    resolveGlossy = glossyPhys;
+                    resolveLobes = lobesPhys;
                     resolveIrradiance = irrPhys;
                     resolveGatherNormal = gatherNormalPhys;
                 }
             }
-            addTexture(HashStringId("ge_ddgiResolveRoughTex"), resolveRough, reflectionFallbackSampler);
-            addTexture(HashStringId("ge_ddgiResolveGlossyTex"), resolveGlossy, reflectionFallbackSampler);
+            addTexture(HashStringId("ge_ddgiResolveLobesTex"), resolveLobes, reflectionFallbackSampler);
             addTexture(HashStringId("ge_ddgiResolveIrradianceTex"), resolveIrradiance, reflectionFallbackSampler);
-            // b67, the upsample's normal guide; the compat profile does not declare it.
             addTexture(HashStringId("ge_ddgiResolveGatherNormalTex"), resolveGatherNormal, reflectionFallbackSampler);
         }
     }
@@ -2440,16 +2427,12 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             // ge_gtao binding in BuildPassResourcesRG.
             if (targets.GTAO.IsValid() && HasKeyword(passKeywords, MaterialKeyword::GTAO))
                 p.Read(targets.GTAO, RenderGraph::RGTextureRead::Sampled);
-            // ge_ddgiResolveRough/Glossy sample the DDGI glossy-resolve
-            // compute outputs: same compute->fragment RAW edge + layout
-            // transition the ge_gtao read above provides, gated exactly like
-            // their bindings in BuildPassResourcesRG.
-            if (targets.DDGIResolveRough.IsValid() && targets.DDGIResolveGlossy.IsValid() &&
+            // The DDGI fragment samples use the textures written by the resolve compute passes.
+            if (targets.DDGIResolveLobes.IsValid() &&
                 targets.DDGIResolveIrradiance.IsValid() && targets.DDGIResolveGatherNormal.IsValid() &&
                 HasKeyword(passKeywords, MaterialKeyword::DDGI))
             {
-                p.Read(targets.DDGIResolveRough, RenderGraph::RGTextureRead::Sampled);
-                p.Read(targets.DDGIResolveGlossy, RenderGraph::RGTextureRead::Sampled);
+                p.Read(targets.DDGIResolveLobes, RenderGraph::RGTextureRead::Sampled);
                 p.Read(targets.DDGIResolveIrradiance, RenderGraph::RGTextureRead::Sampled);
                 p.Read(targets.DDGIResolveGatherNormal, RenderGraph::RGTextureRead::Sampled);
             }
@@ -2872,16 +2855,12 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
             // exactly like the ge_gtao binding in BuildPassResourcesRG.
             if (targets.GTAO.IsValid() && HasKeyword(passKeywords, MaterialKeyword::GTAO))
                 p.Read(targets.GTAO, RenderGraph::RGTextureRead::Sampled);
-            // ge_ddgiResolveRough/Glossy sample the DDGI glossy-resolve
-            // compute outputs: same compute->fragment RAW edge + layout
-            // transition the ge_gtao read above provides, gated exactly like
-            // their bindings in BuildPassResourcesRG.
-            if (targets.DDGIResolveRough.IsValid() && targets.DDGIResolveGlossy.IsValid() &&
+            // The DDGI fragment samples use the textures written by the resolve compute passes.
+            if (targets.DDGIResolveLobes.IsValid() &&
                 targets.DDGIResolveIrradiance.IsValid() && targets.DDGIResolveGatherNormal.IsValid() &&
                 HasKeyword(passKeywords, MaterialKeyword::DDGI))
             {
-                p.Read(targets.DDGIResolveRough, RenderGraph::RGTextureRead::Sampled);
-                p.Read(targets.DDGIResolveGlossy, RenderGraph::RGTextureRead::Sampled);
+                p.Read(targets.DDGIResolveLobes, RenderGraph::RGTextureRead::Sampled);
                 p.Read(targets.DDGIResolveIrradiance, RenderGraph::RGTextureRead::Sampled);
                 p.Read(targets.DDGIResolveGatherNormal, RenderGraph::RGTextureRead::Sampled);
             }
