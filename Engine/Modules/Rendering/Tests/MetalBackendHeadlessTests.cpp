@@ -2147,8 +2147,9 @@ void main()
         pipelineDesc.descriptorSetLayouts = {layout};
     if (withInputs)
     {
+        constexpr uint32_t kShaderStageTask = 0x00000040u; // VK_SHADER_STAGE_TASK_BIT_EXT
         pipelineDesc.pushConstantSize = sizeof(positionAddress);
-        pipelineDesc.pushConstantStagesMask = kShaderStageMesh;
+        pipelineDesc.pushConstantStagesMask = withObject ? kShaderStageTask : kShaderStageMesh;
     }
     pipelineDesc.debugName = "MetalMeshTriangle";
     PipelineHandle pipeline = device->CreatePipeline(pipelineDesc);
