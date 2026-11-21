@@ -59,6 +59,7 @@ struct ForestPlacementSession
     bool WantsCard = false;
     bool WantsShadowSources = false;
     std::optional<Mathematics::Vector4> ShadowBounds;
+    GUID ShadowCard;
     std::string Scope;
     IDevice* Device = nullptr;
     RGFrame* Graph = nullptr;
@@ -103,6 +104,7 @@ struct ForestPlacementSession
         WantsShadowSources = false;
         Card.reset();
         ShadowBounds.reset();
+        ShadowCard = {};
         NearDemand.clear();
         NearOwners.clear();
         PendingNearOwners.clear();
@@ -166,6 +168,19 @@ std::shared_ptr<ForestPlacementSession> ForestPlacementFeature::Attach(
     return session;
 }
 
+bool ForestPlacementFeature::SunShadowCardsEnabled()
+{
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_PACKED_FOREST_SHADOW_CARDS", false);
+    return enabled;
+}
+
+void ForestPlacementFeature::PublishSunShadowCard(uint64 world, const GUID& model, const GUID& material)
+{
+    for (const auto& entry : m_Sessions)
+        if (const auto session = entry.lock(); session && session->World == world && session->Model == model)
+            session->ShadowCard = material;
+}
+
 bool ForestPlacementFeature::HasSunShadowSource(const RenderServices& services, const ViewDesc& view) const
 {
     static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_PACKED_FOREST_SHADOWS", false);
@@ -224,6 +239,7 @@ void ForestPlacementFeature::ClearCards(uint64 world)
         {
             session->Card.reset();
             session->ShadowBounds.reset();
+            session->ShadowCard = {};
         }
     }
 }
@@ -472,9 +488,19 @@ const ForestSunShadows* ForestPlacementFeature::PrepareSunShadows(RGFrame& frame
     const auto lightOrigin = SectorToWorld(lightSector);
     const auto positionRelativeToLight = cameraEye - Mathematics::WorldPosition{lightOrigin.x, lightOrigin.y, lightOrigin.z};
     const uint32 cascades = std::min<uint32>(fit.NumCascades, 4u);
-    const uint32 meshBudget = services.GetProfile().IsCompat() ? 96u : 256u;
+    const bool compat = services.GetProfile().IsCompat();
+    const uint32 meshBudget = compat ? 96u : 256u;
+    const uint32 mixedMeshBudget = compat ? 32u : 64u;
+    const uint32 mixedCasterBudget = compat ? 4096u : 8192u;
+    const auto* stage = SunShadowCardsEnabled() ? services.GetFeature<ImpostorStage>() : nullptr;
+    const auto* shadows = services.GetFeature<ShadowMapRenderFeature>();
+    const float shadowResolution = shadows ? static_cast<float>(shadows->GetConfig().Resolution) : 1.0f;
     const auto& registry = services.GetMeshGPURegistry();
     const MeshGPURegistry::TableScope lock(registry);
+    const auto cardMeshHandle = stage ? stage->CardMesh() : MeshGPUHandle{};
+    const auto* cardMesh = cardMeshHandle.IsValid() ? registry.Find(cardMeshHandle) : nullptr;
+    MeshGPUEntryBindings cardBindings{};
+    const bool cardGeometryReady = cardMesh && registry.TryGetDrawableBindings(*cardMesh, cardBindings);
     const auto& meshes = gpuScene->GetMeshes();
     const auto scales = services.ComputeViewSseScales(viewId);
     const auto margins = services.Materials().MaterialDeformationMarginSpan();
@@ -531,6 +557,17 @@ const ForestSunShadows* ForestPlacementFeature::PrepareSunShadows(RGFrame& frame
         }
         if (parts.size() != session->SourceParts.size())
             continue;
+
+        const auto* cardMaterial = cardGeometryReady && !session->ShadowCard.IsNull()
+            ? services.Materials().Registry().Find(session->ShadowCard) : nullptr;
+        if (cardMaterial)
+        {
+            const auto flags = BoundStreamVertexFlags(*cardMesh, cardBindings, cardMaterial->IgnoresVertexColor());
+            const auto keywords = kForestMeshKeywords | MaterialKeyword::DepthOnlyFragment;
+            if (!services.Materials().Variants().WarmShadowDepthVariant(*cardMaterial, flags,
+                    cardMesh->topology, keywords, services.GetFrontFace(), /*depthClampEnable=*/true))
+                cardMaterial = nullptr;
+        }
         for (uint32 index = 0; index < cascades; ++index)
         {
             auto light = lightViews[index];
@@ -544,13 +581,33 @@ const ForestSunShadows* ForestPlacementFeature::PrepareSunShadows(RGFrame& frame
                 if ((shadow.CascadeMask & (1u << index)) != 0)
                     ready.DetailedDraws.push_back(shadow.Draw);
             std::vector<ForestNearMeshCandidate> trees;
-            CollectForestNearMeshCandidates(*session->Placements, ready, {light,1.0f,0.0f,0.0f,margin},
-                *session->ShadowBounds, meshBudget, trees);
+            const size_t casterBudget = cardMaterial ? mixedCasterBudget : meshBudget;
+            CollectForestNearMeshCandidates(*session->Placements, ready, {light, 1.0f, 0.0f, 0.0f, margin},
+                *session->ShadowBounds, casterBudget, trees);
+
+            // Use a source mesh for a large shadow footprint while its budget
+            // lasts. The remaining eligible placements use one light-facing
+            // card each, with disjoint subranges in the same transform upload.
             std::vector<ForestMeshTransform> transforms;
+            std::vector<ForestMeshTransform> cardTransforms;
             transforms.reserve(trees.size());
+            const float halfExtent = std::max(fit.OrthoHalfExtent[index], 0.001f);
+            const float shadowPixelsPerRadius = shadowResolution / halfExtent;
+            const float cardThreshold = static_cast<float>(services.GetProfile().ImpostorFramePixels);
             for (const auto& tree : trees)
-                if (const auto packed = PackForestMeshTransform(tree))
+            {
+                const auto packed = PackForestMeshTransform(tree);
+                if (!packed)
+                    continue;
+                const float footprint = tree.Scale * session->ShadowBounds->w * shadowPixelsPerRadius;
+                if (cardMaterial && (footprint <= cardThreshold || transforms.size() == mixedMeshBudget))
+                    cardTransforms.push_back(*packed);
+                else
                     transforms.push_back(*packed);
+            }
+            const auto meshCount = static_cast<uint32>(transforms.size());
+            const auto cardCount = static_cast<uint32>(cardTransforms.size());
+            transforms.insert(transforms.end(), cardTransforms.begin(), cardTransforms.end());
             if (transforms.empty())
                 continue;
             const size_t bytes = transforms.size() * sizeof(ForestMeshTransform);
@@ -565,26 +622,37 @@ const ForestSunShadows* ForestPlacementFeature::PrepareSunShadows(RGFrame& frame
                 HashStringId("ForestMeshTransforms"), upload.Buffer, upload.Offset, bytes);
             auto& cascade = result->Cascades[index];
             cascade.Transforms.push_back(storage);
-            for (const auto& part : parts)
+            const auto append = [&](const MeshGPUEntry& mesh, MeshGPUHandle handle, const Material& material,
+                                    uint32 lod, uint32 firstTransform, uint32 instanceCount)
             {
-                const float coverage = 1.25f * session->ShadowBounds->w / std::max(fit.OrthoHalfExtent[index], 0.001f);
-                const auto lod = SelectForestMeshLod(*part.Lod, coverage, scales.Default, scales.Tight, 0xFFFFFFFFu);
-                const auto range = part.Mesh->DrawForLod(lod);
-                if (range.IndexCount == 0 || range.VertexOffset > static_cast<uint32>(std::numeric_limits<int32>::max()))
-                    continue;
+                const auto range = mesh.DrawForLod(lod);
+                if (instanceCount == 0 || range.IndexCount == 0 ||
+                    range.VertexOffset > static_cast<uint32>(std::numeric_limits<int32>::max()))
+                    return;
                 const auto* constants = frame.AllocatePassData<ForestMeshDrawConstants>(
-                    0u, part.Surface->GetGpuSceneMaterialIndex());
+                    firstTransform, material.GetGpuSceneMaterialIndex());
                 DrawCommand command{};
-                command.Material = part.Surface;
-                command.Geometry.Mesh = part.Handle;
+                command.Material = &material;
+                command.Geometry.Mesh = handle;
                 command.IndexCount = range.IndexCount;
                 command.FirstIndex = range.FirstIndex;
                 command.VertexOffset = static_cast<int32>(range.VertexOffset);
-                command.InstanceCount = static_cast<uint32>(transforms.size());
+                command.InstanceCount = instanceCount;
                 command.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
                 command.Bindings.Buffers = std::span(binding, 1u);
                 cascade.Meshes.push_back(command);
+            };
+            if (meshCount != 0)
+            {
+                const float coverage = 1.25f * session->ShadowBounds->w / halfExtent;
+                for (const auto& part : parts)
+                {
+                    const auto lod = SelectForestMeshLod(*part.Lod, coverage, scales.Default, scales.Tight, 0xFFFFFFFFu);
+                    append(*part.Mesh, part.Handle, *part.Surface, lod, 0u, meshCount);
+                }
             }
+            if (cardCount != 0)
+                append(*cardMesh, cardMeshHandle, *cardMaterial, 0u, meshCount, cardCount);
         }
     }
     return result;

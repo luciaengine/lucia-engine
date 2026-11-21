@@ -47,6 +47,7 @@ public:
     /// Registers the card quad, a [0,1] UV square that impostor_card.glsl places, and publishes its
     /// GPU-scene index to the slices. Call each frame before linking; a dedup hit costs a lookup.
     void EnsureCardMesh(RenderServices& services);
+    Rendering::MeshGPUHandle CardMesh() const { return m_CardMesh; }
 
     /// Sets the impostor fields of a slice's LOD parameters. GE_IMPOSTORS=0 leaves every linked
     /// mesh on its mesh, as a reference for comparisons.

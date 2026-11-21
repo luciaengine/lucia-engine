@@ -52,6 +52,8 @@ public:
         AssetManager& assets, uint64 world, const GUID& model, float detailDistance, uint32 nearBudget = 0);
 
     bool HasSunShadowSource(const RenderServices& services, const Rendering::ViewDesc& view) const;
+    static bool SunShadowCardsEnabled();
+    void PublishSunShadowCard(uint64 world, const GUID& model, const GUID& material);
     bool WantsAtlas(uint64 world, const GUID& model) const;
     bool ConsumeShadowSourceDemand(uint64 world, const GUID& model);
     void PublishShadowSources(uint64 world, const GUID& model, const Mathematics::Vector4& bounds,

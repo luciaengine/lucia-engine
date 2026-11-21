@@ -684,7 +684,9 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
                 bounds, sway, impostor.SwitchCoverage},
                 request.Parts);
     }
-    if (!impostor.WantsAtlas)
+    const bool useShadowCard = wantsForestAtlas && wantsForestShadowSources &&
+                               ForestPlacementFeature::SunShadowCardsEnabled();
+    if (!impostor.WantsAtlas && !useShadowCard)
     {
         UnlinkModel(impostor);
         return nullptr;
@@ -697,6 +699,13 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     if (!card)
     {
         // Keep drawing the source while the atlas or base pipeline is unavailable.
+        UnlinkModel(impostor);
+        return nullptr;
+    }
+    if (useShadowCard)
+        forest->PublishSunShadowCard(world, model, cardGuid);
+    if (!impostor.WantsAtlas)
+    {
         UnlinkModel(impostor);
         return nullptr;
     }
