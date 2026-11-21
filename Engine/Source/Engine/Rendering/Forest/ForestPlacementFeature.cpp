@@ -316,7 +316,6 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
 
     auto& frame = *context.Frame;
     auto* draw = frame.AllocatePassData<ForestNearDraw>();
-    std::vector<ForestMeshTransform> transforms;
     std::vector<ForestMeshTransform> treeTransforms;
     std::vector<float> coverages;
     treeTransforms.reserve(session.NearDemand.size());
@@ -334,27 +333,42 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
     if (draw->Owners.empty())
         return nullptr;
 
-    transforms.reserve(treeTransforms.size() * parts.size());
+    const auto bytes = treeTransforms.size() * parts.size() * sizeof(ForestMeshTransform);
+    const auto upload = frame.AllocUpload(bytes);
+    if (!upload.Valid())
+        return nullptr;
+    draw->Upload = frame.ImportExternalBuffer("Forest.NearMeshTransforms", upload.Buffer);
+    if (!draw->Upload.IsValid())
+        return nullptr;
+    draw->Buffer = {HashStringId("ForestMeshTransforms"), upload.Buffer, upload.Offset, bytes};
+
+    auto* transforms = static_cast<std::byte*>(upload.Ptr);
+    std::vector<uint32> treeLods(treeTransforms.size());
+    uint32 firstTransform = 0;
     static const auto producer = DrawProducerRegistry::Register("ForestNearMeshes");
     for (const auto& part : parts)
     {
-        std::array<std::vector<size_t>, kMaxMeshLODs> byLod;
+        std::array<uint32, kMaxMeshLODs> lodCounts{};
         for (size_t tree = 0; tree < treeTransforms.size(); ++tree)
         {
             const uint32 lod = SelectForestMeshLod(*part.Lod, coverages[tree], scales.Default, scales.Tight, force);
-            byLod[lod].push_back(tree);
+            treeLods[tree] = lod;
+            ++lodCounts[lod];
         }
-        for (uint32 lod = 0; lod < byLod.size(); ++lod)
+
+        std::array<uint32, kMaxMeshLODs> writeOffsets{};
+        for (uint32 lod = 0; lod < lodCounts.size(); ++lod)
         {
-            if (byLod[lod].empty())
+            const uint32 count = lodCounts[lod];
+            if (count == 0)
                 continue;
             const auto range = part.Mesh->DrawForLod(lod);
             if (range.IndexCount == 0 || range.VertexOffset > static_cast<uint32>(std::numeric_limits<int32>::max()))
                 return nullptr;
             auto* constants = frame.AllocatePassData<ForestMeshDrawConstants>();
-            *constants = {static_cast<uint32>(transforms.size()), part.Surface->GetGpuSceneMaterialIndex()};
-            for (size_t tree : byLod[lod])
-                transforms.push_back(treeTransforms[tree]);
+            *constants = {firstTransform, part.Surface->GetGpuSceneMaterialIndex()};
+            writeOffsets[lod] = firstTransform;
+            firstTransform += count;
 
             DrawCommand command{};
             command.Material = part.Surface;
@@ -363,22 +377,20 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
             command.IndexCount = range.IndexCount;
             command.FirstIndex = range.FirstIndex;
             command.VertexOffset = static_cast<int32>(range.VertexOffset);
-            command.InstanceCount = static_cast<uint32>(byLod[lod].size());
+            command.InstanceCount = count;
             command.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
             command.Bindings.Buffers = std::span(&draw->Buffer, 1u);
             command.Producer = producer;
             draw->Commands.push_back(command);
         }
+        // Write each LOD range directly to the upload ring in candidate order.
+        for (size_t tree = 0; tree < treeTransforms.size(); ++tree)
+        {
+            const uint32 offset = writeOffsets[treeLods[tree]]++;
+            std::memcpy(transforms + size_t{offset} * sizeof(ForestMeshTransform),
+                        &treeTransforms[tree], sizeof(ForestMeshTransform));
+        }
     }
-    const auto bytes = std::as_bytes(std::span(transforms));
-    const auto upload = frame.AllocUpload(bytes.size());
-    if (!upload.Valid())
-        return nullptr;
-    std::memcpy(upload.Ptr, bytes.data(), bytes.size());
-    draw->Upload = frame.ImportExternalBuffer("Forest.NearMeshTransforms", upload.Buffer);
-    if (!draw->Upload.IsValid())
-        return nullptr;
-    draw->Buffer = {HashStringId("ForestMeshTransforms"), upload.Buffer, upload.Offset, bytes.size()};
     return draw;
 }
 
