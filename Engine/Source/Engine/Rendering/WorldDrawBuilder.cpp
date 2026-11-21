@@ -397,7 +397,7 @@ void WorldDrawBuilder::DeriveBatchKeysForView(ViewBatchState& view,
         // Either way the caches never hold a layer rasterized without a drawn
         // caster, because this derivation precedes every reader in the frame.
         // A caster implies a renderable, so the first one found ends the search.
-        if (!animatedVertexModifierCaster && MaterialDeformsVertices(*rec.material))
+        if (!animatedVertexModifierCaster && MaterialAnimatesVertices(*rec.material))
         {
             animatedVertexModifier = true;
             animatedVertexModifierCaster = (rec.flags & kSubmissionFlagCastShadows) != 0u;

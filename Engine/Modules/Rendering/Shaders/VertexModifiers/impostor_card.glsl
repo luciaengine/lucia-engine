@@ -8,6 +8,9 @@
 // a perspective pass, and the direction toward the light of an orthographic (cascade) pass, so a
 // cascade draws the card that the light sees.
 //
+// The card moves with the view, never with the animation clock:
+// @deformationClock none
+//
 // @property vec4 impostorBounds "Impostor Bounds" default=0,0,0,1 group=Impostor
 
 #include "Includes/impostor_frame.glsl"
