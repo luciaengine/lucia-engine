@@ -26,13 +26,9 @@ struct MetalBuffer;
 // before the render pass that executes them, so the CPU encodes one command per
 // call instead of one per record, and the GPU runs only the counted records.
 //
-// Fragment-textured pipelines use native indirect draws because ICB execution
-// can return zero for scene-color texture reads. For those draws the same
-// translation copies counted records into an append-only argument range and
-// zeros the rest. The CPU encodes MaxDrawCount draws, without reading GPU counts
-// back or requiring unused source records to be zero. Pipelines without fragment
-// textures retain ICB execution. This trades CPU encoding work for correct
-// sampling while preserving GPU culling and exact count semantics.
+// Passes that require native indirect draws use padded GPU arguments.
+// The translation copies counted records and zeros the rest, so the
+// CPU can encode MaxDrawCount draws without reading back the count.
 //
 // Placement. A translation is encoded before a render pass whenever the open
 // one cannot serve it: none is open yet in the command buffer, a compute
@@ -93,7 +89,7 @@ class MetalIndirectCountEncoder
     // written draw records or counts through device addresses; a new
     // translation waits on it.
     void PrepareRenderPass(MTL::CommandBuffer* commandBuffer, MTL::Fence* producerFence);
-    void EncodeDraw(MTL::RenderCommandEncoder* encoder, const Draw& draw);
+    bool EncodeDraw(MTL::RenderCommandEncoder* encoder, const Draw& draw);
     void EndRenderEncoder(MTL::RenderCommandEncoder* encoder);
     // Before `commandBuffer` is committed: completes the open translation and
     // hands the arena to the command buffer's completion.
