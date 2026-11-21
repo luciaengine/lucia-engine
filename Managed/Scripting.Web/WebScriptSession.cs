@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using GameEngine.Scripting.Runtime;
@@ -13,9 +14,9 @@ internal sealed class WebScriptSession : IDisposable
     private readonly MetadataReference[] m_References;
     private AssemblyLoadContext? m_Context;
 
-    public WebScriptSession(IEnumerable<byte[]> referenceAssemblies)
+    public WebScriptSession()
     {
-        m_References = referenceAssemblies.Select(image => MetadataReference.CreateFromImage(image)).ToArray();
+        m_References = ReadReferences().Select(image => MetadataReference.CreateFromImage(image)).ToArray();
     }
 
     /// <summary>Returns compiler diagnostics when the project cannot start.</summary>
@@ -79,6 +80,20 @@ internal sealed class WebScriptSession : IDisposable
         finally
         {
             context.Unload();
+        }
+    }
+
+    private static IEnumerable<byte[]> ReadReferences()
+    {
+        using var references = typeof(WebScriptSession).Assembly.GetManifestResourceStream("Lucia.ScriptReferences")
+            ?? throw new InvalidOperationException("The browser script references are missing.");
+        using var archive = new ZipArchive(references);
+        foreach (var entry in archive.Entries)
+        {
+            using var stream = entry.Open();
+            using var image = new MemoryStream();
+            stream.CopyTo(image);
+            yield return image.ToArray();
         }
     }
 }
