@@ -44,6 +44,11 @@ class PlayerBenchmark
     /// False when the result could not be written; the reason is logged.
     bool Succeeded() const { return m_Succeeded; }
 
+    bool IsTimingFrameInRange(uint32_t first, uint32_t end) const
+    {
+        return m_Phase == Phase::Timing && m_PhaseFrames >= first && m_PhaseFrames < end;
+    }
+
   private:
     enum class Phase
     {

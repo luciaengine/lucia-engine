@@ -77,6 +77,13 @@ bool GE_LodCrossfadeKeep(uint fadeCode, vec2 fragCoord)
                                         15u, 7u, 13u, 5u);
     ivec2 p = ivec2(fragCoord) & 3;
     float d = float(kBayer4x4[p.y * 4 + p.x]) * (1.0 / 16.0);
+    // Explicit forest records use frame-stationary interleaved gradient noise.
+    // The reserved flag never survives the GPUScene index mask.
+    if ((fadeCode & 0x00800000u) != 0u)
+    {
+        vec2 pixel = floor(fragCoord);
+        d = fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+    }
     float weight = float((fadeCode >> kLodFadeWeightShift) & kLodFadeWeightMask)
                  * kLodFadeWeightScale;
     return (fadeCode & kLodFadePhaseBit) == 0u ? (d < weight) : (d >= weight);

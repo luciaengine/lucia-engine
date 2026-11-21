@@ -314,7 +314,7 @@ TEST_F(PackedPlacementStoreTest, ReadySplatPagesFadeBothRepresentationsAcrossDet
     EXPECT_EQ(plan.StandFades[0].Range.FirstIndex, 0u);
     EXPECT_EQ(plan.StandFades[0].Range.IndexCount, 6u);
     EXPECT_EQ(plan.StandFades[0].FadeCode ^ plan.DetailedDraws[0].FadeCode, 0x80000000u);
-    EXPECT_EQ(plan.DetailedDraws[0].FadeCode >> 24u, 56u);
+    EXPECT_EQ(plan.DetailedDraws[0].FadeCode, 0x40800000u);
 
     view.Eye.X = 511'999'898.25;
     ASSERT_TRUE(planner->Prepare(view, 3, 2, plan));

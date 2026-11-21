@@ -221,7 +221,8 @@ bool PlayerApplication::Initialize()
         }
 
         SetFixedFrameRate(m_MovieOptions->fps);
-        m_MovieWarmupFramesRemaining = kMovieStartupWarmupFrames;
+        m_MovieWarmupFramesRemaining = std::getenv("GE_BENCHMARK_CAPTURE_FOREST_HANDOFF")
+            ? 0u : kMovieStartupWarmupFrames;
         m_MovieAudioCaptureArmed = false;
         m_PendingMovieEncodeFrame.reset();
         ClearPendingMovieAudio();
@@ -987,6 +988,10 @@ void PlayerApplication::PollScreenshot()
 #if GE_PLAYER_MOVIE_RECORDER
 void PlayerApplication::DeclareMovieFrame(RuntimeFrameReadback& readback)
 {
+    // Isolate the first forest handoff in a dedicated capture build.
+    static const bool captureForestHandoff = std::getenv("GE_BENCHMARK_CAPTURE_FOREST_HANDOFF") != nullptr;
+    if (captureForestHandoff && (!m_Benchmark || !m_Benchmark->IsTimingFrameInRange(46, 110)))
+        return;
     // Movie capture must read back the post-process output after the game UI is
     // composited, but before the terminal swapchain encode. Keep the queue
     // bounded so a slow encoder cannot make the render loop allocate without

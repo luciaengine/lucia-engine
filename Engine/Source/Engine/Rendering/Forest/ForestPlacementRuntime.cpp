@@ -2,6 +2,7 @@
 
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
 #include <cassert>
@@ -559,15 +560,21 @@ void ForestPlacementRuntime::EmitDraws(const ForestPlacementView& view, uint64 f
                 const double distance = std::sqrt(DistanceSquared(bounds.Min, bounds.Max,
                     {view.Eye.X, view.Eye.Y, view.Eye.Z}));
                 const double weight = std::clamp((view.DetailDistance - distance) / view.DetailFadeWidth, 0.0, 1.0);
-                const uint32 steps = static_cast<uint32>(std::round(weight * 16.0));
-                if (steps == 0)
+                static const bool useGradientMask =
+                    Platform::EnvironmentSwitchEnabled("GE_FOREST_SPLAT_GRADIENT_MASK", true);
+                using Fade = Rendering::GPUDrawStreamBuilder;
+                constexpr uint32 kGradientMask = 0x00800000u;
+                const uint32 levels = useGradientMask ? Fade::kLodFadeMaxWeight : 16u;
+                const uint32 step = static_cast<uint32>(std::round(weight * levels));
+                if (step == 0)
                     continue;
-                if (steps < 16)
+                if (step < levels)
                 {
-                    // Choose an encoded threshold strictly between two adjacent Bayer samples.
-                    using Fade = Rendering::GPUDrawStreamBuilder;
-                    const uint32 quantized = ((steps - 1u) * Fade::kLodFadeMaxWeight) / 16u + 1u;
-                    fadeCode = quantized << Fade::kLodFadeWeightShift;
+                    // The Bayer control has 16 steps. Store an exact threshold between its samples.
+                    const uint32 quantized = useGradientMask ? step
+                        : ((step - 1u) * Fade::kLodFadeMaxWeight) / 16u + 1u;
+                    fadeCode = (quantized << Fade::kLodFadeWeightShift) |
+                        (useGradientMask ? kGradientMask : 0u);
                     const uint32 first = m_IndexOffsets[page];
                     out.StandFades.push_back({{.IndexCount = m_IndexOffsets[page + 1] - first,
                                               .FirstIndex = first}, fadeCode | Fade::kLodFadePhaseBit});
