@@ -1778,8 +1778,12 @@ if(EMSCRIPTEN)
 		set_property(SOURCE Source/WebMain.cpp Source/Scripting/ScriptStatusIndicator.cpp
 			Source/Panels/ProjectPicker/ProjectPickerModal.cpp
 			APPEND PROPERTY COMPILE_DEFINITIONS GE_WEB_MANAGED_EDITOR=1)
+		set(_ge_managed_symbol_option)
+		if(GE_WASM_SYMBOL_NAMES)
+			set(_ge_managed_symbol_option "--keep-symbols;")
+		endif()
 		set_property(TARGET WebEditor PROPERTY CXX_LINKER_LAUNCHER
-			"${GE_PYTHON3};${_ge_managed_web_linker};--dotnet;${GE_WEB_DOTNET};--project;${_ge_managed_web_host}/Lucia.Web.Editor.csproj;--shaderpkg-dir;${GE_WEB_SHADERPKG_DIR};--material-cache;${GE_WEB_EDITOR_MATERIAL_CACHE};--")
+			"${GE_PYTHON3};${_ge_managed_web_linker};${_ge_managed_symbol_option}--dotnet;${GE_WEB_DOTNET};--project;${_ge_managed_web_host}/Lucia.Web.Editor.csproj;--shaderpkg-dir;${GE_WEB_SHADERPKG_DIR};--material-cache;${GE_WEB_EDITOR_MATERIAL_CACHE};--")
 		set_property(TARGET WebEditor APPEND PROPERTY LINK_DEPENDS
 			"${_ge_managed_web_linker};${CMAKE_SOURCE_DIR}/Tools/Web/builtin_shader_cook.py;${_ge_managed_web_host}/main.mjs;${_ge_managed_web_sources};${CMAKE_SOURCE_DIR}/VERSION")
 	else()

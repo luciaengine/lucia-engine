@@ -11,11 +11,13 @@ try {
     const installEditorAssets = globalThis.geInstallEditorAssets;
     delete globalThis.geInstallEditorAssets;
     await installEditorAssets(Module);
-    const installEditorShaders = globalThis.geInstallEditorShaders;
-    delete globalThis.geInstallEditorShaders;
-    Module.webEditorShaders = createShaderDownload(() => installEditorShaders(Module));
+    const prepareEditorShaders = globalThis.gePrepareEditorShaders;
+    delete globalThis.gePrepareEditorShaders;
+    const prepareShaders = () => prepareEditorShaders(Module);
+    const shaders = createShaderDownload(prepareShaders);
+    Module.webEditorShaders = shaders;
     if (new URLSearchParams(location.search).get('project'))
-        await Module.webEditorShaders.install();
+        shaders.mount(await prepareShaders());
     const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
     const scripts = exports.Lucia.Web.Editor.BrowserPlayMode;
     const scriptSession = createScriptSession(Module, scripts);
@@ -30,6 +32,7 @@ try {
     async function frame() {
         try {
             const keepRunning = await Module.ccall('GeTickEditor', 'boolean', [], [], { async: true });
+            shaders.mountReady();
             await scriptSession.runPending();
             if (keepRunning)
                 scheduleFrame();
@@ -49,35 +52,47 @@ try {
     report(error);
 }
 
-function createShaderDownload(load) {
-    let downloaded = false;
-    let pending;
-    let failed = false;
-    function install() {
-        pending ??= load().then(() => {
-            downloaded = true;
-        }).catch(error => {
-            pending = undefined;
-            throw error;
-        });
-        return pending;
+function createShaderDownload(prepare) {
+    let state = 0;
+    let downloading = false;
+    let ready;
+
+    function mount(install) {
+        install();
+        state = 1;
+    }
+
+    function fail(error) {
+        console.error('Could not load the editor shader cache', error);
+        downloading = false;
+        state = -1;
     }
 
     return {
-        install,
+        mount,
+        mountReady() {
+            if (!ready)
+                return;
+            const install = ready;
+            ready = undefined;
+            try {
+                mount(install);
+            } catch (error) {
+                fail(error);
+            }
+        },
         poll() {
-            if (downloaded)
-                return 1;
-            if (failed) {
-                failed = false;
+            if (state < 0) {
+                state = 0;
                 return -1;
             }
-            if (!pending)
-                void install().catch(error => {
-                    console.error('Could not download the editor shader cache', error);
-                    failed = true;
-                });
-            return 0;
+            if (!state && !downloading) {
+                downloading = true;
+                void prepare().then(install => {
+                    ready = install;
+                }, fail);
+            }
+            return state;
         },
     };
 }

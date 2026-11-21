@@ -18,6 +18,11 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tools/Web/test_link_managed_editor.py)
         set_tests_properties(WebManagedEditorPreload PROPERTIES TIMEOUT 30)
     endif()
+    if(GE_WEB_TEST_NODE)
+        add_test(NAME WebEditorShaderDownload
+            COMMAND ${GE_WEB_TEST_NODE} ${CMAKE_SOURCE_DIR}/Tools/Web/test_editor_shader_download.mjs)
+        set_tests_properties(WebEditorShaderDownload PROPERTIES TIMEOUT 30)
+    endif()
     if(Python3_Interpreter_FOUND AND GE_WEB_TEST_NODE)
         add_test(NAME WebMailboxPatch
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/Tools/Web/test_patch_check_mailbox.py)
