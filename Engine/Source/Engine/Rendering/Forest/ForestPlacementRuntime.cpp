@@ -374,7 +374,12 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
         {
             slot.Retiring = true;
             if (slot.Current == Stage::Reading)
-                out.CancelReads.push_back(slot.Ticket);
+            {
+                const auto cancelled = slot.Ticket;
+                out.CancelReads.push_back(cancelled);
+                // Reads have no GPU consumer yet. Reclaim the slot before selecting new pages.
+                CompleteRead(cancelled, {});
+            }
         }
         if (slot.LastReader == 0)
             ReleaseIfRetired(i);

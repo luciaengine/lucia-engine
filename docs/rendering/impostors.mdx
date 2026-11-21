@@ -29,6 +29,19 @@ If a model reload changes geometry used by an HLOD proxy, the engine restores th
 
 For the mesh materials that feed the bake, see the [virtual material texture design](../development/virtual-material-textures.mdx).
 
+## Combine impostors with geometry LOD
+
+Choose the placement workflow for each group of trees in the scene.
+
+| Placement workflow | Near view | Middle distance | Overview |
+| --- | --- | --- | --- |
+| Scene entities | Mesh LOD and fine Cluster LOD where eligible | Whole-model mesh LOD, then a model impostor | Baked HLOD proxies for eligible groups, or each model's distance-selected representation |
+| Packed forest archive | Up to the configured budget of trees grouped by material and mesh LOD | Individual tree impostors from streamed pages | One canopy quad per visible page from the cooked overview mesh |
+
+Use scene entities for trees or props that need individual components or fine Cluster LOD. Fine Cluster LOD requires a supported static material. An alpha-masked material needs a matching cutout cook. A wind vertex modifier or diffuse transmission keeps the part on the resident mesh path, where its mesh LOD, material, and wind continue to apply. A model with leaf pivot data in UV6 and UV7 stays on the source rendering path during HLOD baking, so the leaf attachment data survives.
+
+Use a packed forest archive for large stands. The archive stores the tree transforms together and loads only the detail pages that the view requests. Adjust the near mesh budget to reserve mesh detail for the closest trees, and adjust the detail distance to control where the page-wide canopy takes over. The renderer allocates packed detail independently of scene-entity Cluster LOD and HLOD.
+
 ## Stream packed forest placements
 
 Use `ForestPlacementCook` to turn one species' tree transforms into a `.geforest` archive. Supply a CSV with the header `page,x,y,z,yawDegrees,scale`, the output path, and the tree's root radius in meters. At unit scale, the radius must reach the farthest card corner and the farthest mesh vertex, including their maximum wind displacement. Group the rows by page, starting at page 0 in the same order as the overview mesh. Each page holds up to 144 trees at one root elevation. The format stores horizontal offsets up to 655.35 meters to the nearest centimeter, yaw around the vertical axis, and a uniform scale between 0.75 and 1.25.

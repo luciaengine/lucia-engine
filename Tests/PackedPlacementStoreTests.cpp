@@ -677,6 +677,43 @@ TEST_F(PackedPlacementStoreTest, EmitsStandRangesAndMatchingDepthOnlyIntoEligibl
         EXPECT_TRUE(services.Views().PerView(view).ForwardCommands.empty());
 }
 
+TEST_F(PackedPlacementStoreTest, ACameraCutReusesAReadingSlotBeforeItsIoCallback)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "cut.geforest";
+    WriteStore(file);
+    std::string error;
+    auto planner = ForestPlacementRuntime::OpenQuadStand(file, error, 1, 1);
+    ASSERT_TRUE(planner) << error;
+
+    ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
+    ForestPlacementFrame plan;
+    ASSERT_TRUE(planner->Prepare(view, 1, 0, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    const auto oldRead = plan.Reads.front();
+    ASSERT_EQ(oldRead.Page, 0u);
+
+    view.EyeRelativePlanes[0] = {1, 0, 0, -40};
+    ASSERT_TRUE(planner->Prepare(view, 2, 0, plan));
+    ASSERT_EQ(plan.CancelReads.size(), 1u);
+    EXPECT_EQ(plan.CancelReads.front(), oldRead);
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    const auto newRead = plan.Reads.front();
+    EXPECT_EQ(newRead.Page, 1u);
+    EXPECT_EQ(newRead.Slot, oldRead.Slot);
+    EXPECT_NE(newRead.Generation, oldRead.Generation);
+    EXPECT_TRUE(plan.DetailedDraws.empty());
+    ASSERT_EQ(plan.StandDraws.size(), 1u);
+
+    EXPECT_FALSE(planner->CompleteRead(oldRead, kFirstPage));
+    EXPECT_TRUE(planner->CompleteRead(newRead, kSecondPage));
+    EXPECT_TRUE(planner->CompleteUpload(newRead, true));
+    ASSERT_TRUE(planner->Prepare(view, 3, 2, plan));
+    ASSERT_EQ(plan.DetailedDraws.size(), 1u);
+    EXPECT_EQ(plan.DetailedDraws.front().Ticket, newRead);
+    EXPECT_TRUE(plan.StandDraws.empty());
+}
+
 TEST_F(PackedPlacementStoreTest, StreamRejectsArrivedBytesWhenTheCameraRetiresThePage)
 {
     using namespace Engine::Renderer;

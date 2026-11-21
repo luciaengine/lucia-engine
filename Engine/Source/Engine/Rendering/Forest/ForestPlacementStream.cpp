@@ -98,13 +98,15 @@ bool ForestPlacementStream::Prepare(AssetManager& assets, const ForestPlacementV
 
     if (!plan.CancelReads.empty())
     {
-        for (auto& read : m_Reads)
+        std::erase_if(m_Reads, [&](Read& read)
         {
             for (auto& page : read.Pages)
                 page.Cancelled |= std::ranges::find(plan.CancelReads, page.Ticket) != plan.CancelReads.end();
-            if (std::ranges::all_of(read.Pages, &ReadPage::Cancelled))
-                read.Cancel->store(true, std::memory_order_release);
-        }
+            if (!std::ranges::all_of(read.Pages, &ReadPage::Cancelled))
+                return false;
+            assets.CancelRead(read.Cancel);
+            return true;
+        });
     }
 
     // A batch can still feed live tickets after a neighboring page has been retired.
@@ -127,9 +129,11 @@ bool ForestPlacementStream::Prepare(AssetManager& assets, const ForestPlacementV
         const size_t previous = uploads.size();
         for (const auto& page : read.Pages)
         {
+            if (page.Cancelled)
+                continue;
             const uint64 offset = page.Range.Offset - first;
             std::span<const uint8> slice;
-            if (!page.Cancelled && offset <= data.size() && page.Range.Bytes <= data.size() - offset)
+            if (offset <= data.size() && page.Range.Bytes <= data.size() - offset)
                 slice = data.subspan(static_cast<size_t>(offset), static_cast<size_t>(page.Range.Bytes));
             if (m_Placements->CompleteRead(page.Ticket, slice))
                 uploads.push_back({page.Ticket, slice});
@@ -141,8 +145,7 @@ bool ForestPlacementStream::Prepare(AssetManager& assets, const ForestPlacementV
         return true;
     });
 
-    // An acknowledged cancellation can free a slot immediately. Keep the same
-    // priority order and per-frame budget when reserving its replacement.
+    // A failed read may free a slot. Reserve its replacement within the frame budget.
     if (rejectedRead)
         m_Placements->AppendReads(plan.Reads);
     SubmitReads(assets, plan.Reads);
