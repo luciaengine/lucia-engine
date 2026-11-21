@@ -163,8 +163,8 @@ struct ForestMeshTransform
 
 layout(std430, set = 0, binding = 68) readonly buffer ForestMeshTransforms
 {
-    ForestMeshTransform transforms[];
-} forestMesh;
+    ForestMeshTransform ge_forestMeshTransforms[];
+};
 
 layout(push_constant) uniform ForestMeshDraw
 {
@@ -175,7 +175,7 @@ layout(push_constant) uniform ForestMeshDraw
 InstanceData ge_FetchInstanceData()
 {
     uint index = pc_forestMesh.firstTransform + uint(gl_InstanceIndex);
-    ForestMeshTransform transform = forestMesh.transforms[index];
+    ForestMeshTransform transform = ge_forestMeshTransforms[index];
     float s = transform.yawSinCos.x;
     float c = transform.yawSinCos.y;
     mat3 basis = mat3(vec3(c, 0.0, -s), vec3(0.0, 1.0, 0.0), vec3(s, 0.0, c));
