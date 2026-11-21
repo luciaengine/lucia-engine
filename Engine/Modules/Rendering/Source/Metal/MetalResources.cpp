@@ -1169,6 +1169,7 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     wrapper.renderPipeline = pso;
     wrapper.type = PipelineType::Graphics;
     wrapper.isMeshPipeline = isMesh;
+    wrapper.HasObjectShader = isMesh && gd.AmplificationShader && !gd.AmplificationShader->empty();
     wrapper.FragmentSamplesTextures = fragmentSamplesTextures;
     wrapper.UsesPaddedCountedDraws = fragmentSamplesTextures && !usesTexturedIndirectCommands;
     if (isMesh)

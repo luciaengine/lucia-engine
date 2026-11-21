@@ -176,7 +176,9 @@ class MetalCommandList : public CommandList
     // the ~6 redundant Metal calls when the same PSO is re-set within a pass.
     PipelineHandle m_AppliedRenderPipeline{};
     bool m_AppliedMeshPipeline = false;
+    bool m_AppliedObjectPipeline = false;
     bool m_MeshDeviceAddressesDeclared = false;
+    bool m_ObjectDeviceAddressesDeclared = false;
     BufferHandle m_IndexBuffer{};
     MTL::IndexType m_IndexType = MTL::IndexTypeUInt16;
 
@@ -237,6 +239,7 @@ class MetalCommandList : public CommandList
     // map keeps its storage. A bind allocates only when an encoder holds more residents than any before.
     FastHashMap<MTL::Resource*, MTL::ResourceUsage> m_EncoderResidents;
     FastHashMap<MTL::Resource*, MTL::ResourceUsage> m_EncoderMeshResidents;
+    FastHashMap<MTL::Resource*, MTL::ResourceUsage> m_EncoderObjectResidents;
     std::vector<MTL::Resource*> m_ScratchReadResidents;
     std::vector<MTL::Resource*> m_ScratchWriteResidents;
 
