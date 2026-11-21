@@ -9,6 +9,7 @@
 #include "Platform/Environment.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstring>
 
@@ -1438,8 +1439,11 @@ void MetalCommandList::DrawIndexedIndirectCount(BufferHandle commandBuffer, Buff
         m_RenderEncoder->useResource(indices->buffer, MTL::ResourceUsageRead, MTL::RenderStageVertex);
     }
     const MetalPipeline* pipeline = m_Device.GetMetalPipeline(m_CurrentPipelineHandle);
+    const bool texturedForward = pipeline != nullptr && pipeline->FragmentSamplesTextures &&
+                                 m_CurrentDebugEventName.starts_with("RenderEntities[");
     MetalIndirectCountEncoder::Draw draw{};
-    draw.UseDirectDraws = pipeline != nullptr && pipeline->fragmentSamplesTextures;
+    draw.UseDirectDraws = pipeline != nullptr && pipeline->FragmentSamplesTextures &&
+                         (pipeline->UsesPaddedCountedDraws || !texturedForward);
     draw.Records = records;
     draw.RecordsOffset = commandBufferOffset;
     draw.RecordStride = stride;
@@ -1449,7 +1453,20 @@ void MetalCommandList::DrawIndexedIndirectCount(BufferHandle commandBuffer, Buff
     draw.Indices = indices;
     draw.IndexType = m_IndexType;
     draw.PrimitiveType = pipeline != nullptr ? pipeline->primitiveType : MTL::PrimitiveTypeTriangle;
-    m_IndirectCount.EncodeDraw(m_RenderEncoder, draw);
+    const bool encoded = m_IndirectCount.EncodeDraw(m_RenderEncoder, draw);
+    static const bool s_LogTexturedCountedForward = Platform::EnvironmentSwitchEnabled(
+        "GE_METAL_LOG_TEXTURED_COUNTED_FORWARD", false);
+    if (s_LogTexturedCountedForward && encoded && texturedForward)
+    {
+        static std::atomic_flag s_PaddedLogged;
+        static std::atomic_flag s_CommandBufferLogged;
+        auto& logged = draw.UseDirectDraws ? s_PaddedLogged : s_CommandBufferLogged;
+        if (!logged.test_and_set(std::memory_order_relaxed))
+        {
+            Logger::Log::Info("Metal textured forward counted draw encoded via {}",
+                              draw.UseDirectDraws ? "padded draws" : "indirect command buffer");
+        }
+    }
 }
 
 void MetalCommandList::Dispatch(uint32_t x, uint32_t y, uint32_t z)
