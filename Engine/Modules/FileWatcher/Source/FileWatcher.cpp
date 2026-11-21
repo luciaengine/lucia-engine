@@ -83,10 +83,20 @@ std::filesystem::file_time_type LastWriteTimeOf(const char* path, std::error_cod
 #else
     const timespec modified = status.st_mtim;
 #endif
-    const auto sinceEpoch = std::chrono::sys_seconds(std::chrono::seconds(modified.tv_sec)) +
-                            std::chrono::nanoseconds(modified.tv_nsec);
-    return std::chrono::time_point_cast<std::filesystem::file_time_type::duration>(
-        std::chrono::file_clock::from_sys(sinceEpoch));
+    using FileTime = std::filesystem::file_time_type;
+    using WideNanoseconds = std::chrono::duration<__int128_t, std::nano>;
+    // A file timestamp can fit the file clock after its epoch shift even when
+    // its Unix nanoseconds exceed the range of a signed 64-bit duration.
+    const WideNanoseconds sinceEpoch = std::chrono::seconds{modified.tv_sec} +
+                                      WideNanoseconds{modified.tv_nsec};
+    const auto fileTime = std::chrono::file_clock::from_sys(std::chrono::sys_time<WideNanoseconds>{sinceEpoch});
+    if (fileTime < std::chrono::time_point_cast<WideNanoseconds>(FileTime::min()) ||
+        fileTime > std::chrono::time_point_cast<WideNanoseconds>(FileTime::max()))
+    {
+        error = std::make_error_code(std::errc::value_too_large);
+        return FileTime::min();
+    }
+    return std::chrono::time_point_cast<FileTime::duration>(fileTime);
 }
 #endif
 
