@@ -19,7 +19,8 @@ public:
     /// Calculates a view plan and records pending uploads. The buffer and graph
     /// stream must outlive pending reads and uploads, including their fences.
     bool Prepare(AssetManager& assets, Rendering::IDevice& device, Rendering::RenderGraph::RGFrame& graph,
-                 const ForestPlacementView& view, ForestPlacementFrame& plan);
+                 const ForestPlacementView& view, ForestPlacementFrame& plan,
+                 std::span<const ForestShadowPage> shadowPages = {});
     void Finish(Rendering::RenderGraph::RGFrame& graph, bool submitted);
 
 private:

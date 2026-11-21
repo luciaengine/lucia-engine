@@ -15,6 +15,25 @@ namespace GameEngine::Engine::Renderer
 struct ForwardEmitContext;
 struct ForestPlacementSession;
 struct ImpostorBakePart;
+struct CascadeFrameData;
+
+struct ForestCascadeDraws
+{
+    std::vector<DrawCommand> Meshes;
+    std::vector<Rendering::RenderGraph::RGBuffer> Transforms;
+};
+
+struct ForestSunShadows
+{
+    [[nodiscard]] const ForestCascadeDraws* DrawsForCascade(uint32 index) const
+    {
+        if (index >= Cascades.size() || Cascades[index].Meshes.empty())
+            return nullptr;
+        return &Cascades[index];
+    }
+
+    std::array<ForestCascadeDraws, 4> Cascades;
+};
 
 struct ForestImpostorCard
 {
@@ -32,7 +51,11 @@ public:
     [[nodiscard]] std::shared_ptr<ForestPlacementSession> Attach(std::shared_ptr<ForestPlacementRuntime> placements,
         AssetManager& assets, uint64 world, const GUID& model, float detailDistance, uint32 nearBudget = 0);
 
+    bool HasSunShadowSource(const RenderServices& services, const Rendering::ViewDesc& view) const;
     bool WantsAtlas(uint64 world, const GUID& model) const;
+    bool ConsumeShadowSourceDemand(uint64 world, const GUID& model);
+    void PublishShadowSources(uint64 world, const GUID& model, const Mathematics::Vector4& bounds,
+                              std::span<const ImpostorBakePart> sources);
     void ClearCards(uint64 world);
     void PublishCard(uint64 world, const GUID& model, const ForestImpostorCard& card,
                      std::span<const ImpostorBakePart> sources = {});
@@ -40,6 +63,9 @@ public:
     bool EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
                      const Rendering::CameraData& camera, ForestPlacementView view,
                      std::vector<DrawSubCommand>& standRanges);
+
+    const ForestSunShadows* PrepareSunShadows(Rendering::RenderGraph::RGFrame& frame,
+        RenderServices& services, Rendering::ViewId viewId, const CascadeFrameData& fit);
 
     void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
                             const Rendering::IDevice::GpuSyncToken& token) override;

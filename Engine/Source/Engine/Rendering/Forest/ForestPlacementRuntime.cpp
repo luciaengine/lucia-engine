@@ -3,6 +3,7 @@
 #include "Rendering/Common/Frustum.h"
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -115,7 +116,7 @@ std::unique_ptr<ForestPlacementRuntime> ForestPlacementRuntime::Open(
 
 std::shared_ptr<ForestPlacementRuntime> ForestPlacementRuntime::OpenQuadStand(
     const std::filesystem::path& archive, std::string& error, uint32 slots, uint32 readsPerFrame,
-    bool retainPlacements, uint32 transitionSlots)
+    bool retainPlacements, uint32 transitionSlots, uint32 shadowSlots)
 {
     PageStreaming::PackedPlacementStore store;
     error = store.Open(archive);
@@ -128,20 +129,28 @@ std::shared_ptr<ForestPlacementRuntime> ForestPlacementRuntime::OpenQuadStand(
     const auto pages = static_cast<uint32>(store.Pages().size());
     slots = readsPerFrame == 0 ? 0 : std::min(slots, pages);
     transitionSlots = slots == 0 ? 0 : std::min(transitionSlots, pages - slots);
-    if (uint64{slots} + transitionSlots > std::numeric_limits<uint32>::max() / kPlacementsPerSlot)
+    // Color and shadow can share physical capacity in small archives. Keep
+    // the logical shadow limit even when every page already fits in the pool.
+    shadowSlots = slots == 0 ? 0 : std::min(shadowSlots, pages);
+    const uint32 extraShadowSlots = std::min(shadowSlots, pages - slots - transitionSlots);
+    if (uint64{slots} + transitionSlots + extraShadowSlots > std::numeric_limits<uint32>::max() / kPlacementsPerSlot)
     {
         error = "Forest detail slots exceed the indexed placement address range";
         return {};
     }
     return std::shared_ptr<ForestPlacementRuntime>(
-        new ForestPlacementRuntime(std::move(store), offsets, slots, readsPerFrame, retainPlacements, transitionSlots));
+        new ForestPlacementRuntime(std::move(store), offsets, slots, readsPerFrame, retainPlacements,
+                                   transitionSlots, shadowSlots));
 }
 
 ForestPlacementRuntime::ForestPlacementRuntime(PageStreaming::PackedPlacementStore store,
-    std::span<const uint32> offsets, uint32 slots, uint32 readsPerFrame, bool retainPlacements, uint32 transitionSlots)
-    : m_Store(std::move(store)), m_IndexOffsets(offsets.begin(), offsets.end()), m_Slots(slots + transitionSlots),
+    std::span<const uint32> offsets, uint32 slots, uint32 readsPerFrame, bool retainPlacements,
+    uint32 transitionSlots, uint32 shadowSlots)
+    : m_Store(std::move(store)), m_IndexOffsets(offsets.begin(), offsets.end()),
+      m_Slots(slots + transitionSlots + std::min<size_t>(shadowSlots, m_Store.Pages().size() - slots - transitionSlots)),
       m_Wanted(slots != 0 ? m_Store.Pages().size() : 0), m_RetryAt(m_Wanted.size()),
-      m_ReadsPerFrame(std::min(slots, readsPerFrame)), m_DetailCapacity(slots), m_RetainPlacements(retainPlacements)
+      m_ReadsPerFrame(std::min(slots, readsPerFrame)), m_DetailCapacity(slots),
+      m_ShadowCapacity(shadowSlots), m_TransitionCapacity(transitionSlots), m_RetainPlacements(retainPlacements)
 {
     m_Leaves.reserve(m_Store.Pages().size());
     for (const auto& page : m_Store.Pages())
@@ -170,6 +179,9 @@ void ForestPlacementRuntime::ResetResidency()
     m_DemandView.reset();
     m_DemandRetryFrame.reset();
     m_Priority.clear();
+    m_ShadowMasks.clear();
+    m_ShadowPages.clear();
+    m_CombinedPriority.clear();
     m_Ready.clear();
     m_Frame = 0;
     m_ReadersDone = 0;
@@ -310,6 +322,51 @@ void ForestPlacementRuntime::GatherStand(const ForestPlacementView& view, std::v
         EmitStand(run.First, run.First + run.Count, draws);
 }
 
+std::span<const ForestShadowPage> ForestPlacementRuntime::GatherShadowPages(
+    std::span<const ForestPlacementView> cascades)
+{
+    const size_t count = std::min(cascades.size(), m_ShadowVisibility.size());
+    bool changed = count != m_ShadowQueryCount;
+    m_ShadowQueryCount = count;
+    for (size_t c = 0; c < count; ++c)
+    {
+        auto& cache = m_ShadowVisibility[c];
+        const auto& view = cascades[c];
+        if (cache.View && SameStandView(*cache.View, view))
+            continue;
+        cache.View = view;
+        cache.Visible.clear();
+        Visit(0, view, {view.Eye.X, view.Eye.Y, view.Eye.Z}, 0x3fu, 0, cache.Visible);
+        changed = true;
+    }
+    if (!changed)
+        return m_ShadowQueryPages;
+
+    m_ShadowQueryPages.clear();
+    for (size_t c = 0; c < count; ++c)
+    {
+        const auto mask = static_cast<uint8>(1u << c);
+        for (const auto& run : m_ShadowVisibility[c].Visible)
+            for (uint32 page = run.First; page < run.First + run.Count; ++page)
+                m_ShadowQueryPages.push_back({page, mask});
+    }
+    std::ranges::sort(m_ShadowQueryPages, {}, &ForestShadowPage::Page);
+    size_t uniqueCount = 0;
+    for (const auto entry : m_ShadowQueryPages)
+    {
+        if (uniqueCount != 0 && m_ShadowQueryPages[uniqueCount - 1].Page == entry.Page)
+            m_ShadowQueryPages[uniqueCount - 1].CascadeMask |= entry.CascadeMask;
+        else
+            m_ShadowQueryPages[uniqueCount++] = entry;
+    }
+    m_ShadowQueryPages.resize(uniqueCount);
+    std::ranges::sort(m_ShadowQueryPages, {}, [](const ForestShadowPage& entry)
+    {
+        return std::pair{std::countr_zero(static_cast<unsigned>(entry.CascadeMask)), entry.Page};
+    });
+    return m_ShadowQueryPages;
+}
+
 void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
 {
     if (m_DemandView && m_DemandView->DetailDistance == view.DetailDistance &&
@@ -345,6 +402,54 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
     }
 }
 
+void ForestPlacementRuntime::GatherShadowDemand(std::span<const ForestShadowPage> pages)
+{
+    for (const uint32 page : m_ShadowPages)
+        m_ShadowMasks[page] = 0;
+    m_ShadowPages.clear();
+    m_CombinedPriority.clear();
+    if (pages.empty() || m_Slots.empty())
+        return;
+
+    m_ShadowMasks.resize(m_Leaves.size());
+    uint32 shadowOnly = 0;
+    for (const auto& [page, mask] : pages)
+    {
+        const uint8 valid = mask & 0x0fu;
+        if (page >= m_Leaves.size() || valid == 0)
+            continue;
+        if (m_ShadowMasks[page] != 0)
+        {
+            m_ShadowMasks[page] |= valid;
+            continue;
+        }
+        if (m_Wanted[page] != kDrawDetail)
+        {
+            if (shadowOnly == m_ShadowCapacity)
+                continue;
+            ++shadowOnly;
+        }
+        m_ShadowMasks[page] = valid;
+        m_ShadowPages.push_back(page);
+    }
+    if (m_ShadowPages.empty())
+        return;
+
+    // Demand for the color view still consumes the first read budget. Sharing a page
+    // with one or more cascades never adds another read or another resident slot.
+    const auto firstPrefetch = std::ranges::find_if(m_Priority, [this](uint32 page)
+    {
+        return m_Wanted[page] == kPrefetchDetail;
+    });
+    m_CombinedPriority.assign(m_Priority.begin(), firstPrefetch);
+    for (const uint32 page : m_ShadowPages)
+        if (m_Wanted[page] != kDrawDetail)
+            m_CombinedPriority.push_back(page);
+    for (const uint32 page : std::ranges::subrange(firstPrefetch, m_Priority.end()))
+        if (ShadowMask(page) == 0)
+            m_CombinedPriority.push_back(page);
+}
+
 void ForestPlacementRuntime::ReleaseIfRetired(uint32 slotIndex)
 {
     Slot& slot = m_Slots[slotIndex];
@@ -357,10 +462,11 @@ void ForestPlacementRuntime::ReleaseIfRetired(uint32 slotIndex)
 }
 
 bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 frame, uint64 completedReaders,
-                                     ForestPlacementFrame& out)
+                                     ForestPlacementFrame& out, std::span<const ForestShadowPage> shadowPages)
 {
     out.StandDraws.clear();
     out.DetailedDraws.clear();
+    out.ShadowDraws.clear();
     out.Reads.clear();
     out.CancelReads.clear();
     out.VisibleCells = 0;
@@ -371,6 +477,7 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
     m_Frame = frame;
     m_ReadersDone = completedReaders;
     GatherDemand(view);
+    GatherShadowDemand(shadowPages);
     out.WantsDetails = !m_Priority.empty();
     m_Residency.BeginFrame(frame);
     for (uint32 i = 0; i < m_Slots.size(); ++i)
@@ -378,7 +485,7 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
         Slot& slot = m_Slots[i];
         if (slot.Current == Stage::Empty)
             continue;
-        const bool wanted = m_Wanted[slot.Ticket.Page] != 0;
+        const bool wanted = m_Wanted[slot.Ticket.Page] != 0 || ShadowMask(slot.Ticket.Page) != 0;
         if (wanted && slot.Current == Stage::Ready && slot.LastReader != 0)
         {
             // The validated slot is still ours. A returning view can read it again
@@ -406,20 +513,24 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
 
 void ForestPlacementRuntime::AppendReads(std::vector<ForestPageTicket>& reads)
 {
-    for (uint32 page : m_Priority)
+    const auto& priorities = m_CombinedPriority.empty() ? m_Priority : m_CombinedPriority;
+    for (uint32 page : priorities)
     {
         if (reads.size() >= m_ReadsPerFrame)
             break;
         // A read reported corrupt bytes after this frame's priorities were built.
         if (m_Frame < m_RetryAt[page] || m_Residency.Find(page).IsResident())
             continue;
+        const bool shadowOnly = ShadowMask(page) != 0 && m_Wanted[page] != kDrawDetail;
+        const uint32 reservedForColor = shadowOnly ? m_TransitionCapacity : 0;
         const uint32 freeSlots = m_Residency.FreeCount();
-        if (m_Wanted[page] == kPrefetchDetail && freeSlots <= m_Slots.size() - m_DetailCapacity)
-            break; // Reserve slots for demand even when the previous view has readers in flight.
-        if (freeSlots == 0)
+        if (m_Wanted[page] == kPrefetchDetail && !shadowOnly &&
+            freeSlots <= m_Slots.size() - m_DetailCapacity)
+            break; // Hold spare slots for demand while previous draws still have readers.
+        while (m_Residency.FreeCount() <= reservedForColor)
         {
-            // Keep unused GPU pages warm until a visible page needs the slot.
-            // Pending readers and wanted pages cannot be displaced.
+            // Shadow reads cannot consume the camera-cut reserve. Reclaim only
+            // retired slots whose generation has no unfinished GPU readers.
             uint32 victim = static_cast<uint32>(m_Slots.size());
             uint64 oldest = std::numeric_limits<uint64>::max();
             for (uint32 i = 0; i < m_Slots.size(); ++i)
@@ -436,6 +547,8 @@ void ForestPlacementRuntime::AppendReads(std::vector<ForestPageTicket>& reads)
                 break;
             ReleaseIfRetired(victim);
         }
+        if (m_Residency.FreeCount() <= reservedForColor)
+            break;
         const auto ref = m_Residency.Acquire(page, 0.0f);
         assert(ref.IsResident() && m_Slots[ref.Slot].Current == Stage::Empty);
         const ForestPageTicket ticket{ref.Slot, page, ref.Generation};
@@ -551,10 +664,19 @@ void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
     for (uint32 i = 0; i < m_Slots.size(); ++i)
     {
         Slot& slot = m_Slots[i];
-        if (slot.Current == Stage::Ready && !slot.Retiring && m_Wanted[slot.Ticket.Page] == kDrawDetail)
+        if (slot.Current != Stage::Ready || slot.Retiring)
+            continue;
+        const uint32 page = slot.Ticket.Page;
+        const uint8 shadow = ShadowMask(page);
+        if (m_Wanted[page] == kDrawDetail)
         {
             slot.LastReader = frame;
-            m_Ready.emplace_back(slot.Ticket.Page, i);
+            m_Ready.emplace_back(page, i);
+        }
+        if (shadow != 0)
+        {
+            slot.LastReader = frame;
+            out.ShadowDraws.push_back({{slot.Ticket, i * kPlacementsPerSlot, m_Store.Pages()[page].Count}, shadow});
         }
     }
     std::ranges::sort(m_Ready);

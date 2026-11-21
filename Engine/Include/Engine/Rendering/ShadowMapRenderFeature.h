@@ -49,6 +49,8 @@ class RenderServices;
 class DepthUnderDrawTracker;
 struct ExtractedLight;
 struct FeatureDeclareContext;
+struct ForestCascadeDraws;
+struct ForestSunShadows;
 
 static constexpr uint32_t kMaxShadowCascades = 4;
 static_assert(kMaxShadowCascades == CascadeShadowCache::kMaxCascadesPerView,
@@ -553,7 +555,8 @@ class ShadowMapRenderFeature : public IRenderFeature
     Rendering::RenderGraph::RGPass DeclareCascadePass(Rendering::RenderGraph::RGFrame& frame,
                                                       RenderServices& rs,
                                                       const FeatureDeclareContext& ctx,
-                                                      uint32_t cascadeIndex, const char* passName);
+                                                      uint32_t cascadeIndex, const char* passName,
+                                                      const ForestCascadeDraws* forest = nullptr);
     /// Whether rigid directional depth needs transfer-capable pooled attachments.
     bool IsRigidCascadeCacheEnabled() const;
 
@@ -562,7 +565,8 @@ class ShadowMapRenderFeature : public IRenderFeature
                                                             const FeatureDeclareContext& ctx,
                                                             uint32_t cascadeIndex,
                                                             const float lightDirWS[3],
-                                                            const char* passName);
+                                                            const char* passName,
+                                                            bool hasPackedCasters = false);
 
     // Punctual shadow families (A1.1 S2): each no-ops unless the matching
     // ctx.{Area,Spot,Point}Shadow snapshot is present. They import their own
@@ -1319,7 +1323,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     // scheduler; publishes this frame's MotionFramePlan for the view. Called
     // at the top of Declare's directional branch, BEFORE any cascade declares.
     void PlanCascadeMotionFrame(Rendering::RenderGraph::RGFrame& frame, RenderServices& rs,
-                                const FeatureDeclareContext& ctx);
+                                const FeatureDeclareContext& ctx, const ForestSunShadows* forest);
     bool IsCascadeDeferredThisFrame(Rendering::ViewId viewId, const RenderGraph::RGFrame& frame,
                                     uint32_t cascadeIndex) const;
 

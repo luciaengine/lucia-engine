@@ -85,7 +85,7 @@ void ForestPlacementStream::SubmitReads(AssetManager& assets, std::span<const Fo
 
 bool ForestPlacementStream::Prepare(AssetManager& assets, const ForestPlacementView& view,
                                     uint64 frame, uint64 completedReaders, ForestPlacementFrame& plan,
-                                    std::vector<ForestPlacementUpload>& uploads)
+                                    std::vector<ForestPlacementUpload>& uploads, std::span<const ForestShadowPage> shadowPages)
 {
     uploads.clear();
     m_Completed.clear();
@@ -94,7 +94,7 @@ bool ForestPlacementStream::Prepare(AssetManager& assets, const ForestPlacementV
         plan = {};
         return false;
     }
-    if (!m_Placements->Prepare(view, frame, completedReaders, plan))
+    if (!m_Placements->Prepare(view, frame, completedReaders, plan, shadowPages))
         return false;
 
     if (!plan.CancelReads.empty())

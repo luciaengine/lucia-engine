@@ -7,6 +7,7 @@
 #include "Platform/Environment.h"
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
+#include "Engine/Rendering/Forest/ForestPlacementFeature.h"
 #include "Engine/Rendering/Pipeline/ViewMotionVectors.h"
 #include "Engine/Rendering/IRenderFeature.h"
 
@@ -206,12 +207,15 @@ bool RenderServices::HasShadowCasters(Rendering::ViewId viewId) const
 
 bool RenderServices::ViewNeedsShadowCascadePasses(Rendering::ViewId viewId) const
 {
-    for (const auto& v : m_ViewRegistry.GetViews())
-    {
-        if (v.id == viewId)
-            return v.ActiveRenderLayerMask() != Rendering::RenderLayerMask::None() && HasShadowCasters(viewId);
-    }
-    return false;
+    const auto* view = m_ViewRegistry.FindViewDesc(viewId);
+    if (!view || view->ActiveRenderLayerMask() == Rendering::RenderLayerMask::None())
+        return false;
+    if (HasShadowCasters(viewId))
+        return true;
+    // Packed forest placements do not have per-tree ECS submissions. They
+    // must enable the sun pass before its light-space page demand can run.
+    const auto* forest = GetFeature<ForestPlacementFeature>();
+    return forest && forest->HasSunShadowSource(*this, *view);
 }
 
 FeatureDeclareContext RenderServices::MakeFeatureDeclareContext(

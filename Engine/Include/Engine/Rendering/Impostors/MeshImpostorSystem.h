@@ -108,7 +108,8 @@ private:
     static void BuildPlacementDemandTree(ModelImpostor& model, size_t first, size_t count);
     // Returns the card material once the parts are linked to it, else null.
     const Material* UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
-                                ImpostorStage& stage, ForestPlacementFeature* forest, uint64 world);
+                                ImpostorStage& stage, ForestPlacementFeature* forest, uint64 world,
+                                bool wantsForestAtlas, bool wantsForestShadowSources);
     void UnlinkModel(ModelImpostor& impostor);
 
     RenderServices* m_RenderServices = nullptr;

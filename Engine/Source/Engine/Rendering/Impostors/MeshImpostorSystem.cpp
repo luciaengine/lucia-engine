@@ -250,14 +250,17 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     std::vector<const Material*> cards;
     for (auto& [model, impostor] : m_Models)
     {
-        auto* forestDemand = forest && forest->WantsAtlas(world.GetWorldId(), model) ? forest : nullptr;
-        if (!impostor.WantsAtlas && !forestDemand)
+        const auto worldId = world.GetWorldId();
+        const bool wantsForestAtlas = forest && forest->WantsAtlas(worldId, model);
+        const bool wantsForestShadowSources = forest && forest->ConsumeShadowSourceDemand(worldId, model);
+        if (!impostor.WantsAtlas && !wantsForestAtlas && !wantsForestShadowSources)
         {
             // Drop the link before this undemanded atlas can be evicted.
             UnlinkModel(impostor);
             continue;
         }
-        if (const Material* card = UpdateModel(model, impostor, baker, stage, forestDemand, world.GetWorldId()))
+        if (const Material* card = UpdateModel(model, impostor, baker, stage, forest, worldId,
+                                               wantsForestAtlas, wantsForestShadowSources))
             cards.push_back(card);
     }
     stage.SubmitCards(*m_RenderServices, world.GetWorldId(), cards);
@@ -596,7 +599,8 @@ void MeshImpostorSystem::UpdatePlacements(ECS::World& world)
 }
 
 const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
-                                               ImpostorStage& stage, ForestPlacementFeature* forest, uint64 world)
+                                               ImpostorStage& stage, ForestPlacementFeature* forest, uint64 world,
+                                               bool wantsForestAtlas, bool wantsForestShadowSources)
 {
     if (impostor.HasConflictingParts)
     {
@@ -659,16 +663,25 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
         UnlinkModel(impostor);
         return nullptr;
     }
+    const Mathematics::Vector4 bounds{impostor.Center.x, impostor.Center.y, impostor.Center.z, impostor.Radius};
+    if (wantsForestShadowSources)
+        forest->PublishShadowSources(world, model, bounds, request.Parts);
+    if (!wantsForestAtlas && !impostor.WantsAtlas)
+    {
+        UnlinkModel(impostor);
+        return nullptr;
+    }
+
     // A request each frame keeps the atlas in the baker's least-recently-used budget.
     const ImpostorAtlas atlas = baker.Request(request, m_RenderServices->Spine().WorldFrameEpoch());
     const auto sway = sharedSway.value_or(ImpostorFoliageSway{});
-    if (forest)
+    if (wantsForestAtlas)
     {
         const GUID packedGuid = GUID::Derive(model, "forest-impostor-" + std::to_string(materialIdentity));
         if (ImpostorStage::RegisterCardMaterial(*m_RenderServices, packedGuid, "Forest Impostor", atlas,
                 impostor.Center, impostor.Radius, request.Key.FramesPerSide, kLayout, sway, true))
             forest->PublishCard(world, model, {packedGuid,
-                {impostor.Center.x, impostor.Center.y, impostor.Center.z, impostor.Radius}, sway, impostor.SwitchCoverage},
+                bounds, sway, impostor.SwitchCoverage},
                 request.Parts);
     }
     if (!impostor.WantsAtlas)

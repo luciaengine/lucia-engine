@@ -14,11 +14,14 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 
 namespace GameEngine
 {
 namespace Engine::Renderer
 {
+
+struct DrawCommand;
 
 // Which forward heads a camera prepass (DepthPassType::Prepass, phase A) draws.
 enum class PrepassHeads : uint8_t
@@ -83,6 +86,9 @@ struct DepthOnlyPassParamsRG
     // Camera prepass only (PassType Prepass, phase A); every other pass ignores it.
     PrepassHeads Heads = PrepassHeads::Occluding;
     ResolvedPassResources Resources;
+    // Per-cascade, frame-owned packed draws, with a single transform allocation.
+    std::span<const DrawCommand> PackedShadowMeshes;
+    std::span<const Rendering::RenderGraph::RGBuffer> PackedShadowTransforms;
 };
 
 } // namespace Engine::Renderer

@@ -8,7 +8,10 @@
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/MeshLODThresholds.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/ShadowMapRenderFeature.h"
+#include "Rendering/Common/Frustum.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
@@ -54,6 +57,8 @@ struct ForestPlacementSession
     GUID Model;
     std::optional<ForestImpostorCard> Card;
     bool WantsCard = false;
+    bool WantsShadowSources = false;
+    std::optional<Mathematics::Vector4> ShadowBounds;
     std::string Scope;
     IDevice* Device = nullptr;
     RGFrame* Graph = nullptr;
@@ -64,6 +69,8 @@ struct ForestPlacementSession
     ForestPlacementFrame Plan;
     std::vector<ForestPlacementGpuPage> Pages;
     RGFrameStamp Declared;
+    RGFrameStamp Prepared;
+    ViewId PreparedView{};
     bool ShaderRequested = false;
     bool ShaderAvailable = false;
     bool EmittedDetails = false;
@@ -87,12 +94,15 @@ struct ForestPlacementSession
         Cull = {};
         Graph = nullptr;
         Declared = {};
+        Prepared = {};
         ShaderRequested = false;
         ShaderAvailable = false;
         EmittedDetails = false;
         EmittedNearMeshes = false;
         WantsCard = false;
+        WantsShadowSources = false;
         Card.reset();
+        ShadowBounds.reset();
         NearDemand.clear();
         NearOwners.clear();
         PendingNearOwners.clear();
@@ -156,6 +166,19 @@ std::shared_ptr<ForestPlacementSession> ForestPlacementFeature::Attach(
     return session;
 }
 
+bool ForestPlacementFeature::HasSunShadowSource(const RenderServices& services, const ViewDesc& view) const
+{
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_PACKED_FOREST_SHADOWS", false);
+    if (!enabled || !ImpostorStage::IsEnabled(services) || view.purpose != ViewPurpose::Game ||
+        view.worldPaused || !RenderLayerMask::Default().Intersects(view.ActiveRenderLayerMask()))
+        return false;
+    return std::ranges::any_of(m_Sessions, [&view](const auto& entry)
+    {
+        const auto session = entry.lock();
+        return session && session->World == view.worldId;
+    });
+}
+
 bool ForestPlacementFeature::WantsAtlas(uint64 world, const GUID& model) const
 {
     for (const auto& entry : m_Sessions)
@@ -165,11 +188,44 @@ bool ForestPlacementFeature::WantsAtlas(uint64 world, const GUID& model) const
     return false;
 }
 
+bool ForestPlacementFeature::ConsumeShadowSourceDemand(uint64 world, const GUID& model)
+{
+    bool demand = false;
+    for (const auto& entry : m_Sessions)
+    {
+        if (const auto session = entry.lock(); session && session->World == world && session->Model == model)
+        {
+            if (session->WantsShadowSources)
+                demand = true;
+            session->WantsShadowSources = false;
+        }
+    }
+    return demand;
+}
+
+void ForestPlacementFeature::PublishShadowSources(uint64 world, const GUID& model,
+    const Mathematics::Vector4& bounds, std::span<const ImpostorBakePart> sources)
+{
+    for (const auto& entry : m_Sessions)
+    {
+        if (const auto session = entry.lock(); session && session->World == world && session->Model == model)
+        {
+            session->ShadowBounds = bounds;
+            session->SourceParts.assign(sources.begin(), sources.end());
+        }
+    }
+}
+
 void ForestPlacementFeature::ClearCards(uint64 world)
 {
     for (const auto& entry : m_Sessions)
+    {
         if (const auto session = entry.lock(); session && session->World == world)
+        {
             session->Card.reset();
+            session->ShadowBounds.reset();
+        }
+    }
 }
 
 void ForestPlacementFeature::PublishCard(uint64 world, const GUID& model, const ForestImpostorCard& card,
@@ -396,6 +452,144 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
 
 } // namespace
 
+const ForestSunShadows* ForestPlacementFeature::PrepareSunShadows(RGFrame& frame, RenderServices& services,
+    ViewId viewId, const CascadeFrameData& fit)
+{
+    const auto* view = services.Views().FindViewDesc(viewId);
+    auto* device = services.GetDevice();
+    if (!view || !device || !HasSunShadowSource(services, *view))
+        return nullptr;
+    const auto* camera = services.Views().FindCameraData(view->cameraId);
+    const auto* gpuScene = services.GetGPUScene();
+    if (!camera || !gpuScene)
+        return nullptr;
+
+    const auto cameraEye = CameraEye(*camera);
+    const auto cameraRelative = CameraEyeRelativeToOrigin(*camera);
+    ForestSunShadows* result = nullptr;
+    const auto lightSector = Mathematics::Vector3Int{fit.RenderOriginSector[0], fit.RenderOriginSector[1],
+                                                    fit.RenderOriginSector[2]};
+    const auto lightOrigin = SectorToWorld(lightSector);
+    const auto positionRelativeToLight = cameraEye - Mathematics::WorldPosition{lightOrigin.x, lightOrigin.y, lightOrigin.z};
+    const uint32 cascades = std::min<uint32>(fit.NumCascades, 4u);
+    const uint32 meshBudget = services.GetProfile().IsCompat() ? 96u : 256u;
+    const auto& registry = services.GetMeshGPURegistry();
+    const MeshGPURegistry::TableScope lock(registry);
+    const auto& meshes = gpuScene->GetMeshes();
+    const auto scales = services.ComputeViewSseScales(viewId);
+    const auto margins = services.Materials().MaterialDeformationMarginSpan();
+    for (const auto& weak : m_Sessions)
+    {
+        const auto session = weak.lock();
+        if (!session || session->World != view->worldId || (session->Graph && session->Graph != &frame) ||
+            session->Prepared.IsFor(frame))
+            continue;
+
+        if (!result)
+            result = frame.AllocatePassData<ForestSunShadows>();
+        if (!frame.RequireExecutionLifetime(session) || !session->EnsureGpu(*device))
+            continue;
+        ForestPlacementView color{cameraEye, {}, session->DetailDistance};
+        Rendering::ExtractFrustumPlanes(camera->viewProjRel, color.EyeRelativePlanes.data());
+        for (auto& plane : color.EyeRelativePlanes)
+            plane.w += plane.x * cameraRelative.x + plane.y * cameraRelative.y + plane.z * cameraRelative.z;
+
+        std::array<ForestPlacementView, 4> lightViews{};
+        for (uint32 index = 0; index < cascades; ++index)
+        {
+            auto& light = lightViews[index];
+            light.Eye = {lightOrigin.x, lightOrigin.y, lightOrigin.z};
+            ShadowMapRenderFeature::BuildCascadeCasterCullPlanes(fit.LightVPRel[index], light.EyeRelativePlanes.data());
+        }
+        const auto demand = session->Placements->GatherShadowPages(std::span(lightViews).first(cascades));
+        if (!session->Stream->Prepare(*session->Assets, *device, frame, color, session->Plan, demand))
+            continue;
+        session->Graph = &frame;
+        session->Prepared.Stamp(frame);
+        session->PreparedView = viewId;
+        session->WantsCard = session->Plan.WantsDetails;
+        session->WantsShadowSources = !session->Plan.ShadowDraws.empty();
+        if (!session->WantsShadowSources || !session->ShadowBounds || session->SourceParts.empty())
+            continue;
+
+        std::vector<ForestSourcePart> parts;
+        float margin = 0.0f;
+        for (const auto& part : session->SourceParts)
+        {
+            const auto* mesh = registry.Find(part.Mesh);
+            const auto* material = services.Materials().Registry().Find(part.Material);
+            MeshGPUEntryBindings bindings{};
+            if (!mesh || !material || mesh->gpuMeshIndex >= meshes.size() || IsSkinned(mesh->vertexFlags) ||
+                !registry.TryGetDrawableBindings(*mesh, bindings))
+                break;
+            const auto materialIndex = material->GetGpuSceneMaterialIndex();
+            if (materialIndex >= margins.size())
+                break;
+            margin = std::max(margin, margins[materialIndex]);
+            parts.push_back({mesh, &meshes[mesh->gpuMeshIndex], material, part.Mesh,
+                             BoundStreamVertexFlags(*mesh, bindings, material->IgnoresVertexColor())});
+        }
+        if (parts.size() != session->SourceParts.size())
+            continue;
+        for (uint32 index = 0; index < cascades; ++index)
+        {
+            auto light = lightViews[index];
+            light.Eye = cameraEye;
+            light.DetailDistance = session->DetailDistance;
+            for (auto& plane : light.EyeRelativePlanes)
+                plane.w += plane.x * positionRelativeToLight.x + plane.y * positionRelativeToLight.y +
+                           plane.z * positionRelativeToLight.z;
+            ForestPlacementFrame ready;
+            for (const auto& shadow : session->Plan.ShadowDraws)
+                if ((shadow.CascadeMask & (1u << index)) != 0)
+                    ready.DetailedDraws.push_back(shadow.Draw);
+            std::vector<ForestNearMeshCandidate> trees;
+            CollectForestNearMeshCandidates(*session->Placements, ready, {light,1.0f,0.0f,0.0f,margin},
+                *session->ShadowBounds, meshBudget, trees);
+            std::vector<ForestMeshTransform> transforms;
+            transforms.reserve(trees.size());
+            for (const auto& tree : trees)
+                if (const auto packed = PackForestMeshTransform(tree))
+                    transforms.push_back(*packed);
+            if (transforms.empty())
+                continue;
+            const size_t bytes = transforms.size() * sizeof(ForestMeshTransform);
+            const auto upload = frame.AllocUpload(bytes);
+            if (!upload.Valid())
+                continue;
+            const auto storage = frame.ImportExternalBuffer("Forest.ShadowMeshTransforms", upload.Buffer);
+            if (!storage.IsValid())
+                continue;
+            std::memcpy(upload.Ptr, transforms.data(), bytes);
+            const auto* binding = frame.AllocatePassData<DrawBindings::BufferEntry>(
+                HashStringId("ForestMeshTransforms"), upload.Buffer, upload.Offset, bytes);
+            auto& cascade = result->Cascades[index];
+            cascade.Transforms.push_back(storage);
+            for (const auto& part : parts)
+            {
+                const float coverage = 1.25f * session->ShadowBounds->w / std::max(fit.OrthoHalfExtent[index], 0.001f);
+                const auto lod = SelectForestMeshLod(*part.Lod, coverage, scales.Default, scales.Tight, 0xFFFFFFFFu);
+                const auto range = part.Mesh->DrawForLod(lod);
+                if (range.IndexCount == 0 || range.VertexOffset > static_cast<uint32>(std::numeric_limits<int32>::max()))
+                    continue;
+                const auto* constants = frame.AllocatePassData<ForestMeshDrawConstants>(
+                    0u, part.Surface->GetGpuSceneMaterialIndex());
+                DrawCommand command{};
+                command.Material = part.Surface;
+                command.Geometry.Mesh = part.Handle;
+                command.IndexCount = range.IndexCount;
+                command.FirstIndex = range.FirstIndex;
+                command.VertexOffset = static_cast<int32>(range.VertexOffset);
+                command.InstanceCount = static_cast<uint32>(transforms.size());
+                command.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
+                command.Bindings.Buffers = std::span(binding, 1u);
+                cascade.Meshes.push_back(command);
+            }
+        }
+    }
+    return result;
+}
+
 bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
     const CameraData& camera, ForestPlacementView view, std::vector<DrawSubCommand>& standRanges)
 {
@@ -415,19 +609,28 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     }
 
     view.DetailDistance = session.DetailDistance;
-    if (!session.Stream)
+    if (session.Prepared.IsFor(frame))
     {
-        session.WantsCard = session.Placements->CanPrefetchDetails(view);
-        if (!session.WantsCard)
+        if (session.PreparedView != context.ViewId)
             return false;
     }
-    if (!session.EnsureGpu(*context.Device))
-        return false;
-    if (!session.Stream->Prepare(*session.Assets, *context.Device, frame, view, session.Plan))
-        return false;
-    session.Graph = &frame;
+    else
+    {
+        if (!session.Stream)
+        {
+            session.WantsCard = session.Placements->CanPrefetchDetails(view);
+            if (!session.WantsCard)
+                return false;
+        }
+        if (!session.EnsureGpu(*context.Device) ||
+            !session.Stream->Prepare(*session.Assets, *context.Device, frame, view, session.Plan))
+            return false;
+        session.Graph = &frame;
+        session.Prepared.Stamp(frame);
+        session.PreparedView = context.ViewId;
+        session.WantsCard = session.Plan.WantsDetails;
+    }
     session.Declared.Stamp(frame);
-    session.WantsCard = session.Plan.WantsDetails;
     if (session.Plan.DetailedDraws.empty())
     {
         standRanges.swap(session.Plan.StandDraws);

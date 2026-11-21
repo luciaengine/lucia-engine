@@ -16,6 +16,7 @@
 
 #include "Engine/Rendering/CascadeCacheLogFormat.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
+#include "Engine/Rendering/Forest/ForestPlacementFeature.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
@@ -183,13 +184,16 @@ Rendering::RenderGraph::RGPass DeclareCascadeDepth(
     const uint32_t cascadeIndex = passParameters.CascadeIndex;
     const RenderGraph::RGRange layer{.BaseLayer = cascadeIndex, .LayerCount = 1};
     RenderServices* servicesPointer = &services;
+    const auto packedStorage = passParameters.PackedShadowTransforms;
     auto* preparedDepth = sharedDepth ? sharedDepth : AllocatePreparedDepthOnlyPass(frame, std::move(passParameters));
     return frame.AddPass(
         name, Rendering::PassPhase::kEarlySetup,
         [preparedDepth, ownsPreparation = sharedDepth == nullptr, publishAfterSubmission, publishContents, restored, &context,
-         viewId, cascadeIndex, load, target, layer, servicesPointer]
+         viewId, cascadeIndex, load, target, layer, servicesPointer, packedStorage]
         (RenderGraph::RGPassBuilder& builder)
         {
+            for (const auto storage : packedStorage)
+                builder.Read(storage, RenderGraph::RGBufferRead::Storage);
             if (ownsPreparation)
                 builder.Prepare([servicesPointer, preparedDepth](RenderGraph::RGPrepareContext& prepare)
                 {
@@ -263,20 +267,26 @@ void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, Ren
         // peeked (read-only) so the budget can be split across cascades BEFORE
         // any per-slot declare commits. The plan's DeferMask gates both loops
         // below — a deferred depth layer and its tint twin stay coherent.
-        PlanCascadeMotionFrame(frame, rs, ctx);
+        const ForestSunShadows* forest = nullptr;
+        if (ctx.ViewNeedsCascades)
+            if (auto* placements = rs.GetFeature<ForestPlacementFeature>())
+                if (const auto* fit = GetCachedFrameData(ctx.View))
+                    forest = placements->PrepareSunShadows(frame, rs, ctx.View, *fit);
+        PlanCascadeMotionFrame(frame, rs, ctx, forest);
         for (uint32_t c = 0; c < ctx.CascadeCount; ++c)
         {
             std::array<char, 24> suffix{};
             std::snprintf(suffix.data(), suffix.size(), "Cascade%u", c);
             const std::string name = ctx.PassName ? ctx.PassName(suffix.data()) : std::string(suffix.data());
-            DeclareCascadePass(frame, rs, ctx, c, name.c_str());
+            DeclareCascadePass(frame, rs, ctx, c, name.c_str(), forest ? forest->DrawsForCascade(c) : nullptr);
         }
         for (uint32_t c = 0; c < ctx.CascadeCount; ++c)
         {
             char suffix[24];
             std::snprintf(suffix, sizeof(suffix), "GlassTint%u", c);
             const std::string name = ctx.PassName ? ctx.PassName(suffix) : std::string(suffix);
-            DeclareTransmittancePass(frame, rs, ctx, c, ctx.DirectionalLightDirWS, name.c_str());
+            DeclareTransmittancePass(frame, rs, ctx, c, ctx.DirectionalLightDirWS, name.c_str(),
+                                     forest && forest->DrawsForCascade(c));
         }
         // Min/max pyramid over the cascade depth the loops above just wrote —
         // only PCSS reads it, so only PCSS pays for it, and it is always built
@@ -346,7 +356,8 @@ void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, Ren
 
 void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFrame& frame,
                                                     RenderServices& rs,
-                                                    const FeatureDeclareContext& ctx)
+                                                    const FeatureDeclareContext& ctx,
+                                                    const ForestSunShadows* forest)
 {
     namespace RenderGraph = Rendering::RenderGraph;
     const ViewId viewId = ctx.View;
@@ -414,8 +425,9 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
     CascadeMotionSource source = CascadeMotionSource::CasterDeformation;
     for (uint32_t c = 0; c < numCascades; ++c)
     {
+        const bool hasPackedCasters = forest && forest->DrawsForCascade(c);
         const CascadeRenderInputs depthIn = BuildCascadeCacheInputs(
-            rs, viewId, *frameData, c, depthPhys, res, cascadeContrib, m_FitFreezeEnabled,
+            rs, viewId, *frameData, c, depthPhys, res, cascadeContrib || hasPackedCasters, m_FitFreezeEnabled,
             m_CascadeShadowCache, CascadeShadowCache::kDepthSlotBase + c,
             ctx.CascadeMaterialContentKey);
         const bool depthPending = rs.DepthUnderDraw().Peek(
@@ -427,7 +439,7 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
         if (tintDeclares)
         {
             const CascadeRenderInputs tintIn = BuildCascadeCacheInputs(
-                rs, viewId, *frameData, c, tintPhys, res, tintContrib, m_FitFreezeEnabled,
+                rs, viewId, *frameData, c, tintPhys, res, tintContrib || hasPackedCasters, m_FitFreezeEnabled,
                 m_CascadeShadowCache, CascadeShadowCache::kTintSlotBase + c,
                 ctx.CascadeMaterialContentKey);
             const bool tintPending = rs.DepthUnderDraw().Peek(
@@ -554,7 +566,7 @@ void ShadowMapRenderFeature::SubmitRigidCascadeDepth(const RigidCascadeFrame& pe
 
 Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     Rendering::RenderGraph::RGFrame& frame, RenderServices& rs, const FeatureDeclareContext& ctx,
-    uint32_t cascadeIndex, const char* passName)
+    uint32_t cascadeIndex, const char* passName, const ForestCascadeDraws* forest)
 {
     if (!rs.Spine().BindWorldGeometry(frame))
         return {};
@@ -618,7 +630,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     const CascadeRenderInputs cacheIn = BuildCascadeCacheInputs(
         rs, viewId, *frameData, cascadeIndex,
         static_cast<uint64_t>(frame.PhysicalTexture(shadowArr)), res,
-        rs.HasDepthCommands(viewId, DepthPassType::ShadowCascade), m_FitFreezeEnabled,
+        forest || rs.HasDepthCommands(viewId, DepthPassType::ShadowCascade), m_FitFreezeEnabled,
         m_CascadeShadowCache, cacheSlot, ctx.CascadeMaterialContentKey);
     const bool prepareRigid = IsRigidCascadeCacheEnabled() && ctx.HasPendingSkinnedInstances &&
                               !cacheIn.HasContributorDrawCommands && !rs.GetProfile().IsCompat();
@@ -686,6 +698,11 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     params.ViewId = viewId;
     params.PassType = DepthPassType::ShadowCascade;
     params.CascadeIndex = cascadeIndex;
+    if (forest)
+    {
+        params.PackedShadowMeshes = forest->Meshes;
+        params.PackedShadowTransforms = forest->Transforms;
+    }
     params.DepthBiasEnable = true;
     // Pancaking. A directional light's caster ray is infinite, so the cascade's
     // near plane is an arbitrary cut through the caster set rather than a real
@@ -811,7 +828,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
 
 Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
     Rendering::RenderGraph::RGFrame& frame, RenderServices& rs, const FeatureDeclareContext& ctx,
-    uint32_t cascadeIndex, const float lightDirWS[3], const char* passName)
+    uint32_t cascadeIndex, const float lightDirWS[3], const char* passName, bool hasPackedCasters)
 {
     if (!rs.Spine().BindWorldGeometry(frame))
         return {};
@@ -871,7 +888,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
     const CascadeRenderInputs cacheIn = BuildCascadeCacheInputs(
         rs, viewId, *frameData, cascadeIndex,
         static_cast<uint64_t>(frame.PhysicalTexture(tintArr)), res,
-        rs.HasDepthCommands(viewId, DepthPassType::ShadowCascade) ||
+        hasPackedCasters || rs.HasDepthCommands(viewId, DepthPassType::ShadowCascade) ||
             rs.HasDepthCommands(viewId, DepthPassType::TransmittanceCascade),
         m_FitFreezeEnabled, m_CascadeShadowCache, cacheSlot, ctx.CascadeMaterialContentKey);
     if (rs.DepthUnderDraw().Consume(static_cast<uint32_t>(viewId),

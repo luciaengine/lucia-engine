@@ -16,6 +16,7 @@
 #include "Engine/Rendering/TextureService.h"
 #include "Engine/Rendering/ViewRegistry.h"
 #include "Engine/Rendering/WorldDrawBuilder.h"
+#include "Logger/Logger.h"
 #include "Platform/Environment.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
@@ -363,7 +364,8 @@ class DepthPassPreparation
         const bool virtualPunctualProducer = virtualRoutePublished &&
             (m_Data.Params.PassType == DepthPassType::SpotShadow ||
              m_Data.Params.PassType == DepthPassType::PointShadow);
-        if (!depthCommands.empty() || !fallbackHeads.empty() || m_Services.CpuDrawStream ||
+        const auto packed = m_Data.Params.PackedShadowMeshes;
+        if (!depthCommands.empty() || !fallbackHeads.empty() || !packed.empty() || m_Services.CpuDrawStream ||
             (virtualPage && !virtualRoutePublished) ||
             (m_Data.Params.PassType != DepthPassType::ShadowCascade && !virtualPunctualProducer))
         {
@@ -376,7 +378,7 @@ class DepthPassPreparation
             m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
 
         const bool runEntityDraws = !entityKeys.empty();
-        const bool hasAnyDraws = runEntityDraws || !depthCommands.empty() || !fallbackHeads.empty();
+        const bool hasAnyDraws = runEntityDraws || !depthCommands.empty() || !fallbackHeads.empty() || !packed.empty();
         if (!hasAnyDraws)
         {
             LogMeshPassDiagnostic(
@@ -399,7 +401,8 @@ class DepthPassPreparation
             m_Data.Params.PassType == DepthPassType::PointShadow;
         // The survivor stat is produced by the GPU scatter; the compat profile never
         // runs it, so an unguarded early-out would skip every shadow slice forever.
-        if (kShadowWalkEarlyOut && !virtualPage && !m_Services.CpuDrawStream && isOpaqueShadowSlice && depthCommands.empty() && m_Services.Streams)
+        if (kShadowWalkEarlyOut && !virtualPage && !m_Services.CpuDrawStream && isOpaqueShadowSlice &&
+            depthCommands.empty() && packed.empty() && m_Services.Streams)
         {
             const uint32_t survivors = m_Services.Streams->PreviousFrameShadowSurvivors(
                 static_cast<uint32_t>(m_Data.Params.ViewId), m_CascadeIndex, m_Data.Params.Phase);
@@ -507,6 +510,8 @@ class DepthPassPreparation
             PrepareContributor(command);
         for (const auto& command : fallbackHeads)
             PrepareContributor(command);
+        for (const auto& command : packed)
+            PreparePackedShadowMesh(command);
 
         for (auto& draw : m_Data.Draws)
             draw.Command.Bindings.PushConstants = draw.PushConstantSize == 0
@@ -953,6 +958,55 @@ class DepthPassPreparation
                      ChooseDepthSegmentPipeline(batch.Head.Keywords, batch.Head.UseSharedDepth,
                          batch.Head.ComposesFragment, crossfading).Keywords |
                          Rendering::MaterialKeyword::IndexedDepthOwner});
+        }
+    }
+
+    void PreparePackedShadowMesh(const DrawCommand& command)
+    {
+        const auto* mesh = m_Services.Meshes.Find(command.Geometry.Mesh);
+        const Material* material = command.Material;
+        if (!mesh || !material || command.UseIndirect || Rendering::IsSkinned(mesh->vertexFlags))
+            return;
+        const auto alpha = material->GetAlphaMode();
+        if (alpha != MaterialAlphaMode::Opaque && alpha != MaterialAlphaMode::Mask)
+            return;
+
+        Rendering::MeshGPUEntryBindings geometry{};
+        if (!m_Services.Meshes.TryGetDrawableBindings(*mesh, geometry))
+            return;
+        const auto flags = Rendering::BoundStreamVertexFlags(*mesh, geometry, material->IgnoresVertexColor());
+        auto keywords = Rendering::MaterialKeyword::Instanced | Rendering::MaterialKeyword::ForestMeshInstances;
+        if (alpha == MaterialAlphaMode::Mask)
+            keywords |= Rendering::MaterialKeyword::DepthOnlyFragment;
+        const auto [pipeline, variant, concreteId] = m_Services.Materials.Variants().PrepareDepthInstancedVariant(
+            *material, flags, mesh->topology, keywords, m_Data.Params.RasterizationSamples,
+            m_Data.Params.DepthBiasEnable, m_Data.Params.DepthClampEnable, m_Services.FrontFace, m_Context, false);
+        if (!pipeline.IsValid() || !variant)
+        {
+            MarkUnderDraw(DepthUnderDrawReason::DepthVariantPending, mesh);
+            return;
+        }
+        auto inputs = m_Data.Inputs;
+        inputs.PassKeywords = keywords;
+        const auto bindings = m_Services.Materials.Binder().PrepareMaterialForDraw(
+            inputs, *material, pipeline, variant->VariantMeta.get(), command.Bindings, 0u);
+        if (!bindings.Pipeline.IsValid())
+        {
+            MarkUnderDraw(DepthUnderDrawReason::BindPending, mesh);
+            return;
+        }
+        auto packed = command;
+        static const auto producer = Rendering::DrawProducerRegistry::Register("ForestShadowMeshes");
+        packed.Producer = producer;
+        Append(packed, bindings, geometry, flags);
+        m_Data.Draws.back().ConcretePipeline = concreteId;
+        static const bool diagnostics = Platform::EnvironmentSwitchEnabled("GE_FOREST_SHADOW_STATS", false);
+        if (diagnostics)
+        {
+            Logger::Log::Info("Forest.ShadowDrawPrepared view={} cascade={} mesh={} material={} masked={} instances={} indices={}",
+                static_cast<uint32>(m_Data.Params.ViewId), m_Data.Params.CascadeIndex, mesh->gpuMeshIndex,
+                material->GetGpuSceneMaterialIndex(), alpha == MaterialAlphaMode::Mask, command.InstanceCount,
+                command.IndexCount);
         }
     }
 

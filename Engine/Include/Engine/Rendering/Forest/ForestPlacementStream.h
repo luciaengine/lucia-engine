@@ -34,7 +34,8 @@ public:
     ForestPlacementStream& operator=(const ForestPlacementStream&) = delete;
 
     bool Prepare(AssetManager& assets, const ForestPlacementView& view, uint64 frame, uint64 completedReaders,
-                 ForestPlacementFrame& plan, std::vector<ForestPlacementUpload>& uploads);
+                 ForestPlacementFrame& plan, std::vector<ForestPlacementUpload>& uploads,
+                 std::span<const ForestShadowPage> shadowPages = {});
 
 private:
     struct ReadPage

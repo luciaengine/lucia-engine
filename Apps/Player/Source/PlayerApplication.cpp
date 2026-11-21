@@ -697,8 +697,10 @@ static ScopedSubscription AttachForestStand(SceneLoadInstantiated& instantiated,
     const uint32 nearBudget = detailEnabled ? std::min(config.nearMeshBudget, constrained ? 128u : 256u) : 0u;
     std::string error;
     const uint32 transitionSlots = constrained ? readsPerFrame : 0;
+    const bool forestShadows = detailEnabled && Platform::EnvironmentSwitchEnabled("GE_PACKED_FOREST_SHADOWS", false);
+    const uint32 shadowSlots = forestShadows ? (constrained ? 16u : 48u) : 0;
     auto placements = Engine::Renderer::ForestPlacementRuntime::OpenQuadStand(
-        archive, error, slots, readsPerFrame, nearBudget != 0, transitionSlots);
+        archive, error, slots, readsPerFrame, nearBudget != 0 || forestShadows, transitionSlots, shadowSlots);
     if (!placements)
     {
         instantiated.Fail("Forest stand archive '" + config.archive + "': " + error);

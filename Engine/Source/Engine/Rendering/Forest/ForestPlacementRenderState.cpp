@@ -12,7 +12,8 @@ ForestPlacementRenderState::ForestPlacementRenderState(std::shared_ptr<ForestPla
 }
 
 bool ForestPlacementRenderState::Prepare(AssetManager& assets, Rendering::IDevice& device,
-    Rendering::RenderGraph::RGFrame& graph, const ForestPlacementView& view, ForestPlacementFrame& plan)
+    Rendering::RenderGraph::RGFrame& graph, const ForestPlacementView& view, ForestPlacementFrame& plan,
+    std::span<const ForestShadowPage> shadowPages)
 {
     if (m_Prepared.Frame)
         return false;
@@ -25,14 +26,17 @@ bool ForestPlacementRenderState::Prepare(AssetManager& assets, Rendering::IDevic
     ForestPlacementView demand = view;
     if (!m_ReadFences.empty() &&
         device.QueryGpuSyncToken(m_ReadFences.front().Token) == Rendering::IDevice::GpuSyncStatus::Unknown)
+    {
         demand.DetailDistance = 0;
-    if (!m_Stream.Prepare(assets, demand, m_LastFinished + 1, completedReaders, plan, m_Uploads))
+        shadowPages = {};
+    }
+    if (!m_Stream.Prepare(assets, demand, m_LastFinished + 1, completedReaders, plan, m_Uploads, shadowPages))
         return false;
 
     m_Uploader.Record(graph, m_Uploads);
     m_Uploads.clear();
     m_Prepared.Stamp(graph);
-    m_DeclaredDetail = !plan.DetailedDraws.empty();
+    m_DeclaredDetail = !plan.DetailedDraws.empty() || !plan.ShadowDraws.empty();
     return true;
 }
 
