@@ -40,6 +40,19 @@ set_target_properties(FontAtlasCoreTests PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
+set(_ge_text_fixtures
+    "${PROJECT_SOURCE_DIR}/Apps/Editor/Assets/Fonts/Roboto-Regular.ttf"
+    "${PROJECT_SOURCE_DIR}/Apps/Editor/Assets/Fonts/Roboto-Italic.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansArabic-Regular.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSans-Regular.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansDevanagari-Regular.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansHebrew-Regular.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansJP-Regular.otf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansThai-Regular.ttf"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoCJK-OFL.txt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/Noto-OFL.txt"
+)
+
 # Output layout: bin/<Config>/Tests, with the runtime DLL closure staged
 # beside each exe so the binaries run standalone. See cmake/OutputLayout.cmake.
 foreach(_ge_t IN ITEMS FontAtlasCoreTests FontAtlasShapingTests)
@@ -49,36 +62,17 @@ foreach(_ge_t IN ITEMS FontAtlasCoreTests FontAtlasShapingTests)
     # alone fails on Windows: its MenuIconBitmap_Win32.cpp calls the SVG
     # rasteriser and image decoder that live in Engine, so Engine is linked.
     target_link_libraries(${_ge_t} PRIVATE Engine)
-    add_custom_command(TARGET ${_ge_t} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${_ge_t}>/TestData/Text"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${PROJECT_SOURCE_DIR}/Apps/Editor/Assets/Fonts/Roboto-Regular.ttf"
-            "${PROJECT_SOURCE_DIR}/Apps/Editor/Assets/Fonts/Roboto-Italic.ttf"
-            "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansArabic-Regular.ttf"
-            "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSans-Regular.ttf"
-            "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansDevanagari-Regular.ttf"
-            "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansHebrew-Regular.ttf"
-            "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansJP-Regular.otf"
-            "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoSansThai-Regular.ttf"
-            "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/NotoCJK-OFL.txt"
-            "${CMAKE_CURRENT_SOURCE_DIR}/Fonts/Noto-OFL.txt"
-            "$<TARGET_FILE_DIR:${_ge_t}>/TestData/Text"
-        VERBATIM)
+    foreach(_ge_fixture IN LISTS _ge_text_fixtures)
+        get_filename_component(_ge_fixture_name "${_ge_fixture}" NAME)
+        ge_stage_test_asset(${_ge_t} "${_ge_fixture}" "TestData/Text/${_ge_fixture_name}")
+    endforeach()
 endforeach()
 
 include(GoogleTest)
 add_test(NAME FontAtlasCoreTests COMMAND FontAtlasCoreTests)
 add_test(NAME FontAtlasShapingTests COMMAND FontAtlasShapingTests)
 
-
 foreach(_ge_text_test IN ITEMS FontAtlasCoreTests FontAtlasShapingTests)
-    add_custom_command(TARGET ${_ge_text_test} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts"
-            "$<TARGET_FILE_DIR:${_ge_text_test}>/Assets/Fonts"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_CURRENT_SOURCE_DIR}/Fonts"
-            "$<TARGET_FILE_DIR:${_ge_text_test}>/Assets/Fonts")
     set_tests_properties(${_ge_text_test} PROPERTIES
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:${_ge_text_test}>")
 endforeach()
