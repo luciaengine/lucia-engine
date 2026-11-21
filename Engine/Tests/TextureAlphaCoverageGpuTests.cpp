@@ -18,6 +18,8 @@
 #include "TestCameraEye.h"
 #include "TestDeviceHelper.h"
 #include "TextureCookTestFixtures.h"
+#include "UI/UIElement.h"
+#include "UI/UIManager.h"
 
 #include <algorithm>
 #include <array>
@@ -991,6 +993,54 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     EXPECT_EQ(WidthOf(direct), 512u);
     EXPECT_EQ(loaded->GetPixelData(), nullptr);
     EXPECT_EQ(Render(direct, 16, 16, 0), Render(streamed, 16, 16, 0));
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, AStreamedMaterialTextureAlsoUploadsAsAUiBackground)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    constexpr uint32 kFullWidth = 512;
+    constexpr uint32 kTailWidth = kFullWidth / 2;
+    constexpr uint32 kProbeWidth = 16;
+    Access::SetMipBudget(m_Textures, kMiB);
+    const GUID texture = Register(Image(false, kFullWidth), false);
+    ASSERT_FALSE(texture.IsNull());
+
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingUiBackground");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    const auto tail = WaitForBoundTexture(*material, slot);
+    ASSERT_EQ(WidthOf(tail), kTailWidth);
+
+    auto& assets = EngineCore::GetInstance().GetAssetManager();
+    const auto loaded = std::dynamic_pointer_cast<TextureAsset>(assets.GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->GetPixelData(), nullptr);
+
+    UIManager ui(m_Device.get(), &assets);
+    ui.SetRoot(std::make_unique<UIElement>());
+    uint32 width = 0;
+    uint32 height = 0;
+    const auto background = ui.BackgroundImages().TryGetHandle(texture, &width, &height);
+    ASSERT_TRUE(background.IsValid());
+    EXPECT_EQ(width, kFullWidth);
+    EXPECT_EQ(height, kFullWidth);
+    EXPECT_EQ(WidthOf(background), kFullWidth);
+    EXPECT_EQ(ui.BackgroundImages().RasterMipLevelsForTesting(texture),
+              ComputeTextureCookMipCount(kFullWidth, kFullWidth, TextureCookSettings{}));
+    EXPECT_EQ(material->GetTexture(slot), tail);
+    EXPECT_EQ(loaded->GetPixelData(), nullptr);
+
+    const auto backgroundPixels = Render(background, kProbeWidth, kProbeWidth, 1);
+    ASSERT_FALSE(backgroundPixels.empty());
+    EXPECT_EQ(backgroundPixels, Render(tail, kProbeWidth, kProbeWidth, 0));
 
     m_Textures.OnMaterialUnregistered(materialGuid);
     m_Materials.Unregister(materialGuid);
