@@ -36,13 +36,19 @@ std::string PageStoreReader::Open(const std::filesystem::path& file, PageFieldKi
     if (std::string reason = ReadPageStoreHead(*reader, kind, baseOffset, available, layout); !reason.empty())
         return reason + " (" + file.string() + ")";
 
-    m_File = file;
+    m_File = std::make_shared<const std::filesystem::path>(file);
     m_BaseOffset = baseOffset;
     m_Codec = MakePageCodec(layout.Header);
     m_Layout = std::move(layout);
     m_Reader = std::move(reader);
     m_IsOpen = true;
     return {};
+}
+
+const std::filesystem::path& PageStoreReader::File() const
+{
+    static const std::filesystem::path emptyPath;
+    return m_File ? *m_File : emptyPath;
 }
 
 bool PageStoreReader::ReadPageBytes(const PageAddress& address, ByteBuffer& outBytes) const
