@@ -1093,6 +1093,11 @@ if(ENABLE_TSAN)
 	message(STATUS "ThreadSanitizer: ENABLED")
 	add_compile_options("$<$<CONFIG:Debug>:-fsanitize=thread;-fno-omit-frame-pointer>")
 	add_link_options("$<$<CONFIG:Debug>:-fsanitize=thread>")
+	if(APPLE)
+		# The runtime adds a personality routine to those of C++, Objective-C and Rust. The compact
+		# unwind format of ld holds 3, so the link of Engine fails unless the format is off.
+		add_link_options("$<$<CONFIG:Debug>:LINKER:-no_compact_unwind>")
+	endif()
 	# Every test executable starts with the runtime options in Tests/ThreadSanitizerOptions.cpp.
 	include(cmake/ThreadSanitizerOptions.cmake)
 endif()
