@@ -3,8 +3,11 @@
 #include "LoggerInternals.h"
 
 #include <array>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <thread>
 
 namespace LoggerOwnershipTest
@@ -163,5 +166,68 @@ TEST_F(LoggerOwnershipTestFixture, ConcurrentProducersKeepTheirOwnCallOrder)
     }
     for (const auto count : next)
         EXPECT_EQ(count, 64u);
+}
+
+// Exit codes of the redirect child process.
+constexpr int kDrainTookNoBatch = 2;
+constexpr int kLineReachedNoSink = 3;
+constexpr int kLineReachedAdoptedSink = 4;
+constexpr std::chrono::seconds kChildTimeout{5};
+
+// True when the drain thread took the queued records into its batch before the deadline.
+bool WaitForDrainToTakeQueue(Log::LoggerState& state)
+{
+    const auto deadline = std::chrono::steady_clock::now() + kChildTimeout;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        {
+            std::lock_guard queueLock(state.QueueMutex);
+            if (state.Queue.empty())
+                return true;
+        }
+        std::this_thread::yield();
+    }
+    return false;
+}
+
+// Parks the drain thread with one record, adopts a second state, then lets the drain thread dispatch.
+// Exits 0 when the record reaches the sink of the state it was queued in.
+[[noreturn]] void DispatchRecordQueuedBeforeRedirect(const CaptureSink& ownSink)
+{
+    Log::LoggerState& ownState = *Log::GetStateForSharing();
+    static Log::LoggerState adoptedState;
+    auto adoptedSink = std::make_unique<CaptureSink>();
+    const CaptureSink& adoptedSpy = *adoptedSink;
+    adoptedState.Sinks.push_back(std::move(adoptedSink));
+    {
+        std::unique_lock sinkLock(ownState.Mutex);
+        Log::Info("queued before the redirect");
+        if (!WaitForDrainToTakeQueue(ownState))
+            std::_Exit(kDrainTookNoBatch);
+        Log::RedirectToSharedState(&adoptedState);
+    }
+    // The drain thread writes under ownState.Mutex on both paths, so both sinks are read under it.
+    const auto deadline = std::chrono::steady_clock::now() + kChildTimeout;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        {
+            std::lock_guard sinkLock(ownState.Mutex);
+            if (adoptedSpy.GetCount() > 0)
+                std::_Exit(kLineReachedAdoptedSink);
+            if (ownSink.GetCount() > 0)
+                std::_Exit(0);
+        }
+        std::this_thread::yield();
+    }
+    std::_Exit(kLineReachedNoSink);
+}
+
+// A drain thread serves the state that started it. A host that adopts another state later must not make it
+// write its batch into the adopted sinks while it holds only its own state's lock.
+TEST_F(LoggerOwnershipTestFixture, RecordQueuedBeforeARedirectReachesItsOwnSink)
+{
+    // The child must start a fresh process: a forked child has no drain thread.
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(DispatchRecordQueuedBeforeRedirect(*Spy), ::testing::ExitedWithCode(0), "");
 }
 } // namespace
