@@ -283,21 +283,29 @@ std::vector<VirtualShadowPage> DecodeVirtualShadowFeedback(
         {
             const uint32_t side = baseSide >> mip;
             next -= side * side;
-            for (uint32_t offset = 0; offset < side * side; ++offset)
+            const uint64_t last = next + side * side;
+            // Visit only the set bits, in ascending order.
+            for (uint64_t word = next / 32; word * 32 < last; ++word)
             {
-                const uint64_t bit = next + offset;
-                if ((words[bit / 32] & (uint32_t{1} << (bit % 32))) == 0)
-                    continue;
-                VirtualShadowPage page = origin;
-                page.Mip = static_cast<uint8_t>(mip);
-                page.X += offset % side;
-                page.Y += offset / side;
-                if (active.DirectionalGrid && !FindVirtualShadowFeedbackBit(active, page))
-                    continue;
-                if (mip == old->LastMip && origin.Family != VirtualShadowLight::Directional)
-                    result.push_back(page);
-                else
-                    detail[i].push_back(page);
+                uint32_t bits = words[word];
+                if (word * 32 < next)
+                    bits &= ~uint32_t{0} << (next % 32);
+                if ((word + 1) * 32 > last)
+                    bits &= (uint32_t{1} << (last % 32)) - 1;
+                for (; bits != 0; bits &= bits - 1)
+                {
+                    const auto offset = static_cast<uint32_t>(word * 32 + std::countr_zero(bits) - next);
+                    VirtualShadowPage page = origin;
+                    page.Mip = static_cast<uint8_t>(mip);
+                    page.X += offset % side;
+                    page.Y += offset / side;
+                    if (active.DirectionalGrid && !FindVirtualShadowFeedbackBit(active, page))
+                        continue;
+                    if (mip == old->LastMip && origin.Family != VirtualShadowLight::Directional)
+                        result.push_back(page);
+                    else
+                        detail[i].push_back(page);
+                }
             }
         }
         if (active.DirectionalGrid)
