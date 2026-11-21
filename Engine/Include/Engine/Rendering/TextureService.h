@@ -304,7 +304,7 @@ class TextureService
     // Render thread only — called once per frame from BeginWorldDrawFrame.
     void FlushPendingUploads();
 
-    // True when material textures stream their mips under a budget (GE_MATERIAL_MIP_BUDGET_MB).
+    // True when material textures stream their mips under a budget (MaterialMipBudget::ForPlatform).
     bool StreamsMaterialMips() const { return m_MaterialMipBudgetBytes != 0; }
     // Gives the streams their order: the screen coverage of each material, by GPUScene material
     // index (MaterialScreenDemand). The stream with the most coverage per resident texel gains detail

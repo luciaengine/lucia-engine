@@ -406,6 +406,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/CpuDrawStreamBuilder.cpp
 	Source/Engine/Rendering/MaterialBinder.cpp
 	Source/Engine/Rendering/MaterialBindingCache.cpp
+	Source/Engine/Rendering/MaterialMipStreaming/MaterialMipBudget.cpp
 	Source/Engine/Rendering/MaterialMipStreaming/MaterialMipStepPlanner.cpp
 	Source/Engine/Rendering/MaterialMipStreaming/MaterialMipStreamSource.cpp
 	Source/Engine/Rendering/MaterialMipStreaming/MaterialScreenDemand.cpp
@@ -2173,6 +2174,7 @@ endif()
                 Tests/TextureServiceSamplerTests.cpp
                 Tests/TextureGPUCacheTests.cpp
                 Tests/MaterialMipDemandSystemTests.cpp
+                Tests/MaterialMipBudgetTests.cpp
                 Tests/MaterialMipStepPlannerTests.cpp
                 Tests/MaterialScreenDemandTests.cpp
                 Tests/VideoTextureSystemTests.cpp

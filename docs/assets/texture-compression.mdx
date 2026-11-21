@@ -54,10 +54,21 @@ fails to load is reported in the log with the fix, "rebuild the package": export
 
 ## Material mip streaming
 
-Set `GE_MATERIAL_MIP_BUDGET_MB` before starting the editor or game to enable GPU
-mip streaming for asynchronously loaded material textures with a cooked or container mip
-chain. The value is in MiB. Leave it unset or set it to zero to use full
-resolution at first upload.
+The engine streams the mips of material textures that have a cooked or container mip
+chain. The textures share one budget, which is a share of the memory that the GPU
+reports:
+
+| Device | Budget |
+| --- | --- |
+| Discrete GPU | One half of its video memory. |
+| Unified memory, where the CPU and the GPU share the RAM | One quarter of that memory. |
+| Steam Deck | 2048 MiB. |
+| A device that reports no memory size | 1024 MiB. |
+
+A scene whose material textures fit the budget loads each texture at full resolution.
+A scene that does not fit keeps the most detail where the textures are the largest on
+screen. A build that is not a Release build reads `GE_MATERIAL_MIP_BUDGET_MB`, a budget
+in MiB for tests. A value of zero there turns streaming off.
 
 A texture with a level larger than 256 pixels on its longest edge is eligible.
 It starts at the largest level that fits the free budget. Textures take the

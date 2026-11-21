@@ -11,6 +11,7 @@
 
 #include "Core/DebugMetrics.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MaterialMipStreaming/MaterialMipBudget.h"
 #include "Engine/Rendering/MaterialBinder.h"
 #include "Engine/Rendering/MaterialCompiler.h"
 #include "Engine/Rendering/ShaderGraphMaterial.h"
@@ -163,14 +164,6 @@ TextureService::SelectMaterialIndexingMode(const Rendering::RenderingDeviceCapab
 bool TextureService::Initialize(IDevice* device, MaterialRegistry& materials,
                                 const Rendering::RendererProfile& profile)
 {
-    m_MaterialMipBudgetBytes = 0;
-    if (const char* value = std::getenv("GE_MATERIAL_MIP_BUDGET_MB"))
-    {
-        constexpr uint64_t kBytesPerMiB = 1024 * 1024;
-        if (const auto budgetMiB = ParseUnsigned(value); budgetMiB && *budgetMiB <= UINT32_MAX)
-            m_MaterialMipBudgetBytes = *budgetMiB * kBytesPerMiB;
-    }
-
     m_Device = device;
     m_Materials = &materials;
     m_Profile = profile;
@@ -191,6 +184,7 @@ bool TextureService::Initialize(IDevice* device, MaterialRegistry& materials,
     // shared SSBO in both modes.
     const auto caps = m_Device->GetCapabilities();
     m_IndexingMode = SelectMaterialIndexingMode(caps);
+    m_MaterialMipBudgetBytes = MaterialMipBudget::ForPlatform(caps);
     // Classic is a supported path, not a failure, but it is a different renderer from the
     // one a full-profile device runs — and nothing else in the boot log names it. Say which
     // mode this device took and what put it there, so a materials question asked about a
