@@ -2,10 +2,13 @@
 
 #include "Engine/Rendering/Forest/ForestPlacementGpuData.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/PassPhase.h"
 #include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
+#include <algorithm>
+#include <bit>
 #include <cstring>
 
 namespace GameEngine::Engine::Renderer
@@ -63,7 +66,7 @@ bool ForestPlacementCull::Initialize(IDevice& device)
 
 std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGFrame& frame,
     std::string_view scope, BufferHandle slots, uint32 slotCount, const ForestPlacementGpuView& view,
-    std::span<const ForestPlacementGpuPage> pages) const
+    std::span<const ForestPlacementGpuPage> pages)
 {
     if (!m_Pipeline.IsValid() || !slots.IsValid() || pages.empty() || pages.size() > slotCount ||
         pages.size() > kMaxCullGroups)
@@ -73,7 +76,11 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
         return std::nullopt;
 
     const uint64 slotBytes = uint64{slotCount} * kSlotSize * sizeof(PageStreaming::PackedPlacement);
-    const uint64 visibleBytes = uint64{slotCount} * kSlotSize * sizeof(ForestPlacementGpuVisible);
+    // Each submitted page emits at most one row per placement. Keep capacity
+    // when demand drops to avoid replacing in-flight buffers during camera motion.
+    const uint32 visiblePages = std::min(slotCount, std::max(m_VisiblePageCapacity,
+        std::bit_ceil(static_cast<uint32>(pages.size()))));
+    const uint64 visibleBytes = uint64{visiblePages} * kSlotSize * sizeof(ForestPlacementGpuVisible);
     const auto pageUpload = frame.AllocUpload(pages.size_bytes());
     const auto viewUpload = frame.AllocUpload(sizeof(view));
     const auto argsUpload = frame.AllocUpload(sizeof(ForestPlacementIndirectDraw));
@@ -103,6 +110,14 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
     if (!visible.IsValid() || !args.IsValid() || !frame.PhysicalBuffer(visible).IsValid() ||
         !frame.PhysicalBuffer(args).IsValid())
         return std::nullopt;
+    if (m_VisiblePageCapacity != visiblePages)
+    {
+        m_VisiblePageCapacity = visiblePages;
+        static const bool logCapacity = Platform::EnvironmentSwitchEnabled("GE_FOREST_STATS", false);
+        if (logCapacity)
+            LOG_INFO("Forest: visible placement buffer '{}' reserves {} pages ({} submitted, {} slots, {} bytes)",
+                     scope, visiblePages, pages.size(), slotCount, visibleBytes);
+    }
 
     const auto reset = frame.AddPass("Forest.ResetIndirectDraw", PassPhase::kEarlySetup,
         [=](RGPassBuilder& pass)

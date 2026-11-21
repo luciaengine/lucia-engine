@@ -37,9 +37,10 @@ public:
     /// reads Args as indirect, Slots/Visible/Pages as storage and View as uniform.
     [[nodiscard]] std::optional<DrawBuffers> Declare(Rendering::RenderGraph::RGFrame& frame,
         std::string_view scope, Rendering::BufferHandle slots, uint32 slotCount, const ForestPlacementGpuView& view,
-        std::span<const ForestPlacementGpuPage> pages) const;
+        std::span<const ForestPlacementGpuPage> pages);
 
 private:
+    uint32 m_VisiblePageCapacity = 0;
     Rendering::ComputePipelineId m_Pipeline;
     Rendering::DescriptorSetLayoutDesc m_PlacementsLayout;
     Rendering::DescriptorSetLayoutDesc m_ViewLayout;
