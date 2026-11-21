@@ -13,6 +13,7 @@
 #include "TestTempDir.h"
 #include "TestUtils.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 
@@ -97,4 +98,29 @@ TEST(ImpostorSurfaceCompose, ThePackedForestCardComposesForColorAndDepth)
                        "packed forest color");
         ExpectCompiles(card, MaterialKeyword::DepthOnlyFragment, "packed forest depth");
     }
+}
+
+TEST(ImpostorSurfaceCompose, PackedNearMeshesReflectTheTransformBufferName)
+{
+    MaterialDocument mesh{};
+    mesh.lightingModel = "StandardPBR";
+    mesh.surfaceShader = "Surfaces/standard_pbr.glsl";
+    mesh.alphaMode = MaterialAlphaMode::Mask;
+    mesh.doubleSided = true;
+    const auto result = Build(mesh, MaterialKeyword::Instanced | MaterialKeyword::ForestMeshInstances |
+                                   MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows);
+    if (ShadercMissing(result))
+        GTEST_SKIP() << "shaderc not built into this target";
+    for (const auto& error : result.errors)
+        ADD_FAILURE() << error;
+    ASSERT_TRUE(result.success);
+    ASSERT_NE(result.package, nullptr);
+
+    const auto& sets = result.package->meta.Sets;
+    const auto set = std::ranges::find(sets, 0u, &DescriptorSetMeta::Set);
+    ASSERT_NE(set, sets.end());
+    const auto binding = std::ranges::find(set->Bindings, 68u, &DescriptorBindingMeta::Binding);
+    ASSERT_NE(binding, set->Bindings.end());
+    EXPECT_EQ(binding->ResolvedNameId(), HashStringId("ForestMeshTransforms")) << binding->Name;
+    EXPECT_EQ(binding->Type, ShaderMetaBindingType::kStorageBuffer);
 }
