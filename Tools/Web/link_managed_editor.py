@@ -138,6 +138,27 @@ def split_editor_data(source, archive, framework):
     return source[:start] + json.dumps(startup_metadata) + source[end:end + 2] + shader_call + source[end + 2:]
 
 
+def defer_script_compiler(boot):
+    """Move the C# compiler and its reference archive out of the boot download."""
+    start = boot.index("/*json-start*/") + len("/*json-start*/")
+    end = boot.index("/*json-end*/", start)
+    config = json.loads(boot[start:end])
+    resources = config["resources"]
+    script_assemblies = (
+        "Microsoft.CodeAnalysis.wasm",
+        "Microsoft.CodeAnalysis.CSharp.wasm",
+        "EntitySystemGenerator.wasm",
+        "GameEngine.Scripting.Web.wasm",
+    )
+    eager = resources["assembly"]
+    compiler = {asset["virtualPath"]: asset for asset in eager if asset["virtualPath"] in script_assemblies}
+    if compiler.keys() != set(script_assemblies):
+        raise ValueError("The .NET boot configuration is missing a browser script compiler assembly")
+    resources["assembly"] = [asset for asset in eager if asset["virtualPath"] not in compiler]
+    config["luciaScriptCompiler"] = [compiler[name] for name in script_assemblies]
+    return boot[:start] + json.dumps(config, indent=2) + boot[end:]
+
+
 def patch_glue(framework, archive):
     loader = framework / "dotnet.js"
     boot = loader.read_text()
@@ -255,7 +276,8 @@ def patch_glue(framework, archive):
         "if(n.info.isLoaded)return e.unusedWorkers.splice(t,1),n",
     )
     runtime.write_text(patched)
-    write_file(loader, boot.replace(digest(source), digest(patched)))
+    boot = boot.replace(digest(source), digest(patched))
+    write_file(loader, defer_script_compiler(boot))
 
 
 def main():
