@@ -29,6 +29,12 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+// Writes one JSON document and resolves once it has left the process: stdout to a pipe is
+// written asynchronously, and exiting before the write ends cuts a long answer short.
+function print(value: unknown): Promise<void> {
+  return new Promise(resolve => process.stdout.write(JSON.stringify(value) + "\n", () => resolve()));
+}
+
 function refusal(text: string) {
   return { content: [{ type: "text", text }], isError: true };
 }
@@ -38,17 +44,17 @@ async function main(): Promise<number> {
   const textOnly = flags.includes("--text-only");
   const tools = servedTools();
   if (command === "list") {
-    console.log(JSON.stringify(tools.map(tool => ({
+    await print(tools.map(tool => ({
       name: tool.name,
       description: tool.description,
       inputSchema: zodToJsonSchema(z.object(tool.schema), { target: "openApi3" }),
-    }))));
+    })));
     return 0;
   }
   if (command === "call" && name) {
     const tool = tools.find(t => t.name === name);
     if (!tool) {
-      console.log(JSON.stringify(refusal(`The assistant has no tool '${name}'. Call one of the listed tools.`)));
+      await print(refusal(`The assistant has no tool '${name}'. Call one of the listed tools.`));
       return 0;
     }
     let args: unknown;
@@ -56,13 +62,13 @@ async function main(): Promise<number> {
       const text = await readStdin();
       args = text.trim() === "" ? {} : JSON.parse(text);
     } catch (err: any) {
-      console.log(JSON.stringify(refusal(`The arguments of ${name} are not JSON: ${err?.message ?? String(err)}`)));
+      await print(refusal(`The arguments of ${name} are not JSON: ${err?.message ?? String(err)}`));
       return 0;
     }
     const parsed = z.object(tool.schema).safeParse(args);
     if (!parsed.success) {
       const issues = parsed.error.issues.map(i => `${i.path.join(".") || "(arguments)"}: ${i.message}`).join("; ");
-      console.log(JSON.stringify(refusal(`The arguments of ${name} do not match its schema: ${issues}`)));
+      await print(refusal(`The arguments of ${name} do not match its schema: ${issues}`));
       return 0;
     }
     const answer = await callServedTool(tool, parsed.data as Record<string, unknown>);
@@ -70,7 +76,7 @@ async function main(): Promise<number> {
       answer.content = answer.content.map(block => block.type === "image"
         ? { type: "text", text: `[A ${block.mimeType} image was taken; this connection gets tool results as text only.]` }
         : block);
-    console.log(JSON.stringify(answer));
+    await print(answer);
     return 0;
   }
   console.error("Usage: assistant-bridge list | assistant-bridge call <tool> [--text-only] (arguments as JSON on stdin)");
