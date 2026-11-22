@@ -12,15 +12,15 @@ namespace GameEngine::Engine::Renderer { class RenderServices; }
 namespace GameEngine::Editor
 {
 
-// Creates a "sprite" entity for a dropped texture: a plane primitive whose
-// X/Z scale matches the texture's pixel aspect ratio (longest side = 1 world
-// unit). A fresh .material file is written under <project>/Assets/Materials/
-// with the texture bound to the albedoMap slot so the sprite survives scene
-// serialization.
+// Creates a "sprite" entity for a dropped texture.
 //
-// When `orientForCamera2D` is true, the mesh is the PlaneSpriteUv primitive with
-// +90° roll so bitmap rows line up upright for 2D scene cameras (with correct
-// single-sided shading).
+// When `orientForCamera2D` is true (a 2D view), the entity is a Sprite2D whose pixels per unit
+// is the scene's tile density (TileMapECS::ResolveScenePixelsPerUnit), or one unit per texel in a
+// scene without tiles, so it matches the tiles around it.
+//
+// Otherwise it is a plane primitive scaled to the texture's pixel size, one unit per texel, with a
+// fresh .material under <project>/Assets/Materials/ binding the texture to albedoMap, so the card
+// survives scene serialization and lights with the scene.
 //
 // The texture must already be loaded: the factory reads it from the asset cache
 // and never loads it, so it never waits on the main thread. Callers load it first

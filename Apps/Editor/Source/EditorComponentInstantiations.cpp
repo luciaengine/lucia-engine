@@ -10,6 +10,7 @@
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/Particles.h"
 #include "Components/Rendering/SkyEnvironment.h"
+#include "Components/Rendering/Sprite2D.h"
 #include "Components/Rendering/Skybox.h"
 #include "Components/SceneEntityTag.h"
 #include "Components/Transform.h"
@@ -35,6 +36,7 @@ using GameEngine::Components::PolyhavenPlaceholder;
 using GameEngine::Components::SceneEntityTag;
 using GameEngine::Components::Skybox;
 using GameEngine::Components::SkyEnvironment;
+using GameEngine::Components::Sprite2D;
 using GameEngine::Components::Transform;
 using GameEngine::Components::WorldTransform;
 
@@ -127,6 +129,8 @@ template void World::RemoveComponentImmediate<ParticleCollisionEventsBuffer>(Ent
 
 template void World::AddComponent<MeasureComponent>(EntityHandle, const MeasureComponent&);
 template void World::AddComponentImmediate<MeasureComponent>(EntityHandle, const MeasureComponent&);
+// A texture dropped into a 2D view becomes a Sprite2D (SpriteEntityFactory).
+template void World::AddComponentImmediate<Sprite2D>(EntityHandle, const Sprite2D&);
 template MeasureComponent* World::GetComponentForWrite<MeasureComponent>(EntityHandle);
 template const MeasureComponent* World::GetComponent<MeasureComponent>(EntityHandle) const;
 template bool World::HasComponent<MeasureComponent>(EntityHandle) const;
