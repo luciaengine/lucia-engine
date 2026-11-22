@@ -2186,6 +2186,13 @@ void TextureService::FinishMaterialMipStep()
     RetireCacheEntry(candidate.Resident);
 }
 
+Rendering::TextureHandle TextureService::GetMaterialTexture(const GUID& textureGuid) const
+{
+    std::lock_guard lock(m_PendingTexturesMutex);
+    TextureGPUCache::Entry resident;
+    return TryGetMaterialTextureLocked(textureGuid, resident) ? resident.Texture : TextureHandle{};
+}
+
 Rendering::TextureHandle TextureService::GetOrRequestTexture(const GUID& textureGuid)
 {
     if (textureGuid.IsNull() || !m_Device)

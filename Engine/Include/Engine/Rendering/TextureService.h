@@ -253,6 +253,11 @@ class TextureService
     /// requests return an invalid handle. Failures remain cached until Evict.
     TextureHandle GetOrRequestTexture(const GUID& textureGuid);
 
+    /// The image that a material slot bound to this texture samples now: its mip stream, or its
+    /// full image. Invalid while neither is resident. Never requests a load, so an editor overlay
+    /// that draws what a material draws adds no second full-resolution image. Any thread.
+    TextureHandle GetMaterialTexture(const GUID& textureGuid) const;
+
     // True when this texture's sampled alpha is provably 1.0 over every texel, so a consumer's
     // alpha path (cutout, screen-door, alpha-to-coverage) has nothing to resolve and can be
     // skipped outright. Answers the cutoff-INDEPENDENT question: "is there any alpha here at

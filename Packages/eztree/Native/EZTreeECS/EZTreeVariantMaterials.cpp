@@ -140,19 +140,6 @@ void ApplyWindProperties(MaterialDocument& doc,
         bounds.center.y - bounds.halfExtents.y};
 }
 
-void PreloadMaterialDocumentTextures(Engine::Renderer::RenderServices& renderServices,
-                                     const MaterialDocument& doc)
-{
-    for (const auto& [_, texGuidStr] : doc.textures)
-    {
-        if (texGuidStr.empty())
-            continue;
-        const GUID texGuid(texGuidStr);
-        if (!texGuid.IsNull())
-            (void)renderServices.Textures().GetOrUpload(texGuid);
-    }
-}
-
 MaterialDocument BuildBarkMaterialDocument(const EZTree::TreeOptions& options,
                                            const Mathematics::BoundingBox& bounds)
 {
@@ -305,7 +292,6 @@ void RegisterWithStaticTwin(Engine::Renderer::RenderServices& renderServices,
                             const GUID& staticGuid,
                             MaterialDocument doc)
 {
-    PreloadMaterialDocumentTextures(renderServices, doc);
     renderServices.Materials().RegisterMaterialFromDocument(windGuid, doc);
     doc.vertexModifier.clear();
     renderServices.Materials().RegisterMaterialFromDocument(staticGuid, doc);
@@ -333,7 +319,6 @@ void RegisterVariantMaterials(Engine::Renderer::RenderServices& renderServices,
     RegisterWithStaticTwin(renderServices, materials.Leaves, materials.LeavesStatic,
                            BuildLeafMaterialDocument(options, bounds));
     MaterialDocument trellis = BuildTrellisMaterialDocument(options);
-    PreloadMaterialDocumentTextures(renderServices, trellis);
     renderServices.Materials().RegisterMaterialFromDocument(materials.Trellis, trellis);
 }
 

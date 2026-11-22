@@ -698,6 +698,10 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingRespectsBudgetAndKeepsDirectTextu
     EXPECT_EQ(height, 256u);
     m_Textures.FlushPendingUploads();
     EXPECT_EQ(material->GetTexture(slot), tail);
+    // A read of the material image starts no direct upload.
+    EXPECT_EQ(m_Textures.GetMaterialTexture(texture), tail);
+    m_Textures.FlushPendingUploads();
+    EXPECT_FALSE(Access::Uploaded(m_Textures, texture));
 
     const auto direct = m_Textures.GetOrUpload(texture);
     ASSERT_TRUE(direct.IsValid());
