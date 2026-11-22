@@ -153,6 +153,10 @@ public:
     size_t GetMemoryUsage() const override { return (m_PcmData.size() * sizeof(float)) + m_EncodedData.Size(); }
 
 protected:
+    /// Decodes `data` into a staged clip and adopts its payload. A decode that fails keeps the
+    /// payload of this clip.
+    bool ReloadFromData(std::span<const uint8> data) override;
+
     /**
      * @brief Swap the decoded audio payload with a freshly loaded instance
      * (main thread, member swaps only). See Asset::AdoptReloadedPayload.

@@ -830,7 +830,7 @@ uint64 ModelAsset::GetMaximumReadBytes() const
 bool ModelAsset::ReloadFromData(std::span<const uint8> data)
 {
     if (!m_ClusterLODManifest && FormatFromPath(GetPath()) != ModelFormat::ClusterLOD)
-        return Asset::ReloadFromData(data);
+        return ReloadThroughStagedInstance<ModelAsset>(data);
     MeshClusterLODAssetData decoded;
     String error;
     if (!m_ClusterLODManifest || !DecodeMeshClusterLODAsset(data, decoded, error) ||
