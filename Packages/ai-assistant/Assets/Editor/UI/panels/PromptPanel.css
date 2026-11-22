@@ -880,12 +880,15 @@
 	margin: 0;
 }
 
+/* The controls' own line spans the row with the controls at its right end. Its left padding is
+   the +'s place (its 6 px inset, 24 px and 6 px of gap), which the controls never cover, however
+   narrow the panel. */
 .prompt-panel-input-controls-stacked {
-	align-self: flex-end;
+	align-self: stretch;
+	justify-content: flex-end;
 	flex-shrink: 1;
-	max-width: 100%;
-	/* The + keeps the line's left end: its 6 px inset, 24 px and 6 px of gap. */
-	margin-left: 36px;
+	padding-left: 36px;
+	box-sizing: border-box;
 	height: 36px;
 	min-height: 36px;
 }

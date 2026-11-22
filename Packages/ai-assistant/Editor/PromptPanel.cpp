@@ -496,6 +496,24 @@ void PromptPanel::AutoSizePromptInputPane()
     ApplyPromptInputPaneHeight(std::max(contentHeight, m_InputPaneManualHeightPx));
 }
 
+namespace
+{
+// The controls' own width: their visible children with their margins, not the line a stacked row
+// stretches the controls group across.
+float ControlsContentWidth(const UIElement& controls)
+{
+    float width = 0.0f;
+    for (const auto& child : controls.GetChildren())
+    {
+        if (child->HasClass("hidden"))
+            continue;
+        const auto& margin = child->GetResolvedStyle().Layout.Margin;
+        width += child->GetLayoutWidth() + margin.Left + margin.Right;
+    }
+    return width;
+}
+} // namespace
+
 void PromptPanel::UpdateInputStacking()
 {
     if (!m_InputPane || !m_InputRow || !m_InputControls)
@@ -509,7 +527,7 @@ void PromptPanel::UpdateInputStacking()
         return;
     // The attach button sits beside the field; on a stacked row it sits on the controls' line.
     const float attachWidth = m_AttachButton ? m_AttachButton->GetLayoutWidth() + kAttachButtonMarginPx : 0.0f;
-    const float fieldWidth = rowWidth - kInputRowBorderPx - m_InputControls->GetLayoutWidth() - attachWidth;
+    const float fieldWidth = rowWidth - kInputRowBorderPx - ControlsContentWidth(*m_InputControls) - attachWidth;
     const bool stacked = fieldWidth < kMinPromptFieldPx;
     if (stacked == m_InputStacked)
         return;
