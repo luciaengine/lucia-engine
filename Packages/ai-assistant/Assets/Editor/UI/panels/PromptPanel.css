@@ -14,6 +14,17 @@
 	background-color: var(--ui_color_bg_tabbar);
 }
 
+/* The bar under the panel's tab and, when open, the settings row under it: one block in the
+   active tab's color, rounded at its bottom only, wherever that bottom is. */
+.prompt-panel-header {
+	display: flex;
+	flex-direction: column;
+	flex-shrink: 0;
+	background-color: var(--ui_color_bg_panel);
+	border-bottom-left-radius: 6px;
+	border-bottom-right-radius: 6px;
+}
+
 .prompt-panel-toolbar {
 	display: flex;
 	flex-direction: row;
@@ -22,8 +33,6 @@
 	padding: 5px 8px;
 	min-height: 34px;
 	flex-shrink: 0;
-	background-color: var(--ui_color_bg_grid);
-	border-bottom: 1px solid var(--ui_color_border);
 	box-sizing: border-box;
 	flex-wrap: wrap;
 }
@@ -1147,7 +1156,6 @@
 	gap: 6px;
 	padding: 8px;
 	flex-shrink: 0;
-	background-color: var(--ui_color_bg_panel);
 }
 
 .prompt-panel-input-task {

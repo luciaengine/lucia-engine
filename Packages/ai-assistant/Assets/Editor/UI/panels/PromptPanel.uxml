@@ -1,10 +1,12 @@
 <UIElement id="PromptPanelContainer" class="prompt-panel-root">
-  <UIElement class="prompt-panel-toolbar">
-    <Button id="PromptSettingsToggle" class="icon-button prompt-panel-settings-button" />
-  </UIElement>
+  <UIElement class="prompt-panel-header">
+    <UIElement class="prompt-panel-toolbar">
+      <Button id="PromptSettingsToggle" class="icon-button prompt-panel-settings-button" />
+    </UIElement>
 
-  <UIElement id="PromptProviderSettings" class="prompt-panel-provider-settings hidden">
-    <Button id="PromptClearSession" class="icon-button prompt-panel-icon-button trash-icon" />
+    <UIElement id="PromptProviderSettings" class="prompt-panel-provider-settings hidden">
+      <Button id="PromptClearSession" class="icon-button prompt-panel-icon-button trash-icon" />
+    </UIElement>
   </UIElement>
 
   <SplitView class="prompt-panel-body">
