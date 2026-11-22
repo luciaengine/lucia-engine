@@ -19,7 +19,9 @@ All parts of the model switch together. A model with a bark part and a leaf part
 
 The GPU measures the projected size of the object's bounding sphere. When the sphere is smaller than one atlas view across the screen, about 128 pixels across, the object draws its card in place of all its parts, whatever mesh LOD they show. At that size the card shows about one atlas pixel per screen pixel, so it looks closer to the object than a coarse mesh LOD of its leaves. The object switches only when its card is ready. A small margin reduces switching when the camera moves near that size.
 
-Use **Impostor Screen Height (%)** to set the screen height under which an opted-in model switches. A value of 0 uses the default of one atlas pixel per rendered pixel.
+Use **Impostor Screen Height (%)** to set the screen height under which an opted-in model switches. A value of 0 uses the default of one atlas pixel per rendered pixel, which is about 11.9% of the screen height at 1080 lines. If a model must show its last mesh LOD before its card, set a value below the screen height at which that LOD starts.
+
+The parts of one placed object switch together. Parts at the same position and rotation belong to one object, and the first part decides for all of them. If a part of an object is missing, the object keeps its meshes.
 
 Trees with equal options share one tree variant, and a variant has one atlas. A model has one atlas. A forest that reuses a few variants or models therefore bakes a few atlases.
 
@@ -29,6 +31,8 @@ The engine bakes the atlas on the GPU, a few views in each frame. A model bakes 
 
 - The bake draws each part with its assigned material, including alpha-masked leaves. A model keeps drawing its meshes while a part or its textures are loading, or if instances assign different materials to the same part. Blended, transmissive, skinned, and morphing models keep drawing their meshes.
 - Tree variants bake without wind, so the card shows the rest pose.
+- The bake samples textures 2 mip levels finer than a normal draw, so thin leaves stay in the atlas.
+- The card shades its inner crown darker under the sun. It compares the depth of each point with the atlas views near the light direction.
 - An atlas uses 12 MB of GPU memory. All atlases together stay under 256 MB. Past that, the atlas drawn least recently goes, and its objects draw their meshes.
 
 ## Limits
