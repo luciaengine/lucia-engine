@@ -313,6 +313,26 @@ class TextureService
     // first and loses it last. An empty table removes the order. Any thread.
     void UpdateMaterialMipDemand(std::span<const float> coverageByMaterialIndex);
 
+    /// One material mip stream, with the values that the last plan read.
+    struct MaterialMipStreamState
+    {
+        GUID Texture;
+        uint32_t FirstMip = 0;       ///< The first resident level.
+        uint32_t Tail = 0;           ///< The coarsest first resident level.
+        uint32_t TopExtent = 1;      ///< The longest edge of level 0, in texels.
+        uint64_t ResidentBytes = 0;  ///< The bytes of the resident levels, with the variance companion.
+        float ScreenCoverage = 0.0f; ///< The coverage that the last plan used. 0 without demand data.
+        bool KeepsLevel = false;     ///< A read failed: the stream takes no more steps until a reload.
+        std::optional<uint32_t> StepTargetMip; ///< The first resident level of the step in flight.
+    };
+    struct MaterialMipStreamReport
+    {
+        uint64_t BudgetBytes = 0; ///< 0 when streaming is off.
+        std::vector<MaterialMipStreamState> Streams;
+    };
+    /// The budget and every stream now. The thread that calls FlushPendingUploads.
+    MaterialMipStreamReport ReportMaterialMipStreams() const;
+
     // ── Material texture binding ──────────────────────────────────────────
     // Assign a texture + its bindless index to a material slot in one call. An
     // invalid handle is a texture that failed to upload: the slot takes its

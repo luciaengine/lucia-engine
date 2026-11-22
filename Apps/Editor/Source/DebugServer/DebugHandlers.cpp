@@ -58,6 +58,7 @@
 #include "DebugServer/NavigationDebugHandlers.h"
 #include "DebugServer/MarkupDebugHandlers.h"
 #include "DebugServer/TileMapDebugHandlers.h"
+#include "DebugServer/MaterialMipStreamDebugHandlers.h"
 #include "DebugServer/MemoryDebugHandlers.h"
 #include "DebugServer/PerformDropRequest.h"
 #include "DebugServer/ScrollSequence.h"
@@ -3315,6 +3316,7 @@ void RegisterDebugHandlers(EditorDebugServer& server,
 
     // 4k. the Memory module's stats registry: arenas, tracked bytes, each thread's scratch
     RegisterMemoryDebugHandlers(server, app);
+    RegisterMaterialMipStreamDebugHandlers(server);
 
     // 4l. AI: one agent's last decisions from its AiTrace
     RegisterAiDebugHandlers(server);

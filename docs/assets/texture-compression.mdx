@@ -93,7 +93,9 @@ measurement, textures change in a fixed order.
 
 Normal maps stream their normal-variance companion at the matching mip offset.
 The budget counts resident streamed mip bytes for both images. The `get_memory_stats`
-debug tool shows that count as `Rendering.MaterialMipStreams`. Replacement images can coexist
+debug tool shows that count as `Rendering.MaterialMipStreams`. The `get_material_mip_streams`
+debug tool lists each stream with its first resident level and its screen coverage, in the
+order in which the textures gain detail. Replacement images can coexist
 with their predecessors until GPU work finishes. Staging memory and other textures
 are separate costs.
 
