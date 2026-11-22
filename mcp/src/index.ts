@@ -2,9 +2,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { authorizeHostAction, servedTools } from "./assistant.js";
+import { callServedTool, servedTools } from "./assistant.js";
 import { ipcConfig } from "./config.js";
-import { editorCallCount, lastEditorEndpoint } from "./editor-call.js";
 import { ipc } from "./ipc-singleton.js";
 import type { ToolDef } from "./registry.js";
 import { toolByName } from "./tools/index.js";
@@ -36,32 +35,7 @@ try {
 const servedNames = new Set(tools.map(t => t.name));
 
 for (const tool of tools) {
-  server.tool(tool.name, tool.description, tool.schema, async (args: Record<string, unknown>) => {
-    // Only when this invocation actually reached an editor — attributing an
-    // endpoint to a build or codegen tool would be a claim it never made. A
-    // refusal counts as reaching one; an unreachable editor does not.
-    const callsBefore = editorCallCount();
-    const answeredEndpoint = () => (editorCallCount() > callsBefore ? lastEditorEndpoint() : null);
-    const withEndpoint = (body: string) => {
-      const endpoint = answeredEndpoint();
-      return endpoint ? `${body}\n\n[editor ${endpoint}]` : body;
-    };
-    try {
-      await authorizeHostAction(tool, args);
-      const out = await tool.run(args);
-      const content: Array<
-        | { type: "text"; text: string }
-        | { type: "image"; data: string; mimeType: string }
-      > = [];
-      // Image first: an agent reading the response sees the picture before the
-      // path, which is the order take_screenshot has always answered in.
-      if (out.image) content.push({ type: "image", data: out.image.base64, mimeType: out.image.mimeType });
-      content.push({ type: "text", text: withEndpoint(out.summary ?? JSON.stringify(out.data, null, 2)) });
-      return { content };
-    } catch (err: any) {
-      return { content: [{ type: "text" as const, text: withEndpoint(err?.message ?? String(err)) }], isError: true };
-    }
-  });
+  server.tool(tool.name, tool.description, tool.schema, (args: Record<string, unknown>) => callServedTool(tool, args));
 }
 
 // Resources are views onto the same tools, so they cannot report something the

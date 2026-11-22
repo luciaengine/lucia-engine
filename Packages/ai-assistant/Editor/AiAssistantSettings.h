@@ -150,7 +150,8 @@ public:
     static void UseDetectionInputsForTesting(std::optional<BackendDetection::Inputs> inputs);
 
     /// The Node.js executable that runs the editor's MCP server for a conversation
-    /// that acts in the editor: a program name searched for on PATH or a full path.
+    /// that acts in the editor: a program name searched for on PATH or a full path, found as
+    /// ClaudeExecutable() finds `claude` when the setting is empty.
     static std::string NodeExecutable();
     /// Each stores its executable as the user typed or picked it; a change moves SetupGeneration().
     static void SetClaudeExecutable(const std::string& executable);

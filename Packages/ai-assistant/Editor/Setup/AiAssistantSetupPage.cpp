@@ -172,10 +172,11 @@ bool RunsLocalProgram(std::string_view providerId)
            providerId == HarnessSessionProvider::kId;
 }
 
-// A connection whose program can run the editor's tools, which Node runs.
+// A connection that can run the editor's tools, which Node runs.
 bool UsesEditorTools(std::string_view providerId)
 {
-    return providerId == ClaudeSessionProvider::kId || providerId == CodexSessionProvider::kId;
+    return providerId == ClaudeSessionProvider::kId || providerId == CodexSessionProvider::kId ||
+           providerId == TensorFoldConnection::kId || providerId == OpenAiCompatibleProvider::kId;
 }
 
 // The session whose Editor tools step the page runs after `provider`'s own steps pass; null for

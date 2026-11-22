@@ -272,6 +272,7 @@ add_executable(AgentProviderTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/ClaudeApiProviderTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/OpenAiCompatibleProviderTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/BackendDetectionTests.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/EditorToolBridgeTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/CliSessionProviderTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/AiAssistantSettingsTests.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/AgentSessionStateTests.cpp
@@ -292,6 +293,7 @@ add_executable(AgentProviderTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeApiProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/OpenAiChatStream.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/OpenAiCompatibleProvider.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/EditorToolBridge.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/BackendDetection.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/LocalServerScan.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ApiKeyStore.cpp
@@ -380,6 +382,7 @@ add_executable(AiAssistantPanelTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ClaudeApiProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/OpenAiChatStream.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/OpenAiCompatibleProvider.cpp
+    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/EditorToolBridge.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/BackendDetection.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/LocalServerScan.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/Providers/ApiKeyStore.cpp

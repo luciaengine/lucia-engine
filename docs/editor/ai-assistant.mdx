@@ -24,7 +24,7 @@ Open the panel from the **Panels** button at the right end of the top toolbar an
 | **TensorFold (Local)** | A TensorFold server running a model on this machine: TensorFold Bar's, or one started without the Bar. No key. | `<URL>/chat/completions`, `http://127.0.0.1:8080/v1` unless you change the URL, asking for the first model the server lists (TensorFold Bar's `local-model`). |
 | **Custom (OpenAI-compatible)** | The URL and model of a server with an OpenAI-compatible chat API (Ollama, LM Studio, vLLM, llama.cpp, a hosted service); a key only when the server asks for one. | `<URL>/chat/completions` on the server you name. |
 
-Until you choose a provider, the editor picks one from what is installed: Claude (Subscription) when it finds `claude`, else Codex (Subscription) when it finds `codex`, else Harness (Desktop app) when it finds DeepSeek Harness, else Claude (API key) when `ANTHROPIC_API_KEY` is set, else Claude (Subscription), whose setup check then says what to install. **Check again** on the setup page looks again, so a program installed since is found. The Harness, TensorFold, Custom and Claude API key providers answer in the panel but cannot act in the editor.
+Until you choose a provider, the editor picks one from what is installed: Claude (Subscription) when it finds `claude`, else Codex (Subscription) when it finds `codex`, else Harness (Desktop app) when it finds DeepSeek Harness, else Claude (API key) when `ANTHROPIC_API_KEY` is set, else Claude (Subscription), whose setup check then says what to install. **Check again** on the setup page looks again, so a program installed since is found. The Harness and Claude API key providers answer in the panel but cannot act in the editor. TensorFold and Custom act in the editor through the editor's tools when the model calls tools (see [Tools on a model API](#tools-on-a-model-api)).
 
 ![The provider dropdown open, listing Claude (Subscription), Claude (API key) and Codex (Subscription)](img/ai-assistant-provider-dropdown.png)
 
@@ -126,6 +126,16 @@ A local session runs the command-line program you already use, under your own lo
 - Each prompt runs `dsh --profile headless --json` with the `read-only` permission preset and no approval prompts, so Harness cannot change your files and never stops to ask. A continued conversation passes its session with `--session-id`.
 - The model is the one Harness is set to use; the panel has no model choice for it. Harness needs a context of about 16K or more, because its own instructions and tools take about 11K.
 - Harness keeps its sessions in its own store, so the Session control does not list them.
+
+### Tools on a model API
+
+TensorFold (Local) and Custom (OpenAI-compatible) run the conversation in the editor itself. Each turn sends the model the editor's tools as OpenAI-style functions, runs each tool call the model makes, and sends the answer back, until the model answers without a call (at most 24 requests a turn).
+
+- The everyday tools go to the model whole: editor state, scene hierarchy, entity components, ECS queries, selection, creating, changing and deleting entities, undo and redo, the log, a screenshot, the camera, opening assets, saving the scene, play mode and commands. The other tools are named in `describe_editor_tool`, which returns one tool's schema, and run through `call_editor_tool`. A model with a 64K context keeps room for the conversation.
+- Every call goes through the same mode and gate as a Claude session's: the mode control decides what runs, and the panel asks before an action that cannot be undone.
+- The editor runs `mcp/dist/assistant-bridge.js`, staged with the MCP server, with **Node executable** (Node.js 20 or later): once to list the tools, once per call. Build the McpServer target after changing `mcp/`.
+- Tool results reach the model as text. A screenshot is taken, and the model is told that one was.
+- A model that does not call tools answers as a conversation.
 
 ### Your login, not a key
 
@@ -280,7 +290,7 @@ The other rows sit in the **Model and options** foldout under the checks, closed
 | Effort | Claude (Subscription) | The effort of a turn (the same choice as the panel's effort slider). |
 | Model | Codex (Subscription) | The model name as Codex spells it; empty for Codex's default. |
 | Mode for new conversations | Every connection | The mode a new conversation starts in; the panel's mode control changes it. |
-| Node executable | Claude (Subscription), Codex (Subscription) | `node` on `PATH` by default, or a full path to `node.exe` (Windows) or `node` (macOS, Linux), Node 20 or later, which runs the editor's tools for the assistant. |
+| Node executable | Claude (Subscription), Codex (Subscription), TensorFold (Local), Custom (OpenAI-compatible) | `node` on `PATH` by default, or a full path to `node.exe` (Windows) or `node` (macOS, Linux), Node 20 or later, which runs the editor's tools for the assistant. |
 | Monospaced prompt font | Every connection | Off (the default): the prompt field uses the editor's UI font. On: the script face, the editor's monospaced font. |
 | Hold the microphone to speak, Send when the microphone stops | Every connection, where the system offers speech input | How the panel's microphone button dictates. |
 

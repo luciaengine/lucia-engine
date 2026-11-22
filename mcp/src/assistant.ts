@@ -1,5 +1,5 @@
 import { ipcConfig } from "./config.js";
-import { editorCall } from "./editor-call.js";
+import { editorCall, editorCallCount, lastEditorEndpoint } from "./editor-call.js";
 import type { ToolDef } from "./registry.js";
 import { allTools } from "./tools/index.js";
 
@@ -36,4 +36,40 @@ export function servedTools(): readonly ToolDef[] {
 export async function authorizeHostAction(tool: ToolDef, args: Record<string, unknown>): Promise<void> {
   if (!tool.actsOnHost || !ipcConfig().assistantToken) return;
   await editorCall("assistant_authorize", { tool: tool.name, arguments: args });
+}
+
+/** One MCP content block of a tool's answer. */
+export type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
+/**
+ * Runs one served tool as the MCP server answers it: the host-action check, then the
+ * tool, its output as content blocks (the image first, then the summary or the data),
+ * and a refusal or failure as one text block with isError. Every answer that came
+ * from an editor names that editor. The MCP server and the assistant bridge both call
+ * this, so a tool answers the same through either.
+ */
+export async function callServedTool(
+  tool: ToolDef,
+  args: Record<string, unknown>,
+): Promise<{ content: ToolContent[]; isError?: true }> {
+  // Only when this invocation actually reached an editor: attributing an endpoint to
+  // a build or codegen tool would be a claim it never made. A refusal counts as
+  // reaching one; an unreachable editor does not.
+  const callsBefore = editorCallCount();
+  const withEndpoint = (body: string) => {
+    const endpoint = editorCallCount() > callsBefore ? lastEditorEndpoint() : null;
+    return endpoint ? `${body}\n\n[editor ${endpoint}]` : body;
+  };
+  try {
+    await authorizeHostAction(tool, args);
+    const out = await tool.run(args);
+    const content: ToolContent[] = [];
+    // Image first: an agent reading the response sees the picture before the path,
+    // which is the order take_screenshot has always answered in.
+    if (out.image) content.push({ type: "image", data: out.image.base64, mimeType: out.image.mimeType });
+    content.push({ type: "text", text: withEndpoint(out.summary ?? JSON.stringify(out.data, null, 2)) });
+    return { content };
+  } catch (err: any) {
+    return { content: [{ type: "text", text: withEndpoint(err?.message ?? String(err)) }], isError: true };
+  }
 }

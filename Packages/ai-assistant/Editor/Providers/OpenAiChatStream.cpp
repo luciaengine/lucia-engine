@@ -4,6 +4,7 @@
 #include "JsonFields.h"
 
 #include <chrono>
+#include <algorithm>
 #include <exception>
 #include <utility>
 
@@ -41,18 +42,19 @@ std::string DescribeError(const nlohmann::json& payload)
 }
 } // namespace
 
-void OpenAiChatStream::Run(const std::string& url,
-                           const std::unordered_map<std::string, std::string>& headers,
-                           const std::string& body,
-                           AgentTurnEvents& events,
-                           const CancelToken& cancel)
+OpenAiChatStream::Round OpenAiChatStream::Run(const std::string& url,
+                                              const std::unordered_map<std::string, std::string>& headers,
+                                              const std::string& body,
+                                              AgentTurnEvents& events,
+                                              const CancelToken& cancel,
+                                              std::string textPrefix)
 {
     HttpClient::PostOptions options;
     options.Timeout = kStreamStallTimeout;
     options.MaxResponseBytes = kMaxResponseBytes;
     options.Cancellation = &cancel.Flag();
 
-    OpenAiChatStream stream(events);
+    OpenAiChatStream stream(events, std::move(textPrefix));
     HttpClient::HttpResponse response;
     try
     {
@@ -63,10 +65,14 @@ void OpenAiChatStream::Run(const std::string& url,
     {
         response.error = error.what();
     }
-    stream.Finish(response);
+    Round round;
+    round.Result = stream.End(response);
+    round.ToolCalls = stream.ToolCalls();
+    return round;
 }
 
-OpenAiChatStream::OpenAiChatStream(AgentTurnEvents& events) : m_Events(events)
+OpenAiChatStream::OpenAiChatStream(AgentTurnEvents& events, std::string textPrefix)
+    : m_Events(events), m_TextPrefix(std::move(textPrefix))
 {
 }
 
@@ -108,14 +114,51 @@ void OpenAiChatStream::OnEvent(const SseEvent& event)
         return;
     const nlohmann::json& choice = choices->front();
     m_Result.ModelRoundTrips = 1;
-    const std::string text = JsonFields::String(JsonFields::Object(choice, "delta"), "content");
+    const nlohmann::json& delta = JsonFields::Object(choice, "delta");
+    std::string text = JsonFields::String(delta, "content");
     if (!text.empty())
     {
+        // A later round's reply is a paragraph of its own.
+        text = std::exchange(m_TextPrefix, {}) + text;
         m_Result.Text += text;
         m_Events.OnTextDelta(text);
     }
+    ReadToolCalls(delta);
     if (const std::string reason = JsonFields::String(choice, "finish_reason"); !reason.empty())
         m_FinishReason = reason;
+}
+
+void OpenAiChatStream::ReadToolCalls(const nlohmann::json& delta)
+{
+    const auto calls = delta.find("tool_calls");
+    if (calls == delta.end() || !calls->is_array())
+        return;
+    for (const nlohmann::json& piece : *calls)
+    {
+        if (!piece.is_object())
+            continue;
+        const uint64_t index = JsonFields::Count(piece, "index");
+        auto call = std::find_if(m_ToolCalls.begin(), m_ToolCalls.end(),
+                                 [index](const auto& entry) { return entry.first == index; });
+        if (call == m_ToolCalls.end())
+            call = m_ToolCalls.insert(m_ToolCalls.end(), {index, ToolCall{}});
+        if (const std::string id = JsonFields::String(piece, "id"); !id.empty())
+            call->second.Id = id;
+        const nlohmann::json& function = JsonFields::Object(piece, "function");
+        call->second.Name += JsonFields::String(function, "name");
+        call->second.Arguments += JsonFields::String(function, "arguments");
+    }
+}
+
+std::vector<OpenAiChatStream::ToolCall> OpenAiChatStream::ToolCalls() const
+{
+    std::vector<std::pair<uint64_t, ToolCall>> sorted = m_ToolCalls;
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::vector<ToolCall> calls;
+    for (auto& [index, call] : sorted)
+        if (!call.Name.empty())
+            calls.push_back(std::move(call));
+    return calls;
 }
 
 void OpenAiChatStream::Fail(std::string message)
@@ -125,6 +168,11 @@ void OpenAiChatStream::Fail(std::string message)
 }
 
 void OpenAiChatStream::Finish(const HttpClient::HttpResponse& response)
+{
+    m_Events.OnFinished(End(response));
+}
+
+TurnResult OpenAiChatStream::End(const HttpClient::HttpResponse& response)
 {
     TurnResult result = std::move(m_Result);
     if (response.cancelled)
@@ -170,6 +218,6 @@ void OpenAiChatStream::Finish(const HttpClient::HttpResponse& response)
         result.Outcome = TurnOutcome::Succeeded;
         result.Note = FinishReasonNote(m_FinishReason);
     }
-    m_Events.OnFinished(result);
+    return result;
 }
 } // namespace GameEngine

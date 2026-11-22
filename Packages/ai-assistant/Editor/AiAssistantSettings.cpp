@@ -86,6 +86,7 @@ struct Detection
     std::optional<BackendDetection::Found> Claude;
     std::optional<BackendDetection::Found> Codex;
     std::optional<BackendDetection::Found> Harness;
+    std::optional<BackendDetection::Found> Node;
 };
 std::mutex s_DetectionMutex;
 Detection s_Detection;
@@ -99,6 +100,7 @@ const Detection& Detected()
         s_Detection.Claude = BackendDetection::FindProgram(ClaudeSessionProvider::kDefaultExecutable, inputs);
         s_Detection.Codex = BackendDetection::FindProgram(CodexSessionProvider::kDefaultExecutable, inputs);
         s_Detection.Harness = BackendDetection::FindProgram(HarnessSessionProvider::kDefaultExecutable, inputs);
+        s_Detection.Node = BackendDetection::FindProgram(kDefaultNodeExecutable, inputs);
         s_Detection.Searched = true;
     }
     return s_Detection;
@@ -121,7 +123,7 @@ std::string DetectedProvider()
     return std::string(key && *key ? ClaudeApiProvider::kId : ClaudeSessionProvider::kId);
 }
 
-// What detection found for `programName`; null for a program it does not look for (node).
+// What detection found for `programName`; null for a program it does not look for.
 const std::optional<BackendDetection::Found>* DetectedProgram(const Detection& detected, std::string_view programName)
 {
     if (programName == ClaudeSessionProvider::kDefaultExecutable)
@@ -130,6 +132,8 @@ const std::optional<BackendDetection::Found>* DetectedProgram(const Detection& d
         return &detected.Codex;
     if (programName == HarnessSessionProvider::kDefaultExecutable)
         return &detected.Harness;
+    if (programName == kDefaultNodeExecutable)
+        return &detected.Node;
     return nullptr;
 }
 
@@ -175,9 +179,9 @@ constexpr AiAssistantSettings::AssistantChoice kAssistantChoices[] = {
     {"Harness", "DeepSeek's agent app on this computer, on the model you set in it. Answers in the panel but "
                 "cannot act in the editor."},
     {"TensorFold", "The model a TensorFold server serves on this computer, with or without TensorFold Bar. "
-                   "Answers in the panel but cannot act in the editor."},
+                   "Can act in the editor."},
     {"Custom", "A server you name: a model on this computer or a hosted one, through its "
-               "OpenAI-compatible API."},
+               "OpenAI-compatible API. Can act in the editor when the model calls tools."},
 };
 
 // Grouped by assistant, the method chosen with the assistant first.
@@ -194,12 +198,12 @@ constexpr AiAssistantSettings::ProviderChoice kProviderChoices[] = {
      "Needs DeepSeek Harness, set up with a model. Conversation only: the assistant cannot act in the editor."},
     {TensorFoldConnection::kId, "TensorFold (Local)", "TensorFold", "Local",
      "A TensorFold server on this computer: TensorFold Bar's, or one you started, whichever model it serves.",
-     "Needs a TensorFold server running a model, at 127.0.0.1:8080 unless you change the URL. Conversation "
-     "only: the assistant cannot act in the editor."},
+     "Needs a TensorFold server running a model, at 127.0.0.1:8080 unless you change the URL, and Node.js 20 "
+     "or later for the editor's tools."},
     {OpenAiCompatibleProvider::kId, "Custom (OpenAI-compatible)", "Custom", "OpenAI-compatible",
      "Any server with an OpenAI-compatible chat API, such as Ollama, LM Studio, vLLM or llama.cpp.",
-     "Needs the server's URL and model; a key only when the server asks for one. Conversation only: "
-     "the assistant cannot act in the editor."},
+     "Needs the server's URL and model, a key only when the server asks for one, and Node.js 20 or later "
+     "for the editor's tools, which need a model that calls tools."},
 };
 
 // The CLI's family aliases, each the latest model of its family, the initial choice

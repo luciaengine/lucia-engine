@@ -2,6 +2,7 @@
 
 #include "CancelToken.h"
 #include "JsonFields.h"
+#include "EditorToolBridge.h"
 #include "OpenAiChatStream.h"
 
 #include "Logger/Logger.h"
@@ -196,7 +197,7 @@ OpenAiCompatibleProvider::OpenAiCompatibleProvider(ApiKeyStore keys, std::string
 
 ProviderCapabilities OpenAiCompatibleProvider::Capabilities() const
 {
-    return {.Streams = true, .OwnsTranscript = false, .NeedsKey = false, .CanActWithTools = false};
+    return {.Streams = true, .OwnsTranscript = false, .NeedsKey = false, .CanActWithTools = true};
 }
 
 SetupStatus OpenAiCompatibleProvider::CheckSetup(const CancelToken& cancel, SetupSurface surface,
@@ -235,8 +236,87 @@ void OpenAiCompatibleProvider::RunTurn(const AgentTurnRequest& request, AgentTur
         events.OnFinished(result);
         return;
     }
-    OpenAiChatStream::Run(m_BaseUrl + std::string(kChatPath), BuildRequestHeaders(m_Keys.Read().Value),
-                          BuildRequestBody(request, model), events, cancel);
+    if (request.Tools)
+    {
+        RunToolTurn(request, model, events, cancel);
+        return;
+    }
+    events.OnFinished(OpenAiChatStream::Run(m_BaseUrl + std::string(kChatPath), BuildRequestHeaders(m_Keys.Read().Value),
+                                            BuildRequestBody(request, model), events, cancel)
+                          .Result);
+}
+
+void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, const std::string& model,
+                                           AgentTurnEvents& events, const CancelToken& cancel)
+{
+    EditorToolBridge bridge(*request.Tools);
+    TurnResult total;
+    if (std::string error; !bridge.Load(cancel, error))
+    {
+        total.Outcome = cancel.IsCancelled() ? TurnOutcome::Stopped : TurnOutcome::Failed;
+        total.Error = cancel.IsCancelled() ? std::string() : error;
+        events.OnFinished(total);
+        return;
+    }
+    const std::unordered_map<std::string, std::string> headers = BuildRequestHeaders(m_Keys.Read().Value);
+    nlohmann::json messages = BuildMessages(request);
+    const nlohmann::json tools = bridge.Definitions();
+    for (int round = 0; round < kMaxToolRounds; ++round)
+    {
+        nlohmann::json body = {{"model", model}, {"stream", true}, {"messages", messages}, {"tools", tools}};
+        OpenAiChatStream::Round reply =
+            OpenAiChatStream::Run(m_BaseUrl + std::string(kChatPath), headers,
+                                  body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), events, cancel,
+                                  total.Text.empty() ? std::string() : std::string("\n\n"));
+        total.Text += reply.Result.Text;
+        total.InputTokens += reply.Result.InputTokens;
+        total.OutputTokens += reply.Result.OutputTokens;
+        total.ModelRoundTrips += 1;
+        if (!reply.Result.Model.empty())
+            total.Model = reply.Result.Model;
+        if (reply.Result.Outcome != TurnOutcome::Succeeded || reply.ToolCalls.empty())
+        {
+            total.Outcome = reply.Result.Outcome;
+            total.Error = reply.Result.Error;
+            total.Note = reply.Result.Note;
+            events.OnFinished(total);
+            return;
+        }
+
+        // The model's tool calls, then one answer per call, in the order it made them.
+        nlohmann::json calls = nlohmann::json::array();
+        for (size_t index = 0; index < reply.ToolCalls.size(); ++index)
+        {
+            OpenAiChatStream::ToolCall& call = reply.ToolCalls[index];
+            if (call.Id.empty())
+                call.Id = "call_" + std::to_string(round) + "_" + std::to_string(index);
+            calls.push_back({{"id", call.Id},
+                             {"type", "function"},
+                             {"function", {{"name", call.Name}, {"arguments", call.Arguments}}}});
+        }
+        messages.push_back({{"role", "assistant"},
+                            {"content", reply.Result.Text.empty() ? nlohmann::json(nullptr)
+                                                                  : nlohmann::json(reply.Result.Text)},
+                            {"tool_calls", std::move(calls)}});
+        for (const OpenAiChatStream::ToolCall& call : reply.ToolCalls)
+        {
+            events.OnToolActivity({EditorToolBridge::RunsTool(call.Name, call.Arguments), call.Arguments, call.Id});
+            const EditorToolBridge::Answer answer = bridge.Call(call.Name, call.Arguments, cancel);
+            if (answer.IsError)
+                events.OnToolFailed({.CallId = call.Id, .Error = answer.Text.substr(0, answer.Text.find('\n'))});
+            messages.push_back({{"role", "tool"}, {"tool_call_id", call.Id}, {"content", answer.Text}});
+            if (cancel.IsCancelled())
+            {
+                total.Outcome = TurnOutcome::Stopped;
+                events.OnFinished(total);
+                return;
+            }
+        }
+    }
+    total.Outcome = TurnOutcome::Failed;
+    total.Error = "The model kept calling tools for " + std::to_string(kMaxToolRounds) +
+                  " requests without answering, so the turn stopped. Send a narrower request.";
+    events.OnFinished(total);
 }
 
 std::string OpenAiCompatibleProvider::TurnModel(const AgentTurnRequest& request, std::string& refusal,
@@ -283,6 +363,13 @@ std::string OpenAiCompatibleProvider::NormalizeBaseUrl(std::string_view baseUrl)
 
 std::string OpenAiCompatibleProvider::BuildRequestBody(const AgentTurnRequest& request, std::string_view model)
 {
+    nlohmann::json body = {{"model", std::string(model)}, {"stream", true}, {"messages", BuildMessages(request)}};
+    // Invalid UTF-8 in typed text becomes U+FFFD instead of throwing out of the turn.
+    return body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+nlohmann::json OpenAiCompatibleProvider::BuildMessages(const AgentTurnRequest& request)
+{
     nlohmann::json messages = nlohmann::json::array();
     if (!request.SystemPrompt.empty())
         messages.push_back({{"role", "system"}, {"content", request.SystemPrompt}});
@@ -306,9 +393,7 @@ std::string OpenAiCompatibleProvider::BuildRequestBody(const AgentTurnRequest& r
         content.push_back({{"type", "text"}, {"text", request.UserText}});
         messages.push_back({{"role", "user"}, {"content", std::move(content)}});
     }
-    nlohmann::json body = {{"model", std::string(model)}, {"stream", true}, {"messages", std::move(messages)}};
-    // Invalid UTF-8 in typed text becomes U+FFFD instead of throwing out of the turn.
-    return body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+    return messages;
 }
 
 std::unordered_map<std::string, std::string> OpenAiCompatibleProvider::BuildRequestHeaders(std::string_view key)
