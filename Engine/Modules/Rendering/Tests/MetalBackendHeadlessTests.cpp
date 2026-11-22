@@ -21,6 +21,7 @@
 
 #include "../Source/Metal/MetalArgumentBufferLayout.h"
 #include "../Source/Metal/MetalCommandList.h"
+#include "../Source/Metal/MetalCompletedHandler.h"
 #include "../Source/Metal/MetalDevice.h"
 #include "../Source/Metal/MetalShaderTranslator.h"
 #include "PushBlockMslLayout.h"
@@ -751,7 +752,7 @@ TEST(MetalResources, FailedSubmissionInterruptsAnActiveTimelineWait)
     auto fault = NS::RetainPtr(metal.GetQueue(IDevice::QueueType::Transfer)->commandBuffer());
     ASSERT_NE(fault.get(), nullptr);
     // Inject a terminal fault from a native completion while the host waits.
-    fault->addCompletedHandler([&metal](MTL::CommandBuffer*) {
+    AddCompletedHandler(fault.get(), [&metal](MTL::CommandBuffer*) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         MetalDeviceTestAccess::FailSubmission(metal);
     });

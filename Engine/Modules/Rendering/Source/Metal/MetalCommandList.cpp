@@ -1,6 +1,7 @@
 #include "MetalCommandList.h"
 
 #include "MetalClearTexel.h"
+#include "MetalCompletedHandler.h"
 #include "MetalDevice.h"
 #include "MetalMappings.h"
 #include "MetalQueryPool.h"
@@ -246,7 +247,7 @@ MTL::CommandBuffer* MetalCommandList::Detach()
     MTL::CommandBuffer* cb = m_CommandBuffer;
     // GPU faults abort the command buffer and silently discard its writes —
     // surface them, they are otherwise invisible (no API error, no crash).
-    cb->addCompletedHandler([](MTL::CommandBuffer* completed) {
+    AddCompletedHandler(cb, [](MTL::CommandBuffer* completed) {
         if (completed->status() == MTL::CommandBufferStatusError)
         {
             NS::Error* error = completed->error();
@@ -294,7 +295,7 @@ MTL::CommandBuffer* MetalCommandList::Detach()
     static const bool kDumpCbTiming = Platform::EnvironmentSwitchEnabled("GE_METAL_DUMP_CB_TIMING", false);
     if (kDumpCbTiming)
     {
-        cb->addCompletedHandler([](MTL::CommandBuffer* completed) {
+        AddCompletedHandler(cb, [](MTL::CommandBuffer* completed) {
             const double gpuMs = (completed->GPUEndTime() - completed->GPUStartTime()) * 1000.0;
             const double schedMs = (completed->kernelEndTime() - completed->kernelStartTime()) * 1000.0;
             Logger::Log::Warning("MetalCbTiming: '{}' gpu={:.3f}ms sched={:.3f}ms gpuStart={:.6f}",
@@ -1664,7 +1665,7 @@ void MetalCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture, 
         const size_t centerOffset = DstOffsetBytes + (height / 2) * rowPitch + (width / 2) * 4;
         const uint32_t w = width;
         const uint32_t h = height;
-        m_CommandBuffer->addCompletedHandler([dstBuffer, centerOffset, w, h](MTL::CommandBuffer*) {
+        AddCompletedHandler(m_CommandBuffer, [dstBuffer, centerOffset, w, h](MTL::CommandBuffer*) {
             float value = 0.0f;
             std::memcpy(&value, static_cast<const uint8_t*>(dstBuffer->contents()) + centerOffset, sizeof(value));
             Logger::Log::Warning("MetalDepthProbe: {}x{} center depth = {:.9f}", w, h, value);
