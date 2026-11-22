@@ -86,8 +86,11 @@ AgentCallRow::AgentCallRow(std::string idSuffix, AnswerHandler onAnswer)
     AddClass("agent-call");
 
     m_Line = AddElement<UIElement>(*this, "agent-call-line");
-    m_Glyph = AddElement<UIElement>(*m_Line, "agent-call-glyph");
-    m_Action = AddElement<Label>(*m_Line, "agent-call-action");
+    // The glyph and the action share a row that centers them, so the glyph sits on the action's
+    // line at any text size.
+    UIElement* head = AddElement<UIElement>(*m_Line, "agent-call-head");
+    m_Glyph = AddElement<UIElement>(*head, "agent-call-glyph");
+    m_Action = AddElement<Label>(*head, "agent-call-action");
     m_Break = AddElement<UIElement>(*m_Line, "agent-call-break");
     m_Break->AddClass("hidden");
     m_Summary = AddElement<UIElement>(*m_Line, "agent-call-summary");

@@ -261,6 +261,16 @@
 	gap: 8px;
 }
 
+/* The glyph and the action: one row that centers the glyph on the action's line, whatever
+   the text size. */
+.agent-call-head {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	flex-shrink: 0;
+	gap: 8px;
+}
+
 /* The glyph: done (a check), view only (a ring), refused (a cross), waiting (a question
    mark); a call the editor never received has none. Icons, since the UI face has no
    check or cross. */
@@ -270,7 +280,6 @@
 	min-width: 14px;
 	min-height: 14px;
 	flex-shrink: 0;
-	margin-top: 2px;
 	background-size: 14px 14px;
 	background-repeat: no-repeat;
 	background-position: center;
