@@ -6,7 +6,7 @@
  * for a reason the per-instance mover lane cannot reproduce — a vertex modifier
  * evaluated at two deformation clocks — AND the composed motion variant can
  * actually be built for it. The three refusals below mirror the adapter's own,
- * by name rather than by coincidence:
+ * by name rather than by coincidence, and one more needs no motion draw:
  *
  *  - the simple `vec3 ModifyVertex(vec3, InstanceData)` form only. The extended
  *    output form produces world positions and never applies the instance
@@ -17,6 +17,9 @@
  *  - Blend. A blended surface writes no prepass depth, so the motion it would
  *    write describes a surface the depth buffer never admitted, and both
  *    consumers index this target by the opaque surface at that pixel.
+ *  - a modifier that declares `@deformationClock none`. It gives the same
+ *    position at both clocks, so the depth reprojection and the mover lane
+ *    already give its motion, and the motion draw adds only cost.
  *
  * Two readers, one input. MaterialSystem caches the verdict per materialIndex
  * beside the depth class for the mover exclusion, which has only an index;
@@ -50,6 +53,8 @@ inline bool SupportsDeformationMotion(const Material& mat)
     if (R::HasKeyword(keywords, R::MaterialKeyword::HasVertexOutputMod))
         return false;
     if (R::HasKeyword(keywords, R::MaterialKeyword::CustomVertexShader))
+        return false;
+    if (mat.GetDeformationEnvelope().ClockFree)
         return false;
     return mat.GetAlphaMode() != ::GameEngine::MaterialAlphaMode::Blend;
 }
