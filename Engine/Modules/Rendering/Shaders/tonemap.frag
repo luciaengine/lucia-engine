@@ -136,12 +136,17 @@ float HdrOutputMaxLinearValue()
     return max(maxOutputNits / paperWhiteNits, 1.0);
 }
 
+bool IsHdrEncoding()
+{
+    return pc.outEncoding >= 2 && pc.outEncoding <= 4;
+}
+
 // The peak a peak-parameterised look (Filmic, GT7) targets: the display's
 // paper-white-relative peak under an HDR encode, exactly 1.0 under SDR encodes
 // (for ACES 2 the 100-nit tier, t = 0).
 float LookTargetOutputMax()
 {
-    return (pc.outEncoding >= 2 && pc.outEncoding <= 4) ? HdrOutputMaxLinearValue() : 1.0;
+    return IsHdrEncoding() ? HdrOutputMaxLinearValue() : 1.0;
 }
 
 vec3 ApplyTonemap(vec3 hdr)
@@ -150,7 +155,7 @@ vec3 ApplyTonemap(vec3 hdr)
     {
         case kLookFilmic:       return TonemapACES2(hdr, LookTargetOutputMax());
         case kLookPhotographic: return TonemapAgX(hdr);
-        case kLookGT7:         return TonemapGranTurismo7(hdr, LookTargetOutputMax());
+        case kLookGT7:         return TonemapGranTurismo7(hdr, LookTargetOutputMax(), IsHdrEncoding());
         case kNoLookArm:        return NoLook(hdr);
         default:                return TonemapNeutral(hdr);
     }
@@ -236,7 +241,11 @@ vec3 ApplyOutputRangeTonemap(vec3 sceneLinear, vec3 sdrTonemapped)
     // look they bypass the highlight extension — extending them would apply
     // headroom twice. Clamp only.
     if (pc.look == kLookFilmic || pc.look == kLookGT7)
-        return min(sdrTonemapped, vec3(outputMax));
+    {
+        // GT7 limits its result to outputMax in Rec.2020. A Rec.709 channel above
+        // outputMax is a color outside Rec.709, not too much light.
+        return pc.look == kLookGT7 ? sdrTonemapped : min(sdrTonemapped, vec3(outputMax));
+    }
 
     // Every other look, present and future: extend what IT produced. A new
     // look needs no edit here, which is why this is not a switch.

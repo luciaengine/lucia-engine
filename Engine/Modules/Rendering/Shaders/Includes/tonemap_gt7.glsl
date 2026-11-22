@@ -142,9 +142,12 @@ float GT7Curve(float x)
 
 // outputMax is the display peak relative to paper white: 1.0 for SDR, max nits / paper white nits for HDR.
 // Paper white takes the place of the reference's 250 nit SDR white, so the curve targets 2.5 * outputMax,
-// the reference initializeAsHDR at a 250 nit paper white. The result is display-linear in [0, outputMax],
-// relative to paper white, and equals the reference initializeAsSDR at outputMax 1.0.
-vec3 TonemapGranTurismo7(vec3 sceneRec709, float outputMax)
+// the reference initializeAsHDR at a 250 nit paper white. The result is display-linear Rec.709 relative to
+// paper white, and equals the reference initializeAsSDR at outputMax 1.0.
+// wideGamut keeps the Rec.2020 result whole: it is in [0, outputMax] in Rec.2020, and its Rec.709 channels
+// can be negative or above outputMax (an HDR encode converts back to Rec.2020 or shows extended range).
+// Without it the Rec.709 channels are clamped to [0, outputMax], for an SDR target.
+vec3 TonemapGranTurismo7(vec3 sceneRec709, float outputMax, bool wideGamut)
 {
     float peak = kGT7Peak * max(outputMax, 1.0);
     GT7Shoulder shoulder = GT7ShoulderForPeak(peak);
@@ -168,7 +171,8 @@ vec3 TonemapGranTurismo7(vec3 sceneRec709, float outputMax)
     // Reference blend ratio is 0.6. Dividing by kGT7Peak converts the 250 nit
     // white of the reference to paper white 1.0.
     vec3 mappedRec2020 = min(mix(skewedRgb, scaledRgb, 0.6), vec3(peak)) / kGT7Peak;
-    return clamp(kGT7Rec2020ToRec709 * mappedRec2020, 0.0, peak / kGT7Peak);
+    vec3 mappedRec709 = kGT7Rec2020ToRec709 * mappedRec2020;
+    return wideGamut ? mappedRec709 : clamp(mappedRec709, 0.0, peak / kGT7Peak);
 }
 
 #endif

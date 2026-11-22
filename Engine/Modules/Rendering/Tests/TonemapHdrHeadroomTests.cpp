@@ -237,8 +237,10 @@ void Apply(const float* rgb, float peak, float* out)
 
 // The GT7 look as tonemap.frag frames the reference: Rec.709 scene in, the curve
 // targeted at 2.5 * outputMax (paper white in place of the reference's 250 nit
-// white), divided by 2.5 so paper white is 1.0, Rec.709 out clamped to [0, outputMax].
-Rgb GT7Expected(const Rgb& scene, float outputMax)
+// white), divided by 2.5 so paper white is 1.0, Rec.709 out. Under HDR
+// (wideGamut) the Rec.709 channels keep values outside [0, outputMax]; for SDR
+// they are clamped to it.
+Rgb GT7Expected(const Rgb& scene, float outputMax, bool wideGamut)
 {
     const float rec2020[3] = {0.6274040f * scene.R + 0.3292820f * scene.G + 0.0433136f * scene.B,
                               0.0690970f * scene.R + 0.9195400f * scene.G + 0.0113612f * scene.B,
@@ -248,7 +250,7 @@ Rgb GT7Expected(const Rgb& scene, float outputMax)
     GT7Reference::Apply(rec2020, peak, mapped);
     for (float& c : mapped)
         c /= 2.5f;
-    auto clampOut = [outputMax](float v) { return std::clamp(v, 0.0f, outputMax); };
+    auto clampOut = [outputMax, wideGamut](float v) { return wideGamut ? v : std::clamp(v, 0.0f, outputMax); };
     return {clampOut(1.6604910f * mapped[0] - 0.5876410f * mapped[1] - 0.0728500f * mapped[2]),
             clampOut(-0.1245500f * mapped[0] + 1.1329000f * mapped[1] - 0.0083490f * mapped[2]),
             clampOut(-0.0181510f * mapped[0] - 0.1005790f * mapped[1] + 1.1187300f * mapped[2])};
@@ -913,14 +915,15 @@ TEST_F(TonemapHdrHeadroom, GT7MapsNeutralOneToFortyPercentOfSdrWhite)
 // the tolerance.
 TEST_F(TonemapHdrHeadroom, GT7HdrMatchesReferenceAtDisplayPeak)
 {
-    const Rgb scenes[] = {{0.18f, 0.18f, 0.18f}, {1.0f, 1.0f, 1.0f}, {8.0f, 8.0f, 8.0f},
-                          {0.8f, 1.6f, 8.0f},    {40.0f, 12.0f, 3.0f}, {4096.0f, 4096.0f, 4096.0f}};
+    const Rgb scenes[] = {{0.18f, 0.18f, 0.18f}, {1.0f, 1.0f, 1.0f},  {8.0f, 8.0f, 8.0f},
+                          {0.8f, 1.6f, 8.0f},    {40.0f, 12.0f, 3.0f}, {4096.0f, 4096.0f, 4096.0f},
+                          {20.0f, 1.0f, 0.0f},   {16.0f, 4.0f, 0.1f},  {0.0f, 0.0f, 6.0f}};
     // GPU pow/exp/exp2/log2 against the CPU's: a few ULP through two PQ round trips.
     constexpr float kTolerance = 2e-3f;
     for (const Rgb& scene : scenes)
     {
         const Rgb hdr = Hdr(scene, Mode::GT7);
-        const Rgb expected = GT7Expected(scene, kOutputMax);
+        const Rgb expected = GT7Expected(scene, kOutputMax, true);
         EXPECT_NEAR(hdr.R, expected.R, kTolerance)
             << "scene " << Fmt(scene) << ": " << Fmt(hdr) << " vs " << Fmt(expected);
         EXPECT_NEAR(hdr.G, expected.G, kTolerance)
@@ -929,11 +932,15 @@ TEST_F(TonemapHdrHeadroom, GT7HdrMatchesReferenceAtDisplayPeak)
             << "scene " << Fmt(scene) << ": " << Fmt(hdr) << " vs " << Fmt(expected);
 
         const Rgb sdr = Sdr(scene, Mode::GT7);
-        const Rgb expectedSdr = GT7Expected(scene, 1.0f);
+        const Rgb expectedSdr = GT7Expected(scene, 1.0f, false);
         EXPECT_NEAR(sdr.R, expectedSdr.R, kTolerance) << "SDR scene " << Fmt(scene) << ": " << Fmt(sdr);
         EXPECT_NEAR(sdr.G, expectedSdr.G, kTolerance) << "SDR scene " << Fmt(scene) << ": " << Fmt(sdr);
         EXPECT_NEAR(sdr.B, expectedSdr.B, kTolerance) << "SDR scene " << Fmt(scene) << ": " << Fmt(sdr);
     }
+
+    // A red outside Rec.709 keeps its Rec.709 red channel above the panel's peak: in
+    // Rec.2020 it is within the peak, and the HDR encode shows it as a wider red.
+    EXPECT_GT(Hdr({20.0f, 1.0f, 0.0f}, Mode::GT7).R, kOutputMax + 1.0f);
 
     // The shoulder converges above the target, so a saturating source reaches the panel's peak.
     EXPECT_NEAR(Hdr({4096.0f, 4096.0f, 4096.0f}, Mode::GT7).Peak(), kOutputMax, 1e-3f);

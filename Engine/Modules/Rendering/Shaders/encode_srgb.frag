@@ -98,7 +98,7 @@ vec3 LinearSceneToHLG(vec3 sceneLinear)
 {
     const float hlgReferencePeakNits = 1000.0;
     float paperWhiteNits = max(pc.paperWhiteNits, kHdrPaperWhiteFloorNits);
-    vec3 bt2020 = Rec709ToBT2020(max(sceneLinear, vec3(0.0)) * (paperWhiteNits / hlgReferencePeakNits));
+    vec3 bt2020 = Rec709ToBT2020(sceneLinear * (paperWhiteNits / hlgReferencePeakNits));
     return clamp(vec3(LinearToHLG(bt2020.r), LinearToHLG(bt2020.g), LinearToHLG(bt2020.b)), 0.0, 1.0);
 }
 
@@ -115,6 +115,8 @@ float InterleavedGradientNoise(vec2 screenPos, float offset)
 // no quantizer at this stage, so it neither dithers nor debands. Encoded
 // inputs (5/6) pass through raw: the source already holds output-encoded
 // values, which is exactly the domain deband/dither operate in.
+// The HDR arms take Rec.709 channels outside [0, 1] as a color outside Rec.709
+// and clamp only after the conversion to BT.2020. The other arms clamp at zero.
 vec3 EncodeForOutput(vec3 src)
 {
     if (pc.outEncoding == 2)
@@ -122,13 +124,13 @@ vec3 EncodeForOutput(vec3 src)
     if (pc.outEncoding == 3)
         return LinearSceneToHLG(src);
     if (pc.outEncoding >= 5)
-        return src;
-    return LinearToSRGB(src);
+        return max(src, vec3(0.0));
+    return LinearToSRGB(max(src, vec3(0.0)));
 }
 
 vec3 SampleEncoded(vec2 uv)
 {
-    return EncodeForOutput(max(texture(uLinearColor, uv).rgb, vec3(0.0)));
+    return EncodeForOutput(texture(uLinearColor, uv).rgb);
 }
 
 // ── Gradient-aware deband (pre-dither) ──────────────────────────────────────
@@ -219,7 +221,7 @@ float TriangularDither(vec2 screenPos, float phase)
 void main()
 {
     vec4 lin = texture(uLinearColor, vUV);
-    vec3 c = max(lin.rgb, vec3(0.0));
+    vec3 c = lin.rgb;
 
     if (pc.outEncoding == 4)
     {
@@ -228,7 +230,8 @@ void main()
         // framebuffer 1.0 at 80 nits (scale = paperWhite/80); macOS extended
         // linear anchors 1.0 at the reference white itself (scale = 1, the OS
         // applies the lift). Highlights above 1.0 carry through as headroom.
-        // Target is FP16, so no dithering needed.
+        // Target is FP16, so no dithering needed. A negative channel is a color
+        // outside Rec.709, which extended-range scRGB shows.
         float refWhite = max(pc.scRGBRefWhiteNits, kHdrPaperWhiteFloorNits);
         float scale = max(pc.paperWhiteNits, kHdrPaperWhiteFloorNits) / refWhite;
         oColor = vec4(c * scale, lin.a);
