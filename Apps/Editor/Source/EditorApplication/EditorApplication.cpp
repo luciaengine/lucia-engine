@@ -3800,6 +3800,7 @@ bool EditorApplication::Initialize()
         openActions.OpenInNodeGraph = std::bind_front(&EditorApplication::OpenGraphAsset, this);
         openActions.ShowInInspector = std::bind_front(&EditorApplication::ShowAssetInInspector, this);
         openActions.OpenInAnimationWindow = std::bind_front(&EditorApplication::OpenAnimationAsset, this);
+        openActions.OpenInTileSetEditor = std::bind_front(&EditorApplication::OpenTileSetAsset, this);
         Editor::RegisterBuiltInAssetOpeners(Editor::AssetOpenerRegistry::Get(), std::move(openActions));
         const std::function<void(const std::filesystem::path&)> openAsset = [](const std::filesystem::path& path)
         {
@@ -6066,6 +6067,18 @@ bool EditorApplication::ShowAssetInInspector(const std::filesystem::path& path)
     }
     if (m_PanelManager && !m_Windows.empty())
         m_PanelManager->ShowOrActivatePanel(m_Windows[0].get(), EditorPanelIds::Inspector);
+    return true;
+}
+
+// Shows the Tile Set Editor and loads the tile set at `path` into it.
+bool EditorApplication::OpenTileSetAsset(const std::filesystem::path& path)
+{
+    TileSetEditorPanel* panel = FindFirstPanelOfType<TileSetEditorPanel>(m_PanelStorage);
+    if (m_Windows.empty() || !panel)
+        return false;
+    if (m_PanelManager)
+        m_PanelManager->ShowOrActivatePanel(m_Windows[0].get(), EditorPanelIds::TileSetEditor);
+    panel->OpenTileSetPath(path);
     return true;
 }
 

@@ -79,6 +79,8 @@ void RegisterBuiltInAssetOpeners(AssetOpenerRegistry& registry, BuiltInAssetOpen
                        [](std::string_view ext) { return IsAnimationFile(ext); },
                        [shared](const std::filesystem::path& path)
                        { return shared->OpenInAnimationWindow(path, AnimationAssetWindow::Animation); }});
+    registry.Register({"tileSet", [](std::string_view ext) { return ext == ".tileset"; },
+                       [shared](const std::filesystem::path& path) { return shared->OpenInTileSetEditor(path); }});
 }
 
 } // namespace GameEngine::Editor

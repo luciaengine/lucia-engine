@@ -701,6 +701,7 @@ class EditorApplication : public Application
     void OpenDeferredInternalFile();
     bool OpenGraphAsset(const std::filesystem::path& path);
     bool OpenAnimationAsset(const std::filesystem::path& path, Editor::AnimationAssetWindow window);
+    bool OpenTileSetAsset(const std::filesystem::path& path);
     bool ShowAssetInInspector(const std::filesystem::path& path);
     void BindGraphPanel(GraphPanel& panel);
     void ActivateGraphDock(EditorWindowContext* ctx, GraphPanel& panel);

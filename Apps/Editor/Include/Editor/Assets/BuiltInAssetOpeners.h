@@ -38,10 +38,11 @@ struct BuiltInAssetOpenActions
     std::function<bool(const std::filesystem::path& path)> OpenInNodeGraph;
     std::function<bool(const std::filesystem::path& path)> ShowInInspector;
     std::function<bool(const std::filesystem::path& path, AnimationAssetWindow window)> OpenInAnimationWindow;
+    std::function<bool(const std::filesystem::path& path)> OpenInTileSetEditor;
 };
 
 /// Registers the openers of the editor's own asset kinds: scenes, C# and native source, materials,
-/// graph files, timelines, clip sets and animation files.
+/// graph files, timelines, clip sets, animation files and tile sets.
 void RegisterBuiltInAssetOpeners(AssetOpenerRegistry& registry, BuiltInAssetOpenActions actions);
 
 } // namespace GameEngine::Editor

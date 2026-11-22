@@ -37,6 +37,7 @@ class BuiltInAssetOpenersTest : public ::testing::Test
                          : window == AnimationAssetWindow::ClipEditor ? "ClipEditor"
                                                                       : "Animation");
         };
+        actions.OpenInTileSetEditor = [this](const std::filesystem::path&) { return Reach("TileSetEditor"); };
         GameEngine::Editor::RegisterBuiltInAssetOpeners(m_Registry, std::move(actions));
     }
 
@@ -142,6 +143,13 @@ TEST_F(BuiltInAssetOpenersTest, ScenesAndAnimationAssetsReachTheirPanels)
     EXPECT_EQ(OpenTarget("a.clipset"), "ClipEditor");
     EXPECT_EQ(OpenTarget("a.anim"), "Animation");
     EXPECT_EQ(OpenTarget("a.glb"), "Animation");
+}
+
+// A tile set opens in the Tile Set Editor, as a double-click in the Assets panel did before the
+// open routing moved to the registry.
+TEST_F(BuiltInAssetOpenersTest, ATileSetOpensInTheTileSetEditor)
+{
+    EXPECT_EQ(OpenTarget("Tiles/terrain.tileset"), "TileSetEditor");
 }
 
 TEST_F(BuiltInAssetOpenersTest, AnythingElseGoesToTheOperatingSystem)
