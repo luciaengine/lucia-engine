@@ -129,7 +129,7 @@ A local session runs the command-line program you already use, under your own lo
 
 ### Tools on a model API
 
-TensorFold (Local) and Custom (OpenAI-compatible) run the conversation in the editor itself. Each turn sends the model the editor's tools as OpenAI-style functions, runs each tool call the model makes, and sends the answer back, until the model answers without a call (at most 24 requests a turn).
+TensorFold (Local) and Custom (OpenAI-compatible) run the conversation in the editor itself. Each turn sends the model the editor's tools as OpenAI-style functions, runs each tool call the model makes, and sends the answer back, until the model answers without a call (at most 100 requests a turn).
 
 - The everyday tools go to the model whole: editor state, scene hierarchy, entity components, ECS queries, selection, creating, changing and deleting entities, undo and redo, the log, a screenshot, the camera, opening assets, saving the scene, play mode and commands. The other tools are named in `describe_editor_tool`, which returns one tool's schema, and run through `call_editor_tool`. A model with a 64K context keeps room for the conversation.
 - Every call goes through the same mode and gate as a Claude session's: the mode control decides what runs, and the panel asks before an action that cannot be undone.

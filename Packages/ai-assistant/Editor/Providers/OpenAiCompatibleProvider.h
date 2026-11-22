@@ -29,7 +29,7 @@ public:
     static constexpr std::string_view kModelStep = "Model";
     static constexpr std::string_view kAnswersStep = "Endpoint answers";
     /// The most model requests one turn makes while the model keeps calling tools.
-    static constexpr int kMaxToolRounds = 24;
+    static constexpr int kMaxToolRounds = 100;
 
     /// Which model a turn asks for when the request names none.
     enum class ModelSource : uint8_t
