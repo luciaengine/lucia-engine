@@ -276,9 +276,9 @@ class SceneDocumentManager
     void ReleaseSceneScopedState(Engine::Renderer::RenderServices* renderServices);
 
     // Reconcile (or retire) this scene's baked HLOD proxy clusters against the
-    // current world. Shared by OpenSceneReplace and the device-rebuild recovery.
+    // current world. Used after scene load, snapshot restore and device rebuild.
     void ReconcileHlodForScene(const std::filesystem::path& scenePath,
-                               Engine::Renderer::RenderServices& renderServices);
+                               Engine::Renderer::RenderServices& renderServices) const;
 
     ECS::World* m_World = nullptr; // not owned
     EditorChangeNotifications* m_Notifications = nullptr; // not owned

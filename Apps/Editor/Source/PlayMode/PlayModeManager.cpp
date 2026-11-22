@@ -11,6 +11,7 @@
 #include "UndoRedo/UndoRedoService.h"
 
 #include "Audio/AudioSystem.h"
+#include "Components/Rendering/HLODProxy.h"
 #include "Components/Rendering/MeshGPUData.h"
 #include "Core/Engine.h"
 #include "ECS/Entity.h"
@@ -154,6 +155,11 @@ static void ResetTransientRenderState(ECS::World& world)
                   auto& meshGpu = meshGpuRow;
                   meshGpu = Components::MeshGPUData{};
               });
+
+    // Snapshot restore regenerated the proxies. They start evicted until HLOD selection runs.
+    world.Query<ECS::Write<Components::MeshGPUData>, ECS::Read<Components::HLODProxy>>()
+        .IncludeDisabled()
+        .Each([](Components::MeshGPUData& meshGpu, const Components::HLODProxy&) { meshGpu.hlodEvicted = true; });
 }
 
 struct PlayModeManager::UndoHistoryStash

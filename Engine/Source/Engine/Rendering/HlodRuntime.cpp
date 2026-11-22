@@ -4,11 +4,11 @@
 #include "Assets/HlodCache.h"
 #include "Assets/HlodReconcile.h"
 #include "Assets/ModelAsset.h" // Mesh / Vertex
+#include "Components/GeneratedEntity.h"
 #include "Components/Rendering/HLODProxy.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MeshRenderer.h"
-#include "Components/RuntimeOnlyEntity.h"
 #include "Components/Transform.h"
 #include "Logger/Logger.h"
 
@@ -102,7 +102,7 @@ LiveMemberIndex BuildLiveIndex(GameEngine::ECS::World& world, const ModelResolve
 
 bool HlodRuntime::IsBoundTo(const GameEngine::ECS::World& world) const
 {
-    return m_BoundWorldId == world.GetWorldId() && m_BoundWorldEpoch == world.GetEntityHandleEpoch();
+    return m_BoundWorldId == world.GetWorldId() && m_BoundWorldGeneration == world.GetLifecycleResetGeneration();
 }
 
 void HlodRuntime::Retire(GameEngine::ECS::World& world, GameEngine::Rendering::MeshGPURegistry& meshReg)
@@ -134,7 +134,7 @@ void HlodRuntime::Retire(GameEngine::ECS::World& world, GameEngine::Rendering::M
         world.ProcessCommands();
     m_Clusters.clear();
     m_BoundWorldId = 0;
-    m_BoundWorldEpoch = 0;
+    m_BoundWorldGeneration = 0;
 }
 
 uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
@@ -184,7 +184,7 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
     const ReconcileResult reconciled = ReconcileBakedScene(baked, live);
 
     m_BoundWorldId = world.GetWorldId();
-    m_BoundWorldEpoch = world.GetEntityHandleEpoch();
+    m_BoundWorldGeneration = world.GetLifecycleResetGeneration();
 
     for (const ReconciledCluster& rc : reconciled.Clusters) {
         if (rc.Members.empty())
@@ -259,7 +259,7 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
                 proxy.Set(gpu);
 
                 proxy.Set(Components::HLODProxy{runtimeId});
-                proxy.Set(Components::RuntimeOnlyEntity{});
+                proxy.Set(Components::GeneratedEntity{});
 
                 cluster.Proxies.push_back(proxy.GetHandle());
             }

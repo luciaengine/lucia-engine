@@ -621,7 +621,7 @@ bool SceneDocumentManager::GetSceneBuildProgress(uint64_t& outProcessed, uint64_
 }
 
 void SceneDocumentManager::ReconcileHlodForScene(const std::filesystem::path& scenePath,
-                                                 Engine::Renderer::RenderServices& renderServices)
+                                                 Engine::Renderer::RenderServices& renderServices) const
 {
     if (!m_World)
         return;
@@ -1122,8 +1122,14 @@ bool SceneDocumentManager::ApplyWorldSnapshot(const std::vector<uint8_t>& snapsh
 {
     if (!m_World)
         return false;
+    const uint64 generation = m_World->GetLifecycleResetGeneration();
     m_World->DeserializeWorld(snapshot);
     m_World->ProcessCommands();
+
+    // A valid restore replaces the ECS world and omits generated proxies.
+    if (m_ScenePath && m_World->GetLifecycleResetGeneration() != generation)
+        if (auto* services = EngineCore::GetInstance().GetRenderServices())
+            ReconcileHlodForScene(*m_ScenePath, *services);
     return true;
 }
 

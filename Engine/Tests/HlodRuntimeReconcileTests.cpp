@@ -416,6 +416,48 @@ TEST(HlodRuntimeReconcile, RetireRestoresMembersOfAnActiveProxy)
     std::filesystem::remove(cache, error);
 }
 
+TEST(HlodRuntimeReconcile, SnapshotLeavesGeneratedProxiesForTheNewRuntime)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto world = std::make_unique<ECS::World>(nullptr);
+    ModelBank bank;
+    auto& runtime = services.GetHlodRuntime();
+    const auto material = GUID::Derive(GUID::Null(), "reconcile/snapshot");
+    const auto cache = BakeAndReconcile(
+        services, *world, bank, runtime, material, 0.0f, "hlod_reconcile_snapshot.gehlod");
+
+    ASSERT_EQ(runtime.GetClusters().size(), 1u);
+    const auto members = runtime.GetClusters().front().Members;
+    const auto proxies = runtime.GetClusters().front().Proxies;
+    ASSERT_FALSE(proxies.empty());
+    ASSERT_TRUE(runtime.IsBoundTo(*world));
+    const auto authoredCount = world->GetEntityCount() - proxies.size();
+    const auto handleEpoch = world->GetEntityHandleEpoch();
+
+    const auto snapshot = world->SerializeWorld();
+    world->DeserializeWorld(snapshot);
+    world->ProcessCommands();
+
+    EXPECT_EQ(world->GetEntityHandleEpoch(), handleEpoch);
+    EXPECT_FALSE(runtime.IsBoundTo(*world));
+    EXPECT_EQ(world->GetEntityCount(), authoredCount);
+    for (const auto member : members)
+        EXPECT_TRUE(world->IsValid(member));
+    for (const auto proxy : proxies)
+        EXPECT_FALSE(world->IsValid(proxy));
+
+    runtime.Retire(*world, services.GetMeshGPURegistry());
+    world.reset();
+    services.Shutdown();
+    std::error_code error;
+    std::filesystem::remove(cache, error);
+}
+
 // Members in one cell on two layers bake into one cluster per layer set, and each proxy draws on its
 // members' layers: no proxy draws a member in a view that does not draw that member.
 TEST(HlodRuntimeReconcile, ProxyLayersEqualTheirMembersLayers) {

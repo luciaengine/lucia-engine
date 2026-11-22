@@ -3,7 +3,7 @@
 namespace GameEngine::Components
 {
 // Tag marking an entity as engine-created runtime state that no scene file holds. WriteSceneFile
-// excludes an entity with this tag. A world snapshot keeps it (the HLOD proxies). An entity that
+// excludes an entity with this tag. A world snapshot keeps it. An entity that
 // its owner makes again after a snapshot restore also carries GeneratedEntity.
 //
 // The tag is intentionally kept out of the Add Component menu — a user adding it by hand

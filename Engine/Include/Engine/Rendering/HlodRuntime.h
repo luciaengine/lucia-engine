@@ -100,7 +100,7 @@ public:
 private:
     std::vector<RuntimeCluster> m_Clusters;
     uint64 m_BoundWorldId = 0;
-    uint64 m_BoundWorldEpoch = 0;
+    uint64 m_BoundWorldGeneration = 0;
 };
 
 } // namespace Hlod
