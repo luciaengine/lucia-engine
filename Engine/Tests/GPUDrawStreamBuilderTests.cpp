@@ -953,24 +953,25 @@ TEST(GPUDrawStreamCrossfadeTail, NoTailCapableSliceClaimsTheUndoubledStride)
 
 // ---- Scatter descriptor layout + push-constant shape -----------------------
 
-TEST(GPUDrawStreamScatterLayout, HasFourteenStorageBufferBindings)
+TEST(GPUDrawStreamScatterLayout, HasFifteenStorageBufferBindings)
 {
     const auto layout = GPUDrawStreamBuilder::MakeScatterDescriptorSetLayout();
-    ASSERT_EQ(layout.bindings.size(), 14u);
-    for (uint32_t i = 0; i < 14u; ++i)
+    ASSERT_EQ(layout.bindings.size(), 15u);
+    for (uint32_t i = 0; i < 15u; ++i)
     {
         EXPECT_EQ(layout.bindings[i].binding, i);
         EXPECT_EQ(layout.bindings[i].type, DescriptorType::StorageBuffer);
     }
 }
 
-static_assert(sizeof(GPUDrawStreamBuilder::ScatterPushConstants) == 112,
-              "the PC block is 112 B: 13 arena/LOD/routing words + the P0 shadow-arc "
+static_assert(sizeof(GPUDrawStreamBuilder::ScatterPushConstants) == 124,
+              "the PC block is 124 B: 13 arena/LOD/routing words + the P0 shadow-arc "
               "statsBase + the consolidation meshGroupMode + the small-object cull "
               "threshold + the two per-view SSE coverage scales + the five LOD "
               "crossfade words (clock, 1/duration, tail-active, tail cursor base, "
               "tail record base) + the LOD dwell band + the rendered level and phase "
-              "history gate + the three origin sector words; must match "
+              "history gate + the three origin sector words + the three impostor "
+              "words (card mesh, enter and exit coverage); must match "
               "draw_command_scatter.comp's push_constant block");
 static_assert(GPUDrawStreamBuilder::kClassModeOff == 0u
                   && GPUDrawStreamBuilder::kClassModeShadow == 1u

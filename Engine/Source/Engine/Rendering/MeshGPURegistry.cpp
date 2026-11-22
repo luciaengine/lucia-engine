@@ -610,8 +610,6 @@ static GPUMesh BuildGpuMeshRow(const MeshGPUEntry& entry, LodSelectionMode lodMo
     row.boundingRadius = entry.bounds.Radius();
     row.lodCoverageScale = row.boundingRadius > 0.0f
         ? entry.lodReferenceRadius / row.boundingRadius : 1.0f;
-    row.bucketKey      = static_cast<uint32_t>(entry.bucketKey);
-    row.indexType      = entry.indexType;
     row.vertexFlags    = static_cast<uint32_t>(entry.vertexFlags);
     row.lodCount       = entry.lodCount;
     static_assert(sizeof(MeshGPURegistry::kDefaultLODThresholds) / sizeof(float) == MeshGPUEntry::kMaxEntryLODs,

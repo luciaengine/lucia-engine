@@ -223,9 +223,9 @@ struct OrderedOwnerMeshPush
     uint32_t Index16 = 0;
     uint32_t Padding = 0;
 };
-static_assert(sizeof(OrderedOwnerMeshPush) == 64);
-static_assert(offsetof(OrderedOwnerMeshPush, Index16) == 56);
-static_assert(offsetof(OrderedOwnerMeshPush, Padding) == 60);
+static_assert(sizeof(OrderedOwnerMeshPush) == 72);
+static_assert(offsetof(OrderedOwnerMeshPush, Index16) == 64);
+static_assert(offsetof(OrderedOwnerMeshPush, Padding) == 68);
 
 struct PreparedForwardDraw
 {
@@ -1698,6 +1698,7 @@ class RenderServices::WorldPassPreparation
 
         instanceConstants.indirectionAddr = slotIndirectionBda;
         instanceConstants.gpuInstancesAddr = m_InstanceAddress;
+        instanceConstants.materialOverride = DrawStreamRangeMaterial(key, lookup);
         std::span<const std::byte> constantBytes(
             reinterpret_cast<const std::byte*>(&instanceConstants), sizeof(instanceConstants));
 

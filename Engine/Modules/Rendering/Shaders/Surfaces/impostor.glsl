@@ -6,6 +6,9 @@
 //
 // @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
 // impostorAtlas.z enables the debug tint. impostorAtlas.w is the highest ready mip.
+//
+// The card shades its crown's own shadow toward the primary light:
+// @primaryLightOcclusion
 
 #include "Includes/impostor_frame.glsl"
 #include "Includes/foliage_coverage.glsl"
@@ -16,23 +19,39 @@ vec2 GE_ImpostorClampTile(vec2 atlasUv, vec2 frame, float gridSize, vec2 inset)
     return (frame + tile) / gridSize;
 }
 
-// The object-space surface point (in sphere radii from the center) that `frame` sees through card
-// point `offset`. The bake camera is orthographic and reverse-Z, with near at 1 radius in front of
-// the center and far at 1 radius behind it, so window depth d is at 2d - 1 radii along the frame
-// direction. The atlas holds depth premultiplied by coverage; a texel with no surface keeps `offset`.
-vec3 GE_ImpostorSurfacePoint(vec2 frame, vec3 offset, vec4 impostorAtlas, vec2 halfTexel)
+// How much of the primary light reaches object-space point `surface` through the object itself. The
+// frames around the light direction see the object from the light: where their stored surface lies
+// in front of the point, toward the light, the crown shadows it. lightWS: unit, surface to light,
+// world space, zero without a light. (c, s): the cosine and sine of the object's yaw. The lookups
+// read mip 0 inside each tile: a reprojected UV has no screen derivatives to pick a mip from.
+float GE_ImpostorCrownLight(vec3 surface, vec3 lightWS, float c, float s, vec4 impostorAtlas, vec2 halfTexel)
 {
-    vec2 uv = GE_ImpostorFrameUv(frame, offset, impostorAtlas);
-    bool filtered = impostorAtlas.w > 0.0;
-    if (filtered)
-        uv = GE_ImpostorClampTile(uv, frame, impostorAtlas.x, halfTexel);
-    float coverage = filtered ? textureLod(albedoMap, uv, 0.0).a : texture(albedoMap, uv).a;
-    vec3 direction = GE_ImpostorFrameDirection(frame, impostorAtlas);
-    float storedDepth = filtered ? textureLod(normalMap, uv, 0.0).w : texture(normalMap, uv).w;
-    float depth = storedDepth / max(coverage, 0.0001);
-    vec3 surface = offset - direction * dot(offset, direction) + direction * (2.0 * depth - 1.0);
-    // An edge texel blends toward the card point, so the point does not jump at a silhouette.
-    return mix(offset, surface, smoothstep(0.25, 0.75, coverage));
+    if (dot(lightWS, lightWS) <= 0.0)
+        return 1.0;
+    // The inverse of the yaw that turns the object normal into world space.
+    vec3 lightObject = vec3(c * lightWS.x - s * lightWS.z, lightWS.y, s * lightWS.x + c * lightWS.z);
+    vec2 code = impostorAtlas.y < 0.5 ? GE_HemiOctEncode(lightObject) : GE_OctEncode(lightObject);
+    vec2 frames[3];
+    vec3 weights;
+    GE_ImpostorBlendFrames(code, impostorAtlas, frames, weights);
+    const float kShadowDepth = 0.02;  // Window depth: 0.04 sphere radii.
+    const float kShadowFade = 0.05;
+    float light = 0.0;
+    for (int i = 0; i < 3; ++i)
+    {
+        vec2 uv = GE_ImpostorFrameUv(frames[i], surface, impostorAtlas);
+        bool filtered = impostorAtlas.w > 0.0;
+        if (filtered)
+            uv = GE_ImpostorClampTile(uv, frames[i], impostorAtlas.x, halfTexel);
+        vec4 sampleColor = filtered ? textureLod(albedoMap, uv, 0.0) : texture(albedoMap, uv);
+        float storedNormalDepth = filtered ? textureLod(normalMap, uv, 0.0).w : texture(normalMap, uv).w;
+        float storedDepth = storedNormalDepth / max(sampleColor.a, 0.0001);
+        float expectedDepth = dot(surface, GE_ImpostorFrameDirection(frames[i], impostorAtlas)) * 0.5 + 0.5;
+        float shadowed = smoothstep(kShadowDepth, kShadowDepth + kShadowFade, storedDepth - expectedDepth) *
+                         smoothstep(0.25, 0.75, sampleColor.a);
+        light += weights[i] * (1.0 - shadowed);
+    }
+    return light;
 }
 
 SurfaceOutput EvaluateSurface(SurfaceInput sIn)
@@ -71,12 +90,46 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 
     // Atlas texels outside the tree hold 0 in every channel, so a filtered sample at a leaf edge is
     // already premultiplied by its coverage. Divide by the summed coverage; never multiply by it.
-    // The surface point: each frame's depth under this card point, blended by the frame weights, so
-    // the point moves smoothly when the view crosses from one frame to the next. The frames then
-    // sample that point, so their texels line up instead of each showing the card plane.
+    // Coverage comes from the frames at the card point. Every pass reads the same coverage, so the
+    // depth prepass and the colour pass keep the same pixels, and a depth-only pass stops here.
+    vec2 cardUv[3];
+    vec4 frameColor[3];
+    vec4 cardColor = vec4(0.0);
+    for (int i = 0; i < 3; ++i)
+    {
+        cardUv[i] = GE_ImpostorFrameUv(frames[i], offset, Props.impostorAtlas);
+        if (filtered)
+            cardUv[i] = GE_ImpostorClampTile(cardUv[i], frames[i], gridSize, shadingInset);
+        frameColor[i] = filtered ? textureLod(albedoMap, cardUv[i], mip) : texture(albedoMap, cardUv[i]);
+        cardColor += frameColor[i] * weights[i];
+    }
+    o.opacity = cardColor.a;
+    if (mip > 0.5)
+    {
+        float cutout = step(clamp(Props.alphaCutoff, 0.0, 1.0), cardColor.a);
+        float coverage = mix(cutout, cardColor.a, smoothstep(0.5, 2.0, mip));
+        o.opacity = coverage > GE_FoliageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
+    }
+#ifdef GE_DEPTH_ONLY_FRAGMENT
+    return o;
+#endif
+
+    // The surface point (in sphere radii from the center, object space): each frame's depth under
+    // the card point, blended by the frame weights, so the point moves smoothly when the view
+    // crosses from one frame to the next. The frames then sample that point, so their texels line
+    // up instead of each showing the card plane. The bake camera is orthographic and reverse-Z, with
+    // near 1 radius in front of the center and far 1 radius behind it, so window depth d is at
+    // 2d - 1 radii along the frame direction. A texel with no surface keeps the card point.
     vec3 surface = vec3(0.0);
     for (int i = 0; i < 3; ++i)
-        surface += GE_ImpostorSurfacePoint(frames[i], offset, Props.impostorAtlas, halfTexel) * weights[i];
+    {
+        float storedDepth = filtered ? textureLod(normalMap, cardUv[i], mip).w : texture(normalMap, cardUv[i]).w;
+        float coverage = frameColor[i].a;
+        vec3 direction = GE_ImpostorFrameDirection(frames[i], Props.impostorAtlas);
+        float depth = storedDepth / max(coverage, 0.0001);
+        vec3 framePoint = offset - direction * dot(offset, direction) + direction * (2.0 * depth - 1.0);
+        surface += mix(offset, framePoint, smoothstep(0.25, 0.75, coverage)) * weights[i];
+    }
 
     // A frame that has a surface in front of the surface point sees an occluder there (the leaves
     // above a trunk, seen from a higher frame). Its weight fades out over kOccluderFade, down to
@@ -105,22 +158,24 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     }
     color /= weightSum;
     objectNormal /= weightSum;
-    o.baseColor = color.a > 0.0001 ? color.rgb / color.a : vec3(0.0);
-    o.opacity = color.a;
-    if (mip > 0.5)
-    {
-        float cutout = step(clamp(Props.alphaCutoff, 0.0, 1.0), color.a);
-        float coverage = mix(cutout, color.a, smoothstep(0.5, 2.0, mip));
-        o.opacity = coverage > GE_FoliageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
-    }
+    // Where the aligned frames see no surface, the card point's own colour fills in.
+    o.baseColor = color.a > 0.05 ? color.rgb / color.a : cardColor.rgb / max(cardColor.a, 0.0001);
     if (Props.impostorAtlas.z > 0.5)
         o.baseColor = mix(o.baseColor, vec3(1.0, 0.15, 0.1), 0.65);
 
     float c = sIn.custom0.z;
     float s = sIn.custom0.w;
+    // The blend of leaf normals is shorter than 1 where the leaves face different ways. A pixel of
+    // the mesh averages the sun over those leaves, so the sun on the card scales with this length.
+    float normalCoherence = clamp(length(objectNormal) / max(color.a, 0.0001), 0.0, 1.0);
     objectNormal = normalize(objectNormal + vec3(0.0, 1e-4, 0.0));
     o.normalWS = normalize(vec3(c * objectNormal.x + s * objectNormal.z, objectNormal.y,
                                 -s * objectNormal.x + c * objectNormal.z));
+#ifdef GE_PRIMARY_LIGHT_OCCLUSION
+    o.primaryLightOcclusion =
+        GE_ImpostorCrownLight(surface, sIn.primaryLightDirectionWS, c, s, Props.impostorAtlas, halfTexel) *
+        normalCoherence;
+#endif
     o.roughness = 0.9;
     o.metallic = 0.0;
     return o;

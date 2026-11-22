@@ -131,6 +131,11 @@ void PopulateMeshRenderer(Components::MeshRenderer& mr,
 // Returns a default LocalBounds if the asset has no meshes.
 Components::LocalBounds ComputeModelBounds(const ModelAsset& modelAsset);
 
+// The LocalBounds box of one part of `modelAsset`: `submeshBounds`, or the whole model's box when
+// the model has its impostor stage on. Then every part has the same culling sphere and the same
+// screen coverage, so all parts switch to the impostor card in the same frame.
+Mathematics::BoundingBox ModelPartBounds(const ModelAsset& modelAsset, const Mathematics::BoundingBox& submeshBounds);
+
 // After a scene load, iterate all MeshRenderer components that have a modelAssetGuid
 // but no meshGpuHandleId and resolve them by loading the model asset and registering
 // GPU meshes/materials. Waits for every load: the editor's synchronous additive

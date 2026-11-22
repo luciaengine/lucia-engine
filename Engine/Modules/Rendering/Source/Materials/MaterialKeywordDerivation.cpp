@@ -58,6 +58,20 @@ void ApplyVertexModifierKeyword(ShaderVariantKey& key,
                                 : MaterialKeyword::HasVertexMod;
 }
 
+void ApplySurfaceLightOcclusionKeyword(ShaderVariantKey& key,
+                                       const std::string& surfaceRef,
+                                       const std::filesystem::path& materialDir,
+                                       const MaterialBuildContext& context)
+{
+    key.materialKeywords = key.materialKeywords & ~MaterialKeyword::SurfaceLightOcclusion;
+    if (surfaceRef.empty())
+        return;
+    const std::filesystem::path surfacePath = ShaderComposer::ResolveShaderReference(surfaceRef, materialDir, context);
+    if (HasCapability(ShaderCapabilityDetector::DetectFromFile(surfacePath.string()),
+                      ShaderCapability::PrimaryLightOcclusion))
+        key.materialKeywords |= MaterialKeyword::SurfaceLightOcclusion;
+}
+
 void ApplyAlphaModeKeywords(ShaderVariantKey& key, MaterialAlphaMode alphaMode,
                             const std::optional<MaterialBlendState>& blend)
 {

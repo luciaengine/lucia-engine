@@ -24,6 +24,7 @@
 #include "Engine/Rendering/MaterialDeformationClassify.h"
 #include "Engine/Rendering/ViewTemporalHistory.h"
 #include "AssetCore/GUID.h"
+#include "Rendering/Materials/Shader/ShaderDeformationEnvelope.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Engine::Renderer;
@@ -135,7 +136,7 @@ TEST(DeformationMotionProducer, AnUndifferenceableEndpointPairProducesNoBlock)
         << "the control: the same endpoint with a real viewport DOES build";
 }
 
-// Lane membership. The three refusals mirror the adapter's own.
+// Lane membership. The three refusals mirror the adapter's own; a clock-free modifier needs no motion draw.
 TEST(DeformationMotionProducer, OnlyTheSimpleModifierFormOnANonBlendedMaterialIsInTheLane)
 {
     const Material simple = MakeMaterial(MaterialKeyword::HasVertexMod, MaterialAlphaMode::Opaque);
@@ -165,6 +166,13 @@ TEST(DeformationMotionProducer, OnlyTheSimpleModifierFormOnANonBlendedMaterialIs
     const Material blended = MakeMaterial(MaterialKeyword::HasVertexMod, MaterialAlphaMode::Blend);
     EXPECT_FALSE(SupportsDeformationMotion(blended))
         << "a blended surface writes no prepass depth for the motion draw to agree with";
+
+    Material clockFree = MakeMaterial(MaterialKeyword::HasVertexMod, MaterialAlphaMode::Mask);
+    GameEngine::Rendering::DeformationEnvelopeDeclaration envelope;
+    envelope.ClockFree = true;
+    clockFree.SetDeformationEnvelope(envelope);
+    EXPECT_FALSE(SupportsDeformationMotion(clockFree))
+        << "a modifier without a clock gives the same position at both endpoints";
 }
 
 // The keyword the variant cache reads is the KEY, and two of the engine's

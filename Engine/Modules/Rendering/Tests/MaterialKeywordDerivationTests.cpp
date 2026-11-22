@@ -204,6 +204,23 @@ TEST(MaterialKeywordDerivation, BoundHeightMapOnTheStandardSurfaceDerivesParalla
     EXPECT_NE(std::find(defines.begin(), defines.end(), "GE_PARALLAX_ENABLED"), defines.end());
 }
 
+// The surface light-occlusion keyword reaches the shading shapes only: a key that shades nothing
+// (depth, motion, impostor bake) composes the same program with or without it.
+TEST(MaterialKeywordDerivation, SurfaceLightOcclusionDefinesOnlyInShadingShapes)
+{
+    ShaderVariantKey key{};
+    key.materialKeywords = MaterialKeyword::SurfaceLightOcclusion;
+    const auto shading = GenerateDefines(key, "StandardPBR");
+    EXPECT_NE(std::find(shading.begin(), shading.end(), "GE_SURFACE_LIGHT_OCCLUSION"), shading.end());
+    for (const MaterialKeyword shadesNothing :
+         {MaterialKeyword::DepthOnlyFragment, MaterialKeyword::MotionVectors, MaterialKeyword::ImpostorBake})
+    {
+        key.materialKeywords = MaterialKeyword::SurfaceLightOcclusion | shadesNothing;
+        const auto defines = GenerateDefines(key, "StandardPBR");
+        EXPECT_EQ(std::find(defines.begin(), defines.end(), "GE_SURFACE_LIGHT_OCCLUSION"), defines.end());
+    }
+}
+
 TEST(MaterialKeywordDerivation, UnboundHeightMapClearsParallax)
 {
     // The derivation is the authority: a key rebuilt over one that carried the bit loses it, for

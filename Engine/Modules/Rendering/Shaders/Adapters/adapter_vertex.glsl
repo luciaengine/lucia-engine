@@ -441,6 +441,9 @@ void ge_ApplySkinning8(inout vec3 position, inout vec3 normal,
 //
 // 1. Simple (HAS_VERTEX_MODIFIER): position-only modification.
 //      vec3 ModifyVertex(vec3 position, InstanceData inst);
+//    It may also define GE_VERTEX_MODIFIER_INSTANCE and
+//      void ModifyInstance(inout InstanceData inst);
+//    which runs once before ModifyVertex, to set inst.custom0 for the fragment stage.
 //    GE_VERTEX_MODIFIER_FRAME adds a local-space rotation for normals and tangents.
 //
 // 2. Extended (HAS_VERTEX_OUTPUT_MODIFIER): full vertex output control.
@@ -618,6 +621,11 @@ void main()
 
     // Simple vertex modifier (operates in local space).
 #ifdef HAS_VERTEX_MODIFIER
+#ifdef GE_VERTEX_MODIFIER_INSTANCE
+    // A modifier that defines GE_VERTEX_MODIFIER_INSTANCE sets per-instance data (custom0) for
+    // every endpoint and for the fragment stage, before it moves the vertex.
+    ModifyInstance(inst);
+#endif
 #ifdef GE_MOTION_VECTORS
     // The previous endpoint, evaluated before the current one overwrites the
     // shared pre-modifier vertex. Both endpoints deform the same skinned pose:

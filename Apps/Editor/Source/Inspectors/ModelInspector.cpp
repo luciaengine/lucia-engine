@@ -1116,6 +1116,52 @@ void BuildRigTab(UIElement* root,
         });
 }
 
+// The impostor stage of the model: one baked card for all its parts, far away.
+void BuildImpostorSection(UIElement* root, const std::filesystem::path& assetPath,
+                          std::function<void()> requestInspectorRefresh)
+{
+    InspectorUI::AddTextBlock(root, "Impostor", "inspector-section-subheader");
+    auto& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
+    const ModelAssetSettings settings = ModelAssetSettings::Load(registry, assetPath);
+    InspectorDrag::AddToggleRow(root, "Far impostor", settings.Impostor,
+        [assetPath, requestInspectorRefresh](bool enabled) {
+            auto& assets = EngineCore::GetInstance().GetAssetManager();
+            ModelAssetSettings edited = ModelAssetSettings::Load(assets.GetRegistry(), assetPath);
+            edited.Impostor = enabled;
+            edited.Save(assets.GetRegistry(), assetPath);
+            ReloadModel(assetPath);
+            if (requestInspectorRefresh)
+                requestInspectorRefresh();
+        },
+        "Far away, draw one baked card for all parts of this model. Use it for trees, large plants "
+        "and props seen from far. A small model with few triangles draws faster without it.");
+
+    if (!settings.Impostor)
+        return;
+    constexpr int kMaxPercent = static_cast<int>(ModelAssetSettings::kMaxImpostorScreenHeightPercent);
+    const auto row = InspectorDrag::AddSliderWithIntValueRow(
+        root, "Impostor Screen Height (%)", static_cast<int>(settings.ImpostorScreenHeightPercent), 0, kMaxPercent,
+        "Set how small the model must look before it draws its card. Use 0 for the automatic setting: one "
+        "atlas pixel per screen pixel.");
+    const auto commit = [assetPath, kMaxPercent, slider = row.Slider, field = row.ValueField](int value) {
+        const int percent = std::clamp(value, 0, kMaxPercent);
+        slider->SetValueWithoutNotify(static_cast<float>(percent));
+        field->SetValueWithoutNotify(percent);
+        auto& assets = EngineCore::GetInstance().GetAssetManager();
+        ModelAssetSettings edited = ModelAssetSettings::Load(assets.GetRegistry(), assetPath);
+        if (edited.ImpostorScreenHeightPercent == static_cast<uint32>(percent))
+            return;
+        edited.ImpostorScreenHeightPercent = static_cast<uint32>(percent);
+        if (edited.Save(assets.GetRegistry(), assetPath))
+            ReloadModel(assetPath);
+    };
+    row.Slider->SetOnValueChanging([field = row.ValueField](const float& value) {
+        field->SetValueWithoutNotify(static_cast<int>(std::lround(value)));
+    });
+    row.Slider->SetOnValueChanged([commit](const float& value) { commit(static_cast<int>(std::lround(value))); });
+    row.ValueField->SetOnValueChanged([commit](const int& value) { commit(value); });
+}
+
 void BuildModelInspector(UIElement* root,
                          ModelAsset* model,
                          Editor::UndoRedoService* undo,
@@ -1133,6 +1179,7 @@ void BuildModelInspector(UIElement* root,
     {
     case ModelInspectorTab::Lod:
         BuildLodSection(root, model, undo, requestInspectorRefresh);
+        BuildImpostorSection(root, assetPath, requestInspectorRefresh);
         break;
     case ModelInspectorTab::Rig:
         BuildRigTab(root, model, assetPath, requestInspectorRefresh);

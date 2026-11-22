@@ -24,7 +24,6 @@ struct EZTree
     uint32 RuntimeBranchInstanceIndex = 0xFFFFFFFFu;
     uint32 RuntimeLeafInstanceIndex = 0xFFFFFFFFu;
     uint32 RuntimeTrellisInstanceIndex = 0xFFFFFFFFu;
-    uint32 RuntimeImpostorInstanceIndex = 0xFFFFFFFFu;
     std::array<uint8, 16> RuntimeMeshGuid{};
     uint32 RuntimeVertexCount = 0;
     uint32 RuntimeTriangleCount = 0;

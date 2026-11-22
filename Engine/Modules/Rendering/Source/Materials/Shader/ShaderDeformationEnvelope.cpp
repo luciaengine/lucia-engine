@@ -18,6 +18,7 @@ namespace
 {
 
 constexpr std::string_view kTag = "@deformationEnvelope";
+constexpr std::string_view kClockFreeDeclaration = "@deformationClock none";
 constexpr std::string_view kScaledByKey = "scaledBy=";
 constexpr std::string_view kNotWidened =
     "Culling bounds are not widened for materials using this modifier, so deformed geometry may be culled "
@@ -38,6 +39,18 @@ bool FindDeclaration(const std::string& line, std::string& rest)
         return false;
     rest = line.substr(at);
     return true;
+}
+
+// True when `line` is the comment `// @deformationClock none`.
+bool IsClockFreeDeclaration(const std::string& line)
+{
+    const size_t s = line.find_first_not_of(" \t\r");
+    if (s == std::string::npos || line.compare(s, 2, "//") != 0)
+        return false;
+    const size_t at = line.find_first_not_of(" \t", s + 2);
+    if (at == std::string::npos || line.compare(at, kClockFreeDeclaration.size(), kClockFreeDeclaration) != 0)
+        return false;
+    return line.find_first_not_of(" \t\r", at + kClockFreeDeclaration.size()) == std::string::npos;
 }
 
 bool ParseMeters(const std::string& token, float& out)
@@ -106,6 +119,11 @@ DeformationEnvelopeDeclaration ParseDeformationEnvelope(const ShaderPropertySour
     while (std::getline(lines, line))
     {
         ++lineNo;
+        if (IsClockFreeDeclaration(line))
+        {
+            declaration.ClockFree = true;
+            continue;
+        }
         std::string rest;
         if (!FindDeclaration(line, rest))
             continue;

@@ -205,6 +205,9 @@ struct ParticleExtraction::Impl
     {
         uint64 IndirectionAddress = 0;
         uint64 GpuInstancesAddress = 0;
+        // instance_io.glsl InstancedPC: particles read their own material.
+        uint32 MaterialOverride = 0xFFFFFFFFu;
+        uint32 Pad = 0;
     };
 
     std::unordered_map<ECS::EntityId, EmitterRenderCache> m_EmitterCaches;

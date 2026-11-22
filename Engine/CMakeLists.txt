@@ -445,6 +445,8 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Impostors/ImpostorAtlasCache.cpp
 	Source/Engine/Rendering/Impostors/ImpostorBaker.cpp
 	Source/Engine/Rendering/Impostors/ImpostorFrameCamera.cpp
+	Source/Engine/Rendering/Impostors/ImpostorStage.cpp
+	Source/Engine/Rendering/Impostors/MeshImpostorSystem.cpp
 	Source/Engine/Rendering/ClusterLOD/ClusterLODSplits.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeature.cpp
 	Source/Engine/Rendering/ShadowMapRenderFeaturePasses.cpp

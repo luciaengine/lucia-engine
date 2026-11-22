@@ -23,6 +23,7 @@
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MaterialDeformationClassify.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialSystem.h"
 #include "ScopedShaderCompileTarget.h"
@@ -430,6 +431,25 @@ TEST_F(MaterialPipelineCompilationTest, ConvertedUnityGraphShape_MaterializesAnd
 }
 
 // Unlit material compiles a different shader path successfully.
+// A modifier that declares `@deformationClock none` is out of the deformer lane, in the predicate
+// that the deformer lane reads and in the cached verdict that the mover lane reads.
+TEST_F(MaterialPipelineCompilationTest, AClockFreeModifierIsOutOfTheCachedDeformerLane)
+{
+    MaterialDocument doc{};
+    doc.materialName = "ClockFreeCard";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/impostor.glsl";
+    doc.vertexModifier = "VertexModifiers/impostor_card.glsl";
+    doc.alphaMode = MaterialAlphaMode::Mask;
+    doc.doubleSided = true;
+    Material* mat = m_rs->Materials().RegisterMaterialFromDocument(GUID::Generate(), doc);
+    ASSERT_NE(mat, nullptr);
+    ASSERT_TRUE(mat->GetDeformationEnvelope().ClockFree) << "the card modifier declares no clock";
+    EXPECT_FALSE(SupportsDeformationMotion(*mat));
+    EXPECT_FALSE(m_rs->Materials().SupportsDeformationMotionAt(mat->GetGpuSceneMaterialIndex()))
+        << "the cached verdict disagrees with the predicate";
+}
+
 TEST_F(MaterialPipelineCompilationTest, Unlit_CompilesShaders)
 {
     MaterialDocument doc{};

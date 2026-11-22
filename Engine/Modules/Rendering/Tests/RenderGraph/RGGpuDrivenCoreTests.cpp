@@ -1267,7 +1267,7 @@ TEST(RGGpuDriven, LateShadowListsReportEachPagesCastersInTheShadowArcStats)
         slice.visibilityOffsetBytes = 2u * kStride * sizeof(uint32_t);
         builder->RegisterSlice(slice);
         const RGBuffer scatter = builder->ScheduleUnifiedScatter(frame, "Arena", 0, visibility, sceneRG.Instances,
-            sceneRG.ScatterHot, sceneRG.Meshes, scene->GetBatchRegistry(), {}, {}, {}, {}, kInstances,
+            sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners, scene->GetBatchRegistry(), {}, {}, {}, {}, kInstances,
             static_cast<uint32_t>(scene->GetMeshes().size()));
         ASSERT_TRUE(scatter.IsValid());
         frame.MarkOutput(scatter);
@@ -1355,7 +1355,7 @@ TEST(RGGpuDriven, ScheduleUnifiedScatterPublishesOrderingWithTransferInDstScope)
     // Color-only slice (cascadeIndex none) — no shadow table needed, so the
     // depth-class span is unused (empty); empty color-class span = merge off.
     RGBuffer ordering = builder->ScheduleUnifiedScatter(
-        frame, "E2", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, registry,
+        frame, "E2", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners, registry,
         /*materialDepthClass=*/{}, /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, 8u,
         static_cast<uint32_t>(scene->GetMeshes().size()));
     ASSERT_TRUE(ordering.IsValid());
@@ -1374,7 +1374,7 @@ TEST(RGGpuDriven, ScheduleUnifiedScatterPublishesOrderingWithTransferInDstScope)
     sliceB.phase = GPUDrawStreamBuilder::SlicePhase::B;
     builder->RegisterSlice(sliceB);
     RGBuffer orderingB = builder->ScheduleUnifiedScatter(
-        frame, "E2.B", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, registry,
+        frame, "E2.B", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners, registry,
         /*materialDepthClass=*/{}, /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, 8u,
         static_cast<uint32_t>(scene->GetMeshes().size()));
     ASSERT_TRUE(orderingB.IsValid());
@@ -1478,7 +1478,7 @@ WarmScatterCounts CountWarmScatter(IDevice& device, GPUScene& scene, BufferHandl
         }
         const AllocationCountScope schedule(CountWindow::ThisThread);
         const RGBuffer ordering = builder.ScheduleUnifiedScatter(
-            frame, "Warm", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes,
+            frame, "Warm", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners,
             registry, /*materialDepthClass=*/{}, /*materialColorClass=*/{}, /*meshPoolOrdered=*/{},
             /*orderedToGroup=*/{}, 8u, static_cast<uint32_t>(scene.GetMeshes().size()));
         counts.scheduleAllocations   = schedule.Count();
@@ -1701,7 +1701,7 @@ TEST(RGGpuDriven, SliceTableSelectsPublishedKeyIndependentOfCascadeIndex)
 
     RGBuffer ordering = builder->ScheduleUnifiedScatter(
         frame, "Tables", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-        sceneRG.Meshes, registry, depthClass, /*materialColorClass=*/{},
+        sceneRG.Meshes, sceneRG.ImpostorOwners, registry, depthClass, /*materialColorClass=*/{},
         /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, 8u,
         static_cast<uint32_t>(scene->GetMeshes().size()));
     ASSERT_TRUE(ordering.IsValid());
@@ -1821,7 +1821,7 @@ TEST(RGGpuDriven, ColorSlicesOfOneViewScatterTheirOwnVisibilitySets)
 
         RGBuffer ordering = builder->ScheduleUnifiedScatter(
             frame, "ProbeFaces", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
             /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, kInstances,
             static_cast<uint32_t>(scene->GetMeshes().size()));
         EXPECT_TRUE(ordering.IsValid());
@@ -1938,7 +1938,7 @@ TEST(RGGpuDriven, CrossfadeTailIsASeparateSegmentAndLeavesTheHeadRegionInPlace)
         builder->RegisterSlice(s2);
         RGBuffer ordering = builder->ScheduleUnifiedScatter(
             frame, "XF", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, registry, /*materialDepthClass=*/{}, /*materialColorClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, registry, /*materialDepthClass=*/{}, /*materialColorClass=*/{},
             /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, 8u,
             static_cast<uint32_t>(scene->GetMeshes().size()));
         EXPECT_TRUE(ordering.IsValid());
@@ -2109,7 +2109,7 @@ TEST(RGGpuDriven, ColorClassMergePublishesOneSharedRangePerClass)
     builder->RegisterSlice(slice);
 
     RGBuffer ordering = builder->ScheduleUnifiedScatter(
-        frame, "ColorMerge", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, registry,
+        frame, "ColorMerge", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners, registry,
         /*materialDepthClass=*/{}, colorClass, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, 8u,
         static_cast<uint32_t>(scene->GetMeshes().size()));
     ASSERT_TRUE(ordering.IsValid());
@@ -2189,7 +2189,7 @@ TEST(RGGpuDriven, GroupedSchedulePublishesOneRangePerPoolGroup)
 
     RGBuffer ordering = builder->ScheduleUnifiedScatter(
         frame, "Grouped", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-        sceneRG.Meshes, registry,
+        sceneRG.Meshes, sceneRG.ImpostorOwners, registry,
         /*materialDepthClass=*/{}, /*materialColorClass=*/{}, meshOrdered, orderedToGroup, 8u,
         static_cast<uint32_t>(scene->GetMeshes().size()));
     ASSERT_TRUE(ordering.IsValid());
@@ -2264,7 +2264,7 @@ TEST(RGGpuDriven, ScheduleUnifiedScatterMergesParitySiblingsIntoTwoSegments)
     builder->RegisterSlice(slice);
 
     RGBuffer ordering = builder->ScheduleUnifiedScatter(
-        frame, "Parity", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, registry,
+        frame, "Parity", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners, registry,
         /*materialDepthClass=*/{}, /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, 8u,
         static_cast<uint32_t>(scene->GetMeshes().size()));
     ASSERT_TRUE(ordering.IsValid());
@@ -2422,7 +2422,7 @@ TEST(RGGpuDriven, RecycledSlotDwellHistoryResetsToTheStatelessPick)
 
         RGBuffer ordering = builder->ScheduleUnifiedScatter(
             frame, "Recycle", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
             /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{},
             scene->GetInstanceCount(), static_cast<uint32_t>(scene->GetMeshes().size()));
         EXPECT_TRUE(ordering.IsValid());
@@ -2585,7 +2585,7 @@ TEST(RGGpuDriven, FirstTouchCrossfadeStateArrivesAsNoHistoryAndAdoptsItsPick)
 
         RGBuffer ordering = builder->ScheduleUnifiedScatter(
             frame, "FadeFirstTouch", /*rgPassPhase=*/0, vis, sceneRG.Instances,
-            sceneRG.ScatterHot, sceneRG.Meshes, scene->GetBatchRegistry(),
+            sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners, scene->GetBatchRegistry(),
             /*materialDepthClass=*/{}, /*materialColorClass=*/{}, /*meshPoolOrdered=*/{},
             /*orderedToGroup=*/{}, scene->GetInstanceCount(),
             static_cast<uint32_t>(scene->GetMeshes().size()));
@@ -2685,7 +2685,7 @@ TEST(RGGpuDriven, TailBlocksAreReservedOnlyForTailCapableSlices)
         }
         const RGBuffer first = builder->ScheduleUnifiedScatter(
             frame, "ArenaA", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, registry, /*materialDepthClass=*/{}, /*materialColorClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, registry, /*materialDepthClass=*/{}, /*materialColorClass=*/{},
             /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, 8u,
             static_cast<uint32_t>(scene->GetMeshes().size()));
         EXPECT_TRUE(first.IsValid());
@@ -2696,7 +2696,7 @@ TEST(RGGpuDriven, TailBlocksAreReservedOnlyForTailCapableSlices)
         builder->RegisterSlice(probe);
         const RGBuffer second = builder->ScheduleUnifiedScatter(
             frame, "ArenaB", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, registry, /*materialDepthClass=*/{}, /*materialColorClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, registry, /*materialDepthClass=*/{}, /*materialColorClass=*/{},
             /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, 8u,
             static_cast<uint32_t>(scene->GetMeshes().size()));
         EXPECT_TRUE(second.IsValid());
@@ -2778,7 +2778,7 @@ TEST(RGGpuDriven, AnArenaClaimTooLargeForTheInitialCapacityGrowsInsteadOfSkippin
     }
     const RGBuffer ordering = builder->ScheduleUnifiedScatter(
         frame, "ArenaGrow", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-        sceneRG.Meshes, registry, /*materialDepthClass=*/{}, /*materialColorClass=*/{},
+        sceneRG.Meshes, sceneRG.ImpostorOwners, registry, /*materialDepthClass=*/{}, /*materialColorClass=*/{},
         /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{}, 8u,
         static_cast<uint32_t>(scene->GetMeshes().size()));
 
@@ -2878,7 +2878,7 @@ TEST(RGGpuDriven, ATailCapableSliceWithNoStatsBindingInvalidatesTheCensus)
         }
         const RGBuffer ordering = builder->ScheduleUnifiedScatter(
             frame, "Census", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
             /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{},
             scene->GetInstanceCount(), static_cast<uint32_t>(scene->GetMeshes().size()));
         ok = ordering.IsValid();
@@ -2994,7 +2994,7 @@ TEST(RGGpuDriven, RenderedHistoryStaysUnallocatedUntilAViewAsksForIt)
 
         RGBuffer ordering = builder->ScheduleUnifiedScatter(
             frame, "History", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
             /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{},
             scene->GetInstanceCount(), static_cast<uint32_t>(scene->GetMeshes().size()));
         EXPECT_TRUE(ordering.IsValid());
@@ -3075,7 +3075,7 @@ TEST(RGGpuDriven, DeclaredButUnsubmittedFrameNeverBecomesTheNextFramesPrevious)
 
         RGBuffer ordering = builder->ScheduleUnifiedScatter(
             frame, "History", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
             /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{},
             scene->GetInstanceCount(), static_cast<uint32_t>(scene->GetMeshes().size()));
         EXPECT_TRUE(ordering.IsValid());
@@ -3169,7 +3169,7 @@ TEST(RGGpuDriven, RenderedHistorySurvivesASiblingSliceThatDoesNotAsk)
 
         RGBuffer ordering = builder->ScheduleUnifiedScatter(
             frame, "History", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
             /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{},
             scene->GetInstanceCount(), static_cast<uint32_t>(scene->GetMeshes().size()));
         EXPECT_TRUE(ordering.IsValid());
@@ -3246,7 +3246,7 @@ TEST(RGGpuDriven, RenderedHistoryKeepsHeadroomWhileTheSceneStreamsIn)
 
         RGBuffer ordering = builder->ScheduleUnifiedScatter(
             frame, "History", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
-            sceneRG.Meshes, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
+            sceneRG.Meshes, sceneRG.ImpostorOwners, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
             /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{},
             scene->GetInstanceCount(), static_cast<uint32_t>(scene->GetMeshes().size()));
         ASSERT_TRUE(ordering.IsValid()) << "frame " << n;
@@ -3346,7 +3346,7 @@ ScatterProbeRanges DeclareScatterProbe(RGFrame& frame, ScatterBuilder& builder, 
     ScatterProbeRanges result{};
     result.Ordering = builder.ScheduleUnifiedScatter(
         frame, "PreparedGrouped", 0, visibility, sceneResources.Instances, sceneResources.ScatterHot,
-        sceneResources.Meshes, scene.GetBatchRegistry(), depthClass, colorClass, orderedMeshes, groups,
+        sceneResources.Meshes, sceneResources.ImpostorOwners, scene.GetBatchRegistry(), depthClass, colorClass, orderedMeshes, groups,
         kScatterProbeInstances, 2u);
     for (uint32_t ordinal = 0; ordinal < 3u; ++ordinal)
     {
@@ -3366,7 +3366,7 @@ ScatterProbeRanges DeclareScatterProbe(RGFrame& frame, ScatterBuilder& builder, 
     const std::array<uint32_t, 1> secondColorClass{kScatterProbeColorClass + 1u};
     result.Ordering = builder.ScheduleUnifiedScatter(
         frame, "PreparedSecond", 0, visibility, sceneResources.Instances, sceneResources.ScatterHot,
-        sceneResources.Meshes, scene.GetBatchRegistry(), {}, secondColorClass, {}, {},
+        sceneResources.Meshes, sceneResources.ImpostorOwners, scene.GetBatchRegistry(), {}, secondColorClass, {}, {},
         kScatterProbeInstances, 2u);
     for (uint32_t mesh = 0; mesh < 2u; ++mesh)
         result.Ranges[3u + mesh] = builder.FindBatchDrawRange(

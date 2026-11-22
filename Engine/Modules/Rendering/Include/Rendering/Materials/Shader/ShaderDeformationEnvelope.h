@@ -15,6 +15,12 @@
 // A declaration is a promise culling trusts, so a broken one is refused rather
 // than guessed at: the refusal states the fix and the margin is zero, so the
 // material culls on its mesh bounds alone. A refusal never rejects the shader.
+//
+//   // @deformationClock none
+//
+// states that the modifier never reads the animation clock: its vertices depend
+// only on the instance, the material and the view. The depth caches then keep a
+// layer between frames, as for a mesh with no modifier.
 
 #include <cstdint>
 #include <string>
@@ -35,6 +41,8 @@ struct DeformationEnvelopeDeclaration
     // Empty when the declaration is usable or absent.
     std::string Refusal;
     uint32_t SourceLine = 0;
+    // The modifier declares `@deformationClock none`: it does not move with time.
+    bool ClockFree = false;
 
     bool Usable() const { return Declared && Refusal.empty(); }
     bool operator==(const DeformationEnvelopeDeclaration&) const = default;

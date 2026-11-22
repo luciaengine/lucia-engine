@@ -2,6 +2,7 @@
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
+#include "Types/ParseNumber.h"
 
 namespace GameEngine {
 
@@ -44,6 +45,13 @@ ModelAssetSettings ModelAssetSettings::Load(const AssetRegistry& registry,
     std::string value;
     if (registry.TryGetMetaValue(assetPath, kRigKindKey, value))
         ParseRigKindMeta(value, settings.RigKind);
+    if (registry.TryGetMetaValue(assetPath, kImpostorKey, value))
+        settings.Impostor = value == "true";
+    if (registry.TryGetMetaValue(assetPath, kModelImpostorScreenHeightMetaKey, value))
+    {
+        if (const auto percent = ParseUnsigned(value); percent && *percent <= kMaxImpostorScreenHeightPercent)
+            settings.ImpostorScreenHeightPercent = static_cast<uint32>(*percent);
+    }
     return settings;
 }
 
@@ -52,7 +60,10 @@ bool ModelAssetSettings::Save(AssetRegistry& registry,
 {
     if (assetPath.empty())
         return false;
-    return registry.SetMetaValue(assetPath, kRigKindKey, RigKindToMeta(RigKind));
+    return registry.SetMetaValue(assetPath, kRigKindKey, RigKindToMeta(RigKind))
+        && registry.SetMetaValue(assetPath, kImpostorKey, Impostor ? "true" : "false")
+        && registry.SetMetaValue(assetPath, kModelImpostorScreenHeightMetaKey,
+                                 std::to_string(ImpostorScreenHeightPercent));
 }
 
 ModelAssetSettings LoadModelAssetSettings(AssetManager* assetManager,

@@ -209,6 +209,14 @@ class GPUDrawStreamBuilder
         // enabled the dwell band. A view that leaves this false allocates
         // nothing and binds the never-read stand-in, which is every view today.
         bool     renderedLevelHistoryRequested = false;
+        // Impostor stage (GPUScene::SetMeshImpostorGroup). The card quad's mesh index;
+        // 0xFFFFFFFF leaves every linked mesh on its mesh in this slice. A linked instance draws
+        // its card below impostorSwitchCoverage (Hlod::ClusterCoverage on its instance sphere)
+        // and, in a camera slice with history, keeps it until
+        // impostorSwitchCoverage * (1 + impostorSwitchHysteresis).
+        uint32_t impostorCardMesh = 0xFFFFFFFFu;
+        float    impostorSwitchCoverage = 0.0f;
+        float    impostorSwitchHysteresis = 0.0f;
     };
 
     /// A crossfading slice splits its records into two regions with independent
@@ -298,6 +306,9 @@ class GPUDrawStreamBuilder
     /// state in both buffers (level 0 / displaying LOD0).
     /// MUST match draw_command_scatter.comp's kLodNoHistory.
     static constexpr uint32_t kLodNoHistory = 0xFFFFFFFFu;
+    /// prevLod entry of an instance that drew its impostor card. Above every level count, so the
+    /// mesh LOD pick reads it as no history. MUST match draw_command_scatter.comp's kImpostorHistory.
+    static constexpr uint32_t kImpostorHistory = 0xFFFFFFFEu;
 
     /// One row of the GPU batch table consumed by draw_command_scatter.comp.
     /// 16 B, std430-compatible; MUST match the shader's BatchTableEntry.
@@ -461,7 +472,7 @@ class GPUDrawStreamBuilder
     PipelineHandle CreateScatterPipelineForVariant(bool compact, bool stats);
 
     /// Push constants for draw_command_scatter.comp. Field order MUST match
-    /// the shader's PushConstants block (112 B).
+    /// the shader's PushConstants block (124 B).
     struct ScatterPushConstants
     {
         uint32_t instanceCount;   // call-captured at snapshot time
@@ -522,6 +533,11 @@ class GPUDrawStreamBuilder
         int32_t  originSectorX;
         int32_t  originSectorY;
         int32_t  originSectorZ;
+        // Impostor stage (see ViewLODParams). impostorExitCoverage > impostorEnterCoverage only
+        // where a real per-view history is bound at binding 10.
+        uint32_t impostorCardMesh;
+        float    impostorEnterCoverage;
+        float    impostorExitCoverage;
     };
 
     /// Descriptor set layout for the scatter pipeline (14 storage buffers:
@@ -624,6 +640,8 @@ class GPUDrawStreamBuilder
     // the compact fetch is active AND this buffer is valid, the scatter binds it
     // at binding 1 in place of `instances`; otherwise `instances` (240 B) is
     // bound, exactly as before. Callers pass both; the builder picks.
+    // `impostorOwners` is GPUScene's placement owner per instance (binding 14); an invalid buffer
+    // turns the impostor stage off for the call, so linked parts keep their meshes.
     // `meshPoolOrdered` and `orderedToGroup` enable consolidation; pass both or neither.
     // Rows use ordered mesh ranks. Compatible instances combine before each class,
     // pool group, and parity run publishes one dense command range keyed by group id.
@@ -634,6 +652,7 @@ class GPUDrawStreamBuilder
                                                  RenderGraph::RGBuffer instances,
                                                  RenderGraph::RGBuffer scatterHot,
                                                  RenderGraph::RGBuffer meshes,
+                                                 RenderGraph::RGBuffer impostorOwners,
                                                  const BatchRegistry& registry,
                                                  std::span<const uint8_t> materialDepthClass,
                                                  std::span<const uint32_t> materialColorClass,

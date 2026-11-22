@@ -200,6 +200,7 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
         // sets the one the resolved file actually implements rather than merging on top.
         ApplyVertexModifierKeyword(variantKey, doc.vertexModifier, materialPath.parent_path(),
                                    context);
+        ApplySurfaceLightOcclusionKeyword(variantKey, doc.surfaceShader, materialPath.parent_path(), context);
         // The same authority for the relief march: a cook of a height-mapped material composes
         // the parallax variant of every row it is asked for, and a cache-driven compile's stand-in
         // document carries the height binding exactly when registration derived the keyword.

@@ -221,14 +221,17 @@ struct GPUMesh
     // Convert conservative culling-sphere coverage to the LOD0 reference metric.
     // The centers agree; instance scale cancels. Ordinary meshes use 1.
     float lodCoverageScale = 1.0f; // 16
-    uint32_t clusterCount;  // 20     (reserved)
+    // Impostor link of the mesh (GPUScene::SetMeshImpostorGroup): 0 = none, otherwise the
+    // card material's GPU-scene index + 1 in bits 0..23 and kGPUMeshImpostorPrimaryBit for
+    // the part that draws the card. GPUScene owns these links.
+    uint32_t impostorCard;  // 20
     uint32_t vertexOffset;  // 24     (in vertices, NOT bytes)
     uint32_t vertexCount;   // 28     (total vertex count for this submesh)
     uint32_t indexOffset;   // 32     (LOD0 firstIndex into bound IB pool, in indices)
     uint32_t indexCount;    // 36     (LOD0 index count)
     uint32_t lodCount;      // 40     (1..kMaxMeshLODs)
-    uint32_t bucketKey;     // 44     (VertexAttributeFlags as uint32; 0 = unbucketed)
-    uint32_t indexType;     // 48     (0 = uint16, 1 = uint32; matches Rendering::IndexType)
+    uint32_t nextImpostorPart; // 44  (next mesh index in the linked model's circular list)
+    float impostorSwitchCoverage; // 48 (0 uses the view's default)
     uint32_t vertexFlags;   // 52     (source mesh's VertexAttributeFlags)
     uint32_t lodIndexOffset[kMaxMeshLODs]; // 56..72  (per-LOD firstIndex; [0]==indexOffset)
     uint32_t lodIndexCount[kMaxMeshLODs];  // 72..88  (per-LOD index count; [0]==indexCount)
@@ -261,6 +264,12 @@ struct GPUMesh
 // GPUMesh.lodFlags bit assignments (mirrored in draw_command_scatter.comp).
 inline constexpr uint32_t kGPUMeshLodSseSlotMask   = 0xFu;      // bits 0..3
 inline constexpr uint32_t kGPUMeshLodTightClassBit = 1u << 4;
+// GPUMesh.impostorCard layout (mirrored in draw_command_scatter.comp).
+inline constexpr uint32_t kGPUMeshImpostorMaterialMask = 0xFFFFFFu;
+inline constexpr uint32_t kGPUMeshImpostorPrimaryBit   = 1u << 31;
+static_assert(offsetof(GPUMesh, impostorCard) == 20, "GPUMesh.impostorCard offset drift");
+static_assert(offsetof(GPUMesh, nextImpostorPart) == 44, "GPUMesh.nextImpostorPart offset drift");
+static_assert(offsetof(GPUMesh, impostorSwitchCoverage) == 48, "GPUMesh.impostorSwitchCoverage offset drift");
 static_assert(sizeof(GPUMesh) == 128,
               "GPUMesh must be 128 bytes to match draw_command_scatter.comp std430 layout");
 static_assert(offsetof(GPUMesh, lodCoverageScale) == 16, "GPUMesh.lodCoverageScale offset drift");
@@ -364,9 +373,10 @@ struct GPUSceneFrameResources
 {
     BufferHandle instanceBuffer;
     BufferHandle scatterHotBuffer; // 40 B/instance coalesced mirror (scatter fetch)
+    BufferHandle impostorOwnerBuffer; // 4 B/instance: the placement owner of a linked part
     BufferHandle meshBuffer;
     BufferHandle indirectArgsBuffer;
-    uint32_t instanceCapacity = 0; // rows that instanceBuffer and scatterHotBuffer hold
+    uint32_t instanceCapacity = 0; // rows that the instance-sized buffers hold
 };
 
 /**
@@ -532,6 +542,26 @@ class GPUScene
      */
     void RemoveMesh(uint32_t meshIndex);
 
+    /**
+     * Link all parts to one impostor card. Only the first part draws the card and contributes
+     * capacity to its batch. Invalid or conflicting groups leave the existing links in place.
+     */
+    bool SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t cardMaterialIndex,
+                              uint32_t cardMeshIndex, float switchCoverage = 0.0f);
+    /// Clear the group that contains this mesh, if any.
+    void ClearMeshImpostorGroup(uint32_t meshIndex);
+
+    /// No placement owner: the instance draws its mesh at every distance, even when its mesh is
+    /// linked to a card.
+    static constexpr uint32_t kNoImpostorOwner = 0xFFFFFFFFu;
+    /**
+     * Name the instance that decides the impostor switch for `instanceIndex`: the instance of the
+     * primary part of the same placement (one placement of a model, with every part). Every part
+     * reads that owner's rendered history, so the parts of a placement switch in the same frame.
+     * kNoImpostorOwner keeps the instance on its mesh. A new or removed instance has no owner.
+     */
+    void SetInstanceImpostorOwner(uint32_t instanceIndex, uint32_t ownerInstanceIndex);
+
     // Debug / test accessor.
     const std::vector<GPUMesh>& GetMeshes() const { return m_Meshes; }
 
@@ -647,6 +677,8 @@ class GPUScene
         // binds Instances directly, exactly as before.
         RenderGraph::RGBuffer ScatterHot{};
         RenderGraph::RGBuffer Meshes{};
+        // The placement owner of each instance (SetInstanceImpostorOwner).
+        RenderGraph::RGBuffer ImpostorOwners{};
     };
     // One call per RGFrame per frame (dedup-by-physical makes repeats harmless).
     GPUSceneFrameRG ImportFrameResources(RenderGraph::RGFrame& frame) const;
@@ -671,6 +703,7 @@ class GPUScene
     // compact scatter fetch is disabled — callers fall back to the full
     // instance buffer (GetInstanceBuffer) for the scatter's binding 1.
     BufferHandle GetScatterHotBuffer() const { return m_Frames[m_FrameSlot].scatterHotBuffer; }
+    BufferHandle GetImpostorOwnerBuffer() const { return m_Frames[m_FrameSlot].impostorOwnerBuffer; }
     /// Rows that the current slot's instance and scatter-hot buffers hold. A binding range over
     /// GetInstanceBuffer() reads this in the same frame, because a slot's buffers grow with the scene.
     uint32_t GetInstanceCapacity() const { return m_Frames[m_FrameSlot].instanceCapacity; }
@@ -698,6 +731,10 @@ class GPUScene
     BufferHandle GetScatterHotBufferForFrame(uint32_t frameIndex) const
     {
         return m_Frames[frameIndex % m_FramesInFlight].scatterHotBuffer;
+    }
+    BufferHandle GetImpostorOwnerBufferForFrame(uint32_t frameIndex) const
+    {
+        return m_Frames[frameIndex % m_FramesInFlight].impostorOwnerBuffer;
     }
     BufferHandle GetIndirectArgsBufferForFrame(uint32_t frameIndex) const
     {
@@ -789,6 +826,8 @@ class GPUScene
     // m_Instances by the three instance mutators (index i mirrors instance i).
     // Only populated + uploaded when m_ScatterHotEnabled.
     std::vector<GPUInstanceScatterHot> m_ScatterHot;
+    // Placement owner per instance (SetInstanceImpostorOwner), index-locked to m_Instances.
+    std::vector<uint32_t> m_ImpostorOwners;
     std::vector<GPUMesh> m_Meshes;
     BatchRegistry m_BatchRegistry;
     std::vector<uint32_t> m_FreeInstanceSlots;
@@ -859,6 +898,7 @@ class GPUScene
     std::vector<uint32_t> m_InstanceDirtyWords[kMaxFramesInFlight];
     std::vector<BufferUpdateRange> m_InstanceUploadRanges;
     std::vector<BufferUpdateRange> m_ScatterHotUploadRanges;
+    std::vector<BufferUpdateRange> m_ImpostorOwnerUploadRanges;
     // Full-upload override per slot (set for all slots in Initialize so the
     // first upload of each slot is a full one, and by anything that
     // invalidates the whole array wholesale).

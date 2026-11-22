@@ -230,6 +230,7 @@ ShaderVariantKey PrewarmBaseKey(const CookTarget& target, const MaterialBuildCon
     ShaderVariantKey key = Engine::Renderer::DeriveBaseVariantKey(document);
     key.vertexFlags = VertexAttributeFlags::StandardMesh;
     ApplyVertexModifierKeyword(key, document.vertexModifier, target.MaterialPath.parent_path(), context);
+    ApplySurfaceLightOcclusionKeyword(key, document.surfaceShader, target.MaterialPath.parent_path(), context);
     const auto heightMap = document.textures.find(kParallaxHeightMapSlot);
     if (heightMap != document.textures.end() && !heightMap->second.empty())
         key.materialKeywords |= MaterialKeyword::Parallax;

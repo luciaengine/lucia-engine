@@ -321,6 +321,7 @@ struct IndexedDepthDraw
     Rendering::MeshGPUEntryBindings Geometry;
     uint64_t IndirectionAddress;
     uint64_t InstancesAddress;
+    uint32_t MaterialOverride;
 
     bool operator==(const IndexedDepthDraw&) const = default;
 };
@@ -349,7 +350,7 @@ inline std::optional<IndexedDepthDraw> GetIndexedDepthDraw(
         command.IndirectCommandBuffer, command.IndirectCountBuffer,
         command.IndirectCommandOffset, command.IndirectCountOffset,
         command.IndirectMaxDrawCount, command.IndirectStride, geometry,
-        instances.indirectionAddr, instances.gpuInstancesAddr
+        instances.indirectionAddr, instances.gpuInstancesAddr, instances.materialOverride
     };
 }
 

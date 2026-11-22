@@ -62,6 +62,10 @@ ShaderCapability ShaderCapabilityDetector::Detect(const std::string& source)
     const std::string code = StripComments(source);
     ShaderCapability caps = ShaderCapability::None;
 
+    // A declaration, so it is read from the comments the scan below strips.
+    if (source.find("// @primaryLightOcclusion") != std::string::npos)
+        caps = caps | ShaderCapability::PrimaryLightOcclusion;
+
     if (code.find("EvaluateSurface(") != std::string::npos)
         caps = caps | ShaderCapability::Surface;
 

@@ -171,7 +171,7 @@ TEST_F(GPUSceneUpdateInstancesTest, FlushUploadsExactlyTheChangedRows)
     scene->AdvanceFrameSlot();
     scene->FlushGPUBuffers();
     const uint64_t rowBytes =
-        sizeof(GPUInstance) + (scene->IsScatterHotEnabled() ? sizeof(GPUInstanceScatterHot) : 0u);
+        sizeof(GPUInstance) + (scene->IsScatterHotEnabled() ? sizeof(GPUInstanceScatterHot) : 0u) + sizeof(uint32_t);
     EXPECT_EQ(scene->GetInstanceUploadBytesTotal() - before, changedRows * rowBytes);
 
     const std::vector<GPUInstance>& rows = scene->GetInstances();

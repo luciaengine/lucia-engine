@@ -500,10 +500,21 @@ const uint kPerInstanceMaterialRow = 0xffffffffu;
 layout(constant_id = 306) const uint GE_FORWARD_MATERIAL_ROW = kPerInstanceMaterialRow;
 #endif
 
+// The mip bias of every material sample. An impostor bake draws a whole object into one atlas
+// frame, so the coarse mip that the frame size selects merges each leaf with its gaps and the
+// alpha test drops it. The bake samples 2 mips finer: the weakest bias that keeps the leaf
+// coverage of the mesh, so color and normal move as little as possible.
+#ifdef GE_IMPOSTOR_BAKE
+const float kImpostorBakeMipBias = -2.0;
+#define GE_MATERIAL_MIP_BIAS kImpostorBakeMipBias
+#else
+#define GE_MATERIAL_MIP_BIAS ge_mipBiasParams.x
+#endif
+
 #if defined(GE_COMPAT_PROFILE)
 vec4 texture(GE_MaterialTexture t, vec2 uv)
 {
-    return ge_CompatSampleSlot(t.Slot, uv, ge_mipBiasParams.x);
+    return ge_CompatSampleSlot(t.Slot, uv, GE_MATERIAL_MIP_BIAS);
 }
 #else
 vec4 texture(GE_MaterialTexture t, vec2 uv)
@@ -511,11 +522,11 @@ vec4 texture(GE_MaterialTexture t, vec2 uv)
 #ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
     if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
         return texture(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]),
-                       uv, ge_mipBiasParams.x);
+                       uv, GE_MATERIAL_MIP_BIAS);
 #endif
     return texture(sampler2D(ge_BindlessTextures[nonuniformEXT(t.TexIdx)],
                              ge_BindlessSamplers[nonuniformEXT(t.SamplerIdx)]),
-                   uv, ge_mipBiasParams.x);
+                   uv, GE_MATERIAL_MIP_BIAS);
 }
 #endif
 
@@ -526,13 +537,13 @@ vec4 texture(GE_MaterialTexture t, vec2 uv)
 #if defined(GE_COMPAT_PROFILE)
 vec4 textureGrad(GE_MaterialTexture t, vec2 uv, vec2 uvPerPixelX, vec2 uvPerPixelY)
 {
-    float biasScale = exp2(ge_mipBiasParams.x);
+    float biasScale = exp2(GE_MATERIAL_MIP_BIAS);
     return ge_CompatSampleSlotGrad(t.Slot, uv, uvPerPixelX * biasScale, uvPerPixelY * biasScale);
 }
 #else
 vec4 textureGrad(GE_MaterialTexture t, vec2 uv, vec2 uvPerPixelX, vec2 uvPerPixelY)
 {
-    float biasScale = exp2(ge_mipBiasParams.x);
+    float biasScale = exp2(GE_MATERIAL_MIP_BIAS);
 #ifdef GE_CAN_SPECIALIZE_MATERIAL_ROW
     if (GE_FORWARD_MATERIAL_ROW != kPerInstanceMaterialRow)
         return textureGrad(sampler2D(ge_BindlessTextures[t.TexIdx], ge_BindlessSamplers[t.SamplerIdx]),
@@ -870,10 +881,10 @@ void main()
     si.positionFootprintX = parallaxPositionFootprintX;
     si.positionFootprintY = parallaxPositionFootprintY;
 #endif
-#if defined(GE_PARALLAX_MARCH) && !defined(GE_DEPTH_ONLY_FRAGMENT)
-    // The relief's self-shadow marches toward the light both lighting paths below shade as the
-    // shadowed directional term, gated like them on the light it delivers. The prepass shades
-    // nothing, so its direction stays zero and the self-shadow skips.
+#if defined(GE_PRIMARY_LIGHT_OCCLUSION) && !defined(GE_DEPTH_ONLY_FRAGMENT)
+    // A self-shadow (the relief's, an impostor crown's) toward the light both lighting paths below
+    // shade as the shadowed directional term, gated like them on the light it delivers. The prepass
+    // shades nothing, so its direction stays zero and the self-shadow skips.
     {
         vec3 primaryLight = Light.uLightColorWorld.rgb * Light.uLightDirWorld.w;
         si.primaryLightDirectionWS = max(primaryLight.r, max(primaryLight.g, primaryLight.b)) > 0.0
@@ -1076,8 +1087,8 @@ void main()
         shadowFactor = GE_SurfaceSunShadow(vPosRel, so.normalWS, viewZ, L, gl_FragCoord.xy);
         shadowTint = ge_lastShadowTint;
     #endif
-    #ifdef GE_PARALLAX_MARCH
-        // The surface's own relief shadows the primary light as its cascade shadow does.
+    #ifdef GE_PRIMARY_LIGHT_OCCLUSION
+        // The surface's own relief or crown shadows the primary light as its cascade shadow does.
         shadowFactor *= so.primaryLightOcclusion;
     #endif
         shadowFactor = GE_SurfaceDirectionalVisibility(shadowFactor, (Cam.uVRel * vec4(vPosRel, 1.0)).z, L);

@@ -31,4 +31,13 @@ inline bool MaterialDeformsVertices(const Material& mat)
         || R::HasKeyword(keywords, R::MaterialKeyword::HasVertexOutputMod);
 }
 
+/// True when the material's vertices can change between frames with byte-identical instance
+/// records: it deforms them and its modifier does not declare `@deformationClock none`. The
+/// per-frame content signal of the depth caches reads this; the depth class and the culling
+/// margins read MaterialDeformsVertices.
+inline bool MaterialAnimatesVertices(const Material& mat)
+{
+    return MaterialDeformsVertices(mat) && !mat.GetDeformationEnvelope().ClockFree;
+}
+
 } // namespace GameEngine::Engine::Renderer

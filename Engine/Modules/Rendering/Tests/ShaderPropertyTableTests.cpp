@@ -426,6 +426,24 @@ TEST(ShaderDeformationEnvelope, ReadsMetersAndTheScaleProperty)
     EXPECT_EQ(silent.DeformationEnvelope.ModifierFile, "modifier.glsl");
 }
 
+// `@deformationClock none` marks a modifier that never reads the animation clock. It stands on
+// its own line and does not count as an envelope declaration.
+TEST(ShaderDeformationEnvelope, ReadsTheClockFreeDeclaration)
+{
+    const ShaderPropertyTable clockFree = BuildShaderPropertyTable(
+        {Surface(""), Modifier("// @deformationClock none\nvec3 ModifyVertex();\n")});
+    ASSERT_FALSE(clockFree.Rejected()) << Errors(clockFree);
+    EXPECT_TRUE(clockFree.DeformationEnvelope.ClockFree);
+    EXPECT_FALSE(clockFree.DeformationEnvelope.Declared);
+
+    for (const char* text : {"vec3 ModifyVertex();\n", "// @deformationClock\n", "// @deformationClock none extra\n",
+                             "int x; // @deformationClock none\n"})
+    {
+        const ShaderPropertyTable other = BuildShaderPropertyTable({Surface(""), Modifier(text)});
+        EXPECT_FALSE(other.DeformationEnvelope.ClockFree) << text;
+    }
+}
+
 // A declaration culling cannot trust is refused with the fix in the message and a
 // zero margin; the shader itself still builds.
 TEST(ShaderDeformationEnvelope, RefusesWhatCullingCannotTrustWithoutRejectingTheShader)

@@ -235,6 +235,7 @@ bool GPUScene::Initialize(uint32_t maxInstances, uint32_t maxMeshes)
     m_InstanceSlotFree.reserve(maxInstances);
     if (m_ScatterHotEnabled)
         m_ScatterHot.reserve(maxInstances);
+    m_ImpostorOwners.reserve(maxInstances);
     m_Meshes.reserve(maxMeshes);
 
     // Create GPU buffers
@@ -271,6 +272,8 @@ void GPUScene::Shutdown()
                 m_Device->DestroyBuffer(fr.instanceBuffer);
             if (fr.scatterHotBuffer.IsValid())
                 m_Device->DestroyBuffer(fr.scatterHotBuffer);
+            if (fr.impostorOwnerBuffer.IsValid())
+                m_Device->DestroyBuffer(fr.impostorOwnerBuffer);
             if (fr.meshBuffer.IsValid() && fr.meshBuffer != m_MeshBuffer)
                 m_Device->DestroyBuffer(fr.meshBuffer);
             if (fr.indirectArgsBuffer.IsValid() && fr.indirectArgsBuffer != m_IndirectArgsBuffer)
@@ -289,6 +292,7 @@ void GPUScene::Shutdown()
     // Clear CPU data
     m_Instances.clear();
     m_ScatterHot.clear();
+    m_ImpostorOwners.clear();
     m_InstanceSlotFree.clear();
     m_Meshes.clear();
     m_BatchRegistry.Clear();
@@ -429,6 +433,11 @@ uint32_t GPUScene::AddInstance(const GPUInstance& instance)
         else
             m_ScatterHot.push_back(MakeScatterHot(instance));
     }
+    // A new tenant has no placement owner until the impostor system names one.
+    if (index < m_ImpostorOwners.size())
+        m_ImpostorOwners[index] = kNoImpostorOwner;
+    else
+        m_ImpostorOwners.push_back(kNoImpostorOwner);
 
     // Two-phase HZB history reset: a slot the scene has used before (free-list
     // reuse or re-append into a trimmed index) may still hold the prior tenant's
@@ -673,6 +682,8 @@ void GPUScene::RemoveInstances(std::span<const uint32_t> instanceIndices)
         // Mirror the tombstone (meshIndex=0xFFFFFFFF self-rejects in the scatter).
         if (m_ScatterHotEnabled && index < m_ScatterHot.size())
             m_ScatterHot[index] = MakeScatterHot(m_Instances[index]);
+        if (index < m_ImpostorOwners.size())
+            m_ImpostorOwners[index] = kNoImpostorOwner;
         MarkInstanceDirtyAllSlots(index);
         FreeInstanceSlot(index);
         m_ReleaseLog.push_back(index);
@@ -705,6 +716,8 @@ void GPUScene::RemoveInstances(std::span<const uint32_t> instanceIndices)
         m_InstanceSlotFree.pop_back();
         if (m_ScatterHotEnabled && !m_ScatterHot.empty())
             m_ScatterHot.pop_back();
+        if (!m_ImpostorOwners.empty())
+            m_ImpostorOwners.pop_back();
     }
     if (m_Instances.size() != sizeBefore)
     {
@@ -778,6 +791,9 @@ uint32_t GPUScene::AddMesh(const GPUMesh& mesh)
     {
         m_Meshes.push_back(mesh);
     }
+    m_Meshes[index].impostorCard = 0u;
+    m_Meshes[index].nextImpostorPart = 0u;
+    m_Meshes[index].impostorSwitchCoverage = 0.0f;
 
     m_MeshCount++;
     m_MeshesDirty = true;
@@ -794,9 +810,89 @@ void GPUScene::UpdateMesh(uint32_t meshIndex, const GPUMesh& mesh)
         return;
     }
 
+    const uint32_t impostorCard = m_Meshes[meshIndex].impostorCard;
+    const uint32_t nextImpostorPart = m_Meshes[meshIndex].nextImpostorPart;
+    const float switchCoverage = m_Meshes[meshIndex].impostorSwitchCoverage;
     m_Meshes[meshIndex] = mesh;
+    m_Meshes[meshIndex].impostorCard = impostorCard;
+    m_Meshes[meshIndex].nextImpostorPart = nextImpostorPart;
+    m_Meshes[meshIndex].impostorSwitchCoverage = switchCoverage;
     m_MeshesDirty = true;
     for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
+}
+
+bool GPUScene::SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t cardMaterialIndex,
+                                    uint32_t cardMeshIndex, float switchCoverage)
+{
+    if (parts.empty() || cardMeshIndex >= m_Meshes.size() || m_Meshes[cardMeshIndex].indexCount == 0u
+        || cardMaterialIndex >= kGPUMeshImpostorMaterialMask
+        || !(switchCoverage >= 0.0f && switchCoverage <= 1.0f))
+        return false;
+
+    const uint32_t material = cardMaterialIndex + 1u;
+    bool needsLink = false;
+    bool needsCoverageUpdate = false;
+    for (size_t i = 0; i < parts.size(); ++i)
+    {
+        const uint32_t index = parts[i];
+        const auto previousParts = parts.first(i);
+        if (index >= m_Meshes.size() || index == cardMeshIndex || m_Meshes[index].indexCount == 0u
+            || std::ranges::find(previousParts, index) != previousParts.end())
+            return false;
+        const GPUMesh& mesh = m_Meshes[index];
+        const uint32_t word = material | (i == 0 ? kGPUMeshImpostorPrimaryBit : 0u);
+        if (mesh.impostorCard == 0u)
+            needsLink = true;
+        else if (mesh.impostorCard != word || mesh.nextImpostorPart != parts[(i + 1u) % parts.size()])
+            return false;
+        needsCoverageUpdate |= mesh.impostorSwitchCoverage != switchCoverage;
+    }
+    if (!needsLink && !needsCoverageUpdate)
+        return true;
+
+    for (size_t i = 0; i < parts.size(); ++i)
+    {
+        GPUMesh& mesh = m_Meshes[parts[i]];
+        mesh.impostorCard = material | (i == 0 ? kGPUMeshImpostorPrimaryBit : 0u);
+        mesh.nextImpostorPart = parts[(i + 1u) % parts.size()];
+        mesh.impostorSwitchCoverage = switchCoverage;
+    }
+    if (needsLink)
+        m_BatchRegistry.SetMeshCardRow(parts.front(), cardMaterialIndex, cardMeshIndex);
+    m_MeshesDirty = true;
+    for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
+    return true;
+}
+
+void GPUScene::ClearMeshImpostorGroup(uint32_t meshIndex)
+{
+    if (meshIndex >= m_Meshes.size() || m_Meshes[meshIndex].impostorCard == 0u)
+        return;
+    uint32_t part = meshIndex;
+    do
+    {
+        GPUMesh& mesh = m_Meshes[part];
+        const uint32_t next = mesh.nextImpostorPart;
+        if ((mesh.impostorCard & kGPUMeshImpostorPrimaryBit) != 0u)
+            m_BatchRegistry.ClearMeshCardRow(part);
+        mesh.impostorCard = 0u;
+        mesh.nextImpostorPart = 0u;
+        mesh.impostorSwitchCoverage = 0.0f;
+        part = next;
+    } while (part != meshIndex);
+    m_MeshesDirty = true;
+    for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
+}
+
+void GPUScene::SetInstanceImpostorOwner(uint32_t instanceIndex, uint32_t ownerInstanceIndex)
+{
+    if (instanceIndex >= m_ImpostorOwners.size() || m_ImpostorOwners[instanceIndex] == ownerInstanceIndex)
+        return;
+    m_ImpostorOwners[instanceIndex] = ownerInstanceIndex;
+    m_InstancesDirty = true;
+    MarkInstanceDirtyAllSlots(instanceIndex);
+    for (uint32_t s = 0; s < m_FramesInFlight; ++s)
+        m_InstancesDirtySlots[s] = true;
 }
 
 void GPUScene::RemoveMesh(uint32_t meshIndex)
@@ -812,6 +908,7 @@ void GPUScene::RemoveMesh(uint32_t meshIndex)
     // count fields are already zero as already-freed.
     if (m_Meshes[meshIndex].indexCount == 0 && m_Meshes[meshIndex].vertexCount == 0)
         return;
+    ClearMeshImpostorGroup(meshIndex);
     m_Meshes[meshIndex] = GPUMesh{};
 
     FreeMeshSlot(meshIndex);
@@ -849,6 +946,8 @@ GPUScene::GPUSceneFrameRG GPUScene::ImportFrameResources(RenderGraph::RGFrame& f
     if (BufferHandle hot = GetScatterHotBuffer(); hot.IsValid())
         out.ScatterHot = frame.ImportExternalBuffer("GPUScene.ScatterHot", hot);
     out.Meshes = frame.ImportExternalBuffer("GPUScene.Meshes", GetMeshBuffer());
+    if (BufferHandle owners = GetImpostorOwnerBuffer(); owners.IsValid())
+        out.ImpostorOwners = frame.ImportExternalBuffer("GPUScene.ImpostorOwners", owners);
     return out;
 }
 
@@ -1068,6 +1167,17 @@ void GPUScene::CreateInstanceBuffers(uint32_t slot)
         d.debugName = "GPUScene_ScatterHotBuffer_PerFrame";
         frame.scatterHotBuffer = m_Device->CreateBuffer(d);
     }
+    // Placement owners (4 B/instance), read by the scatter for linked meshes only.
+    {
+        BufferDesc d{};
+        const size_t kMinImpostorOwnerBufferSize = 256;
+        d.size = std::max(kMinImpostorOwnerBufferSize, static_cast<size_t>(frame.instanceCapacity) * sizeof(uint32_t));
+        d.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferDst);
+        d.memoryUsage = BufferMemoryUsage::Upload;
+        d.flags = BufferCreateFlags::FrameSlotted;
+        d.debugName = "GPUScene_ImpostorOwnerBuffer_PerFrame";
+        frame.impostorOwnerBuffer = m_Device->CreateBuffer(d);
+    }
 }
 
 void GPUScene::GrowInstanceBuffers(uint32_t rowCount)
@@ -1078,6 +1188,8 @@ void GPUScene::GrowInstanceBuffers(uint32_t rowCount)
     m_Device->DestroyBuffer(frame.instanceBuffer);
     if (frame.scatterHotBuffer.IsValid())
         m_Device->DestroyBuffer(frame.scatterHotBuffer);
+    if (frame.impostorOwnerBuffer.IsValid())
+        m_Device->DestroyBuffer(frame.impostorOwnerBuffer);
     frame.instanceCapacity = std::min(std::bit_ceil(rowCount), m_MaxInstances);
     CreateInstanceBuffers(m_FrameSlot);
     m_InstanceDirtyAllSlots[m_FrameSlot] = true;
@@ -1106,6 +1218,7 @@ void GPUScene::UpdateGPUBuffers()
         std::vector<GPUInstance> convertScratch;
         m_InstanceUploadRanges.clear();
         m_ScatterHotUploadRanges.clear();
+        m_ImpostorOwnerUploadRanges.clear();
         uint64_t uploadedBytes = 0;
 
         auto uploadRange = [&](uint32_t firstInstance, uint32_t instanceCount)
@@ -1146,6 +1259,10 @@ void GPUScene::UpdateGPUBuffers()
                     {hotOffset, hotBytes, m_ScatterHot.data() + firstInstance});
                 uploadedBytes += hotBytes;
             }
+            const size_t ownerOffset = static_cast<size_t>(firstInstance) * sizeof(uint32_t);
+            const size_t ownerBytes = static_cast<size_t>(instanceCount) * sizeof(uint32_t);
+            m_ImpostorOwnerUploadRanges.push_back({ownerOffset, ownerBytes, m_ImpostorOwners.data() + firstInstance});
+            uploadedBytes += ownerBytes;
         };
 
         const uint32_t instanceTotal = static_cast<uint32_t>(
@@ -1196,6 +1313,7 @@ void GPUScene::UpdateGPUBuffers()
         m_Device->UpdateBufferRanges(GetInstanceBuffer(), m_InstanceUploadRanges);
         if (m_ScatterHotEnabled)
             m_Device->UpdateBufferRanges(GetScatterHotBuffer(), m_ScatterHotUploadRanges);
+        m_Device->UpdateBufferRanges(GetImpostorOwnerBuffer(), m_ImpostorOwnerUploadRanges);
         m_InstanceUploadBytesTotal.fetch_add(uploadedBytes, std::memory_order_relaxed);
         for (uint32_t word : m_InstanceDirtyWords[m_FrameSlot])
             m_InstanceDirtyBits[m_FrameSlot][word] = 0;

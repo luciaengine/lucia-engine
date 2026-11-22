@@ -28,6 +28,14 @@ const float GE_EMISSION_PAPERWHITE_NITS = 203.0;
 #define GE_PARALLAX_MARCH
 #endif
 
+// A self-shadow toward the primary directional light: the relief march's, or the one a surface
+// declares with `// @primaryLightOcclusion` (MaterialKeyword::SurfaceLightOcclusion). The surface
+// reads SurfaceInput.primaryLightDirectionWS and writes SurfaceOutput.primaryLightOcclusion, and
+// both lighting paths multiply the primary light's direct term by it.
+#if defined(GE_PARALLAX_MARCH) || defined(GE_SURFACE_LIGHT_OCCLUSION)
+#define GE_PRIMARY_LIGHT_OCCLUSION
+#endif
+
 // The relief's depth. Pass keyword ParallaxDepthOffset: a marching variant writes the depth of the
 // relief hit along the view ray as its fragment depth. Pass keyword ParallaxDepthFromPrepass: the
 // colour variant after a prepass that wrote it does not march; it rebuilds the hit from that depth.
@@ -94,10 +102,14 @@ struct SurfaceInput
     vec4 uvFootprint;        // xy = d(uv0)/dx, zw = d(uv0)/dy: repeats per pixel
     vec3 positionFootprintX; // d(positionRelWS)/dx: metres per pixel
     vec3 positionFootprintY; // d(positionRelWS)/dy: metres per pixel
+#endif
+#ifdef GE_PRIMARY_LIGHT_OCCLUSION
     // Unit, surface to the primary directional light, world space: the light the lighting shades as
     // its shadowed directional term (Light.uLightDirWorld, which the sky blends sun to moon). Zero
-    // when that light delivers nothing, so the relief casts no shadow toward it.
+    // when that light delivers nothing, so the surface casts no shadow toward it.
     vec3 primaryLightDirectionWS;
+#endif
+#ifdef GE_PARALLAX_MARCH
 #ifdef GE_PARALLAX_READS_DEPTH
     // Metres along the view ray from the polygon to the depth the camera prepass wrote at this pixel,
     // >= 0: the relief hit, unless something nearer stands inside the relief.
@@ -211,9 +223,9 @@ struct SurfaceOutput
     vec3 diffuseTransmissionAlbedo;
 #endif
 
-#ifdef GE_PARALLAX_MARCH
+#ifdef GE_PRIMARY_LIGHT_OCCLUSION
     // How much of the primary directional light reaches the shaded point past the surface's own
-    // relief, 0..1 (1 unoccluded). Both lighting paths multiply the primary light's direct term by
+    // relief or crown, 0..1 (1 unoccluded). Both lighting paths multiply the primary light's direct term by
     // it, beside its cascade shadow; ambient, local lights and secondary directionals are untouched.
     float primaryLightOcclusion;
 #endif
@@ -293,7 +305,7 @@ SurfaceOutput DefaultSurfaceOutput()
     o.diffuseTransmission = 0.0;
     o.diffuseTransmissionAlbedo = vec3(0.0);
 #endif
-#ifdef GE_PARALLAX_MARCH
+#ifdef GE_PRIMARY_LIGHT_OCCLUSION
     o.primaryLightOcclusion = 1.0;
 #endif
 #ifdef GE_PARALLAX_STEPS_VIEW
@@ -371,11 +383,13 @@ SurfaceInput DefaultSurfaceInput()
         si.textureST2[i] = vec4(0.0, 1.0, 0.0, 0.0);
     }
 #endif
+#ifdef GE_PRIMARY_LIGHT_OCCLUSION
+    si.primaryLightDirectionWS = vec3(0.0);
+#endif
 #ifdef GE_PARALLAX_MARCH
     si.uvFootprint = vec4(0.0);
     si.positionFootprintX = vec3(0.0);
     si.positionFootprintY = vec3(0.0);
-    si.primaryLightDirectionWS = vec3(0.0);
 #ifdef GE_PARALLAX_READS_DEPTH
     si.prepassDepthOffset = 0.0;
     si.prepassDepthOffsetError = 0.0;

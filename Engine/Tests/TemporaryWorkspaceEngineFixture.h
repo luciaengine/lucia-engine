@@ -15,13 +15,16 @@ namespace GameEngine::Testing
 {
 
 // The engine started on an empty temporary workspace, with the CLR off. A
-// derived fixture calls SetUp first and TearDown last.
+// derived fixture calls SetUp first and TearDown last. The engine makes the
+// workspace the working directory, so TearDown restores the previous one before
+// it deletes the workspace.
 class TemporaryWorkspaceEngineFixture : public testing::Test
 {
   protected:
     void SetUp() override
     {
         namespace fs = std::filesystem;
+        m_PreviousDirectory = fs::current_path();
         m_Root = fs::temp_directory_path() / ("engine-test-workspace-" + GUID::Generate().ToString());
         fs::create_directories(m_Root / "Assets");
         ScriptsConfig scripts{};
@@ -44,9 +47,11 @@ class TemporaryWorkspaceEngineFixture : public testing::Test
         if (m_Initialized)
             EngineCore::GetInstance().Shutdown();
         std::error_code ec;
+        std::filesystem::current_path(m_PreviousDirectory, ec);
         std::filesystem::remove_all(m_Root, ec);
     }
 
+    std::filesystem::path m_PreviousDirectory;
     std::filesystem::path m_Root;
     bool m_Initialized = false;
 };

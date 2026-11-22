@@ -28,6 +28,7 @@
 #include "Assets/TextureAsset.h"
 #include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
+#include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
@@ -314,7 +315,7 @@ void RenderServices::ScheduleWorldBucketerDispatches(Rendering::RenderGraph::RGF
     m_FrameRG.DrawStreamOrdering = m_DrawStreamBuilder->ScheduleUnifiedScatter(
         frame, "World", static_cast<int32_t>(Rendering::PassPhase::kEarlySetup),
         m_FrameRG.Visibility, m_FrameRG.SceneInstances, m_FrameRG.SceneScatterHot,
-        m_FrameRG.SceneMeshes, m_GpuScene->GetBatchRegistry(),
+        m_FrameRG.SceneMeshes, m_FrameRG.SceneImpostorOwners, m_GpuScene->GetBatchRegistry(),
         m_MaterialSystem.MaterialDepthClassSpan(),
         m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered,
         groupMaps.OrderedToGroup, instanceCount,
@@ -666,6 +667,8 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
         // cascade.
         if (!isShadowBucket)
             s.lod.renderedLevelHistoryRequested = true;
+        if (const auto* impostors = GetFeature<ImpostorStage>())
+            impostors->ApplyToSlice(s.lod, *this, viewId);
         // Fit-freeze lane: a directional cascade slice selects LODs with the
         // FROZEN camera captured at that cascade's last refit (the value the
         // static-cache key holds via CullCameraViewProj), so a retained layer
@@ -875,9 +878,11 @@ bool RenderServices::ScheduleBucketerDispatchesForViewSlices(
     // fan-out (probe faces at their own indices) never collides with it.
     // Keeping these band-less means the utility path adds no history of its
     // own, but it does not by itself guarantee a stateless pick for these views.
-    const Rendering::GPUDrawStreamBuilder::ViewLODParams lod = MakeViewLODParams(
+    Rendering::GPUDrawStreamBuilder::ViewLODParams lod = MakeViewLODParams(
         m_ViewRegistry.ResolveCameraData(viewId), m_LODGlobalBias, ResolveViewForceLOD(viewId),
         m_SmallObjectCullCoverage, ComputeViewSseScales(viewId), m_LODCrossfadeDuration, 0.0f);
+    if (const auto* impostors = GetFeature<ImpostorStage>())
+        impostors->ApplyToSlice(lod, *this, viewId);
     const uint32_t viewWorldKey = WorldKeyForView(viewId);
     for (const uint8_t cascadeIdx : cascadeIndices)
     {
@@ -900,7 +905,7 @@ bool RenderServices::ScheduleBucketerDispatchesForViewSlices(
     const ScatterGroupMaps groupMaps = MeshPoolGroupMapsForScatter();
     const RenderGraph::RGBuffer ordering = m_DrawStreamBuilder->ScheduleUnifiedScatter(
         frame, passSuffix, static_cast<int32_t>(Rendering::PassPhase::kEarlySetup),
-        visRG, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes,
+        visRG, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners,
         m_GpuScene->GetBatchRegistry(), m_MaterialSystem.MaterialDepthClassSpan(),
         m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered,
         groupMaps.OrderedToGroup,
@@ -994,6 +999,9 @@ bool RenderServices::ScheduleWorldOcclusionRecoverScatterForView(
                               ResolveViewForceLOD(viewId), m_SmallObjectCullCoverage,
                               ComputeViewSseScales(viewId), m_LODCrossfadeDuration,
                               m_LODHysteresisBand);
+    // Phase B selects cards exactly as phase A does.
+    if (const auto* impostors = GetFeature<ImpostorStage>())
+        impostors->ApplyToSlice(s.lod, *this, viewId);
     // Phase B shares this view's history buffer with phase A (the comment
     // above), so it asks for it too.
     s.lod.renderedLevelHistoryRequested = true;
@@ -1008,7 +1016,7 @@ bool RenderServices::ScheduleWorldOcclusionRecoverScatterForView(
     const ScatterGroupMaps groupMaps = MeshPoolGroupMapsForScatter();
     const RenderGraph::RGBuffer ordering = m_DrawStreamBuilder->ScheduleUnifiedScatter(
         frame, "World.B", static_cast<int32_t>(Rendering::PassPhase::kPostProcess),
-        m_FrameRG.Visibility, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes,
+        m_FrameRG.Visibility, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners,
         m_GpuScene->GetBatchRegistry(), m_MaterialSystem.MaterialDepthClassSpan(),
         m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered,
         groupMaps.OrderedToGroup,
@@ -1407,6 +1415,7 @@ void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFra
     const GPUScene::GPUSceneFrameRG sceneRG = scene->ImportFrameResources(frame); // dedup'd
     m_FrameRG.SceneInstances = sceneRG.Instances;
     m_FrameRG.SceneScatterHot = sceneRG.ScatterHot;
+    m_FrameRG.SceneImpostorOwners = sceneRG.ImpostorOwners;
     m_FrameRG.SceneMeshes = sceneRG.Meshes;
     m_FrameRG.Visibility = m_GpuCullingPipeline->GetVisibilityRG();
 }

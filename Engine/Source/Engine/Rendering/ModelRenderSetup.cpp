@@ -348,6 +348,13 @@ void PopulateMeshRenderer(Components::MeshRenderer& mr,
     }
 }
 
+Mathematics::BoundingBox ModelPartBounds(const ModelAsset& modelAsset, const Mathematics::BoundingBox& submeshBounds)
+{
+    if (!modelAsset.IsImpostorEnabled())
+        return submeshBounds;
+    return ComputeModelBounds(modelAsset).Box;
+}
+
 Components::LocalBounds ComputeModelBounds(const ModelAsset& modelAsset)
 {
     Components::LocalBounds lb{};
@@ -557,7 +564,7 @@ void ApplyModelRenderResources(ECS::World& world, RenderServices& rs, ECS::Entit
         if (gpuEntry)
         {
             Components::LocalBounds lb{};
-            lb.Box = gpuEntry->bounds;
+            lb.Box = ModelPartBounds(*resources.modelAsset, gpuEntry->bounds);
             world.AddComponentImmediate(entity, lb);
         }
         else
