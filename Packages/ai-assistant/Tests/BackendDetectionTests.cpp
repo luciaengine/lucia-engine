@@ -55,7 +55,7 @@ TEST(BackendDetectionTests, AProgramOnPathIsFoundThereFirst)
 
     const auto found = BackendDetection::FindProgram(
         "claude", {.Path = "/nonexistent" + std::string(1, kSeparator) + (temp.Path() / "bin").string(),
-                   .Home = temp.Path() / "home"});
+                   .Home = temp.Path() / "home", .SystemFolders = false});
 
     ASSERT_TRUE(found.has_value());
     EXPECT_EQ(found->Program, onPath);
@@ -68,7 +68,7 @@ TEST(BackendDetectionTests, AProgramOffPathIsFoundInItsInstallFolder)
     const TestUtils::ScopedTempDir temp{TestUtils::MakeUniqueTempDirectory("BackendDetectionInstall")};
     const std::filesystem::path installed = MakeProgram(temp.Path() / "home" / ".local" / "bin", "codex");
 
-    const auto found = BackendDetection::FindProgram("codex", {.Path = "", .Home = temp.Path() / "home"});
+    const auto found = BackendDetection::FindProgram("codex", {.Path = "", .Home = temp.Path() / "home", .SystemFolders = false});
 
     ASSERT_TRUE(found.has_value());
     EXPECT_EQ(found->Program, installed);
@@ -82,7 +82,7 @@ TEST(BackendDetectionTests, AFileThatIsNotExecutableIsNotAProgram)
     std::filesystem::create_directories(temp.Path() / "bin");
     std::ofstream(temp.Path() / "bin" / "claude") << "text";
 
-    EXPECT_FALSE(BackendDetection::FindProgram("claude", {.Path = (temp.Path() / "bin").string(), .Home = {}}));
+    EXPECT_FALSE(BackendDetection::FindProgram("claude", {.Path = (temp.Path() / "bin").string(), .Home = {}, .SystemFolders = false}));
 }
 #endif
 
@@ -92,7 +92,7 @@ TEST(BackendDetectionTests, AnEmptyExecutableIsTheDetectedPathOffPath)
     const ScopedPreferencesRoot preferences;
     const TestUtils::ScopedTempDir temp{TestUtils::MakeUniqueTempDirectory("BackendDetectionSetting")};
     const std::filesystem::path installed = MakeProgram(temp.Path() / "home" / ".local" / "bin", "claude");
-    const ScopedDetection detection({.Path = "", .Home = temp.Path() / "home"});
+    const ScopedDetection detection({.Path = "", .Home = temp.Path() / "home", .SystemFolders = false});
 
     EXPECT_EQ(AiAssistantSettings::ClaudeExecutable(), installed.string());
     EXPECT_EQ(AiAssistantSettings::CodexExecutable(), std::string(CodexSessionProvider::kDefaultExecutable));
@@ -108,7 +108,7 @@ TEST(BackendDetectionTests, TheFirstConnectionFollowsWhatIsInstalled)
     const std::filesystem::path bin = temp.Path() / "bin";
     std::filesystem::create_directories(bin);
     // A home with no install folders, so only the test's PATH folder can hold a program.
-    const BackendDetection::Inputs inputs{.Path = bin.string(), .Home = home};
+    const BackendDetection::Inputs inputs{.Path = bin.string(), .Home = home, .SystemFolders = false};
     {
         const ScopedDetection detection(inputs);
         EXPECT_EQ(AiAssistantSettings::Provider(), std::string(ClaudeSessionProvider::kId)) << "nothing installed";
@@ -131,4 +131,21 @@ TEST(BackendDetectionTests, TheFirstConnectionFollowsWhatIsInstalled)
         EXPECT_EQ(AiAssistantSettings::Provider(), std::string(CodexSessionProvider::kId)) << "a choice wins";
     }
 }
+#if defined(__APPLE__)
+// DeepSeek Harness keeps dsh inside its app bundle, never on PATH.
+TEST(BackendDetectionTests, HarnessIsFoundInsideItsAppBundle)
+{
+    const TestUtils::ScopedTempDir temp{TestUtils::MakeUniqueTempDirectory("BackendDetectionHarness")};
+    const std::filesystem::path dsh = MakeProgram(
+        temp.Path() / "home" / "Applications" / "Harness.app" / "Contents" / "Resources" / "runtime" / "cli" / "bin",
+        "dsh");
+
+    const auto found = BackendDetection::FindProgram("dsh", {.Path = "", .Home = temp.Path() / "home", .SystemFolders = false});
+
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->Program, dsh);
+    EXPECT_FALSE(found->OnPath);
+}
+#endif
+
 } // namespace GameEngine

@@ -4,6 +4,7 @@
 #include "Providers/ClaudeApiProvider.h"
 #include "Providers/ClaudeSessionProvider.h"
 #include "Providers/CodexSessionProvider.h"
+#include "Providers/HarnessSessionProvider.h"
 #include "Providers/OpenAiCompatibleProvider.h"
 
 #include "Editor/EditorPaths.h"
@@ -34,6 +35,8 @@ std::shared_ptr<IAgentProvider> AgentSessionState::Provider(std::string_view pro
         executable = AiAssistantSettings::ClaudeExecutable();
     else if (providerId == CodexSessionProvider::kId)
         executable = AiAssistantSettings::CodexExecutable();
+    else if (providerId == HarnessSessionProvider::kId)
+        executable = AiAssistantSettings::HarnessExecutable();
     else if (providerId == OpenAiCompatibleProvider::kId)
     {
         endpointUrl = AiAssistantSettings::EndpointUrl();
@@ -57,6 +60,8 @@ std::shared_ptr<IAgentProvider> AgentSessionState::Provider(std::string_view pro
         connection.Provider = std::make_shared<ClaudeSessionProvider>(executable, directory);
     else if (providerId == CodexSessionProvider::kId)
         connection.Provider = std::make_shared<CodexSessionProvider>(executable, directory);
+    else if (providerId == HarnessSessionProvider::kId)
+        connection.Provider = std::make_shared<HarnessSessionProvider>(executable, directory);
     else if (providerId == OpenAiCompatibleProvider::kId)
         connection.Provider = std::make_shared<OpenAiCompatibleProvider>(m_EndpointKeys, endpointUrl, endpointModel);
     else
@@ -94,7 +99,8 @@ void AgentSessionState::UseEndpointKeysForTesting(ApiKeyStore keys)
 
 std::shared_ptr<CliSessionProvider> AgentSessionState::SessionProvider(std::string_view providerId)
 {
-    if (providerId != ClaudeSessionProvider::kId && providerId != CodexSessionProvider::kId)
+    if (providerId != ClaudeSessionProvider::kId && providerId != CodexSessionProvider::kId &&
+        providerId != HarnessSessionProvider::kId)
         return nullptr;
     return std::static_pointer_cast<CliSessionProvider>(Provider(providerId));
 }

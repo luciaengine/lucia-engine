@@ -4,6 +4,7 @@
 #include "Providers/ClaudeApiProvider.h"
 #include "Providers/ClaudeSessionProvider.h"
 #include "Providers/CodexSessionProvider.h"
+#include "Providers/HarnessSessionProvider.h"
 #include "Providers/OpenAiCompatibleProvider.h"
 #include "Setup/AiAssistantSetupPage.h"
 
@@ -35,6 +36,7 @@ constexpr const char* kPrefEndpointUrl = "aiAssistant.endpointUrl";
 constexpr const char* kPrefClaudeSessionEffort = "aiAssistant.claudeSessionEffort";
 constexpr const char* kPrefClaudeExecutable = "aiAssistant.claudeExecutable";
 constexpr const char* kPrefCodexExecutable = "aiAssistant.codexExecutable";
+constexpr const char* kPrefHarnessExecutable = "aiAssistant.harnessExecutable";
 constexpr const char* kPrefNodeExecutable = "aiAssistant.nodeExecutable";
 constexpr const char* kPrefLastMode = "aiAssistant.lastMode";
 constexpr const char* kPrefTextSize = "aiAssistant.textSize";
@@ -79,6 +81,7 @@ struct Detection
     bool Searched = false;
     std::optional<BackendDetection::Found> Claude;
     std::optional<BackendDetection::Found> Codex;
+    std::optional<BackendDetection::Found> Harness;
 };
 std::mutex s_DetectionMutex;
 Detection s_Detection;
@@ -91,6 +94,7 @@ const Detection& Detected()
         const BackendDetection::Inputs inputs = s_Detection.TestInputs.value_or(BackendDetection::CurrentInputs());
         s_Detection.Claude = BackendDetection::FindProgram(ClaudeSessionProvider::kDefaultExecutable, inputs);
         s_Detection.Codex = BackendDetection::FindProgram(CodexSessionProvider::kDefaultExecutable, inputs);
+        s_Detection.Harness = BackendDetection::FindProgram(HarnessSessionProvider::kDefaultExecutable, inputs);
         s_Detection.Searched = true;
     }
     return s_Detection;
@@ -106,9 +110,23 @@ std::string DetectedProvider()
             return std::string(ClaudeSessionProvider::kId);
         if (detected.Codex)
             return std::string(CodexSessionProvider::kId);
+        if (detected.Harness)
+            return std::string(HarnessSessionProvider::kId);
     }
     const char* key = std::getenv(std::string(ApiKeyStore::kVariable).c_str());
     return std::string(key && *key ? ClaudeApiProvider::kId : ClaudeSessionProvider::kId);
+}
+
+// What detection found for `programName`; null for a program it does not look for (node).
+const std::optional<BackendDetection::Found>* DetectedProgram(const Detection& detected, std::string_view programName)
+{
+    if (programName == ClaudeSessionProvider::kDefaultExecutable)
+        return &detected.Claude;
+    if (programName == CodexSessionProvider::kDefaultExecutable)
+        return &detected.Codex;
+    if (programName == HarnessSessionProvider::kDefaultExecutable)
+        return &detected.Harness;
+    return nullptr;
 }
 
 // An executable never set or set empty is the program's name when PATH finds it, else the full
@@ -119,11 +137,9 @@ std::string ReadExecutable(const char* key, std::string_view programName)
     if (!executable.empty())
         return executable;
     std::lock_guard lock(s_DetectionMutex);
-    const Detection& detected = Detected();
-    const std::optional<BackendDetection::Found>& found =
-        programName == ClaudeSessionProvider::kDefaultExecutable ? detected.Claude : detected.Codex;
-    if (found && !found->OnPath)
-        return found->Program.string();
+    const std::optional<BackendDetection::Found>* found = DetectedProgram(Detected(), programName);
+    if (found && *found && !(*found)->OnPath)
+        return (*found)->Program.string();
     return std::string(programName);
 }
 
@@ -152,6 +168,8 @@ std::string SessionModeKey(std::string_view providerId)
 constexpr AiAssistantSettings::AssistantChoice kAssistantChoices[] = {
     {"Claude", "Anthropic's assistant. Can act in the editor when you sign in with your subscription."},
     {"Codex", "OpenAI's assistant. On Windows it answers in the panel but cannot act in the editor."},
+    {"Harness", "DeepSeek's agent app on this computer, on the model you set in it. Answers in the panel but "
+                "cannot act in the editor."},
     {"Custom", "A server you name: a model on this computer or a hosted one, through its "
                "OpenAI-compatible API."},
 };
@@ -165,6 +183,9 @@ constexpr AiAssistantSettings::ProviderChoice kProviderChoices[] = {
     {CodexSessionProvider::kId, "Codex (Subscription)", "Codex", "Subscription",
      "Your ChatGPT account, through Codex.",
      "Needs Codex, logged in."},
+    {HarnessSessionProvider::kId, "Harness (Desktop app)", "Harness", "Desktop app",
+     "DeepSeek Harness on this computer, through its dsh program.",
+     "Needs DeepSeek Harness, set up with a model. Conversation only: the assistant cannot act in the editor."},
     {OpenAiCompatibleProvider::kId, "Custom (OpenAI-compatible)", "Custom", "OpenAI-compatible",
      "Any server with an OpenAI-compatible chat API, such as Ollama, LM Studio, vLLM or llama.cpp.",
      "Needs the server's URL and model; a key only when the server asks for one. Conversation only: "
@@ -474,6 +495,11 @@ std::string AiAssistantSettings::CodexExecutable()
     return ReadExecutable(kPrefCodexExecutable, CodexSessionProvider::kDefaultExecutable);
 }
 
+std::string AiAssistantSettings::HarnessExecutable()
+{
+    return ReadExecutable(kPrefHarnessExecutable, HarnessSessionProvider::kDefaultExecutable);
+}
+
 std::string AiAssistantSettings::NodeExecutable()
 {
     return ReadExecutable(kPrefNodeExecutable, kDefaultNodeExecutable);
@@ -487,6 +513,11 @@ void AiAssistantSettings::SetClaudeExecutable(const std::string& executable)
 void AiAssistantSettings::SetCodexExecutable(const std::string& executable)
 {
     WriteExecutable(kPrefCodexExecutable, CodexExecutable(), executable);
+}
+
+void AiAssistantSettings::SetHarnessExecutable(const std::string& executable)
+{
+    WriteExecutable(kPrefHarnessExecutable, HarnessExecutable(), executable);
 }
 
 void AiAssistantSettings::SetNodeExecutable(const std::string& executable)
@@ -625,7 +656,7 @@ Editor::SettingsCategoryDescriptor AiAssistantSettings::BuildCategory()
         "ai assistant agent claude codex subscription api key provider setup check login session model effort "
         "codex model mode for new conversations claude code executable codex executable node executable "
         "hold the microphone to speak send when the microphone stops custom endpoint url openai compatible "
-        "local model server ollama lm studio vllm llama.cpp";
+        "local model server ollama lm studio vllm llama.cpp tensorfold deepseek harness dsh";
     category.CreateContent = [] { return std::unique_ptr<UIElement>(std::make_unique<AiAssistantSetupPage>()); };
     return category;
 }

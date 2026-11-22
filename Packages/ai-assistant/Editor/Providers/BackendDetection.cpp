@@ -58,13 +58,28 @@ Inputs CurrentInputs()
 std::vector<std::filesystem::path> InstallFolders(std::string_view program, const Inputs& inputs)
 {
     std::vector<std::filesystem::path> folders;
+#if defined(__APPLE__)
+    if (program == "dsh")
+    {
+        const std::filesystem::path inBundle = std::filesystem::path("Harness.app") / "Contents" / "Resources" /
+                                               "runtime" / "cli" / "bin";
+        if (!inputs.Home.empty())
+            folders.push_back(inputs.Home / "Applications" / inBundle);
+        if (inputs.SystemFolders)
+            folders.push_back(std::filesystem::path("/Applications") / inBundle);
+        return folders;
+    }
+#endif
     if (!inputs.Home.empty())
         folders.push_back(inputs.Home / ".local" / "bin");
 #if !defined(_WIN32)
     if (program == "claude" && !inputs.Home.empty())
         folders.push_back(inputs.Home / ".claude" / "local");
-    folders.emplace_back("/opt/homebrew/bin");
-    folders.emplace_back("/usr/local/bin");
+    if (inputs.SystemFolders)
+    {
+        folders.emplace_back("/opt/homebrew/bin");
+        folders.emplace_back("/usr/local/bin");
+    }
     if (!inputs.Home.empty())
     {
         folders.push_back(inputs.Home / ".npm-global" / "bin");

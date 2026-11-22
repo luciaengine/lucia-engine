@@ -26,13 +26,14 @@ TEST(AiAssistantSettingsTests, EachAssistantOffersItsMethodsUnderAssistantMethod
     std::vector<std::string_view> assistants;
     for (const AiAssistantSettings::AssistantChoice& choice : AiAssistantSettings::AssistantChoices())
         assistants.push_back(choice.Name);
-    EXPECT_EQ(assistants, (std::vector<std::string_view>{"Claude", "Codex", "Custom"}));
+    EXPECT_EQ(assistants, (std::vector<std::string_view>{"Claude", "Codex", "Harness", "Custom"}));
 
     const std::vector<AiAssistantSettings::ProviderChoice> claude = AiAssistantSettings::MethodChoices("Claude");
     ASSERT_EQ(claude.size(), 2u);
     EXPECT_EQ(claude[0].Id, "claude-session") << "Subscription first: choosing Claude selects it";
     EXPECT_EQ(claude[1].Id, "claude-api");
     ASSERT_EQ(AiAssistantSettings::MethodChoices("Codex").size(), 1u);
+    ASSERT_EQ(AiAssistantSettings::MethodChoices("Harness").size(), 1u);
     ASSERT_EQ(AiAssistantSettings::MethodChoices("Custom").size(), 1u);
     EXPECT_TRUE(AiAssistantSettings::MethodChoices("Local LLM").empty());
 
@@ -96,6 +97,12 @@ TEST(AiAssistantSettingsTests, ANewExecutableAsksForANewCheck)
 TEST(AiAssistantSettingsTests, AnEmptyExecutableIsTheProgramOnPath)
 {
     ScopedPreferencesRoot preferences;
+    // Detection finds nothing, so the machine's own installs do not count.
+    AiAssistantSettings::UseDetectionInputsForTesting(BackendDetection::Inputs{.SystemFolders = false});
+    struct ResetDetection
+    {
+        ~ResetDetection() { AiAssistantSettings::UseDetectionInputsForTesting(std::nullopt); }
+    } resetDetection;
     EXPECT_EQ(AiAssistantSettings::CodexExecutable(), CodexSessionProvider::kDefaultExecutable);
     AiAssistantSettings::SetCodexExecutable("C:/Tools/codex.exe");
     AiAssistantSettings::SetCodexExecutable("");

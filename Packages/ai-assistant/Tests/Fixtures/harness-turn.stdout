@@ -1,0 +1,8 @@
+{"type":"session","sessionId":"session-00000000-0000-4000-8000-000000000002","cwd":"/fixture/project"}
+{"type":"status","phase":"turn_start","turn":1}
+{"type":"status","phase":"step_start","turn":1,"step":1}
+{"type":"thinking","text":"Two sentences about blue."}
+{"type":"text","text":"Blue is the color of a clear sky. It often feels calm and peaceful."}
+{"type":"status","phase":"step_end","turn":1,"step":1,"usage":{"inputTokens":11240,"outputTokens":31}}
+{"type":"status","phase":"turn_end","turn":1,"reason":{"kind":"completed"}}
+{"type":"final","sessionId":"session-00000000-0000-4000-8000-000000000002","reason":{"kind":"completed"},"text":"Blue is the color of a clear sky. It often feels calm and peaceful."}

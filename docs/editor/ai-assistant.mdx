@@ -20,9 +20,10 @@ Open the panel from the **Panels** button at the right end of the top toolbar an
 | **Claude (Subscription)** | Claude Code installed on this machine and logged in (`claude auth login`). | Your own `claude` program, which talks to the service it is logged in to. |
 | **Codex (Subscription)** | Codex installed on this machine and logged in (`codex login`). | Your own `codex` program, which talks to the service it is logged in to. |
 | **Claude (API key)** | A Claude API key, saved in Settings > AI Assistant or set in the `ANTHROPIC_API_KEY` environment variable. | `https://api.anthropic.com/v1/messages`, always. |
+| **Harness (Desktop app)** | DeepSeek Harness installed on this machine and set up with a model. | Your own `dsh` program (`dsh --profile headless --json`), which talks to the model Harness is set to use. |
 | **Custom (OpenAI-compatible)** | The URL and model of a server with an OpenAI-compatible chat API (Ollama, LM Studio, vLLM, llama.cpp, a hosted service); a key only when the server asks for one. | `<URL>/chat/completions` on the server you name. |
 
-Until you choose a provider, the editor picks one from what is installed: Claude (Subscription) when it finds `claude`, else Codex (Subscription) when it finds `codex`, else Claude (API key) when `ANTHROPIC_API_KEY` is set, else Claude (Subscription), whose setup check then says what to install. **Check again** on the setup page looks again, so a program installed since is found. The Custom provider and the Claude API key provider answer in the panel but cannot act in the editor.
+Until you choose a provider, the editor picks one from what is installed: Claude (Subscription) when it finds `claude`, else Codex (Subscription) when it finds `codex`, else Harness (Desktop app) when it finds DeepSeek Harness, else Claude (API key) when `ANTHROPIC_API_KEY` is set, else Claude (Subscription), whose setup check then says what to install. **Check again** on the setup page looks again, so a program installed since is found. The Harness, Custom and Claude API key providers answer in the panel but cannot act in the editor.
 
 ![The provider dropdown open, listing Claude (Subscription), Claude (API key) and Codex (Subscription)](img/ai-assistant-provider-dropdown.png)
 
@@ -117,6 +118,13 @@ A local session runs the command-line program you already use, under your own lo
 - Not logged in: run `codex login` in a terminal, then send the prompt again.
 - The model comes from the **Model** row under **Model and options**, a name as Codex spells it. Empty uses Codex's own default.
 - Codex has no option to add the panel's instructions to its own, so a Codex session answers without them.
+
+### Harness (Desktop app)
+
+- Install DeepSeek Harness and set it up with a model in the app. The editor runs its `dsh` program, which is inside the app at `Harness.app/Contents/Resources/runtime/cli/bin/dsh` and not on `PATH`: an empty **Harness executable** finds it in `~/Applications` or `/Applications`.
+- Each prompt runs `dsh --profile headless --json` with the `read-only` permission preset and no approval prompts, so Harness cannot change your files and never stops to ask. A continued conversation passes its session with `--session-id`.
+- The model is the one Harness is set to use; the panel has no model choice for it. Harness needs a context of about 16K or more, because its own instructions and tools take about 11K.
+- Harness keeps its sessions in its own store, so the Session control does not list them.
 
 ### Your login, not a key
 
@@ -256,6 +264,7 @@ The page's three steps, **Which assistant?**, **How do you sign in?** and **Setu
 | Claude Code executable | Claude (Subscription) | `claude` on `PATH` by default, or a full path to `claude.exe` (Windows) or `claude` (macOS, Linux). |
 | Codex executable | Codex (Subscription) | `codex` on `PATH` by default, or a full path to `codex.exe` (Windows) or `codex` (macOS, Linux). |
 | Server | Custom (OpenAI-compatible), once the check finds one | The model servers running on this computer: the check asks `127.0.0.1` on ports 8080 (TensorFold, llama.cpp), 11434 (Ollama), 1234 (LM Studio) and 8000 (vLLM) for their model lists and names each server by its list (TensorFold Bar's reads "TensorFold (local-model)"). Choosing one fills in the URL and the model; with no URL set yet, the first server found is used. **Other** keeps the URL you typed. |
+| Harness executable | Harness (Desktop app) | `dsh` on `PATH` by default, else the `dsh` inside Harness.app; or a full path to it. |
 | Endpoint URL | Custom (OpenAI-compatible) | The server's API URL, the part before `/chat/completions`: Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`. |
 | Model | Custom (OpenAI-compatible) | The model as the server names it. The setup check asks the server for its model list and warns when the model is not in it. |
 

@@ -73,7 +73,8 @@ public:
 
     /// The connection id the panel uses (an IAgentProvider::Id()). Until the user chooses one it
     /// is detected: the Claude session when claude is installed, else the Codex session when codex
-    /// is, else Claude (API key) when ANTHROPIC_API_KEY is set, else the Claude session. A stored
+    /// is, else the Harness session when DeepSeek Harness is, else Claude (API key) when
+    /// ANTHROPIC_API_KEY is set, else the Claude session. A stored
     /// id that is unknown also gives the Claude session.
     static std::string Provider();
     /// Stores the connection id; an unknown id is ignored.
@@ -130,6 +131,9 @@ public:
     static std::string ClaudeExecutable();
     /// The `codex` executable, found as ClaudeExecutable() finds `claude`.
     static std::string CodexExecutable();
+    /// DeepSeek Harness's `dsh` executable, found as ClaudeExecutable() finds `claude` (in Harness's
+    /// app bundle when it is not on PATH).
+    static std::string HarnessExecutable();
 
     /// The custom endpoint's API URL as the user typed it (".../v1"); empty until set.
     static std::string EndpointUrl();
@@ -146,6 +150,7 @@ public:
     /// Each stores its executable as the user typed or picked it; a change moves SetupGeneration().
     static void SetClaudeExecutable(const std::string& executable);
     static void SetCodexExecutable(const std::string& executable);
+    static void SetHarnessExecutable(const std::string& executable);
     static void SetNodeExecutable(const std::string& executable);
     /// Moves whenever the connection or the Claude, Codex or Node executable changes, so the
     /// setup page checks the new setup at once.

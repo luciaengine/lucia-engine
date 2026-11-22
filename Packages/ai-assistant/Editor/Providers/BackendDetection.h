@@ -19,6 +19,9 @@ struct Inputs
 {
     std::string Path;
     std::filesystem::path Home;
+    /// Whether the folders outside the home folder (Homebrew, /usr/local/bin, /Applications) are
+    /// searched; a test turns them off so the machine's own programs do not count.
+    bool SystemFolders = true;
 };
 
 /// Where a program was found.
@@ -35,7 +38,8 @@ Inputs CurrentInputs();
 
 /// The folders `program` is looked for in after PATH, in order: the user's local bin folder (the
 /// native installers), Claude Code's own local folder (claude only), Homebrew, /usr/local/bin and
-/// the npm and Bun global folders. Windows has the user's local bin folder only.
+/// the npm and Bun global folders. Windows has the user's local bin folder only. `dsh` is looked
+/// for in DeepSeek Harness's app bundle instead (~/Applications, then /Applications, on macOS).
 std::vector<std::filesystem::path> InstallFolders(std::string_view program, const Inputs& inputs);
 
 /// `program` (claude, codex) on PATH, else in InstallFolders(); nullopt when it is in neither.

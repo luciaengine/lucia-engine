@@ -10,6 +10,7 @@
 #include "Providers/ClaudeSessionProvider.h"
 #include "Providers/CliSessionProvider.h"
 #include "Providers/CodexSessionProvider.h"
+#include "Providers/HarnessSessionProvider.h"
 #include "Providers/OpenAiCompatibleProvider.h"
 #include "Providers/IAgentProvider.h"
 #include "Providers/SetupStatus.h"
@@ -79,11 +80,15 @@ constexpr const char* kSendWhenMicStopsTooltip = "Stopping the microphone sends 
 constexpr const char* kClaudeExecutableTooltip = "The claude program: a name found on PATH or a full path to claude.exe.";
 constexpr const char* kCodexExecutableTooltip =
     "The codex program: a name found on PATH or a full path to codex.exe, the native program (not codex.cmd).";
+constexpr const char* kHarnessExecutableTooltip = "DeepSeek Harness's dsh program: a name found on PATH or a full path to it.";
 constexpr const char* kNodeExecutableTooltip = "The node program that runs the editor's tools for the assistant "
                                                "(Node 20 or later): a name found on PATH or a full path to node.exe.";
 #else
 constexpr const char* kClaudeExecutableTooltip = "The claude program: a name found on PATH or a full path to it.";
 constexpr const char* kCodexExecutableTooltip = "The codex program: a name found on PATH or a full path to it.";
+constexpr const char* kHarnessExecutableTooltip =
+    "DeepSeek Harness's dsh program: a name found on PATH or a full path to it, inside Harness.app at "
+    "Contents/Resources/runtime/cli/bin/dsh.";
 constexpr const char* kNodeExecutableTooltip = "The node program that runs the editor's tools for the assistant "
                                                "(Node 20 or later): a name found on PATH or a full path to it.";
 #endif
@@ -159,7 +164,15 @@ void SetHidden(UIElement& element, bool hidden)
         element.RemoveClass("hidden");
 }
 
-bool IsSubscription(std::string_view providerId)
+// A connection that runs a program on this computer, so the page shows its executable row.
+bool RunsLocalProgram(std::string_view providerId)
+{
+    return providerId == ClaudeSessionProvider::kId || providerId == CodexSessionProvider::kId ||
+           providerId == HarnessSessionProvider::kId;
+}
+
+// A connection whose program can run the editor's tools, which Node runs.
+bool UsesEditorTools(std::string_view providerId)
 {
     return providerId == ClaudeSessionProvider::kId || providerId == CodexSessionProvider::kId;
 }
@@ -446,19 +459,33 @@ void AiAssistantSetupPage::ShowMethodChoices(const std::string& providerId)
 
 void AiAssistantSetupPage::ShowExecutableRow(const std::string& providerId)
 {
-    if (!IsSubscription(providerId))
+    if (!RunsLocalProgram(providerId))
     {
         m_ExecutableRow->AddClass("hidden");
         return;
     }
     m_ExecutableRow->RemoveClass("hidden");
-    const bool claude = providerId == ClaudeSessionProvider::kId;
-    m_ExecutableLabel->SetText(claude ? "Claude Code executable" : "Codex executable");
-    const char* tooltip = claude ? kClaudeExecutableTooltip : kCodexExecutableTooltip;
+    const char* label = "Claude Code executable";
+    const char* tooltip = kClaudeExecutableTooltip;
+    std::string value;
+    if (providerId == ClaudeSessionProvider::kId)
+        value = AiAssistantSettings::ClaudeExecutable();
+    else if (providerId == CodexSessionProvider::kId)
+    {
+        label = "Codex executable";
+        tooltip = kCodexExecutableTooltip;
+        value = AiAssistantSettings::CodexExecutable();
+    }
+    else
+    {
+        label = "Harness executable";
+        tooltip = kHarnessExecutableTooltip;
+        value = AiAssistantSettings::HarnessExecutable();
+    }
+    m_ExecutableLabel->SetText(label);
     m_ExecutableLabel->SetTooltip(tooltip);
     m_ExecutableField->SetTooltip(tooltip);
-    m_ExecutableField->SetValue(claude ? AiAssistantSettings::ClaudeExecutable()
-                                       : AiAssistantSettings::CodexExecutable());
+    m_ExecutableField->SetValue(value);
 }
 
 void AiAssistantSetupPage::ShowEndpointAndKeyRows(const std::string& providerId)
@@ -529,6 +556,8 @@ void AiAssistantSetupPage::StoreExecutable(const std::string& executable)
         AiAssistantSettings::SetClaudeExecutable(executable);
     else if (provider == CodexSessionProvider::kId)
         AiAssistantSettings::SetCodexExecutable(executable);
+    else if (provider == HarnessSessionProvider::kId)
+        AiAssistantSettings::SetHarnessExecutable(executable);
 }
 
 void AiAssistantSetupPage::ShowOptions(const std::string& providerId)
@@ -570,7 +599,7 @@ void AiAssistantSetupPage::ShowOptions(const std::string& providerId)
 
     m_ModeDropdown->SetSelectedValue(std::string(DescribeAssistantMode(AiAssistantSettings::LastMode()).Id));
     // Node runs the editor's tools, which only a session that signs in through its program uses.
-    SetHidden(*m_NodeRow, !IsSubscription(providerId));
+    SetHidden(*m_NodeRow, !UsesEditorTools(providerId));
     m_NodeField->SetValue(AiAssistantSettings::NodeExecutable());
     m_HoldToSpeak->SetValueWithoutNotify(AiAssistantSettings::HoldToSpeak());
     m_SendWhenMicStops->SetValueWithoutNotify(AiAssistantSettings::SendWhenMicStops());
@@ -584,6 +613,8 @@ void AiAssistantSetupPage::ShowOptionsSummary(const std::string& providerId)
         summary += AiAssistantSettings::ModelLabel(providerId, model);
     else if (providerId == OpenAiCompatibleProvider::kId)
         summary += "no model set";
+    else if (providerId == HarnessSessionProvider::kId)
+        summary += "Harness's own model";
     else
         summary += "Codex's own model";
     if (const std::string effort = AiAssistantSettings::Effort(providerId); !effort.empty())

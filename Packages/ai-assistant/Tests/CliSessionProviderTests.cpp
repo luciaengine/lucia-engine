@@ -1,6 +1,7 @@
 #include "Providers/CancelToken.h"
 #include "Providers/ClaudeSessionProvider.h"
 #include "Providers/CodexSessionProvider.h"
+#include "Providers/HarnessSessionProvider.h"
 #include "RecordingTurnEvents.h"
 #include "ScopedEnvironmentVariable.h"
 
@@ -750,6 +751,56 @@ TEST(CliSessionProviderTests, CodexDirectoryAndImagePathsUseUtf8)
     ASSERT_NE(std::next(directory), args.end());
     EXPECT_EQ(*std::next(directory), "C:/Project/\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E");
     EXPECT_NE(std::find(args.begin(), args.end(), "--image=C:/Project/\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E/\xE5\x86\x92.png"), args.end());
+}
+
+// The Harness fixtures follow the `--json` event format of DeepSeek Harness 0.2.2-rc.5
+// (dsh-headless's json-stream projection): session, status, thinking, text, final.
+TEST(CliSessionProviderTests, HarnessTurnYieldsTheSessionTheMessageAndTheUsage)
+{
+    ScopedEnvironmentVariable mode("FAKE_AGENT_CLI_MODE", "replay");
+    const std::string fixture = Fixture("harness-turn.stdout");
+    ScopedEnvironmentVariable replay("FAKE_AGENT_CLI_REPLAY", fixture.c_str());
+    HarnessSessionProvider provider(FakeCli(), {});
+    RecordingTurnEvents events;
+    CancelToken cancel;
+
+    provider.RunTurn(Request("Describe blue in two sentences."), events, cancel);
+
+    const std::string reply = "Blue is the color of a clear sky. It often feels calm and peaceful.";
+    const std::vector<std::string> expected = {"session:session-00000000-0000-4000-8000-000000000002",
+                                               "delta:" + reply, "finished:" + reply};
+    EXPECT_EQ(events.Log, expected);
+    EXPECT_EQ(events.Result.Outcome, TurnOutcome::Succeeded);
+    EXPECT_EQ(events.Result.InputTokens, 11240u);
+    EXPECT_EQ(events.Result.OutputTokens, 31u);
+}
+
+TEST(CliSessionProviderTests, HarnessTurnThatEndsInAnErrorFailsWithItsMessage)
+{
+    ScopedEnvironmentVariable mode("FAKE_AGENT_CLI_MODE", "replay");
+    const std::string fixture = Fixture("harness-provider-error.stdout");
+    ScopedEnvironmentVariable replay("FAKE_AGENT_CLI_REPLAY", fixture.c_str());
+    HarnessSessionProvider provider(FakeCli(), {});
+    RecordingTurnEvents events;
+    CancelToken cancel;
+
+    provider.RunTurn(Request("Hello"), events, cancel);
+
+    EXPECT_EQ(events.Result.Outcome, TurnOutcome::Failed);
+    EXPECT_NE(events.Result.Error.find("ECONNREFUSED 127.0.0.1:8080"), std::string::npos) << events.Result.Error;
+}
+
+// Harness runs read-only and never stops to ask; a continued session is passed by id.
+TEST(CliSessionProviderTests, HarnessRunsReadOnlyWithoutApprovalPrompts)
+{
+    HarnessSessionProvider provider(FakeCli(), {});
+    AgentTurnRequest request = Request("Hi");
+    request.SessionId = "session-x";
+    const std::vector<std::string> expected = {"--profile",  "headless",          "--json", "--permission-mode",
+                                               "read-only",  "--approval-policy", "never",  "--session-id",
+                                               "session-x",  "-"};
+    EXPECT_EQ(provider.TurnArguments(request), expected);
+    EXPECT_FALSE(provider.Capabilities().CanActWithTools);
 }
 
 } // namespace GameEngine
