@@ -3410,6 +3410,11 @@ button.inspector-button.inspector-new-material-button,
 .settings-panel .foldout-header:hover > .foldout-chevron {
     opacity: 1.0;
 }
+/* With the pointer on a live enable dot a click switches the component instead of collapsing the
+   section, so the chevron stays at rest, as the title does. */
+.inspector-section > .inspector-section-header-row.inspector-section-header-row-dot-hovered:hover > .foldout-chevron {
+    opacity: 0.5;
+}
 
 /* Preserve the enabled-state contrast while keeping whole-row hover feedback. */
 .inspector-section > .inspector-section-header-row > .inspector-section-header {
