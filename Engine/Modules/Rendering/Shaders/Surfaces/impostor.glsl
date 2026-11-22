@@ -157,12 +157,16 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 
     float c = sIn.custom0.z;
     float s = sIn.custom0.w;
+    // The blend of leaf normals is shorter than 1 where the leaves face different ways. A pixel of
+    // the mesh averages the sun over those leaves, so the sun on the card scales with this length.
+    float normalCoherence = clamp(length(objectNormal) / max(color.a, 0.0001), 0.0, 1.0);
     objectNormal = normalize(objectNormal + vec3(0.0, 1e-4, 0.0));
     o.normalWS = normalize(vec3(c * objectNormal.x + s * objectNormal.z, objectNormal.y,
                                 -s * objectNormal.x + c * objectNormal.z));
 #ifdef GE_PRIMARY_LIGHT_OCCLUSION
     o.primaryLightOcclusion =
-        GE_ImpostorCrownLight(surface, sIn.primaryLightDirectionWS, c, s, Props.impostorAtlas, halfTexel);
+        GE_ImpostorCrownLight(surface, sIn.primaryLightDirectionWS, c, s, Props.impostorAtlas, halfTexel) *
+        normalCoherence;
 #endif
     o.roughness = 0.9;
     o.metallic = 0.0;
