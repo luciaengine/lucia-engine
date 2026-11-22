@@ -19,11 +19,15 @@ struct ImpostorAtlasKey
     uint32 FramesPerSide = 8; // The atlas holds FramesPerSide^2 frames.
     uint32 FrameSize = 128;   // Pixels per frame side.
 
+    bool FilterMips = false;
+
     auto operator<=>(const ImpostorAtlasKey&) const = default;
 };
 
-/// GPU bytes of one atlas: an RGBA8 base colour layer and an RGBA16F normal and depth layer
-/// per frame.
+/// Allocated mip levels through a four-texel view tile when filtering is enabled.
+uint32 ImpostorAtlasMipCount(const ImpostorAtlasKey& key);
+
+/// GPU bytes of all allocated color and normal/depth levels.
 uint64 ImpostorAtlasBytes(const ImpostorAtlasKey& key);
 
 /// Which atlases live inside a byte budget. An atlas is requested when an instance first needs
@@ -51,8 +55,8 @@ public:
     /// Returns the state after the request: Absent when the atlas does not fit.
     State Request(const ImpostorAtlasKey& key, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted);
 
-    /// The bake of a Pending atlas finished.
-    void MarkReady(const ImpostorAtlasKey& key);
+    /// Marks a baked atlas ready and charges only its allocated mip levels.
+    void MarkReady(const ImpostorAtlasKey& key, uint32 allocatedMipCount);
 
     /// Drops every atlas, for a device rebuild that freed their textures.
     void Clear();

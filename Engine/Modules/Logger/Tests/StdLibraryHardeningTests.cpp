@@ -52,9 +52,10 @@ int ReadElement(const std::vector<int>& values, std::size_t index)
 
 // What the failed check prints before the process dies: Logger's Critical record in libc++ debug
 // mode, the library's own line on libstdc++, nothing on the MSVC STL or in libc++ fast mode.
-// The pattern does not match the handler's lowercase "[CRASH]" stderr line.
+// The pattern does not match the handler's lowercase "[CRASH]" stderr line. The libc++ text is
+// "assertion <expression> failed" in the Xcode SDK and "Hardening assertion <expression> failed" in LLVM releases.
 #if defined(_LIBCPP_VERSION) && _LIBCPP_HARDENING_MODE == _LIBCPP_HARDENING_MODE_DEBUG
-constexpr const char* kFailedCheckReport = "Standard library check failed: .*Hardening assertion";
+constexpr const char* kFailedCheckReport = "Standard library check failed: .*assertion .* failed";
 #elif defined(_LIBCPP_VERSION)
 constexpr const char* kFailedCheckReport = "";
 #elif defined(_GLIBCXX_ASSERTIONS)

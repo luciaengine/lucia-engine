@@ -31,13 +31,10 @@ void ApplyDocumentPropertiesToMaterial(Material& mat, const MaterialDocument& do
 {
     for (const auto& [propName, propValue] : doc.properties)
     {
-        if (mat.GetDeclaredProperties())
+        if (const auto* declared = mat.GetDeclaredProperties())
         {
-            // Declared surface: the table owns the type, so an int lands as int
-            // bits and a vector is clamped to its declared width. An undeclared
-            // key stores nothing; the inspector and the validator report it.
-            mat.SetDeclaredPropertyValue(propName, propValue);
-            continue;
+            if (mat.SetDeclaredPropertyValue(propName, propValue) || !declared->UsesLegacySurfaceLanes)
+                continue;
         }
 
         const StringId sid = HashStringId(propName);
@@ -273,16 +270,18 @@ void MaterialRegistry::ApplyDocumentToMaterial(Material& mat, const MaterialDocu
 
     mat.m_AuthoredProperties = doc.properties;
     if (mat.m_DeclaredProperties)
-    {
-        // Declared surface: defaults come from the table, so re-installing it
-        // resets every lane and replays the document — a removed key reverts.
         mat.SetDeclaredProperties(mat.m_DeclaredProperties);
-        SyncMaterialOpacityFromDocument(mat, doc);
-        for (const auto& [texName, st] : doc.textureTransforms)
-            mat.SetTextureTransform(HashStringId(texName), st);
-        return;
-    }
+    if (!mat.m_DeclaredProperties || mat.m_DeclaredProperties->UsesLegacySurfaceLanes)
+        ApplyLegacySurfaceProperties(mat, doc);
+    SyncMaterialOpacityFromDocument(mat, doc);
+    for (const auto& [texName, st] : doc.textureTransforms)
+        mat.SetTextureTransform(HashStringId(texName), st);
+}
 
+void MaterialRegistry::ApplyLegacySurfaceProperties(Material& mat, const MaterialDocument& doc)
+{
+    if (mat.m_DeclaredProperties)
+        InstallLegacyPropertyLayouts(mat);
     // Reset known scalar/color properties to defaults before applying the
     // document so unset properties revert correctly across a reload.
     {
@@ -422,10 +421,6 @@ void MaterialRegistry::ApplyDocumentToMaterial(Material& mat, const MaterialDocu
     }
 
     ApplyDocumentPropertiesToMaterial(mat, doc);
-    SyncMaterialOpacityFromDocument(mat, doc);
-
-    for (const auto& [texName, st] : doc.textureTransforms)
-        mat.SetTextureTransform(HashStringId(texName), st);
 }
 
 void MaterialRegistry::InstallLegacyPropertyLayouts(Material& mat)
@@ -435,8 +430,18 @@ void MaterialRegistry::InstallLegacyPropertyLayouts(Material& mat)
     // (Materials/LegacyMaterialLanes.h); a surface with `// @property`
     // declarations replaces this map through Material::SetDeclaredProperties.
     for (const Rendering::LegacyMaterialLane& lane : Rendering::kLegacyMaterialLanes)
-        mat.m_PropertyLayouts[HashStringId(std::string(lane.Name))] = {LegacyLaneByteOffset(lane),
-                                                                       LegacyLaneByteSize(lane)};
+    {
+        const uint32_t offset = LegacyLaneByteOffset(lane);
+        const uint32_t bytes = LegacyLaneByteSize(lane);
+        if (mat.m_DeclaredProperties && lane.Lane >= kGenericLaneFirst &&
+            std::any_of(mat.m_DeclaredProperties->Properties.begin(), mat.m_DeclaredProperties->Properties.end(),
+                [offset, bytes](const ShaderProperty& p)
+                {
+                    return p.HasLane && p.ByteOffset < offset + bytes && offset < p.ByteOffset + p.ByteSize;
+                }))
+            continue; // A typed modifier property owns these bytes.
+        mat.m_PropertyLayouts.try_emplace(HashStringId(lane.Name), Material::PropertyLayout{offset, bytes});
+    }
 }
 
 void MaterialRegistry::ApplyPropertyTable(Material& mat, std::shared_ptr<const Rendering::ShaderPropertyTable> table)
@@ -446,8 +451,18 @@ void MaterialRegistry::ApplyPropertyTable(Material& mat, std::shared_ptr<const R
     mat.SetDeformationEnvelope(table->DeformationEnvelope);
     if (table->HasSurfaceDeclarations)
     {
-        if (mat.GetDeclaredProperties() != table.get())
-            mat.SetDeclaredProperties(std::move(table));
+        if (mat.GetDeclaredProperties() == table.get())
+            return;
+        const bool legacy = table->UsesLegacySurfaceLanes;
+        mat.SetDeclaredProperties(std::move(table));
+        if (legacy)
+        {
+            MaterialDocument authored{};
+            authored.surfaceShader = mat.GetCompileSpec().surfaceShaderPath;
+            authored.properties = mat.m_AuthoredProperties;
+            ApplyLegacySurfaceProperties(mat, authored);
+            SyncMaterialOpacityFromDocument(mat, authored);
+        }
         return;
     }
     if (!mat.GetDeclaredProperties())

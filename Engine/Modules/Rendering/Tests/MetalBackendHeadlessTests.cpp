@@ -8,17 +8,20 @@
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/QueryPool.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include "Mathematics/HalfFloat.h"
+#include "Mathematics/Vector2.h"
 #include "Mathematics/Vector4.h"
 #include "Memory/AllocationCountScope.h"
 #include "Platform/Environment.h"
 
 #include "../Source/Metal/MetalArgumentBufferLayout.h"
 #include "../Source/Metal/MetalCommandList.h"
+#include "../Source/Metal/MetalCompletedHandler.h"
 #include "../Source/Metal/MetalDevice.h"
 #include "../Source/Metal/MetalShaderTranslator.h"
 #include "PushBlockMslLayout.h"
@@ -46,6 +49,12 @@ namespace GameEngine::Rendering
 {
 struct MetalCommandListTestAccess
 {
+    static BufferHandle GetRetainedVertexBuffer(const CommandList& list, uint32_t slot)
+    {
+        const auto& buffers = static_cast<const MetalCommandList&>(list).m_VertexBuffers;
+        return slot < buffers.size() ? buffers[slot] : BufferHandle{};
+    }
+
     static MTL::CommandBuffer* GetBuffer(CommandList& list)
     {
         return static_cast<MetalCommandList&>(list).m_CommandBuffer;
@@ -743,7 +752,7 @@ TEST(MetalResources, FailedSubmissionInterruptsAnActiveTimelineWait)
     auto fault = NS::RetainPtr(metal.GetQueue(IDevice::QueueType::Transfer)->commandBuffer());
     ASSERT_NE(fault.get(), nullptr);
     // Inject a terminal fault from a native completion while the host waits.
-    fault->addCompletedHandler([&metal](MTL::CommandBuffer*) {
+    AddCompletedHandler(fault.get(), [&metal](MTL::CommandBuffer*) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         MetalDeviceTestAccess::FailSubmission(metal);
     });
@@ -2534,6 +2543,114 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
 
     device->DestroyBuffer(readback);
     device->DestroyTexture(rt);
+    device->Shutdown();
+}
+
+TEST(MetalSpirvPipeline, RetainsExtraVertexStreamsAcrossRenderEncoders)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+        GTEST_SKIP() << "Metal backend unavailable";
+
+    static constexpr char kVertexShader[] = R"(
+#version 450
+layout(location = 14) in vec2 position;
+layout(location = 15) in vec2 color;
+layout(location = 0) out vec2 vertexColor;
+void main() {
+    gl_Position = vec4(position, 0.5, 1.0);
+    vertexColor = color;
+}
+)";
+    static constexpr char kFragmentShader[] = R"(
+#version 450
+layout(location = 0) in vec2 vertexColor;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(vertexColor, 0.0, 1.0); }
+)";
+    using GameEngine::Mathematics::Vector2;
+    const std::array<Vector2, 3> positions{{{-1.0f, -1.0f}, {3.0f, -1.0f}, {-1.0f, 3.0f}}};
+    const std::array<Vector2, 3> colors{{{0.0f, 1.0f}, {0.0f, 1.0f}, {0.0f, 1.0f}}};
+    BufferDesc vertexDesc{};
+    vertexDesc.size = sizeof(positions);
+    vertexDesc.usage = static_cast<uint32_t>(BufferUsage::Vertex | BufferUsage::TransferDst);
+    const BufferHandle positionBuffer = device->CreateBuffer(vertexDesc);
+    const BufferHandle colorBuffer = device->CreateBuffer(vertexDesc);
+    ASSERT_TRUE(positionBuffer.IsValid());
+    ASSERT_TRUE(colorBuffer.IsValid());
+    device->UpdateBuffer(positionBuffer, 0, sizeof(positions), positions.data());
+    device->UpdateBuffer(colorBuffer, 0, sizeof(colors), colors.data());
+
+    PipelineDesc pipelineDesc{};
+    pipelineDesc.type = PipelineType::Graphics;
+    pipelineDesc.vertexShader = CompileGlsl(kVertexShader, shaderc_vertex_shader, "retained-uv-streams.vert");
+    pipelineDesc.pixelShader = CompileGlsl(kFragmentShader, shaderc_fragment_shader, "retained-uv-streams.frag");
+    ASSERT_FALSE(pipelineDesc.vertexShader.empty());
+    ASSERT_FALSE(pipelineDesc.pixelShader.empty());
+    pipelineDesc.vertexBindings = {{VertexBinding::UV6, sizeof(Vector2), 0},
+                                   {VertexBinding::UV7, sizeof(Vector2), 0}};
+    pipelineDesc.vertexAttributes = {{VertexLocation::UV6, VertexBinding::UV6, Format::R32G32_FLOAT, 0},
+                                     {VertexLocation::UV7, VertexBinding::UV7, Format::R32G32_FLOAT, 0}};
+    constexpr auto kColorFormat = static_cast<uint32_t>(TextureFormat::BGRA8_UNORM);
+    pipelineDesc.colorAttachmentFormats = {kColorFormat};
+    pipelineDesc.rasterizationState.cullMode = CullModeFlagBits::None;
+    pipelineDesc.depthStencilState.depthTestEnable = false;
+    pipelineDesc.depthStencilState.depthWriteEnable = false;
+    const PipelineHandle pipeline = device->CreatePipeline(pipelineDesc);
+    ASSERT_TRUE(pipeline.IsValid());
+
+    constexpr uint32_t kSide = 16;
+    TextureDesc targetDesc{};
+    targetDesc.width = kSide;
+    targetDesc.height = kSide;
+    targetDesc.format = kColorFormat;
+    targetDesc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::TransferSrc);
+    const TextureHandle target = device->CreateTexture(targetDesc);
+    ASSERT_TRUE(target.IsValid());
+
+    BufferDesc readbackDesc{};
+    readbackDesc.size = kSide * kSide * 4;
+    readbackDesc.usage = static_cast<uint32_t>(BufferUsage::TransferDst);
+    const BufferHandle readback = device->CreateBuffer(readbackDesc);
+    ASSERT_TRUE(readback.IsValid());
+
+    auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+    commands->Begin();
+    commands->SetVertexBuffer(positionBuffer, VertexBinding::UV6);
+    ASSERT_EQ(MetalCommandListTestAccess::GetRetainedVertexBuffer(*commands, VertexBinding::UV6), positionBuffer);
+
+    RenderPassDesc pass{};
+    pass.colorTargets[0] = target;
+    pass.colorTargetCount = 1;
+    pass.clearColor[0] = true;
+    pass.clearColorValue[0][0] = 1.0f;
+    pass.clearColorValue[0][3] = 1.0f;
+    commands->BeginRenderPass(pass);
+    commands->SetVertexBuffer(colorBuffer, VertexBinding::UV7);
+    commands->EndRenderPass();
+    ASSERT_EQ(MetalCommandListTestAccess::GetRetainedVertexBuffer(*commands, VertexBinding::UV7), colorBuffer);
+
+    commands->BeginRenderPass(pass);
+    commands->SetPipeline(pipeline);
+    commands->SetViewport(0.0f, 0.0f, kSide, kSide);
+    commands->SetScissor(0, 0, kSide, kSide);
+    commands->Draw(3);
+    commands->EndRenderPass();
+    commands->CopyTextureToBuffer(target, readback, kSide, kSide);
+    commands->End();
+    device->ExecuteCommandLists({commands.get()});
+    device->WaitForIdle();
+
+    const auto* pixels = static_cast<const uint8_t*>(device->MapBuffer(readback));
+    ASSERT_NE(pixels, nullptr);
+    const auto* center = pixels + ((kSide / 2) * kSide + kSide / 2) * 4;
+    EXPECT_EQ(center[1], 255u);
+    EXPECT_EQ(center[2], 0u);
+
+    device->DestroyBuffer(readback);
+    device->DestroyTexture(target);
+    device->DestroyBuffer(colorBuffer);
+    device->DestroyBuffer(positionBuffer);
     device->Shutdown();
 }
 
