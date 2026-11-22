@@ -881,10 +881,10 @@ void main()
     si.positionFootprintX = parallaxPositionFootprintX;
     si.positionFootprintY = parallaxPositionFootprintY;
 #endif
-#if defined(GE_PARALLAX_MARCH) && !defined(GE_DEPTH_ONLY_FRAGMENT)
-    // The relief's self-shadow marches toward the light both lighting paths below shade as the
-    // shadowed directional term, gated like them on the light it delivers. The prepass shades
-    // nothing, so its direction stays zero and the self-shadow skips.
+#if (defined(GE_PARALLAX_MARCH) || defined(GE_SURFACE_READS_PRIMARY_LIGHT)) && !defined(GE_DEPTH_ONLY_FRAGMENT)
+    // A self-shadow (the relief's, an impostor crown's) toward the light both lighting paths below
+    // shade as the shadowed directional term, gated like them on the light it delivers. The prepass
+    // shades nothing, so its direction stays zero and the self-shadow skips.
     {
         vec3 primaryLight = Light.uLightColorWorld.rgb * Light.uLightDirWorld.w;
         si.primaryLightDirectionWS = max(primaryLight.r, max(primaryLight.g, primaryLight.b)) > 0.0

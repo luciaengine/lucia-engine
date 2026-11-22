@@ -9,6 +9,10 @@
 
 #include "Includes/impostor_frame.glsl"
 
+// The card shades its crown's own shadow toward the primary light, so the forward adapter fills
+// SurfaceInput.primaryLightDirectionWS for it.
+#define GE_SURFACE_READS_PRIMARY_LIGHT 1
+
 // The object-space surface point (in sphere radii from the center) that `frame` sees through card
 // point `offset`. The bake camera is orthographic and reverse-Z, with near at 1 radius in front of
 // the center and far at 1 radius behind it, so window depth d is at 2d - 1 radii along the frame
@@ -22,6 +26,36 @@ vec3 GE_ImpostorSurfacePoint(vec2 frame, vec3 offset, vec4 impostorAtlas)
     vec3 surface = offset - direction * dot(offset, direction) + direction * (2.0 * depth - 1.0);
     // An edge texel blends toward the card point, so the point does not jump at a silhouette.
     return mix(offset, surface, smoothstep(0.25, 0.75, coverage));
+}
+
+// How much of the primary light reaches object-space point `surface` through the object itself. The
+// frames around the light direction see the object from the light: where their stored surface lies
+// in front of the point, toward the light, the crown shadows it. lightWS: unit, surface to light,
+// world space, zero without a light. (c, s): the cosine and sine of the object's yaw.
+float GE_ImpostorCrownLight(vec3 surface, vec3 lightWS, float c, float s, vec4 impostorAtlas)
+{
+    if (dot(lightWS, lightWS) <= 0.0)
+        return 1.0;
+    // The inverse of the yaw that turns the object normal into world space.
+    vec3 lightObject = vec3(c * lightWS.x - s * lightWS.z, lightWS.y, s * lightWS.x + c * lightWS.z);
+    vec2 code = impostorAtlas.y < 0.5 ? GE_HemiOctEncode(lightObject) : GE_OctEncode(lightObject);
+    vec2 frames[3];
+    vec3 weights;
+    GE_ImpostorBlendFrames(code, impostorAtlas, frames, weights);
+    const float kShadowDepth = 0.02;  // Window depth: 0.04 sphere radii.
+    const float kShadowFade = 0.05;
+    float light = 0.0;
+    for (int i = 0; i < 3; ++i)
+    {
+        vec2 uv = GE_ImpostorFrameUv(frames[i], surface, impostorAtlas);
+        vec4 sampleColor = texture(albedoMap, uv);
+        float storedDepth = texture(normalMap, uv).w / max(sampleColor.a, 0.0001);
+        float expectedDepth = dot(surface, GE_ImpostorFrameDirection(frames[i], impostorAtlas)) * 0.5 + 0.5;
+        float shadowed = smoothstep(kShadowDepth, kShadowDepth + kShadowFade, storedDepth - expectedDepth) *
+                         smoothstep(0.25, 0.75, sampleColor.a);
+        light += weights[i] * (1.0 - shadowed);
+    }
+    return light;
 }
 
 SurfaceOutput EvaluateSurface(SurfaceInput sIn)
@@ -83,6 +117,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     objectNormal = normalize(objectNormal + vec3(0.0, 1e-4, 0.0));
     o.normalWS = normalize(vec3(c * objectNormal.x + s * objectNormal.z, objectNormal.y,
                                 -s * objectNormal.x + c * objectNormal.z));
+    o.primaryLightOcclusion = GE_ImpostorCrownLight(surface, sIn.primaryLightDirectionWS, c, s, Props.impostorAtlas);
     o.roughness = 0.9;
     o.metallic = 0.0;
     return o;
