@@ -18,6 +18,8 @@
 #include "TestCameraEye.h"
 #include "TestDeviceHelper.h"
 #include "TextureCookTestFixtures.h"
+#include "UI/UIElement.h"
+#include "UI/UIManager.h"
 
 #include <algorithm>
 #include <array>
@@ -441,7 +443,8 @@ class TextureCoverageGPU : public testing::Test
         return pixels;
     }
     void CheckBlockCompressedMipStream(const fs::path& source, const char* compression,
-                                       GameEngine::TextureFormat format, uint64 tailBudgetBytes)
+                                       GameEngine::TextureFormat format, uint64 tailBudgetBytes,
+                                       uint32 fullHeight = 512)
     {
         using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
         if (!IsTextureCookEncoderAvailable())
@@ -471,22 +474,28 @@ class TextureCoverageGPU : public testing::Test
             std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
         ASSERT_NE(loaded, nullptr);
         ASSERT_EQ(loaded->GetFormat(), format);
+        ASSERT_EQ(loaded->GetHeight(), fullHeight);
         EXPECT_EQ(loaded->GetPixelData(), nullptr);
 
         const auto direct = WaitForUpload(texture);
         ASSERT_TRUE(direct.IsValid());
         EXPECT_EQ(WidthOf(direct), kFullWidth);
-        EXPECT_EQ(Render(tail, 16, 16, 0), Render(direct, 16, 16, 1));
+        constexpr uint32 kProbeExtent = 16;
+        const uint32 tailProbeHeight = std::min(kProbeExtent, fullHeight / 2);
+        EXPECT_EQ(Render(tail, kProbeExtent, tailProbeHeight, 0), Render(direct, kProbeExtent, tailProbeHeight, 1));
 
         Access::SetMipBudget(m_Textures, kFullBudgetBytes);
         SettleMipStreams();
         const auto promoted = material->GetTexture(slot);
         ASSERT_EQ(WidthOf(promoted), kFullWidth);
-        EXPECT_EQ(Render(promoted, 16, 16, 0), Render(direct, 16, 16, 0));
+        const uint32 fullProbeHeight = std::min(kProbeExtent, fullHeight);
+        EXPECT_EQ(Render(promoted, kProbeExtent, fullProbeHeight, 0),
+                  Render(direct, kProbeExtent, fullProbeHeight, 0));
         constexpr uint32 kProbeLod = 3;
         const uint32 probeWidth = kFullWidth >> kProbeLod;
-        const auto promotedPixels = Render(promoted, probeWidth, probeWidth, kProbeLod);
-        EXPECT_EQ(promotedPixels, Render(direct, probeWidth, probeWidth, kProbeLod));
+        const uint32 probeHeight = fullHeight >> kProbeLod;
+        const auto promotedPixels = Render(promoted, probeWidth, probeHeight, kProbeLod);
+        EXPECT_EQ(promotedPixels, Render(direct, probeWidth, probeHeight, kProbeLod));
         if (format == GameEngine::TextureFormat::BC6H)
         {
             ASSERT_FALSE(promotedPixels.empty());
@@ -997,6 +1006,54 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     m_Textures.FlushPendingUploads();
 }
 
+TEST_F(TextureCoverageGPU, AStreamedMaterialTextureAlsoUploadsAsAUiBackground)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    constexpr uint32 kFullWidth = 512;
+    constexpr uint32 kTailWidth = kFullWidth / 2;
+    constexpr uint32 kProbeWidth = 16;
+    Access::SetMipBudget(m_Textures, kMiB);
+    const GUID texture = Register(Image(false, kFullWidth), false);
+    ASSERT_FALSE(texture.IsNull());
+
+    const GUID materialGuid = GUID::Generate();
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingUiBackground");
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+    const auto tail = WaitForBoundTexture(*material, slot);
+    ASSERT_EQ(WidthOf(tail), kTailWidth);
+
+    auto& assets = EngineCore::GetInstance().GetAssetManager();
+    const auto loaded = std::dynamic_pointer_cast<TextureAsset>(assets.GetAsset(texture));
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->GetPixelData(), nullptr);
+
+    UIManager ui(m_Device.get(), &assets);
+    ui.SetRoot(std::make_unique<UIElement>());
+    uint32 width = 0;
+    uint32 height = 0;
+    const auto background = ui.BackgroundImages().TryGetHandle(texture, &width, &height);
+    ASSERT_TRUE(background.IsValid());
+    EXPECT_EQ(width, kFullWidth);
+    EXPECT_EQ(height, kFullWidth);
+    EXPECT_EQ(WidthOf(background), kFullWidth);
+    EXPECT_EQ(ui.BackgroundImages().RasterMipLevelsForTesting(texture),
+              ComputeTextureCookMipCount(kFullWidth, kFullWidth, TextureCookSettings{}));
+    EXPECT_EQ(material->GetTexture(slot), tail);
+    EXPECT_EQ(loaded->GetPixelData(), nullptr);
+
+    const auto backgroundPixels = Render(background, kProbeWidth, kProbeWidth, 1);
+    ASSERT_FALSE(backgroundPixels.empty());
+    EXPECT_EQ(backgroundPixels, Render(tail, kProbeWidth, kProbeWidth, 0));
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+}
+
 TEST_F(TextureCoverageGPU, AMaterialMipStreamOfABlockCompressedTextureMatchesTheDirectUpload)
 {
     CheckBlockCompressedMipStream(Image(false, 512), "bc7", GameEngine::TextureFormat::BC7, 128 * 1024);
@@ -1014,15 +1071,17 @@ TEST_F(TextureCoverageGPU, AStreamedBC4TextureMatchesItsDirectUpload)
 
 TEST_F(TextureCoverageGPU, AStreamedBC6HTextureKeepsItsHdrRangeAndMatchesItsDirectUpload)
 {
-    constexpr uint32 kSize = 512;
+    constexpr uint32 kWidth = 512;
+    constexpr uint32 kHeight = 16;
+    // The long edge still requires a mip tail. The short edge limits BC6H encoder work.
     const auto path = s_Workspace / "Assets" / (GUID::Generate().ToString() + ".hdr");
-    const auto data = GameEngine::Tests::MakeGradientHdr(kSize);
+    const auto data = GameEngine::Tests::MakeGradientHdr(kWidth, kHeight);
     {
         std::ofstream stream(path, std::ios::binary);
         stream.write(reinterpret_cast<const char*>(data.data()), data.size());
         ASSERT_TRUE(stream.good());
     }
-    CheckBlockCompressedMipStream(path, "bc6h", GameEngine::TextureFormat::BC6H, 128 * 1024);
+    CheckBlockCompressedMipStream(path, "bc6h", GameEngine::TextureFormat::BC6H, 8 * 1024, kHeight);
 }
 
 TEST_F(TextureCoverageGPU, AnEvictedStreamOfAReleasedTextureStartsAgainFromItsFile)

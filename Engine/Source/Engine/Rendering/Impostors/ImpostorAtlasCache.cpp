@@ -54,7 +54,7 @@ ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& ke
         EvictLeastRecentlyUsed(m_UsedBytes + bytes - m_BudgetBytes, frame, outEvicted);
     if (m_UsedBytes + bytes > m_BudgetBytes)
         return State::Absent;
-    m_Entries.InsertOrAssign(key, Entry{State::Pending, frame});
+    m_Entries.InsertOrAssign(key, Entry{State::Pending, frame, bytes});
     m_UsedBytes += bytes;
     return State::Pending;
 }
@@ -73,26 +73,40 @@ void ImpostorAtlasCache::Clear()
 
 void ImpostorAtlasCache::EvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted)
 {
-    // An atlas used in this frame stays: its instances already draw it.
+    // Atlases used in this frame stay. Check the full eviction capacity before retiring any texture.
+    uint64 evictableBytes = 0;
+    for (const auto& [key, entry] : m_Entries)
+    {
+        if (entry.LastUsedFrame < frame)
+        {
+            evictableBytes += entry.ReservedBytes;
+            if (evictableBytes >= neededBytes)
+                break;
+        }
+    }
+    if (evictableBytes < neededBytes)
+        return;
+
     uint64 freed = 0;
     while (freed < neededBytes)
     {
         const ImpostorAtlasKey* oldest = nullptr;
+        uint64 oldestBytes = 0;
         uint64 oldestFrame = std::numeric_limits<uint64>::max();
         for (const auto& [key, entry] : m_Entries)
         {
             if (entry.LastUsedFrame < frame && entry.LastUsedFrame < oldestFrame)
             {
                 oldest = &key;
+                oldestBytes = entry.ReservedBytes;
                 oldestFrame = entry.LastUsedFrame;
             }
         }
         if (!oldest)
             return;
         const ImpostorAtlasKey victim = *oldest;
-        const uint64 bytes = ImpostorAtlasBytes(victim);
-        freed += bytes;
-        m_UsedBytes -= bytes;
+        freed += oldestBytes;
+        m_UsedBytes -= oldestBytes;
         outEvicted.push_back(victim);
         m_Entries.Erase(victim);
     }
