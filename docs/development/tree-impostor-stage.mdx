@@ -118,6 +118,10 @@ Any static mesh gets the stage, and the selection runs on the GPU. The tree pack
 
 **The card light.** A card is flat, so without help the sun lights the whole crown like its outer leaves. A surface that declares `// @primaryLightOcclusion` gets the material keyword `SurfaceLightOcclusion` and the define `GE_SURFACE_LIGHT_OCCLUSION`. The impostor surface then finds the shaded point in the atlas frames near the light direction and compares depths (`GE_ImpostorCrownLight`), so the inner crown gets less sun. A shape that shades nothing (depth-only passes) drops the define.
 
+**The card passes.** The card reads its coverage from the three frames at the card point, at the shading mip. Every pass reads the same coverage, so the depth prepass and the colour pass keep the same pixels, and the depth-only passes (the prepass and the shadow cascades) stop after three atlas reads. The colour pass reuses those reads for the surface point, then samples the frames at that point. A card modifier declares `// @deformationClock none`, so the card stays out of the deformation motion pass: both motion endpoints give the same position, and the depth reprojection already gives its motion.
+
+**The sun on the card.** The blend of the frames' leaf normals is shorter than 1 where the leaves face different ways. A pixel of the mesh averages the sun over those leaves, so the card scales its sun by that length.
+
 **The bake sampling.** The bake variant samples material textures 2 mips finer (`GE_MATERIAL_MIP_BIAS`, `kImpostorBakeMipBias` = -2). One atlas frame holds the whole object, so at the normal mip a leaf texel merges with its gaps and the alpha test drops the leaf. A bias of 0 gives bare cards. A bias of -8 gives pale cards.
 
 **The bake.** An engine system finds the opted-in models in the world, requests their atlas from `ImpostorBaker` every frame (which keeps the atlas in the least-recently-used budget), registers the card material, and sets the links once the card pipeline is built. An evicted atlas clears the links, and the parts draw their meshes again.
