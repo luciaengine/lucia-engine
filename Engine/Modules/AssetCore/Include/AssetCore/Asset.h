@@ -234,11 +234,33 @@ protected:
      * live objects only once the whole candidate parsed, so that returning
      * false leaves every consumer on the last good payload. The default
      * implementation cannot offer that — Unload() has already run by the time
-     * LoadFromData() can fail.
+     * LoadFromData() can fail. A type with AdoptReloadedPayload overrides it
+     * with ReloadThroughStagedInstance.
      *
      * @return true when the asset now holds the payload of `data`.
      */
     virtual bool ReloadFromData(std::span<const uint8> data);
+
+    /**
+     * @brief A ReloadFromData for a type with AdoptReloadedPayload: decodes `data` into a staged
+     * `T` and adopts its payload. A decode that fails keeps the payload of this asset. An asset
+     * with no payload becomes Failed.
+     */
+    template <class T>
+    bool ReloadThroughStagedInstance(std::span<const uint8> data)
+    {
+        T staged(GetGUID(), GetPath());
+        if (!staged.LoadFromData(data))
+        {
+            if (!IsLoaded())
+                SetState(AssetState::Failed);
+            return false;
+        }
+        if (!AdoptReloadedPayload(staged))
+            return false;
+        SetState(AssetState::Loaded);
+        return true;
+    }
 
     /**
      * @brief Type-specific payload adoption for AdoptReload: swap the decoded

@@ -505,18 +505,7 @@ uint64 TextureAsset::NextPayloadGeneration()
 }
 
 bool TextureAsset::ReloadFromData(std::span<const uint8> data) {
-    TextureAsset staged(GetGUID(), GetPath());
-    if (!staged.LoadFromData(data))
-    {
-        // A texture that had a payload keeps it and stays loaded.
-        if (!IsLoaded())
-            SetState(AssetState::Failed);
-        return false;
-    }
-    if (!AdoptReloadedPayload(staged))
-        return false;
-    SetState(AssetState::Loaded);
-    return true;
+    return ReloadThroughStagedInstance<TextureAsset>(data);
 }
 
 bool TextureAsset::AdoptReloadedPayload(Asset& staged) {

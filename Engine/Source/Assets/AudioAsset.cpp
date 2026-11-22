@@ -79,6 +79,10 @@ bool AudioAsset::LoadFromData(std::span<const uint8> data) {
     return LoadFromDataWithRuntimeSettings(ByteBuffer::CopyOf(data), RuntimeSettings{}, data.size());
 }
 
+bool AudioAsset::ReloadFromData(std::span<const uint8> data) {
+    return ReloadThroughStagedInstance<AudioAsset>(data);
+}
+
 bool AudioAsset::AdoptReloadedPayload(Asset& staged) {
     auto* other = dynamic_cast<AudioAsset*>(&staged);
     if (!other || !other->IsLoaded()) {
