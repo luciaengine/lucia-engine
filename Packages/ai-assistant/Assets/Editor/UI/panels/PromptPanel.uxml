@@ -25,6 +25,7 @@
     <UIElement id="PromptInputPane" class="pane prompt-panel-input-pane">
       <UIElement class="prompt-panel-input-column">
         <PromptFileDropZone id="PromptInputRow" class="prompt-panel-input-row">
+          <Button id="PromptAttachButton" class="icon-button plus-icon prompt-panel-attach-button" focusable="false" />
           <UIElement class="prompt-panel-input-field">
             <ScrollView id="PromptInputScroll" class="prompt-panel-input-scroll">
               <PromptTextArea id="PromptInputText" class="script-editor-textarea prompt-panel-input" value="" />
@@ -33,7 +34,6 @@
             <Label id="PromptInputPlaceholder" class="prompt-panel-input-placeholder" text="Type a prompt, Up for history" />
           </UIElement>
           <UIElement id="PromptInputControls" class="prompt-panel-input-controls">
-            <Button id="PromptAttachButton" class="icon-button plus-icon prompt-panel-attach-button" focusable="false" />
             <Dropdown id="PromptModeDropdown" class="prompt-panel-mode prompt-panel-input-task hidden" />
             <Button id="PromptSessionButton" class="secondary hidden" text="Session…" focusable="false" />
             <Dropdown id="PromptProviderDropdown" class="prompt-panel-task prompt-panel-input-task" />

@@ -80,6 +80,8 @@ constexpr int kPromptInputMaxAutoGrowLines = 8;
 constexpr float kMinPromptFieldPx = 288.0f;
 // The input row's 1 px border on each side (.prompt-panel-input-row).
 constexpr float kInputRowBorderPx = 2.0f;
+// The attach button's left margin (.prompt-panel-attach-button).
+constexpr float kAttachButtonMarginPx = 6.0f;
 // The controls' own line when they sit under the field. Keep in sync with
 // .prompt-panel-input-controls-stacked in PromptPanel.css.
 constexpr float kStackedControlsRowPx = 36.0f;
@@ -436,6 +438,7 @@ void PromptPanel::OnLayoutBound()
         Logger::Log::Error("AI Assistant panel layout is missing its file attachment controls");
         return;
     }
+    m_AttachButton = attachButton;
     m_FileTray = std::make_unique<PromptFileTray>(*fileStrip, *fileItems, EngineCore::GetInstance().GetJobSystem(),
         [this](const std::string& text) { SetStatus(text); });
     const auto addFiles = [this](std::span<const std::filesystem::path> paths) { m_FileTray->Add(paths); };
@@ -504,11 +507,17 @@ void PromptPanel::UpdateInputStacking()
     const float rowWidth = m_InputRow->GetLayoutWidth();
     if (rowWidth <= 0.0f)
         return;
-    const float fieldWidth = rowWidth - kInputRowBorderPx - m_InputControls->GetLayoutWidth();
+    // The attach button takes the same width beside the field as in the controls.
+    const float attachWidth =
+        m_AttachButton && m_AttachButton->GetParent() == m_InputRow
+            ? m_AttachButton->GetLayoutWidth() + kAttachButtonMarginPx
+            : 0.0f;
+    const float fieldWidth = rowWidth - kInputRowBorderPx - m_InputControls->GetLayoutWidth() - attachWidth;
     const bool stacked = fieldWidth < kMinPromptFieldPx;
     if (stacked == m_InputStacked)
         return;
     m_InputStacked = stacked;
+    PlaceAttachButton(stacked);
     if (stacked)
     {
         m_InputRow->AddClass("prompt-panel-input-row-stacked");
@@ -519,6 +528,19 @@ void PromptPanel::UpdateInputStacking()
         m_InputRow->RemoveClass("prompt-panel-input-row-stacked");
         m_InputControls->RemoveClass("prompt-panel-input-controls-stacked");
     }
+}
+
+// Beside the field the attach button is the row's first child, left of the field. Under a
+// narrow field it leads the controls line, before the mode control.
+void PromptPanel::PlaceAttachButton(bool stacked)
+{
+    if (!m_AttachButton || !m_AttachButton->GetParent())
+        return;
+    UIElement* target = stacked ? m_InputControls : m_InputRow;
+    if (m_AttachButton->GetParent() == target)
+        return;
+    std::unique_ptr<UIElement> button = m_AttachButton->GetParent()->TakeChild(m_AttachButton);
+    target->InsertChild(0, std::move(button));
 }
 
 void PromptPanel::UpdateHistoryNarrow()
