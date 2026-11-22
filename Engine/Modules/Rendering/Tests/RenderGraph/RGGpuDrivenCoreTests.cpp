@@ -3346,7 +3346,7 @@ ScatterProbeRanges DeclareScatterProbe(RGFrame& frame, ScatterBuilder& builder, 
     ScatterProbeRanges result{};
     result.Ordering = builder.ScheduleUnifiedScatter(
         frame, "PreparedGrouped", 0, visibility, sceneResources.Instances, sceneResources.ScatterHot,
-        sceneResources.Meshes, scene.GetBatchRegistry(), depthClass, colorClass, orderedMeshes, groups,
+        sceneResources.Meshes, sceneResources.ImpostorOwners, scene.GetBatchRegistry(), depthClass, colorClass, orderedMeshes, groups,
         kScatterProbeInstances, 2u);
     for (uint32_t ordinal = 0; ordinal < 3u; ++ordinal)
     {
@@ -3366,7 +3366,7 @@ ScatterProbeRanges DeclareScatterProbe(RGFrame& frame, ScatterBuilder& builder, 
     const std::array<uint32_t, 1> secondColorClass{kScatterProbeColorClass + 1u};
     result.Ordering = builder.ScheduleUnifiedScatter(
         frame, "PreparedSecond", 0, visibility, sceneResources.Instances, sceneResources.ScatterHot,
-        sceneResources.Meshes, scene.GetBatchRegistry(), {}, secondColorClass, {}, {},
+        sceneResources.Meshes, sceneResources.ImpostorOwners, scene.GetBatchRegistry(), {}, secondColorClass, {}, {},
         kScatterProbeInstances, 2u);
     for (uint32_t mesh = 0; mesh < 2u; ++mesh)
         result.Ranges[3u + mesh] = builder.FindBatchDrawRange(
