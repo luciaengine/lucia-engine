@@ -2,7 +2,9 @@
 
 #include "Assets/AssetManager.h"
 #include "Assets/ModelAsset.h"
+#include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MeshRenderer.h"
+#include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
@@ -13,6 +15,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/GPUScene.h"
 #include "Types/Fnv1a.h"
 
 #include <algorithm>
@@ -75,6 +78,14 @@ std::string_view ModelRefusal(const ModelAsset& model)
     return {};
 }
 
+// The placement key of a renderer: a hash of its exact world transform. The parts of one placement
+// share the transform bit for bit.
+uint64 PlacementKey(const Components::WorldTransform& transform)
+{
+    uint64 hash = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, transform.Position);
+    return Hashing::Fnv1a64Value(hash, transform.Basis);
+}
+
 // True when the material's pipeline is built and its textures are loaded.
 bool IsMaterialReady(const Material& material)
 {
@@ -104,6 +115,8 @@ MeshImpostorSystem::~MeshImpostorSystem()
         return;
     for (auto& [model, impostor] : m_Models)
         UnlinkModel(impostor);
+    m_Models.Clear();
+    ApplyOwners();
 }
 
 void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
@@ -129,7 +142,7 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     const uint64 probeVersion = world.GetGlobalSystemVersion();
     const std::size_t structuralVersion = world.GetStructuralChangeVersion();
     const bool modelReloaded = m_ModelReloaded.exchange(false, std::memory_order_relaxed);
-    bool changed = deviceRebuilt || modelReloaded || structuralVersion != m_StructuralVersion;
+    bool changed = deviceRebuilt || modelReloaded || m_RescanPending || structuralVersion != m_StructuralVersion;
     m_StructuralVersion = structuralVersion;
     {
         auto query = world.Query<ECS::Read<Components::MeshRenderer>>();
@@ -155,7 +168,8 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     stage.SubmitCards(*m_RenderServices, world.GetWorldId(), cards);
 }
 
-void MeshImpostorSystem::AddRenderer(ScanState& scan, const Components::MeshRenderer& renderer)
+void MeshImpostorSystem::AddRenderer(ScanState& scan, const Components::MeshRenderer& renderer,
+                                     const Components::WorldTransform& transform, uint32 instanceIndex)
 {
     if (renderer.meshGpuHandleId == 0u || renderer.modelAssetGuid.IsNull())
         return;
@@ -196,6 +210,46 @@ void MeshImpostorSystem::AddRenderer(ScanState& scan, const Components::MeshRend
         existing = part;
     else if (existing != part)
         impostor.HasConflictingParts = true;
+
+    if (instanceIndex == kNoInstance)
+    {
+        scan.MissingInstance = true;
+        return;
+    }
+    Placement& placement = impostor.Placements[PlacementKey(transform)];
+    placement.Instances.resize(impostor.Parts.size(), kNoInstance);
+    if (placement.Instances[submesh] != kNoInstance)
+        placement.HasDuplicatePart = true;
+    else
+        placement.Instances[submesh] = instanceIndex;
+}
+
+void MeshImpostorSystem::ApplyOwners()
+{
+    Rendering::GPUScene* scene = m_RenderServices ? m_RenderServices->GetGPUScene() : nullptr;
+    if (!scene)
+        return;
+    FlatMap<uint32, uint32> owners;
+    for (const auto& [model, impostor] : m_Models)
+    {
+        for (const auto& [key, placement] : impostor.Placements)
+        {
+            // Part 0 is the primary part of the link, so its instance draws the card.
+            const bool complete = !placement.HasDuplicatePart
+                                  && std::ranges::none_of(placement.Instances,
+                                                          [](uint32 instance) { return instance == kNoInstance; });
+            if (!complete)
+                continue;
+            for (const uint32 instance : placement.Instances)
+                owners.InsertOrAssign(instance, placement.Instances[0]);
+        }
+    }
+    for (const auto& [instance, owner] : m_Owners)
+        if (!owners.Find(instance))
+            scene->SetInstanceImpostorOwner(instance, Rendering::GPUScene::kNoImpostorOwner);
+    for (const auto& [instance, owner] : owners)
+        scene->SetInstanceImpostorOwner(instance, owner);
+    m_Owners = std::move(owners);
 }
 
 void MeshImpostorSystem::Scan(ECS::World& world)
@@ -205,8 +259,11 @@ void MeshImpostorSystem::Scan(ECS::World& world)
     scan.Assets = EngineCore::GetInstance().TryGetAssetManager();
     if (!scan.Assets)
         return;
-    world.Query<ECS::Read<Components::MeshRenderer>>().Each(
-        [&scan](ECS::EntityHandle, const Components::MeshRenderer& renderer) { AddRenderer(scan, renderer); });
+    world.Query<ECS::Read<Components::MeshRenderer>, ECS::Read<Components::WorldTransform>,
+                ECS::Optional<Components::MeshGPUData>>()
+        .Each([&scan](ECS::EntityHandle, const Components::MeshRenderer& renderer,
+                      const Components::WorldTransform& transform, const Components::MeshGPUData* gpu)
+              { AddRenderer(scan, renderer, transform, gpu ? gpu->instanceIndex : kNoInstance); });
 
     // Keep the link of a model whose parts did not change; unlink every other model.
     for (auto& [model, previous] : m_Models)
@@ -225,6 +282,8 @@ void MeshImpostorSystem::Scan(ECS::World& world)
         }
     }
     m_Models = std::move(scan.Models);
+    m_RescanPending = scan.MissingInstance;
+    ApplyOwners();
     for (const auto& [model, reason] : scan.Refusals)
         LogRefusal(model, reason);
 }

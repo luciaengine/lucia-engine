@@ -516,6 +516,9 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
                                              renderedCount * sizeof(uint32_t));
         m_Device->UpdateStorageBufferBinding(ds, 13, m_Rendered[m_RenderedCurrentIndex], 0,
                                              renderedCount * sizeof(uint32_t));
+        // Binding 14 (placement owners), uploaded by the scene with the instance rows.
+        m_Device->UpdateStorageBufferBinding(ds, 14, m_Scene->GetImpostorOwnerBufferForFrame(frameIndex), 0,
+                                             std::max<size_t>(instanceCount, 1u) * sizeof(uint32_t));
 
         GPUDrawStreamBuilder::ScatterPushConstants pc{};
         pc.instanceCount   = instanceCount;
@@ -2911,9 +2914,9 @@ class GroupCompactComputeTest : public BatchScatterComputeTest
         m_Device->UpdateStorageBufferBinding(scatterDS, 8, colorClass, 0, sizeof(uint32_t));
         m_Device->UpdateStorageBufferBinding(scatterDS, 9, poolGroup, 0,
                                              std::max<size_t>(meshOrdered.size(), 1u) * sizeof(uint32_t));
-        // The per-instance history bindings (10..13) are never read here — this
-        // fixture runs no band, no fade and no rendered history — but the shader
-        // declares all four, so every one of them gets a real buffer rather than
+        // The per-instance bindings (10..14) are never read here — this fixture
+        // runs no band, no fade, no rendered history and no impostor stage — but
+        // the shader declares all five, so every one of them gets a real buffer rather than
         // an unwritten descriptor. The production path binds a stand-in for the
         // same reason.
         const uint32_t historyCount = std::max(instanceCount, 1u);
@@ -2932,6 +2935,8 @@ class GroupCompactComputeTest : public BatchScatterComputeTest
                                              0, historyCount * sizeof(uint32_t));
         m_Device->UpdateStorageBufferBinding(scatterDS, 13, m_Rendered[m_RenderedCurrentIndex], 0,
                                              historyCount * sizeof(uint32_t));
+        m_Device->UpdateStorageBufferBinding(scatterDS, 14, m_Scene->GetImpostorOwnerBufferForFrame(frameIndex),
+                                             0, historyCount * sizeof(uint32_t));
 
         DescriptorSetDesc compactDesc{};
         compactDesc.layout    = GPUDrawStreamBuilder::MakeGroupCompactDescriptorSetLayout();
@@ -4489,12 +4494,16 @@ TEST_P(BatchScatterComputeTest, ImpostorPastTheSwitchDrawsTheCardForThePrimaryPa
     constexpr uint32_t kLeafMaterial = 2u;
     constexpr uint32_t kCardMaterial = 3u;
     const uint32_t bark = m_Scene->AddInstance(MakeInstance(kBarkMaterial, primary));
-    m_Scene->AddInstance(MakeInstance(kLeafMaterial, secondary, kInstanceFlagDepthMaterialDependent));
+    const uint32_t leaves = m_Scene->AddInstance(MakeInstance(kLeafMaterial, secondary, kInstanceFlagDepthMaterialDependent));
     const uint32_t mirroredBark = m_Scene->AddInstance(MakeInstance(kBarkMaterial, primary, kInstanceFlagMirrored));
-    m_Scene->AddInstance(
+    const uint32_t mirroredLeaves = m_Scene->AddInstance(
         MakeInstance(kLeafMaterial, secondary, kInstanceFlagDepthMaterialDependent | kInstanceFlagMirrored));
     const uint32_t parts[] = {primary, secondary};
     ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, kCardMaterial, card));
+    for (const uint32_t instance : {bark, leaves})
+        m_Scene->SetInstanceImpostorOwner(instance, bark);
+    for (const uint32_t instance : {mirroredBark, mirroredLeaves})
+        m_Scene->SetInstanceImpostorOwner(instance, mirroredBark);
 
     const std::vector<uint8_t> depthClasses{
         static_cast<uint8_t>(MaterialDepthClass::EligibleSingleSided),
@@ -4542,50 +4551,110 @@ TEST_P(BatchScatterComputeTest, ImpostorPastTheSwitchDrawsTheCardForThePrimaryPa
     }
 }
 
-// With a history the card stays until the exit coverage and every part records the card state, so
-// the parts keep deciding alike. Without one (exit == enter) the switch is at the enter coverage.
-// A slice with no card mesh never selects a card.
+// With the owner's rendered history the card stays until the exit coverage. Without one
+// (exit == enter) the switch is at the enter coverage. A slice with no card mesh never selects a
+// card.
 TEST_P(BatchScatterComputeTest, ImpostorHysteresisKeepsTheCardUntilTheExitCoverage)
 {
     const uint32_t primary = AddMeshRow(kImpostorPrimaryIndices);
     const uint32_t secondary = AddMeshRow(kImpostorSecondaryIndices);
     const uint32_t card = AddMeshRow(kImpostorCardIndices);
     const uint32_t bark = m_Scene->AddInstance(MakeInstance(1u, primary));
-    m_Scene->AddInstance(MakeInstance(2u, secondary));
+    const uint32_t leaves = m_Scene->AddInstance(MakeInstance(2u, secondary));
     const uint32_t parts[] = {primary, secondary};
     ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 3u, card));
+    m_Scene->SetInstanceImpostorOwner(bark, bark);
+    m_Scene->SetInstanceImpostorOwner(leaves, bark);
     uint32_t total = 0u;
     const auto table = BatchTableTesting::Build(m_Scene->GetBatchRegistry(), {}, &total);
     ASSERT_EQ(total, 3u);
     const uint32_t rows = static_cast<uint32_t>(table.size());
     const auto dispatch = [&](float dist, uint32_t cardMesh, bool hysteresis)
-    { return Dispatch(table, total, 0u, 0u, rows, total, 0u, {}, 0xFFFFFFFFu, {}, 0u, ImpostorLod(dist, cardMesh, hysteresis)); };
+    {
+        auto lod = ImpostorLod(dist, cardMesh, hysteresis);
+        lod.renderedHistory = true;
+        return Dispatch(table, total, 0u, 0u, rows, total, 0u, {}, 0xFFFFFFFFu, {}, 0u, lod);
+    };
     const auto cards = [&](const DispatchResult& result)
     { return InstancesInRows(table, result.cursors, result.records, result.indirection, card, kImpostorCardIndices); };
-    const uint32_t kCard = GPUDrawStreamBuilder::kImpostorHistory;
+    const uint32_t kNone = GPUDrawStreamBuilder::kLodNoHistory;
+    const uint32_t kCardLevel = GPUDrawStreamBuilder::kRenderedHistoryLevelMask;
 
-    SeedPrevLod(2u, GPUDrawStreamBuilder::kLodNoHistory);
+    SeedRenderedHistory({kNone, kNone});
     const auto enterFromMesh = dispatch(kImpostorBandDist, card, true);
     EXPECT_TRUE(cards(enterFromMesh).empty()) << "inside the band a mesh stays a mesh";
-    EXPECT_EQ(enterFromMesh.prevLod, (std::vector<uint32_t>{0u, 0u}));
 
-    SeedPrevLod(2u, kCard);
+    SeedRenderedHistory({kCardLevel, kNone});
     const auto holdCard = dispatch(kImpostorBandDist, card, true);
     EXPECT_EQ(cards(holdCard), std::multiset<uint32_t>{bark}) << "inside the band a card stays a card";
-    EXPECT_EQ(holdCard.prevLod, (std::vector<uint32_t>{kCard, kCard}));
-    // The rule is a fixed point: the same inputs give the same result.
-    EXPECT_EQ(cards(dispatch(kImpostorBandDist, card, true)), std::multiset<uint32_t>{bark});
+    EXPECT_TRUE(InstancesInRows(table, holdCard.cursors, holdCard.records, holdCard.indirection, secondary,
+                                kImpostorSecondaryIndices).empty())
+        << "the leaves follow the owner's history, not their own";
+    EXPECT_EQ(holdCard.renderedCurrent[bark] & kCardLevel, kCardLevel) << "the owner records the card";
 
-    SeedPrevLod(2u, kCard);
+    SeedRenderedHistory({kCardLevel, kNone});
     EXPECT_TRUE(cards(dispatch(kImpostorBandDist, card, false)).empty()) << "no history: switch at enter";
 
-    SeedPrevLod(2u, GPUDrawStreamBuilder::kLodNoHistory);
-    const auto farFromMesh = dispatch(kImpostorFarDist, card, true);
-    EXPECT_EQ(cards(farFromMesh), std::multiset<uint32_t>{bark});
-    EXPECT_EQ(farFromMesh.prevLod, (std::vector<uint32_t>{kCard, kCard}));
-
-    SeedPrevLod(2u, GPUDrawStreamBuilder::kLodNoHistory);
+    SeedRenderedHistory({kNone, kNone});
+    EXPECT_EQ(cards(dispatch(kImpostorFarDist, card, true)), std::multiset<uint32_t>{bark});
     EXPECT_TRUE(cards(dispatch(kImpostorFarDist, 0xFFFFFFFFu, true)).empty()) << "no card mesh: no stage";
+}
+
+// A placement switches as one: every part follows the owner that the impostor system names. A part
+// with no owner (its placement lacks a part) draws its mesh at every distance, and a part whose
+// owner is not the primary of its card or has another sphere keeps its mesh too. The leaves never
+// drop while the bark draws its mesh, so the canopy cannot vanish.
+TEST_P(BatchScatterComputeTest, ImpostorPlacementSwitchesWithItsOwner)
+{
+    const uint32_t primary = AddMeshRow(kImpostorPrimaryIndices);
+    const uint32_t secondary = AddMeshRow(kImpostorSecondaryIndices);
+    const uint32_t card = AddMeshRow(kImpostorCardIndices);
+    const uint32_t bark = m_Scene->AddInstance(MakeInstance(1u, primary));
+    const uint32_t leaves = m_Scene->AddInstance(MakeInstance(2u, secondary));
+    const uint32_t loneLeaves = m_Scene->AddInstance(MakeInstance(2u, secondary));
+    const uint32_t loneBark = m_Scene->AddInstance(MakeInstance(1u, primary));
+    GPUInstance wideInstance = MakeInstance(2u, secondary);
+    wideInstance.boundingRadius = 2.0f;
+    const uint32_t wideLeaves = m_Scene->AddInstance(wideInstance);
+    const uint32_t leavesOwnedByLeaves = m_Scene->AddInstance(MakeInstance(2u, secondary));
+    const uint32_t parts[] = {primary, secondary};
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 3u, card));
+    m_Scene->SetInstanceImpostorOwner(bark, bark);
+    m_Scene->SetInstanceImpostorOwner(leaves, bark);
+    m_Scene->SetInstanceImpostorOwner(wideLeaves, bark);
+    m_Scene->SetInstanceImpostorOwner(leavesOwnedByLeaves, leaves);
+    uint32_t total = 0u;
+    const auto table = BatchTableTesting::Build(m_Scene->GetBatchRegistry(), {}, &total);
+    const uint32_t rows = static_cast<uint32_t>(table.size());
+    const auto dispatch = [&](float dist)
+    {
+        auto lod = ImpostorLod(dist, card, true);
+        lod.renderedHistory = true;
+        return Dispatch(table, total, 0u, 0u, rows, total, 0u, {}, 0xFFFFFFFFu, {}, 0u, lod);
+    };
+    const auto rowsOf = [&](const DispatchResult& result, uint32_t mesh, uint32_t indexCount)
+    { return InstancesInRows(table, result.cursors, result.records, result.indirection, mesh, indexCount); };
+    const uint32_t kNone = GPUDrawStreamBuilder::kLodNoHistory;
+    const uint32_t kCardLevel = GPUDrawStreamBuilder::kRenderedHistoryLevelMask;
+
+    SeedRenderedHistory(std::vector<uint32_t>(6u, kNone));
+    const auto far = dispatch(kImpostorFarDist);
+    EXPECT_EQ(rowsOf(far, card, kImpostorCardIndices), std::multiset<uint32_t>{bark});
+    EXPECT_EQ(rowsOf(far, primary, kImpostorPrimaryIndices), std::multiset<uint32_t>{loneBark})
+        << "a bark without its leaves draws its mesh, not a whole tree";
+    EXPECT_EQ(rowsOf(far, secondary, kImpostorSecondaryIndices),
+              (std::multiset<uint32_t>{loneLeaves, wideLeaves, leavesOwnedByLeaves}))
+        << "no owner, another sphere, or an owner that is not the primary: the mesh draws";
+
+    // The leaves' own history says card and the owner's says mesh: inside the band both stay meshes.
+    std::vector<uint32_t> split(6u, kNone);
+    split[leaves] = kCardLevel;
+    SeedRenderedHistory(split);
+    const auto band = dispatch(kImpostorBandDist);
+    EXPECT_TRUE(rowsOf(band, card, kImpostorCardIndices).empty());
+    EXPECT_EQ(rowsOf(band, primary, kImpostorPrimaryIndices), (std::multiset<uint32_t>{bark, loneBark}));
+    EXPECT_EQ(rowsOf(band, secondary, kImpostorSecondaryIndices).count(leaves), 1u)
+        << "the leaves draw while the bark draws its mesh";
 }
 
 // Below the switch the card replaces every mesh LOD of the parts, the finest included: a coarse
@@ -4598,6 +4667,8 @@ TEST_P(BatchScatterComputeTest, ImpostorReplacesEveryMeshLodBelowTheSwitch)
     const uint32_t cardMesh = AddMeshRow(kImpostorCardIndices);
     const uint32_t bark = m_Scene->AddInstance(MakeInstance(1u, barkMesh));
     const uint32_t leaves = m_Scene->AddInstance(MakeInstance(2u, leafMesh));
+    m_Scene->SetInstanceImpostorOwner(bark, bark);
+    m_Scene->SetInstanceImpostorOwner(leaves, bark);
     const uint32_t parts[] = {barkMesh, leafMesh};
     constexpr uint32_t kCoarseLeafIndices = 12u;
     // Two leaf levels with an SSE switch at coverage 1.0 * 0.08: LOD0 above it, LOD1 below.

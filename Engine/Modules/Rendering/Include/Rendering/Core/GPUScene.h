@@ -373,9 +373,10 @@ struct GPUSceneFrameResources
 {
     BufferHandle instanceBuffer;
     BufferHandle scatterHotBuffer; // 40 B/instance coalesced mirror (scatter fetch)
+    BufferHandle impostorOwnerBuffer; // 4 B/instance: the placement owner of a linked part
     BufferHandle meshBuffer;
     BufferHandle indirectArgsBuffer;
-    uint32_t instanceCapacity = 0; // rows that instanceBuffer and scatterHotBuffer hold
+    uint32_t instanceCapacity = 0; // rows that the instance-sized buffers hold
 };
 
 /**
@@ -550,6 +551,17 @@ class GPUScene
     /// Clear the group that contains this mesh, if any.
     void ClearMeshImpostorGroup(uint32_t meshIndex);
 
+    /// No placement owner: the instance draws its mesh at every distance, even when its mesh is
+    /// linked to a card.
+    static constexpr uint32_t kNoImpostorOwner = 0xFFFFFFFFu;
+    /**
+     * Name the instance that decides the impostor switch for `instanceIndex`: the instance of the
+     * primary part of the same placement (one placement of a model, with every part). Every part
+     * reads that owner's rendered history, so the parts of a placement switch in the same frame.
+     * kNoImpostorOwner keeps the instance on its mesh. A new or removed instance has no owner.
+     */
+    void SetInstanceImpostorOwner(uint32_t instanceIndex, uint32_t ownerInstanceIndex);
+
     // Debug / test accessor.
     const std::vector<GPUMesh>& GetMeshes() const { return m_Meshes; }
 
@@ -665,6 +677,8 @@ class GPUScene
         // binds Instances directly, exactly as before.
         RenderGraph::RGBuffer ScatterHot{};
         RenderGraph::RGBuffer Meshes{};
+        // The placement owner of each instance (SetInstanceImpostorOwner).
+        RenderGraph::RGBuffer ImpostorOwners{};
     };
     // One call per RGFrame per frame (dedup-by-physical makes repeats harmless).
     GPUSceneFrameRG ImportFrameResources(RenderGraph::RGFrame& frame) const;
@@ -689,6 +703,7 @@ class GPUScene
     // compact scatter fetch is disabled — callers fall back to the full
     // instance buffer (GetInstanceBuffer) for the scatter's binding 1.
     BufferHandle GetScatterHotBuffer() const { return m_Frames[m_FrameSlot].scatterHotBuffer; }
+    BufferHandle GetImpostorOwnerBuffer() const { return m_Frames[m_FrameSlot].impostorOwnerBuffer; }
     /// Rows that the current slot's instance and scatter-hot buffers hold. A binding range over
     /// GetInstanceBuffer() reads this in the same frame, because a slot's buffers grow with the scene.
     uint32_t GetInstanceCapacity() const { return m_Frames[m_FrameSlot].instanceCapacity; }
@@ -716,6 +731,10 @@ class GPUScene
     BufferHandle GetScatterHotBufferForFrame(uint32_t frameIndex) const
     {
         return m_Frames[frameIndex % m_FramesInFlight].scatterHotBuffer;
+    }
+    BufferHandle GetImpostorOwnerBufferForFrame(uint32_t frameIndex) const
+    {
+        return m_Frames[frameIndex % m_FramesInFlight].impostorOwnerBuffer;
     }
     BufferHandle GetIndirectArgsBufferForFrame(uint32_t frameIndex) const
     {
@@ -807,6 +826,8 @@ class GPUScene
     // m_Instances by the three instance mutators (index i mirrors instance i).
     // Only populated + uploaded when m_ScatterHotEnabled.
     std::vector<GPUInstanceScatterHot> m_ScatterHot;
+    // Placement owner per instance (SetInstanceImpostorOwner), index-locked to m_Instances.
+    std::vector<uint32_t> m_ImpostorOwners;
     std::vector<GPUMesh> m_Meshes;
     BatchRegistry m_BatchRegistry;
     std::vector<uint32_t> m_FreeInstanceSlots;
@@ -877,6 +898,7 @@ class GPUScene
     std::vector<uint32_t> m_InstanceDirtyWords[kMaxFramesInFlight];
     std::vector<BufferUpdateRange> m_InstanceUploadRanges;
     std::vector<BufferUpdateRange> m_ScatterHotUploadRanges;
+    std::vector<BufferUpdateRange> m_ImpostorOwnerUploadRanges;
     // Full-upload override per slot (set for all slots in Initialize so the
     // first upload of each slot is a full one, and by anything that
     // invalidates the whole array wholesale).

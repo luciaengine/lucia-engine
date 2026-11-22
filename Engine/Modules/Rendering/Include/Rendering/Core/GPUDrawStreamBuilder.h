@@ -640,6 +640,8 @@ class GPUDrawStreamBuilder
     // the compact fetch is active AND this buffer is valid, the scatter binds it
     // at binding 1 in place of `instances`; otherwise `instances` (240 B) is
     // bound, exactly as before. Callers pass both; the builder picks.
+    // `impostorOwners` is GPUScene's placement owner per instance (binding 14); an invalid buffer
+    // turns the impostor stage off for the call, so linked parts keep their meshes.
     // `meshPoolOrdered` and `orderedToGroup` enable consolidation; pass both or neither.
     // Rows use ordered mesh ranks. Compatible instances combine before each class,
     // pool group, and parity run publishes one dense command range keyed by group id.
@@ -650,6 +652,7 @@ class GPUDrawStreamBuilder
                                                  RenderGraph::RGBuffer instances,
                                                  RenderGraph::RGBuffer scatterHot,
                                                  RenderGraph::RGBuffer meshes,
+                                                 RenderGraph::RGBuffer impostorOwners,
                                                  const BatchRegistry& registry,
                                                  std::span<const uint8_t> materialDepthClass,
                                                  std::span<const uint32_t> materialColorClass,

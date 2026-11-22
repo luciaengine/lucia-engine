@@ -92,6 +92,7 @@ struct GpuDrivenFrameRG
     // Invalid when GE_SCATTER_COMPACT=0; the scatter then binds SceneInstances.
     Rendering::RenderGraph::RGBuffer SceneScatterHot{};
     Rendering::RenderGraph::RGBuffer SceneMeshes{};
+    Rendering::RenderGraph::RGBuffer SceneImpostorOwners{};
     Rendering::RenderGraph::RGBuffer Visibility{};        // culling output
     Rendering::RenderGraph::RGBuffer DrawStreamOrdering{}; // consumers Read(_, Indirect)
     // THE atlas id world/depth/shadow/selection-mask passes MUST Read

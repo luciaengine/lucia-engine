@@ -29,6 +29,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace GameEngine::EZTreeECS
@@ -211,6 +212,34 @@ std::vector<Rendering::MeshGPUHandle> ImpostorParts(const TreeVariant& variant)
             parts.push_back(part);
     }
     return parts;
+}
+
+// A tree is one placement: its first linked part owns the impostor switch of every part, so the
+// parts switch together. A part without an instance leaves the tree on its meshes.
+void OwnPartInstances(Rendering::GPUScene& scene, const TreeVariant& variant, const Components::EZTree& tree)
+{
+    const std::pair<Rendering::MeshGPUHandle, uint32> parts[] = {
+        {variant.Branches, tree.RuntimeBranchInstanceIndex},
+        {variant.Leaves, tree.RuntimeLeafInstanceIndex},
+        {variant.Trellis, tree.RuntimeTrellisInstanceIndex}};
+    uint32 owner = Rendering::GPUScene::kNoImpostorOwner;
+    for (const auto& [mesh, instance] : parts)
+    {
+        if (!mesh.IsValid())
+            continue;
+        if (instance == 0xFFFFFFFFu)
+        {
+            owner = Rendering::GPUScene::kNoImpostorOwner;
+            break;
+        }
+        if (owner == Rendering::GPUScene::kNoImpostorOwner)
+            owner = instance;
+    }
+    for (const auto& [mesh, instance] : parts)
+    {
+        if (mesh.IsValid() && instance != 0xFFFFFFFFu)
+            scene.SetInstanceImpostorOwner(instance, owner);
+    }
 }
 
 Engine::Renderer::ImpostorBakeRequest MakeImpostorBakeRequest(const TreeVariant& variant)
@@ -434,6 +463,8 @@ void EZTreeExtractionSystem::ExtractTree(FrameContext& frame,
                tree.RuntimeLeafInstanceIndex);
     SubmitPart(*m_RenderServices, frame.World, entity, *worldTransform, bounds, variant->Trellis,
                variant->Materials.Trellis, inflation, tree.RuntimeTrellisInstanceIndex);
+    if (auto* scene = m_RenderServices->GetGPUScene())
+        OwnPartInstances(*scene, *variant, tree);
     binding->Instances = PartInstances(tree);
 }
 

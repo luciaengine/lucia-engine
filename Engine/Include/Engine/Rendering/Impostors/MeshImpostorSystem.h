@@ -22,6 +22,7 @@ class AssetManager;
 namespace Components
 {
 struct MeshRenderer;
+struct WorldTransform;
 }
 } // namespace GameEngine
 
@@ -59,6 +60,17 @@ public:
     };
 
 private:
+    static constexpr uint32 kNoInstance = 0xFFFFFFFFu;
+
+    // One placement of a model: the renderers of its parts with the same world transform.
+    struct Placement
+    {
+        // The GPU instance of each part, indexed by submesh; kNoInstance while missing.
+        std::vector<uint32> Instances;
+        // Two renderers of one part share the transform: no part can own the decision.
+        bool HasDuplicatePart = false;
+    };
+
     struct ModelImpostor
     {
         // Indexed by submesh. An empty part prevents the model from linking.
@@ -71,6 +83,8 @@ private:
         // The card material index and the part mesh indices the link holds; empty while not linked.
         uint32 LinkedMaterial = 0xFFFFFFFFu;
         std::vector<uint32> LinkedMeshes;
+        // Keyed by a hash of the world transform (PlacementKey).
+        FlatMap<uint64, Placement> Placements;
     };
 
     // The models a scan has met: a null source records a model checked but not eligible.
@@ -81,12 +95,19 @@ private:
         FlatMap<GUID, ModelImpostor> Models;
         // Opted-in models that cannot take a card, with the reason.
         FlatMap<GUID, std::string_view> Refusals;
+        // A part had no GPU instance yet, so its placement waits for the next scan.
+        bool MissingInstance = false;
     };
 
     // Rebuilds the parts of the opted-in models from the world's mesh renderers.
     void Scan(ECS::World& world);
-    // Adds one mesh renderer to the scan: the model's eligibility on first sight, then its part.
-    static void AddRenderer(ScanState& scan, const Components::MeshRenderer& renderer);
+    // Adds one mesh renderer to the scan: the model's eligibility on first sight, then its part and
+    // its place in the placement of its world transform.
+    static void AddRenderer(ScanState& scan, const Components::MeshRenderer& renderer,
+                            const Components::WorldTransform& transform, uint32 instanceIndex);
+    // Names the owner of every part of every complete placement on the GPU scene, and clears the
+    // owners that the scan no longer finds.
+    void ApplyOwners();
     // Returns the card material once the parts are linked to it, else null.
     const Material* UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
                                 ImpostorStage& stage);
@@ -96,6 +117,9 @@ private:
 
     RenderServices* m_RenderServices = nullptr;
     FlatMap<GUID, ModelImpostor> m_Models;
+    // The owners on the GPU scene, by instance (GPUScene::SetInstanceImpostorOwner).
+    FlatMap<uint32, uint32> m_Owners;
+    bool m_RescanPending = false;
     // The models with a refusal warning; a model leaves the set when it links.
     FlatSet<GUID> m_RefusalsLogged;
     ECS::ChangeGate m_MeshRendererGate;

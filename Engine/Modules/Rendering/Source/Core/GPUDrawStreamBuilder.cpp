@@ -58,7 +58,7 @@ namespace
 constexpr uint32_t kPerInstanceHistoryMinBytes = 4096;
 
 // The storage-buffer bindings of the scatter set: draw_command_scatter.comp set 0.
-constexpr uint32_t kScatterBindingCount = 14;
+constexpr uint32_t kScatterBindingCount = 15;
 
 // The storage-buffer bindings of the group-compact set: draw_stream_group_compact.comp set 0.
 constexpr uint32_t kGroupCompactBindingCount = 5;
@@ -696,7 +696,7 @@ DescriptorSetLayoutDesc GPUDrawStreamBuilder::MakeScatterDescriptorSetLayout()
     //   6: IndirectionBuffer  (write)      13: CurrentRenderedHistory (write, same)
     // The shader declares the read bindings `readonly`, so the layout marks them read-only too.
     constexpr uint32_t kReadOnlyBindings = (1u << 0) | (1u << 1) | (1u << 2) | (1u << 3) | (1u << 8) |
-                                           (1u << 9) | (1u << 12);
+                                           (1u << 9) | (1u << 12) | (1u << 14);
     DescriptorSetLayoutDesc layout{};
     layout.debugName = "GPUDrawScatter_SetLayout";
     for (uint32_t i = 0; i < kScatterBindingCount; ++i)
@@ -1778,6 +1778,9 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     std::vector<float> SliceBand{};
     std::vector<RenderedHistoryBinding> SliceRenderedHistory{};
     RenderGraph::RGBuffer Meshes{};
+    // Placement owners (binding 14). Without them the impostor stage is off for the call.
+    RenderGraph::RGBuffer ImpostorOwners{};
+    bool OwnersBound = false;
     bool ClearRecordRange = false;
     bool Ready = false;
     std::vector<PreparedSlice> PreparedSlices;
@@ -1791,6 +1794,9 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         const BufferHandle visibilityBuffer = context.GetBuffer(Visibility);
         const BufferHandle instanceBuffer = context.GetBuffer(Instances);
         const BufferHandle meshBuffer = context.GetBuffer(Meshes);
+        const BufferHandle ownerBuffer = OwnersBound ? context.GetBuffer(ImpostorOwners) : BufferHandle{};
+        if (OwnersBound && !ownerBuffer.IsValid())
+            return false;
         if (!device || !visibilityBuffer.IsValid() || !instanceBuffer.IsValid()
             || !meshBuffer.IsValid() || !Pipeline.IsValid()
             || (GroupActive && !CompactPipeline.IsValid())
@@ -1799,7 +1805,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
 
         for (uint32_t sliceIndex = 0; sliceIndex < static_cast<uint32_t>(Slices.size()); ++sliceIndex)
         {
-            if (!PrepareScatter(device, visibilityBuffer, instanceBuffer, meshBuffer, sliceIndex))
+            if (!PrepareScatter(device, visibilityBuffer, instanceBuffer, meshBuffer, ownerBuffer, sliceIndex))
                 return false;
             PreparedSlice& slice = PreparedSlices[sliceIndex];
             if (!slice.ScatterSet.IsValid())
@@ -1818,7 +1824,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     }
 
     bool PrepareScatter(IDevice* device, BufferHandle visibilityBuffer, BufferHandle instanceBuffer,
-                        BufferHandle meshBuffer, uint32_t sliceIndex)
+                        BufferHandle meshBuffer, BufferHandle ownerBuffer, uint32_t sliceIndex)
     {
         const size_t visibilityReadBytes = static_cast<size_t>(InstanceCount) * sizeof(uint32_t);
         const size_t instanceReadBytes = static_cast<size_t>(InstanceCount) * InstanceStride;
@@ -1860,6 +1866,9 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         // meshGroupMode != 0.
         writes[9] = StorageBufferWrite(9, TableRing, GroupBindOffset, GroupBindBytes);
         WriteHistory(writes, sliceIndex);
+        // Placement owners; the stand-in is never read because the stage is off without them.
+        writes[14] = OwnersBound ? StorageBufferWrite(14, ownerBuffer, 0, static_cast<size_t>(InstanceCount) * sizeof(uint32_t))
+                                 : StorageBufferWrite(14, HistoryStandIn, 0, static_cast<size_t>(kPerInstanceHistoryMinBytes));
         device->WriteDescriptorSet(setHandle, writes);
         PreparedSlices[sliceIndex].ScatterSet = setHandle;
         return true;
@@ -1868,9 +1877,8 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     // Writes bindings 10 to 13 of the scatter set: the slice's LOD history or its stand-ins.
     void WriteHistory(std::array<DescriptorWrite, kScatterBindingCount>& writes, uint32_t sliceIndex) const
     {
-        // prevLod (dwell band and impostor switch). Either this view's persistent
-        // history or the never-read stand-in; SliceBand[sliceIndex] is 0 and the
-        // impostor exit coverage equals the enter coverage in the latter case,
+        // prevLod (dwell band). Either this view's persistent history or
+        // the never-read stand-in; SliceBand[sliceIndex] is 0 in the latter case,
         // which is what stops the shader touching it.
         const PrevLodBinding& previousLodBinding = SlicePrevLod[sliceIndex];
         if (previousLodBinding.handle.IsValid())
@@ -1949,11 +1957,12 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         }
         pushConstants.lodHysteresisBand = SliceBand[sliceIndex];
         pushConstants.renderedHistoryEnabled = historyBound ? 1u : 0u;
-        pushConstants.impostorCardMesh = slice.lod.impostorCardMesh;
+        // The stage reads the placement owners; without them every linked part keeps its mesh.
+        pushConstants.impostorCardMesh = OwnersBound ? slice.lod.impostorCardMesh : 0xFFFFFFFFu;
         pushConstants.impostorEnterCoverage = slice.lod.impostorSwitchCoverage;
-        // The hysteresis band needs the per-view history: without it the switch is stateless.
+        // The hysteresis band reads the owner's rendered history: without it the switch is stateless.
         pushConstants.impostorExitCoverage =
-            SlicePrevLod[sliceIndex].handle.IsValid()
+            historyBound
                 ? slice.lod.impostorSwitchCoverage * (1.0f + std::max(slice.lod.impostorSwitchHysteresis, 0.0f))
                 : slice.lod.impostorSwitchCoverage;
         return pushConstants;
@@ -2274,7 +2283,8 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
 RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     RenderGraph::RGFrame& frame, const char* passNameSuffix, int32_t rgPassPhase,
     RenderGraph::RGBuffer visibility, RenderGraph::RGBuffer instances,
-    RenderGraph::RGBuffer scatterHot, RenderGraph::RGBuffer meshes, const BatchRegistry& registry,
+    RenderGraph::RGBuffer scatterHot, RenderGraph::RGBuffer meshes, RenderGraph::RGBuffer impostorOwners,
+    const BatchRegistry& registry,
     std::span<const uint8_t> materialDepthClass, std::span<const uint32_t> materialColorClass,
     std::span<const uint32_t> meshPoolOrdered, std::span<const uint32_t> orderedToGroup,
     uint32_t instanceCount, uint32_t meshTableCount)
@@ -3031,9 +3041,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     // the lazy create/grow and the pending-reset take stay on the CPU timeline
     // (the exec closure only fills and binds; an elided call never takes, so
     // its views' pending resets survive to the next dispatching call). A slice
-    // gets real history only when it is a CAMERA slice that actually
-    // auto-selects and it asked for a band (env kill-switch off) or for the
-    // impostor switch's hysteresis; everything else
+    // gets real history only when it asked for a band, the env kill-switch is
+    // off, and it is a CAMERA slice that actually auto-selects; everything else
     // binds the never-read stand-in so binding 10 is always valid. Bands are
     // zeroed in lockstep with the binding choice, so the shader can never read
     // the stand-in as if it were history.
@@ -3042,21 +3051,18 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     for (size_t s = 0; s < slices.size(); ++s)
     {
         const SliceRegistration& slice = slices[s];
-        const bool cameraSlice = slice.table == SliceTable::Color
-                                 && slice.cascadeIndex == kCascadeIndexNone
-                                 && slice.lod.projScaleY > 0.0f
-                                 && slice.lod.forceLod == 0xFFFFFFFFu;
-        const bool wantsBand = cameraSlice && m_LodHysteresisEnabled && slice.lod.lodHysteresisBand > 0.0f;
-        // The impostor switch keeps its hysteresis state in the same history.
-        const bool wantsImpostorHistory = cameraSlice && slice.lod.impostorCardMesh != 0xFFFFFFFFu
-                                          && slice.lod.impostorSwitchHysteresis > 0.0f;
-        if (wantsBand || wantsImpostorHistory)
+        const bool wantsBand = m_LodHysteresisEnabled && slice.lod.lodHysteresisBand > 0.0f
+                              && slice.table == SliceTable::Color
+                              && slice.cascadeIndex == kCascadeIndexNone
+                              && slice.lod.projScaleY > 0.0f
+                              && slice.lod.forceLod == 0xFFFFFFFFu;
+        if (wantsBand)
         {
             PrevLodBinding binding = EnsurePrevLodBuffer(slice.viewId, instanceCount);
             if (binding.handle.IsValid())
             {
                 slicePrevLod[s] = std::move(binding);
-                sliceBand[s]    = wantsBand ? slice.lod.lodHysteresisBand : 0.0f;
+                sliceBand[s]    = slice.lod.lodHysteresisBand;
             }
         }
     }
@@ -3155,6 +3161,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     pass->SliceBand = std::move(sliceBand);
     pass->SliceRenderedHistory = std::move(sliceRenderedHistory);
     pass->Meshes = meshes;
+    pass->ImpostorOwners = impostorOwners;
+    pass->OwnersBound = impostorOwners.IsValid();
     pass->ClearRecordRange = !m_Device->GetCapabilities().supportsDrawIndirectCountNative;
     pass->PreparedSlices.resize(pass->Slices.size());
 
@@ -3165,6 +3173,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
             p.Read(visibility);
             p.Read(instanceReadRG);
             p.Read(meshes);
+            if (impostorOwners.IsValid())
+                p.Read(impostorOwners);
             p.Write(ordering);
             p.Write(ordering, RenderGraph::RGBufferWrite::CopyDst);
             p.Prepare([pass](RenderGraph::RGPrepareContext& ctx) { return pass->Prepare(ctx); });

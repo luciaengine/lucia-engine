@@ -315,7 +315,7 @@ void RenderServices::ScheduleWorldBucketerDispatches(Rendering::RenderGraph::RGF
     m_FrameRG.DrawStreamOrdering = m_DrawStreamBuilder->ScheduleUnifiedScatter(
         frame, "World", static_cast<int32_t>(Rendering::PassPhase::kEarlySetup),
         m_FrameRG.Visibility, m_FrameRG.SceneInstances, m_FrameRG.SceneScatterHot,
-        m_FrameRG.SceneMeshes, m_GpuScene->GetBatchRegistry(),
+        m_FrameRG.SceneMeshes, m_FrameRG.SceneImpostorOwners, m_GpuScene->GetBatchRegistry(),
         m_MaterialSystem.MaterialDepthClassSpan(),
         m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered,
         groupMaps.OrderedToGroup, instanceCount,
@@ -905,7 +905,7 @@ bool RenderServices::ScheduleBucketerDispatchesForViewSlices(
     const ScatterGroupMaps groupMaps = MeshPoolGroupMapsForScatter();
     const RenderGraph::RGBuffer ordering = m_DrawStreamBuilder->ScheduleUnifiedScatter(
         frame, passSuffix, static_cast<int32_t>(Rendering::PassPhase::kEarlySetup),
-        visRG, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes,
+        visRG, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners,
         m_GpuScene->GetBatchRegistry(), m_MaterialSystem.MaterialDepthClassSpan(),
         m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered,
         groupMaps.OrderedToGroup,
@@ -1016,7 +1016,7 @@ bool RenderServices::ScheduleWorldOcclusionRecoverScatterForView(
     const ScatterGroupMaps groupMaps = MeshPoolGroupMapsForScatter();
     const RenderGraph::RGBuffer ordering = m_DrawStreamBuilder->ScheduleUnifiedScatter(
         frame, "World.B", static_cast<int32_t>(Rendering::PassPhase::kPostProcess),
-        m_FrameRG.Visibility, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes,
+        m_FrameRG.Visibility, sceneRG.Instances, sceneRG.ScatterHot, sceneRG.Meshes, sceneRG.ImpostorOwners,
         m_GpuScene->GetBatchRegistry(), m_MaterialSystem.MaterialDepthClassSpan(),
         m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered,
         groupMaps.OrderedToGroup,
@@ -1415,6 +1415,7 @@ void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFra
     const GPUScene::GPUSceneFrameRG sceneRG = scene->ImportFrameResources(frame); // dedup'd
     m_FrameRG.SceneInstances = sceneRG.Instances;
     m_FrameRG.SceneScatterHot = sceneRG.ScatterHot;
+    m_FrameRG.SceneImpostorOwners = sceneRG.ImpostorOwners;
     m_FrameRG.SceneMeshes = sceneRG.Meshes;
     m_FrameRG.Visibility = m_GpuCullingPipeline->GetVisibilityRG();
 }

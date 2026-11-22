@@ -255,6 +255,15 @@ const uint kRenderedHistoryFadingBit     = 0x100u;
 const uint kRenderedHistoryContinuousBit = 0x200u;
 const uint kRenderedHistoryStateMask     = kRenderedHistoryLevelMask | kRenderedHistoryFadingBit;
 
+// The placement owner of each instance (GPUScene::SetInstanceImpostorOwner): the instance of the
+// primary part of the same placement, or kNoImpostorOwner. Read only for an instance whose mesh is
+// linked to a card, and only while the impostor stage is active (a slice without the buffer has no
+// card mesh).
+layout(set = 0, binding = 14, std430) restrict readonly buffer ImpostorOwnerBuffer {
+    uint impostorOwner[];
+};
+const uint kNoImpostorOwner = 0xFFFFFFFFu;
+
 layout(push_constant) uniform PushConstants {
     uint instanceCount;    // CALL-CAPTURED at snapshot time, never live-read
     uint batchCount;       // table entry count B (search bound) — never a draw bound
@@ -365,6 +374,8 @@ const uint kImpostorPrimaryBit   = 0x80000000u;
 // prevLod value of an instance that drew its card. It is above every level count, so the mesh
 // LOD pick reads it as "no usable history".
 const uint kImpostorHistory      = 0xFFFFFFFEu;
+// Rendered level of an instance that drew its card.
+const uint kImpostorRenderedLevel = kRenderedHistoryLevelMask;
 
 // classMode values -- MUST match GPUDrawStreamBuilder::kClassMode*.
 const uint kClassModeOff    = 0u;
@@ -553,19 +564,40 @@ bool ge_ImpostorStageActive()
            && pc.impostorEnterCoverage > 0.0;
 }
 
-// The impostor switch (Hlod::UpdateProxyActive on Hlod::ClusterCoverage). Every part of a linked
-// model has the model's sphere as its instance sphere, so the parts decide alike. Below the switch
-// a card frame shows at most one atlas texel per pixel, so it replaces every mesh LOD of the parts:
-// a coarse mesh LOD of alpha-masked foliage loses far more. With a history the card stays until
-// the exit coverage; without one the switch is at the enter coverage.
-bool ge_SelectImpostor(uint instanceIndex, uint meshIndex)
+// True when `owner` can decide the switch for the part at `instanceIndex`: a live instance of the
+// primary part of the same card, with the same sphere and LOD bias. Anything else (an index recycled before the
+// next scan, a part that moved without its owner) keeps the part on its mesh.
+bool ge_ImpostorOwnerValid(uint owner, uint instanceIndex, uint impostorCard)
+{
+    if (owner >= pc.instanceCount)
+        return false;
+    uint ownerMesh = instances[owner].meshIndex;
+    if (ownerMesh >= meshes.length())
+        return false;
+    uint ownerCard = meshes[ownerMesh].impostorCard;
+    return (ownerCard & kImpostorPrimaryBit) != 0u
+           && (ownerCard & kImpostorMaterialMask) == (impostorCard & kImpostorMaterialMask)
+           && instances[owner].boundingRadius == instances[instanceIndex].boundingRadius
+           && instances[owner].lodBias == instances[instanceIndex].lodBias
+           && ge_InstanceCenterRelativeToOrigin(owner) == ge_InstanceCenterRelativeToOrigin(instanceIndex);
+}
+
+// The impostor switch (Hlod::UpdateProxyActive on Hlod::ClusterCoverage). Every part of a placement
+// has the model's sphere as its instance sphere and reads the owner's rendered history, so the
+// parts decide alike. Below the switch a card frame shows at most one atlas texel per pixel, so it
+// replaces every mesh LOD of the parts: a coarse mesh LOD of alpha-masked foliage loses far more.
+// With a history the card stays until the exit coverage; without one the switch is at the enter
+// coverage.
+bool ge_SelectImpostor(uint instanceIndex, uint meshIndex, uint owner)
 {
     vec3 camPos = vec3(pc.cameraPosX, pc.cameraPosY, pc.cameraPosZ);
     float dist = max(distance(camPos, ge_InstanceCenterRelativeToOrigin(instanceIndex)), 1e-4);
     float coverage = instances[instanceIndex].boundingRadius * pc.projScaleY / dist;
     coverage *= exp2(instances[instanceIndex].lodBias + pc.lodBiasGlobal);
-    bool hasHistory = pc.impostorExitCoverage > pc.impostorEnterCoverage;
-    bool wasCard = hasHistory && prevLod[instanceIndex] == kImpostorHistory;
+    bool hasHistory = pc.renderedHistoryEnabled != 0u && pc.impostorExitCoverage > pc.impostorEnterCoverage;
+    uint ownerRendered = hasHistory ? prevRendered[owner] : kLodNoHistory;
+    bool wasCard = ownerRendered != kLodNoHistory
+                   && (ownerRendered & kRenderedHistoryLevelMask) == kImpostorRenderedLevel;
     // A model's own switch (0 = the view's default) keeps the view's hysteresis ratio.
     float enter = meshes[meshIndex].impostorSwitchCoverage;
     if (enter <= 0.0)
@@ -644,13 +676,10 @@ void main() {
     // Impostor stage: past the switch the primary part of a linked model draws the card and the
     // other parts draw nothing. Decided before every claim, so a dropped part leaves no record.
     uint impostorCard = meshes[meshIndex].impostorCard;
-    bool drawCard = impostorCard != 0u && ge_ImpostorStageActive()
-                    && ge_SelectImpostor(instanceIndex, meshIndex);
-    bool impostorHistory = impostorCard != 0u && pc.impostorExitCoverage > pc.impostorEnterCoverage;
+    uint owner = (impostorCard != 0u && ge_ImpostorStageActive()) ? impostorOwner[instanceIndex] : kNoImpostorOwner;
+    bool drawCard = owner != kNoImpostorOwner && ge_ImpostorOwnerValid(owner, instanceIndex, impostorCard)
+                    && ge_SelectImpostor(instanceIndex, meshIndex, owner);
     if (drawCard && (impostorCard & kImpostorPrimaryBit) == 0u) {
-        if (impostorHistory) {
-            prevLod[instanceIndex] = kImpostorHistory;
-        }
         // As for the card below: the part adopts its level on return instead of fading.
         if (pc.crossfadeTailActive != 0u) {
             lodFade[instanceIndex] = uvec2(kLodNoHistory, 0u);
@@ -818,7 +847,7 @@ void main() {
     // from when it reappears. `lod` is the INCOMING level: a crossfading
     // instance's history tracks where it is heading, so the fade's outgoing
     // record never re-enters selection.
-    if (pc.lodHysteresisBand > 0.0 || impostorHistory) {
+    if (pc.lodHysteresisBand > 0.0) {
 #ifdef SCATTER_STATS
         // Thrash instrument: how many instances changed level this frame. The
         // subgroup reduction costs one atomic per subgroup instead of one per
@@ -845,7 +874,7 @@ void main() {
     // tail-exhausted instance drew one opaque record and is recorded as such.
     if (pc.renderedHistoryEnabled != 0u) {
         // A card records level 255, so the switch reads as a break in the history.
-        uint level = drawCard ? kRenderedHistoryLevelMask : (lod & kRenderedHistoryLevelMask);
+        uint level = drawCard ? kImpostorRenderedLevel : (lod & kRenderedHistoryLevelMask);
         uint state = level | (wroteTail ? kRenderedHistoryFadingBit : 0u);
         uint previous = prevRendered[instanceIndex];
         bool continuous = previous != kLodNoHistory
