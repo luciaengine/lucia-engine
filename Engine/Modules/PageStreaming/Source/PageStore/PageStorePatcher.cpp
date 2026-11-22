@@ -2,6 +2,7 @@
 
 #include "PageCodec.h"
 #include "PageFieldFilter.h"
+#include "PageStreaming/PageSampleRect.h"
 #include "PageStreaming/PageStore/PageStoreWriter.h"
 
 #include "JobSystem/WorkStealingThreadPool.h"
@@ -9,7 +10,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <optional>
 #include <vector>
 
 namespace GameEngine::PageStreaming
@@ -56,11 +56,6 @@ Span OwningPages(Span samples)
     return {samples.First / kPageOwnedSamples, samples.Last / kPageOwnedSamples};
 }
 
-Span Union(Span a, Span b)
-{
-    return {std::min(a.First, b.First), std::max(a.Last, b.Last)};
-}
-
 // The finer level's samples over a window, gathered from the owned samples of its stored pages.
 struct FinerWindow
 {
@@ -101,25 +96,6 @@ struct FinerWindow
         return false;
     }
 };
-
-// The samples page `address` owns, clamped to its level.
-PageSampleRect OwnedSamples(const PageAddress& address, const PageStoreLevel& shape)
-{
-    const int64 firstX = static_cast<int64>(address.X) * kPageOwnedSamples;
-    const int64 firstZ = static_cast<int64>(address.Z) * kPageOwnedSamples;
-    return {ClampIndex(firstX, shape.SamplesX), ClampIndex(firstZ, shape.SamplesZ),
-            ClampIndex(firstX + kPageOwnedSamples - 1, shape.SamplesX),
-            ClampIndex(firstZ + kPageOwnedSamples - 1, shape.SamplesZ)};
-}
-
-// `samples` grown by `apron` on each side, clamped to the level.
-PageSampleRect GrownSamples(const PageSampleRect& samples, uint32 apron, const PageStoreLevel& shape)
-{
-    return {ClampIndex(static_cast<int64>(samples.MinX) - apron, shape.SamplesX),
-            ClampIndex(static_cast<int64>(samples.MinZ) - apron, shape.SamplesZ),
-            ClampIndex(static_cast<int64>(samples.MaxX) + apron, shape.SamplesX),
-            ClampIndex(static_cast<int64>(samples.MaxZ) + apron, shape.SamplesZ)};
-}
 
 // The samples page `address` stores, clamped to its level.
 PageSampleRect StoredSamples(const PageAddress& address, uint32 apron, const PageStoreLevel& shape)
@@ -339,79 +315,115 @@ bool PageStorePatcher::WritePage(const PageAddress& address, std::span<const uin
     EncodedPage encoded;
     EncodedPage unencoded;
     EncodePage(address.Level, samples, encoded, unencoded);
-    if (HoldsPage(address, encoded, unencoded))
-    {
+    const bool unchanged = HoldsPage(address, encoded, unencoded);
+    if (unchanged)
         m_PagesUnchanged.fetch_add(1);
-        return true;
-    }
-    if (!StorePage(address, encoded, unencoded))
+    else if (!StorePage(address, encoded, unencoded))
         return false;
-    m_PagesWritten.fetch_add(1);
-    if (address.Level > 0u)
+    else
+        m_PagesWritten.fetch_add(1);
+    // A level-0 page is a change whatever its bytes: its ancestors can still hold another bake.
+    if (address.Level == 0u || !unchanged)
     {
-        const PageSampleRect owned = OwnedSamples(address, m_Writer.Layout().Levels[address.Level]);
         std::lock_guard lock(m_WrittenMutex);
-        std::optional<PageSampleRect>& written = m_Written[address.Level];
-        written = written ? Union(*written, owned) : owned;
+        m_Written[address.Level].push_back(address);
     }
     return true;
 }
 
-bool PageStorePatcher::RefilterAncestors(const std::optional<PageSampleRect>& level0Rect)
+bool PageStorePatcher::RefilterAncestors()
 {
     if (!CanPatch())
         return false;
-    const PageStoreLevel& level0 = m_Writer.Layout().Levels.front();
-    std::optional<PageSampleRect> changed;
-    if (level0Rect)
-        changed = PageSampleRect{std::min(level0Rect->MinX, level0.SamplesX - 1u),
-                                 std::min(level0Rect->MinZ, level0.SamplesZ - 1u),
-                                 std::min(level0Rect->MaxX, level0.SamplesX - 1u),
-                                 std::min(level0Rect->MaxZ, level0.SamplesZ - 1u)};
-    std::vector<std::optional<PageSampleRect>> written(m_Written.size());
+    std::vector<std::vector<PageAddress>> written(m_Written.size());
     {
         std::lock_guard lock(m_WrittenMutex);
         written.swap(m_Written);
     }
-    for (uint32 level = 1; level < m_Writer.Layout().Levels.size(); ++level)
+    const PageStoreLayout& layout = m_Writer.Layout();
+    const uint32 apron = (PageStrideTexels(layout.Header.Format) - kPageOwnedSamples) / 2u;
+    const uint32 levels = static_cast<uint32>(std::min(layout.Levels.size(), written.size()));
+    // The samples of the finer level's changed pages: each level-0 page WritePage was given with the
+    // lattice's one-sample apron, then at each level the stored samples of the pages written and remade.
+    std::vector<PageSampleRect> changed;
+    if (!written.empty())
+        for (const PageAddress& address : written.front())
+            changed.push_back(StoredSamples(address, kPageApronSamples, layout.Levels.front()));
+    for (uint32 level = 1; level < levels; ++level)
     {
-        const PageStoreLevel& shape = m_Writer.Layout().Levels[level];
-        std::optional<PageSampleRect> coarser;
-        if (changed)
+        const PageStoreLevel& shape = layout.Levels[level];
+        std::vector<uint8> marked(static_cast<std::size_t>(shape.PagesX) * shape.PagesZ, 0u);
+        for (const PageSampleRect& samples : changed)
         {
-            const Span x = CoarserSamples({changed->MinX, changed->MaxX}, shape.SamplesX);
-            const Span z = CoarserSamples({changed->MinZ, changed->MaxZ}, shape.SamplesZ);
-            coarser = PageSampleRect{x.First, z.First, x.Last, z.Last};
+            const Span x = PagesHolding(CoarserSamples({samples.MinX, samples.MaxX}, shape.SamplesX), shape.PagesX, apron);
+            const Span z = PagesHolding(CoarserSamples({samples.MinZ, samples.MaxZ}, shape.SamplesZ), shape.PagesZ, apron);
+            for (uint32 pz = z.First; pz <= z.Last; ++pz)
+                std::fill_n(marked.begin() + static_cast<std::ptrdiff_t>(pz) * shape.PagesX + x.First, x.Count(), 1u);
         }
-        if (!RefilterLevel(level, coarser, written[level], changed))
+        for (const PageAddress& address : written[level])
+            marked[static_cast<std::size_t>(address.Z) * shape.PagesX + address.X] = 1u;
+        std::vector<PageAddress> remade;
+        if (!RefilterMarked(level, marked, remade))
             return false;
+        // A page WritePage wrote is a new input to the level above, whatever this call made of it.
+        changed.clear();
+        for (const PageAddress& address : written[level])
+            changed.push_back(StoredSamples(address, apron, shape));
+        for (const PageAddress& address : remade)
+            changed.push_back(StoredSamples(address, apron, shape));
     }
     return true;
 }
 
-bool PageStorePatcher::RefilterLevel(uint32 level, const std::optional<PageSampleRect>& changed,
-                                     const std::optional<PageSampleRect>& written,
-                                     std::optional<PageSampleRect>& outChanged)
+bool PageStorePatcher::RefilterMarked(uint32 level, std::span<const uint8> marked,
+                                      std::vector<PageAddress>& outChanged)
 {
-    outChanged.reset();
-    if (!changed && !written)
-        return true;
+    // A tile bounds the finer window that one span gathers: kRefilterTilePages pages a side read about
+    // twice that many finer pages a side.
+    constexpr uint32 kRefilterTilePages = 8u;
+    const PageStoreLevel& shape = m_Writer.Layout().Levels[level];
+    std::vector<uint8> remake;
+    for (uint32 tileZ = 0; tileZ < shape.PagesZ; tileZ += kRefilterTilePages)
+        for (uint32 tileX = 0; tileX < shape.PagesX; tileX += kRefilterTilePages)
+        {
+            const uint32 endX = std::min(tileX + kRefilterTilePages, shape.PagesX);
+            const uint32 endZ = std::min(tileZ + kRefilterTilePages, shape.PagesZ);
+            uint32 firstX = endX;
+            uint32 firstZ = endZ;
+            uint32 lastX = 0;
+            uint32 lastZ = 0;
+            for (uint32 pz = tileZ; pz < endZ; ++pz)
+                for (uint32 px = tileX; px < endX; ++px)
+                    if (marked[static_cast<std::size_t>(pz) * shape.PagesX + px] != 0u)
+                    {
+                        firstX = std::min(firstX, px);
+                        firstZ = std::min(firstZ, pz);
+                        lastX = std::max(lastX, px);
+                        lastZ = std::max(lastZ, pz);
+                    }
+            if (firstX == endX)
+                continue;
+            remake.clear();
+            for (uint32 pz = firstZ; pz <= lastZ; ++pz)
+                for (uint32 px = firstX; px <= lastX; ++px)
+                    remake.push_back(marked[static_cast<std::size_t>(pz) * shape.PagesX + px]);
+            if (!RefilterSpan(level, firstX, lastX, firstZ, lastZ, remake, outChanged))
+                return false;
+        }
+    return true;
+}
+
+bool PageStorePatcher::RefilterSpan(uint32 level, uint32 firstX, uint32 lastX, uint32 firstZ, uint32 lastZ,
+                                    std::span<const uint8> remake, std::vector<PageAddress>& outChanged)
+{
     const PageStoreLayout& layout = m_Writer.Layout();
     const PageFieldFormat format = layout.Header.Format;
     const uint32 stride = PageStrideTexels(format);
     const uint32 apron = (stride - kPageOwnedSamples) / 2u;
     const uint32 texelBytes = PageTexelBytes(format);
     const PageStoreLevel& finer = layout.Levels[level - 1u];
-    const PageStoreLevel& shape = layout.Levels[level];
-    Span pagesX = written ? OwningPages({written->MinX, written->MaxX}) : Span{};
-    Span pagesZ = written ? OwningPages({written->MinZ, written->MaxZ}) : Span{};
-    if (changed)
-    {
-        const Span holdingX = PagesHolding({changed->MinX, changed->MaxX}, shape.PagesX, apron);
-        const Span holdingZ = PagesHolding({changed->MinZ, changed->MaxZ}, shape.PagesZ, apron);
-        pagesX = written ? Union(pagesX, holdingX) : holdingX;
-        pagesZ = written ? Union(pagesZ, holdingZ) : holdingZ;
-    }
+    const Span pagesX{firstX, lastX};
+    const Span pagesZ{firstZ, lastZ};
 
     // The finer samples every remade page reads, from the pages that own them: a Bc5 store's from
     // its unencoded store.
@@ -438,8 +450,10 @@ bool PageStorePatcher::RefilterLevel(uint32 level, const std::optional<PageSampl
     const std::size_t remakeCount = static_cast<std::size_t>(pagesX.Count()) * pagesZ.Count();
     std::vector<EncodedPage> encoded(remakeCount);
     std::vector<EncodedPage> unencoded(remakeCount);
-    std::vector<PageRemake> remake(remakeCount, PageRemake::Waiting);
+    std::vector<PageRemake> outcome(remakeCount, PageRemake::Waiting);
     JobSystem::ParallelFor(m_Pool, remakeCount, [&](std::size_t i) {
+        if (remake[i] == 0u)
+            return;
         const uint32 px = pagesX.First + static_cast<uint32>(i % pagesX.Count());
         const uint32 pz = pagesZ.First + static_cast<uint32>(i / pagesX.Count());
         const PageAddress address{0, static_cast<uint8>(level), px, pz};
@@ -449,26 +463,22 @@ bool PageStorePatcher::RefilterLevel(uint32 level, const std::optional<PageSampl
             return;
         FilterCoarserPage(layout, level, px, pz, window, coverage == FinerCoverage::All, samples);
         EncodePage(level, samples, encoded[i], unencoded[i]);
-        remake[i] = HoldsPage(address, encoded[i], unencoded[i]) ? PageRemake::Unchanged : PageRemake::Changed;
+        outcome[i] = HoldsPage(address, encoded[i], unencoded[i]) ? PageRemake::Unchanged : PageRemake::Changed;
     });
 
-    // A page WritePage wrote is a new input to the level above, whatever this call made of it.
-    if (written)
-        outChanged = GrownSamples(*written, apron, shape);
     // Written in address order, so the store's bytes do not depend on the workers.
     for (std::size_t i = 0; i < remakeCount; ++i)
     {
-        if (remake[i] == PageRemake::Unchanged)
+        if (outcome[i] == PageRemake::Unchanged)
             m_PagesUnchanged.fetch_add(1);
-        if (remake[i] != PageRemake::Changed)
+        if (outcome[i] != PageRemake::Changed)
             continue;
         const PageAddress address{0, static_cast<uint8>(level), pagesX.First + static_cast<uint32>(i % pagesX.Count()),
                                   pagesZ.First + static_cast<uint32>(i / pagesX.Count())};
         if (!StorePage(address, encoded[i], unencoded[i]))
             return false;
         m_PagesWritten.fetch_add(1);
-        const PageSampleRect stored = StoredSamples(address, apron, shape);
-        outChanged = outChanged ? Union(*outChanged, stored) : stored;
+        outChanged.push_back(address);
     }
     return true;
 }

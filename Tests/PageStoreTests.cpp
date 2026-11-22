@@ -1397,17 +1397,10 @@ void WriteBc5Stores(const std::filesystem::path& dir, const std::string& name, c
             }
     for (const std::vector<PageAddress>& pages : landings)
     {
-        PageSampleRect owned{header.SamplesX, header.SamplesZ, 0u, 0u};
         for (const PageAddress& address : pages)
-        {
             ASSERT_TRUE(patcher.WritePage(
                 address, GridPageSamples(normals, header.SamplesX, header.SamplesZ, header.Format, address)));
-            owned.MinX = std::min(owned.MinX, address.X * kPageOwnedSamples);
-            owned.MinZ = std::min(owned.MinZ, address.Z * kPageOwnedSamples);
-            owned.MaxX = std::max(owned.MaxX, std::min((address.X + 1u) * kPageOwnedSamples, header.SamplesX) - 1u);
-            owned.MaxZ = std::max(owned.MaxZ, std::min((address.Z + 1u) * kPageOwnedSamples, header.SamplesZ) - 1u);
-        }
-        ASSERT_TRUE(patcher.RefilterAncestors(owned));
+        ASSERT_TRUE(patcher.RefilterAncestors());
     }
     ASSERT_EQ(writer.Finish(), "");
     ASSERT_EQ(unencoded.Finish(), "");
@@ -1465,7 +1458,7 @@ TEST_F(PageStoreTest, APatchedPageIsWrittenAtItsAddressAndTheBytesTheStoreHoldsA
     PageStorePatcher normalPatcher(normals, nullptr);
     const std::vector<uint8> samples(static_cast<std::size_t>(136u) * 136u * 2u, 128u);
     EXPECT_FALSE(normalPatcher.WritePage(PageAddress{0, 0, 0, 0}, samples));
-    EXPECT_FALSE(normalPatcher.RefilterAncestors(PageSampleRect{0, 0, 10, 10}));
+    EXPECT_FALSE(normalPatcher.RefilterAncestors());
 }
 
 TEST_F(PageStoreTest, RefilteringTheAncestorsOfAPatchedRectGivesTheFullBuildAndRewritesOnlyThePagesThatChanged)
@@ -1501,7 +1494,7 @@ TEST_F(PageStoreTest, RefilteringTheAncestorsOfAPatchedRectGivesTheFullBuildAndR
     PageStorePatcher patcher(writer, &pool);
     for (const PageAddress& address : Level0PagesHolding(layout, rect))
         ASSERT_TRUE(patcher.WritePage(address, SurfacePage(expected, address)));
-    ASSERT_TRUE(patcher.RefilterAncestors(rect));
+    ASSERT_TRUE(patcher.RefilterAncestors());
     EXPECT_EQ(patcher.PagesWritten(), changedPages);
     ASSERT_EQ(writer.Finish(), "");
 
@@ -1539,9 +1532,7 @@ TEST_F(PageStoreTest, ABc5StorePatchedAPageAtATimeIsTheFullBuildFilteredFromItsU
         {
             const PageAddress address{0, 0, px, pz};
             ASSERT_TRUE(patcher.WritePage(address, GridPageSamples(normals, kSide, kSide, header.Format, address)));
-            ASSERT_TRUE(patcher.RefilterAncestors(PageSampleRect{px * kPageOwnedSamples, pz * kPageOwnedSamples,
-                                                                 px * kPageOwnedSamples + kPageOwnedSamples - 1u,
-                                                                 pz * kPageOwnedSamples + kPageOwnedSamples - 1u}));
+            ASSERT_TRUE(patcher.RefilterAncestors());
         }
     ASSERT_EQ(writer.Finish(), "");
     ASSERT_EQ(unencoded.Finish(), "");
@@ -1580,7 +1571,7 @@ TEST_F(PageStoreTest, ACoarseLevelWrittenFirstIsReplacedByTheFilterOfLevelZeroAs
     // samples with every tap in that page become the filter.
     const uint64 coarsePages = patcher.PagesWritten();
     ASSERT_TRUE(patcher.WritePage(PageAddress{0, 0, 0, 0}, SurfacePage(expected, PageAddress{0, 0, 0, 0})));
-    ASSERT_TRUE(patcher.RefilterAncestors(PageSampleRect{0, 0, 127, 127}));
+    ASSERT_TRUE(patcher.RefilterAncestors());
     EXPECT_EQ(patcher.PagesWritten(), coarsePages + levels.size());
 
     // The rest land from the far corner back, each followed by its refilter.
@@ -1589,9 +1580,7 @@ TEST_F(PageStoreTest, ACoarseLevelWrittenFirstIsReplacedByTheFilterOfLevelZeroAs
         {
             const PageAddress address{0, 0, px, pz};
             ASSERT_TRUE(patcher.WritePage(address, SurfacePage(expected, address)));
-            ASSERT_TRUE(patcher.RefilterAncestors(PageSampleRect{px * kPageOwnedSamples, pz * kPageOwnedSamples,
-                                                                 px * kPageOwnedSamples + kPageOwnedSamples - 1u,
-                                                                 pz * kPageOwnedSamples + kPageOwnedSamples - 1u}));
+            ASSERT_TRUE(patcher.RefilterAncestors());
         }
     ASSERT_EQ(writer.Finish(), "");
     PageStoreReader actual;
@@ -1631,7 +1620,7 @@ TEST_F(PageStoreTest, ACoarsePageOverHalfItsFinerPagesFiltersTheSamplesWhoseTaps
     for (uint32 pz = 0; pz < levels[0].PagesZ; ++pz)
         for (uint32 px = 0; px < kLandedColumns; ++px)
             ASSERT_TRUE(patcher.WritePage(PageAddress{0, 0, px, pz}, SurfacePage(expected, PageAddress{0, 0, px, pz})));
-    ASSERT_TRUE(patcher.RefilterAncestors(PageSampleRect{0, 0, kLandedColumns * kPageOwnedSamples - 1u, kSide - 1u}));
+    ASSERT_TRUE(patcher.RefilterAncestors());
     ASSERT_EQ(writer.Finish(), "");
 
     PageStoreReader actual;
@@ -1864,7 +1853,7 @@ TEST_F(PageStoreTest, ACoarsePageWrittenByWritePageIsANewInputToTheLevelAbove)
                 const PageAddress address{0, level, px, pz};
                 ASSERT_TRUE(patcher.WritePage(address, level >= 2u ? flat : SurfacePage(expected, address)));
             }
-    ASSERT_TRUE(patcher.RefilterAncestors(PageSampleRect{0, 0, kSide - 1u, kSide - 1u}));
+    ASSERT_TRUE(patcher.RefilterAncestors());
     ASSERT_EQ(writer.Finish(), "");
     PageStoreReader actual;
     ASSERT_EQ(actual.Open(baked, PageFieldKind::Splat), "");
