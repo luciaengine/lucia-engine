@@ -1,5 +1,6 @@
 #include "MetalIndirectCountEncoder.h"
 
+#include "../MetalCompletedHandler.h"
 #include "../MetalDevice.h"
 
 #include "Logger/Logger.h"
@@ -257,8 +258,7 @@ void MetalIndirectCountEncoder::FinishCommandBuffer(MTL::CommandBuffer* commandB
         // the command buffer's completion.
         std::shared_ptr<MetalIndirectCountResources> resources = m_Resources;
         MetalIndirectCommandArena* arena = m_Arena;
-        commandBuffer->addCompletedHandler(
-            [resources, arena](MTL::CommandBuffer*) { resources->ReleaseArena(arena); });
+        AddCompletedHandler(commandBuffer, [resources, arena](MTL::CommandBuffer*) { resources->ReleaseArena(arena); });
         m_Arena = nullptr;
     }
     m_EncoderExecutedCommands = false;
