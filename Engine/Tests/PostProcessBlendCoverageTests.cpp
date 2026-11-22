@@ -1330,18 +1330,18 @@ TEST(PostProcessTonemapControls, ExposesAllTonemappers)
     std::string compactTonemap = tonemap;
     for (const char whitespace : {' ', '\t', '\r', '\n'})
         std::erase(compactTonemap, whitespace);
-    EXPECT_NE(compactTonemap.find("casekLookFilmic:returnTonemapACES2(hdr,Aces2TargetOutputMax())"),
+    EXPECT_NE(compactTonemap.find("casekLookFilmic:returnTonemapACES2(hdr,LookTargetOutputMax())"),
               std::string::npos);
     EXPECT_NE(compactTonemap.find("casekLookPhotographic:returnTonemapAgX(hdr)"), std::string::npos);
-    EXPECT_NE(compactTonemap.find("casekLookGT7:returnTonemapGranTurismo7(hdr)"), std::string::npos);
+    EXPECT_NE(compactTonemap.find("casekLookGT7:returnTonemapGranTurismo7(hdr,LookTargetOutputMax())"), std::string::npos);
     EXPECT_NE(tonemap.find("#include \"Includes/tonemap_look.glsl\""), std::string::npos);
     const std::string look = readText(shaderRoot / "Includes/tonemap_look.glsl");
     EXPECT_NE(look.find("const int kLookFilmic = 1;"), std::string::npos);
     EXPECT_NE(look.find("const int kLookGT7 = 3;"), std::string::npos);
     EXPECT_NE(look.find("const int kNoLookArm = 4;"), std::string::npos);
-    // Filmic (ACES 2) is peak-parameterised: it routes display-referred (clamped,
-    // never extended) so its tier ladder owns the headroom rendering.
-    EXPECT_NE(tonemap.find("if (pc.look == kLookFilmic)\n        return min(sdrTonemapped, vec3(outputMax))"),
+    // Filmic (ACES 2) and GT7 are peak-parameterised: they route display-referred
+    // (clamped, never extended) so their own curves own the headroom rendering.
+    EXPECT_NE(tonemap.find("if (pc.look == kLookFilmic || pc.look == kLookGT7)\n        return min(sdrTonemapped, vec3(outputMax))"),
               std::string::npos);
 
     // ACES 2's reference transform includes CAM/JMh tone scaling, chroma
