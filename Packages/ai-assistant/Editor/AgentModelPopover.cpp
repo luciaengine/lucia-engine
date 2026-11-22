@@ -17,6 +17,7 @@
 #include <optional>
 #include <span>
 #include <utility>
+#include <vector>
 
 namespace GameEngine
 {
@@ -50,6 +51,19 @@ std::string EffortSuffix(std::string_view providerId, std::string_view effortId)
     return {};
 }
 
+// Whether `providerId` has a model or an effort to choose.
+bool HasChoices(std::string_view providerId)
+{
+    return !AiAssistantSettings::ModelChoices(providerId).empty() || !AiAssistantSettings::EffortChoices(providerId).empty();
+}
+
+// The model a turn of `providerId` asks for: the stored one, else the one its server serves.
+std::string AskedModel(std::string_view providerId)
+{
+    const std::string model = AiAssistantSettings::Model(providerId);
+    return model.empty() ? AiAssistantSettings::ServedModelName(providerId) : model;
+}
+
 const AiAssistantSettings::Choice* FindChoice(std::span<const AiAssistantSettings::Choice> choices,
                                               std::string_view id)
 {
@@ -81,6 +95,7 @@ bool AgentModelPopover::Build(UIManager& ui)
         return false;
     }
     m_Panel = FindById("AgentModelPopoverPanel"_sid);
+    m_ModelRow = FindById("AgentModelRow"_sid);
     m_ModelDropdown = dynamic_cast<Dropdown*>(FindById("AgentModelDropdown"_sid));
     m_EffortRow = FindById("AgentEffortRow"_sid);
     m_EffortSlider = dynamic_cast<Slider*>(FindById("AgentEffortSlider"_sid));
@@ -88,7 +103,7 @@ bool AgentModelPopover::Build(UIManager& ui)
     m_EffortEnds = FindById("AgentEffortEnds"_sid);
     m_EffortLowest = dynamic_cast<Label*>(FindById("AgentEffortLowest"_sid));
     m_EffortHighest = dynamic_cast<Label*>(FindById("AgentEffortHighest"_sid));
-    if (!m_Panel || !m_ModelDropdown || !m_EffortRow || !m_EffortSlider || !m_EffortValue || !m_EffortEnds ||
+    if (!m_Panel || !m_ModelRow || !m_ModelDropdown || !m_EffortRow || !m_EffortSlider || !m_EffortValue || !m_EffortEnds ||
         !m_EffortLowest || !m_EffortHighest)
     {
         Logger::Log::Error("AI Assistant: {} is missing one of its controls.", kLayoutAssetPath);
@@ -115,12 +130,6 @@ void AgentModelPopover::SetProvider(std::string providerId)
     m_ProviderId = std::move(providerId);
     Close();
     m_ModelLabels.clear();
-    if (AiAssistantSettings::ModelChoices(m_ProviderId).empty())
-    {
-        m_Button.AddClass("hidden");
-        return;
-    }
-    m_Button.RemoveClass("hidden");
     Refresh();
 }
 
@@ -139,7 +148,7 @@ void AgentModelPopover::Update()
 
 void AgentModelPopover::Open()
 {
-    if (m_Open || !m_Panel || AiAssistantSettings::ModelChoices(m_ProviderId).empty())
+    if (m_Open || !m_Panel || !HasChoices(m_ProviderId))
         return;
     Refresh();
     m_Open = true;
@@ -158,7 +167,15 @@ void AgentModelPopover::Close()
 void AgentModelPopover::Refresh()
 {
     m_Generation = AiAssistantSettings::ModelGeneration();
-    const std::string model = AiAssistantSettings::Model(m_ProviderId);
+    // A server connection's efforts arrive with its model list, after the connection is chosen.
+    if (!HasChoices(m_ProviderId))
+    {
+        m_Button.AddClass("hidden");
+        Close();
+        return;
+    }
+    m_Button.RemoveClass("hidden");
+    const std::string model = AskedModel(m_ProviderId);
     const std::string answered = AiAssistantSettings::AnsweredModel(m_ProviderId, model);
     const std::string effortSuffix = EffortSuffix(m_ProviderId, AiAssistantSettings::Effort(m_ProviderId));
     m_FullText = AiAssistantSettings::ModelLabel(m_ProviderId, model) + effortSuffix;
@@ -170,9 +187,13 @@ void AgentModelPopover::Refresh()
     if (!m_Panel)
         return;
     m_Refreshing = true;
+    if (AiAssistantSettings::ModelChoices(m_ProviderId).empty())
+        m_ModelRow->AddClass("hidden");
+    else
+        m_ModelRow->RemoveClass("hidden");
     RefreshModelOptions();
 
-    const std::span<const AiAssistantSettings::Choice> efforts = AiAssistantSettings::EffortChoices(m_ProviderId);
+    const std::vector<AiAssistantSettings::Choice> efforts = AiAssistantSettings::EffortChoices(m_ProviderId);
     if (efforts.empty())
     {
         m_EffortRow->AddClass("hidden");
@@ -202,15 +223,22 @@ void AgentModelPopover::SizeButton()
     // Every text the button can show for the connection, the "(latest)" forms
     // included after a turn has named a version, so the width stays put.
     float widest = 0.0f;
-    const std::span<const AiAssistantSettings::Choice> efforts = AiAssistantSettings::EffortChoices(m_ProviderId);
+    const std::vector<AiAssistantSettings::Choice> efforts = AiAssistantSettings::EffortChoices(m_ProviderId);
+    std::vector<std::string> names;
     for (const AiAssistantSettings::Choice& choice : AiAssistantSettings::ModelChoices(m_ProviderId))
-        for (const std::string& name : {std::string(choice.Label), AiAssistantSettings::ModelLabel(m_ProviderId, choice.Id)})
-        {
-            if (efforts.empty())
-                widest = std::max(widest, m_Button.WidthForText(name));
-            for (const AiAssistantSettings::Choice& effort : efforts)
-                widest = std::max(widest, m_Button.WidthForText(name + EffortSuffix(m_ProviderId, effort.Id)));
-        }
+    {
+        names.emplace_back(choice.Label);
+        names.push_back(AiAssistantSettings::ModelLabel(m_ProviderId, choice.Id));
+    }
+    if (names.empty())
+        names.push_back(AiAssistantSettings::ModelLabel(m_ProviderId, AskedModel(m_ProviderId)));
+    for (const std::string& name : names)
+    {
+        if (efforts.empty())
+            widest = std::max(widest, m_Button.WidthForText(name));
+        for (const AiAssistantSettings::Choice& effort : efforts)
+            widest = std::max(widest, m_Button.WidthForText(name + EffortSuffix(m_ProviderId, effort.Id)));
+    }
     // 0 before the button has been laid out as text.
     if (widest <= 0.0f)
         return;
@@ -305,7 +333,7 @@ void AgentModelPopover::OnEffortMoved(float stop, bool commit)
 {
     if (m_Refreshing)
         return;
-    const std::span<const AiAssistantSettings::Choice> efforts = AiAssistantSettings::EffortChoices(m_ProviderId);
+    const std::vector<AiAssistantSettings::Choice> efforts = AiAssistantSettings::EffortChoices(m_ProviderId);
     if (efforts.empty())
         return;
     const size_t index = std::min(static_cast<size_t>(std::max(0l, std::lround(stop))), efforts.size() - 1);

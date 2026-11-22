@@ -5,6 +5,8 @@
 #include "AgentCallResourceTile.h"
 #include "AgentCallRow.h"
 #include "AgentConnectionDropdown.h"
+#include "AgentModelHeading.h"
+#include "Providers/TensorFoldConnection.h"
 #include "AgentConversationController.h"
 #include "AgentConversationRow.h"
 #include "AgentConversationRowModel.h"
@@ -1848,6 +1850,69 @@ TEST(AiAssistantPanelTests, TheModelPopoverStoresEachChoiceAndItsButtonReadsIt)
     EXPECT_EQ(button.GetText(), "Opus 5.5");
     popover.SetProvider("codex-session");
     EXPECT_TRUE(button.HasClass("hidden")) << "Codex names its own models in settings";
+}
+
+// A server connection has no model list: once its server's list names the model and its efforts,
+// the button shows with the efforts alone, Default first (no effort sent), and the top bar names
+// the assistant, the model and the chosen effort.
+TEST(AiAssistantPanelTests, AServerConnectionOffersTheEffortsItsServerLists)
+{
+    auto device = MakeHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No device";
+    ScopedPreferencesRoot preferences;
+    UIRegistration::RegisterBuiltInControls();
+    JobSystem::WorkStealingThreadPool pool(2);
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "AiAssistantPanelTests-served";
+    std::filesystem::create_directories(root);
+    AssetManager assets;
+    ASSERT_TRUE(assets.Initialize(root, &pool));
+    AssetSourceDesc package;
+    package.Alias = "ai-assistant";
+    package.Root = Platform::GetExecutablePath().parent_path() / "AiAssistantPanelFixtures" / "ai-assistant";
+    ASSERT_TRUE(assets.RegisterSource(package));
+    UIManager ui(device.get(), &assets);
+    ui.SetRoot(std::make_unique<UIElement>());
+
+    Button button;
+    auto owned = std::make_unique<AgentModelPopover>(button);
+    AgentModelPopover& popover = *owned;
+    ui.GetRootElement()->AddChild(std::move(owned));
+    ASSERT_TRUE(popover.Build(ui));
+    const std::string tensorFold(TensorFoldConnection::kId);
+    AiAssistantSettings::SetServedModel(tensorFold, {});
+    popover.SetProvider(tensorFold);
+    EXPECT_TRUE(button.HasClass("hidden")) << "nothing to choose before the server's list is read";
+    EXPECT_EQ(AgentModelHeading::Text(tensorFold), "TensorFold");
+
+    AiAssistantSettings::SetServedModel(tensorFold, {.Name = "inkling-2-mini",
+                                                     .Efforts = {"max", "xhigh", "high", "medium", "low", "minimal"}});
+    popover.Update();
+    EXPECT_FALSE(button.HasClass("hidden"));
+    EXPECT_EQ(button.GetText(), "inkling-2-mini · Default");
+    EXPECT_EQ(AiAssistantSettings::Effort(tensorFold), "") << "Default sends no effort";
+    popover.Open();
+    auto* effort = dynamic_cast<Slider*>(popover.FindById("AgentEffortSlider"_sid));
+    UIElement* modelRow = popover.FindById("AgentModelRow"_sid);
+    ASSERT_TRUE(effort && modelRow);
+    EXPECT_TRUE(modelRow->HasClass("hidden")) << "the server serves one model";
+    std::vector<std::string> labels;
+    for (const AiAssistantSettings::Choice& choice : AiAssistantSettings::EffortChoices(tensorFold))
+        labels.emplace_back(choice.Label);
+    EXPECT_EQ(labels, (std::vector<std::string>{"Default", "Minimal", "Low", "Medium", "High", "Extra high", "Max"}))
+        << "lowest first, whatever order the server lists them in";
+    EXPECT_EQ(effort->GetMax(), 6.0f);
+    EXPECT_EQ(effort->GetValue(), 0.0f);
+
+    effort->SetValue(5.0f);
+    EXPECT_EQ(AiAssistantSettings::Effort(tensorFold), "xhigh");
+    EXPECT_EQ(button.GetText(), "inkling-2-mini · Extra high");
+    EXPECT_EQ(AgentModelHeading::Text(tensorFold), "TensorFold · inkling-2-mini · Extra high");
+
+    AiAssistantSettings::SetServedModel(tensorFold, {.Name = "local-model", .Efforts = {"low", "none"}});
+    EXPECT_EQ(AiAssistantSettings::Effort(tensorFold), "") << "an effort the new model does not list is not sent";
+    EXPECT_EQ(AgentModelHeading::Text(tensorFold), "TensorFold · local-model");
+    AiAssistantSettings::SetServedModel(tensorFold, {});
 }
 
 // The model button is as wide as the widest text it can show for the connection, measured

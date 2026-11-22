@@ -1,6 +1,7 @@
 <UIElement id="PromptPanelContainer" class="prompt-panel-root">
   <UIElement class="prompt-panel-header">
     <UIElement class="prompt-panel-toolbar">
+      <Label id="PromptCurrentModel" class="prompt-panel-current-model" />
       <Button id="PromptSettingsToggle" class="icon-button prompt-panel-settings-button" />
     </UIElement>
 

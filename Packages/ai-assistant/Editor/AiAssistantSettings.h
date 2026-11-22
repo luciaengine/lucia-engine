@@ -2,6 +2,7 @@
 
 #include "AssistantMode.h"
 #include "Providers/BackendDetection.h"
+#include "Providers/OpenAiCompatibleProvider.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -111,12 +112,20 @@ public:
     static void SetAnsweredModel(std::string_view providerId, std::string_view modelId,
                                  std::string_view answeredModel);
 
+    /// The model a server connection (TensorFold, the custom endpoint) serves, as its model list
+    /// last named it (SetServedModel()); empty until the list has been read.
+    static std::string ServedModelName(std::string_view providerId);
+    /// Records what the model list of `providerId`'s server says; a change bumps ModelGeneration().
+    static void SetServedModel(std::string_view providerId, const OpenAiCompatibleProvider::ServedModel& served);
+
     /// The efforts the settings page and the panel offer for `providerId`, lowest
-    /// first; empty for a connection without effort levels.
-    static std::span<const Choice> EffortChoices(std::string_view providerId);
-    /// The effort a turn of `providerId` asks for: the stored EffortChoices() id,
-    /// High when none is stored or the stored one is no longer offered (said once in
-    /// the log); empty for a connection without effort levels.
+    /// first; empty for a connection without effort levels. A server connection offers
+    /// Default (no effort sent) and then the efforts its model list names.
+    static std::vector<Choice> EffortChoices(std::string_view providerId);
+    /// The effort a turn of `providerId` asks for: the stored EffortChoices() id. The
+    /// Claude session's is High when none is stored or the stored one is no longer offered
+    /// (said once in the log); a server connection's is empty (the server's default) then.
+    /// Empty for a connection without effort levels.
     static std::string Effort(std::string_view providerId);
     /// Stores `effortId` for `providerId`; an id outside EffortChoices() is ignored.
     static void SetEffort(std::string_view providerId, std::string_view effortId);

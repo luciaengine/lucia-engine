@@ -264,6 +264,14 @@ TEST(EditorToolBridgeTests, AModelThatReadsImagesGetsTheToolsImage)
     EXPECT_NE(second.find("The images the tool calls returned, in order: take_screenshot (c1)."), std::string::npos);
     EXPECT_NE(second.find("data:image/png;base64,iVBORw0KGgo"), std::string::npos) << "the screenshot is sent";
     EXPECT_LT(second.find("\"role\":\"tool\""), second.find("data:image/png")) << "the image follows the tool answer";
+    const nlohmann::json body = nlohmann::json::parse(second.substr(second.find("\r\n\r\n") + 4), nullptr, false);
+    ASSERT_TRUE(body.is_object()) << second;
+    const nlohmann::json& last = body["messages"].back();
+    EXPECT_EQ(last["role"], "user");
+    ASSERT_EQ(last["content"].size(), 2u) << last.dump();
+    EXPECT_EQ(last["content"][0], (nlohmann::json{{"type", "text"},
+                                                  {"text", "The images the tool calls returned, in order: take_screenshot (c1)."}}));
+    EXPECT_EQ(last["content"][1]["type"], "image_url");
     std::filesystem::remove(std::filesystem::temp_directory_path() / "gameengine_mcp" /
                             ("pid-" + std::to_string(Platform::GetCurrentProcessId())) / "outside.png");
 }

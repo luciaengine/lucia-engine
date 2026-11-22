@@ -286,6 +286,40 @@ TEST(OpenAiCompatibleProviderTests, AFirstListedProviderAsksForTheServersFirstMo
     EXPECT_EQ(provider.Id(), "tensorfold-local");
 }
 
+// ReadServedModel names the served model and the efforts its entry lists, and a turn that names an
+// effort sends it as reasoning_effort; a turn without one sends none.
+TEST(OpenAiCompatibleProviderTests, TheServedModelsEffortsAreReadAndTheChosenOneIsSent)
+{
+    FakeApiKeyStore keys;
+    LoopbackServer server([](LoopbackServer& self, SocketHandle client) {
+        if (self.LastRequest().starts_with("GET "))
+            LoopbackServer::Send(client, JsonAnswer("200 OK", R"({"data":[{"id":"inkling-2-mini",)"
+                                                              R"("reasoning":{"supported_efforts":["high","low"]}}]})"));
+        else
+            LoopbackServer::Send(client, ChunkedHead() + Chunk(kRecordedReply) + "0\r\n\r\n");
+    });
+    OpenAiCompatibleProvider provider(keys.Store("the test store", ApiKeyStore::kEndpointSlot), server.Url("/v1"), "",
+                                      "tensorfold-local", OpenAiCompatibleProvider::ModelSource::FirstListed);
+    CancelToken cancel;
+
+    const OpenAiCompatibleProvider::ServedModel served = provider.ReadServedModel(cancel);
+    EXPECT_EQ(served.Name, "inkling-2-mini");
+    EXPECT_EQ(served.Efforts, (std::vector<std::string>{"high", "low"}));
+
+    AgentTurnRequest request;
+    request.UserText = "Hi";
+    request.Effort = "high";
+    RecordingTurnEvents events;
+    provider.RunTurn(request, events, cancel);
+    EXPECT_EQ(events.Result.Outcome, TurnOutcome::Succeeded) << events.Result.Error;
+    EXPECT_NE(server.LastRequest().find("\"reasoning_effort\":\"high\""), std::string::npos) << server.LastRequest();
+
+    request.Effort.clear();
+    RecordingTurnEvents plain;
+    provider.RunTurn(request, plain, cancel);
+    EXPECT_EQ(server.LastRequest().find("reasoning_effort"), std::string::npos) << "Default sends no effort";
+}
+
 // With no server running, the turn says to start it.
 TEST(OpenAiCompatibleProviderTests, AFirstListedProviderWithNoServerRefusesTheTurn)
 {

@@ -36,6 +36,8 @@ constexpr const char* kPrefEndpointModel = "aiAssistant.endpointModel";
 constexpr const char* kPrefEndpointUrl = "aiAssistant.endpointUrl";
 constexpr const char* kPrefTensorFoldUrl = "aiAssistant.tensorFoldUrl";
 constexpr const char* kPrefClaudeSessionEffort = "aiAssistant.claudeSessionEffort";
+constexpr const char* kPrefTensorFoldEffort = "aiAssistant.tensorFoldEffort";
+constexpr const char* kPrefEndpointEffort = "aiAssistant.endpointEffort";
 constexpr const char* kPrefClaudeExecutable = "aiAssistant.claudeExecutable";
 constexpr const char* kPrefCodexExecutable = "aiAssistant.codexExecutable";
 constexpr const char* kPrefHarnessExecutable = "aiAssistant.harnessExecutable";
@@ -233,9 +235,19 @@ constexpr AiAssistantSettings::Choice kClaudeSessionEfforts[] = {
 };
 static_assert(std::size(kClaudeSessionEfforts) == std::size(ClaudeSessionProvider::kEffortLevels));
 
+// The efforts a server connection can list, lowest first, after Default: the server's own choice,
+// sent as no reasoning_effort at all.
+constexpr AiAssistantSettings::Choice kServerDefaultEffort = {"", "Default"};
+constexpr AiAssistantSettings::Choice kServerEfforts[] = {
+    {"none", "None"}, {"minimal", "Minimal"}, {"low", "Low"},  {"medium", "Medium"},
+    {"high", "High"}, {"xhigh", "Extra high"}, {"max", "Max"},
+};
+
 // The models that answered, by "<providerId>\n<model asked for>"; this process only.
 std::mutex s_AnsweredModelsMutex;
 std::vector<std::pair<std::string, std::string>> s_AnsweredModels;
+std::mutex s_ServedModelsMutex;
+std::vector<std::pair<std::string, OpenAiCompatibleProvider::ServedModel>> s_ServedModels;
 
 std::string AnsweredKey(std::string_view providerId, std::string_view modelId)
 {
@@ -268,6 +280,26 @@ bool Contains(std::span<const AiAssistantSettings::Choice> choices, std::string_
 {
     return std::any_of(choices.begin(), choices.end(),
                        [id](const AiAssistantSettings::Choice& choice) { return choice.Id == id; });
+}
+
+// A connection whose model and efforts come from its server's model list.
+bool IsServerConnection(std::string_view providerId)
+{
+    return providerId == TensorFoldConnection::kId || providerId == OpenAiCompatibleProvider::kId;
+}
+
+const char* ServerEffortKey(std::string_view providerId)
+{
+    return providerId == TensorFoldConnection::kId ? kPrefTensorFoldEffort : kPrefEndpointEffort;
+}
+
+OpenAiCompatibleProvider::ServedModel ServedModelOf(std::string_view providerId)
+{
+    std::lock_guard lock(s_ServedModelsMutex);
+    for (const auto& [id, served] : s_ServedModels)
+        if (id == providerId)
+            return served;
+    return {};
 }
 
 const AiAssistantSettings::ProviderChoice* FindProviderChoice(std::string_view id)
@@ -431,15 +463,50 @@ void AiAssistantSettings::SetAnsweredModel(std::string_view providerId, std::str
     s_ModelGeneration.fetch_add(1, std::memory_order_relaxed);
 }
 
-std::span<const AiAssistantSettings::Choice> AiAssistantSettings::EffortChoices(std::string_view providerId)
+std::string AiAssistantSettings::ServedModelName(std::string_view providerId)
+{
+    return ServedModelOf(providerId).Name;
+}
+
+void AiAssistantSettings::SetServedModel(std::string_view providerId, const OpenAiCompatibleProvider::ServedModel& served)
+{
+    {
+        std::lock_guard lock(s_ServedModelsMutex);
+        auto entry = std::find_if(s_ServedModels.begin(), s_ServedModels.end(),
+                                  [providerId](const auto& known) { return known.first == providerId; });
+        if (entry == s_ServedModels.end())
+            s_ServedModels.emplace_back(std::string(providerId), served);
+        else if (entry->second != served)
+            entry->second = served;
+        else
+            return;
+    }
+    s_ModelGeneration.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::vector<AiAssistantSettings::Choice> AiAssistantSettings::EffortChoices(std::string_view providerId)
 {
     if (providerId == ClaudeSessionProvider::kId)
-        return kClaudeSessionEfforts;
-    return {};
+        return {std::begin(kClaudeSessionEfforts), std::end(kClaudeSessionEfforts)};
+    if (!IsServerConnection(providerId))
+        return {};
+    const std::vector<std::string> listed = ServedModelOf(providerId).Efforts;
+    std::vector<Choice> choices;
+    for (const Choice& effort : kServerEfforts)
+        if (std::find(listed.begin(), listed.end(), effort.Id) != listed.end())
+            choices.push_back(effort);
+    if (!choices.empty())
+        choices.insert(choices.begin(), kServerDefaultEffort);
+    return choices;
 }
 
 std::string AiAssistantSettings::Effort(std::string_view providerId)
 {
+    if (IsServerConnection(providerId))
+    {
+        const std::string effort = ReadPreference(ServerEffortKey(providerId), {});
+        return Contains(EffortChoices(providerId), effort) ? effort : std::string();
+    }
     if (providerId != ClaudeSessionProvider::kId)
         return {};
     const std::string initial(kInitialClaudeSessionEffort);
@@ -454,7 +521,8 @@ void AiAssistantSettings::SetEffort(std::string_view providerId, std::string_vie
 {
     if (!Contains(EffortChoices(providerId), effortId) || effortId == Effort(providerId))
         return;
-    WritePreference(kPrefClaudeSessionEffort, std::string(effortId));
+    WritePreference(IsServerConnection(providerId) ? ServerEffortKey(providerId) : kPrefClaudeSessionEffort,
+                    std::string(effortId));
     s_ModelGeneration.fetch_add(1, std::memory_order_relaxed);
 }
 

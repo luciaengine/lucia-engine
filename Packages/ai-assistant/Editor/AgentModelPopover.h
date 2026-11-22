@@ -80,6 +80,7 @@ private:
     // The button width FitButtonText() last fitted the text to.
     float m_FittedWidthPx = -1.0f;
     UIElement* m_Panel = nullptr;
+    UIElement* m_ModelRow = nullptr;
     Dropdown* m_ModelDropdown = nullptr;
     UIElement* m_EffortRow = nullptr;
     Slider* m_EffortSlider = nullptr;

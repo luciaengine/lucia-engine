@@ -1301,6 +1301,16 @@
 	background-color: var(--ui_color_bg_selected);
 }
 
+/* What the next prompt talks to: one line, cut at the panel's width. */
+.prompt-panel-current-model {
+	flex-shrink: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	color: var(--ui_color_text_secondary);
+}
+
 .prompt-panel-settings-button {
 	width: 22px;
 	min-width: 22px;

@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -45,6 +46,17 @@ public:
         FirstListed,
     };
 
+    /// What the server's model list says about the model a turn asks for when the request names none.
+    struct ServedModel
+    {
+        /// The model's id as the server lists it; empty when the server does not answer or lists none.
+        std::string Name;
+        /// The reasoning efforts its entry lists (`reasoning.supported_efforts`), as the server spells them.
+        std::vector<std::string> Efforts;
+
+        bool operator==(const ServedModel&) const = default;
+    };
+
     /// `baseUrl` is the server's API root (".../v1"); `model` the model a turn asks for when the
     /// request names none (ModelSource::Given); `id` the connection it serves (kId, or
     /// TensorFoldConnection::kId).
@@ -63,6 +75,11 @@ public:
     SetupStatus CheckSetup(const CancelToken& cancel, SetupSurface surface, const SetupStepSink& onStep) const override;
     std::vector<SetupStep> SetupPlan() const override;
 
+    /// One GET of <base>/models: the given model (ModelSource::Given) or the first listed one, and
+    /// the efforts its entry lists. Blocks for up to the request's time limit or until `cancel` fires:
+    /// call it off the UI thread.
+    ServedModel ReadServedModel(const CancelToken& cancel) const;
+
     /// Refuses with the Endpoint or Model step's finding and fix when either fails; otherwise
     /// streams the turn from <base>/chat/completions (OpenAiChatStream), with the tool loop when
     /// the request attaches the editor's tools.
@@ -71,9 +88,9 @@ public:
     /// `baseUrl` without its trailing slashes and without a trailing "/chat/completions" a user
     /// pasted, so the paths below can be appended.
     static std::string NormalizeBaseUrl(std::string_view baseUrl);
-    /// The request body: model, stream true, and messages = the system prompt when there is one,
-    /// the history (messages with empty text skipped) and the user's message, with its images as
-    /// data URLs.
+    /// The request body: model, stream true, reasoning_effort when the request names an effort, and
+    /// messages = the system prompt when there is one, the history (messages with empty text skipped)
+    /// and the user's message, with its images as data URLs.
     static std::string BuildRequestBody(const AgentTurnRequest& request, std::string_view model);
     /// The `messages` array BuildRequestBody() sends.
     static nlohmann::json BuildMessages(const AgentTurnRequest& request);

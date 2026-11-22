@@ -610,7 +610,7 @@ void AiAssistantSetupPage::ShowOptions(const std::string& providerId)
         m_ModelDropdown->SetOptions(options, found == options.end() ? 0 : static_cast<int>(found - options.begin()));
     }
 
-    const std::span<const AiAssistantSettings::Choice> efforts = AiAssistantSettings::EffortChoices(providerId);
+    const std::vector<AiAssistantSettings::Choice> efforts = AiAssistantSettings::EffortChoices(providerId);
     SetHidden(*m_EffortRow, efforts.empty());
     if (!efforts.empty())
     {

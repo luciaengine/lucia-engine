@@ -3,6 +3,7 @@
 #include "AgentConversationController.h"
 #include "AgentConversationRow.h"
 #include "AgentConversationRowModel.h"
+#include "AgentModelHeading.h"
 #include "AgentModelPopover.h"
 #include "AgentReplyActions.h"
 #include "AgentSessionPicker.h"
@@ -20,6 +21,7 @@
 #include "PromptTextArea.h"
 #include "PromptFileDropZone.h"
 #include "PromptFileTray.h"
+#include "ServedModelProbe.h"
 #include "Core/Engine.h"
 #include "ModeControlFit.h"
 #include "Providers/CliSessionProvider.h"
@@ -255,6 +257,9 @@ void PromptPanel::OnLayoutBound()
     m_Connections = std::make_unique<AgentConnectionDropdown>(*m_ProviderDropdown);
     m_ProviderGeneration = AiAssistantSettings::ProviderGeneration();
     m_Connections->Show(AiAssistantSettings::Provider());
+    if (Label* heading = dynamic_cast<Label*>(FindById("PromptCurrentModel"_sid)))
+        m_ModelHeading = std::make_unique<AgentModelHeading>(*heading);
+    m_ServedModelProbe = std::make_unique<ServedModelProbe>(EngineCore::GetInstance().GetJobSystem());
     auto modelPopover = std::make_unique<AgentModelPopover>(*m_ModelButton);
     m_ModelPopover = modelPopover.get();
     AddChild(std::move(modelPopover));
@@ -616,6 +621,14 @@ void PromptPanel::UpdateConversation()
         m_SessionPicker->Update();
     if (m_ModelPopover)
         m_ModelPopover->Update();
+    if (const bool busy = m_Controller->IsBusy(); busy != m_WasBusy)
+    {
+        m_WasBusy = busy;
+        if (!busy && m_ServedModelProbe)
+            m_ServedModelProbe->Ask(AiAssistantSettings::Provider());
+    }
+    if (m_ModelHeading)
+        m_ModelHeading->Update(AiAssistantSettings::Provider());
     RefreshContinuedRow();
     if (m_Controller->GetConversation().Revision() != m_RowsRevision ||
         m_Controller->ActionsRevision() != m_ActionsRevision)
@@ -633,6 +646,10 @@ void PromptPanel::FollowProvider(const std::string& providerId)
         m_SessionPicker->SetAvailable(AgentSessionState::Get().SessionProvider(providerId) != nullptr);
     if (m_ModelPopover)
         m_ModelPopover->SetProvider(providerId);
+    if (m_ServedModelProbe)
+        m_ServedModelProbe->Ask(providerId);
+    if (m_ModelHeading)
+        m_ModelHeading->Update(providerId);
 }
 
 void PromptPanel::SyncModeControl()

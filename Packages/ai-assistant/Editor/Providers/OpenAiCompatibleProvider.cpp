@@ -189,6 +189,33 @@ SetupStep AnswersStep(const std::string& baseUrl, const std::string& model, cons
     return step;
 }
 
+// The efforts a model list entry lists under `reasoning.supported_efforts`.
+std::vector<std::string> EntryEfforts(const nlohmann::json* entry)
+{
+    std::vector<std::string> efforts;
+    if (!entry)
+        return efforts;
+    const auto reasoning = entry->find("reasoning");
+    if (reasoning == entry->end() || !reasoning->is_object())
+        return efforts;
+    const auto supported = reasoning->find("supported_efforts");
+    if (supported == reasoning->end() || !supported->is_array())
+        return efforts;
+    for (const nlohmann::json& effort : *supported)
+        if (effort.is_string() && !effort.get<std::string>().empty())
+            efforts.push_back(effort.get<std::string>());
+    return efforts;
+}
+
+// The body fields every chat request sends.
+nlohmann::json ChatBody(const AgentTurnRequest& request, std::string_view model, nlohmann::json messages)
+{
+    nlohmann::json body = {{"model", std::string(model)}, {"stream", true}, {"messages", std::move(messages)}};
+    if (!request.Effort.empty())
+        body["reasoning_effort"] = request.Effort;
+    return body;
+}
+
 // Whether a model list entry says its model reads images: `input_types` (TensorFold, vLLM) first,
 // then `capabilities.vision` (TensorFold). An entry with neither says nothing.
 std::optional<bool> EntryReadsImages(const nlohmann::json* entry)
@@ -251,6 +278,20 @@ SetupStatus OpenAiCompatibleProvider::CheckSetup(const CancelToken& cancel, Setu
         return status;
     Publish(AnswersStep(m_BaseUrl, m_Model, m_Keys.Read(), surface, cancel), onStep, status);
     return status;
+}
+
+OpenAiCompatibleProvider::ServedModel OpenAiCompatibleProvider::ReadServedModel(const CancelToken& cancel) const
+{
+    if (!IsHttpUrl(m_BaseUrl))
+        return {};
+    const nlohmann::json list = ModelList(GetModels(m_BaseUrl, m_Keys.Read(), cancel));
+    ServedModel served;
+    if (m_ModelSource == ModelSource::Given)
+        served.Name = m_Model;
+    else if (const std::vector<std::string> models = ListedModels(list); !models.empty())
+        served.Name = models.front();
+    served.Efforts = EntryEfforts(ListedEntry(list, served.Name));
+    return served;
 }
 
 std::vector<SetupStep> OpenAiCompatibleProvider::SetupPlan() const
@@ -316,7 +357,8 @@ void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, cons
     const nlohmann::json tools = bridge.Definitions();
     for (int round = 0; round < m_ToolRequestLimit; ++round)
     {
-        nlohmann::json body = {{"model", model.Name}, {"stream", true}, {"messages", messages}, {"tools", tools}};
+        nlohmann::json body = ChatBody(request, model.Name, messages);
+        body["tools"] = tools;
         OpenAiChatStream::Round reply =
             OpenAiChatStream::Run(m_BaseUrl + std::string(kChatPath), headers,
                                   body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), events, cancel,
@@ -376,8 +418,10 @@ void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, cons
         }
         if (!images.empty())
         {
-            images.insert(images.begin(),
-                          {{"type", "text"}, {"text", "The images the tool calls returned, in order: " + imageSources + "."}});
+            // An explicit object: a braced list here would insert each of its pairs as an array.
+            nlohmann::json caption = nlohmann::json::object(
+                {{"type", "text"}, {"text", "The images the tool calls returned, in order: " + imageSources + "."}});
+            images.insert(images.begin(), std::move(caption));
             messages.push_back({{"role", "user"}, {"content", std::move(images)}});
         }
     }
@@ -446,7 +490,7 @@ std::string OpenAiCompatibleProvider::NormalizeBaseUrl(std::string_view baseUrl)
 
 std::string OpenAiCompatibleProvider::BuildRequestBody(const AgentTurnRequest& request, std::string_view model)
 {
-    nlohmann::json body = {{"model", std::string(model)}, {"stream", true}, {"messages", BuildMessages(request)}};
+    const nlohmann::json body = ChatBody(request, model, BuildMessages(request));
     // Invalid UTF-8 in typed text becomes U+FFFD instead of throwing out of the turn.
     return body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
