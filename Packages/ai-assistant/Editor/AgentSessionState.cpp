@@ -6,6 +6,7 @@
 #include "Providers/CodexSessionProvider.h"
 #include "Providers/HarnessSessionProvider.h"
 #include "Providers/OpenAiCompatibleProvider.h"
+#include "Providers/TensorFoldConnection.h"
 
 #include "Editor/EditorPaths.h"
 
@@ -14,6 +15,19 @@
 
 namespace GameEngine
 {
+namespace
+{
+// A key store that holds no key, for a connection that sends none (TensorFold).
+ApiKeyStore NoKeys()
+{
+    ApiKeyStore::Backend backend;
+    backend.Read = [](std::string_view) { return Platform::SecretReadResult{.Status = Platform::SecretStoreStatus::NotFound}; };
+    backend.Store = [](std::string_view, std::string_view) { return Platform::SecretStoreStatus::NoStore; };
+    backend.Delete = [](std::string_view) { return Platform::SecretStoreStatus::NoStore; };
+    return ApiKeyStore(std::move(backend), ApiKeyStore::kEndpointSlot);
+}
+} // namespace
+
 AgentSessionState& AgentSessionState::Get()
 {
     static AgentSessionState state;
@@ -43,6 +57,11 @@ std::shared_ptr<IAgentProvider> AgentSessionState::Provider(std::string_view pro
         endpointModel = AiAssistantSettings::Model(providerId);
         executable = endpointUrl + "\n" + endpointModel;
     }
+    else if (providerId == TensorFoldConnection::kId)
+    {
+        endpointUrl = AiAssistantSettings::TensorFoldUrl();
+        executable = endpointUrl;
+    }
     else if (providerId != ClaudeApiProvider::kId)
         return nullptr;
     const std::filesystem::path directory = Editor::GetCurrentEditorProjectPaths().projectRoot;
@@ -64,6 +83,10 @@ std::shared_ptr<IAgentProvider> AgentSessionState::Provider(std::string_view pro
         connection.Provider = std::make_shared<HarnessSessionProvider>(executable, directory);
     else if (providerId == OpenAiCompatibleProvider::kId)
         connection.Provider = std::make_shared<OpenAiCompatibleProvider>(m_EndpointKeys, endpointUrl, endpointModel);
+    else if (providerId == TensorFoldConnection::kId)
+        connection.Provider = std::make_shared<OpenAiCompatibleProvider>(
+            NoKeys(), endpointUrl, std::string(), TensorFoldConnection::kId,
+            OpenAiCompatibleProvider::ModelSource::FirstListed);
     else
         connection.Provider = std::make_shared<ClaudeApiProvider>(m_ApiKeys, m_ModelsUrl);
     return connection.Provider;

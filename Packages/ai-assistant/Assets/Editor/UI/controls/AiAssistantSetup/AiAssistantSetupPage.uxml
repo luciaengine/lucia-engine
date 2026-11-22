@@ -54,6 +54,10 @@
       <TextField id="AiSetupNode" class="settings-row-field" />
       <Button id="AiSetupNodeBrowse" class="small secondary" text="Browse..." />
     </UIElement>
+    <UIElement class="settings-row">
+      <Label id="AiSetupPromptMonospaceLabel" class="settings-row-label" text="Monospaced prompt font" />
+      <Toggle id="AiSetupPromptMonospace" />
+    </UIElement>
     <UIElement id="AiSetupDictationRows">
       <UIElement class="settings-row">
         <Label id="AiSetupHoldToSpeakLabel" class="settings-row-label" text="Hold the microphone to speak" />

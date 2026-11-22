@@ -574,6 +574,22 @@ void PromptPanel::ApplyPromptInputPaneHeight(float heightPx)
     m_InputPane->RequestRelayout();
 }
 
+void PromptPanel::ApplyPromptFont()
+{
+    const bool monospace = AiAssistantSettings::PromptMonospace();
+    for (UIElement* element : {static_cast<UIElement*>(m_PromptText), static_cast<UIElement*>(m_PromptPlaceholder)})
+    {
+        if (!element)
+            continue;
+        if (monospace)
+            element->AddClass("prompt-panel-script-font");
+        else
+            element->RemoveClass("prompt-panel-script-font");
+    }
+    // The line advance follows the font, and the pane's height follows the lines.
+    AutoSizePromptInputPane();
+}
+
 void PromptPanel::UpdateConversation()
 {
     // The settings page changed the connection while the panel was open.
@@ -583,6 +599,13 @@ void PromptPanel::UpdateConversation()
         m_ProviderGeneration = providerGeneration;
         m_Connections->Show(AiAssistantSettings::Provider());
         FollowProvider(AiAssistantSettings::Provider());
+    }
+
+    if (const uint64_t fontGeneration = AiAssistantSettings::PromptFontGeneration();
+        fontGeneration != m_PromptFontGeneration)
+    {
+        m_PromptFontGeneration = fontGeneration;
+        ApplyPromptFont();
     }
 
     TakePrefill();

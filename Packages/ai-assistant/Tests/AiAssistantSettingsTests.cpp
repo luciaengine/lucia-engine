@@ -1,4 +1,5 @@
 #include "AiAssistantSettings.h"
+#include "Providers/TensorFoldConnection.h"
 #include "Providers/ClaudeSessionProvider.h"
 #include "Providers/CodexSessionProvider.h"
 #include "ScopedEnvironmentVariable.h"
@@ -26,7 +27,7 @@ TEST(AiAssistantSettingsTests, EachAssistantOffersItsMethodsUnderAssistantMethod
     std::vector<std::string_view> assistants;
     for (const AiAssistantSettings::AssistantChoice& choice : AiAssistantSettings::AssistantChoices())
         assistants.push_back(choice.Name);
-    EXPECT_EQ(assistants, (std::vector<std::string_view>{"Claude", "Codex", "Harness", "Custom"}));
+    EXPECT_EQ(assistants, (std::vector<std::string_view>{"Claude", "Codex", "Harness", "TensorFold", "Custom"}));
 
     const std::vector<AiAssistantSettings::ProviderChoice> claude = AiAssistantSettings::MethodChoices("Claude");
     ASSERT_EQ(claude.size(), 2u);
@@ -191,4 +192,15 @@ TEST(AiAssistantSettingsTests, TheLastSessionIsStoredPerConnectionAndProject)
     AiAssistantSettings::SetLastSession("claude-session", {}, "ignored");
     EXPECT_EQ(AiAssistantSettings::LastSession("claude-session", {}), "");
 }
+// TensorFold works without TensorFold Bar: its URL defaults to the Bar's and can be changed.
+TEST(AiAssistantSettingsTests, TheTensorFoldUrlDefaultsToTheBarsAndCanBeChanged)
+{
+    ScopedPreferencesRoot preferences;
+    EXPECT_EQ(AiAssistantSettings::TensorFoldUrl(), TensorFoldConnection::kDefaultBaseUrl);
+    AiAssistantSettings::SetTensorFoldUrl("http://127.0.0.1:9090/v1");
+    EXPECT_EQ(AiAssistantSettings::TensorFoldUrl(), "http://127.0.0.1:9090/v1");
+    AiAssistantSettings::SetTensorFoldUrl("");
+    EXPECT_EQ(AiAssistantSettings::TensorFoldUrl(), TensorFoldConnection::kDefaultBaseUrl);
+}
+
 } // namespace GameEngine

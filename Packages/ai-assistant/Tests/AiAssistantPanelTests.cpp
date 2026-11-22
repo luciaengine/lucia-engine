@@ -1400,6 +1400,32 @@ TEST(AiAssistantPanelTests, TheInputAndItsPlaceholderFollowTheTextScale)
     EXPECT_NEAR(hint->GetResolvedStyle().Visual.FontSize, 21.0f, 0.01f) << "scale 1.5 of the placeholder's 14 px";
 }
 
+// The prompt is in the UI font by default; Monospaced prompt font switches it to the script face.
+TEST(AiAssistantPanelTests, ThePromptIsInTheUiFontUnlessMonospacedIsChosen)
+{
+    ConversationLayout layout;
+    if (!layout.Device)
+        GTEST_SKIP() << "No device";
+    const std::string built = BuildConversation(layout, 1200.0f, TurnWithALongReason("short"));
+    ASSERT_TRUE(built.empty()) << built;
+    layout.List->Style().SetCustom(HashStringId("--ui_font_family"), "Roboto");
+    layout.List->Style().SetCustom(HashStringId("--ui_font_script"), "Roboto Mono");
+    auto input = std::make_unique<TextArea>();
+    TextArea* field = input.get();
+    input->AddClass("prompt-panel-input");
+    layout.List->AddChild(std::move(input));
+    const auto family = [&] {
+        layout.List->MarkDirtySubtree(UIElement::StyleDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
+        layout.Ui->Update(0.016f, /*interactive=*/false);
+        const auto& families = field->GetResolvedStyle().Visual.FontFamily;
+        return families && !families->empty() ? families->front() : std::string();
+    };
+
+    EXPECT_EQ(family(), "Roboto");
+    field->AddClass("prompt-panel-script-font");
+    EXPECT_EQ(family(), "Roboto Mono");
+}
+
 // The conversation is a reading column in the middle of the panel: in a wide panel each card is
 // 800 px wide with equal space on both sides, and in a narrow one it keeps the list's 8 px gap on
 // each side.

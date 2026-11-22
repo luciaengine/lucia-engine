@@ -255,4 +255,51 @@ TEST(OpenAiCompatibleProviderTests, TheScanFindsTheServersThatAnswer)
     EXPECT_EQ(found[0].Name, "TensorFold");
     EXPECT_EQ(found[0].BaseUrl, answering);
 }
+// A server started without TensorFold Bar lists its model by name: a FirstListed provider asks
+// for that model, and its check has no Model step.
+TEST(OpenAiCompatibleProviderTests, AFirstListedProviderAsksForTheServersFirstModel)
+{
+    FakeApiKeyStore keys;
+    LoopbackServer server([](LoopbackServer& self, SocketHandle client) {
+        // The model list for GET /v1/models, the chat stream for the chat request.
+        if (self.LastRequest().starts_with("GET "))
+            LoopbackServer::Send(client, JsonAnswer("200 OK", R"({"data":[{"id":"Qwen3.8-Flash","owned_by":"tensorfold"}]})"));
+        else
+            LoopbackServer::Send(client, ChunkedHead() + Chunk(kRecordedReply) + "0\r\n\r\n");
+    });
+    OpenAiCompatibleProvider provider(keys.Store("the test store", ApiKeyStore::kEndpointSlot), server.Url("/v1"), "",
+                                      "tensorfold-local", OpenAiCompatibleProvider::ModelSource::FirstListed);
+
+    const SetupStatus status = provider.CheckSetup({}, SetupSurface::SettingsPage, {});
+    ASSERT_EQ(status.Steps.size(), 2u) << "Endpoint and Endpoint answers, no Model step";
+    EXPECT_EQ(status.Steps[1].State, SetupStepState::Passed);
+    EXPECT_NE(status.Steps[1].Found.find("Qwen3.8-Flash"), std::string::npos) << status.Steps[1].Found;
+
+    AgentTurnRequest request;
+    request.UserText = "Hi";
+    RecordingTurnEvents events;
+    CancelToken cancel;
+    provider.RunTurn(request, events, cancel);
+
+    EXPECT_EQ(events.Result.Outcome, TurnOutcome::Succeeded) << events.Result.Error;
+    EXPECT_NE(server.LastRequest().find("\"model\":\"Qwen3.8-Flash\""), std::string::npos) << server.LastRequest();
+    EXPECT_EQ(provider.Id(), "tensorfold-local");
+}
+
+// With no server running, the turn says to start it.
+TEST(OpenAiCompatibleProviderTests, AFirstListedProviderWithNoServerRefusesTheTurn)
+{
+    FakeApiKeyStore keys;
+    OpenAiCompatibleProvider provider(keys.Store(), "http://127.0.0.1:1/v1", "", "tensorfold-local",
+                                      OpenAiCompatibleProvider::ModelSource::FirstListed);
+    AgentTurnRequest request;
+    request.UserText = "Hi";
+    RecordingTurnEvents events;
+    CancelToken cancel;
+    provider.RunTurn(request, events, cancel);
+
+    EXPECT_EQ(events.Result.Outcome, TurnOutcome::Failed);
+    EXPECT_NE(events.Result.Error.find("Start the server"), std::string::npos) << events.Result.Error;
+}
+
 } // namespace GameEngine

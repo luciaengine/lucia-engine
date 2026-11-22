@@ -6,6 +6,7 @@
 #include "Providers/CodexSessionProvider.h"
 #include "Providers/HarnessSessionProvider.h"
 #include "Providers/OpenAiCompatibleProvider.h"
+#include "Providers/TensorFoldConnection.h"
 #include "Setup/AiAssistantSetupPage.h"
 
 #include "Editor/Settings/EditorSettingsRegistry.h"
@@ -33,6 +34,7 @@ constexpr const char* kPrefClaudeApiModel = "aiAssistant.claudeApiModel";
 constexpr const char* kPrefCodexModel = "aiAssistant.codexModel";
 constexpr const char* kPrefEndpointModel = "aiAssistant.endpointModel";
 constexpr const char* kPrefEndpointUrl = "aiAssistant.endpointUrl";
+constexpr const char* kPrefTensorFoldUrl = "aiAssistant.tensorFoldUrl";
 constexpr const char* kPrefClaudeSessionEffort = "aiAssistant.claudeSessionEffort";
 constexpr const char* kPrefClaudeExecutable = "aiAssistant.claudeExecutable";
 constexpr const char* kPrefCodexExecutable = "aiAssistant.codexExecutable";
@@ -41,6 +43,7 @@ constexpr const char* kPrefNodeExecutable = "aiAssistant.nodeExecutable";
 constexpr const char* kPrefLastMode = "aiAssistant.lastMode";
 constexpr const char* kPrefTextSize = "aiAssistant.textSize";
 constexpr const char* kPrefHoldToSpeak = "aiAssistant.holdToSpeak";
+constexpr const char* kPrefPromptMonospace = "aiAssistant.promptMonospace";
 constexpr const char* kPrefSendWhenMicStops = "aiAssistant.sendWhenMicStops";
 constexpr const char* kDefaultNodeExecutable = "node";
 constexpr AssistantMode kInitialMode = AssistantMode::Auto;
@@ -50,6 +53,7 @@ constexpr std::string_view kInitialClaudeSessionEffort = ClaudeSessionProvider::
 std::atomic<uint64_t> s_ProviderGeneration{0};
 std::atomic<uint64_t> s_ModelGeneration{0};
 std::atomic<uint64_t> s_SetupGeneration{0};
+std::atomic<uint64_t> s_PromptFontGeneration{0};
 
 // Serializes the read-modify-write of a project's per-user settings: a turn's thread
 // stores the session it ran while the panel stores the session's mode.
@@ -170,6 +174,8 @@ constexpr AiAssistantSettings::AssistantChoice kAssistantChoices[] = {
     {"Codex", "OpenAI's assistant. On Windows it answers in the panel but cannot act in the editor."},
     {"Harness", "DeepSeek's agent app on this computer, on the model you set in it. Answers in the panel but "
                 "cannot act in the editor."},
+    {"TensorFold", "The model a TensorFold server serves on this computer, with or without TensorFold Bar. "
+                   "Answers in the panel but cannot act in the editor."},
     {"Custom", "A server you name: a model on this computer or a hosted one, through its "
                "OpenAI-compatible API."},
 };
@@ -186,6 +192,10 @@ constexpr AiAssistantSettings::ProviderChoice kProviderChoices[] = {
     {HarnessSessionProvider::kId, "Harness (Desktop app)", "Harness", "Desktop app",
      "DeepSeek Harness on this computer, through its dsh program.",
      "Needs DeepSeek Harness, set up with a model. Conversation only: the assistant cannot act in the editor."},
+    {TensorFoldConnection::kId, "TensorFold (Local)", "TensorFold", "Local",
+     "A TensorFold server on this computer: TensorFold Bar's, or one you started, whichever model it serves.",
+     "Needs a TensorFold server running a model, at 127.0.0.1:8080 unless you change the URL. Conversation "
+     "only: the assistant cannot act in the editor."},
     {OpenAiCompatibleProvider::kId, "Custom (OpenAI-compatible)", "Custom", "OpenAI-compatible",
      "Any server with an OpenAI-compatible chat API, such as Ollama, LM Studio, vLLM or llama.cpp.",
      "Needs the server's URL and model; a key only when the server asks for one. Conversation only: "
@@ -472,6 +482,20 @@ std::string AiAssistantSettings::EndpointUrl()
     return ReadPreference(kPrefEndpointUrl, {});
 }
 
+std::string AiAssistantSettings::TensorFoldUrl()
+{
+    const std::string url = ReadPreference(kPrefTensorFoldUrl, {});
+    return url.empty() ? std::string(TensorFoldConnection::kDefaultBaseUrl) : url;
+}
+
+void AiAssistantSettings::SetTensorFoldUrl(const std::string& url)
+{
+    if (url == ReadPreference(kPrefTensorFoldUrl, {}))
+        return;
+    WritePreference(kPrefTensorFoldUrl, url);
+    s_SetupGeneration.fetch_add(1, std::memory_order_relaxed);
+}
+
 void AiAssistantSettings::SetEndpointUrl(const std::string& url)
 {
     if (url == EndpointUrl())
@@ -539,6 +563,25 @@ void AiAssistantSettings::SetTextSize(float px)
 {
     const float clamped = std::clamp(px, kDefaultTextSizePx, kMaxTextSizePx);
     WritePreference(kPrefTextSize, std::to_string(static_cast<int>(std::lround(clamped))));
+}
+
+bool AiAssistantSettings::PromptMonospace()
+{
+    return ReadPreference(kPrefPromptMonospace, "0") == "1";
+}
+
+// Writes only a change: the settings page calls Set with the stored value when it opens.
+void AiAssistantSettings::SetPromptMonospace(bool monospace)
+{
+    if (PromptMonospace() == monospace)
+        return;
+    WritePreference(kPrefPromptMonospace, monospace ? "1" : "0");
+    s_PromptFontGeneration.fetch_add(1, std::memory_order_relaxed);
+}
+
+uint64_t AiAssistantSettings::PromptFontGeneration()
+{
+    return s_PromptFontGeneration.load(std::memory_order_relaxed);
 }
 
 bool AiAssistantSettings::HoldToSpeak()
@@ -656,7 +699,7 @@ Editor::SettingsCategoryDescriptor AiAssistantSettings::BuildCategory()
         "ai assistant agent claude codex subscription api key provider setup check login session model effort "
         "codex model mode for new conversations claude code executable codex executable node executable "
         "hold the microphone to speak send when the microphone stops custom endpoint url openai compatible "
-        "local model server ollama lm studio vllm llama.cpp tensorfold deepseek harness dsh";
+        "local model server ollama lm studio vllm llama.cpp tensorfold deepseek harness dsh monospaced prompt font";
     category.CreateContent = [] { return std::unique_ptr<UIElement>(std::make_unique<AiAssistantSetupPage>()); };
     return category;
 }

@@ -3,6 +3,7 @@
 #include "ApiKeyStore.h"
 #include "IAgentProvider.h"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -24,11 +25,22 @@ public:
     static constexpr std::string_view kModelStep = "Model";
     static constexpr std::string_view kAnswersStep = "Endpoint answers";
 
-    /// `baseUrl` is the server's API root (".../v1"); `model` the model a turn asks for when the
-    /// request names none.
-    OpenAiCompatibleProvider(ApiKeyStore keys, std::string baseUrl, std::string model);
+    /// Which model a turn asks for when the request names none.
+    enum class ModelSource : uint8_t
+    {
+        /// The model given to the constructor; the Model step fails when it is empty.
+        Given,
+        /// The first model the server lists, read when a turn starts (TensorFold).
+        FirstListed,
+    };
 
-    std::string_view Id() const override { return kId; }
+    /// `baseUrl` is the server's API root (".../v1"); `model` the model a turn asks for when the
+    /// request names none (ModelSource::Given); `id` the connection it serves (kId, or
+    /// TensorFoldConnection::kId).
+    OpenAiCompatibleProvider(ApiKeyStore keys, std::string baseUrl, std::string model, std::string_view id = kId,
+                             ModelSource modelSource = ModelSource::Given);
+
+    std::string_view Id() const override { return m_Id; }
     ProviderCapabilities Capabilities() const override;
 
     /// Three steps. Endpoint: the base URL is an http or https URL. Model: a model is named.
@@ -53,6 +65,11 @@ public:
     static std::unordered_map<std::string, std::string> BuildRequestHeaders(std::string_view key);
 
 private:
+    /// The model a turn of `request` asks for; empty with the reason in `refusal` when there is none.
+    std::string TurnModel(const AgentTurnRequest& request, std::string& refusal, const CancelToken& cancel) const;
+
+    std::string_view m_Id;
+    ModelSource m_ModelSource = ModelSource::Given;
     ApiKeyStore m_Keys;
     std::string m_BaseUrl;
     std::string m_Model;

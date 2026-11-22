@@ -112,6 +112,7 @@ private:
     UIElement* m_NodeRow = nullptr;
     TextField* m_NodeField = nullptr;
     UIElement* m_DictationRows = nullptr;
+    Toggle* m_PromptMonospace = nullptr;
     Toggle* m_HoldToSpeak = nullptr;
     Toggle* m_SendWhenMicStops = nullptr;
 

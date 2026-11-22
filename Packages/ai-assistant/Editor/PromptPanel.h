@@ -76,6 +76,8 @@ private:
     bool FocusWaitingAnswer();
     AgentConversationRowModel RowModelAt(size_t messageIndex) const;
     void UpdateConversation();
+    /// Shows the prompt field and its placeholder in the font AiAssistantSettings::PromptMonospace() names.
+    void ApplyPromptFont();
     void SyncRows();
     void RemoveRows();
     void UpdateStatus();
@@ -150,6 +152,8 @@ private:
     std::string m_ContinuedText;
     // AiAssistantSettings::ProviderGeneration() the panel last followed.
     uint64_t m_ProviderGeneration = 0;
+    /// The prompt font generation the field shows; UINT64_MAX until the first update applies it.
+    uint64_t m_PromptFontGeneration = UINT64_MAX;
     PromptTextArea* m_PromptText = nullptr;
     ScrollView* m_HistoryScroll = nullptr;
     ScrollView* m_PromptInputScroll = nullptr;

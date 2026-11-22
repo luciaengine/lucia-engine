@@ -139,6 +139,11 @@ public:
     static std::string EndpointUrl();
     /// Stores the custom endpoint's URL; a change moves SetupGeneration().
     static void SetEndpointUrl(const std::string& url);
+    /// The TensorFold server's API URL: TensorFoldConnection::kDefaultBaseUrl (TensorFold Bar's)
+    /// until the user types another.
+    static std::string TensorFoldUrl();
+    /// Stores the TensorFold URL; empty returns to the default. A change moves SetupGeneration().
+    static void SetTensorFoldUrl(const std::string& url);
 
     /// Makes detection search `inputs` instead of this process's PATH and home, and forgets what
     /// it found; nullopt returns to the process's own. For tests.
@@ -168,6 +173,13 @@ public:
     static float TextSize();
     /// Stores `px`, clamped to the slider's range.
     static void SetTextSize(float px);
+
+    /// Whether the prompt field and its placeholder use the script (monospaced) font. Off, the
+    /// default, uses the editor's UI font.
+    static bool PromptMonospace();
+    static void SetPromptMonospace(bool monospace);
+    /// Counts the prompt font changes in this process, so an open panel follows the settings page.
+    static uint64_t PromptFontGeneration();
 
     /// Dictation (where the platform offers speech input): whether the microphone is
     /// held to speak (a press starts, the release stops) instead of clicked on and off.

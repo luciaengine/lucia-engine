@@ -73,6 +73,32 @@ SetupStep EndpointStep(const std::string& baseUrl, SetupSurface surface)
     return step;
 }
 
+// The models <base>/models lists, in its order; empty when the server does not answer with a list.
+std::vector<std::string> ListedModels(const HttpClient::HttpResponse& response)
+{
+    std::vector<std::string> models;
+    if (!response.success)
+        return models;
+    const nlohmann::json payload = nlohmann::json::parse(response.body, nullptr, false);
+    const auto data = payload.is_object() ? payload.find("data") : payload.end();
+    if (!payload.is_object() || data == payload.end() || !data->is_array())
+        return models;
+    for (const nlohmann::json& entry : *data)
+        if (entry.is_object())
+            if (std::string id = JsonFields::String(entry, "id"); !id.empty())
+                models.push_back(std::move(id));
+    return models;
+}
+
+HttpClient::HttpResponse GetModels(const std::string& baseUrl, const ApiKeyStore::Key& key, const CancelToken& cancel)
+{
+    std::unordered_map<std::string, std::string> headers = OpenAiCompatibleProvider::BuildRequestHeaders(key.Value);
+    headers.erase("accept");
+    return HttpClient::Get(baseUrl + "/models", headers,
+                           {.MaxResponseBytes = kMaxModelsResponseBytes, .Timeout = kAnswersTimeout,
+                            .Cancellation = &cancel.Flag()});
+}
+
 SetupStep ModelStep(const std::string& model, SetupSurface surface)
 {
     SetupStep step{.Name = std::string(OpenAiCompatibleProvider::kModelStep)};
@@ -100,15 +126,22 @@ bool ListsModel(const nlohmann::json& payload, const std::string& model)
 }
 
 // One GET of <base>/models. A server that cannot be reached fails: nothing would answer a turn.
+// An empty `model` (ModelSource::FirstListed) passes when the server lists any model.
 SetupStep AnswersStep(const std::string& baseUrl, const std::string& model, const ApiKeyStore::Key& key,
                       SetupSurface surface, const CancelToken& cancel)
 {
     SetupStep step{.Name = std::string(OpenAiCompatibleProvider::kAnswersStep)};
-    std::unordered_map<std::string, std::string> headers = OpenAiCompatibleProvider::BuildRequestHeaders(key.Value);
-    headers.erase("accept");
-    const HttpClient::HttpResponse response = HttpClient::Get(
-        baseUrl + "/models", headers,
-        {.MaxResponseBytes = kMaxModelsResponseBytes, .Timeout = kAnswersTimeout, .Cancellation = &cancel.Flag()});
+    const HttpClient::HttpResponse response = GetModels(baseUrl, key, cancel);
+    if (response.success && model.empty())
+    {
+        const std::vector<std::string> models = ListedModels(response);
+        step.State = models.empty() ? SetupStepState::Failed : SetupStepState::Passed;
+        step.Found = models.empty() ? "The endpoint answered, but lists no model."
+                                    : "The endpoint answered; it serves " + models.front() + ".";
+        if (models.empty())
+            step.Fix = "Load a model in the server, then click Check again.";
+        return step;
+    }
     if (response.success)
     {
         const nlohmann::json payload = nlohmann::json::parse(response.body, nullptr, false);
@@ -154,8 +187,10 @@ void Publish(const SetupStep& step, const SetupStepSink& onStep, SetupStatus& st
 }
 } // namespace
 
-OpenAiCompatibleProvider::OpenAiCompatibleProvider(ApiKeyStore keys, std::string baseUrl, std::string model)
-    : m_Keys(std::move(keys)), m_BaseUrl(NormalizeBaseUrl(baseUrl)), m_Model(std::move(model))
+OpenAiCompatibleProvider::OpenAiCompatibleProvider(ApiKeyStore keys, std::string baseUrl, std::string model,
+                                                   std::string_view id, ModelSource modelSource)
+    : m_Id(id), m_ModelSource(modelSource), m_Keys(std::move(keys)), m_BaseUrl(NormalizeBaseUrl(baseUrl)),
+      m_Model(std::move(model))
 {
 }
 
@@ -169,7 +204,8 @@ SetupStatus OpenAiCompatibleProvider::CheckSetup(const CancelToken& cancel, Setu
 {
     SetupStatus status;
     Publish(EndpointStep(m_BaseUrl, surface), onStep, status);
-    Publish(ModelStep(m_Model, surface), onStep, status);
+    if (m_ModelSource == ModelSource::Given)
+        Publish(ModelStep(m_Model, surface), onStep, status);
     if (!status.Ready() || cancel.IsCancelled())
         return status;
     Publish(AnswersStep(m_BaseUrl, m_Model, m_Keys.Read(), surface, cancel), onStep, status);
@@ -178,28 +214,56 @@ SetupStatus OpenAiCompatibleProvider::CheckSetup(const CancelToken& cancel, Setu
 
 std::vector<SetupStep> OpenAiCompatibleProvider::SetupPlan() const
 {
-    return {{.Name = std::string(kEndpointStep), .Found = "Reads the endpoint URL."},
-            {.Name = std::string(kModelStep), .Found = "Reads the model name."},
-            {.Name = std::string(kAnswersStep), .Found = "Asks the endpoint for its model list."}};
+    std::vector<SetupStep> plan = {{.Name = std::string(kEndpointStep), .Found = "Reads the endpoint URL."}};
+    if (m_ModelSource == ModelSource::Given)
+        plan.push_back({.Name = std::string(kModelStep), .Found = "Reads the model name."});
+    plan.push_back({.Name = std::string(kAnswersStep), .Found = "Asks the endpoint for its model list."});
+    return plan;
 }
 
 void OpenAiCompatibleProvider::RunTurn(const AgentTurnRequest& request, AgentTurnEvents& events,
                                        const CancelToken& cancel)
 {
-    const std::string model = request.Model.empty() ? m_Model : request.Model;
-    for (const SetupStep& step : {EndpointStep(m_BaseUrl, SetupSurface::Panel), ModelStep(model, SetupSurface::Panel)})
+    std::string refusal;
+    const std::string model = TurnModel(request, refusal, cancel);
+    if (model.empty())
     {
-        if (step.State != SetupStepState::Failed)
-            continue;
         TurnResult result;
-        result.Outcome = TurnOutcome::Failed;
-        result.NotReady = true;
-        result.Error = step.Found + " " + step.Fix;
+        result.Outcome = cancel.IsCancelled() ? TurnOutcome::Stopped : TurnOutcome::Failed;
+        result.NotReady = !cancel.IsCancelled();
+        result.Error = cancel.IsCancelled() ? std::string() : refusal;
         events.OnFinished(result);
         return;
     }
     OpenAiChatStream::Run(m_BaseUrl + std::string(kChatPath), BuildRequestHeaders(m_Keys.Read().Value),
                           BuildRequestBody(request, model), events, cancel);
+}
+
+std::string OpenAiCompatibleProvider::TurnModel(const AgentTurnRequest& request, std::string& refusal,
+                                                const CancelToken& cancel) const
+{
+    if (const SetupStep endpoint = EndpointStep(m_BaseUrl, SetupSurface::Panel); endpoint.State == SetupStepState::Failed)
+    {
+        refusal = endpoint.Found + " " + endpoint.Fix;
+        return {};
+    }
+    if (!request.Model.empty())
+        return request.Model;
+    if (m_ModelSource == ModelSource::Given)
+    {
+        const SetupStep step = ModelStep(m_Model, SetupSurface::Panel);
+        refusal = step.Found + " " + step.Fix;
+        return m_Model;
+    }
+    const HttpClient::HttpResponse response = GetModels(m_BaseUrl, m_Keys.Read(), cancel);
+    const std::vector<std::string> models = ListedModels(response);
+    if (!models.empty())
+        return models.front();
+    refusal = response.statusCode == 0
+                  ? "The endpoint at " + m_BaseUrl + " could not be reached (" + response.error +
+                        "). Start the server, or correct its URL in Settings > AI Assistant."
+                  : "The endpoint at " + m_BaseUrl + " lists no model. Load a model in the server.";
+    return {};
 }
 
 std::string OpenAiCompatibleProvider::NormalizeBaseUrl(std::string_view baseUrl)

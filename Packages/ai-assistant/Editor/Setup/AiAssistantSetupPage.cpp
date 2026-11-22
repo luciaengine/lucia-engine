@@ -12,6 +12,7 @@
 #include "Providers/CodexSessionProvider.h"
 #include "Providers/HarnessSessionProvider.h"
 #include "Providers/OpenAiCompatibleProvider.h"
+#include "Providers/TensorFoldConnection.h"
 #include "Providers/IAgentProvider.h"
 #include "Providers/SetupStatus.h"
 #include "Setup/AiAssistantApiKeyRow.h"
@@ -296,6 +297,7 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
     m_NodeField = dynamic_cast<TextField*>(FindById("AiSetupNode"_sid));
     auto* nodeBrowse = dynamic_cast<Button*>(FindById("AiSetupNodeBrowse"_sid));
     m_DictationRows = FindById("AiSetupDictationRows"_sid);
+    m_PromptMonospace = dynamic_cast<Toggle*>(FindById("AiSetupPromptMonospace"_sid));
     m_HoldToSpeak = dynamic_cast<Toggle*>(FindById("AiSetupHoldToSpeak"_sid));
     m_SendWhenMicStops = dynamic_cast<Toggle*>(FindById("AiSetupSendWhenMicStops"_sid));
     if (!m_AssistantHost || !m_MethodHost || !m_MethodNeeds || !m_SetupHeader || !m_ExecutableRow || !m_ExecutableLabel || !m_ExecutableField || !executableBrowse ||
@@ -303,7 +305,7 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
         !m_EndpointModelRow || !m_EndpointModelField ||
         !stepsHost || !apiKeyHost || !m_Options || !m_ModelRow || !m_ModelDropdown || !m_EffortRow || !m_EffortDropdown ||
         !m_CodexModelRow || !m_CodexModelField || !m_ModeDropdown || !m_NodeRow || !m_NodeField || !nodeBrowse ||
-        !m_DictationRows || !m_HoldToSpeak || !m_SendWhenMicStops)
+        !m_DictationRows || !m_PromptMonospace || !m_HoldToSpeak || !m_SendWhenMicStops)
     {
         Logger::Log::Error("AI Assistant: {} is missing one of its controls.", kLayoutAssetPath);
         RemoveAllChildren();
@@ -340,7 +342,12 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
     m_EndpointServerRow->SetTooltip(kEndpointServerTooltip);
     m_EndpointServerDropdown->SetOnValueChanged([this](const std::string& value) { ChooseLocalServer(value); });
     m_EndpointUrlRow->SetTooltip(kEndpointUrlTooltip);
-    OnCommit(*m_EndpointUrlField, [](const std::string& url) { AiAssistantSettings::SetEndpointUrl(url); });
+    OnCommit(*m_EndpointUrlField, [](const std::string& url) {
+        if (AiAssistantSettings::Provider() == TensorFoldConnection::kId)
+            AiAssistantSettings::SetTensorFoldUrl(url);
+        else
+            AiAssistantSettings::SetEndpointUrl(url);
+    });
     m_EndpointModelRow->SetTooltip(kEndpointModelTooltip);
     OnCommit(*m_EndpointModelField,
              [](const std::string& model) { AiAssistantSettings::SetModel(OpenAiCompatibleProvider::kId, model); });
@@ -372,6 +379,9 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
             AiAssistantSettings::SetNodeExecutable(m_NodeField->GetValue());
     });
 
+    m_PromptMonospace->SetTooltip("Shows the prompt you type in the script face, the editor's monospaced font. "
+                                  "Off uses the editor's UI font.");
+    m_PromptMonospace->SetOnValueChanged([](const bool& monospace) { AiAssistantSettings::SetPromptMonospace(monospace); });
     m_HoldToSpeak->SetTooltip(kHoldToSpeakTooltip);
     m_HoldToSpeak->SetOnValueChanged([](const bool& hold) { AiAssistantSettings::SetHoldToSpeak(hold); });
     m_SendWhenMicStops->SetTooltip(kSendWhenMicStopsTooltip);
@@ -491,14 +501,20 @@ void AiAssistantSetupPage::ShowExecutableRow(const std::string& providerId)
 void AiAssistantSetupPage::ShowEndpointAndKeyRows(const std::string& providerId)
 {
     const bool endpoint = providerId == OpenAiCompatibleProvider::kId;
-    // The Server row appears once a scan found a server.
+    const bool tensorFold = providerId == TensorFoldConnection::kId;
+    // The Server row appears once a scan found a server. TensorFold has only its URL: its model is
+    // the one the server lists.
     SetHidden(*m_EndpointServerRow, !endpoint || m_LocalServers.empty());
-    SetHidden(*m_EndpointUrlRow, !endpoint);
+    SetHidden(*m_EndpointUrlRow, !endpoint && !tensorFold);
     SetHidden(*m_EndpointModelRow, !endpoint);
     if (endpoint)
     {
         m_EndpointUrlField->SetValue(AiAssistantSettings::EndpointUrl());
         m_EndpointModelField->SetValue(AiAssistantSettings::Model(providerId));
+    }
+    else if (tensorFold)
+    {
+        m_EndpointUrlField->SetValue(AiAssistantSettings::TensorFoldUrl());
     }
     const bool claudeKey = providerId == ClaudeApiProvider::kId;
     SetHidden(*m_ApiKeyRow, !claudeKey && !endpoint);
@@ -601,6 +617,7 @@ void AiAssistantSetupPage::ShowOptions(const std::string& providerId)
     // Node runs the editor's tools, which only a session that signs in through its program uses.
     SetHidden(*m_NodeRow, !UsesEditorTools(providerId));
     m_NodeField->SetValue(AiAssistantSettings::NodeExecutable());
+    m_PromptMonospace->SetValueWithoutNotify(AiAssistantSettings::PromptMonospace());
     m_HoldToSpeak->SetValueWithoutNotify(AiAssistantSettings::HoldToSpeak());
     m_SendWhenMicStops->SetValueWithoutNotify(AiAssistantSettings::SendWhenMicStops());
     ShowOptionsSummary(providerId);
@@ -615,6 +632,8 @@ void AiAssistantSetupPage::ShowOptionsSummary(const std::string& providerId)
         summary += "no model set";
     else if (providerId == HarnessSessionProvider::kId)
         summary += "Harness's own model";
+    else if (providerId == TensorFoldConnection::kId)
+        summary += "the model the server serves";
     else
         summary += "Codex's own model";
     if (const std::string effort = AiAssistantSettings::Effort(providerId); !effort.empty())

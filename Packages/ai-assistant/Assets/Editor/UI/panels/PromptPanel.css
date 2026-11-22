@@ -998,7 +998,7 @@
 	display: flex;
 	align-items: center;
 	min-width: 0;
-	font-family: var(--ui_font_script);
+	font-family: var(--ui_font_family);
 	font-size: calc(14px * var(--prompt_text_scale, 1));
 	line-height: var(--script_line_height, 1.0);
 	/* Instructions: the dimmest text tier that reads as text (6.8:1 on the plate),
@@ -1017,7 +1017,7 @@
 
 .prompt-panel-input {
 	text-align: left;
-	font-family: var(--ui_font_script);
+	font-family: var(--ui_font_family);
 	font-size: calc(16px * var(--prompt_text_scale, 1));
 	line-height: var(--script_line_height, 1.0);
 	padding: 10px 12px;
@@ -1030,6 +1030,11 @@
 	border-color: transparent;
 	box-shadow: none;
 	outline: none;
+}
+
+/* Settings > AI Assistant > Monospaced prompt font: the prompt and its placeholder in the script face. */
+.prompt-panel-script-font {
+	font-family: var(--ui_font_script);
 }
 
 .prompt-panel-input:hover {
