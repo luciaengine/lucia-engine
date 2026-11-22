@@ -4,9 +4,11 @@
 // On macOS the runtime ignores the accesses of interceptors (memcpy, memset) and of uninstrumented
 // libraries such as libc++ by default. Then a write into a std::string buffer is not seen, and a
 // race on it is not reported.
+// abort_on_error=0: a process with reports exits with code 66. The macOS default aborts it with code 134,
+// which looks like a crash.
 extern "C" __attribute__((no_sanitize("thread"), visibility("default"), used)) const char* __tsan_default_options()
 {
-    return "ignore_interceptors_accesses=0:ignore_noninstrumented_modules=0";
+    return "ignore_interceptors_accesses=0:ignore_noninstrumented_modules=0:abort_on_error=0";
 }
 
 // The GPU driver stack and the OS trace buffer pass memory between their own threads through
@@ -32,5 +34,12 @@ extern "C" __attribute__((no_sanitize("thread"), visibility("default"), used)) c
         // IOKit allocates the dispatch block of a notification port and libdispatch frees it on a worker
         // thread; io_connect_method copies driver arguments on a worker thread. Each entry matches one function.
         "race:^IONotificationPortSetDispatchQueue$\n"
-        "race:^io_connect_method$\n";
+        "race:^io_connect_method$\n"
+        // The Metal shader compiler frees a request on a worker thread that another worker allocated.
+        "race:XPCCompilerConnection::BuildRequestInternal\n"
+        // A pipeline cache hashes driver data on a libdispatch worker thread.
+        "called_from_lib:/libcommonCrypto.dylib$\n"
+        // libc++ counts the references to the shared state of a std::promise inside the uninstrumented
+        // library. The runtime does not see that the last owner destroys the state after the wait returns.
+        "race:std::__1::allocator<std::__1::promise<void>>>::destroy\n";
 }
