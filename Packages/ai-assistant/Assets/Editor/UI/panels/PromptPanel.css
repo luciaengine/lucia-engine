@@ -34,10 +34,10 @@
 	min-height: 34px;
 	flex-shrink: 0;
 	box-sizing: border-box;
-	flex-wrap: wrap;
+	flex-wrap: nowrap;
 }
 
-/* The connection dropdown: its full label at rest, narrower in a narrow panel. */
+/* The connection dropdown, first in the top bar: its full label at rest, narrower in a narrow panel. */
 .prompt-panel-task {
 	width: 176px;
 	min-width: 48px;
@@ -1206,9 +1206,9 @@
 
 /* The model control: the Session control's shape. Its width is set from the longest
    text it can show (AgentModelPopover::SizeButton), so it follows the panel's width,
-   never its text. In a narrow row it gives way after the mode control (.prompt-panel-mode)
-   and faster than the connection, down to 56 px; its text drops "(latest)" before it is
-   cut, and its tooltip holds the whole text. */
+   never its text. It sits beside the connection in the top bar, and in a narrow panel it gives
+   way faster than the connection, down to 56 px; its text drops "(latest)" before it is cut,
+   and its tooltip holds the whole text. */
 #PromptModelButton {
 	align-self: center;
 	flex-shrink: 4;
@@ -1220,9 +1220,15 @@
 	margin-right: 4px;
 }
 
+/* In the top bar the bar's gap spaces the connection and the model control. */
+.prompt-panel-toolbar > .prompt-panel-input-task,
+.prompt-panel-toolbar > #PromptModelButton {
+	margin-right: 0;
+}
+
 /* The model popover (AgentModelPopover.uxml): a zero-size anchor at the panel's origin
    that gives the popover a coordinate space (a full-size box would count every press
-   in the panel as inside it), and the panel placed in it above the model button. */
+   in the panel as inside it), and the panel placed in it below the model button. */
 .agent-model-popover {
 	position: absolute;
 	left: 0;
@@ -1299,16 +1305,6 @@
 
 .prompt-panel-input-task-header {
 	background-color: var(--ui_color_bg_selected);
-}
-
-/* What the next prompt talks to: one line, cut at the panel's width. */
-.prompt-panel-current-model {
-	flex-shrink: 1;
-	min-width: 0;
-	overflow: hidden;
-	white-space: nowrap;
-	text-overflow: ellipsis;
-	color: var(--ui_color_text_secondary);
 }
 
 .prompt-panel-settings-button {

@@ -4,7 +4,7 @@ namespace GameEngine
 {
 ModeControlLayout ModeControlLayoutFor(const ModeControlFit& fit)
 {
-    const float others = fit.OthersPx + fit.ModelMinimumPx + fit.ConnectionReadablePx;
+    const float others = fit.OthersPx;
     if (!fit.Stacked || fit.AvailablePx >= fit.WholeLabelPx + others)
         return {fit.WholeLabelPx, false};
     if (fit.AvailablePx >= fit.CompactLabelPx + others)

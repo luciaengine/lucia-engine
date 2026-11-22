@@ -3,15 +3,15 @@ title: AI Assistant
 description: The editor's AI Assistant panel, its providers, the conversation, Claude Code and Codex local sessions, letting the assistant act in the editor, and its settings.
 ---
 
-The **AI Assistant** panel sends what you type to a language model and shows its reply. The panel is the editor's own. The model behind it is a **provider** you choose in the dropdown beside the send button or on the settings page, **Settings > AI Assistant** (under User Settings). The two always show the same choice.
+The **AI Assistant** panel sends what you type to a language model and shows its reply. The panel is the editor's own. The model behind it is a **provider** you choose in the dropdown in the panel's top bar or on the settings page, **Settings > AI Assistant** (under User Settings). The two always show the same choice.
 
 ## Where to start
 
-Open the panel from the **Panels** button at the right end of the top toolbar and choose **AI Assistant**. It opens as a tab beside the Scene View. Pick a provider in the dropdown beside the send button: **Claude (Subscription)**, the default, needs only Claude Code installed and logged in on this machine. Type a request in the prompt field, for example "Create an empty entity named Lantern at (0, 2, 0)", and press Enter.
+Open the panel from the **Panels** button at the right end of the top toolbar and choose **AI Assistant**. It opens as a tab beside the Scene View. Pick a provider in the dropdown in the panel's top bar: **Claude (Subscription)**, the default, needs only Claude Code installed and logged in on this machine. Type a request in the prompt field, for example "Create an empty entity named Lantern at (0, 2, 0)", and press Enter.
 
 ![The AI Assistant panel before the first prompt](img/ai-assistant-panel.png)
 
-*The panel before the first prompt: the prompt field, then the mode control, Session…, the provider dropdown, the model button, and the send button.*
+*The panel before the first prompt: the provider dropdown and the model button in the top bar, then the prompt field with the mode control, Session…, and the send button.*
 
 ## Providers
 
@@ -44,11 +44,11 @@ A reply shows the Markdown the model writes: headings, bold and italic, inline c
 | Copy on a finished or stopped reply | Copies the reply's text (without the ellipsis). The status line reads **Reply copied**. |
 | Retry on a failed reply | Sends the same prompt again, to the same provider and model, as a new message at the end of the conversation (queued like any prompt if a reply is being written). The failed reply stays where it was and reads **Retried below** in place of the button. It is never sent to the provider as part of the conversation. If the retry fails too, its own row offers Retry. |
 | Choose another provider | Starts a new conversation: the rows and the queue are cleared. A local session keeps its own conversation, so choosing it again continues it. |
-| The model button beside the provider | Opens a small panel with the **Model** and, for Claude (Subscription), an **Effort** slider. The button reads your choice: **Opus (latest) · High** until a reply names the version, then **Opus 5.5 · High**. In a narrow panel the button drops "(latest)", then the effort, before it cuts its text, and its tooltip holds the whole choice. A change is kept at once and applies from the next prompt you send, in the same conversation. Prompts already queued keep what they were sent with. Click outside the panel or press Esc to close it. |
+| The model button beside the provider, in the top bar | Opens a small panel under it with the **Model** and, for Claude (Subscription), an **Effort** slider. The button reads your choice: **Opus (latest) · High** until a reply names the version, then **Opus 5.5 · High**. In a narrow panel the button drops "(latest)", then the effort, before it cuts its text, and its tooltip holds the whole choice. A change is kept at once and applies from the next prompt you send, in the same conversation. Prompts already queued keep what they were sent with. Click outside the panel or press Esc to close it. |
 
 ### Model and effort
 
-The panel's top bar names what the next prompt talks to: the assistant, its model and the effort you chose, for example **TensorFold · inkling-2-mini · High**. The editor reads a server connection's model list when you choose the connection and after each reply. TensorFold Bar serves its model as `local-model`, so that name is shown for it.
+The top bar shows what the next prompt talks to: the provider dropdown, then the model button with the model and the effort you chose, for example **inkling-2-mini · High**. The editor reads a server connection's model list when you choose the connection and after each reply. TensorFold Bar serves its model as `local-model`, so that name is shown for it.
 
 | Provider | Models | Effort |
 |---|---|---|

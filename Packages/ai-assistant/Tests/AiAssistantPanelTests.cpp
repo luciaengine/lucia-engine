@@ -5,7 +5,6 @@
 #include "AgentCallResourceTile.h"
 #include "AgentCallRow.h"
 #include "AgentConnectionDropdown.h"
-#include "AgentModelHeading.h"
 #include "Providers/TensorFoldConnection.h"
 #include "AgentConversationController.h"
 #include "AgentConversationRow.h"
@@ -1853,8 +1852,7 @@ TEST(AiAssistantPanelTests, TheModelPopoverStoresEachChoiceAndItsButtonReadsIt)
 }
 
 // A server connection has no model list: once its server's list names the model and its efforts,
-// the button shows with the efforts alone, Default first (no effort sent), and the top bar names
-// the assistant, the model and the chosen effort.
+// the button shows with the efforts alone, Default first (no effort sent).
 TEST(AiAssistantPanelTests, AServerConnectionOffersTheEffortsItsServerLists)
 {
     auto device = MakeHeadlessDevice();
@@ -1883,7 +1881,6 @@ TEST(AiAssistantPanelTests, AServerConnectionOffersTheEffortsItsServerLists)
     AiAssistantSettings::SetServedModel(tensorFold, {});
     popover.SetProvider(tensorFold);
     EXPECT_TRUE(button.HasClass("hidden")) << "nothing to choose before the server's list is read";
-    EXPECT_EQ(AgentModelHeading::Text(tensorFold), "TensorFold");
 
     AiAssistantSettings::SetServedModel(tensorFold, {.Name = "inkling-2-mini",
                                                      .Efforts = {"max", "xhigh", "high", "medium", "low", "minimal"}});
@@ -1907,11 +1904,9 @@ TEST(AiAssistantPanelTests, AServerConnectionOffersTheEffortsItsServerLists)
     effort->SetValue(5.0f);
     EXPECT_EQ(AiAssistantSettings::Effort(tensorFold), "xhigh");
     EXPECT_EQ(button.GetText(), "inkling-2-mini · Extra high");
-    EXPECT_EQ(AgentModelHeading::Text(tensorFold), "TensorFold · inkling-2-mini · Extra high");
 
     AiAssistantSettings::SetServedModel(tensorFold, {.Name = "local-model", .Efforts = {"low", "none"}});
     EXPECT_EQ(AiAssistantSettings::Effort(tensorFold), "") << "an effort the new model does not list is not sent";
-    EXPECT_EQ(AgentModelHeading::Text(tensorFold), "TensorFold · local-model");
     AiAssistantSettings::SetServedModel(tensorFold, {});
 }
 
@@ -2019,17 +2014,14 @@ TEST(AiAssistantPanelTests, TheNarrowedConnectionDropdownShowsEachNameWhole)
     }
 }
 
-// The mode control keeps its widest label whole while the control line still leaves the
-// model button its minimum and the connection its first word, and always beside the field;
-// on a narrower line it shows its compact labels, whole while they fit.
-TEST(AiAssistantPanelTests, TheModeControlKeepsItsLabelWholeOnlyWhileTheConnectionStaysReadable)
+// The mode control keeps its widest label whole while it fits on the control line, and always
+// beside the field; on a narrower line it shows its compact labels, whole while they fit.
+TEST(AiAssistantPanelTests, TheModeControlKeepsItsLabelWholeWhileItFits)
 {
     ModeControlFit fit;
     fit.WholeLabelPx = 122.0f;
     fit.CompactLabelPx = 60.0f;
-    fit.OthersPx = 130.0f;
-    fit.ModelMinimumPx = 56.0f;
-    fit.ConnectionReadablePx = 70.0f;
+    fit.OthersPx = 256.0f;
     fit.Stacked = true;
     const auto expect = [&](std::optional<float> minimum, bool compact, const char* what)
     {

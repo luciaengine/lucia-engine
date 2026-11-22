@@ -20,7 +20,6 @@ namespace GameEngine
 class AgentConnectionDropdown;
 class AgentConversationController;
 class AgentConversationRow;
-class AgentModelHeading;
 class AgentModelPopover;
 class AgentSessionPicker;
 class MarkupTokenPicker;
@@ -142,7 +141,6 @@ private:
     Button* m_ModelButton = nullptr;
     // The model control's popover, a child of the panel; it owns the button's behavior.
     AgentModelPopover* m_ModelPopover = nullptr;
-    std::unique_ptr<AgentModelHeading> m_ModelHeading;
     std::unique_ptr<ServedModelProbe> m_ServedModelProbe;
     /// A turn ran at the last update: its end reads the server's model list again.
     bool m_WasBusy = false;

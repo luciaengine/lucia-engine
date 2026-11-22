@@ -358,7 +358,6 @@ add_executable(AiAssistantPanelTests
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentSessionSearchProvider.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentConnectionDropdown.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentModelPopover.cpp
-    ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentModelHeading.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/ModeControlFit.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentConversationRowModel.cpp
     ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/AgentConversationRow.cpp

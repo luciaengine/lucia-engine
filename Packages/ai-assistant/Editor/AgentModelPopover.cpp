@@ -302,13 +302,13 @@ void AgentModelPopover::Place()
         return;
     // Layout rectangles are window-absolute; the panel is placed in the parent's space.
     const float buttonCenterX = m_Button.GetLayoutX() + m_Button.GetLayoutWidth() * 0.5f - parent->GetLayoutX();
-    const float buttonTop = m_Button.GetLayoutY() - parent->GetLayoutY();
+    const float buttonBottom = m_Button.GetLayoutY() + m_Button.GetLayoutHeight() - parent->GetLayoutY();
     const float width = m_Panel->GetLayoutWidth() > 0.0f ? m_Panel->GetLayoutWidth() : kPanelWidthEstimatePx;
     const float height = m_Panel->GetLayoutHeight() > 0.0f ? m_Panel->GetLayoutHeight() : kPanelHeightEstimatePx;
-    // Above the button, which sits on the panel's bottom line.
+    // Below the button, which sits in the panel's top bar.
     const UI::Layout::PopupPosition placed =
         UI::Layout::ClampPopupToViewport({0.0f, 0.0f, parentWidth, parentHeight}, buttonCenterX - width * 0.5f,
-                                         buttonTop - kAnchorGapPx - height, width, height, kEdgePaddingPx);
+                                         buttonBottom + kAnchorGapPx, width, height, kEdgePaddingPx);
 
     const auto moved = [](const std::optional<StyleLength>& current, float value)
     { return !current || !current->IsPx() || std::fabs(current->Value - value) > kPlacementEpsilonPx; };

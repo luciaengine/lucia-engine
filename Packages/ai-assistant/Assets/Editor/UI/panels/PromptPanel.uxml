@@ -1,7 +1,8 @@
 <UIElement id="PromptPanelContainer" class="prompt-panel-root">
   <UIElement class="prompt-panel-header">
     <UIElement class="prompt-panel-toolbar">
-      <Label id="PromptCurrentModel" class="prompt-panel-current-model" />
+      <Dropdown id="PromptProviderDropdown" class="prompt-panel-task prompt-panel-input-task" />
+      <Button id="PromptModelButton" class="secondary hidden" text="Opus (latest) · High" focusable="false" />
       <Button id="PromptSettingsToggle" class="icon-button prompt-panel-settings-button" />
     </UIElement>
 
@@ -39,8 +40,6 @@
           <UIElement id="PromptInputControls" class="prompt-panel-input-controls">
             <Dropdown id="PromptModeDropdown" class="prompt-panel-mode prompt-panel-input-task hidden" />
             <Button id="PromptSessionButton" class="secondary hidden" text="Session…" focusable="false" />
-            <Dropdown id="PromptProviderDropdown" class="prompt-panel-task prompt-panel-input-task" />
-            <Button id="PromptModelButton" class="secondary hidden" text="Opus (latest) · High" focusable="false" />
             <UIElement id="PromptSpeechLevelsLeft" class="prompt-panel-speech-levels hidden">
               <UIElement class="prompt-panel-speech-bar" />
               <UIElement class="prompt-panel-speech-bar" />

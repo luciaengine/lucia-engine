@@ -3,7 +3,6 @@
 #include "AgentConversationController.h"
 #include "AgentConversationRow.h"
 #include "AgentConversationRowModel.h"
-#include "AgentModelHeading.h"
 #include "AgentModelPopover.h"
 #include "AgentReplyActions.h"
 #include "AgentSessionPicker.h"
@@ -161,13 +160,6 @@ void ConfigurePromptScrollView(ScrollView& scroll, bool input)
     }
 }
 
-// The width `element`'s stylesheet lets it shrink to; 0 when it sets none in pixels.
-float MinWidthPx(const UIElement& element)
-{
-    const StyleLength minimum = element.GetResolvedStyle().Layout.MinWidth;
-    return minimum.IsPx() ? minimum.Value : 0.0f;
-}
-
 auto s_PromptTextAreaRegistration =
     UIRegistration::RegisterWithFactory<PromptTextArea>(
         "PromptTextArea", []() { return std::make_unique<PromptTextArea>(); });
@@ -257,8 +249,6 @@ void PromptPanel::OnLayoutBound()
     m_Connections = std::make_unique<AgentConnectionDropdown>(*m_ProviderDropdown);
     m_ProviderGeneration = AiAssistantSettings::ProviderGeneration();
     m_Connections->Show(AiAssistantSettings::Provider());
-    if (Label* heading = dynamic_cast<Label*>(FindById("PromptCurrentModel"_sid)))
-        m_ModelHeading = std::make_unique<AgentModelHeading>(*heading);
     m_ServedModelProbe = std::make_unique<ServedModelProbe>(EngineCore::GetInstance().GetJobSystem());
     auto modelPopover = std::make_unique<AgentModelPopover>(*m_ModelButton);
     m_ModelPopover = modelPopover.get();
@@ -627,8 +617,6 @@ void PromptPanel::UpdateConversation()
         if (!busy && m_ServedModelProbe)
             m_ServedModelProbe->Ask(AiAssistantSettings::Provider());
     }
-    if (m_ModelHeading)
-        m_ModelHeading->Update(AiAssistantSettings::Provider());
     RefreshContinuedRow();
     if (m_Controller->GetConversation().Revision() != m_RowsRevision ||
         m_Controller->ActionsRevision() != m_ActionsRevision)
@@ -648,8 +636,6 @@ void PromptPanel::FollowProvider(const std::string& providerId)
         m_ModelPopover->SetProvider(providerId);
     if (m_ServedModelProbe)
         m_ServedModelProbe->Ask(providerId);
-    if (m_ModelHeading)
-        m_ModelHeading->Update(providerId);
 }
 
 void PromptPanel::SyncModeControl()
@@ -719,7 +705,7 @@ void PromptPanel::ShowModeLabels(int selected)
 
 void PromptPanel::FitModeControl()
 {
-    if (!m_ModeDropdown || !m_ModelButton || m_ModeDropdown->HasClass("hidden") || m_ModeOptions.empty())
+    if (!m_ModeDropdown || m_ModeDropdown->HasClass("hidden") || m_ModeOptions.empty())
         return;
     const StyleLength width = m_ModeDropdown->GetResolvedStyle().Layout.Width;
     if (!width.IsPx())
@@ -733,16 +719,11 @@ void PromptPanel::FitModeControl()
         widest = std::max(widest, m_ModeDropdown->WidthForLabel(option.Label));
         widestCompact = std::max(widestCompact, m_ModeDropdown->WidthForLabel(option.CompactLabel));
     }
-    // The connection's first word with the ellipsis its cut label ends in; a one-word name whole.
-    const std::string& name = m_ProviderDropdown->GetSelectedLabel();
-    const size_t space = name.find(' ');
-    const float readableConnection = m_ProviderDropdown->WidthForLabel(
-        space == std::string::npos ? name : name.substr(0, space) + "\xE2\x80\xA6");
-    // 0 until the controls have been laid out as text.
-    if (widest <= 0.0f || readableConnection <= 0.0f)
+    // 0 until the control has been laid out as text.
+    if (widest <= 0.0f)
         return;
 
-    // What the line holds besides the three controls that shrink: Session…, Send and the
+    // What the line holds besides the mode control: Session…, the microphone, Send and the
     // margins between them, measured from where the visible controls start and end.
     float left = std::numeric_limits<float>::max();
     float right = 0.0f;
@@ -758,11 +739,8 @@ void PromptPanel::FitModeControl()
     ModeControlFit fit;
     fit.WholeLabelPx = std::min(std::ceil(widest), width.Value);
     fit.CompactLabelPx = std::min(std::ceil(widestCompact), width.Value);
-    fit.OthersPx = right - left - m_ModeDropdown->GetLayoutWidth() - m_ModelButton->GetLayoutWidth() -
-                   m_ProviderDropdown->GetLayoutWidth();
+    fit.OthersPx = right - left - m_ModeDropdown->GetLayoutWidth();
     fit.AvailablePx = m_InputControls->GetLayoutWidth() - line.Layout.Padding.Left - line.Layout.Padding.Right;
-    fit.ModelMinimumPx = MinWidthPx(*m_ModelButton);
-    fit.ConnectionReadablePx = std::ceil(readableConnection);
     fit.Stacked = m_InputStacked;
 
     const ModeControlLayout layout = ModeControlLayoutFor(fit);
