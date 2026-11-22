@@ -400,6 +400,16 @@ ge_stage_test_asset(AiAssistantPanelTests
 ge_stage_test_asset(AiAssistantPanelTests
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/SetupStepList/SetupStepRow.uxml"
     "Assets/UI/controls/SetupStepList/SetupStepRow.uxml")
+# Text measurements need the shipped faces: macOS has no system-font fallback for a
+# missing staged face, so without these every label measures 0 px wide there.
+foreach(face IN ITEMS
+        Roboto-Regular Roboto-Bold Roboto-Italic Roboto-BoldItalic
+        Roboto-Medium Roboto-MediumItalic
+        RobotoMono-Regular RobotoMono-Bold RobotoMono-Italic RobotoMono-BoldItalic)
+    ge_stage_test_asset(AiAssistantPanelTests
+        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/${face}.ttf"
+        "Assets/Fonts/${face}.ttf")
+endforeach()
 add_dependencies(AiAssistantPanelTests FakeAgentCli)
 add_custom_command(TARGET AiAssistantPanelTests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:AiAssistantPanelTests>/AiAssistantPanelFixtures
