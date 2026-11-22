@@ -1689,6 +1689,23 @@ TEST(GltfImport, SparseNormalAndTexcoordImportTheAppliedValues)
     EXPECT_EQ(Vector<float>(vertices[2].TexCoords, vertices[2].TexCoords + 2), (Vector<float>{0.5f, 0.25f}));
 }
 
+TEST(GltfImport, SecondaryTexcoordSlotsSupportSparseAttributesWithoutFillingGaps)
+{
+    std::string source(kSparseNormalAndTexcoord);
+    constexpr std::string_view kTexcoordAttribute = R"("TEXCOORD_0": 2)";
+    const size_t position = source.find(kTexcoordAttribute);
+    ASSERT_NE(position, std::string::npos);
+    source.replace(position, kTexcoordAttribute.size(),
+                   R"("TEXCOORD_0": 2, "TEXCOORD_6": 2, "TEXCOORD_7": 2)");
+    const Mesh mesh = LoadOnlyMesh(source, "secondary_sparse_texcoords.gltf");
+    ASSERT_EQ(mesh.ExtraTexCoords.size(), 6u);
+    for (size_t channel = 0; channel < 4; ++channel)
+        EXPECT_TRUE(mesh.ExtraTexCoords[channel].empty());
+    const Vector<float> expected{0.0f, 0.0f, 0.0f, 0.0f, 0.5f, 0.25f};
+    EXPECT_EQ(mesh.ExtraTexCoords[4], expected);
+    EXPECT_EQ(mesh.ExtraTexCoords[5], expected);
+}
+
 // A triangle with normals and UVs and no TANGENT, under a material that is `materialJson`. U runs
 // along +X in the file, V along +Y, the normal is +Z.
 std::string TriangleWithoutTangents(std::string_view materialJson)
@@ -3242,6 +3259,29 @@ TEST(GltfImport, StaticMergePastTheVertexLimitLeavesTheGroupUnmerged)
     EXPECT_EQ(pastTheLimit.size(), kTriangles);
     const std::string warning = TestLog::FirstLineContaining(lines, "merge.gltf");
     EXPECT_NE(warning.find("the 32 static primitives of material 0 are not merged"), std::string::npos) << warning;
+}
+
+TEST(GltfImport, StaticMergeKeepsExtraTexcoordsInTheirSourceNodeSpace)
+{
+    Vector<Mesh> meshes(33);
+    for (Mesh& mesh : meshes) {
+        mesh.Vertices.resize(3);
+        mesh.Indices = {0, 1, 2};
+    }
+    const Vector<float> pivots{2.0f, 4.0f, 2.0f, 4.0f, 2.0f, 4.0f};
+    meshes.front().ExtraTexCoords.resize(5u);
+    meshes.front().ExtraTexCoords[4] = pivots;
+    meshes.front().SourceNodeTransform[12] = 64.0f;
+
+    MergeStaticPrimitivesByMaterial(meshes, "pivot_space.gltf", 99u);
+
+    ASSERT_EQ(meshes.size(), 2u);
+    const Mesh& pivotMesh = meshes.front();
+    ASSERT_EQ(pivotMesh.ExtraTexCoords.size(), 5u);
+    EXPECT_EQ(pivotMesh.ExtraTexCoords[4], pivots);
+    EXPECT_EQ(pivotMesh.SourceNodeTransform[12], 64.0f);
+    EXPECT_EQ(pivotMesh.Vertices.size(), 3u);
+    EXPECT_EQ(meshes.back().Vertices.size(), 96u);
 }
 
 // An .anim file that is not JSON, or whose key holds a value of the wrong type, is refused with the

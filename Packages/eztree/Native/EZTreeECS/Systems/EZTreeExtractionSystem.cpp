@@ -249,6 +249,7 @@ Engine::Renderer::ImpostorBakeRequest MakeImpostorBakeRequest(const TreeVariant&
     request.Key.MeshHash = variant.Hash;
     request.Key.MaterialHash = variant.Hash;
     request.Key.Layout = Mathematics::OctahedralLayout::Hemisphere;
+    request.Key.FilterMips = Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_FILTER_MIPS", false);
     request.Center = variant.Bounds.center;
     request.Radius = variant.ImpostorRadius;
     if (variant.Branches.IsValid())
@@ -359,7 +360,7 @@ void EZTreeExtractionSystem::RequestImpostors(FrameContext& frame)
     for (const auto& [hash, variant] : frame.Variants)
     {
         // A request each frame keeps the atlas in the baker's least-recently-used budget.
-        const Engine::Renderer::ImpostorAtlas atlas = baker.Request(MakeImpostorBakeRequest(variant), m_UpdateStamp);
+        const Engine::Renderer::ImpostorAtlas atlas = baker.Request(MakeImpostorBakeRequest(variant), *m_RenderServices);
         const Engine::Renderer::Material* card = Engine::Renderer::ImpostorStage::RegisterCardMaterial(
             *m_RenderServices, variant.Materials.Impostor, "Tree Generator Impostor", atlas, variant.Bounds.center,
             variant.ImpostorRadius, Engine::Renderer::ImpostorAtlasKey{}.FramesPerSide,

@@ -12,6 +12,7 @@
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Memory/AllocationCountScope.h"
 #include "StagedTestPaths.h"
+#include "TextureCookTestFixtures.h"
 #include "Types/Fnv1a.h"
 
 #include <algorithm>
@@ -1730,24 +1731,6 @@ TEST(TextureCookParallel, CancelStopsSpreadEncode)
 
 // ── Memory ───────────────────────────────────────────────────────────────────
 
-// A Radiance file whose texels ramp across both axes (one RGBE texel each, no RLE).
-std::vector<uint8> GradientHdr(uint32 size)
-{
-    const std::string header = "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y " + std::to_string(size) + " +X " +
-                               std::to_string(size) + "\n";
-    std::vector<uint8> hdr(header.begin(), header.end());
-    for (uint32 y = 0; y < size; ++y)
-        for (uint32 x = 0; x < size; ++x)
-        {
-            // Mantissas 64..255 under exponents 2^-1..2^2: radiance 0.125 to 4.
-            const uint8 texel[4] = {static_cast<uint8>(64 + (x * 191) / (size - 1)),
-                                    static_cast<uint8>(64 + (y * 191) / (size - 1)), 128,
-                                    static_cast<uint8>(128 + ((x + y) * 4) / (2 * size))};
-            hdr.insert(hdr.end(), texel, texel + 4);
-        }
-    return hdr;
-}
-
 std::vector<uint8> ReadFixture(const char* name)
 {
     const std::filesystem::path path = TestPaths::StagedRoot() / "Engine/Tests/Fixtures" / name;
@@ -1782,7 +1765,7 @@ std::vector<SteadyCook> SteadyCooks()
          TextureCookOutput::BC7, 4},
         {"albedo uncompressed", albedo, ".png", MakeInputs(TextureCookUsage::Auto, TextureColorSpace::SRGB),
          TextureCookOutput::Uncompressed, 2},
-        {"radiance uncompressed", GradientHdr(256), ".hdr",
+        {"radiance uncompressed", GameEngine::Tests::MakeGradientHdr(256, 256), ".hdr",
          MakeInputs(TextureCookUsage::Auto, TextureColorSpace::Linear), TextureCookOutput::Uncompressed, 2},
     };
 }

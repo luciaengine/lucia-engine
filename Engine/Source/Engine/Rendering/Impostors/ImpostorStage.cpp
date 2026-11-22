@@ -16,6 +16,7 @@
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Types/Fnv1a.h"
 
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,12 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
     Material* registered = services.Materials().Registry().Find(material);
     const StringId albedo = HashStringId("albedoMap");
     const StringId normal = HashStringId("normalMap");
+    // impostorAtlas: frames per side, layout, debug tint, highest ready mip.
+    const float atlasParams[4] = {
+        static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f,
+        Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f,
+        static_cast<float>(atlas.HighestReadyMip)};
+    const StringId atlasProperty = HashStringId("impostorAtlas");
     if (!registered || registered->GetTexture(albedo) != atlas.Color)
     {
         MaterialDocument doc{};
@@ -68,9 +75,7 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
         doc.doubleSided = true;
         doc.properties["alphaCutoff"] = 0.5f;
         doc.properties["impostorBounds"] = std::vector<float>{center.x, center.y, center.z, radius};
-        doc.properties["impostorAtlas"] = std::vector<float>{
-            static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f,
-            Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f, 0.0f};
+        doc.properties["impostorAtlas"] = std::vector<float>(std::begin(atlasParams), std::end(atlasParams));
         doc.textures["albedoMap"] = std::string{};
         doc.textures["normalMap"] = std::string{};
         registered = services.Materials().RegisterMaterialFromDocument(material, doc);
@@ -81,6 +86,13 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
         registered->SetBindlessTextureIndex(albedo, services.Textures().GetBindlessIndex(atlas.Color));
         registered->SetTexture(normal, atlas.NormalDepth);
         registered->SetBindlessTextureIndex(normal, services.Textures().GetBindlessIndex(atlas.NormalDepth));
+    }
+    else
+    {
+        // The same atlas gains its mips over several frames: only the ready mip changes.
+        float current[4]{};
+        if (!registered->GetVector(atlasProperty, current, 4) || current[3] != atlasParams[3])
+            registered->SetVector(atlasProperty, atlasParams, 4);
     }
     return registered->GetGraphicsPipelineId().IsValid() ? registered : nullptr;
 }

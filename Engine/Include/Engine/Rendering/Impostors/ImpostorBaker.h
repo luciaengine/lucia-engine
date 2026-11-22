@@ -6,11 +6,13 @@
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Mathematics/Geometry.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/RenderGraph/RGFrameStamp.h"
 #include "Types/FlatMap.h"
 
 #include <array>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 namespace GameEngine::Rendering::RenderGraph
@@ -50,6 +52,7 @@ struct ImpostorAtlas
 {
     Rendering::TextureHandle Color;
     Rendering::TextureHandle NormalDepth;
+    uint32 HighestReadyMip = 0;
 };
 
 /// Bakes impostor atlases on the GPU. Each frame it draws a few atlas frames of the oldest
@@ -66,10 +69,15 @@ public:
     ~ImpostorBaker() override;
 
     /// The atlas of `request.Key` once it is baked; an atlas with invalid textures until then.
-    /// The first call for a key queues its bake when it fits the budget. Thread safe.
-    ImpostorAtlas Request(const ImpostorBakeRequest& request, uint64 frame);
+    /// New atlases enter the budget after extraction marks the atlases it uses. Thread safe.
+    /// Atlas eviction uses the renderer's app-frame epoch for every producer.
+    ImpostorAtlas Request(const ImpostorBakeRequest& request, const RenderServices& services);
 
     void DeclareFrameStage(Rendering::RenderGraph::RGFrame& frame, RenderServices& services) override;
+    void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
+                            const Rendering::IDevice::GpuSyncToken& token) override;
+    void OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame) override;
+    void OnFrameStreamRetiredRG(Rendering::RenderGraph::RGFrame& frame) override;
     void OnDeviceRebuilt(Rendering::IDevice* device) override;
 
 private:
@@ -78,12 +86,21 @@ private:
         ImpostorBakeRequest Request;
         uint32 NextFrame = 0;     // The next atlas frame to draw.
         uint32 SettledFrames = 0; // Frames in a row with no pipeline build in flight for its materials.
+        uint32 MipAttemptsWithoutProgress = 0;
         bool Cleared = false;
     };
     struct AtlasTextures
     {
         ImpostorAtlas Atlas;
-        bool Ready = false;
+        std::array<std::vector<Rendering::TextureViewHandle>, 2> SampleViews;
+        uint32 MipCount = 1;
+    };
+    struct PendingMip
+    {
+        Rendering::RenderGraph::RGFrameStamp Frame;
+        ImpostorAtlasKey Key;
+        uint32 Level = 0;
+        std::array<const bool*, 2> Recorded{};
     };
     // Draw commands and push constants live until the frame that declared them executes.
     static constexpr uint32 kFrameSlots = 4;
@@ -93,8 +110,14 @@ private:
         std::vector<std::array<std::byte, 128>> PushConstants;
     };
 
+    void AdmitRequests(uint64 frame);
     bool EnsureBakeView(RenderServices& services);
     AtlasTextures& EnsureTextures(Rendering::IDevice& device, const ImpostorAtlasKey& key);
+    bool EnsureMipPipeline(Rendering::IDevice& device);
+    bool DeclareMip(Rendering::RenderGraph::RGFrame& frame, RenderServices& services, AtlasTextures& textures,
+                    const ImpostorAtlasKey& key,
+                    const std::array<Rendering::RenderGraph::RGTexture, 2>& resources);
+    static void DestroyAtlas(Rendering::IDevice& device, AtlasTextures& textures);
     void FreeTextures(Rendering::IDevice* device, const ImpostorAtlasKey& key);
     bool PartsSettled(RenderServices& services, BakeJob& job);
     void DeclareAtlasFrame(Rendering::RenderGraph::RGFrame& frame, RenderServices& services, const BakeJob& job,
@@ -104,11 +127,17 @@ private:
     std::mutex m_Mutex;
     ImpostorAtlasCache m_Cache{kDefaultBudgetBytes};
     FlatMap<ImpostorAtlasKey, AtlasTextures> m_Textures;
+    FlatMap<ImpostorAtlasKey, ImpostorBakeRequest> m_Requests;
+    uint64 m_RequestFrame = 0;
     std::deque<BakeJob> m_Jobs;
     std::vector<ImpostorAtlasKey> m_Evicted;
     std::vector<ImpostorAtlasKey> m_Finished; // Baked in a declared frame; ready once it ran.
     std::array<FrameSlot, kFrameSlots> m_FrameSlots;
     Rendering::IDevice* m_Device = nullptr;
+    std::optional<PendingMip> m_PendingMip;
+    Rendering::GraphicsPipelineId m_MipPipeline;
+    Rendering::DescriptorSetLayoutDesc m_MipLayout;
+    bool m_MipPipelineRequested = false;
     Rendering::CameraId m_Camera{};
     Rendering::ViewId m_View{};
 };

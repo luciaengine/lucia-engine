@@ -336,6 +336,15 @@ add_test(NAME ClonePathGuard.RefusesSpacesAndProgramFiles
           -DWORK=${CMAKE_BINARY_DIR}/Tests/ClonePathGuardScratch
           -P ${CMAKE_SOURCE_DIR}/cmake/Tests/ClonePathGuardTest.cmake)
 
+# A link setting of an imported target replaces the setting of the build on a
+# wasm link line; this exercises the drop and the refusal against scratch
+# projects, without a toolchain.
+add_test(NAME WasmLinkSettings.DropsAndRefusesImportedSettings
+  COMMAND ${CMAKE_COMMAND}
+          -DSCRIPT=${CMAKE_SOURCE_DIR}/cmake/WasmLinkSettings.cmake
+          -DWORK=${CMAKE_BINARY_DIR}/Tests/WasmLinkSettingsScratch
+          -P ${CMAKE_SOURCE_DIR}/cmake/Tests/WasmLinkSettingsTest.cmake)
+
 # The overlay-port freshness guard reads the same status database and decides
 # whether a build links a patched port or the library that preceded it; this
 # exercises it against a scratch install root, without a build.

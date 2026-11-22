@@ -129,7 +129,6 @@ private:
     // A destroy that empties its chunk stamps no column, so the structural version also starts a scan.
     std::size_t m_StructuralVersion = static_cast<std::size_t>(-1);
     uint64 m_DeviceGeneration = 0;
-    uint64 m_Frame = 0;
     std::atomic<bool> m_ModelReloaded{false};
     AssetReloadInvalidator m_ModelReloadInvalidator;
 };

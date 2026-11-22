@@ -164,7 +164,7 @@ void ValidateDeformationEnvelopeScale(DeformationEnvelopeDeclaration& declaratio
                               " property; scaledBy takes a float or vector property. " + std::string(kNotWidened);
         return;
     }
-    if (!table.HasSurfaceDeclarations && FindLegacyMaterialLane(declaration.ScaledBy))
+    if ((!table.HasSurfaceDeclarations || table.UsesLegacySurfaceLanes) && FindLegacyMaterialLane(declaration.ScaledBy))
         return;
     declaration.Refusal = "Vertex modifier '" + declaration.ModifierFile + "': '" + std::string(kTag) +
                           " scaledBy=" + declaration.ScaledBy +

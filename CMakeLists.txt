@@ -424,15 +424,6 @@ if(EMSCRIPTEN)
     # target; Apps/Editor/CMakeLists.txt refuses to build WebEditor in Debug
     # rather than let it fail in the browser.
 
-    # KTX's imported target ships the link settings its own wasm demos want,
-    # and usage requirements carry them into every executable that links the
-    # engine — including "-s STACK_SIZE=96kb", which lands after the budget
-    # above and wins, because emcc takes the last -s. The main-thread stack is
-    # an application decision, and 96 KB is far below what a UI layout pass
-    # recurses through. Resolve the package once here, at a scope every
-    # subdirectory inherits (Engine and UI each call find_package(Ktx), and a
-    # per-directory imported target would keep its own copy of the flag), and
-    # drop that one entry — the port's other settings stay as they are.
     # Link contract for a target that mounts OPFS (Platform::Web::
     # MountPersistentStorage). Two parts that only work together, kept in one
     # variable so a target cannot pick up one of them:
@@ -483,22 +474,6 @@ if(EMSCRIPTEN)
         add_link_options("SHELL:-s MALLOC=${GE_WASM_MALLOC}")
     endif()
 
-    find_package(Ktx CONFIG QUIET)
-    if(TARGET KTX::ktx)
-        get_target_property(_ge_ktx_link_options KTX::ktx INTERFACE_LINK_OPTIONS)
-        if(_ge_ktx_link_options)
-            list(FILTER _ge_ktx_link_options EXCLUDE REGEX "STACK_SIZE")
-            # The port also carries -s MALLOC. It lands after everything set
-            # here and emcc takes the last -s, so the knob above is inert while
-            # it is present. Dropped only when the knob asks for a specific
-            # allocator; with the knob empty the port's choice stands.
-            if(GE_WASM_MALLOC)
-                list(FILTER _ge_ktx_link_options EXCLUDE REGEX "MALLOC")
-            endif()
-            set_target_properties(KTX::ktx PROPERTIES
-                INTERFACE_LINK_OPTIONS "${_ge_ktx_link_options}")
-        endif()
-    endif()
 endif()
 
 # Toggle scripting/native hosting related builds (default ON for normal developer builds)
@@ -639,6 +614,22 @@ ge_check_overlay_port_freshness()
 # comparison is against the post-install state.
 ge_check_vcpkg_install_set_unchanged(
     "${VCPKG_INSTALLED_DIR}" "${VCPKG_TARGET_TRIPLET}" "${CMAKE_BINARY_DIR}")
+
+# KTX exports "-s STACK_SIZE=96kb"; emcc takes the last -s, so it replaces GE_WASM_STACK_SIZE.
+# Keep this after verify_dependencies() (KTX is not installed before it when the toolchain
+# does not install packages) and at the root scope, before the first subdirectory.
+if(EMSCRIPTEN)
+    include(cmake/WasmLinkSettings.cmake)
+    find_package(Ktx CONFIG QUIET)
+    if(TARGET KTX::ktx)
+        ge_wasm_drop_link_setting(KTX::ktx STACK_SIZE)
+        # The port also carries -s MALLOC, which replaces GE_WASM_MALLOC in the
+        # same way. With the knob empty, the choice of the port stays.
+        if(GE_WASM_MALLOC)
+            ge_wasm_drop_link_setting(KTX::ktx MALLOC)
+        endif()
+    endif()
+endif()
 
 # Output directories - all build artifacts go to build directory
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -1093,6 +1084,13 @@ if(ENABLE_TSAN)
 	message(STATUS "ThreadSanitizer: ENABLED")
 	add_compile_options("$<$<CONFIG:Debug>:-fsanitize=thread;-fno-omit-frame-pointer>")
 	add_link_options("$<$<CONFIG:Debug>:-fsanitize=thread>")
+	if(APPLE)
+		# A sanitizer link of Engine has 4 personality routines (C, C++, Objective-C, Rust). The compact
+		# unwind format of ld holds 3, so the format is off and unwinding uses the DWARF tables.
+		# On arm64 the compiler omits a DWARF entry by default; without one a C++ exception can terminate.
+		add_compile_options("$<$<CONFIG:Debug>:-femit-dwarf-unwind=always>")
+		add_link_options("$<$<CONFIG:Debug>:LINKER:-no_compact_unwind>")
+	endif()
 	# Every test executable starts with the runtime options in Tests/ThreadSanitizerOptions.cpp.
 	include(cmake/ThreadSanitizerOptions.cmake)
 endif()

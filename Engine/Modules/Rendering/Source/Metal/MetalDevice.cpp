@@ -2,6 +2,7 @@
 
 #include "MetalAccelerationStructures.h"
 #include "MetalCommandList.h"
+#include "MetalCompletedHandler.h"
 #include "MetalHdrOutput.h"
 #include "MetalIndirectCount/MetalIndirectCountResources.h"
 #include "MetalLayerBridge.h"
@@ -161,6 +162,8 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     }
 
     m_Capabilities = {};
+    m_Capabilities.prefersForwardShaderSpecialization =
+        Platform::EnvironmentSwitchEnabled("GE_METAL_TRY_FORWARD_SPECIALIZATION", false);
     m_Capabilities.supportsFilterableFloat32 = m_Device->supports32BitFloatFiltering();
     // Bindless: the engine's texture/sampler arrays map onto Tier2 argument
     // buffers where supported; descriptor writes are raw 8-byte slot
@@ -634,7 +637,7 @@ std::shared_ptr<MetalSubmitQueue::Submit::TrackedBuffer> MetalDevice::TrackFrame
     m_SlotInFlightCbs[tracked->FrameSlot].fetch_add(1, std::memory_order_acq_rel);
     if (tracked->OnGraphicsQueue)
         m_GraphicsCbsInFlight.fetch_add(1, std::memory_order_acq_rel);
-    buffer->addCompletedHandler([this, tracked](MTL::CommandBuffer* completed) {
+    AddCompletedHandler(buffer, [this, tracked](MTL::CommandBuffer* completed) {
         // Metal also invokes this handler when an uncommitted buffer is destroyed.
         // Cancellation can retire it before the handler runs or the device is destroyed.
         if (tracked->RetirementClaimed.exchange(true, std::memory_order_acq_rel))

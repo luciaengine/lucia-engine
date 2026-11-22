@@ -8,20 +8,24 @@
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/QueryPool.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "Rendering/Materials/Shader/ShaderReflection.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include "Mathematics/HalfFloat.h"
+#include "Mathematics/Vector2.h"
 #include "Mathematics/Vector4.h"
 #include "Memory/AllocationCountScope.h"
 #include "Platform/Environment.h"
 
 #include "../Source/Metal/MetalArgumentBufferLayout.h"
 #include "../Source/Metal/MetalCommandList.h"
+#include "../Source/Metal/MetalCompletedHandler.h"
 #include "../Source/Metal/MetalDevice.h"
 #include "../Source/Metal/MetalShaderTranslator.h"
 #include "PushBlockMslLayout.h"
+#include "ScopedEnvVar.h"
 #include "TestGlslCompile.h"
 
 #include <objc/runtime.h>
@@ -29,6 +33,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -44,6 +49,12 @@ namespace GameEngine::Rendering
 {
 struct MetalCommandListTestAccess
 {
+    static BufferHandle GetRetainedVertexBuffer(const CommandList& list, uint32_t slot)
+    {
+        const auto& buffers = static_cast<const MetalCommandList&>(list).m_VertexBuffers;
+        return slot < buffers.size() ? buffers[slot] : BufferHandle{};
+    }
+
     static MTL::CommandBuffer* GetBuffer(CommandList& list)
     {
         return static_cast<MetalCommandList&>(list).m_CommandBuffer;
@@ -741,7 +752,7 @@ TEST(MetalResources, FailedSubmissionInterruptsAnActiveTimelineWait)
     auto fault = NS::RetainPtr(metal.GetQueue(IDevice::QueueType::Transfer)->commandBuffer());
     ASSERT_NE(fault.get(), nullptr);
     // Inject a terminal fault from a native completion while the host waits.
-    fault->addCompletedHandler([&metal](MTL::CommandBuffer*) {
+    AddCompletedHandler(fault.get(), [&metal](MTL::CommandBuffer*) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         MetalDeviceTestAccess::FailSubmission(metal);
     });
@@ -1253,6 +1264,20 @@ TEST(MetalFrameSync, ABufferDestroyedBetweenFramesStaysAliveUntilItsSlotIsRecycl
     EXPECT_EQ(object->retainCount(), withDevice - 1) << "the device kept a buffer destroyed between frames";
     object->release();
     device->Shutdown();
+}
+
+TEST(MetalDeviceInitialization, ForwardShaderSpecializationRequiresOptIn)
+{
+    for (const bool enabled : {false, true})
+    {
+        SCOPED_TRACE(enabled);
+        const Tests::ScopedEnvVar specializationMode("GE_METAL_TRY_FORWARD_SPECIALIZATION", enabled ? "1" : "0");
+        auto device = CreateHeadlessMetalDevice();
+        if (!device)
+            GTEST_SKIP() << "Metal backend unavailable";
+        EXPECT_EQ(device->GetCapabilities().prefersForwardShaderSpecialization, enabled);
+        device->Shutdown();
+    }
 }
 
 #if RENDERING_HAS_SHADERC
@@ -2002,6 +2027,7 @@ TEST(MetalDeviceCapabilities, DepthOwnerReplayRequiresNativeResources)
 namespace
 {
 enum class MeshTriangleInput { None, Mesh, Object };
+enum class MeshTriangleDraw { Direct, Indirect, Empty };
 
 void ExpectMeshTriangle(MeshTriangleInput input)
 {
@@ -2163,27 +2189,91 @@ void main()
 
     constexpr size_t kArgumentOffset = sizeof(uint32_t);
     constexpr size_t kGridBytes = 3u * sizeof(uint32_t);
-    BufferHandle arguments{};
-    if (!withObject)
+    constexpr size_t kPlacementOffset = kArgumentOffset + kGridBytes;
+    BufferDesc argumentDesc{};
+    argumentDesc.size = kPlacementOffset;
+    argumentDesc.usage = static_cast<uint32_t>(BufferUsage::Indirect | BufferUsage::TransferDst);
+    PipelineHandle gridWriter{};
+    uint64_t gridAddress = 0;
+    if (withObject)
     {
-        BufferDesc argumentDesc{};
-        argumentDesc.size = kArgumentOffset + kGridBytes;
-        argumentDesc.usage = static_cast<uint32_t>(BufferUsage::Indirect | BufferUsage::TransferDst);
-        arguments = device->CreateBuffer(argumentDesc);
-        ASSERT_TRUE(arguments.IsValid());
+        argumentDesc.size += sizeof(float);
+        argumentDesc.usage |= static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::ShaderDeviceAddress);
+    }
+    const BufferHandle arguments = device->CreateBuffer(argumentDesc);
+    ASSERT_TRUE(arguments.IsValid());
+
+    struct GridWriterConstants
+    {
+        uint64_t Address;
+        uint32_t GroupsX;
+        uint32_t Reserved = 0;
+    };
+    if (withObject)
+    {
+        static const char* kWriteGrid = R"(
+#version 450
+#extension GL_EXT_buffer_reference : require
+layout(local_size_x = 1) in;
+layout(buffer_reference, std430, buffer_reference_align = 4) writeonly buffer Grid
+{
+    uint x;
+    uint y;
+    uint z;
+    float offsetX;
+};
+layout(push_constant) uniform GridWriter
+{
+    Grid grid;
+    uint groupsX;
+} constants;
+void main()
+{
+    constants.grid.x = constants.groupsX;
+    constants.grid.y = 1;
+    constants.grid.z = 1;
+    constants.grid.offsetX = 0.75;
+}
+)";
+        PipelineDesc computeDesc{};
+        computeDesc.type = PipelineType::Compute;
+        computeDesc.computeShader = CompileGlsl(kWriteGrid, shaderc_compute_shader, "write-object-grid.comp");
+        ASSERT_FALSE(computeDesc.computeShader.empty());
+        computeDesc.pushConstantSize = sizeof(GridWriterConstants);
+        computeDesc.pushConstantStagesMask = kShaderStageCompute;
+        computeDesc.debugName = "WriteMetalObjectGrid";
+        gridWriter = device->CreatePipeline(computeDesc);
+        ASSERT_TRUE(gridWriter.IsValid());
+        const uint64_t argumentAddress = device->GetBufferDeviceAddress(arguments);
+        ASSERT_NE(argumentAddress, 0u);
+        gridAddress = argumentAddress + kArgumentOffset;
     }
 
-    constexpr std::array kDrawModes{false, true};
-    for (const bool indirect : std::span{kDrawModes}.first(withObject ? 1u : kDrawModes.size()))
+    constexpr std::array kDrawModes{MeshTriangleDraw::Direct, MeshTriangleDraw::Indirect, MeshTriangleDraw::Empty};
+    for (const MeshTriangleDraw mode : std::span{kDrawModes}.first(withObject ? 3u : 2u))
     {
-        SCOPED_TRACE(indirect ? "GPU-written indirect grid" : "direct grid");
+        const bool indirect = mode != MeshTriangleDraw::Direct;
+        const bool empty = mode == MeshTriangleDraw::Empty;
+        SCOPED_TRACE(empty ? "empty indirect object grid" : indirect ? "indirect grid" : "direct grid");
         auto commandList = device->CreateCommandList(IDevice::QueueType::Graphics);
         commandList->Begin();
         if (indirect)
         {
             EXPECT_TRUE(device->GetCapabilities().supportsIndirectMeshTasks);
             commandList->FillBuffer(arguments, 0, kArgumentOffset, 0u);
-            commandList->FillBuffer(arguments, kArgumentOffset, kGridBytes, 1u);
+            commandList->FillBuffer(arguments, kArgumentOffset, kGridBytes, withObject && !empty ? 0u : 1u);
+            if (withObject)
+            {
+                // Seed the opposite grid size and placement before the compute pass.
+                const uint32_t initialPlacement = std::bit_cast<uint32_t>(empty ? 0.75f : 0.0f);
+                commandList->FillBuffer(arguments, kPlacementOffset, sizeof(float), initialPlacement);
+                const GridWriterConstants constants{gridAddress, empty ? 0u : 1u};
+                commandList->SetPipeline(gridWriter);
+                commandList->SetConstants(0, sizeof(constants), &constants);
+                commandList->Dispatch(1, 1, 1);
+                commandList->Barrier(ResourceBarrier::CreateBufferBarrier(
+                    arguments, ResourceState::UnorderedAccess, ResourceState::IndirectArgs));
+            }
         }
         RenderPassDesc pass{};
         pass.colorTargets[0] = rt;
@@ -2197,7 +2287,10 @@ void main()
         pass.clearDepth = false;
         commandList->BeginRenderPass(pass);
         if (withInputs)
-            commandList->SetConstants(0, sizeof(positionAddress), &positionAddress);
+        {
+            const uint64_t address = indirect && withObject ? gridAddress + kGridBytes : positionAddress;
+            commandList->SetConstants(0, sizeof(address), &address);
+        }
         commandList->SetPipeline(pipeline);
         if (withMeshInputs)
             commandList->BindDescriptorSet(0, inputs, pipeline);
@@ -2218,8 +2311,8 @@ void main()
         // Center pixel (NDC 0,0) lies inside the triangle. BGRA: green fill.
         const uint8_t* center = mapped + ((kRtDim / 2) * kRtDim + kRtDim / 2) * 4;
         EXPECT_EQ(center[0], 0u) << "B";
-        EXPECT_NEAR(center[1], 255, 2) << "G (mesh-shader triangle fill)";
-        EXPECT_EQ(center[2], 0u) << "R (proves the triangle overdrew the red clear)";
+        EXPECT_EQ(center[1], empty ? 0u : 255u) << "G (mesh-shader triangle fill)";
+        EXPECT_EQ(center[2], empty ? 255u : 0u) << "R (clear color)";
         EXPECT_EQ(center[3], 255u) << "A";
         device->UnmapBuffer(readback);
     }
@@ -2231,8 +2324,9 @@ void main()
     }
     if (withInputs)
         device->DestroyBuffer(position);
-    if (arguments.IsValid())
-        device->DestroyBuffer(arguments);
+    if (gridWriter.IsValid())
+        device->DestroyPipeline(gridWriter);
+    device->DestroyBuffer(arguments);
     device->DestroyBuffer(readback);
     device->DestroyTexture(rt);
     device->Shutdown();
@@ -2449,6 +2543,114 @@ void main() { outColor = vec4(0.0, 1.0, 0.0, 1.0); }
 
     device->DestroyBuffer(readback);
     device->DestroyTexture(rt);
+    device->Shutdown();
+}
+
+TEST(MetalSpirvPipeline, RetainsExtraVertexStreamsAcrossRenderEncoders)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+        GTEST_SKIP() << "Metal backend unavailable";
+
+    static constexpr char kVertexShader[] = R"(
+#version 450
+layout(location = 14) in vec2 position;
+layout(location = 15) in vec2 color;
+layout(location = 0) out vec2 vertexColor;
+void main() {
+    gl_Position = vec4(position, 0.5, 1.0);
+    vertexColor = color;
+}
+)";
+    static constexpr char kFragmentShader[] = R"(
+#version 450
+layout(location = 0) in vec2 vertexColor;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(vertexColor, 0.0, 1.0); }
+)";
+    using GameEngine::Mathematics::Vector2;
+    const std::array<Vector2, 3> positions{{{-1.0f, -1.0f}, {3.0f, -1.0f}, {-1.0f, 3.0f}}};
+    const std::array<Vector2, 3> colors{{{0.0f, 1.0f}, {0.0f, 1.0f}, {0.0f, 1.0f}}};
+    BufferDesc vertexDesc{};
+    vertexDesc.size = sizeof(positions);
+    vertexDesc.usage = static_cast<uint32_t>(BufferUsage::Vertex | BufferUsage::TransferDst);
+    const BufferHandle positionBuffer = device->CreateBuffer(vertexDesc);
+    const BufferHandle colorBuffer = device->CreateBuffer(vertexDesc);
+    ASSERT_TRUE(positionBuffer.IsValid());
+    ASSERT_TRUE(colorBuffer.IsValid());
+    device->UpdateBuffer(positionBuffer, 0, sizeof(positions), positions.data());
+    device->UpdateBuffer(colorBuffer, 0, sizeof(colors), colors.data());
+
+    PipelineDesc pipelineDesc{};
+    pipelineDesc.type = PipelineType::Graphics;
+    pipelineDesc.vertexShader = CompileGlsl(kVertexShader, shaderc_vertex_shader, "retained-uv-streams.vert");
+    pipelineDesc.pixelShader = CompileGlsl(kFragmentShader, shaderc_fragment_shader, "retained-uv-streams.frag");
+    ASSERT_FALSE(pipelineDesc.vertexShader.empty());
+    ASSERT_FALSE(pipelineDesc.pixelShader.empty());
+    pipelineDesc.vertexBindings = {{VertexBinding::UV6, sizeof(Vector2), 0},
+                                   {VertexBinding::UV7, sizeof(Vector2), 0}};
+    pipelineDesc.vertexAttributes = {{VertexLocation::UV6, VertexBinding::UV6, Format::R32G32_FLOAT, 0},
+                                     {VertexLocation::UV7, VertexBinding::UV7, Format::R32G32_FLOAT, 0}};
+    constexpr auto kColorFormat = static_cast<uint32_t>(TextureFormat::BGRA8_UNORM);
+    pipelineDesc.colorAttachmentFormats = {kColorFormat};
+    pipelineDesc.rasterizationState.cullMode = CullModeFlagBits::None;
+    pipelineDesc.depthStencilState.depthTestEnable = false;
+    pipelineDesc.depthStencilState.depthWriteEnable = false;
+    const PipelineHandle pipeline = device->CreatePipeline(pipelineDesc);
+    ASSERT_TRUE(pipeline.IsValid());
+
+    constexpr uint32_t kSide = 16;
+    TextureDesc targetDesc{};
+    targetDesc.width = kSide;
+    targetDesc.height = kSide;
+    targetDesc.format = kColorFormat;
+    targetDesc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::TransferSrc);
+    const TextureHandle target = device->CreateTexture(targetDesc);
+    ASSERT_TRUE(target.IsValid());
+
+    BufferDesc readbackDesc{};
+    readbackDesc.size = kSide * kSide * 4;
+    readbackDesc.usage = static_cast<uint32_t>(BufferUsage::TransferDst);
+    const BufferHandle readback = device->CreateBuffer(readbackDesc);
+    ASSERT_TRUE(readback.IsValid());
+
+    auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+    commands->Begin();
+    commands->SetVertexBuffer(positionBuffer, VertexBinding::UV6);
+    ASSERT_EQ(MetalCommandListTestAccess::GetRetainedVertexBuffer(*commands, VertexBinding::UV6), positionBuffer);
+
+    RenderPassDesc pass{};
+    pass.colorTargets[0] = target;
+    pass.colorTargetCount = 1;
+    pass.clearColor[0] = true;
+    pass.clearColorValue[0][0] = 1.0f;
+    pass.clearColorValue[0][3] = 1.0f;
+    commands->BeginRenderPass(pass);
+    commands->SetVertexBuffer(colorBuffer, VertexBinding::UV7);
+    commands->EndRenderPass();
+    ASSERT_EQ(MetalCommandListTestAccess::GetRetainedVertexBuffer(*commands, VertexBinding::UV7), colorBuffer);
+
+    commands->BeginRenderPass(pass);
+    commands->SetPipeline(pipeline);
+    commands->SetViewport(0.0f, 0.0f, kSide, kSide);
+    commands->SetScissor(0, 0, kSide, kSide);
+    commands->Draw(3);
+    commands->EndRenderPass();
+    commands->CopyTextureToBuffer(target, readback, kSide, kSide);
+    commands->End();
+    device->ExecuteCommandLists({commands.get()});
+    device->WaitForIdle();
+
+    const auto* pixels = static_cast<const uint8_t*>(device->MapBuffer(readback));
+    ASSERT_NE(pixels, nullptr);
+    const auto* center = pixels + ((kSide / 2) * kSide + kSide / 2) * 4;
+    EXPECT_EQ(center[1], 255u);
+    EXPECT_EQ(center[2], 0u);
+
+    device->DestroyBuffer(readback);
+    device->DestroyTexture(target);
+    device->DestroyBuffer(colorBuffer);
+    device->DestroyBuffer(positionBuffer);
     device->Shutdown();
 }
 

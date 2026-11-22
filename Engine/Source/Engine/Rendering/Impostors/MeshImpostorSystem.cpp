@@ -158,7 +158,6 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     if (m_Models.Empty())
         return;
 
-    ++m_Frame;
     auto& stage = m_RenderServices->EnsureFeature<ImpostorStage>();
     stage.EnsureCardMesh(*m_RenderServices);
     auto& baker = m_RenderServices->EnsureFeature<ImpostorBaker>();
@@ -333,7 +332,7 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
         request.Parts.push_back({part.Mesh, part.Material});
     }
     // A request each frame keeps the atlas in the baker's least-recently-used budget.
-    const ImpostorAtlas atlas = baker.Request(request, m_Frame);
+    const ImpostorAtlas atlas = baker.Request(request, *m_RenderServices);
     const GUID cardGuid = GUID::Derive(model, "impostor-card-" + std::to_string(materialIdentity));
     const Material* card = ImpostorStage::RegisterCardMaterial(*m_RenderServices, cardGuid, "Impostor", atlas,
                                                                impostor.Center, impostor.Radius,

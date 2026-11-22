@@ -386,8 +386,22 @@ struct ClusterLODFeature::State
     std::vector<ClusterLODCutGroup> CutGroups;
     std::vector<ClusterLODCutDecision> CutDecisions;
     std::vector<ClusterLODCutInstance> CutInstances;
-    // The geometry of every unit of each model in this preparation (UnitGeometries).
-    FastHashMap<const ModelAsset*, std::vector<MeshGPUHandle>> FrameGeometries;
+    // The drawable geometry of every unit of one model (UnitGeometries).
+    struct ModelGeometries
+    {
+        const ModelAsset* Model = nullptr;
+        uint64 Incarnation = 0;
+        std::vector<MeshGPUHandle> Handles;
+        // The units whose storage waits for its upload: checked again once per preparation.
+        std::vector<uint32> Waiting;
+        uint64 CheckedEpoch = 0;
+    };
+    // Valid while the registry content revision holds: every change of a unit's geometry, except
+    // an upload that lands, changes the revision.
+    FastHashMap<GUID, ModelGeometries> Geometries;
+    const MeshGPURegistry* GeometriesRegistry = nullptr;
+    uint64 GeometriesRevision = 0;
+    uint64 GeometriesEpoch = 0;
     // The epoch of the next fine page admission after fine storage refused one.
     uint64 AdmissionRetryEpoch = 0;
     // Resident unit registrations a full pool refused, with the epoch of their next try.
@@ -759,9 +773,10 @@ struct ClusterLODFeature::State
         return found->second;
     }
 
-    // The drawable geometry of a unit, or an invalid handle. No side effects.
-    MeshGPUHandle FindUnitGeometry(const GUID& guid, const ModelAsset& model, const MeshClusterLODManifest& manifest,
-                                   uint32 unit) const
+    // The drawable geometry of a unit, or an invalid handle. `waiting` is set when the unit has
+    // storage whose upload has not landed. No side effects.
+    MeshGPUHandle LookUpUnitGeometry(const GUID& guid, const ModelAsset& model, const MeshClusterLODManifest& manifest,
+                                     uint32 unit, bool& waiting) const
     {
         const auto& registry = Services->GetMeshGPURegistry();
         const MeshGPUKey key = UnitKey(guid, model, unit);
@@ -770,8 +785,21 @@ struct ClusterLODFeature::State
             handle = registry.FindHandle(key);
         else if (const auto found = Pages.find(key); found != Pages.end() && !found->second->Retiring)
             handle = found->second->FineHandle;
+        waiting = false;
         const auto* entry = registry.Find(handle);
-        return entry && registry.IsEntryDrawable(*entry) ? handle : MeshGPUHandle{};
+        if (!entry)
+            return {};
+        if (registry.IsEntryDrawable(*entry))
+            return handle;
+        waiting = !entry->DrawClosed && !registry.IsFlushResident(*entry);
+        return {};
+    }
+
+    MeshGPUHandle FindUnitGeometry(const GUID& guid, const ModelAsset& model, const MeshClusterLODManifest& manifest,
+                                   uint32 unit) const
+    {
+        bool waiting = false;
+        return LookUpUnitGeometry(guid, model, manifest, unit, waiting);
     }
 
     // Registers a resident unit or requests a streamed unit's page; returns the geometry once it
@@ -821,19 +849,52 @@ struct ClusterLODFeature::State
                        Mathematics::BoundingBox::FromMinMax(record.MinBounds, record.MaxBounds), epoch);
     }
 
-    // The drawable geometry of every unit of `model`, found once per preparation and shared by its
-    // instances. PrepareUnit refreshes an entry it registers.
+    // Forgets the unit geometries when the registry changed since they were found.
+    void ValidateGeometries(uint64 epoch)
+    {
+        const auto& registry = Services->GetMeshGPURegistry();
+        const uint64 revision = registry.GetContentRevision();
+        if (&registry != GeometriesRegistry || revision != GeometriesRevision)
+            Geometries.clear();
+        GeometriesRegistry = &registry;
+        GeometriesRevision = revision;
+        GeometriesEpoch = epoch;
+    }
+
+    // The drawable geometry of every unit of `model`, shared by its instances. A unit is looked up
+    // again only after a registry change, or once per preparation while its upload waits.
+    // PrepareUnit refreshes an entry it registers.
     std::vector<MeshGPUHandle>& UnitGeometries(const GUID& guid, const ModelAsset& model)
     {
-        auto [found, inserted] = FrameGeometries.try_emplace(&model);
-        if (inserted)
+        const auto& manifest = *model.GetClusterLODManifest();
+        auto& geometries = Geometries[guid];
+        if (geometries.Model != &model || geometries.Incarnation != manifest.Incarnation ||
+            geometries.Handles.size() != manifest.Units.size())
         {
-            const auto& manifest = *model.GetClusterLODManifest();
-            found->second.resize(manifest.Units.size());
+            geometries.Model = &model;
+            geometries.Incarnation = manifest.Incarnation;
+            geometries.Handles.assign(manifest.Units.size(), MeshGPUHandle{});
+            geometries.Waiting.clear();
             for (uint32 unit = 0; unit < manifest.Units.size(); ++unit)
-                found->second[unit] = FindUnitGeometry(guid, model, manifest, unit);
+            {
+                bool waiting = false;
+                geometries.Handles[unit] = LookUpUnitGeometry(guid, model, manifest, unit, waiting);
+                if (waiting)
+                    geometries.Waiting.push_back(unit);
+            }
+            geometries.CheckedEpoch = GeometriesEpoch;
         }
-        return found->second;
+        else if (geometries.CheckedEpoch != GeometriesEpoch)
+        {
+            geometries.CheckedEpoch = GeometriesEpoch;
+            std::erase_if(geometries.Waiting, [this, &guid, &model, &manifest, &geometries](uint32 unit)
+            {
+                bool waiting = false;
+                geometries.Handles[unit] = LookUpUnitGeometry(guid, model, manifest, unit, waiting);
+                return !waiting;
+            });
+        }
+        return geometries.Handles;
     }
 
     // `firstUnit` is the first unit of the instance's mesh: `unit` minus it is the part index.
@@ -1041,7 +1102,7 @@ struct ClusterLODFeature::State
     void UpdateSplits(ECS::World& world, uint64 epoch)
     {
         InSplitPass = true;
-        FrameGeometries.clear();
+        ValidateGeometries(epoch);
         auto* scene = Services->GetGPUScene();
         auto& instances = Splits.Instances();
         std::vector<ECS::EntityHandle> ended;

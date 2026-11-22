@@ -18,9 +18,19 @@ try {
     Module.webEditorShaders = shaders;
     if (new URLSearchParams(location.search).get('project'))
         shaders.mount(await prepareShaders());
-    const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
-    const scripts = exports.Lucia.Web.Editor.BrowserPlayMode;
-    const scriptSession = createScriptSession(Module, scripts);
+    const prepareScripts = async () => {
+        const assets = getConfig().luciaScriptCompiler;
+        const images = await Promise.all(assets.map(downloadCompilerAssembly));
+        return async () => {
+            const exports = await getAssemblyExports('Lucia.Web.Editor.dll');
+            const { Program, BrowserPlayMode } = exports.Lucia.Web.Editor;
+            // Threaded Mono requires asynchronous JavaScript calls into managed code.
+            for (const [index, asset] of assets.entries())
+                await Program.LoadCompilerAssembly(asset.virtualPath.replace(/\.wasm$/, ''), images[index]);
+            return BrowserPlayMode;
+        };
+    };
+    const scriptSession = createScriptSession(Module, prepareScripts);
     Module.webScriptSession = scriptSession;
     globalThis.Module = Module;
     await prepareStorage(Module);
@@ -97,7 +107,18 @@ function createShaderDownload(prepare) {
     };
 }
 
-function createScriptSession(module, scripts) {
+async function downloadCompilerAssembly(asset) {
+    const url = new URL(`./_framework/${asset.name}`, import.meta.url);
+    const response = await fetch(url, { integrity: asset.hash });
+    if (!response.ok)
+        throw new Error(`Could not download ${asset.virtualPath} (HTTP ${response.status}).`);
+    return new Uint8Array(await response.arrayBuffer());
+}
+
+function createScriptSession(module, prepareScripts) {
+    let scripts;
+    let compilerDownload;
+    let preparingStart;
     let pending;
     let running = false;
     const reportScriptError = diagnostic =>
@@ -107,18 +128,44 @@ function createScriptSession(module, scripts) {
     // stack. All managed calls run after that frame has returned to JavaScript.
     return {
         start(world, sources) {
-            pending = async () => {
+            const start = async () => {
+                if (!scripts) {
+                    const install = await compilerDownload;
+                    scripts = await install();
+                    compilerDownload = undefined;
+                }
                 const diagnostic = await scripts.Start(world, sources);
                 running = !diagnostic;
                 if (diagnostic)
                     reportScriptError(diagnostic);
             };
+            if (scripts) {
+                pending = start;
+                return;
+            }
+
+            // Fetch off the frame loop. Queue managed loading only when the download is ready.
+            preparingStart = start;
+            const download = compilerDownload ??= prepareScripts();
+            void download.then(() => {
+                if (preparingStart === start)
+                    pending = start;
+            }, error => {
+                if (compilerDownload === download)
+                    compilerDownload = undefined;
+                if (preparingStart === start)
+                    pending = () => { throw error; };
+            });
         },
         tick(delta) {
             if (running && !pending)
                 pending = () => scripts.Tick(delta);
         },
         requestStop() {
+            if (preparingStart) {
+                preparingStart = undefined;
+                pending = undefined;
+            }
             if (!running && !pending)
                 return true;
             pending = async () => {
@@ -132,6 +179,7 @@ function createScriptSession(module, scripts) {
             pending = undefined;
             if (!operation)
                 return;
+            preparingStart = undefined;
             try {
                 await operation();
             } catch (error) {

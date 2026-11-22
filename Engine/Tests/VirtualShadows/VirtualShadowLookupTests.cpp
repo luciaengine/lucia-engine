@@ -229,8 +229,9 @@ TEST_F(VirtualShadowLookupTest, FiltersNonAdjacentLayersAndSignalsMissingPages)
         }
         commands->EndRenderPass();
     }
+    // A sampled depth image is read in the depth read-only layout (DepthSampled).
     commands->Barrier(ResourceBarrier::CreateTextureBarrier(m_Depth, ResourceState::DepthWrite,
-                                                            ResourceState::ShaderResource, 0, 1, 0, texture.arrayLayers));
+                                                            ResourceState::DepthSampled, 0, 1, 0, texture.arrayLayers));
     commands->SetPipeline(pipeline);
     commands->BindDescriptorSet(0, m_Set, pipeline);
     commands->Dispatch(1, 1, 1);

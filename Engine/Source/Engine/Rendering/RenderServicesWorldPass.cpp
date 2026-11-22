@@ -114,7 +114,7 @@ void AttachExtraColors(RenderGraph::RGPassBuilder& builder,
         if (extra.Resolve.IsValid())
             builder.AttachColorResolve(extra.Location, extra.Texture, extra.Resolve, extra.Ops);
         else
-            builder.AttachColor(extra.Location, extra.Texture, extra.Ops);
+            builder.AttachColor(extra.Location, extra.Texture, extra.Ops, extra.Range);
     }
 }
 
@@ -221,9 +221,11 @@ struct OrderedOwnerMeshPush
     ComposedPCInstanced Instances{};
     uint64_t Core = 0, Color = 0, Index = 0, Work = 0, State = 0;
     uint32_t Index16 = 0;
+    uint32_t Padding = 0;
 };
 static_assert(sizeof(OrderedOwnerMeshPush) == 72);
 static_assert(offsetof(OrderedOwnerMeshPush, Index16) == 64);
+static_assert(offsetof(OrderedOwnerMeshPush, Padding) == 68);
 
 struct PreparedForwardDraw
 {

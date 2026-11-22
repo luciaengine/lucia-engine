@@ -75,9 +75,9 @@ namespace GameEngine.Scripting
         public Look Look
         {
             readonly get => m_Look;
-            set => m_Look = (uint)value <= 2u
+            set => m_Look = (uint)value <= 3u
                 ? value
-                : throw new ArgumentOutOfRangeException(nameof(value), value, "PostProcessVolume.Look is Neutral, Filmic or Photographic.");
+                : throw new ArgumentOutOfRangeException(nameof(value), value, "PostProcessVolume.Look is Neutral, Filmic, Photographic or GT7.");
         }
 
         [FieldOffset(28)]

@@ -1,6 +1,7 @@
 #include "Engine/Rendering/Impostors/ImpostorAtlasCache.h"
 
 #include <algorithm>
+#include <bit>
 #include <limits>
 
 namespace GameEngine::Engine::Renderer
@@ -8,16 +9,34 @@ namespace GameEngine::Engine::Renderer
 namespace
 {
 
+constexpr uint32 kMinimumMipTileSize = 4;
 constexpr uint64 kColorBytesPerPixel = 4;        // RGBA8
 constexpr uint64 kNormalDepthBytesPerPixel = 8;  // RGBA16F
 
+uint64 AtlasBytesForLevels(const ImpostorAtlasKey& key, uint32 mipCount)
+{
+    const uint64 frames = static_cast<uint64>(key.FramesPerSide) * key.FramesPerSide;
+    uint64 pixels = 0;
+    for (uint32 mip = 0; mip < mipCount; ++mip)
+    {
+        const uint64 side = key.FrameSize >> mip;
+        pixels += side * side;
+    }
+    return frames * pixels * (kColorBytesPerPixel + kNormalDepthBytesPerPixel);
+}
+
 } // namespace
+
+uint32 ImpostorAtlasMipCount(const ImpostorAtlasKey& key)
+{
+    if (!key.FilterMips || key.FrameSize < kMinimumMipTileSize || !std::has_single_bit(key.FrameSize))
+        return 1;
+    return std::bit_width(key.FrameSize / kMinimumMipTileSize);
+}
 
 uint64 ImpostorAtlasBytes(const ImpostorAtlasKey& key)
 {
-    const uint64 frames = static_cast<uint64>(key.FramesPerSide) * key.FramesPerSide;
-    const uint64 pixels = static_cast<uint64>(key.FrameSize) * key.FrameSize;
-    return frames * pixels * (kColorBytesPerPixel + kNormalDepthBytesPerPixel);
+    return AtlasBytesForLevels(key, ImpostorAtlasMipCount(key));
 }
 
 ImpostorAtlasCache::ImpostorAtlasCache(uint64 budgetBytes)
@@ -31,15 +50,22 @@ ImpostorAtlasCache::State ImpostorAtlasCache::GetState(const ImpostorAtlasKey& k
     return entry ? entry->Status : State::Absent;
 }
 
-ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& key,
-                                                      uint64 frame,
-                                                      std::vector<ImpostorAtlasKey>& outEvicted)
+ImpostorAtlasCache::State ImpostorAtlasCache::Touch(const ImpostorAtlasKey& key, uint64 frame)
 {
-    if (Entry* entry = m_Entries.Find(key))
-    {
-        entry->LastUsedFrame = frame;
-        return entry->Status;
-    }
+    Entry* entry = m_Entries.Find(key);
+    if (!entry)
+        return State::Absent;
+    entry->LastUsedFrame = frame;
+    return entry->Status;
+}
+
+ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& key,
+                                                     uint64 frame,
+                                                     std::vector<ImpostorAtlasKey>& outEvicted)
+{
+    const State state = Touch(key, frame);
+    if (state != State::Absent)
+        return state;
     const uint64 bytes = ImpostorAtlasBytes(key);
     if (bytes > m_BudgetBytes)
         return State::Absent;
@@ -47,15 +73,22 @@ ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& ke
         EvictLeastRecentlyUsed(m_UsedBytes + bytes - m_BudgetBytes, frame, outEvicted);
     if (m_UsedBytes + bytes > m_BudgetBytes)
         return State::Absent;
-    m_Entries.InsertOrAssign(key, Entry{State::Pending, frame});
+    m_Entries.InsertOrAssign(key, Entry{State::Pending, frame, bytes});
     m_UsedBytes += bytes;
     return State::Pending;
 }
 
-void ImpostorAtlasCache::MarkReady(const ImpostorAtlasKey& key)
+void ImpostorAtlasCache::MarkReady(const ImpostorAtlasKey& key, uint32 allocatedMipCount)
 {
-    if (Entry* entry = m_Entries.Find(key))
-        entry->Status = State::Ready;
+    Entry* entry = m_Entries.Find(key);
+    if (!entry || entry->Status != State::Pending || allocatedMipCount == 0 ||
+        allocatedMipCount > ImpostorAtlasMipCount(key))
+        return;
+
+    const uint64 bytes = AtlasBytesForLevels(key, allocatedMipCount);
+    m_UsedBytes -= entry->ReservedBytes - bytes;
+    entry->ReservedBytes = bytes;
+    entry->Status = State::Ready;
 }
 
 void ImpostorAtlasCache::Clear()
@@ -66,26 +99,40 @@ void ImpostorAtlasCache::Clear()
 
 void ImpostorAtlasCache::EvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted)
 {
-    // An atlas used in this frame stays: its instances already draw it.
+    // Atlases used in this frame stay. Check the full eviction capacity before retiring any texture.
+    uint64 evictableBytes = 0;
+    for (const auto& [key, entry] : m_Entries)
+    {
+        if (entry.LastUsedFrame < frame)
+        {
+            evictableBytes += entry.ReservedBytes;
+            if (evictableBytes >= neededBytes)
+                break;
+        }
+    }
+    if (evictableBytes < neededBytes)
+        return;
+
     uint64 freed = 0;
     while (freed < neededBytes)
     {
         const ImpostorAtlasKey* oldest = nullptr;
+        uint64 oldestBytes = 0;
         uint64 oldestFrame = std::numeric_limits<uint64>::max();
         for (const auto& [key, entry] : m_Entries)
         {
             if (entry.LastUsedFrame < frame && entry.LastUsedFrame < oldestFrame)
             {
                 oldest = &key;
+                oldestBytes = entry.ReservedBytes;
                 oldestFrame = entry.LastUsedFrame;
             }
         }
         if (!oldest)
             return;
         const ImpostorAtlasKey victim = *oldest;
-        const uint64 bytes = ImpostorAtlasBytes(victim);
-        freed += bytes;
-        m_UsedBytes -= bytes;
+        freed += oldestBytes;
+        m_UsedBytes -= oldestBytes;
         outEvicted.push_back(victim);
         m_Entries.Erase(victim);
     }
