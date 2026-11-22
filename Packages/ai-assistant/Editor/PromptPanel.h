@@ -107,7 +107,6 @@ private:
     float PromptInputPaneHeightForLines(int lines) const;
     void AutoSizePromptInputPane();
     void UpdateInputStacking();
-    void PlaceAttachButton(bool stacked);
     void UpdateHistoryNarrow();
     void ApplyPromptInputPaneHeight(float heightPx);
 
@@ -162,7 +161,7 @@ private:
     UIElement* m_InputPane = nullptr;
     UIElement* m_InputRow = nullptr;
     UIElement* m_InputControls = nullptr;
-    // Left of the field in the input row; first in the controls when they stack under the field.
+    // Left of the field; at the left end of the controls' line when they stack under the field.
     Button* m_AttachButton = nullptr;
     // The pane is too narrow for a kMinPromptFieldPx field beside the visible controls,
     // so the controls sit on a line of their own under the field.

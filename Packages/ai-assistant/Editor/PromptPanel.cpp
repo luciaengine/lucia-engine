@@ -507,15 +507,10 @@ void PromptPanel::UpdateInputStacking()
     const float rowWidth = m_InputRow->GetLayoutWidth();
     if (rowWidth <= 0.0f)
         return;
-    // The attach button takes the same width beside the field as in the controls.
-    const float attachWidth =
-        m_AttachButton && m_AttachButton->GetParent() == m_InputRow
-            ? m_AttachButton->GetLayoutWidth() + kAttachButtonMarginPx
-            : 0.0f;
+    // The attach button sits beside the field; on a stacked row it sits on the controls' line.
+    const float attachWidth = m_AttachButton ? m_AttachButton->GetLayoutWidth() + kAttachButtonMarginPx : 0.0f;
     const float fieldWidth = rowWidth - kInputRowBorderPx - m_InputControls->GetLayoutWidth() - attachWidth;
     const bool stacked = fieldWidth < kMinPromptFieldPx;
-    // Every pass: a move refused during an event dispatch (a panel resize) happens on a later pass.
-    PlaceAttachButton(stacked);
     if (stacked == m_InputStacked)
         return;
     m_InputStacked = stacked;
@@ -529,22 +524,6 @@ void PromptPanel::UpdateInputStacking()
         m_InputRow->RemoveClass("prompt-panel-input-row-stacked");
         m_InputControls->RemoveClass("prompt-panel-input-controls-stacked");
     }
-}
-
-// Beside the field the attach button is the row's first child, left of the field. Under a
-// narrow field it leads the controls line, before the mode control. TakeChild refuses during an
-// event dispatch; the button then stays where it is until a later pass moves it.
-void PromptPanel::PlaceAttachButton(bool stacked)
-{
-    if (!m_AttachButton || !m_AttachButton->GetParent())
-        return;
-    UIElement* target = stacked ? m_InputControls : m_InputRow;
-    if (m_AttachButton->GetParent() == target)
-        return;
-    std::unique_ptr<UIElement> button = m_AttachButton->GetParent()->TakeChild(m_AttachButton);
-    if (!button)
-        return;
-    target->InsertChild(0, std::move(button));
 }
 
 void PromptPanel::UpdateHistoryNarrow()

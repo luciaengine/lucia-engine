@@ -871,10 +871,21 @@
 	flex-direction: column;
 }
 
+/* On a stacked row the + sits at the left end of the controls' line, which the controls leave free
+   (they keep to the right). Positioned, not moved: the panel's layout pass cannot reparent it. */
+.prompt-panel-input-row-stacked > .prompt-panel-attach-button {
+	position: absolute;
+	left: 6px;
+	bottom: 6px;
+	margin: 0;
+}
+
 .prompt-panel-input-controls-stacked {
 	align-self: flex-end;
 	flex-shrink: 1;
 	max-width: 100%;
+	/* The + keeps the line's left end: its 6 px inset, 24 px and 6 px of gap. */
+	margin-left: 36px;
 	height: 36px;
 	min-height: 36px;
 }
