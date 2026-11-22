@@ -59,7 +59,9 @@ vec3 ApplyCas(vec3 c, vec2 texel)
 
     float adaptive = 1.0 - smoothstep(0.08, 0.40, contrast);
     float gain = w * mix(2.8, 0.75, 1.0 - adaptive);
-    return max(c + detail * gain, vec3(0.0));
+    // The sharpened channel stays at or above zero, or at its own value when that is
+    // already negative: a negative channel is a color outside Rec.709 (HDR output).
+    return max(c + detail * gain, min(c, vec3(0.0)));
 }
 
 // URP-exact procedural vignette (UberPost.hlsl), applied on display-referred LDR color.
