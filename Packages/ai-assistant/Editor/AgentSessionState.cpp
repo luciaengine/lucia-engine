@@ -45,6 +45,7 @@ std::shared_ptr<IAgentProvider> AgentSessionState::Provider(std::string_view pro
     std::string executable;
     std::string endpointUrl;
     std::string endpointModel;
+    const int toolRequestLimit = AiAssistantSettings::ToolRequestLimit();
     if (providerId == ClaudeSessionProvider::kId)
         executable = AiAssistantSettings::ClaudeExecutable();
     else if (providerId == CodexSessionProvider::kId)
@@ -55,12 +56,12 @@ std::shared_ptr<IAgentProvider> AgentSessionState::Provider(std::string_view pro
     {
         endpointUrl = AiAssistantSettings::EndpointUrl();
         endpointModel = AiAssistantSettings::Model(providerId);
-        executable = endpointUrl + "\n" + endpointModel;
+        executable = endpointUrl + "\n" + endpointModel + "\n" + std::to_string(toolRequestLimit);
     }
     else if (providerId == TensorFoldConnection::kId)
     {
         endpointUrl = AiAssistantSettings::TensorFoldUrl();
-        executable = endpointUrl;
+        executable = endpointUrl + "\n" + std::to_string(toolRequestLimit);
     }
     else if (providerId != ClaudeApiProvider::kId)
         return nullptr;
@@ -82,11 +83,13 @@ std::shared_ptr<IAgentProvider> AgentSessionState::Provider(std::string_view pro
     else if (providerId == HarnessSessionProvider::kId)
         connection.Provider = std::make_shared<HarnessSessionProvider>(executable, directory);
     else if (providerId == OpenAiCompatibleProvider::kId)
-        connection.Provider = std::make_shared<OpenAiCompatibleProvider>(m_EndpointKeys, endpointUrl, endpointModel);
+        connection.Provider = std::make_shared<OpenAiCompatibleProvider>(
+            m_EndpointKeys, endpointUrl, endpointModel, OpenAiCompatibleProvider::kId,
+            OpenAiCompatibleProvider::ModelSource::Given, toolRequestLimit);
     else if (providerId == TensorFoldConnection::kId)
         connection.Provider = std::make_shared<OpenAiCompatibleProvider>(
             NoKeys(), endpointUrl, std::string(), TensorFoldConnection::kId,
-            OpenAiCompatibleProvider::ModelSource::FirstListed);
+            OpenAiCompatibleProvider::ModelSource::FirstListed, toolRequestLimit);
     else
         connection.Provider = std::make_shared<ClaudeApiProvider>(m_ApiKeys, m_ModelsUrl);
     return connection.Provider;

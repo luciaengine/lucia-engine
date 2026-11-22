@@ -16,7 +16,8 @@ namespace GameEngine
 /// one), streamed. Stateless: every turn resends the system prompt, the history and the new
 /// message. A turn with the editor's tools (AgentTurnRequest::Tools) runs the tool loop itself:
 /// it sends EditorToolBridge's definitions, runs each tool call the model makes through the
-/// bridge and sends the answers back, until the model answers without a call or kMaxToolRounds. The base URL and the model are settings; the key is optional and comes from the
+/// bridge and sends the answers back, until the model answers without a call or the tool request
+/// limit is reached. The base URL and the model are settings; the key is optional and comes from the
 /// ApiKeyStore's endpoint slot. HttpClient refuses to send a key over plain http to a host that
 /// is not loopback, so a key travels only over https or to this computer.
 class OpenAiCompatibleProvider final : public IAgentProvider
@@ -28,8 +29,9 @@ public:
     static constexpr std::string_view kEndpointStep = "Endpoint";
     static constexpr std::string_view kModelStep = "Model";
     static constexpr std::string_view kAnswersStep = "Endpoint answers";
-    /// The most model requests one turn makes while the model keeps calling tools.
-    static constexpr int kMaxToolRounds = 100;
+    /// The most model requests one turn makes while the model keeps calling tools, until the user
+    /// sets another (AiAssistantSettings::ToolRequestLimit).
+    static constexpr int kDefaultToolRequestLimit = 100;
 
     /// Which model a turn asks for when the request names none.
     enum class ModelSource : uint8_t
@@ -43,8 +45,10 @@ public:
     /// `baseUrl` is the server's API root (".../v1"); `model` the model a turn asks for when the
     /// request names none (ModelSource::Given); `id` the connection it serves (kId, or
     /// TensorFoldConnection::kId).
+    /// `toolRequestLimit` is the most model requests a tool turn makes.
     OpenAiCompatibleProvider(ApiKeyStore keys, std::string baseUrl, std::string model, std::string_view id = kId,
-                             ModelSource modelSource = ModelSource::Given);
+                             ModelSource modelSource = ModelSource::Given,
+                             int toolRequestLimit = kDefaultToolRequestLimit);
 
     std::string_view Id() const override { return m_Id; }
     ProviderCapabilities Capabilities() const override;
@@ -82,6 +86,7 @@ private:
 
     std::string_view m_Id;
     ModelSource m_ModelSource = ModelSource::Given;
+    int m_ToolRequestLimit = kDefaultToolRequestLimit;
     ApiKeyStore m_Keys;
     std::string m_BaseUrl;
     std::string m_Model;

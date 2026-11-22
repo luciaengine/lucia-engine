@@ -44,6 +44,7 @@ constexpr const char* kPrefLastMode = "aiAssistant.lastMode";
 constexpr const char* kPrefTextSize = "aiAssistant.textSize";
 constexpr const char* kPrefHoldToSpeak = "aiAssistant.holdToSpeak";
 constexpr const char* kPrefPromptMonospace = "aiAssistant.promptMonospace";
+constexpr const char* kPrefToolRequestLimit = "aiAssistant.toolRequestLimit";
 constexpr const char* kPrefSendWhenMicStops = "aiAssistant.sendWhenMicStops";
 constexpr const char* kDefaultNodeExecutable = "node";
 constexpr AssistantMode kInitialMode = AssistantMode::Auto;
@@ -569,6 +570,25 @@ void AiAssistantSettings::SetTextSize(float px)
     WritePreference(kPrefTextSize, std::to_string(static_cast<int>(std::lround(clamped))));
 }
 
+int AiAssistantSettings::ToolRequestLimit()
+{
+    const std::string stored = ReadPreference(kPrefToolRequestLimit, {});
+    char* end = nullptr;
+    const long limit = stored.empty() ? 0 : std::strtol(stored.c_str(), &end, 10);
+    if (stored.empty() || end == stored.c_str() || limit < 1)
+        return OpenAiCompatibleProvider::kDefaultToolRequestLimit;
+    return static_cast<int>(std::min<long>(limit, kMaxToolRequestLimit));
+}
+
+void AiAssistantSettings::SetToolRequestLimit(int limit)
+{
+    const int clamped = std::clamp(limit, 1, kMaxToolRequestLimit);
+    if (clamped == ToolRequestLimit())
+        return;
+    WritePreference(kPrefToolRequestLimit, std::to_string(clamped));
+    s_SetupGeneration.fetch_add(1, std::memory_order_relaxed);
+}
+
 bool AiAssistantSettings::PromptMonospace()
 {
     return ReadPreference(kPrefPromptMonospace, "0") == "1";
@@ -703,7 +723,7 @@ Editor::SettingsCategoryDescriptor AiAssistantSettings::BuildCategory()
         "ai assistant agent claude codex subscription api key provider setup check login session model effort "
         "codex model mode for new conversations claude code executable codex executable node executable "
         "hold the microphone to speak send when the microphone stops custom endpoint url openai compatible "
-        "local model server ollama lm studio vllm llama.cpp tensorfold deepseek harness dsh monospaced prompt font";
+        "local model server ollama lm studio vllm llama.cpp tensorfold deepseek harness dsh monospaced prompt font tool requests per turn limit";
     category.CreateContent = [] { return std::unique_ptr<UIElement>(std::make_unique<AiAssistantSetupPage>()); };
     return category;
 }

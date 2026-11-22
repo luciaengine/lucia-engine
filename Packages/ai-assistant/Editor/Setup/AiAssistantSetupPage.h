@@ -69,6 +69,8 @@ private:
     /// runs while `running`.
     void ShowSteps(const SetupStatus& status, bool running);
     void StoreExecutable(const std::string& executable);
+    /// Stores the typed tool request limit; text that is not a whole number shows the stored limit again.
+    void StoreToolLimit(const std::string& text);
 
     /// Starts a check on the check thread; a `keyWrite` that is not empty runs first on that thread.
     void StartCheck(std::function<Platform::SecretStoreStatus()> keyWrite);
@@ -108,6 +110,8 @@ private:
     Dropdown* m_EffortDropdown = nullptr;
     UIElement* m_CodexModelRow = nullptr;
     TextField* m_CodexModelField = nullptr;
+    UIElement* m_ToolLimitRow = nullptr;
+    TextField* m_ToolLimitField = nullptr;
     Dropdown* m_ModeDropdown = nullptr;
     UIElement* m_NodeRow = nullptr;
     TextField* m_NodeField = nullptr;

@@ -175,6 +175,14 @@ public:
     /// Stores `px`, clamped to the slider's range.
     static void SetTextSize(float px);
 
+    /// The most model requests one turn on a model API with the editor's tools (TensorFold, the
+    /// custom endpoint) makes while the model keeps calling tools: the stored value within
+    /// [1, kMaxToolRequestLimit], OpenAiCompatibleProvider::kDefaultToolRequestLimit until the user sets one.
+    static constexpr int kMaxToolRequestLimit = 1000;
+    static int ToolRequestLimit();
+    /// Stores `limit`, clamped to [1, kMaxToolRequestLimit]; a change moves SetupGeneration().
+    static void SetToolRequestLimit(int limit);
+
     /// Whether the prompt field and its placeholder use the script (monospaced) font. Off, the
     /// default, uses the editor's UI font.
     static bool PromptMonospace();

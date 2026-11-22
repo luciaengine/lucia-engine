@@ -9,6 +9,7 @@
 #include "Platform/HttpClient.h"
 #include "Types/Base64.h"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
@@ -189,9 +190,10 @@ void Publish(const SetupStep& step, const SetupStepSink& onStep, SetupStatus& st
 } // namespace
 
 OpenAiCompatibleProvider::OpenAiCompatibleProvider(ApiKeyStore keys, std::string baseUrl, std::string model,
-                                                   std::string_view id, ModelSource modelSource)
-    : m_Id(id), m_ModelSource(modelSource), m_Keys(std::move(keys)), m_BaseUrl(NormalizeBaseUrl(baseUrl)),
-      m_Model(std::move(model))
+                                                   std::string_view id, ModelSource modelSource,
+                                                   int toolRequestLimit)
+    : m_Id(id), m_ModelSource(modelSource), m_ToolRequestLimit(std::max(toolRequestLimit, 1)),
+      m_Keys(std::move(keys)), m_BaseUrl(NormalizeBaseUrl(baseUrl)), m_Model(std::move(model))
 {
 }
 
@@ -261,7 +263,7 @@ void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, cons
     const std::unordered_map<std::string, std::string> headers = BuildRequestHeaders(m_Keys.Read().Value);
     nlohmann::json messages = BuildMessages(request);
     const nlohmann::json tools = bridge.Definitions();
-    for (int round = 0; round < kMaxToolRounds; ++round)
+    for (int round = 0; round < m_ToolRequestLimit; ++round)
     {
         nlohmann::json body = {{"model", model}, {"stream", true}, {"messages", messages}, {"tools", tools}};
         OpenAiChatStream::Round reply =
@@ -314,8 +316,9 @@ void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, cons
         }
     }
     total.Outcome = TurnOutcome::Failed;
-    total.Error = "The model kept calling tools for " + std::to_string(kMaxToolRounds) +
-                  " requests without answering, so the turn stopped. Send a narrower request.";
+    total.Error = "The model kept calling tools for " + std::to_string(m_ToolRequestLimit) +
+                  " requests without answering, so the turn stopped. Send a narrower request, or raise Tool "
+                  "requests per turn in Settings > AI Assistant > Model and options.";
     events.OnFinished(total);
 }
 

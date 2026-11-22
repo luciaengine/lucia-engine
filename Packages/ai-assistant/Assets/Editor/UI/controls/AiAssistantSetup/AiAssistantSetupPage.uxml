@@ -45,6 +45,10 @@
       <Label class="settings-row-label" text="Model" />
       <TextField id="AiSetupCodexModel" class="settings-row-field" />
     </UIElement>
+    <UIElement id="AiSetupToolLimitRow" class="settings-row">
+      <Label class="settings-row-label" text="Tool requests per turn" />
+      <TextField id="AiSetupToolLimit" class="settings-row-field" />
+    </UIElement>
     <UIElement class="settings-row">
       <Label id="AiSetupModeLabel" class="settings-row-label" text="Mode for new conversations" />
       <Dropdown id="AiSetupMode" class="settings-row-field" />

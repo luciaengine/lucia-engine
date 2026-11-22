@@ -68,6 +68,10 @@ constexpr const char* kEndpointUrlTooltip =
     "The server's OpenAI-compatible API URL, the part before /chat/completions: Ollama "
     "http://localhost:11434/v1, LM Studio http://localhost:1234/v1.";
 constexpr const char* kEndpointModelTooltip = "The model the server serves, as the server names it.";
+constexpr const char* kToolLimitTooltip =
+    "The most requests a TensorFold or Custom turn sends while the model keeps calling the editor's tools, "
+    "from 1 to 1000. The turn stops there and says so; a higher limit lets longer tasks finish but uses more "
+    "of the model's context."; 
 constexpr const char* kEndpointServerTooltip =
     "The model servers running on this computer that the check found (TensorFold, Ollama, LM Studio, "
     "llama.cpp, vLLM). Choosing one fills in the URL and the model; Other keeps what you typed.";
@@ -293,6 +297,8 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
     m_EffortDropdown = dynamic_cast<Dropdown*>(FindById("AiSetupEffort"_sid));
     m_CodexModelRow = FindById("AiSetupCodexModelRow"_sid);
     m_CodexModelField = dynamic_cast<TextField*>(FindById("AiSetupCodexModel"_sid));
+    m_ToolLimitRow = FindById("AiSetupToolLimitRow"_sid);
+    m_ToolLimitField = dynamic_cast<TextField*>(FindById("AiSetupToolLimit"_sid));
     m_ModeDropdown = dynamic_cast<Dropdown*>(FindById("AiSetupMode"_sid));
     m_NodeRow = FindById("AiSetupNodeRow"_sid);
     m_NodeField = dynamic_cast<TextField*>(FindById("AiSetupNode"_sid));
@@ -305,7 +311,7 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
         !m_EndpointServerRow || !m_EndpointServerDropdown || !m_EndpointUrlRow || !m_EndpointUrlField ||
         !m_EndpointModelRow || !m_EndpointModelField ||
         !stepsHost || !apiKeyHost || !m_Options || !m_ModelRow || !m_ModelDropdown || !m_EffortRow || !m_EffortDropdown ||
-        !m_CodexModelRow || !m_CodexModelField || !m_ModeDropdown || !m_NodeRow || !m_NodeField || !nodeBrowse ||
+        !m_CodexModelRow || !m_CodexModelField || !m_ToolLimitRow || !m_ToolLimitField || !m_ModeDropdown || !m_NodeRow || !m_NodeField || !nodeBrowse ||
         !m_DictationRows || !m_PromptMonospace || !m_HoldToSpeak || !m_SendWhenMicStops)
     {
         Logger::Log::Error("AI Assistant: {} is missing one of its controls.", kLayoutAssetPath);
@@ -359,6 +365,8 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
     m_EffortDropdown->SetOnValueChanged([](const std::string& effort)
                                         { AiAssistantSettings::SetEffort(ClaudeSessionProvider::kId, effort); });
     m_CodexModelRow->SetTooltip(kCodexModelTooltip);
+    m_ToolLimitRow->SetTooltip(kToolLimitTooltip);
+    OnCommit(*m_ToolLimitField, [this](const std::string& text) { StoreToolLimit(text); });
     OnCommit(*m_CodexModelField,
              [](const std::string& model) { AiAssistantSettings::SetModel(CodexSessionProvider::kId, model); });
 
@@ -566,6 +574,15 @@ void AiAssistantSetupPage::ChooseLocalServer(const std::string& value)
     ShowEndpointAndKeyRows(std::string(OpenAiCompatibleProvider::kId));
 }
 
+void AiAssistantSetupPage::StoreToolLimit(const std::string& text)
+{
+    char* end = nullptr;
+    const long limit = std::strtol(text.c_str(), &end, 10);
+    if (end != text.c_str() && limit > 0)
+        AiAssistantSettings::SetToolRequestLimit(static_cast<int>(std::min<long>(limit, AiAssistantSettings::kMaxToolRequestLimit)));
+    m_ToolLimitField->SetValue(std::to_string(AiAssistantSettings::ToolRequestLimit()));
+}
+
 void AiAssistantSetupPage::StoreExecutable(const std::string& executable)
 {
     const std::string provider = AiAssistantSettings::Provider();
@@ -613,6 +630,11 @@ void AiAssistantSetupPage::ShowOptions(const std::string& providerId)
     SetHidden(*m_CodexModelRow, !codex);
     if (codex)
         m_CodexModelField->SetValue(AiAssistantSettings::Model(providerId));
+    // The tool loop the editor runs itself: the model API connections.
+    const bool runsToolLoop = providerId == TensorFoldConnection::kId || providerId == OpenAiCompatibleProvider::kId;
+    SetHidden(*m_ToolLimitRow, !runsToolLoop);
+    if (runsToolLoop)
+        m_ToolLimitField->SetValue(std::to_string(AiAssistantSettings::ToolRequestLimit()));
 
     m_ModeDropdown->SetSelectedValue(std::string(DescribeAssistantMode(AiAssistantSettings::LastMode()).Id));
     // Node runs the editor's tools, which only a session that signs in through its program uses.
