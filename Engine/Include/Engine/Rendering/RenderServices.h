@@ -890,17 +890,19 @@ class RenderServices
             // pass attaches the pair (AttachColorResolve) when valid.
             Rendering::RenderGraph::RGTexture Resolve{};
             Rendering::RenderGraph::RGAttachmentOps Ops{};
+            Rendering::RenderGraph::RGRange Range = Rendering::RenderGraph::RGRange::All();
         };
         static constexpr uint32_t kMaxExtraColorAttachments = 3;
         std::array<ExtraColorAttachment, kMaxExtraColorAttachments> ExtraColor{};
         uint32_t ExtraColorCount = 0;
         void AddExtraColor(uint32_t location, Rendering::RenderGraph::RGTexture texture,
                            const Rendering::RenderGraph::RGAttachmentOps& ops,
-                           Rendering::RenderGraph::RGTexture resolve = {})
+                           Rendering::RenderGraph::RGTexture resolve = {},
+                           Rendering::RenderGraph::RGRange range = Rendering::RenderGraph::RGRange::All())
         {
             assert(ExtraColorCount < kMaxExtraColorAttachments &&
                    "world pass extra color attachments exceeded");
-            ExtraColor[ExtraColorCount++] = {location, texture, resolve, ops};
+            ExtraColor[ExtraColorCount++] = {location, texture, resolve, ops, range};
         }
         // True when Resolve is a pipeline redirect (ForwardPlus "SceneColor"):
         // with MSAA off the pass renders STRAIGHT into Resolve so the post-FX
