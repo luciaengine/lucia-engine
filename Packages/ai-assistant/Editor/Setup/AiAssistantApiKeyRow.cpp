@@ -25,21 +25,21 @@ constexpr const char* kErrorClass = "ai-setup-key-note-error";
 constexpr const char* kEmptyPlaceholder = "Paste your key";
 constexpr const char* kSavedPlaceholder = "Paste a new key";
 
-std::string Variable()
+std::string NoStoreNote(std::string_view variable)
 {
-    return std::string(ApiKeyStore::kVariable);
-}
-
-std::string NoStoreNote()
-{
-    return "This system has no credential store: set " + Variable() +
+    if (variable.empty())
+        return "This system has no credential store, so a key cannot be saved.";
+    return "This system has no credential store: set " + std::string(variable) +
            " in the environment before starting the editor.";
 }
 
-std::string KeptNote(const std::string& storeName)
+std::string KeptNote(const std::string& storeName, const std::string& getKeyLine)
 {
-    return "A key you save stays in the system's credential store (" + storeName +
-           ") for your user on this computer, never in a file or the project. Get a key at console.anthropic.com.";
+    std::string note = "A key you save stays in the system's credential store (" + storeName +
+                       ") for your user on this computer, never in a file or the project.";
+    if (!getKeyLine.empty())
+        note += " " + getKeyLine;
+    return note;
 }
 
 // A key is printable ASCII with no space: a space or a control character inside it is a copy error.
@@ -51,6 +51,20 @@ bool HasHiddenCharacter(std::string_view key)
     });
 }
 } // namespace
+
+AiAssistantApiKeyRow::Purpose AiAssistantApiKeyRow::ClaudePurpose()
+{
+    return {.Store = [] { return AgentSessionState::Get().ApiKeys(); },
+            .KeySource = "the Claude Console",
+            .GetKeyLine = "Get a key at console.anthropic.com."};
+}
+
+AiAssistantApiKeyRow::Purpose AiAssistantApiKeyRow::EndpointPurpose()
+{
+    return {.Store = [] { return AgentSessionState::Get().EndpointKeys(); },
+            .KeySource = "your server or its provider",
+            .GetKeyLine = "A server on this computer usually needs no key."};
+}
 
 AiAssistantApiKeyRow::AiAssistantApiKeyRow(std::function<void(KeyWrite)> runWrite) : m_RunWrite(std::move(runWrite))
 {
@@ -76,8 +90,6 @@ bool AiAssistantApiKeyRow::Build(UIManager& ui)
         return false;
     }
 
-    m_StoreName = AgentSessionState::Get().ApiKeys().StoreName();
-    m_Field->SetTooltip("Paste a key from the Claude Console. The field shows a dot for each character.");
     m_Field->SetOnValueChanging([this](const std::string&) { SyncButtons(); });
     // Escape restores the field's value through a commit, not an edit.
     m_Field->SetOnValueChanged([this](const std::string&) { SyncButtons(); });
@@ -90,17 +102,29 @@ bool AiAssistantApiKeyRow::Build(UIManager& ui)
     m_Save->SetOnClick([this](UIEvent&) { Save(); });
     m_Remove->SetTooltip("Deletes the saved key from the system's credential store.");
     m_Remove->SetOnClick([this](UIEvent&) { Remove(); });
-    if (m_StoreName.empty())
-    {
-        m_Field->SetEnabled(false);
-        ShowNote(NoStoreNote(), false);
-    }
-    else
-    {
-        ShowNote(KeptNote(m_StoreName), false);
-    }
-    SyncButtons();
+    ShowPurpose();
     return true;
+}
+
+void AiAssistantApiKeyRow::SetPurpose(Purpose purpose)
+{
+    m_Purpose = std::move(purpose);
+    m_Saved = false;
+    if (m_Field)
+        ShowPurpose();
+}
+
+void AiAssistantApiKeyRow::ShowPurpose()
+{
+    const ApiKeyStore store = m_Purpose.Store();
+    m_StoreName = store.StoreName();
+    m_Field->SetTooltip("Paste a key from " + m_Purpose.KeySource + ". The field shows a dot for each character.");
+    m_Field->SetEnabled(!m_StoreName.empty());
+    if (m_StoreName.empty())
+        ShowNote(NoStoreNote(store.Variable()), false);
+    else
+        ShowNote(KeptNote(m_StoreName, m_Purpose.GetKeyLine), false);
+    SyncButtons();
 }
 
 void AiAssistantApiKeyRow::ShowSaved(bool saved)
@@ -118,24 +142,24 @@ void AiAssistantApiKeyRow::Save()
     const std::string_view key = TrimWhitespaceView(m_Field->GetValue());
     if (HasHiddenCharacter(key))
     {
-        ShowNote("The key has a space, a line break or another hidden character inside it. Copy the key from the "
-                 "Claude Console again and paste it.",
+        ShowNote("The key has a space, a line break or another hidden character inside it. Copy the key from " +
+                     m_Purpose.KeySource + " again and paste it.",
                  true);
         return;
     }
     if (key.empty())
     {
-        ShowNote("Paste the key from the Claude Console, then click Save.", true);
+        ShowNote("Paste the key from " + m_Purpose.KeySource + ", then click Save.", true);
         return;
     }
     if (key.size() > Platform::kMaxSecretBytes)
     {
         ShowNote("The key is longer than " + std::to_string(Platform::kMaxSecretBytes) +
-                     " characters. Copy only the key from the Claude Console and paste it.",
+                     " characters. Copy only the key from " + m_Purpose.KeySource + " and paste it.",
                  true);
         return;
     }
-    KeyWrite write = [keys = AgentSessionState::Get().ApiKeys(), value = std::string(key)] {
+    KeyWrite write = [keys = m_Purpose.Store(), value = std::string(key)] {
         return keys.Save(value);
     };
     m_Field->SetValue("");
@@ -150,7 +174,7 @@ void AiAssistantApiKeyRow::Remove()
         return;
     m_Writing = Writing::Remove;
     SyncButtons();
-    m_RunWrite([keys = AgentSessionState::Get().ApiKeys()] { return keys.Remove(); });
+    m_RunWrite([keys = m_Purpose.Store()] { return keys.Remove(); });
 }
 
 void AiAssistantApiKeyRow::ShowWriteResult(Platform::SecretStoreStatus status)
@@ -161,11 +185,11 @@ void AiAssistantApiKeyRow::ShowWriteResult(Platform::SecretStoreStatus status)
     if (done)
     {
         m_Saved = writing == Writing::Save;
-        ShowNote(KeptNote(m_StoreName), false);
+        ShowNote(KeptNote(m_StoreName, m_Purpose.GetKeyLine), false);
     }
     else if (status == Platform::SecretStoreStatus::NoStore)
     {
-        ShowNote(NoStoreNote(), true);
+        ShowNote(NoStoreNote(m_Purpose.Store().Variable()), true);
     }
     else if (writing == Writing::Save)
     {

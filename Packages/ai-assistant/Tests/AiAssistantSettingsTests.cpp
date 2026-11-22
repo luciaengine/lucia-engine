@@ -26,13 +26,14 @@ TEST(AiAssistantSettingsTests, EachAssistantOffersItsMethodsUnderAssistantMethod
     std::vector<std::string_view> assistants;
     for (const AiAssistantSettings::AssistantChoice& choice : AiAssistantSettings::AssistantChoices())
         assistants.push_back(choice.Name);
-    EXPECT_EQ(assistants, (std::vector<std::string_view>{"Claude", "Codex"}));
+    EXPECT_EQ(assistants, (std::vector<std::string_view>{"Claude", "Codex", "Custom"}));
 
     const std::vector<AiAssistantSettings::ProviderChoice> claude = AiAssistantSettings::MethodChoices("Claude");
     ASSERT_EQ(claude.size(), 2u);
     EXPECT_EQ(claude[0].Id, "claude-session") << "Subscription first: choosing Claude selects it";
     EXPECT_EQ(claude[1].Id, "claude-api");
     ASSERT_EQ(AiAssistantSettings::MethodChoices("Codex").size(), 1u);
+    ASSERT_EQ(AiAssistantSettings::MethodChoices("Custom").size(), 1u);
     EXPECT_TRUE(AiAssistantSettings::MethodChoices("Local LLM").empty());
 
     for (const AiAssistantSettings::ProviderChoice& choice : AiAssistantSettings::ProviderChoices())

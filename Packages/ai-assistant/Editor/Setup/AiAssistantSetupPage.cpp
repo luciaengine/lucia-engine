@@ -10,6 +10,7 @@
 #include "Providers/ClaudeSessionProvider.h"
 #include "Providers/CliSessionProvider.h"
 #include "Providers/CodexSessionProvider.h"
+#include "Providers/OpenAiCompatibleProvider.h"
 #include "Providers/IAgentProvider.h"
 #include "Providers/SetupStatus.h"
 #include "Setup/AiAssistantApiKeyRow.h"
@@ -60,6 +61,10 @@ constexpr const char* kEffortTooltip = "How much a Claude (Subscription) turn re
                                        "model button changes it too.";
 constexpr const char* kCodexModelTooltip =
     "The model a Codex (Subscription) turn asks for, as Codex names it; empty uses Codex's own default.";
+constexpr const char* kEndpointUrlTooltip =
+    "The server's OpenAI-compatible API URL, the part before /chat/completions: Ollama "
+    "http://localhost:11434/v1, LM Studio http://localhost:1234/v1.";
+constexpr const char* kEndpointModelTooltip = "The model the server serves, as the server names it.";
 constexpr const char* kHoldToSpeakTooltip = "Press and hold the microphone beside Send to dictate; releasing it "
                                             "stops. Off: a click starts dictation and a second click stops it.";
 constexpr const char* kSendWhenMicStopsTooltip = "Stopping the microphone sends the dictated prompt once its last "
@@ -201,7 +206,7 @@ struct AiAssistantSetupPage::PendingCheck
     bool Done = false;
     /// The steps that have ended; the whole result once Done.
     SetupStatus Status;
-    /// Whether a Claude API key is saved, read with a Claude (API key) check; else empty.
+    /// Whether an API key is saved, read with a Claude (API key) or custom endpoint check; else empty.
     std::optional<bool> KeySaved;
     /// The key store write that runs before the check; empty for a check alone. Set before the
     /// thread starts and read only by it.
@@ -251,6 +256,10 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
     m_ExecutableLabel = dynamic_cast<Label*>(FindById("AiSetupExecutableLabel"_sid));
     m_ExecutableField = dynamic_cast<TextField*>(FindById("AiSetupExecutableField"_sid));
     auto* executableBrowse = dynamic_cast<Button*>(FindById("AiSetupExecutableBrowse"_sid));
+    m_EndpointUrlRow = FindById("AiSetupEndpointUrlRow"_sid);
+    m_EndpointUrlField = dynamic_cast<TextField*>(FindById("AiSetupEndpointUrl"_sid));
+    m_EndpointModelRow = FindById("AiSetupEndpointModelRow"_sid);
+    m_EndpointModelField = dynamic_cast<TextField*>(FindById("AiSetupEndpointModel"_sid));
     UIElement* stepsHost = FindById("AiSetupStepsHost"_sid);
     UIElement* apiKeyHost = FindById("AiSetupApiKeyHost"_sid);
     m_Options = dynamic_cast<Foldout*>(FindById("AiSetupOptions"_sid));
@@ -268,6 +277,7 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
     m_HoldToSpeak = dynamic_cast<Toggle*>(FindById("AiSetupHoldToSpeak"_sid));
     m_SendWhenMicStops = dynamic_cast<Toggle*>(FindById("AiSetupSendWhenMicStops"_sid));
     if (!m_AssistantHost || !m_MethodHost || !m_MethodNeeds || !m_SetupHeader || !m_ExecutableRow || !m_ExecutableLabel || !m_ExecutableField || !executableBrowse ||
+        !m_EndpointUrlRow || !m_EndpointUrlField || !m_EndpointModelRow || !m_EndpointModelField ||
         !stepsHost || !apiKeyHost || !m_Options || !m_ModelRow || !m_ModelDropdown || !m_EffortRow || !m_EffortDropdown ||
         !m_CodexModelRow || !m_CodexModelField || !m_ModeDropdown || !m_NodeRow || !m_NodeField || !nodeBrowse ||
         !m_DictationRows || !m_HoldToSpeak || !m_SendWhenMicStops)
@@ -303,6 +313,12 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
         if (BrowseInto(*m_ExecutableField))
             StoreExecutable(m_ExecutableField->GetValue());
     });
+
+    m_EndpointUrlRow->SetTooltip(kEndpointUrlTooltip);
+    OnCommit(*m_EndpointUrlField, [](const std::string& url) { AiAssistantSettings::SetEndpointUrl(url); });
+    m_EndpointModelRow->SetTooltip(kEndpointModelTooltip);
+    OnCommit(*m_EndpointModelField,
+             [](const std::string& model) { AiAssistantSettings::SetModel(OpenAiCompatibleProvider::kId, model); });
 
     m_ModelDropdown->SetOnValueChanged(
         [](const std::string& model) { AiAssistantSettings::SetModel(AiAssistantSettings::Provider(), model); });
@@ -357,7 +373,7 @@ void AiAssistantSetupPage::ShowConnection()
     m_MethodNeeds->SetText(std::string(choice.MethodNeeds));
     m_SetupHeader->SetText("Setup for " + std::string(choice.Label));
     ShowExecutableRow(provider);
-    SetHidden(*m_ApiKeyRow, provider != ClaudeApiProvider::kId);
+    ShowEndpointAndKeyRows(provider);
     ShowOptions(provider);
     m_Plan.clear();
     m_Steps->SetSteps({});
@@ -433,6 +449,23 @@ void AiAssistantSetupPage::ShowExecutableRow(const std::string& providerId)
                                        : AiAssistantSettings::CodexExecutable());
 }
 
+void AiAssistantSetupPage::ShowEndpointAndKeyRows(const std::string& providerId)
+{
+    const bool endpoint = providerId == OpenAiCompatibleProvider::kId;
+    SetHidden(*m_EndpointUrlRow, !endpoint);
+    SetHidden(*m_EndpointModelRow, !endpoint);
+    if (endpoint)
+    {
+        m_EndpointUrlField->SetValue(AiAssistantSettings::EndpointUrl());
+        m_EndpointModelField->SetValue(AiAssistantSettings::Model(providerId));
+    }
+    const bool claudeKey = providerId == ClaudeApiProvider::kId;
+    SetHidden(*m_ApiKeyRow, !claudeKey && !endpoint);
+    if (claudeKey || endpoint)
+        m_ApiKeyRow->SetPurpose(endpoint ? AiAssistantApiKeyRow::EndpointPurpose()
+                                         : AiAssistantApiKeyRow::ClaudePurpose());
+}
+
 void AiAssistantSetupPage::StoreExecutable(const std::string& executable)
 {
     const std::string provider = AiAssistantSettings::Provider();
@@ -493,6 +526,8 @@ void AiAssistantSetupPage::ShowOptionsSummary(const std::string& providerId)
     std::string summary = "Model and options: ";
     if (const std::string model = AiAssistantSettings::Model(providerId); !model.empty())
         summary += AiAssistantSettings::ModelLabel(providerId, model);
+    else if (providerId == OpenAiCompatibleProvider::kId)
+        summary += "no model set";
     else
         summary += "Codex's own model";
     if (const std::string effort = AiAssistantSettings::Effort(providerId); !effort.empty())
@@ -634,6 +669,8 @@ void AiAssistantSetupPage::RunCheck(std::shared_ptr<PendingCheck> pending, std::
     std::optional<bool> keySaved;
     if (provider->Id() == ClaudeApiProvider::kId)
         keySaved = AgentSessionState::Get().ApiKeys().HasSavedKey();
+    else if (provider->Id() == OpenAiCompatibleProvider::kId)
+        keySaved = AgentSessionState::Get().EndpointKeys().HasSavedKey();
     std::lock_guard lock(pending->Mutex);
     // A write that threw leaves KeyWrite set: the row must still leave its writing state.
     if (pending->KeyWrite)

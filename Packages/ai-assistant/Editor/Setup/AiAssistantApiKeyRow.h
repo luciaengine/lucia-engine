@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Providers/ApiKeyStore.h"
 #include "UI/UIElement.h"
 
 #include <cstdint>
@@ -17,7 +18,8 @@ class Label;
 class TextField;
 class UIManager;
 
-/// The API key row of Settings > AI Assistant, shown for the Claude (API key) connection: the
+/// The API key row of Settings > AI Assistant, shown for the Claude (API key) connection and the
+/// custom endpoint, each with its own Purpose (key store and wording): the
 /// layout comes from the package's `Editor/UI/controls/AiAssistantSetup/AiAssistantApiKeyRow.uxml`
 /// (a masked field with a placeholder that says whether a key is saved, Save, Remove and the line
 /// that names where the key is kept and where to get one). Save and Remove hand a write of the
@@ -29,12 +31,30 @@ public:
     /// A write of the credential store, run off the UI thread; returns the store's status.
     using KeyWrite = std::function<Platform::SecretStoreStatus()>;
 
+    /// Which key the row saves and how it names where a key comes from.
+    struct Purpose
+    {
+        /// The store the row's writes go to, read when a write starts.
+        std::function<ApiKeyStore()> Store;
+        /// Where the user copies a key from: "the Claude Console".
+        std::string KeySource;
+        /// A sentence that says where to get a key; empty for none.
+        std::string GetKeyLine;
+    };
+    /// The Claude (API key) connection's key: AgentSessionState::ApiKeys().
+    static Purpose ClaudePurpose();
+    /// The custom endpoint's key: AgentSessionState::EndpointKeys().
+    static Purpose EndpointPurpose();
+
     /// `runWrite` runs a write off the UI thread, then calls ShowWriteResult on the UI thread.
     explicit AiAssistantApiKeyRow(std::function<void(KeyWrite)> runWrite);
 
-    /// Instantiates the row layout through `ui`. False (and logged) when the layout is not
-    /// staged or is missing an element.
+    /// Instantiates the row layout through `ui` for ClaudePurpose(). False (and logged) when the
+    /// layout is not staged or is missing an element.
     bool Build(UIManager& ui);
+
+    /// Shows the row for `purpose`: its tooltips, its note and no saved key until ShowSaved says.
+    void SetPurpose(Purpose purpose);
 
     /// Shows whether a key is saved (read on the setup check's thread): Remove is on only then.
     void ShowSaved(bool saved);
@@ -50,12 +70,14 @@ private:
         Remove,
     };
 
+    void ShowPurpose();
     void Save();
     void Remove();
     void ShowNote(const std::string& text, bool error);
     void SyncButtons();
 
     std::function<void(KeyWrite)> m_RunWrite;
+    Purpose m_Purpose = ClaudePurpose();
     Writing m_Writing = Writing::None;
     TextField* m_Field = nullptr;
     Button* m_Save = nullptr;

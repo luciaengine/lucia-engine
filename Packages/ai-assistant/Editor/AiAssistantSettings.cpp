@@ -4,6 +4,7 @@
 #include "Providers/ClaudeApiProvider.h"
 #include "Providers/ClaudeSessionProvider.h"
 #include "Providers/CodexSessionProvider.h"
+#include "Providers/OpenAiCompatibleProvider.h"
 #include "Setup/AiAssistantSetupPage.h"
 
 #include "Editor/Settings/EditorSettingsRegistry.h"
@@ -29,6 +30,8 @@ constexpr const char* kPrefProvider = "aiAssistant.provider";
 constexpr const char* kPrefClaudeSessionModel = "aiAssistant.claudeSessionModel";
 constexpr const char* kPrefClaudeApiModel = "aiAssistant.claudeApiModel";
 constexpr const char* kPrefCodexModel = "aiAssistant.codexModel";
+constexpr const char* kPrefEndpointModel = "aiAssistant.endpointModel";
+constexpr const char* kPrefEndpointUrl = "aiAssistant.endpointUrl";
 constexpr const char* kPrefClaudeSessionEffort = "aiAssistant.claudeSessionEffort";
 constexpr const char* kPrefClaudeExecutable = "aiAssistant.claudeExecutable";
 constexpr const char* kPrefCodexExecutable = "aiAssistant.codexExecutable";
@@ -69,11 +72,59 @@ void WritePreference(const char* key, const std::string& value)
     prefs.Save();
 }
 
-// An executable never set or set empty is the program's name, searched for on PATH.
+// What detection found, searched once and again after Check again.
+struct Detection
+{
+    std::optional<BackendDetection::Inputs> TestInputs;
+    bool Searched = false;
+    std::optional<BackendDetection::Found> Claude;
+    std::optional<BackendDetection::Found> Codex;
+};
+std::mutex s_DetectionMutex;
+Detection s_Detection;
+
+// Searches when nothing was searched since the last Check again. Call with s_DetectionMutex held.
+const Detection& Detected()
+{
+    if (!s_Detection.Searched)
+    {
+        const BackendDetection::Inputs inputs = s_Detection.TestInputs.value_or(BackendDetection::CurrentInputs());
+        s_Detection.Claude = BackendDetection::FindProgram(ClaudeSessionProvider::kDefaultExecutable, inputs);
+        s_Detection.Codex = BackendDetection::FindProgram(CodexSessionProvider::kDefaultExecutable, inputs);
+        s_Detection.Searched = true;
+    }
+    return s_Detection;
+}
+
+// The connection detection picks while the user has chosen none.
+std::string DetectedProvider()
+{
+    {
+        std::lock_guard lock(s_DetectionMutex);
+        const Detection& detected = Detected();
+        if (detected.Claude)
+            return std::string(ClaudeSessionProvider::kId);
+        if (detected.Codex)
+            return std::string(CodexSessionProvider::kId);
+    }
+    const char* key = std::getenv(std::string(ApiKeyStore::kVariable).c_str());
+    return std::string(key && *key ? ClaudeApiProvider::kId : ClaudeSessionProvider::kId);
+}
+
+// An executable never set or set empty is the program's name when PATH finds it, else the full
+// path where detection found it, else the name.
 std::string ReadExecutable(const char* key, std::string_view programName)
 {
     std::string executable = ReadPreference(key, {});
-    return executable.empty() ? std::string(programName) : executable;
+    if (!executable.empty())
+        return executable;
+    std::lock_guard lock(s_DetectionMutex);
+    const Detection& detected = Detected();
+    const std::optional<BackendDetection::Found>& found =
+        programName == ClaudeSessionProvider::kDefaultExecutable ? detected.Claude : detected.Codex;
+    if (found && !found->OnPath)
+        return found->Program.string();
+    return std::string(programName);
 }
 
 // Stores an executable and moves s_SetupGeneration when it changed, so the setup is checked again.
@@ -101,6 +152,8 @@ std::string SessionModeKey(std::string_view providerId)
 constexpr AiAssistantSettings::AssistantChoice kAssistantChoices[] = {
     {"Claude", "Anthropic's assistant. Can act in the editor when you sign in with your subscription."},
     {"Codex", "OpenAI's assistant. On Windows it answers in the panel but cannot act in the editor."},
+    {"Custom", "A server you name: a model on this computer or a hosted one, through its "
+               "OpenAI-compatible API."},
 };
 
 // Grouped by assistant, the method chosen with the assistant first.
@@ -112,6 +165,10 @@ constexpr AiAssistantSettings::ProviderChoice kProviderChoices[] = {
     {CodexSessionProvider::kId, "Codex (Subscription)", "Codex", "Subscription",
      "Your ChatGPT account, through Codex.",
      "Needs Codex, logged in."},
+    {OpenAiCompatibleProvider::kId, "Custom (OpenAI-compatible)", "Custom", "OpenAI-compatible",
+     "Any server with an OpenAI-compatible chat API, such as Ollama, LM Studio, vLLM or llama.cpp.",
+     "Needs the server's URL and model; a key only when the server asks for one. Conversation only: "
+     "the assistant cannot act in the editor."},
 };
 
 // The CLI's family aliases, each the latest model of its family, the initial choice
@@ -228,7 +285,9 @@ void AiAssistantSettings::SetAssistant(std::string_view assistant)
 
 std::string AiAssistantSettings::Provider()
 {
-    std::string id = ReadPreference(kPrefProvider, std::string(ClaudeSessionProvider::kId));
+    std::string id = ReadPreference(kPrefProvider, {});
+    if (id.empty())
+        return DetectedProvider();
     return IsKnownProvider(id) ? id : std::string(ClaudeSessionProvider::kId);
 }
 
@@ -259,6 +318,8 @@ std::string AiAssistantSettings::Model(std::string_view providerId)
 {
     if (providerId == CodexSessionProvider::kId)
         return ReadPreference(kPrefCodexModel, {});
+    if (providerId == OpenAiCompatibleProvider::kId)
+        return ReadPreference(kPrefEndpointModel, {});
     const char* key = ModelKey(providerId);
     if (!key)
         return {};
@@ -278,6 +339,15 @@ void AiAssistantSettings::SetModel(std::string_view providerId, std::string_view
             return;
         WritePreference(kPrefCodexModel, std::string(modelId));
         s_ModelGeneration.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (providerId == OpenAiCompatibleProvider::kId)
+    {
+        if (modelId == Model(providerId))
+            return;
+        WritePreference(kPrefEndpointModel, std::string(modelId));
+        s_ModelGeneration.fetch_add(1, std::memory_order_relaxed);
+        s_SetupGeneration.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     const char* key = ModelKey(providerId);
@@ -359,6 +429,33 @@ uint64_t AiAssistantSettings::SetupGeneration()
 
 void AiAssistantSettings::CheckSetupAgain()
 {
+    const std::string before = Provider();
+    {
+        std::lock_guard lock(s_DetectionMutex);
+        s_Detection.Searched = false;
+    }
+    if (Provider() != before)
+        s_ProviderGeneration.fetch_add(1, std::memory_order_relaxed);
+    s_SetupGeneration.fetch_add(1, std::memory_order_relaxed);
+}
+
+void AiAssistantSettings::UseDetectionInputsForTesting(std::optional<BackendDetection::Inputs> inputs)
+{
+    std::lock_guard lock(s_DetectionMutex);
+    s_Detection.TestInputs = std::move(inputs);
+    s_Detection.Searched = false;
+}
+
+std::string AiAssistantSettings::EndpointUrl()
+{
+    return ReadPreference(kPrefEndpointUrl, {});
+}
+
+void AiAssistantSettings::SetEndpointUrl(const std::string& url)
+{
+    if (url == EndpointUrl())
+        return;
+    WritePreference(kPrefEndpointUrl, url);
     s_SetupGeneration.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -527,7 +624,8 @@ Editor::SettingsCategoryDescriptor AiAssistantSettings::BuildCategory()
     category.SearchKeywords =
         "ai assistant agent claude codex subscription api key provider setup check login session model effort "
         "codex model mode for new conversations claude code executable codex executable node executable "
-        "hold the microphone to speak send when the microphone stops";
+        "hold the microphone to speak send when the microphone stops custom endpoint url openai compatible "
+        "local model server ollama lm studio vllm llama.cpp";
     category.CreateContent = [] { return std::unique_ptr<UIElement>(std::make_unique<AiAssistantSetupPage>()); };
     return category;
 }

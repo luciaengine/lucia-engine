@@ -4,6 +4,7 @@
 #include "Providers/ClaudeApiProvider.h"
 #include "Providers/ClaudeSessionProvider.h"
 #include "Providers/CodexSessionProvider.h"
+#include "Providers/OpenAiCompatibleProvider.h"
 
 #include "Editor/EditorPaths.h"
 
@@ -24,11 +25,21 @@ AgentSessionState::AgentSessionState() : m_ModelsUrl(ClaudeApiProvider::kModelsE
 
 std::shared_ptr<IAgentProvider> AgentSessionState::Provider(std::string_view providerId)
 {
+    // What the provider is made from; a change makes a new provider. The custom endpoint's is its
+    // URL and model, which its setup check reads.
     std::string executable;
+    std::string endpointUrl;
+    std::string endpointModel;
     if (providerId == ClaudeSessionProvider::kId)
         executable = AiAssistantSettings::ClaudeExecutable();
     else if (providerId == CodexSessionProvider::kId)
         executable = AiAssistantSettings::CodexExecutable();
+    else if (providerId == OpenAiCompatibleProvider::kId)
+    {
+        endpointUrl = AiAssistantSettings::EndpointUrl();
+        endpointModel = AiAssistantSettings::Model(providerId);
+        executable = endpointUrl + "\n" + endpointModel;
+    }
     else if (providerId != ClaudeApiProvider::kId)
         return nullptr;
     const std::filesystem::path directory = Editor::GetCurrentEditorProjectPaths().projectRoot;
@@ -46,6 +57,8 @@ std::shared_ptr<IAgentProvider> AgentSessionState::Provider(std::string_view pro
         connection.Provider = std::make_shared<ClaudeSessionProvider>(executable, directory);
     else if (providerId == CodexSessionProvider::kId)
         connection.Provider = std::make_shared<CodexSessionProvider>(executable, directory);
+    else if (providerId == OpenAiCompatibleProvider::kId)
+        connection.Provider = std::make_shared<OpenAiCompatibleProvider>(m_EndpointKeys, endpointUrl, endpointModel);
     else
         connection.Provider = std::make_shared<ClaudeApiProvider>(m_ApiKeys, m_ModelsUrl);
     return connection.Provider;
@@ -64,6 +77,19 @@ void AgentSessionState::UseApiConnectionForTesting(ApiKeyStore keys, std::string
     m_ModelsUrl = std::move(modelsUrl);
     Connection& connection = FindOrAdd(ClaudeApiProvider::kId);
     connection.Provider.reset();
+}
+
+ApiKeyStore AgentSessionState::EndpointKeys() const
+{
+    std::lock_guard lock(m_Mutex);
+    return m_EndpointKeys;
+}
+
+void AgentSessionState::UseEndpointKeysForTesting(ApiKeyStore keys)
+{
+    std::lock_guard lock(m_Mutex);
+    m_EndpointKeys = std::move(keys);
+    FindOrAdd(OpenAiCompatibleProvider::kId).Provider.reset();
 }
 
 std::shared_ptr<CliSessionProvider> AgentSessionState::SessionProvider(std::string_view providerId)

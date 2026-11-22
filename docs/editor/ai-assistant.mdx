@@ -17,9 +17,12 @@ Open the panel from the **Panels** button at the right end of the top toolbar an
 
 | Provider | What it needs | Where it sends your prompt |
 |---|---|---|
-| **Claude (Subscription)** (the default) | Claude Code installed on this machine and logged in (`claude auth login`). | Your own `claude` program, which talks to the service it is logged in to. |
+| **Claude (Subscription)** | Claude Code installed on this machine and logged in (`claude auth login`). | Your own `claude` program, which talks to the service it is logged in to. |
 | **Codex (Subscription)** | Codex installed on this machine and logged in (`codex login`). | Your own `codex` program, which talks to the service it is logged in to. |
 | **Claude (API key)** | A Claude API key, saved in Settings > AI Assistant or set in the `ANTHROPIC_API_KEY` environment variable. | `https://api.anthropic.com/v1/messages`, always. |
+| **Custom (OpenAI-compatible)** | The URL and model of a server with an OpenAI-compatible chat API (Ollama, LM Studio, vLLM, llama.cpp, a hosted service); a key only when the server asks for one. | `<URL>/chat/completions` on the server you name. |
+
+Until you choose a provider, the editor picks one from what is installed: Claude (Subscription) when it finds `claude`, else Codex (Subscription) when it finds `codex`, else Claude (API key) when `ANTHROPIC_API_KEY` is set, else Claude (Subscription), whose setup check then says what to install. **Check again** on the setup page looks again, so a program installed since is found. The Custom provider and the Claude API key provider answer in the panel but cannot act in the editor.
 
 ![The provider dropdown open, listing Claude (Subscription), Claude (API key) and Codex (Subscription)](img/ai-assistant-provider-dropdown.png)
 
@@ -102,7 +105,7 @@ A local session runs the command-line program you already use, under your own lo
 ### Claude (Subscription)
 
 - Install Claude Code, the command-line program, from [claude.com/claude-code](https://claude.com/claude-code). The editor runs its native program: `claude.exe` on Windows, `claude` on macOS and Linux. On Windows it does not run the `claude.cmd` script that npm installs, because Windows passes a script's arguments through `cmd.exe`. It does not run the Claude desktop app, which is a different program.
-- Runs `claude`, found on `PATH`, unless you set a full path in **Claude Code executable**.
+- Runs `claude`, found on `PATH`, unless you set a full path in **Claude Code executable**. When `claude` is not on the editor's `PATH` (an editor opened from the Dock or Finder does not see a terminal's `PATH`), the editor uses the full path where it finds `claude` in the installers' folders: `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.npm-global/bin` and `~/.bun/bin` (on Windows, `%USERPROFILE%\.local\bin`).
 - Needs Claude Code 2.1.259 or later. An older one is refused with the fix: run "claude update".
 - Not logged in: run `claude auth login` in a terminal, then send the prompt again.
 - The model and the effort come from the model button (or **Claude session model** and **Claude session effort** in the settings), and every prompt names both: Opus at High until you choose. Your own Claude Code model and effort settings do not apply to the panel.
@@ -110,7 +113,7 @@ A local session runs the command-line program you already use, under your own lo
 ### Codex (Subscription)
 
 - Install the Codex CLI from [github.com/openai/codex](https://github.com/openai/codex).
-- **Codex executable** is `codex` on `PATH` until you set it. When Codex is not on `PATH` (an editor extension installs it in its own folder), set it to the full path of the native program: `codex.exe` on Windows (not the `codex.cmd` script that npm installs), `codex` on macOS and Linux. An empty value means `codex` on `PATH` again.
+- **Codex executable** is `codex` on `PATH` until you set it, or the full path where the editor finds `codex` in the same installers' folders as `claude`. When Codex is in none of them (an editor extension installs it in its own folder), set it to the full path of the native program: `codex.exe` on Windows (not the `codex.cmd` script that npm installs), `codex` on macOS and Linux. An empty value means `codex` on `PATH` again.
 - Not logged in: run `codex login` in a terminal, then send the prompt again.
 - The model comes from the **Model** row under **Model and options**, a name as Codex spells it. Empty uses Codex's own default.
 - Codex has no option to add the panel's instructions to its own, so a Codex session answers without them.
@@ -252,6 +255,10 @@ The page's three steps, **Which assistant?**, **How do you sign in?** and **Setu
 |---|---|---|
 | Claude Code executable | Claude (Subscription) | `claude` on `PATH` by default, or a full path to `claude.exe` (Windows) or `claude` (macOS, Linux). |
 | Codex executable | Codex (Subscription) | `codex` on `PATH` by default, or a full path to `codex.exe` (Windows) or `codex` (macOS, Linux). |
+| Endpoint URL | Custom (OpenAI-compatible) | The server's API URL, the part before `/chat/completions`: Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`. |
+| Model | Custom (OpenAI-compatible) | The model as the server names it. The setup check asks the server for its model list and warns when the model is not in it. |
+
+An empty **Claude Code executable** or **Codex executable** shows the full path the editor found when the program is not on `PATH`.
 
 The other rows sit in the **Model and options** foldout under the checks, closed by default. Its title reads the current choice, for example "Model and options: Opus (latest) · High effort · new conversations: Auto". It holds only the rows of the chosen connection:
 
@@ -264,7 +271,7 @@ The other rows sit in the **Model and options** foldout under the checks, closed
 | Node executable | Claude (Subscription), Codex (Subscription) | `node` on `PATH` by default, or a full path to `node.exe` (Windows) or `node` (macOS, Linux), Node 20 or later, which runs the editor's tools for the assistant. |
 | Hold the microphone to speak, Send when the microphone stops | Every connection, where the system offers speech input | How the panel's microphone button dictates. |
 
-With Claude (API key) chosen, the page shows the **API key** row: see [Claude (API key): supplying the key](#claude-api-key-supplying-the-key). The settings search finds the page by any of its row names.
+With Claude (API key) chosen, the page shows the **API key** row: see [Claude (API key): supplying the key](#claude-api-key-supplying-the-key). With Custom (OpenAI-compatible) chosen it shows the same row for the server's key, kept in the system's credential store under its own name and sent only to that server, as `Authorization: Bearer <key>`. A server on this computer usually needs no key. The editor sends a key over plain `http` only to this computer; a remote server needs `https`. The settings search finds the page by any of its row names.
 
 ![Settings, User Settings, AI Assistant page](img/ai-assistant-settings.png)
 

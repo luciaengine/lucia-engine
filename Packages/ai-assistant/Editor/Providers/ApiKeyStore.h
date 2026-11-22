@@ -9,9 +9,10 @@
 
 namespace GameEngine
 {
-/// The Claude API key: the ANTHROPIC_API_KEY environment variable when it is set and not
-/// empty, else the key the user saved in the system's credential store. The key is never
-/// written to a file, a preference or the project. Copyable; thread-safe when its backend is.
+/// An API key of one Slot: the slot's environment variable when it has one and it is set and
+/// not empty, else the key the user saved under the slot's name in the system's credential store.
+/// The Claude slot reads ANTHROPIC_API_KEY; the custom endpoint's slot has no variable. The key is
+/// never written to a file, a preference or the project. Copyable; thread-safe when its backend is.
 class ApiKeyStore
 {
 public:
@@ -42,20 +43,31 @@ public:
         Platform::SecretStoreStatus StoreStatus = Platform::SecretStoreStatus::NotFound;
     };
 
-    /// The name of the saved key in the credential store.
+    /// Which key: its name in the credential store and the environment variable used instead
+    /// of a saved key when it is set (empty for none).
+    struct Slot
+    {
+        std::string_view CredentialName;
+        std::string_view Variable;
+    };
+
+    /// The name of the saved Claude API key in the credential store.
     static constexpr std::string_view kCredentialName = "GameEngine/Editor/ai-assistant/anthropic-api-key";
-    /// The environment variable that is used instead of a saved key when it is set.
+    /// The environment variable that is used instead of a saved Claude API key when it is set.
     static constexpr std::string_view kVariable = "ANTHROPIC_API_KEY";
+    static constexpr Slot kClaudeSlot{kCredentialName, kVariable};
+    /// The custom endpoint's key: saved only, with no environment variable.
+    static constexpr Slot kEndpointSlot{"GameEngine/Editor/ai-assistant/custom-endpoint-api-key", {}};
 
     /// Platform::StoreSecret, ReadSecret, DeleteSecret and SecretStoreName.
     static Backend SystemBackend();
 
-    explicit ApiKeyStore(Backend backend);
+    explicit ApiKeyStore(Backend backend, Slot slot = kClaudeSlot);
 
     /// The key a turn uses. Reads the credential store, which can block (the macOS Keychain asks
     /// the user), so call it from a worker thread.
     Key Read() const;
-    /// Saves `key` under kCredentialName, replacing a saved key. An empty key gives Failed.
+    /// Saves `key` under the slot's name, replacing a saved key. An empty key gives Failed.
     Platform::SecretStoreStatus Save(std::string_view key) const;
     /// Deletes the saved key; NotFound when no key is saved.
     Platform::SecretStoreStatus Remove() const;
@@ -64,8 +76,11 @@ public:
     bool HasSavedKey() const;
     /// Backend::StoreName.
     const std::string& StoreName() const { return m_Backend.StoreName; }
+    /// The slot's environment variable; empty when the slot has none.
+    std::string_view Variable() const { return m_Slot.Variable; }
 
 private:
     Backend m_Backend;
+    Slot m_Slot;
 };
 } // namespace GameEngine

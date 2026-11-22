@@ -17,6 +17,14 @@
     <TextField id="AiSetupExecutableField" class="settings-row-field" />
     <Button id="AiSetupExecutableBrowse" class="small secondary" text="Browse..." />
   </UIElement>
+  <UIElement id="AiSetupEndpointUrlRow" class="settings-row">
+    <Label class="settings-row-label" text="Endpoint URL" />
+    <TextField id="AiSetupEndpointUrl" class="settings-row-field" placeholder="http://localhost:11434/v1" />
+  </UIElement>
+  <UIElement id="AiSetupEndpointModelRow" class="settings-row">
+    <Label class="settings-row-label" text="Model" />
+    <TextField id="AiSetupEndpointModel" class="settings-row-field" placeholder="llama3.1" />
+  </UIElement>
   <UIElement id="AiSetupApiKeyHost" />
   <UIElement id="AiSetupStepsHost" class="ai-setup-block" />
 
@@ -54,5 +62,5 @@
     </UIElement>
   </Foldout>
 
-  <CollapsibleInfoCard class="ai-setup-info" text="Your login stays yours: the editor never stores, copies or sends it, and removes API keys from the environment of the programs it starts. An API key you save is kept in the system's credential store and is sent only to the Claude API." />
+  <CollapsibleInfoCard class="ai-setup-info" text="Your login stays yours: the editor never stores, copies or sends it, and removes API keys from the environment of the programs it starts. An API key you save is kept in the system's credential store and is sent only to the service it is for: the Claude API, or your custom endpoint." />
 </UIElement>

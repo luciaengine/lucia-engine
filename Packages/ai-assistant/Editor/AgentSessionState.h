@@ -65,6 +65,12 @@ public:
     /// a fake store and a loopback URL, so a test never reads the real key or the network.
     void UseApiConnectionForTesting(ApiKeyStore keys, std::string modelsUrl);
 
+    /// The key store the custom endpoint reads (ApiKeyStore::kEndpointSlot): the system's
+    /// credential store unless a test swapped it.
+    ApiKeyStore EndpointKeys() const;
+    /// Makes the custom endpoint use `keys` and drops its provider. For tests.
+    void UseEndpointKeysForTesting(ApiKeyStore keys);
+
 private:
     struct Connection
     {
@@ -80,6 +86,7 @@ private:
     mutable std::mutex m_Mutex;
     std::vector<Connection> m_Connections;
     ApiKeyStore m_ApiKeys{ApiKeyStore::SystemBackend()};
+    ApiKeyStore m_EndpointKeys{ApiKeyStore::SystemBackend(), ApiKeyStore::kEndpointSlot};
     std::string m_ModelsUrl;
 };
 } // namespace GameEngine

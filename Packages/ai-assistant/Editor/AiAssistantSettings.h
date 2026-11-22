@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssistantMode.h"
+#include "Providers/BackendDetection.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -70,8 +71,10 @@ public:
     /// The connection of `providerId`; the Claude session's for an unknown id.
     static const ProviderChoice& ProviderChoiceOf(std::string_view providerId);
 
-    /// The connection id the panel uses (an IAgentProvider::Id()); the Claude
-    /// session when none was chosen or the stored one is unknown.
+    /// The connection id the panel uses (an IAgentProvider::Id()). Until the user chooses one it
+    /// is detected: the Claude session when claude is installed, else the Codex session when codex
+    /// is, else Claude (API key) when ANTHROPIC_API_KEY is set, else the Claude session. A stored
+    /// id that is unknown also gives the Claude session.
     static std::string Provider();
     /// Stores the connection id; an unknown id is ignored.
     static void SetProvider(const std::string& providerId);
@@ -83,15 +86,17 @@ public:
     static uint64_t ProviderGeneration();
 
     /// The models the settings page and the panel offer for `providerId`, the initial
-    /// choice first; empty for a connection whose model is free text (Codex). The
+    /// choice first; empty for a connection whose model is free text (Codex, the custom
+    /// endpoint). The
     /// Claude session offers the CLI's family aliases, never a version.
     static std::span<const Choice> ModelChoices(std::string_view providerId);
     /// The model a turn of `providerId` asks for: the stored ModelChoices() id, the
     /// first one when none is stored or the stored one is no longer offered (said once
-    /// in the log); Codex's free text, empty for its own default.
+    /// in the log); Codex's and the custom endpoint's free text, empty when none is typed.
     static std::string Model(std::string_view providerId);
-    /// Stores `modelId` for `providerId`: Codex's free text as typed (empty for its own default), else
-    /// a ModelChoices() id; an id outside ModelChoices() is ignored.
+    /// Stores `modelId` for `providerId`: Codex's and the custom endpoint's free text as typed (a
+    /// change of the endpoint's model moves SetupGeneration()), else a ModelChoices() id; an id
+    /// outside ModelChoices() is ignored.
     static void SetModel(std::string_view providerId, std::string_view modelId);
     /// What the panel and the settings page call `modelId` of `providerId`: the model
     /// that last answered a turn asking for it ("Opus 5.5", AnsweredModel()), else its
@@ -119,12 +124,21 @@ public:
     /// and names the model that answered.
     static uint64_t ModelGeneration();
 
-    /// The `claude` executable: a program name searched for on PATH or a full path;
-    /// `claude` when the setting is empty.
+    /// The `claude` executable: a program name searched for on PATH or a full path. When the
+    /// setting is empty: `claude` when it is on PATH, else the full path where it was detected
+    /// (BackendDetection), else `claude`.
     static std::string ClaudeExecutable();
-    /// The `codex` executable: a program name searched for on PATH or a full path;
-    /// `codex` when the setting is empty.
+    /// The `codex` executable, found as ClaudeExecutable() finds `claude`.
     static std::string CodexExecutable();
+
+    /// The custom endpoint's API URL as the user typed it (".../v1"); empty until set.
+    static std::string EndpointUrl();
+    /// Stores the custom endpoint's URL; a change moves SetupGeneration().
+    static void SetEndpointUrl(const std::string& url);
+
+    /// Makes detection search `inputs` instead of this process's PATH and home, and forgets what
+    /// it found; nullopt returns to the process's own. For tests.
+    static void UseDetectionInputsForTesting(std::optional<BackendDetection::Inputs> inputs);
 
     /// The Node.js executable that runs the editor's MCP server for a conversation
     /// that acts in the editor: a program name searched for on PATH or a full path.
@@ -137,7 +151,8 @@ public:
     /// setup page checks the new setup at once.
     static uint64_t SetupGeneration();
     /// Moves SetupGeneration() with no setting changed (Check again): the page, the panel and
-    /// the providers' cached answers check again, so a program installed since is found.
+    /// the providers' cached answers check again, and detection searches again, so a program
+    /// installed since is found.
     static void CheckSetupAgain();
 
     /// The conversation's text size in px, the size slider's value (its body text; the

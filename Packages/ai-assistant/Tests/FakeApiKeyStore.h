@@ -27,7 +27,7 @@ struct FakeApiKeyStore
 
     std::shared_ptr<State> Data = std::make_shared<State>();
 
-    ApiKeyStore Store(std::string storeName = "the test store") const
+    ApiKeyStore Store(std::string storeName = "the test store", ApiKeyStore::Slot slot = ApiKeyStore::kClaudeSlot) const
     {
         ApiKeyStore::Backend backend;
         backend.StoreName = std::move(storeName);
@@ -58,7 +58,7 @@ struct FakeApiKeyStore
             data->Saved.reset();
             return Platform::SecretStoreStatus::Done;
         };
-        return ApiKeyStore(std::move(backend));
+        return ApiKeyStore(std::move(backend), slot);
     }
 };
 } // namespace GameEngine

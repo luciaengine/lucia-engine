@@ -53,10 +53,12 @@ private:
     void ShowAssistantChoices(const std::string& assistant);
     void ShowMethodChoices(const std::string& providerId);
     void ShowExecutableRow(const std::string& providerId);
+    /// Shows the endpoint rows and the key row for the connections that use them.
+    void ShowEndpointAndKeyRows(const std::string& providerId);
     void ShowOptions(const std::string& providerId);
     void ShowOptionsSummary(const std::string& providerId);
     /// Shows `status` as the chosen connection's checklist: the summary pill, the line beside
-    /// it and one row per step. `keySaved` tells a saved Claude API key from one in the environment.
+    /// it and one row per step. `keySaved` tells a saved API key from one in the environment.
     void ShowStatus(const SetupStatus& status, bool keySaved);
     /// The steps of `status`, then the plan's steps that have not ended; the first of those
     /// runs while `running`.
@@ -86,6 +88,10 @@ private:
     UIElement* m_ExecutableRow = nullptr;
     Label* m_ExecutableLabel = nullptr;
     TextField* m_ExecutableField = nullptr;
+    UIElement* m_EndpointUrlRow = nullptr;
+    TextField* m_EndpointUrlField = nullptr;
+    UIElement* m_EndpointModelRow = nullptr;
+    TextField* m_EndpointModelField = nullptr;
     AiAssistantApiKeyRow* m_ApiKeyRow = nullptr;
     EditorUI::SetupStepList* m_Steps = nullptr;
     Foldout* m_Options = nullptr;
