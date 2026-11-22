@@ -713,6 +713,7 @@ set(EDITOR_SOURCES
 	Source/DebugServer/ReflectionProbeDebugHandlers.cpp
 	Source/DebugServer/JobSystem/JobSystemDebugHandlers.cpp
 	Source/DebugServer/JobSystem/JobSystemReport.cpp
+	Source/DebugServer/MaterialMipStreamDebugHandlers.cpp
 	Source/DebugServer/MemoryDebugHandlers.cpp
 	Source/DebugServer/NavigationDebugHandlers.cpp
 	Source/DebugServer/SystemWaveTraceReport.cpp
@@ -770,6 +771,7 @@ set(EDITOR_HEADERS
 	Source/DebugServer/ReflectionProbeDebugHandlers.h
 	Source/DebugServer/JobSystem/JobSystemDebugHandlers.h
 	Source/DebugServer/JobSystem/JobSystemReport.h
+	Source/DebugServer/MaterialMipStreamDebugHandlers.h
 	Source/DebugServer/MemoryDebugHandlers.h
 	Source/DebugServer/NavigationDebugHandlers.h
 	Source/DebugServer/SystemWaveTraceReport.h

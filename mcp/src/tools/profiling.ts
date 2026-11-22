@@ -213,6 +213,13 @@ export const tools: ToolDef[] = [
   }),
 
   proxyTool({
+    name: "get_material_mip_streams",
+    category: "profiling",
+    description: "Read every material mip stream now, most need first: the order in which the planner gives a level to a stream (the first stream gains first, the last one loses first). enabled is false and streams is empty when streaming is off. budgetBytes is the stream budget and residentBytes the sum of the streams. streams[]: texture (GUID), path, firstMip (the first resident level), tail (the coarsest first resident level), topExtent and residentExtent (the longest edge of level 0 and of the first resident level, in texels), residentBytes (with the normal-map variance companion), screenCoverage (the coverage that the last plan used; 0 without demand data), need (screenCoverage / residentExtent, the planner's order key), keepsLevel (a read failed: no more steps until a reload) and stepTargetMip (present while a step of this stream reads its levels). A texture that a direct request (GetOrUpload) loaded first is a full image, not a stream, and is not listed.",
+    schema: {},
+  }),
+
+  proxyTool({
     name: "get_ecs_wave_trace",
     category: "profiling",
     description: "Read how the ECS system waves ran, frame by frame, from a ring of the newest 256 SystemManager updates recorded while the trace is armed (pass enabled: true first; arming clears the ring). Unlike get_job_system, which polls between frames, it sees every fork after the fact. summary: ecsMs (the ECS part of the frame), framePeriodMs, joinWaitMs (time the main thread waited in wave joins), inlineMs (bodies the main thread ran in single-system and exclusive waves), helpMs (forked bodies the main thread ran while joining, its own wave's jobs), gapsMs (ECS time outside any wave), forkedWaves, forks, joins, and publishes: waveForks (pool tasks the waves' publish loops published, at most one per fork), inSystems (jobs system bodies published on their own thread), duringUpdate (every thread's publishes during the ECS update), perFrame (every thread's publishes from one frame's start to the next) and outsideSystems (perFrame minus the two attributed counts). waves[] per plan wave: systems, forks, makespanMs, gapBeforeMs, joinWaitMs, criticalPathMs (slowest forked body), dispatchMs (fork publish to body start). systems[] per system, slowest first: ms, updates, forked, onWorker, onCaller, publishesPerUpdate. Distributions are {median, p95, max} in milliseconds. frames[] describes the newest N frames system by system. On macOS the same waves, joins and bodies are os_signpost intervals (subsystem com.gameengine.ecs, category SystemWaves) for an Instruments recording while armed.",

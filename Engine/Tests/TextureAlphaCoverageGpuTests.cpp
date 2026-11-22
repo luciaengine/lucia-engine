@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -120,6 +121,34 @@ struct TextureCoverageUploadTestAccess
 namespace
 {
 namespace fs = std::filesystem;
+using MipStreamState = Engine::Renderer::TextureService::MaterialMipStreamState;
+
+// The stream of `texture` in `report`, or null.
+const MipStreamState* FindMipStream(const Engine::Renderer::TextureService::MaterialMipStreamReport& report,
+                                    const GUID& texture)
+{
+    const auto found = std::ranges::find(report.Streams, texture, &MipStreamState::Texture);
+    return found == report.Streams.end() ? nullptr : &*found;
+}
+
+// The report of `textures` names the first resident level and the coverage that the last plan used.
+void ExpectMipStreamReport(const Engine::Renderer::TextureService& service, std::span<const GUID> textures,
+                           std::span<const uint32> firstMips, std::span<const float> coverage)
+{
+    const auto report = service.ReportMaterialMipStreams();
+    EXPECT_EQ(report.BudgetBytes, 2u * 1024u * 1024u);
+    ASSERT_EQ(report.Streams.size(), textures.size());
+    for (size_t index = 0; index < textures.size(); ++index)
+    {
+        const MipStreamState* stream = FindMipStream(report, textures[index]);
+        ASSERT_NE(stream, nullptr);
+        EXPECT_EQ(stream->FirstMip, firstMips[index]);
+        EXPECT_EQ(stream->Tail, 1u);
+        EXPECT_EQ(stream->TopExtent, 512u);
+        EXPECT_FLOAT_EQ(stream->ScreenCoverage, coverage[index]);
+        EXPECT_FALSE(stream->StepTargetMip.has_value());
+    }
+}
 class TextureCoverageGPU : public testing::Test
 {
   protected:
@@ -751,6 +780,8 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     SettleMipStreams();
     EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 256u);
     EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 512u);
+    const std::array<GUID, 2> textures{streamed[0].Texture, streamed[1].Texture};
+    ExpectMipStreamReport(m_Textures, textures, std::array<uint32, 2>{1u, 0u}, coverage);
     // With no change to the demand, the streams or the budget, the planner does not run again.
     EXPECT_TRUE(Access::MipStreamsSettled(m_Textures));
     m_Textures.FlushPendingUploads();
@@ -763,6 +794,7 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamingGivesDetailToTheMaterialWithTheMo
     SettleMipStreams();
     EXPECT_EQ(WidthOf(streamed[0].BoundMaterial->GetTexture(slot)), 512u);
     EXPECT_EQ(WidthOf(streamed[1].BoundMaterial->GetTexture(slot)), 256u);
+    ExpectMipStreamReport(m_Textures, textures, std::array<uint32, 2>{0u, 1u}, coverage);
 
     for (const Streamed& entry : streamed)
     {

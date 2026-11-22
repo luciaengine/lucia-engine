@@ -1889,6 +1889,29 @@ void TextureService::UpdateMaterialMipDemand(std::span<const float> coverageByMa
     InvalidateMaterialMipCoverageLocked();
 }
 
+TextureService::MaterialMipStreamReport TextureService::ReportMaterialMipStreams() const
+{
+    MaterialMipStreamReport report;
+    report.BudgetBytes = m_MaterialMipBudgetBytes;
+    std::lock_guard lock(m_PendingTexturesMutex);
+    report.Streams.reserve(m_MaterialMipStreams.Size());
+    for (const auto& [guid, stream] : m_MaterialMipStreams)
+    {
+        const MaterialMipStreamSource& source = *stream.Source;
+        MaterialMipStreamState& state = report.Streams.emplace_back();
+        state.Texture = guid;
+        state.FirstMip = stream.FirstMip;
+        state.Tail = source.Tail();
+        state.TopExtent = source.TopExtent();
+        state.ResidentBytes = source.SuffixBytes()[stream.FirstMip];
+        state.ScreenCoverage = stream.ScreenCoverage;
+        state.KeepsLevel = stream.KeepsLevel;
+        if (m_MaterialMipStep.Read && m_MaterialMipStep.Texture == guid)
+            state.StepTargetMip = m_MaterialMipStep.Read->FirstMip;
+    }
+    return report;
+}
+
 void TextureService::InvalidateMaterialMipCoverageLocked()
 {
     m_MaterialMipCoverageStale = true;
