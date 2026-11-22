@@ -17,6 +17,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Common/Utils.h"
+#include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
@@ -32,6 +33,7 @@
 #include "StagedTestPaths.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -1274,6 +1276,63 @@ TEST_F(MaterialRegistryTest, Register_UserLanes_WireTheGraphPreviewKeysToGpuOffs
     std::memcpy(vec3Lane, cache + userBase + 48, sizeof(vec3Lane));
     EXPECT_FLOAT_EQ(vec3Lane[0], 1.5f);
     EXPECT_FLOAT_EQ(vec3Lane[3], 4.5f) << "userVec3 did not cover the whole uUser3 lane";
+}
+
+TEST_F(MaterialRegistryTest, VertexPropertiesKeepLegacyCutoutLanesOnRegistrationAndReload)
+{
+    const auto table = std::make_shared<const ShaderPropertyTable>(BuildShaderPropertyTable({
+        {"// @property float alphaCutoff default=0.5\n", "adapter_forward.glsl", ShaderPropertyOrigin::Adapter},
+        {"vec3 Shade() { return Mat.uBaseColor.rgb; }", "standard_pbr.glsl", ShaderPropertyOrigin::Surface},
+        {"// @property vec2 foliageWindHeight default=0,1\n"
+         "// @property vec2 foliageWindMotion default=0,0\n"
+         "// @property float foliageLeafPivots default=0\n"
+         "// @deformationEnvelope 1.414214 scaledBy=foliageWindMotion\n",
+         "foliage_wind.glsl", ShaderPropertyOrigin::VertexModifier}}));
+    ASSERT_FALSE(table->Rejected());
+    const auto* motion = table->Find("foliageWindMotion");
+    ASSERT_NE(motion, nullptr);
+    EXPECT_TRUE(motion->HasLane);
+    EXPECT_GE(motion->Lane, kGenericLaneFirst);
+
+    MaterialDocument document;
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    document.alphaMode = MaterialAlphaMode::Mask;
+    document.properties["baseColor"] = std::vector<float>{0.25f, 0.5f, 0.75f, 1.0f};
+    document.properties["alphaCutoff"] = 0.45f;
+    document.properties["roughness"] = 0.82f;
+    document.properties["foliageWindHeight"] = std::vector<float>{0.0f, 14.0f};
+    document.properties["foliageWindMotion"] = std::vector<float>{0.0f, 0.18f};
+
+    const GUID guid = GUID::Generate();
+    Material* material = m_registry.Register(guid, document);
+    ASSERT_NE(material, nullptr);
+    m_registry.ApplyPropertyTable(*material, table);
+
+    const auto readLegacyLane = [material](const LegacyMaterialLane& lane)
+    {
+        std::array<float, 4> values{};
+        std::memcpy(values.data(), material->GetCacheData() + LegacyLaneByteOffset(lane), LegacyLaneByteSize(lane));
+        return values;
+    };
+    const auto& color = *FindLegacyMaterialLane("baseColor");
+    const auto& cutoff = *FindLegacyMaterialLane("alphaCutoff");
+    const auto& roughness = *FindLegacyMaterialLane("roughness");
+    EXPECT_EQ(readLegacyLane(color), (std::array{0.25f, 0.5f, 0.75f, 1.0f}));
+    EXPECT_FLOAT_EQ(readLegacyLane(cutoff).front(), 0.45f);
+    EXPECT_FLOAT_EQ(readLegacyLane(roughness).front(), 0.82f);
+    std::array<float, 2> motionValues{};
+    ASSERT_TRUE(material->GetVector("foliageWindMotion"_sid, motionValues.data(), motionValues.size()));
+    EXPECT_FLOAT_EQ(motionValues.back(), 0.18f);
+
+    document.properties.erase("baseColor");
+    document.properties.erase("roughness");
+    document.properties.erase("foliageWindMotion");
+    ASSERT_EQ(m_registry.Register(guid, document), material);
+    EXPECT_EQ(readLegacyLane(color), (std::array{1.0f, 1.0f, 1.0f, 1.0f}));
+    EXPECT_FLOAT_EQ(readLegacyLane(cutoff).front(), 0.45f);
+    EXPECT_FLOAT_EQ(readLegacyLane(roughness).front(), 0.5f);
+    ASSERT_TRUE(material->GetVector("foliageWindMotion"_sid, motionValues.data(), motionValues.size()));
+    EXPECT_FLOAT_EQ(motionValues.back(), 0.0f);
 }
 
 // A project surface declares its own properties; the declared table replaces the
