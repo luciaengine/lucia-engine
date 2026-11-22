@@ -96,41 +96,79 @@ vec3 GT7ICtCpToRgb(vec3 ictcp)
 // The reference SDR target is 250 nits and scene-linear 1.0 represents 100 nits.
 const float kGT7Peak = 2.5;
 const float kGT7Midpoint = 0.538;
-const float kGT7ShoulderStart = 0.444 * kGT7Peak;
+const float kGT7LinearSection = 0.444;
+const float kGT7Alpha = 0.25;
+const float kGT7ToeStrength = 1.280;
+const float kGT7ShoulderStart = kGT7LinearSection * kGT7Peak;
 const float kGT7ShoulderLimit = 2.963333333333334;
 const float kGT7ShoulderAmplitude = -3.3733512380644313;
 const float kGT7ShoulderExponent = -0.539568345323741;
 
-float GT7Curve(float x)
+// The convergent shoulder of the curve for one target peak: limit + amplitude * exp(x * exponent) from start.
+struct GT7Shoulder
+{
+    float start;
+    float limit;
+    float amplitude;
+    float exponent;
+};
+
+// The reference initializeCurve: the shoulder for a target peak in reference units (1.0 = 100 nits).
+GT7Shoulder GT7ShoulderForPeak(float peak)
+{
+    const float k = (kGT7LinearSection - 1.0) / (kGT7Alpha - 1.0);
+    return GT7Shoulder(kGT7LinearSection * peak,
+                       peak * (kGT7LinearSection + k),
+                       -peak * k * exp(kGT7LinearSection / k),
+                       -1.0 / (k * peak));
+}
+
+float GT7CurveWithShoulder(float x, GT7Shoulder shoulder)
 {
     x = max(x, 0.0);
-    if (x >= kGT7ShoulderStart)
-        return kGT7ShoulderLimit + kGT7ShoulderAmplitude * exp(x * kGT7ShoulderExponent);
+    if (x >= shoulder.start)
+        return shoulder.limit + shoulder.amplitude * exp(x * shoulder.exponent);
     float weightLinear = smoothstep(0.0, kGT7Midpoint, x);
-    float toeMapped = kGT7Midpoint * pow(x / kGT7Midpoint, 1.280);
+    float toeMapped = kGT7Midpoint * pow(x / kGT7Midpoint, kGT7ToeStrength);
     return mix(toeMapped, x, weightLinear);
 }
 
-vec3 TonemapGranTurismo7(vec3 sceneRec709)
+// The curve at the 250 nit SDR target.
+float GT7Curve(float x)
 {
+    return GT7CurveWithShoulder(
+        x, GT7Shoulder(kGT7ShoulderStart, kGT7ShoulderLimit, kGT7ShoulderAmplitude, kGT7ShoulderExponent));
+}
+
+// outputMax is the display peak relative to paper white: 1.0 for SDR, max nits / paper white nits for HDR.
+// Paper white takes the place of the reference's 250 nit SDR white, so the curve targets 2.5 * outputMax,
+// the reference initializeAsHDR at a 250 nit paper white. The result is display-linear in [0, outputMax],
+// relative to paper white, and equals the reference initializeAsSDR at outputMax 1.0.
+vec3 TonemapGranTurismo7(vec3 sceneRec709, float outputMax)
+{
+    float peak = kGT7Peak * max(outputMax, 1.0);
+    GT7Shoulder shoulder = GT7ShoulderForPeak(peak);
+
     vec3 rgb = kGT7Rec709ToRec2020 * max(sceneRec709, vec3(0.0));
     vec3 sourceICtCp = GT7RgbToICtCp(rgb);
 
-    vec3 skewedRgb = vec3(GT7Curve(rgb.r), GT7Curve(rgb.g), GT7Curve(rgb.b));
+    vec3 skewedRgb = vec3(GT7CurveWithShoulder(rgb.r, shoulder),
+                          GT7CurveWithShoulder(rgb.g, shoulder),
+                          GT7CurveWithShoulder(rgb.b, shoulder));
     vec3 skewedICtCp = GT7RgbToICtCp(skewedRgb);
 
-    // ICtCp intensity for neutral 2.5 (the 250 nit SDR target).
-    const float targetIntensity = 0.6025591549907509;
+    // The ICtCp intensity of a neutral at the target peak.
+    float targetIntensity = GT7InverseEotfSt2084(peak);
     float chromaScale = 1.0 - smoothstep(0.98, 1.16,
                                         sourceICtCp.x / targetIntensity);
     vec3 scaledICtCp = vec3(skewedICtCp.x,
                             sourceICtCp.yz * chromaScale);
     vec3 scaledRgb = GT7ICtCpToRgb(scaledICtCp);
 
-    // Reference blend ratio is 0.6. The 0.4 correction converts its 250 nit
-    // SDR convention back to display-linear [0,1] for the terminal sRGB OETF.
-    vec3 mappedRec2020 = min(mix(skewedRgb, scaledRgb, 0.6), vec3(kGT7Peak)) / kGT7Peak;
-    return clamp(kGT7Rec2020ToRec709 * mappedRec2020, 0.0, 1.0);
+    // Reference blend ratio is 0.6. Dividing by kGT7Peak converts the 250 nit
+    // white of the reference to paper white 1.0.
+    vec3 mappedRec2020 = min(mix(skewedRgb, scaledRgb, 0.6), vec3(peak)) / kGT7Peak;
+    return clamp(kGT7Rec2020ToRec709 * mappedRec2020, 0.0, peak / kGT7Peak);
 }
 
 #endif

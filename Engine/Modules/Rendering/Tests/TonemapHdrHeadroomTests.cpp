@@ -157,6 +157,103 @@ std::string Fmt(const Rgb& c)
     return buf;
 }
 
+// Polyphony Digital's GT7 operator, transcribed from the published sample
+// (gt7_tone_mapping.cpp, version 1.0, MIT, Copyright (c) 2025 Polyphony Digital
+// Inc.) for the comparison below: ICtCp, frame buffer 1.0 = 100 cd/m^2, input and
+// output linear Rec.2020. Peak is the curve's target in frame buffer units.
+namespace GT7Reference
+{
+float Pq(float frameBufferValue)
+{
+    constexpr float m1 = 0.1593017578125f, m2 = 78.84375f, c1 = 0.8359375f, c2 = 18.8515625f, c3 = 18.6875f;
+    const float ym = std::pow(frameBufferValue * 100.0f / 10000.0f, m1);
+    return std::exp2(m2 * (std::log2(c1 + c2 * ym) - std::log2(1.0f + c3 * ym)));
+}
+
+float PqInverse(float signal)
+{
+    constexpr float m1 = 0.1593017578125f, m2 = 78.84375f, c1 = 0.8359375f, c2 = 18.8515625f, c3 = 18.6875f;
+    const float np = std::pow(std::clamp(signal, 0.0f, 1.0f), 1.0f / m2);
+    const float l = std::max(np - c1, 0.0f) / (c2 - c3 * np);
+    return std::pow(l, 1.0f / m1) * 10000.0f / 100.0f;
+}
+
+void RgbToICtCp(const float* rgb, float* ictcp)
+{
+    const float l = Pq((rgb[0] * 1688.0f + rgb[1] * 2146.0f + rgb[2] * 262.0f) / 4096.0f);
+    const float m = Pq((rgb[0] * 683.0f + rgb[1] * 2951.0f + rgb[2] * 462.0f) / 4096.0f);
+    const float s = Pq((rgb[0] * 99.0f + rgb[1] * 309.0f + rgb[2] * 3688.0f) / 4096.0f);
+    ictcp[0] = (2048.0f * l + 2048.0f * m) / 4096.0f;
+    ictcp[1] = (6610.0f * l - 13613.0f * m + 7003.0f * s) / 4096.0f;
+    ictcp[2] = (17933.0f * l - 17390.0f * m - 543.0f * s) / 4096.0f;
+}
+
+void ICtCpToRgb(const float* ictcp, float* rgb)
+{
+    const float l = PqInverse(ictcp[0] + 0.00860904f * ictcp[1] + 0.11103f * ictcp[2]);
+    const float m = PqInverse(ictcp[0] - 0.00860904f * ictcp[1] - 0.11103f * ictcp[2]);
+    const float s = PqInverse(ictcp[0] + 0.560031f * ictcp[1] - 0.320627f * ictcp[2]);
+    rgb[0] = std::max(3.43661f * l - 2.50645f * m + 0.0698454f * s, 0.0f);
+    rgb[1] = std::max(-0.79133f * l + 1.9836f * m - 0.192271f * s, 0.0f);
+    rgb[2] = std::max(-0.0259499f * l - 0.0989137f * m + 1.12486f * s, 0.0f);
+}
+
+float SmoothStep(float x, float edge0, float edge1)
+{
+    const float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+float Curve(float x, float peak)
+{
+    constexpr float alpha = 0.25f, midPoint = 0.538f, linearSection = 0.444f, toeStrength = 1.280f;
+    if (x < 0.0f)
+        return 0.0f;
+    const float k = (linearSection - 1.0f) / (alpha - 1.0f);
+    if (x >= linearSection * peak)
+        return peak * linearSection + peak * k - peak * k * std::exp(linearSection / k) * std::exp(-x / (k * peak));
+    const float weightLinear = SmoothStep(x, 0.0f, midPoint);
+    return (1.0f - weightLinear) * midPoint * std::pow(x / midPoint, toeStrength) + weightLinear * x;
+}
+
+// applyToneMapping before the SDR correction factor: output in [0, peak].
+void Apply(const float* rgb, float peak, float* out)
+{
+    float ucs[3], skewed[3], skewedUcs[3], scaled[3];
+    RgbToICtCp(rgb, ucs);
+    for (int i = 0; i < 3; ++i)
+        skewed[i] = Curve(rgb[i], peak);
+    RgbToICtCp(skewed, skewedUcs);
+    const float white[3] = {peak, peak, peak};
+    float whiteUcs[3];
+    RgbToICtCp(white, whiteUcs);
+    const float chromaScale = 1.0f - SmoothStep(ucs[0] / whiteUcs[0], 0.98f, 1.16f);
+    const float scaledUcs[3] = {skewedUcs[0], ucs[1] * chromaScale, ucs[2] * chromaScale};
+    ICtCpToRgb(scaledUcs, scaled);
+    for (int i = 0; i < 3; ++i)
+        out[i] = std::min(0.4f * skewed[i] + 0.6f * scaled[i], peak);
+}
+} // namespace GT7Reference
+
+// The GT7 look as tonemap.frag frames the reference: Rec.709 scene in, the curve
+// targeted at 2.5 * outputMax (paper white in place of the reference's 250 nit
+// white), divided by 2.5 so paper white is 1.0, Rec.709 out clamped to [0, outputMax].
+Rgb GT7Expected(const Rgb& scene, float outputMax)
+{
+    const float rec2020[3] = {0.6274040f * scene.R + 0.3292820f * scene.G + 0.0433136f * scene.B,
+                              0.0690970f * scene.R + 0.9195400f * scene.G + 0.0113612f * scene.B,
+                              0.0163916f * scene.R + 0.0880132f * scene.G + 0.8955950f * scene.B};
+    const float peak = 2.5f * outputMax;
+    float mapped[3];
+    GT7Reference::Apply(rec2020, peak, mapped);
+    for (float& c : mapped)
+        c /= 2.5f;
+    auto clampOut = [outputMax](float v) { return std::clamp(v, 0.0f, outputMax); };
+    return {clampOut(1.6604910f * mapped[0] - 0.5876410f * mapped[1] - 0.0728500f * mapped[2]),
+            clampOut(-0.1245500f * mapped[0] + 1.1329000f * mapped[1] - 0.0083490f * mapped[2]),
+            clampOut(-0.0181510f * mapped[0] - 0.1005790f * mapped[1] + 1.1187300f * mapped[2])};
+}
+
 // The Cube LUT the pass samples.
 enum class RigLut
 {
@@ -807,6 +904,48 @@ TEST_F(TonemapHdrHeadroom, GT7MapsNeutralOneToFortyPercentOfSdrWhite)
     EXPECT_NEAR(mapped.R, 0.4f, 0.001f) << Fmt(mapped);
     EXPECT_NEAR(mapped.G, 0.4f, 0.001f) << Fmt(mapped);
     EXPECT_NEAR(mapped.B, 0.4f, 0.001f) << Fmt(mapped);
+}
+
+// GT7 is peak-parameterised like Filmic: under HDR its curve targets the display
+// peak, as the reference's initializeAsHDR does, and it bypasses the highlight
+// extension. Midtones match the SDR result either way; the highlight extension of
+// the 250 nit SDR result misses the shoulder and chroma fade values by more than
+// the tolerance.
+TEST_F(TonemapHdrHeadroom, GT7HdrMatchesReferenceAtDisplayPeak)
+{
+    const Rgb scenes[] = {{0.18f, 0.18f, 0.18f}, {1.0f, 1.0f, 1.0f}, {8.0f, 8.0f, 8.0f},
+                          {0.8f, 1.6f, 8.0f},    {40.0f, 12.0f, 3.0f}, {4096.0f, 4096.0f, 4096.0f}};
+    // GPU pow/exp/exp2/log2 against the CPU's: a few ULP through two PQ round trips.
+    constexpr float kTolerance = 2e-3f;
+    for (const Rgb& scene : scenes)
+    {
+        const Rgb hdr = Hdr(scene, Mode::GT7);
+        const Rgb expected = GT7Expected(scene, kOutputMax);
+        EXPECT_NEAR(hdr.R, expected.R, kTolerance)
+            << "scene " << Fmt(scene) << ": " << Fmt(hdr) << " vs " << Fmt(expected);
+        EXPECT_NEAR(hdr.G, expected.G, kTolerance)
+            << "scene " << Fmt(scene) << ": " << Fmt(hdr) << " vs " << Fmt(expected);
+        EXPECT_NEAR(hdr.B, expected.B, kTolerance)
+            << "scene " << Fmt(scene) << ": " << Fmt(hdr) << " vs " << Fmt(expected);
+
+        const Rgb sdr = Sdr(scene, Mode::GT7);
+        const Rgb expectedSdr = GT7Expected(scene, 1.0f);
+        EXPECT_NEAR(sdr.R, expectedSdr.R, kTolerance) << "SDR scene " << Fmt(scene) << ": " << Fmt(sdr);
+        EXPECT_NEAR(sdr.G, expectedSdr.G, kTolerance) << "SDR scene " << Fmt(scene) << ": " << Fmt(sdr);
+        EXPECT_NEAR(sdr.B, expectedSdr.B, kTolerance) << "SDR scene " << Fmt(scene) << ": " << Fmt(sdr);
+    }
+
+    // The shoulder converges above the target, so a saturating source reaches the panel's peak.
+    EXPECT_NEAR(Hdr({4096.0f, 4096.0f, 4096.0f}, Mode::GT7).Peak(), kOutputMax, 1e-3f);
+
+    // An HDR surface with no headroom equals the SDR result.
+    TonemapParams flat{};
+    flat.Look = Mode::GT7;
+    flat.OutEncoding = kEncodingHdrLinear;
+    flat.MaxOutputNits = kPaperWhiteNits;
+    const Rgb flatResult = Rig().Run({8.0f, 8.0f, 8.0f}, flat);
+    const Rgb sdrResult = Sdr({8.0f, 8.0f, 8.0f}, Mode::GT7);
+    EXPECT_NEAR(flatResult.Peak(), sdrResult.Peak(), 1e-5f) << Fmt(flatResult) << " vs " << Fmt(sdrResult);
 }
 
 // --- 1. THE REGRESSION GATE ------------------------------------------------

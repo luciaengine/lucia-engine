@@ -136,9 +136,10 @@ float HdrOutputMaxLinearValue()
     return max(maxOutputNits / paperWhiteNits, 1.0);
 }
 
-// ACES 2 tier headroom: the display's paper-white-relative peak under an HDR
-// encode, exactly 1.0 (the 100-nit tier, t = 0) under SDR encodes.
-float Aces2TargetOutputMax()
+// The peak a peak-parameterised look (Filmic, GT7) targets: the display's
+// paper-white-relative peak under an HDR encode, exactly 1.0 under SDR encodes
+// (for ACES 2 the 100-nit tier, t = 0).
+float LookTargetOutputMax()
 {
     return (pc.outEncoding >= 2 && pc.outEncoding <= 4) ? HdrOutputMaxLinearValue() : 1.0;
 }
@@ -147,9 +148,9 @@ vec3 ApplyTonemap(vec3 hdr)
 {
     switch (pc.look)
     {
-        case kLookFilmic:       return TonemapACES2(hdr, Aces2TargetOutputMax());
+        case kLookFilmic:       return TonemapACES2(hdr, LookTargetOutputMax());
         case kLookPhotographic: return TonemapAgX(hdr);
-        case kLookGT7:         return TonemapGranTurismo7(hdr);
+        case kLookGT7:         return TonemapGranTurismo7(hdr, LookTargetOutputMax());
         case kNoLookArm:        return NoLook(hdr);
         default:                return TonemapNeutral(hdr);
     }
@@ -229,11 +230,12 @@ vec3 ApplyOutputRangeTonemap(vec3 sceneLinear, vec3 sdrTonemapped)
     if (outputMax <= 1.001)
         return clamp(sdrTonemapped, vec3(0.0), vec3(1.0));
 
-    // Filmic (ACES 2) is peak-parameterised: ApplyTonemap already produced
-    // display-referred output spanning [0, outputMax] from its tier ladder, so
-    // like no look it bypasses the highlight extension — extending it would
-    // apply headroom twice. Clamp only.
-    if (pc.look == kLookFilmic)
+    // Filmic (ACES 2) and GT7 are peak-parameterised: ApplyTonemap already
+    // produced display-referred output spanning [0, outputMax] (ACES 2 from its
+    // tier ladder, GT7 from its curve set up for the display peak), so like no
+    // look they bypass the highlight extension — extending them would apply
+    // headroom twice. Clamp only.
+    if (pc.look == kLookFilmic || pc.look == kLookGT7)
         return min(sdrTonemapped, vec3(outputMax));
 
     // Every other look, present and future: extend what IT produced. A new
