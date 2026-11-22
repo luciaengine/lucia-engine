@@ -1,13 +1,11 @@
 #pragma once
 
 #include "PageStreaming/PageAddress.h"
-#include "PageStreaming/PageSampleRect.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
 
 #include <atomic>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <span>
 #include <vector>
 
@@ -23,9 +21,11 @@ class PageCodec;
 class PageStoreWriter;
 struct EncodedPage;
 
-/// Writes the pages of a byte-format or Bc5 store and refilters the coarser pages over a changed rect: a
+/// Writes the pages of a byte-format or Bc5 store and refilters the coarser pages that read them: a
 /// coarser sample is the filter of the level below when every finer page its taps read is written, else
 /// it keeps its stored value. WritePage runs on many threads; RefilterAncestors with no WritePage in flight.
+/// A bake that writes its pages in many calls refilters once, after the last one: each coarser page is
+/// then filtered once from its final finer pages.
 class PageStorePatcher
 {
 public:
@@ -44,11 +44,12 @@ public:
     /// already holds is not written. False on another format, a wrong sample count or a write error.
     bool WritePage(const PageAddress& address, std::span<const uint8> samples);
 
-    /// Remakes, level by level, each coarser page that reads `level0Rect` (none: no level-0 change), a page
-    /// written at its level or a page written at the level below. A sample whose taps read a finer page not yet
+    /// Remakes, level by level, each coarser page that reads a sample of a page WritePage was given since the
+    /// last call (every level-0 page, and each coarser page written with new bytes), each page written at its
+    /// level, and each page that reads a page this call remade. A sample whose taps read a finer page not yet
     /// written keeps its stored value; a page with such a sample that is not written yet stays unwritten.
     /// False on a write error.
-    bool RefilterAncestors(const std::optional<PageSampleRect>& level0Rect);
+    bool RefilterAncestors();
 
     /// Pages written with new bytes, and pages whose bytes were already stored.
     uint64 PagesWritten() const { return m_PagesWritten.load(); }
@@ -66,10 +67,13 @@ private:
     bool ReadStoredSamples(const PageAddress& address, std::vector<uint8>& outSamples) const;
     /// True when the store holds these bytes for `address`.
     bool HoldsPage(const PageAddress& address, const EncodedPage& encoded, const EncodedPage& unencoded) const;
-    /// Remakes the pages of `level` that hold a sample of `changed`, a rect of that level, and the
-    /// pages that own a sample of `written`. `outChanged` is the samples of the pages it rewrote.
-    bool RefilterLevel(uint32 level, const std::optional<PageSampleRect>& changed,
-                       const std::optional<PageSampleRect>& written, std::optional<PageSampleRect>& outChanged);
+    /// Remakes the pages of `level` that `marked` names (one byte a page of the level, row-major), a tile
+    /// of pages at a time. Appends each page it rewrote to `outChanged`.
+    bool RefilterMarked(uint32 level, std::span<const uint8> marked, std::vector<PageAddress>& outChanged);
+    /// Remakes the pages of `level` in columns firstX to lastX and rows firstZ to lastZ whose byte in
+    /// `remake` (one a page of the span, row-major) is set. Appends each page it rewrote to `outChanged`.
+    bool RefilterSpan(uint32 level, uint32 firstX, uint32 lastX, uint32 firstZ, uint32 lastZ,
+                      std::span<const uint8> remake, std::vector<PageAddress>& outChanged);
 
     PageStoreWriter& m_Writer;
     JobSystem::WorkStealingThreadPool* m_Pool = nullptr;
@@ -79,8 +83,9 @@ private:
     std::atomic<uint64> m_PagesWritten{0};
     std::atomic<uint64> m_PagesUnchanged{0};
     std::mutex m_WrittenMutex;
-    // One a level: the owned samples of the pages WritePage wrote since the last RefilterAncestors.
-    std::vector<std::optional<PageSampleRect>> m_Written;
+    // One list a level, since the last RefilterAncestors: every level-0 page WritePage was given, and each
+    // coarser page it wrote with new bytes.
+    std::vector<std::vector<PageAddress>> m_Written;
 };
 
 } // namespace GameEngine::PageStreaming

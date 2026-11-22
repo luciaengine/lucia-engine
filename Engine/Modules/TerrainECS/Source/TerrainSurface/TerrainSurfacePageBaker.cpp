@@ -232,6 +232,9 @@ struct TerrainSurfacePageBaker::OpenStore
     std::filesystem::path File;
     uint64 Key = 0;
     SurfaceStoreWriters Writers;
+    // Writes every page of the run, and refilters the coarser pages once at Finish. After Writers: it
+    // writes into them.
+    std::optional<PageStreaming::PageStorePatcher> Patcher;
 };
 
 TerrainSurfacePageBaker::TerrainSurfacePageBaker(std::shared_ptr<const TerrainSurfaceBakeInputs> inputs,
@@ -528,8 +531,10 @@ std::string TerrainSurfacePageBaker::BakePages(const std::filesystem::path& file
         m_Open.reset();
         return grown;
     }
-    std::optional<PageStreaming::PageStorePatcher> patcher;
-    MakePatcher(*m_Store, writers, m_Pool, patcher);
+    if (!m_Open->Patcher)
+        MakePatcher(*m_Store, writers, m_Pool, m_Open->Patcher);
+    PageStreaming::PageStorePatcher& patcher = *m_Open->Patcher;
+    const uint64 writtenBefore = patcher.PagesWritten();
     // The level-0 samples of the level-0 pages written, and of the pages written at each coarser level.
     std::vector<std::optional<PageSampleRect>> written(levels);
     std::optional<PageAddress> notBaked;
@@ -542,9 +547,9 @@ std::string TerrainSurfacePageBaker::BakePages(const std::filesystem::path& file
                     notBaked = page.Address;
                 continue;
             }
-            if (!patcher->WritePage(page.Address, page.Texels))
+            if (!patcher.WritePage(page.Address, page.Texels))
             {
-                patcher.reset();
+                m_Open->Patcher.reset();
                 AbandonStores(*m_Store, writers);
                 m_Open.reset();
                 return "the surface store could not be written at " + file.string();
@@ -552,16 +557,7 @@ std::string TerrainSurfacePageBaker::BakePages(const std::filesystem::path& file
             const PageSampleRect stored = Level0Footprint(page.Address, layout.Levels.front());
             written[level] = written[level] ? Union(*written[level], stored) : stored;
         }
-    // A written coarse page is the filter of its finer level where every finer page it reads is present.
-    if (std::ranges::any_of(written, [](const auto& rect) { return rect.has_value(); }) &&
-        !patcher->RefilterAncestors(written.front()))
-    {
-        patcher.reset();
-        AbandonStores(*m_Store, writers);
-        m_Open.reset();
-        return "the surface store's coarser pages could not be written at " + file.string();
-    }
-    m_PagesWritten += patcher->PagesWritten();
+    m_PagesWritten += patcher.PagesWritten() - writtenBefore;
     for (uint32 level = 0; level < levels; ++level)
         if (written[level])
             m_Store->Commit(*written[level], level);
@@ -577,6 +573,19 @@ std::string TerrainSurfacePageBaker::Finish()
     if (!m_Open)
         return {};
     const std::unique_ptr<OpenStore> open = std::move(m_Open);
+    if (open->Patcher)
+    {
+        // Each coarser page is filtered once, from the final pages of the run.
+        const uint64 writtenBefore = open->Patcher->PagesWritten();
+        const bool refiltered = open->Patcher->RefilterAncestors();
+        m_PagesWritten += open->Patcher->PagesWritten() - writtenBefore;
+        open->Patcher.reset();
+        if (!refiltered)
+        {
+            AbandonStores(*m_Store, open->Writers);
+            return "the surface store's coarser pages could not be written at " + open->File.string();
+        }
+    }
     return FinishStores(*m_Store, open->Writers, open->File);
 }
 

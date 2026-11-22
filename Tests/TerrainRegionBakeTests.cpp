@@ -3308,8 +3308,7 @@ TEST(TerrainRegionBake, ASplatStoreBakesItsCoarseLevelsFirstAndSettlesOnTheTentO
                 const PageStreaming::PageAddress address{0, 0, px, pz};
                 ASSERT_TRUE(patcher.WritePage(address, StoreSplatPage(forwardStore, address)));
             }
-        ASSERT_TRUE(patcher.RefilterAncestors(
-            PageStreaming::PageSampleRect{0u, 0u, levels[0].SamplesX - 1u, levels[0].SamplesZ - 1u}));
+        ASSERT_TRUE(patcher.RefilterAncestors());
         ASSERT_EQ(writer.Finish(), "");
     }
     PageStreaming::PageStoreReader backwardStore;

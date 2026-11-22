@@ -62,12 +62,13 @@ public:
     std::string CreateStore(const std::filesystem::path& file, uint64 key, uint32 firstCoarseLevel);
 
     /// Bakes `pages` of any level, and the ancestors the store lacks, into the store at `file`, each at its own
-    /// spacing. A coarse texel is then the filter of its finer level where every finer page it reads is present.
-    /// The store stays open until Finish; its access reads each page on return. Returns "", else the reason.
+    /// spacing. The store stays open until Finish; its access reads each page on return. A coarser page that
+    /// reads a baked page keeps its stored texels until Finish. Returns "", else the reason.
     std::string BakePages(const std::filesystem::path& file, std::span<const PageStreaming::PageAddress> pages);
 
-    /// Publishes the store that BakePages holds open at its file. Returns an empty string (also
-    /// when no store is open), else the reason.
+    /// Refilters, once, each coarser page that reads a page BakePages baked since the store opened: a coarse
+    /// texel is then the filter of its finer level where every finer page it reads is present. Then publishes
+    /// the store at its file. Returns an empty string (also when no store is open), else the reason.
     std::string Finish();
 
     /// One rect a level: the pages (columns MinX to MaxX, rows MinZ to MaxZ) whose bake reads a level-0
