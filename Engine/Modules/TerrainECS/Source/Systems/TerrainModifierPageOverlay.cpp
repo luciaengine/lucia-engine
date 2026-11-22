@@ -209,7 +209,11 @@ void TerrainModifierSystem::BakeHeightPageOverlay(TiledTerrainData& tiled, float
     std::optional<PageSampleRect> dirty;
     if (heightDirty.Any)
         dirty = LatticeRect(*lattice, heightDirty.MinX, heightDirty.MinZ, heightDirty.MaxX, heightDirty.MaxZ);
-    const bool edit = !fullBake && previous && tiled.PageOverlayCurrent && previous->FitsLevels(levels);
+    // The dirty rect is 1 box over every changed footprint. When its pages pass the cap, the box spans
+    // an empty gap: rebuild from the sparse footprints, and do not allocate a dense grid over the gap.
+    const bool edit = !fullBake && previous && tiled.PageOverlayCurrent && previous->FitsLevels(levels) &&
+                      (!dirty || PageStreaming::HeightPageLayerBytesOver(levels, std::span(&*dirty, 1)) <=
+                                     tiled.PageOverlayByteCap);
     if (edit && !dirty)
         return; // nothing under the terrain's height changed
     const std::vector<PageSampleRect> writes = edit ? std::vector<PageSampleRect>{*dirty} : reach;
