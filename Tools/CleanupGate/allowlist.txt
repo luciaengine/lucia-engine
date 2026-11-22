@@ -124,7 +124,7 @@ Engine/Modules/Types/Include/Types/InlineVector.h:raw_delete:1                  
 Engine/Modules/UI/Source/Controls/Foldout.cpp:control_creations:6                       # the header's parts, its status badge and the content box, built in code until #6723 moves them to .uxml
 Engine/Modules/UI/Source/Controls/ProgressBar.cpp:files_assembling_ui:1                      # the track's one fill, built in code as Slider and Toggle build their parts; the move to .uxml is #6568
 Engine/Modules/UI/Source/Controls/ProgressBar.cpp:imperative_no_asset:1                      # the track's one fill, built in code as Slider and Toggle build their parts; the move to .uxml is #6568
-Engine/Source/Assets/ModelAssetLoadGltf.cpp:float_ptr:7                                      # importer: a pointer into the glTF file's own attribute arrays
+Engine/Source/Assets/ModelAssetLoadGltf.cpp:float_ptr:6                                      # importer: a pointer into the glTF file's own attribute arrays
 Engine/Source/Core/Application.cpp:sleep_poll:1                                              # the frame pacer's tail yield
 Engine/Source/Engine/Build/CancellableShellProcess.cpp:atomic_spin:1                         # a process host (pipes block)
 Engine/Source/Engine/Build/CancellableShellProcess.cpp:std_thread:2                          # a process host (pipes block)
