@@ -48,11 +48,14 @@ A reply shows the Markdown the model writes: headings, bold and italic, inline c
 
 ### Model and effort
 
+The panel's top bar names what the next prompt talks to: the assistant, its model and the effort you chose, for example **TensorFold · inkling-2-mini · High**. The editor reads a server connection's model list when you choose the connection and after each reply. TensorFold Bar serves its model as `local-model`, so that name is shown for it.
+
 | Provider | Models | Effort |
 |---|---|---|
 | Claude (Subscription) | **Opus** (the first choice), **Fable**, **Sonnet**, **Haiku**: each the latest model of its family, so a new release needs no editor update. Once a reply has named the version, the button and the list show it. | **Low**, **Medium**, **High** (the first choice), **Extra high**, **Max**: how much the model reasons before it answers. Higher levels answer more carefully, take longer, and cost more. |
 | Claude (API key) | Opus 5.5, Sonnet 5.5, Haiku 4.5. | None. |
 | Codex (Subscription) | The button is hidden: Codex names its own models, so the **Model** row of the settings page takes the name as Codex spells it. | None. |
+| TensorFold (Local), Custom (OpenAI-compatible) | The model the server serves, named by its model list. The model list has no choice to make, so the panel shows no **Model** row. | **Default** (the first choice), then the efforts the server's model list names under `reasoning.supported_efforts`, lowest first. **Default** sends no effort, so the server keeps its own setting. Another level is sent as `reasoning_effort`. The button shows when the server lists at least one effort. |
 
 The choice is yours, not the project's: it is kept in your editor settings and applies to every project you open. A model your account cannot use fails the prompt with Claude Code's own message ("There's an issue with the selected model …"). Choose another and send again.
 
