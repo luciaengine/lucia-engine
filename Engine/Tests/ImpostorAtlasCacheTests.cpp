@@ -126,9 +126,9 @@ TEST(ImpostorAtlasCache, ARefusedRequestKeepsReadyAtlases)
     std::vector<ImpostorAtlasKey> evicted;
 
     ASSERT_EQ(cache.Request(oldest, 1, evicted), State::Pending);
-    cache.MarkReady(oldest);
+    cache.MarkReady(oldest, ImpostorAtlasMipCount(oldest));
     ASSERT_EQ(cache.Request(current, 2, evicted), State::Pending);
-    cache.MarkReady(current);
+    cache.MarkReady(current, ImpostorAtlasMipCount(current));
 
     EXPECT_EQ(cache.Request(larger, 2, evicted), State::Absent);
     EXPECT_TRUE(evicted.empty());
@@ -151,7 +151,7 @@ TEST(ImpostorAtlasCache, TouchingAnAbsentAtlasKeepsReservationsUntilAdmission)
     std::vector<ImpostorAtlasKey> evicted;
 
     ASSERT_EQ(cache.Request(resident, 1, evicted), State::Pending);
-    cache.MarkReady(resident);
+    cache.MarkReady(resident, ImpostorAtlasMipCount(resident));
 
     EXPECT_EQ(cache.Touch(incoming, 2), State::Absent);
     EXPECT_EQ(cache.GetUsedBytes(), budget);
