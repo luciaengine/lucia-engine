@@ -91,6 +91,28 @@ TEST(ImpostorAtlasCache, ARefusedRequestKeepsReadyAtlases)
     EXPECT_EQ(cache.GetUsedBytes(), ImpostorAtlasBytes(larger));
 }
 
+TEST(ImpostorAtlasCache, TouchingAnAbsentAtlasKeepsReservationsUntilAdmission)
+{
+    using State = ImpostorAtlasCache::State;
+    const ImpostorAtlasKey resident = KeyFor(1);
+    const ImpostorAtlasKey incoming = KeyFor(2);
+    const uint64 budget = ImpostorAtlasBytes(resident);
+    ImpostorAtlasCache cache(budget);
+    std::vector<ImpostorAtlasKey> evicted;
+
+    ASSERT_EQ(cache.Request(resident, 1, evicted), State::Pending);
+    cache.MarkReady(resident);
+
+    EXPECT_EQ(cache.Touch(incoming, 2), State::Absent);
+    EXPECT_EQ(cache.GetUsedBytes(), budget);
+    EXPECT_EQ(cache.Touch(resident, 2), State::Ready);
+    EXPECT_EQ(cache.Request(incoming, 2, evicted), State::Absent);
+    EXPECT_TRUE(evicted.empty());
+
+    EXPECT_EQ(cache.Request(incoming, 3, evicted), State::Pending);
+    EXPECT_EQ(evicted, std::vector<ImpostorAtlasKey>{resident});
+}
+
 TEST(ImpostorAtlasCache, AnAtlasLargerThanTheBudgetIsRefused)
 {
     ImpostorAtlasCache cache(ImpostorAtlasBytes(KeyFor(1)) - 1);
