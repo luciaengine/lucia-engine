@@ -865,8 +865,8 @@ private:
 
     // Brings the tiled terrain's height page overlay (TiledTerrainData::PageOverlay) up to
     // `modifiers` after a bake: the composed height minus the base under each height modifier's
-    // lattice bounds, written into the layer it holds over `heightDirty` only after an edit
-    // (TerrainModifierPageOverlay.cpp). Builds nothing for a terrain with no overlay cap (one that
+    // lattice bounds, written into the layer it holds over `heightDirty` only after an edit whose
+    // `heightDirty` pages fit the cap, else rebuilt from the footprints (TerrainModifierPageOverlay.cpp). Builds nothing for a terrain with no overlay cap (one that
     // keeps its height texture) and refuses an overlay whose pages pass the cap (TiledTerrainData::PageOverlayByteCap).
     // `readBakedTiles`: the tiles' CPU heights are current, so the overlay reads them, not composes.
     void BakeHeightPageOverlay(TiledTerrainData& tiled, float32 heightScale, float32 terrainOriginY,
