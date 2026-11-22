@@ -6443,7 +6443,7 @@ void SettingsPanel::CreateUIInspectorContent()
         m_InspectorCollapseArrowVisibleToggle = toggle.get();
         toggle->AddClass("settings-toggle");
 
-        bool visible = false;  // default: arrows hidden
+        bool visible = kInspectorCollapseArrowVisibleDefault;
         {
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
@@ -6471,16 +6471,15 @@ void SettingsPanel::CreateUIInspectorContent()
         Label* collapseArrowLabelPtr = label.get();
         section->InsertChild(0, std::move(label));
         AddDoubleClickReset(collapseArrowLabelPtr, [this]() {
-            const bool kDefault = false;
             if (m_InspectorCollapseArrowVisibleToggle)
-                m_InspectorCollapseArrowVisibleToggle->SetChecked(kDefault);
+                m_InspectorCollapseArrowVisibleToggle->SetChecked(kInspectorCollapseArrowVisibleDefault);
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
             prefs.Load(&err);
-            prefs.SetBool("ui.inspectorShowCollapseArrow", kDefault);
+            prefs.SetBool("ui.inspectorShowCollapseArrow", kInspectorCollapseArrowVisibleDefault);
             prefs.Save(&err);
             if (m_OnInspectorCollapseArrowVisibilityChanged)
-                m_OnInspectorCollapseArrowVisibilityChanged(kDefault);
+                m_OnInspectorCollapseArrowVisibilityChanged(kInspectorCollapseArrowVisibleDefault);
         });
         m_ContentBody->AddContent(std::move(section));
     }

@@ -304,6 +304,8 @@ public:
     void SetAssetsExtraBottomViewToolbarValue(bool enabled);
     void SetAssetsSingleViewToggleIconValue(bool enabled);
     void SetAssetsBottomToolbarZoomSliderVisibleValue(bool visible);
+    /// Show Inspector Chevrons when the preference "ui.inspectorShowCollapseArrow" is not saved.
+    static constexpr bool kInspectorCollapseArrowVisibleDefault = true;
     void SetInspectorCollapseArrowVisibleValue(bool visible);
     void SetInspectorComponentIconsVisibleValue(bool visible);
     void SetInspectorFilledSectionsValue(bool enabled);

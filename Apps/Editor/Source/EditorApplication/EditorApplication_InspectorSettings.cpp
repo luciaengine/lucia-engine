@@ -562,7 +562,7 @@ void EditorApplication::InitializeInspectorSettings(SettingsPanel* settingsPanel
     };
     settingsPanel->SetOnInspectorCollapseArrowVisibilityChanged(applyCollapseArrowVisibility);
 
-    bool showArrow = false; // default: arrows hidden
+    bool showArrow = SettingsPanel::kInspectorCollapseArrowVisibleDefault;
     {
         auto prefs = Editor::OpenEditorPreferences();
         std::string err;
