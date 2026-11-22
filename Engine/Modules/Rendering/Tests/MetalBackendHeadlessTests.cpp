@@ -22,6 +22,7 @@
 #include "../Source/Metal/MetalDevice.h"
 #include "../Source/Metal/MetalShaderTranslator.h"
 #include "PushBlockMslLayout.h"
+#include "ScopedEnvVar.h"
 #include "TestGlslCompile.h"
 
 #include <objc/runtime.h>
@@ -1254,6 +1255,20 @@ TEST(MetalFrameSync, ABufferDestroyedBetweenFramesStaysAliveUntilItsSlotIsRecycl
     EXPECT_EQ(object->retainCount(), withDevice - 1) << "the device kept a buffer destroyed between frames";
     object->release();
     device->Shutdown();
+}
+
+TEST(MetalDeviceInitialization, ForwardShaderSpecializationRequiresOptIn)
+{
+    for (const bool enabled : {false, true})
+    {
+        SCOPED_TRACE(enabled);
+        const Tests::ScopedEnvVar specializationMode("GE_METAL_TRY_FORWARD_SPECIALIZATION", enabled ? "1" : "0");
+        auto device = CreateHeadlessMetalDevice();
+        if (!device)
+            GTEST_SKIP() << "Metal backend unavailable";
+        EXPECT_EQ(device->GetCapabilities().prefersForwardShaderSpecialization, enabled);
+        device->Shutdown();
+    }
 }
 
 #if RENDERING_HAS_SHADERC
