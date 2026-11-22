@@ -19,6 +19,7 @@
 #include <thread>
 
 #include "StagedTestPaths.h"
+#include "ThreadSanitizerBuild.h"
 
 using namespace GameEngine;
 
@@ -56,6 +57,10 @@ class VideoPlayerTest : public ::testing::Test
         ASSERT_TRUE(std::filesystem::exists(video))
             << "staged fixture missing: " << video.string()
             << " (StageTestAssets should have copied it)";
+        if constexpr (TestBuild::kThreadSanitizerBuild)
+        {
+            GTEST_SKIP() << TestBuild::kMediaLoadUnderThreadSanitizer;
+        }
         if (!m_Player.Load(video.string()))
         {
             GTEST_SKIP() << "video decode unavailable in this build (null VideoPlayer backend); "
@@ -188,6 +193,10 @@ TEST_F(VideoPlayerTest, UnloadDuringPlaybackJoinsTheDecodeThread)
 // entity destroyed, scene closed, app shut down.
 TEST_F(VideoPlayerTest, DestructionWhilePlayingIsSafe)
 {
+    if constexpr (TestBuild::kThreadSanitizerBuild)
+    {
+        GTEST_SKIP() << TestBuild::kMediaLoadUnderThreadSanitizer;
+    }
     const std::filesystem::path video = StagedSampleVideo();
     ASSERT_TRUE(std::filesystem::exists(video));
     {
