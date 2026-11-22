@@ -2,12 +2,15 @@
 
 #include "CancelToken.h"
 #include "JsonFields.h"
+#include "PromptFiles.h"
 
 #include "Engine/Build/CancellableShellProcess.h"
 #include "Platform/Process.h"
+#include "Types/PathUtils.h"
 
 #include <algorithm>
 #include <filesystem>
+#include <system_error>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -17,6 +20,16 @@ namespace GameEngine
 namespace
 {
 constexpr const char* kBridgeFile = "assistant-bridge.js";
+
+// One folder per editor process; each image file has a unique name, so turns can share it.
+std::filesystem::path ImageFolder()
+{
+    std::error_code error;
+    const std::filesystem::path base = std::filesystem::temp_directory_path(error);
+    if (error || base.empty())
+        return {};
+    return base / "gameengine_mcp" / ("pid-" + std::to_string(Platform::GetCurrentProcessId())) / "tool-images";
+}
 
 bool IsCore(std::string_view name)
 {
@@ -44,10 +57,13 @@ std::string ContentText(const nlohmann::json& answer)
 }
 } // namespace
 
-EditorToolBridge::EditorToolBridge(const AgentToolAttachment& attachment)
+EditorToolBridge::EditorToolBridge(const AgentToolAttachment& attachment, ToolImages images)
     : m_Attachment(attachment),
-      m_BridgeScript((std::filesystem::path(attachment.ServerScript).parent_path() / kBridgeFile).string())
+      m_BridgeScript((std::filesystem::path(attachment.ServerScript).parent_path() / kBridgeFile).string()),
+      m_ImageFolder(images == ToolImages::Returned ? ImageFolder() : std::filesystem::path())
 {
+    // Without a temporary folder an image cannot leave the bridge, so the model gets the line.
+    m_Images = m_ImageFolder.empty() ? ToolImages::Described : images;
 }
 
 bool EditorToolBridge::Load(const CancelToken& cancel, std::string& error)
@@ -160,7 +176,11 @@ EditorToolBridge::Answer EditorToolBridge::RunTool(const std::string& name, cons
 {
     ProcessLaunch launch;
     launch.Executable = m_Attachment.Node;
-    launch.Arguments = {m_BridgeScript, "call", name, "--text-only"};
+    launch.Arguments = {m_BridgeScript, "call", name};
+    if (m_Images == ToolImages::Returned)
+        launch.Arguments.insert(launch.Arguments.end(), {"--image-dir", PathUtf8(m_ImageFolder)});
+    else
+        launch.Arguments.push_back("--text-only");
     for (const auto& [variable, value] : m_Attachment.Environment)
         launch.Environment.push_back({variable, value});
     launch.StdinPayload = arguments;
@@ -176,7 +196,32 @@ EditorToolBridge::Answer EditorToolBridge::RunTool(const std::string& name, cons
                         (run.stderrTail.empty() ? std::string() : ": " + run.stderrTail) + ").",
                 .IsError = true};
     const auto isError = answer.find("isError");
-    return {.Text = ContentText(answer), .IsError = isError != answer.end() && isError->is_boolean() && isError->get<bool>()};
+    Answer result{.Text = ContentText(answer),
+                  .IsError = isError != answer.end() && isError->is_boolean() && isError->get<bool>()};
+    if (const auto content = answer.find("content"); content != answer.end() && content->is_array())
+        TakeImages(*content, result);
+    return result;
+}
+
+void EditorToolBridge::TakeImages(const nlohmann::json& content, Answer& answer) const
+{
+    for (const nlohmann::json& block : content)
+    {
+        if (!block.is_object() || JsonFields::String(block, "type") != "image_file")
+            continue;
+        const std::filesystem::path path = PathFromUtf8(JsonFields::String(block, "path"));
+        // Only a file the bridge wrote in this process's folder is read and deleted.
+        if (m_Images != ToolImages::Returned || path.parent_path() != m_ImageFolder)
+            continue;
+        PromptFileLoad load = PromptFiles::Load(path);
+        std::error_code error;
+        std::filesystem::remove(path, error);
+        if (load.File && load.File->Kind == PromptFileKind::Image)
+            answer.Images.push_back(std::move(*load.File));
+        else
+            answer.Text += (answer.Text.empty() ? "" : "\n\n") + std::string("[The tool's image could not be read: ") +
+                           (load.Refusal.empty() ? "it is not an image." : load.Refusal) + "]";
+    }
 }
 
 const nlohmann::json* EditorToolBridge::FindTool(std::string_view name) const

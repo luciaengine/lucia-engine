@@ -1,7 +1,10 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { callServedTool, servedTools } from "./assistant.js";
+import { callServedTool, servedTools, type ToolContent } from "./assistant.js";
 import { ipc } from "./ipc-singleton.js";
 
 // The editor's tools for an AI Assistant turn on a model API (the custom endpoint,
@@ -13,13 +16,16 @@ import { ipc } from "./ipc-singleton.js";
 //
 //   assistant-bridge list         the served tools as JSON: name, description and the
 //                                 JSON Schema of the arguments
-//   assistant-bridge call <tool> [--text-only]
+//   assistant-bridge call <tool> [--text-only | --image-dir <folder>]
 //                                 reads the arguments as one JSON object on stdin and
-//                                 prints the answer as callServedTool returns it; with
-//                                 --text-only an image becomes a line that says one was
-//                                 taken (for a model without image input, and so a
-//                                 screenshot never makes the answer longer than a line
-//                                 the editor reads)
+//                                 prints the answer as callServedTool returns it. An
+//                                 image never travels on stdout, so the answer stays
+//                                 shorter than a line the editor reads: --text-only
+//                                 makes it a line that says one was taken (a model
+//                                 without image input); --image-dir writes it to a new
+//                                 file in <folder> and makes it an image_file block
+//                                 with the file's path, which the editor reads and
+//                                 deletes
 //
 // Each prints one JSON document on stdout and exits 0; a usage error exits 2.
 
@@ -39,9 +45,25 @@ function refusal(text: string) {
   return { content: [{ type: "text", text }], isError: true };
 }
 
+type BridgeContent = ToolContent | { type: "image_file"; path: string; mimeType: string };
+
+// An image block as the editor reads it: a text line, a file, or (with neither flag) as it is.
+function imageBlock(block: ToolContent, textOnly: boolean, imageDir: string | undefined): BridgeContent {
+  if (block.type !== "image") return block;
+  if (textOnly)
+    return { type: "text", text: `[A ${block.mimeType} image was taken; this connection gets tool results as text only.]` };
+  if (!imageDir) return block;
+  mkdirSync(imageDir, { recursive: true });
+  const path = join(imageDir, `${randomUUID()}.${block.mimeType === "image/png" ? "png" : "img"}`);
+  writeFileSync(path, Buffer.from(block.data, "base64"));
+  return { type: "image_file", path, mimeType: block.mimeType };
+}
+
 async function main(): Promise<number> {
   const [command, name, ...flags] = process.argv.slice(2);
   const textOnly = flags.includes("--text-only");
+  const imageDirFlag = flags.indexOf("--image-dir");
+  const imageDir = imageDirFlag >= 0 ? flags[imageDirFlag + 1] : undefined;
   const tools = servedTools();
   if (command === "list") {
     await print(tools.map(tool => ({
@@ -72,14 +94,10 @@ async function main(): Promise<number> {
       return 0;
     }
     const answer = await callServedTool(tool, parsed.data as Record<string, unknown>);
-    if (textOnly)
-      answer.content = answer.content.map(block => block.type === "image"
-        ? { type: "text", text: `[A ${block.mimeType} image was taken; this connection gets tool results as text only.]` }
-        : block);
-    await print(answer);
+    await print({ ...answer, content: answer.content.map(block => imageBlock(block, textOnly, imageDir)) });
     return 0;
   }
-  console.error("Usage: assistant-bridge list | assistant-bridge call <tool> [--text-only] (arguments as JSON on stdin)");
+  console.error("Usage: assistant-bridge list | assistant-bridge call <tool> [--text-only | --image-dir <folder>] (arguments as JSON on stdin)");
   return 2;
 }
 

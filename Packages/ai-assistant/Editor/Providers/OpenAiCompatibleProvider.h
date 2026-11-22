@@ -17,7 +17,10 @@ namespace GameEngine
 /// message. A turn with the editor's tools (AgentTurnRequest::Tools) runs the tool loop itself:
 /// it sends EditorToolBridge's definitions, runs each tool call the model makes through the
 /// bridge and sends the answers back, until the model answers without a call or the tool request
-/// limit is reached. The base URL and the model are settings; the key is optional and comes from the
+/// limit is reached. When the server's model list says the model reads images (`input_types` names
+/// "image", or `capabilities.vision` is true), the images a tool answers with go to the model in a
+/// user message after the tool answers; otherwise each becomes a line that says it was taken, and a
+/// turn whose prompt carries images is refused for a model the list says reads text only. The base URL and the model are settings; the key is optional and comes from the
 /// ApiKeyStore's endpoint slot. HttpClient refuses to send a key over plain http to a host that
 /// is not loopback, so a key travels only over https or to this computer.
 class OpenAiCompatibleProvider final : public IAgentProvider
@@ -78,11 +81,29 @@ public:
     static std::unordered_map<std::string, std::string> BuildRequestHeaders(std::string_view key);
 
 private:
+    /// Whether the model reads images, as the server's model list says.
+    enum class ImageInput : uint8_t
+    {
+        /// The list does not say, or was not read.
+        Unknown,
+        Yes,
+        No,
+    };
+
+    /// The model a turn asks for and what the server's list says about it.
+    struct TurnModel
+    {
+        std::string Name;
+        ImageInput Images = ImageInput::Unknown;
+    };
+
     /// The tool loop of a turn that attaches the editor's tools.
-    void RunToolTurn(const AgentTurnRequest& request, const std::string& model, AgentTurnEvents& events,
+    void RunToolTurn(const AgentTurnRequest& request, const TurnModel& model, AgentTurnEvents& events,
                      const CancelToken& cancel);
-    /// The model a turn of `request` asks for; empty with the reason in `refusal` when there is none.
-    std::string TurnModel(const AgentTurnRequest& request, std::string& refusal, const CancelToken& cancel) const;
+    /// The model a turn of `request` asks for; an empty Name with the reason in `refusal` when there
+    /// is none. Reads the server's model list when the model comes from it, or when the turn has tools
+    /// or images and so needs to know whether the model reads images.
+    TurnModel ChooseModel(const AgentTurnRequest& request, std::string& refusal, const CancelToken& cancel) const;
 
     std::string_view m_Id;
     ModelSource m_ModelSource = ModelSource::Given;

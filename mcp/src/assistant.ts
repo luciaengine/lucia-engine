@@ -64,9 +64,9 @@ export async function callServedTool(
     await authorizeHostAction(tool, args);
     const out = await tool.run(args);
     const content: ToolContent[] = [];
-    // Image first: an agent reading the response sees the picture before the path,
-    // which is the order take_screenshot has always answered in.
-    if (out.image) content.push({ type: "image", data: out.image.base64, mimeType: out.image.mimeType });
+    // Image first: an agent reading the response sees the picture before the path.
+    // Only an inline image goes in the answer; the others stay in the file the summary names.
+    if (out.image?.inline) content.push({ type: "image", data: out.image.base64, mimeType: out.image.mimeType });
     content.push({ type: "text", text: withEndpoint(out.summary ?? JSON.stringify(out.data, null, 2)) });
     return { content };
   } catch (err: any) {

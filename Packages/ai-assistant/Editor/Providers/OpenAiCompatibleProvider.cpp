@@ -13,6 +13,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstddef>
+#include <optional>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -75,21 +76,40 @@ SetupStep EndpointStep(const std::string& baseUrl, SetupSurface surface)
     return step;
 }
 
-// The models <base>/models lists, in its order; empty when the server does not answer with a list.
-std::vector<std::string> ListedModels(const HttpClient::HttpResponse& response)
+// <base>/models' answer when it is a model list ({"data": [...]}); null otherwise.
+nlohmann::json ModelList(const HttpClient::HttpResponse& response)
 {
-    std::vector<std::string> models;
     if (!response.success)
-        return models;
-    const nlohmann::json payload = nlohmann::json::parse(response.body, nullptr, false);
+        return nullptr;
+    nlohmann::json payload = nlohmann::json::parse(response.body, nullptr, false);
     const auto data = payload.is_object() ? payload.find("data") : payload.end();
     if (!payload.is_object() || data == payload.end() || !data->is_array())
+        return nullptr;
+    return payload;
+}
+
+// The models a model list names, in its order.
+std::vector<std::string> ListedModels(const nlohmann::json& list)
+{
+    std::vector<std::string> models;
+    if (!list.is_object())
         return models;
-    for (const nlohmann::json& entry : *data)
+    for (const nlohmann::json& entry : list.at("data"))
         if (entry.is_object())
             if (std::string id = JsonFields::String(entry, "id"); !id.empty())
                 models.push_back(std::move(id));
     return models;
+}
+
+// The entry a model list has for `model`; null when it has none.
+const nlohmann::json* ListedEntry(const nlohmann::json& list, const std::string& model)
+{
+    if (!list.is_object())
+        return nullptr;
+    for (const nlohmann::json& entry : list.at("data"))
+        if (entry.is_object() && JsonFields::String(entry, "id") == model)
+            return &entry;
+    return nullptr;
 }
 
 HttpClient::HttpResponse GetModels(const std::string& baseUrl, const ApiKeyStore::Key& key, const CancelToken& cancel)
@@ -116,17 +136,6 @@ SetupStep ModelStep(const std::string& model, SetupSurface surface)
     return step;
 }
 
-bool ListsModel(const nlohmann::json& payload, const std::string& model)
-{
-    const auto data = payload.find("data");
-    if (data == payload.end() || !data->is_array())
-        return false;
-    for (const nlohmann::json& entry : *data)
-        if (entry.is_object() && JsonFields::String(entry, "id") == model)
-            return true;
-    return false;
-}
-
 // One GET of <base>/models. A server that cannot be reached fails: nothing would answer a turn.
 // An empty `model` (ModelSource::FirstListed) passes when the server lists any model.
 SetupStep AnswersStep(const std::string& baseUrl, const std::string& model, const ApiKeyStore::Key& key,
@@ -136,7 +145,7 @@ SetupStep AnswersStep(const std::string& baseUrl, const std::string& model, cons
     const HttpClient::HttpResponse response = GetModels(baseUrl, key, cancel);
     if (response.success && model.empty())
     {
-        const std::vector<std::string> models = ListedModels(response);
+        const std::vector<std::string> models = ListedModels(ModelList(response));
         step.State = models.empty() ? SetupStepState::Failed : SetupStepState::Passed;
         step.Found = models.empty() ? "The endpoint answered, but lists no model."
                                     : "The endpoint answered; it serves " + models.front() + ".";
@@ -146,8 +155,8 @@ SetupStep AnswersStep(const std::string& baseUrl, const std::string& model, cons
     }
     if (response.success)
     {
-        const nlohmann::json payload = nlohmann::json::parse(response.body, nullptr, false);
-        if (payload.is_object() && payload.contains("data") && !ListsModel(payload, model))
+        const nlohmann::json list = ModelList(response);
+        if (list.is_object() && !ListedEntry(list, model))
         {
             step.State = SetupStepState::Warning;
             step.Found = "The endpoint answered, but its model list does not name " + model + ".";
@@ -178,6 +187,35 @@ SetupStep AnswersStep(const std::string& baseUrl, const std::string& model, cons
                  " for its model list, so the model is not checked.";
     step.Fix = "Send a prompt to try the endpoint.";
     return step;
+}
+
+// Whether a model list entry says its model reads images: `input_types` (TensorFold, vLLM) first,
+// then `capabilities.vision` (TensorFold). An entry with neither says nothing.
+std::optional<bool> EntryReadsImages(const nlohmann::json* entry)
+{
+    if (!entry)
+        return std::nullopt;
+    if (const auto types = entry->find("input_types"); types != entry->end() && types->is_array())
+        return std::find(types->begin(), types->end(), "image") != types->end();
+    if (const auto capabilities = entry->find("capabilities"); capabilities != entry->end() && capabilities->is_object())
+        if (const auto vision = capabilities->find("vision"); vision != capabilities->end() && vision->is_boolean())
+            return vision->get<bool>();
+    return std::nullopt;
+}
+
+nlohmann::json ImageUrlPart(const PromptFile& image)
+{
+    return {{"type", "image_url"},
+            {"image_url", {{"url", "data:" + image.MediaType + ";base64," + Base64Encode(image.Bytes)}}}};
+}
+
+// What the model is told about the images the editor's tools answer with.
+std::string ToolImagesNote(bool returned)
+{
+    return returned ? "This connection shows you images. To look at the editor, call take_screenshot with "
+                      "includeImage set to true: the image follows the tool's answer."
+                    : "This connection reads text only. A tool's image reaches you as a line that says it was "
+                      "taken, and you cannot open the files the tools save.";
 }
 
 void Publish(const SetupStep& step, const SetupStepSink& onStep, SetupStatus& status)
@@ -228,13 +266,22 @@ void OpenAiCompatibleProvider::RunTurn(const AgentTurnRequest& request, AgentTur
                                        const CancelToken& cancel)
 {
     std::string refusal;
-    const std::string model = TurnModel(request, refusal, cancel);
-    if (model.empty())
+    const TurnModel model = ChooseModel(request, refusal, cancel);
+    if (model.Name.empty())
     {
         TurnResult result;
         result.Outcome = cancel.IsCancelled() ? TurnOutcome::Stopped : TurnOutcome::Failed;
         result.NotReady = !cancel.IsCancelled();
         result.Error = cancel.IsCancelled() ? std::string() : refusal;
+        events.OnFinished(result);
+        return;
+    }
+    if (model.Images == ImageInput::No && !request.Images.empty())
+    {
+        TurnResult result;
+        result.Error = "The model " + model.Name + " reads text only, so the prompt's images cannot be sent. Remove "
+                       "the images, or load a model that reads images in the server (TensorFold: a vision model, "
+                       "served with --vision).";
         events.OnFinished(result);
         return;
     }
@@ -244,14 +291,16 @@ void OpenAiCompatibleProvider::RunTurn(const AgentTurnRequest& request, AgentTur
         return;
     }
     events.OnFinished(OpenAiChatStream::Run(m_BaseUrl + std::string(kChatPath), BuildRequestHeaders(m_Keys.Read().Value),
-                                            BuildRequestBody(request, model), events, cancel)
+                                            BuildRequestBody(request, model.Name), events, cancel)
                           .Result);
 }
 
-void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, const std::string& model,
+void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, const TurnModel& model,
                                            AgentTurnEvents& events, const CancelToken& cancel)
 {
-    EditorToolBridge bridge(*request.Tools);
+    const bool returnsImages = model.Images == ImageInput::Yes;
+    EditorToolBridge bridge(*request.Tools, returnsImages ? EditorToolBridge::ToolImages::Returned
+                                                          : EditorToolBridge::ToolImages::Described);
     TurnResult total;
     if (std::string error; !bridge.Load(cancel, error))
     {
@@ -261,11 +310,13 @@ void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, cons
         return;
     }
     const std::unordered_map<std::string, std::string> headers = BuildRequestHeaders(m_Keys.Read().Value);
-    nlohmann::json messages = BuildMessages(request);
+    AgentTurnRequest withNote = request;
+    withNote.SystemPrompt += (withNote.SystemPrompt.empty() ? "" : "\n\n") + ToolImagesNote(returnsImages);
+    nlohmann::json messages = BuildMessages(withNote);
     const nlohmann::json tools = bridge.Definitions();
     for (int round = 0; round < m_ToolRequestLimit; ++round)
     {
-        nlohmann::json body = {{"model", model}, {"stream", true}, {"messages", messages}, {"tools", tools}};
+        nlohmann::json body = {{"model", model.Name}, {"stream", true}, {"messages", messages}, {"tools", tools}};
         OpenAiChatStream::Round reply =
             OpenAiChatStream::Run(m_BaseUrl + std::string(kChatPath), headers,
                                   body.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), events, cancel,
@@ -300,19 +351,34 @@ void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, cons
                             {"content", reply.Result.Text.empty() ? nlohmann::json(nullptr)
                                                                   : nlohmann::json(reply.Result.Text)},
                             {"tool_calls", std::move(calls)}});
+        // A tool message holds text only, so the round's images follow in one user message.
+        nlohmann::json images = nlohmann::json::array();
+        std::string imageSources;
         for (const OpenAiChatStream::ToolCall& call : reply.ToolCalls)
         {
-            events.OnToolActivity({EditorToolBridge::RunsTool(call.Name, call.Arguments), call.Arguments, call.Id});
+            const std::string runs = EditorToolBridge::RunsTool(call.Name, call.Arguments);
+            events.OnToolActivity({runs, call.Arguments, call.Id});
             const EditorToolBridge::Answer answer = bridge.Call(call.Name, call.Arguments, cancel);
             if (answer.IsError)
                 events.OnToolFailed({.CallId = call.Id, .Error = answer.Text.substr(0, answer.Text.find('\n'))});
             messages.push_back({{"role", "tool"}, {"tool_call_id", call.Id}, {"content", answer.Text}});
+            for (const PromptFile& image : answer.Images)
+            {
+                images.push_back(ImageUrlPart(image));
+                imageSources += (imageSources.empty() ? "" : ", ") + runs + " (" + call.Id + ")";
+            }
             if (cancel.IsCancelled())
             {
                 total.Outcome = TurnOutcome::Stopped;
                 events.OnFinished(total);
                 return;
             }
+        }
+        if (!images.empty())
+        {
+            images.insert(images.begin(),
+                          {{"type", "text"}, {"text", "The images the tool calls returned, in order: " + imageSources + "."}});
+            messages.push_back({{"role", "user"}, {"content", std::move(images)}});
         }
     }
     total.Outcome = TurnOutcome::Failed;
@@ -322,31 +388,45 @@ void OpenAiCompatibleProvider::RunToolTurn(const AgentTurnRequest& request, cons
     events.OnFinished(total);
 }
 
-std::string OpenAiCompatibleProvider::TurnModel(const AgentTurnRequest& request, std::string& refusal,
-                                                const CancelToken& cancel) const
+OpenAiCompatibleProvider::TurnModel OpenAiCompatibleProvider::ChooseModel(const AgentTurnRequest& request,
+                                                                          std::string& refusal,
+                                                                          const CancelToken& cancel) const
 {
     if (const SetupStep endpoint = EndpointStep(m_BaseUrl, SetupSurface::Panel); endpoint.State == SetupStepState::Failed)
     {
         refusal = endpoint.Found + " " + endpoint.Fix;
         return {};
     }
-    if (!request.Model.empty())
-        return request.Model;
-    if (m_ModelSource == ModelSource::Given)
+    TurnModel model{.Name = !request.Model.empty() ? request.Model
+                            : m_ModelSource == ModelSource::Given ? m_Model
+                                                                  : std::string()};
+    if (model.Name.empty() && m_ModelSource == ModelSource::Given)
     {
         const SetupStep step = ModelStep(m_Model, SetupSurface::Panel);
         refusal = step.Found + " " + step.Fix;
-        return m_Model;
+        return {};
     }
+    if (!model.Name.empty() && !request.Tools && request.Images.empty())
+        return model;
+
     const HttpClient::HttpResponse response = GetModels(m_BaseUrl, m_Keys.Read(), cancel);
-    const std::vector<std::string> models = ListedModels(response);
-    if (!models.empty())
-        return models.front();
-    refusal = response.statusCode == 0
-                  ? "The endpoint at " + m_BaseUrl + " could not be reached (" + response.error +
-                        "). Start the server, or correct its URL in Settings > AI Assistant."
-                  : "The endpoint at " + m_BaseUrl + " lists no model. Load a model in the server.";
-    return {};
+    const nlohmann::json list = ModelList(response);
+    if (model.Name.empty())
+    {
+        const std::vector<std::string> models = ListedModels(list);
+        if (models.empty())
+        {
+            refusal = response.statusCode == 0
+                          ? "The endpoint at " + m_BaseUrl + " could not be reached (" + response.error +
+                                "). Start the server, or correct its URL in Settings > AI Assistant."
+                          : "The endpoint at " + m_BaseUrl + " lists no model. Load a model in the server.";
+            return {};
+        }
+        model.Name = models.front();
+    }
+    if (const std::optional<bool> readsImages = EntryReadsImages(ListedEntry(list, model.Name)))
+        model.Images = *readsImages ? ImageInput::Yes : ImageInput::No;
+    return model;
 }
 
 std::string OpenAiCompatibleProvider::NormalizeBaseUrl(std::string_view baseUrl)
@@ -391,8 +471,7 @@ nlohmann::json OpenAiCompatibleProvider::BuildMessages(const AgentTurnRequest& r
     {
         nlohmann::json content = nlohmann::json::array();
         for (const PromptFile& image : request.Images)
-            content.push_back({{"type", "image_url"},
-                               {"image_url", {{"url", "data:" + image.MediaType + ";base64," + Base64Encode(image.Bytes)}}}});
+            content.push_back(ImageUrlPart(image));
         content.push_back({{"type", "text"}, {"text", request.UserText}});
         messages.push_back({{"role", "user"}, {"content", std::move(content)}});
     }

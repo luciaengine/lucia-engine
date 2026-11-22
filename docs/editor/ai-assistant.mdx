@@ -134,7 +134,10 @@ TensorFold (Local) and Custom (OpenAI-compatible) run the conversation in the ed
 - The everyday tools go to the model whole: editor state, scene hierarchy, entity components, ECS queries, selection, creating, changing and deleting entities, undo and redo, the log, a screenshot, the camera, opening assets, saving the scene, play mode and commands. The other tools are named in `describe_editor_tool`, which returns one tool's schema, and run through `call_editor_tool`. A model with a 64K context keeps room for the conversation.
 - Every call goes through the same mode and gate as a Claude session's: the mode control decides what runs, and the panel asks before an action that cannot be undone.
 - The editor runs `mcp/dist/assistant-bridge.js`, staged with the MCP server, with **Node executable** (Node.js 20 or later): once to list the tools, once per call. Build the McpServer target after changing `mcp/`.
-- Tool results reach the model as text. A screenshot is taken, and the model is told that one was.
+- Whether the model sees images comes from the server's model list: an entry whose `input_types` names `image`, or whose `capabilities.vision` is true, reads images. TensorFold reports this; it serves images only for a vision model started with `--vision`.
+  - A model that reads images gets a screenshot it asks for (`take_screenshot` with `includeImage`) as an image, in a message after the tool's answer.
+  - Any other model gets tool results as text: a screenshot is taken, and the model is told that one was.
+  - A prompt with images is refused, with the fix, for a model the list says reads text only. A server whose list says nothing gets the images.
 - A model that does not call tools answers as a conversation.
 
 ### Your login, not a key

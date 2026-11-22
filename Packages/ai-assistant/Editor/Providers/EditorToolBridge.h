@@ -2,6 +2,8 @@
 
 #include "IAgentProvider.h"
 
+#include <cstdint>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
@@ -22,14 +24,27 @@ class CancelToken;
 /// The model sees kCoreTools with their full schemas and two more: describe_editor_tool (the
 /// schema of any other tool, answered from the list) and call_editor_tool (runs any tool by name).
 /// A model with a small context keeps room for the conversation; every tool stays reachable.
+///
+/// An image a tool answers with (take_screenshot with includeImage) reaches the editor as a file,
+/// never on the bridge's stdout: ToolImages::Returned reads it into Answer::Images and deletes it.
 class EditorToolBridge
 {
 public:
-    /// What one tool call answered, as text.
+    /// What the model gets for an image a tool answers with.
+    enum class ToolImages : uint8_t
+    {
+        /// A line that says an image was taken: the model reads text only.
+        Described,
+        /// The image, in Answer::Images: the model reads images.
+        Returned,
+    };
+
+    /// What one tool call answered: its text, and its images when ToolImages::Returned.
     struct Answer
     {
         std::string Text;
         bool IsError = false;
+        std::vector<PromptFile> Images;
     };
 
     /// The tools sent with their full schemas: the everyday reads and edits.
@@ -42,7 +57,7 @@ public:
     static constexpr std::string_view kDescribeTool = "describe_editor_tool";
     static constexpr std::string_view kCallTool = "call_editor_tool";
 
-    explicit EditorToolBridge(const AgentToolAttachment& attachment);
+    EditorToolBridge(const AgentToolAttachment& attachment, ToolImages images);
 
     /// Lists the tools (assistant-bridge list) and keeps them for Definitions() and calls. False,
     /// with the reason in `error`, when the bridge does not start or answers no list.
@@ -63,9 +78,14 @@ public:
 private:
     Answer RunTool(const std::string& name, const std::string& arguments, const CancelToken& cancel) const;
     const nlohmann::json* FindTool(std::string_view name) const;
+    /// Reads the image files an answer names into `answer`, and deletes them.
+    void TakeImages(const nlohmann::json& content, Answer& answer) const;
 
     AgentToolAttachment m_Attachment;
     std::string m_BridgeScript;
+    ToolImages m_Images = ToolImages::Described;
+    /// Where the bridge writes images for this process (ToolImages::Returned).
+    std::filesystem::path m_ImageFolder;
     /// The list's entries (name, description, inputSchema), in its order.
     std::vector<nlohmann::json> m_Tools;
 };
