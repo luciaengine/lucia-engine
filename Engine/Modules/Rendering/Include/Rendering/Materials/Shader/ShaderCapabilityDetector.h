@@ -17,6 +17,9 @@ enum class ShaderCapability : uint32_t
     Surface              = 1u << 0, // Defines EvaluateSurface(SurfaceInput) -> SurfaceOutput
     VertexModifier       = 1u << 1, // Defines ModifyVertex(vec3, InstanceData) -> vec3
     VertexOutputModifier = 1u << 2, // Defines ModifyVertex(inout VertexOutput, InstanceData)
+    PrimaryLightOcclusion = 1u << 3, // Declares `// @primaryLightOcclusion`: the surface writes
+                                     // SurfaceOutput.primaryLightOcclusion (its own shadow toward the
+                                     // primary directional light)
 };
 
 inline ShaderCapability operator|(ShaderCapability a, ShaderCapability b)

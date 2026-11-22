@@ -302,7 +302,8 @@ TEST_F(GPUSceneBufferCapacityTest, DirtyInstancesConvergeAcrossFrameSlotsWithout
     ASSERT_GT(slots, 1u); // This oracle must exercise a real rotating ring.
     std::vector<std::vector<GPUInstance>> previous(slots);
     const size_t stride = sizeof(GPUInstance) +
-        (m_Scene->GetScatterHotBuffer().IsValid() ? sizeof(GPUInstanceScatterHot) : 0);
+        (m_Scene->GetScatterHotBuffer().IsValid() ? sizeof(GPUInstanceScatterHot) : 0) +
+        sizeof(uint32_t); // the placement owner word
     for (uint32_t frame = 0; frame < slots * 5; ++frame)
     {
         ASSERT_TRUE(m_Device->BeginFrame());
@@ -368,7 +369,8 @@ TEST_F(GPUSceneBufferCapacityTest, DirtyTailRemovalAndReuseUploadOnlyLiveChanged
     m_Scene->RemoveInstance(7);
     auto before = m_Scene->GetInstanceUploadBytesTotal();
     const size_t stride = sizeof(GPUInstance) +
-        (m_Scene->GetScatterHotBuffer().IsValid() ? sizeof(GPUInstanceScatterHot) : 0);
+        (m_Scene->GetScatterHotBuffer().IsValid() ? sizeof(GPUInstanceScatterHot) : 0) +
+        sizeof(uint32_t); // the placement owner word
     m_Scene->FlushGPUBuffers();
     EXPECT_EQ(m_Scene->GetInstanceUploadBytesTotal() - before, stride);
     GPUInstance tombstone{};
@@ -420,7 +422,8 @@ TEST_F(GPUSceneBufferCapacityTest, InstanceCapacityClampPreservesValidSparseWrit
         m_Scene->AddInstance(expected[i]);
     }
     const size_t stride = sizeof(GPUInstance) +
-        (m_Scene->GetScatterHotBuffer().IsValid() ? sizeof(GPUInstanceScatterHot) : 0);
+        (m_Scene->GetScatterHotBuffer().IsValid() ? sizeof(GPUInstanceScatterHot) : 0) +
+        sizeof(uint32_t); // the placement owner word
     auto before = m_Scene->GetInstanceUploadBytesTotal();
     m_Scene->FlushGPUBuffers();
     EXPECT_EQ(m_Scene->GetInstanceUploadBytesTotal() - before, kCapacity * stride);

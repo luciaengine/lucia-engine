@@ -47,6 +47,14 @@ void ApplyVertexModifierKeyword(ShaderVariantKey& key,
                                 const std::filesystem::path& materialDir,
                                 const MaterialBuildContext& context);
 
+/// Set MaterialKeyword::SurfaceLightOcclusion exactly when the resolved surface declares
+/// `// @primaryLightOcclusion`, and clear it otherwise. `materialDir` as for
+/// ApplyVertexModifierKeyword.
+void ApplySurfaceLightOcclusionKeyword(ShaderVariantKey& key,
+                                       const std::string& surfaceRef,
+                                       const std::filesystem::path& materialDir,
+                                       const MaterialBuildContext& context);
+
 /// Add the keywords a material's alpha mode and blend compile into its variant key: AlphaTest for
 /// Mask (the adapter discards below the cutoff) and AlphaBlend for Blend (the adapter keeps the
 /// surface opacity as the output alpha the blend state reads). Opaque adds neither, and its output

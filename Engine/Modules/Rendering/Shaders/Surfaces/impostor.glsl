@@ -6,12 +6,11 @@
 //
 // @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
 // impostorAtlas.z = 1 tints the cards red (GE_IMPOSTOR_DEBUG_TINT), to show which trees are cards.
+//
+// The card shades its crown's own shadow toward the primary light:
+// @primaryLightOcclusion
 
 #include "Includes/impostor_frame.glsl"
-
-// The card shades its crown's own shadow toward the primary light, so the forward adapter fills
-// SurfaceInput.primaryLightDirectionWS for it.
-#define GE_SURFACE_READS_PRIMARY_LIGHT 1
 
 // The object-space surface point (in sphere radii from the center) that `frame` sees through card
 // point `offset`. The bake camera is orthographic and reverse-Z, with near at 1 radius in front of
@@ -117,7 +116,9 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     objectNormal = normalize(objectNormal + vec3(0.0, 1e-4, 0.0));
     o.normalWS = normalize(vec3(c * objectNormal.x + s * objectNormal.z, objectNormal.y,
                                 -s * objectNormal.x + c * objectNormal.z));
+#ifdef GE_PRIMARY_LIGHT_OCCLUSION
     o.primaryLightOcclusion = GE_ImpostorCrownLight(surface, sIn.primaryLightDirectionWS, c, s, Props.impostorAtlas);
+#endif
     o.roughness = 0.9;
     o.metallic = 0.0;
     return o;

@@ -2938,6 +2938,8 @@ Rendering::ShaderVariantKey MaterialSystem::DeriveRegistrationVariantKey(
     Rendering::ApplyVertexModifierKeyword(key, resolvedDoc.vertexModifier,
                                           materialAssetPath.parent_path(),
                                           m_MaterialBuildContext);
+    Rendering::ApplySurfaceLightOcclusionKeyword(key, resolvedDoc.surfaceShader, materialAssetPath.parent_path(),
+                                                 m_MaterialBuildContext);
     outParallaxRefusal = ApplyParallaxKeywordDescribingRefusal(key, resolvedDoc, materialAssetPath, surfaceSlots);
     // Both derivations above are unaware of fully-procedural materials: the vertexFlags
     // inference would resurrect a phantom vertex binding the SPIR-V never consumes, and

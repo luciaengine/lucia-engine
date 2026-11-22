@@ -119,6 +119,9 @@ private:
     FlatMap<GUID, ModelImpostor> m_Models;
     // The owners on the GPU scene, by instance (GPUScene::SetInstanceImpostorOwner).
     FlatMap<uint32, uint32> m_Owners;
+    // A part without a GPU instance retries the scan after kRescanInterval updates, not every frame.
+    static constexpr uint32 kRescanInterval = 16;
+    uint32 m_UpdatesUntilRescan = 0;
     bool m_RescanPending = false;
     // The models with a refusal warning; a model leaves the set when it links.
     FlatSet<GUID> m_RefusalsLogged;

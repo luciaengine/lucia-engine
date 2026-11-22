@@ -4655,6 +4655,17 @@ TEST_P(BatchScatterComputeTest, ImpostorPlacementSwitchesWithItsOwner)
     EXPECT_EQ(rowsOf(band, primary, kImpostorPrimaryIndices), (std::multiset<uint32_t>{bark, loneBark}));
     EXPECT_EQ(rowsOf(band, secondary, kImpostorSecondaryIndices).count(leaves), 1u)
         << "the leaves draw while the bark draws its mesh";
+
+    // The owner is culled in this slice and its leaves are visible: the leaves draw their mesh.
+    SeedRenderedHistory(std::vector<uint32_t>(6u, kNone));
+    auto culledOwner = ImpostorLod(kImpostorFarDist, card, true);
+    culledOwner.renderedHistory = true;
+    culledOwner.visibility = std::vector<uint32_t>(6u, 1u);
+    culledOwner.visibility[bark] = 0u;
+    const auto ownerCulled = Dispatch(table, total, 0u, 0u, rows, total, 0u, {}, 0xFFFFFFFFu, {}, 0u, culledOwner);
+    EXPECT_TRUE(rowsOf(ownerCulled, card, kImpostorCardIndices).empty());
+    EXPECT_EQ(rowsOf(ownerCulled, secondary, kImpostorSecondaryIndices).count(leaves), 1u)
+        << "a part never drops while its owner draws nothing";
 }
 
 // Below the switch the card replaces every mesh LOD of the parts, the finest included: a coarse

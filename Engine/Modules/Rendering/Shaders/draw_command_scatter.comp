@@ -565,11 +565,17 @@ bool ge_ImpostorStageActive()
 }
 
 // True when `owner` can decide the switch for the part at `instanceIndex`: a live instance of the
-// primary part of the same card, with the same sphere and LOD bias. Anything else (an index recycled before the
-// next scan, a part that moved without its owner) keeps the part on its mesh.
+// primary part of the same card, visible in this slice, with the same sphere and LOD bias. Anything
+// else (an index recycled before the next scan, a part that moved without its owner, an owner that
+// is culled, hidden or casts no shadow) keeps the part on its mesh, so a part never drops while
+// its owner draws nothing.
 bool ge_ImpostorOwnerValid(uint owner, uint instanceIndex, uint impostorCard)
 {
     if (owner >= pc.instanceCount)
+        return false;
+    if (pc.disableVisCheck == 0u && visibilityResults[owner] == 0u)
+        return false;
+    if (pc.viewWorldKey != 0u && ((instances[owner].flags >> 16u) & 0xFFFFu) != pc.viewWorldKey)
         return false;
     uint ownerMesh = instances[owner].meshIndex;
     if (ownerMesh >= meshes.length())

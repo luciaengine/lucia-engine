@@ -881,7 +881,7 @@ void main()
     si.positionFootprintX = parallaxPositionFootprintX;
     si.positionFootprintY = parallaxPositionFootprintY;
 #endif
-#if (defined(GE_PARALLAX_MARCH) || defined(GE_SURFACE_READS_PRIMARY_LIGHT)) && !defined(GE_DEPTH_ONLY_FRAGMENT)
+#if defined(GE_PRIMARY_LIGHT_OCCLUSION) && !defined(GE_DEPTH_ONLY_FRAGMENT)
     // A self-shadow (the relief's, an impostor crown's) toward the light both lighting paths below
     // shade as the shadowed directional term, gated like them on the light it delivers. The prepass
     // shades nothing, so its direction stays zero and the self-shadow skips.
@@ -1087,8 +1087,8 @@ void main()
         shadowFactor = GE_SurfaceSunShadow(vPosRel, so.normalWS, viewZ, L, gl_FragCoord.xy);
         shadowTint = ge_lastShadowTint;
     #endif
-    #ifdef GE_PARALLAX_MARCH
-        // The surface's own relief shadows the primary light as its cascade shadow does.
+    #ifdef GE_PRIMARY_LIGHT_OCCLUSION
+        // The surface's own relief or crown shadows the primary light as its cascade shadow does.
         shadowFactor *= so.primaryLightOcclusion;
     #endif
         shadowFactor = GE_SurfaceDirectionalVisibility(shadowFactor, (Cam.uVRel * vec4(vPosRel, 1.0)).z, L);

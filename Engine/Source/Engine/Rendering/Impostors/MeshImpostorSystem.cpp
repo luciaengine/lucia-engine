@@ -142,7 +142,10 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     const uint64 probeVersion = world.GetGlobalSystemVersion();
     const std::size_t structuralVersion = world.GetStructuralChangeVersion();
     const bool modelReloaded = m_ModelReloaded.exchange(false, std::memory_order_relaxed);
-    bool changed = deviceRebuilt || modelReloaded || m_RescanPending || structuralVersion != m_StructuralVersion;
+    const bool rescanDue = m_RescanPending && m_UpdatesUntilRescan == 0;
+    if (m_UpdatesUntilRescan > 0)
+        --m_UpdatesUntilRescan;
+    bool changed = deviceRebuilt || modelReloaded || rescanDue || structuralVersion != m_StructuralVersion;
     m_StructuralVersion = structuralVersion;
     {
         auto query = world.Query<ECS::Read<Components::MeshRenderer>>();
@@ -283,6 +286,7 @@ void MeshImpostorSystem::Scan(ECS::World& world)
     }
     m_Models = std::move(scan.Models);
     m_RescanPending = scan.MissingInstance;
+    m_UpdatesUntilRescan = scan.MissingInstance ? kRescanInterval : 0;
     ApplyOwners();
     for (const auto& [model, reason] : scan.Refusals)
         LogRefusal(model, reason);

@@ -540,8 +540,8 @@ vec3 GE_AccumulateClusteredLighting(
             dirTint = ge_lastShadowTint;
         }
 #endif
-#ifdef GE_PARALLAX_MARCH
-        // The surface's own relief shadows the primary light as its cascade shadow does.
+#ifdef GE_PRIMARY_LIGHT_OCCLUSION
+        // The surface's own relief or crown shadows the primary light as its cascade shadow does.
         dirAtten *= so.primaryLightOcclusion;
 #endif
         dirAtten = GE_SurfaceDirectionalVisibility(dirAtten, linearDepth, dirL);
