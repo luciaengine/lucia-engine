@@ -139,10 +139,13 @@ struct SpeechInput::Impl : std::enable_shared_from_this<SpeechInput::Impl>
             request.shouldReportPartialResults = YES;
             engine = [[AVAudioEngine alloc] init];
             AVAudioInputNode* input = engine.inputNode;
-            AVAudioFormat* format = [input outputFormatForBus:0];
+            // The hardware format: with no input device it is 0 channels at 0 Hz, while the output
+            // format still reads a default (2 channels, 44.1 kHz) that no tap can use. A tap must
+            // match the hardware's sample rate.
+            AVAudioFormat* format = [input inputFormatForBus:0];
             if (format.channelCount == 0 || format.sampleRate <= 0)
             {
-                End("No microphone is connected");
+                End("No microphone is connected. Connect one, or choose an input in System Settings > Sound > Input");
                 return;
             }
             // The tap holds this request and its own smoothed levels until the tap is removed;
