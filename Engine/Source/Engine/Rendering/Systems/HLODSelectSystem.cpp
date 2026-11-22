@@ -124,7 +124,7 @@ void HLODSelectSystem::Update(ECS::World& world, float32 /*deltaTime*/) {
         return;
 
     Hlod::HlodRuntime& runtime = m_RenderServices->GetHlodRuntime();
-    if (!runtime.HasClusters() || runtime.GetBoundWorldId() != world.GetWorldId())
+    if (!runtime.HasClusters() || !runtime.IsBoundTo(world))
         return;
 
     Rendering::GPUScene* scene = m_RenderServices->GetGPUScene();

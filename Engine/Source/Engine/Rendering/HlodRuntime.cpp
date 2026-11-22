@@ -4,11 +4,11 @@
 #include "Assets/HlodCache.h"
 #include "Assets/HlodReconcile.h"
 #include "Assets/ModelAsset.h" // Mesh / Vertex
+#include "Components/GeneratedEntity.h"
 #include "Components/Rendering/HLODProxy.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MeshRenderer.h"
-#include "Components/RuntimeOnlyEntity.h"
 #include "Components/Transform.h"
 #include "Logger/Logger.h"
 
@@ -100,24 +100,41 @@ LiveMemberIndex BuildLiveIndex(GameEngine::ECS::World& world, const ModelResolve
 
 } // namespace
 
-void HlodRuntime::Retire(GameEngine::ECS::World& world,
-                         GameEngine::Rendering::MeshGPURegistry& meshReg) {
+bool HlodRuntime::IsBoundTo(const GameEngine::ECS::World& world) const
+{
+    return m_BoundWorldId == world.GetWorldId() && m_BoundWorldGeneration == world.GetLifecycleResetGeneration();
+}
+
+void HlodRuntime::Retire(GameEngine::ECS::World& world, GameEngine::Rendering::MeshGPURegistry& meshReg)
+{
     if (m_Clusters.empty())
         return;
 
-    for (RuntimeCluster& cluster : m_Clusters) {
-        for (GameEngine::ECS::EntityHandle proxy : cluster.Proxies) {
-            if (world.IsValid(proxy))
-                world.DestroyEntity(proxy);
+    // Clear can reuse the same handles in a new scene in this world.
+    const bool ownsEntities = IsBoundTo(world);
+    for (RuntimeCluster& cluster : m_Clusters)
+    {
+        if (ownsEntities)
+        {
+            if (cluster.ProxyActive)
+            {
+                for (const auto member : cluster.Members)
+                    if (auto* gpu = world.GetComponentForWrite<Components::MeshGPUData>(member))
+                        gpu->hlodEvicted = false;
+            }
+            for (const auto proxy : cluster.Proxies)
+                if (world.IsValid(proxy))
+                    world.DestroyEntity(proxy);
         }
-        // C7: no refcount on RegisterSubmesh, so the proxy meshes leak until
-        // Shutdown unless explicitly unregistered here.
-        for (const GameEngine::Rendering::MeshGPUKey& key : cluster.ProxyMeshKeys)
+
+        for (const auto& key : cluster.ProxyMeshKeys)
             meshReg.UnregisterSubmesh(key);
     }
-    world.ProcessCommands();
+    if (ownsEntities)
+        world.ProcessCommands();
     m_Clusters.clear();
     m_BoundWorldId = 0;
+    m_BoundWorldGeneration = 0;
 }
 
 uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
@@ -167,6 +184,7 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
     const ReconcileResult reconciled = ReconcileBakedScene(baked, live);
 
     m_BoundWorldId = world.GetWorldId();
+    m_BoundWorldGeneration = world.GetLifecycleResetGeneration();
 
     for (const ReconciledCluster& rc : reconciled.Clusters) {
         if (rc.Members.empty())
@@ -241,7 +259,7 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
                 proxy.Set(gpu);
 
                 proxy.Set(Components::HLODProxy{runtimeId});
-                proxy.Set(Components::RuntimeOnlyEntity{});
+                proxy.Set(Components::GeneratedEntity{});
 
                 cluster.Proxies.push_back(proxy.GetHandle());
             }

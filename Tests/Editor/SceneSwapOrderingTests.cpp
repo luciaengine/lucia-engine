@@ -2,24 +2,12 @@
 // immediately BEFORE the world is swapped, at both swap sites and at neither
 // other path.
 //
-// Ordering, not presence, is the property — and it is a source-level one. The
-// hazard it prevents is an ABA: World::Clear recycles entity indices and
-// restarts versions in place, so an HLOD cluster's proxy handle carried across
-// the Clear names an unrelated freshly-loaded entity, and the generational
-// IsValid check cannot tell. HlodRuntime::Retire then destroys it. The
-// companion test below reproduces exactly that on a live world, which is what
-// makes the ordering assertions here worth pinning rather than hypothetical.
-//
-// The third assertion is the one with teeth: calling the step from
-// LoadSceneAdditive would be user data loss. That path never clears the world,
-// so retiring proxies there destroys the SURVIVING scene's far-field geometry
-// and the payload reset discards its live terrain zone edits.
+// Additive load shares the current world. It retains the existing baked proxies
+// and terrain edits. The WorldDraw HLOD tests cover stale handles after a reset.
 
 #include <gtest/gtest.h>
 
 #include "Assets/Polyhaven/PolyhavenDownloadManager.h"
-#include "Engine/Rendering/HlodRuntime.h"
-#include "Engine/Rendering/MeshGPURegistry.h"
 
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
@@ -248,43 +236,6 @@ TEST(SceneSwapOrdering, SceneEditorControllerHoldsTheReleaseUntilTheDocumentExis
               std::string::npos)
         << "AttachToRoot builds m_Doc, so it must hand the stored release over; without that "
            "line nothing ever arms the release and every scene swap silently skips it";
-}
-
-// The hazard itself, on a live world. Not a regression test for the fix — the
-// fix is the ordering above — but the evidence that a Retire carried across a
-// Clear destroys an unrelated entity, which is why the ordering is load-bearing.
-TEST(SceneSwapOrdering, RetireAfterClearDestroysAnEntityOfTheIncomingScene)
-{
-    World world;
-    GameEngine::Rendering::MeshGPURegistry meshRegistry; // uninitialized: no proxy mesh keys below
-
-    const EntityHandle outgoingProxy = world.CreateEntity();
-    world.AddComponentImmediate(outgoingProxy, GameEngine::Components::Transform{});
-
-    GameEngine::Hlod::HlodRuntime hlod;
-    GameEngine::Hlod::RuntimeCluster cluster{};
-    cluster.Proxies.push_back(outgoingProxy);
-    hlod.GetClusters().push_back(cluster);
-
-    // The swap.
-    world.Clear();
-    world.ProcessCommands();
-
-    // The incoming scene's first entity lands on the recycled index.
-    const EntityHandle incoming = world.CreateEntity();
-    world.AddComponentImmediate(incoming, GameEngine::Components::Transform{});
-    ASSERT_TRUE(world.IsValid(incoming));
-
-    // A stale proxy handle is indistinguishable from the live one it now aliases.
-    EXPECT_TRUE(world.IsValid(outgoingProxy))
-        << "if this ever fails the ABA is gone and the ordering constraint can be revisited";
-
-    hlod.Retire(world, meshRegistry);
-    world.ProcessCommands();
-
-    EXPECT_FALSE(world.IsValid(incoming))
-        << "a Retire deferred past World::Clear destroys an entity of the scene just loaded — "
-           "this is the reason ReleaseSceneScopedState runs before the swap";
 }
 
 // The second version-reset path, which no swap-site hook can reach.
