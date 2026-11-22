@@ -4310,50 +4310,6 @@ void SettingsPanel::CreateUIAppearanceContent()
 
     // (Slug text weight threshold moved to the Font Rendering tab.)
 
-    // Search bar placement toggle
-    {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-        section->AddClass("settings-toggle-row");
-
-        auto toggle = std::make_unique<Toggle>();
-        toggle->AddClass("settings-toggle");
-        toggle->SetChecked(EditorSearchBars::GetAtTop());
-        toggle->SetOnValueChanged([](const bool& atTop) {
-            EditorSearchBars::SetAtTop(atTop);
-        });
-        section->AddChild(std::move(toggle));
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Place Search Bars at Top");
-        label->AddClass("settings-row-label");
-        section->InsertChild(0, std::move(label));
-
-        m_ContentBody->AddContent(std::move(section));
-    }
-
-    // Accent-colored focus outline for editor search fields.
-    {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-        section->AddClass("settings-toggle-row");
-
-        auto toggle = std::make_unique<Toggle>();
-        toggle->AddClass("settings-toggle");
-        toggle->SetChecked(EditorSearchBars::GetAccentFocusOutline());
-        toggle->SetOnValueChanged([](const bool& enabled) {
-            EditorSearchBars::SetAccentFocusOutline(enabled);
-        });
-        section->AddChild(std::move(toggle));
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Accent Search Focus Outline");
-        label->AddClass("settings-row-label");
-        section->InsertChild(0, std::move(label));
-
-        m_ContentBody->AddContent(std::move(section));
-    }
-
     // Tab Icons toggle
     {
         auto section = std::make_unique<UIElement>();
@@ -12636,10 +12592,6 @@ void SettingsPanel::RegisterSearchableItems()
     m_SearchableItems.push_back({"Truncation Threshold", "truncation threshold icon size", SettingsCategory::UIAssets, nullptr});
     m_SearchableItems.push_back(
         {"Expand Smart Folders On Startup", "smart folders startup collapse expand assets", SettingsCategory::UIAssets, nullptr});
-    m_SearchableItems.push_back(
-        {"Place Search Bars at Top", "search bar placement position top bottom panels", SettingsCategory::UIAppearance, nullptr});
-    m_SearchableItems.push_back(
-        {"Accent Search Focus Outline", "search bar focus border accent color", SettingsCategory::UIAppearance, nullptr});
     m_SearchableItems.push_back({"Panel Tab Icons", "tab icons dock panel tab header", SettingsCategory::UIAppearance, nullptr});
     m_SearchableItems.push_back({"Tab Right-Click Menu", "tab right click context menu close", SettingsCategory::UIAppearance, nullptr});
     // UI > Inspector
