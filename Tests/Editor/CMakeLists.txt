@@ -868,6 +868,9 @@ set(EDITOR_TEST_SOURCES
 	# buttons) goes through, and the editor's own openers. GraphKindChrome.cpp is
 	# already compiled in above for the graph-panel extension query.
 	AssetOpenerRegistryTests.cpp
+	# The editor's explicit World instantiations (SkyEnvironment, MeasureComponent, Sprite2D) that
+	# editor sources compiled into this suite call; without them the suite does not link.
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/EditorComponentInstantiations.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Registries/AssetOpenerRegistry.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Assets/BuiltInAssetOpeners.cpp
 	# The Scribe panel: a state-tree program file opened through the opener registry, its outline, its edits
