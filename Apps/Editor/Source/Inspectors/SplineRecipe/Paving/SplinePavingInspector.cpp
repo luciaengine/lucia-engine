@@ -359,6 +359,14 @@ std::string_view PlaceWords(SplineECS::SplineNodeKind kind)
     return "crossing";
 }
 
+// The junction `nodeId` holds a grade override that Join at Grade recorded.
+bool HasGradeOverride(const ECS::World& world, uint32 nodeId)
+{
+    const auto* network = SplineECS::SplineNetwork::TryGet();
+    const auto* node = network ? network->FindNode(world, nodeId) : nullptr;
+    return node && node->Rule == Components::SplineNodeRule::AtGrade;
+}
+
 EditorUI::SplineJunctionList::Row JunctionRow(const ECS::World& world, const PavingJunctionStatus& junction)
 {
     EditorUI::SplineJunctionList::Row row;
@@ -379,6 +387,12 @@ EditorUI::SplineJunctionList::Row JunctionRow(const ECS::World& world, const Pav
         row.Warning = true;
         break;
     case PavingJunctionState::Paved:
+        if (HasGradeOverride(world, junction.NodeId))
+        {
+            row.Action = "Clear Grade Override";
+            row.ActionTooltip = "Remove the join at grade, so the road and this spline keep their own heights here";
+        }
+        break;
     case PavingJunctionState::PavedByOther:
     case PavingJunctionState::Ignored:
     case PavingJunctionState::CutOut:
@@ -387,10 +401,10 @@ EditorUI::SplineJunctionList::Row JunctionRow(const ECS::World& world, const Pav
     return row;
 }
 
-// "Join <road> at Grade" on the junction `nodeId` of the inspected spline, its road read from
-// `rows`, one undo step.
-void JoinAtGrade(const InspectorContext& ctx, const std::vector<EditorUI::SplineJunctionList::Row>& rows,
-                 uint32 nodeId)
+// The row action on the junction `nodeId` of the inspected spline, one undo step: Clear Grade
+// Override when the junction holds one, else "Join <road> at Grade", its road read from `rows`.
+void RunJunctionAction(const InspectorContext& ctx, const std::vector<EditorUI::SplineJunctionList::Row>& rows,
+                       uint32 nodeId)
 {
     auto* network = SplineECS::SplineNetwork::TryGet();
     const auto row = std::find_if(rows.begin(), rows.end(),
@@ -402,7 +416,10 @@ void JoinAtGrade(const InspectorContext& ctx, const std::vector<EditorUI::Spline
     {
         if (node->Id != nodeId)
             continue;
-        if (auto command = Editor::SplineNetworkRecordCommand::JoinAtGrade(*ctx.World, *node, road))
+        auto command = node->Rule == Components::SplineNodeRule::AtGrade
+                           ? Editor::SplineNetworkRecordCommand::Clear(*ctx.World, node->RuleHolder, node->RuleSlot)
+                           : Editor::SplineNetworkRecordCommand::JoinAtGrade(*ctx.World, *node, road);
+        if (command)
             ctx.Undo->Execute(std::move(command));
         break;
     }
@@ -446,7 +463,7 @@ void AddJunctionList(const InspectorContext& context, const PavingStatus* status
     }
     EditorUI::SplineJunctionList::Handlers handlers;
     handlers.Select = context.SelectEntity;
-    handlers.Act = [context, rows = content.Rows](uint32 nodeId) { JoinAtGrade(context, rows, nodeId); };
+    handlers.Act = [context, rows = content.Rows](uint32 nodeId) { RunJunctionAction(context, rows, nodeId); };
     UIElement* section = AddListSection(context, "SplinePaving/Junctions", "Junctions",
                                         "Where roads meet this spline, and whether the paving joins them");
     InspectorUI::AddControl(section, std::make_unique<EditorUI::SplineJunctionList>(content, handlers));
