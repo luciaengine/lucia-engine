@@ -134,6 +134,13 @@
     box-shadow: inset 0 0 0 1px rgba(98, 183, 255, 0.55);
 }
 
+/* The hovered pane previews the active outline: it is the pane a click or a Space release activates. */
+.scene-viewport-host.quad-layout .scene-viewport-slot:hover .scene-viewport-active-outline {
+    border-width: 2px;
+    border-color: #62b7ff;
+    box-shadow: inset 0 0 0 1px rgba(98, 183, 255, 0.55);
+}
+
 /* The active tool's one-line status: what the next click needs. Centred at the
    bottom edge like the hover pill; the panel places it once its width is known. */
 .scene-view-tool-status {
