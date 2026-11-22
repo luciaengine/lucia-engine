@@ -1765,7 +1765,7 @@ std::vector<SteadyCook> SteadyCooks()
          TextureCookOutput::BC7, 4},
         {"albedo uncompressed", albedo, ".png", MakeInputs(TextureCookUsage::Auto, TextureColorSpace::SRGB),
          TextureCookOutput::Uncompressed, 2},
-        {"radiance uncompressed", GameEngine::Tests::MakeGradientHdr(256), ".hdr",
+        {"radiance uncompressed", GameEngine::Tests::MakeGradientHdr(256, 256), ".hdr",
          MakeInputs(TextureCookUsage::Auto, TextureColorSpace::Linear), TextureCookOutput::Uncompressed, 2},
     };
 }
