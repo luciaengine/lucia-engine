@@ -68,6 +68,8 @@ class EmbeddedTextureReload : public testing::Test
         // The engine runs the job system that decodes embedded images.
         m_Workspace = TestUtils::MakeUniqueTempDirectory("ge-embedded-reload");
         std::filesystem::create_directories(m_Workspace / "Assets");
+        // EngineCore::Initialize makes the workspace the working directory.
+        m_PreviousDirectory = std::filesystem::current_path();
         auto& engine = EngineCore::GetInstance();
         ScriptsConfig scripts;
         scripts.disableClr = true;
@@ -92,6 +94,7 @@ class EmbeddedTextureReload : public testing::Test
         m_Device->Shutdown();
         EngineCore::GetInstance().Shutdown();
         std::error_code error;
+        std::filesystem::current_path(m_PreviousDirectory, error);
         std::filesystem::remove_all(m_Workspace, error);
     }
 
@@ -136,6 +139,7 @@ class EmbeddedTextureReload : public testing::Test
 
     const GUID m_ModelGuid = GUID::Generate();
     std::filesystem::path m_Workspace;
+    std::filesystem::path m_PreviousDirectory;
     std::unique_ptr<IDevice> m_Device;
     std::unique_ptr<RenderServices> m_Services;
 };
