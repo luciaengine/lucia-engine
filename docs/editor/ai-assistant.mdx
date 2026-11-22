@@ -129,7 +129,7 @@ A local session runs the command-line program you already use, under your own lo
 
 ### Tools on a model API
 
-TensorFold (Local) and Custom (OpenAI-compatible) run the conversation in the editor itself. Each turn sends the model the editor's tools as OpenAI-style functions, runs each tool call the model makes, and sends the answer back, until the model answers without a call (at most 100 requests a turn).
+TensorFold (Local) and Custom (OpenAI-compatible) run the conversation in the editor itself. Each turn sends the model the editor's tools as OpenAI-style functions, runs each tool call the model makes, and sends the answer back, until the model answers without a call (at most **Tool requests per turn**, 100 by default).
 
 - The everyday tools go to the model whole: editor state, scene hierarchy, entity components, ECS queries, selection, creating, changing and deleting entities, undo and redo, the log, a screenshot, the camera, opening assets, saving the scene, play mode and commands. The other tools are named in `describe_editor_tool`, which returns one tool's schema, and run through `call_editor_tool`. A model with a 64K context keeps room for the conversation.
 - Every call goes through the same mode and gate as a Claude session's: the mode control decides what runs, and the panel asks before an action that cannot be undone.
@@ -291,6 +291,7 @@ The other rows sit in the **Model and options** foldout under the checks, closed
 | Model | Codex (Subscription) | The model name as Codex spells it; empty for Codex's default. |
 | Mode for new conversations | Every connection | The mode a new conversation starts in; the panel's mode control changes it. |
 | Node executable | Claude (Subscription), Codex (Subscription), TensorFold (Local), Custom (OpenAI-compatible) | `node` on `PATH` by default, or a full path to `node.exe` (Windows) or `node` (macOS, Linux), Node 20 or later, which runs the editor's tools for the assistant. |
+| Tool requests per turn | TensorFold (Local), Custom (OpenAI-compatible) | The most requests a turn sends while the model keeps calling the editor's tools, from 1 to 1000; 100 by default. The turn stops there and says so. |
 | Monospaced prompt font | Every connection | Off (the default): the prompt field uses the editor's UI font. On: the script face, the editor's monospaced font. |
 | Hold the microphone to speak, Send when the microphone stops | Every connection, where the system offers speech input | How the panel's microphone button dictates. |
 
