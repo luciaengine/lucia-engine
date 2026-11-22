@@ -216,7 +216,7 @@ void MeshImpostorSystem::AddRenderer(ScanState& scan, const Components::MeshRend
         scan.MissingInstance = true;
         return;
     }
-    Placement& placement = impostor.Placements[PlacementKey(transform)];
+    Placement& placement = impostor.Placements.GetOrInsert(PlacementKey(transform));
     placement.Instances.resize(impostor.Parts.size(), kNoInstance);
     if (placement.Instances[submesh] != kNoInstance)
         placement.HasDuplicatePart = true;
