@@ -1000,7 +1000,7 @@ public:
             part.MeshGpuHandleId = tree->RuntimeLeafMeshHandleId;
             part.AlphaTexture = leafTextureGuid.IsNull()
                 ? Rendering::TextureHandle{}
-                : rs->Textures().GetOrUpload(leafTextureGuid);
+                : rs->Textures().GetMaterialTexture(leafTextureGuid);
             part.AlphaCutoff = tree->Options.leaves.alphaTest;
             part.UvScale[0] = std::max(0.0001f, tree->Options.leaves.textureScale.x);
             part.UvScale[1] = std::max(0.0001f, tree->Options.leaves.textureScale.y);
