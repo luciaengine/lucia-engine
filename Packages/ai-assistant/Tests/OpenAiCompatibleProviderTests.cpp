@@ -1,5 +1,6 @@
 #include "Providers/CancelToken.h"
 #include "Providers/OpenAiChatStream.h"
+#include "Providers/LocalServerScan.h"
 #include "Providers/OpenAiCompatibleProvider.h"
 #include "FakeApiKeyStore.h"
 #include "RecordingTurnEvents.h"
@@ -218,5 +219,40 @@ TEST(OpenAiCompatibleProviderTests, ATurnStreamsFromTheChatCompletionsPathWithTh
     EXPECT_NE(sent.find("POST /v1/chat/completions"), std::string::npos) << sent;
     EXPECT_NE(sent.find("Bearer fixture-endpoint-key"), std::string::npos);
     EXPECT_EQ(keys.Data->LastName, ApiKeyStore::kEndpointSlot.CredentialName);
+}
+
+// A model list's owner names the server: TensorFold Bar serves "local-model", owned by "tensorfold".
+TEST(OpenAiCompatibleProviderTests, AModelListNamesItsServer)
+{
+    const LocalServerScan::Server tensorFold = LocalServerScan::ParseModelList(
+        "http://127.0.0.1:8080/v1",
+        R"({"object":"list","data":[{"id":"local-model","object":"model","owned_by":"tensorfold"}]})");
+    EXPECT_EQ(tensorFold.Name, "TensorFold");
+    EXPECT_EQ(tensorFold.Models, (std::vector<std::string>{"local-model"}));
+
+    const LocalServerScan::Server lmStudio = LocalServerScan::ParseModelList(
+        "http://127.0.0.1:1234/v1", R"({"data":[{"id":"qwen3","owned_by":"organization_owner"}]})");
+    EXPECT_EQ(lmStudio.Name, "LM Studio") << "an unknown owner falls back to the port's program";
+
+    EXPECT_EQ(LocalServerScan::ParseModelList("http://127.0.0.1:9999/v1", R"({"data":[{"id":"m"}]})").Name,
+              "Server at 127.0.0.1:9999");
+    EXPECT_TRUE(LocalServerScan::ParseModelList("http://127.0.0.1:8080/v1", "not json").Models.empty());
+}
+
+// The scan keeps the servers that list a model and skips a port nothing answers on.
+TEST(OpenAiCompatibleProviderTests, TheScanFindsTheServersThatAnswer)
+{
+    LoopbackServer server([](LoopbackServer&, SocketHandle client) {
+        LoopbackServer::Send(client, JsonAnswer("200 OK", R"({"data":[{"id":"local-model","owned_by":"tensorfold"}]})"));
+    });
+    const std::string answering = server.Url("/v1");
+    const std::string_view candidates[] = {"http://127.0.0.1:1/v1", answering};
+    CancelToken cancel;
+
+    const std::vector<LocalServerScan::Server> found = LocalServerScan::Scan(candidates, cancel);
+
+    ASSERT_EQ(found.size(), 1u);
+    EXPECT_EQ(found[0].Name, "TensorFold");
+    EXPECT_EQ(found[0].BaseUrl, answering);
 }
 } // namespace GameEngine

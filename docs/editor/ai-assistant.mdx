@@ -255,6 +255,7 @@ The page's three steps, **Which assistant?**, **How do you sign in?** and **Setu
 |---|---|---|
 | Claude Code executable | Claude (Subscription) | `claude` on `PATH` by default, or a full path to `claude.exe` (Windows) or `claude` (macOS, Linux). |
 | Codex executable | Codex (Subscription) | `codex` on `PATH` by default, or a full path to `codex.exe` (Windows) or `codex` (macOS, Linux). |
+| Server | Custom (OpenAI-compatible), once the check finds one | The model servers running on this computer: the check asks `127.0.0.1` on ports 8080 (TensorFold, llama.cpp), 11434 (Ollama), 1234 (LM Studio) and 8000 (vLLM) for their model lists and names each server by its list (TensorFold Bar's reads "TensorFold (local-model)"). Choosing one fills in the URL and the model; with no URL set yet, the first server found is used. **Other** keeps the URL you typed. |
 | Endpoint URL | Custom (OpenAI-compatible) | The server's API URL, the part before `/chat/completions`: Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`. |
 | Model | Custom (OpenAI-compatible) | The model as the server names it. The setup check asks the server for its model list and warns when the model is not in it. |
 

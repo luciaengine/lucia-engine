@@ -17,6 +17,10 @@
     <TextField id="AiSetupExecutableField" class="settings-row-field" />
     <Button id="AiSetupExecutableBrowse" class="small secondary" text="Browse..." />
   </UIElement>
+  <UIElement id="AiSetupEndpointServerRow" class="settings-row">
+    <Label class="settings-row-label" text="Server" />
+    <Dropdown id="AiSetupEndpointServer" class="settings-row-field" />
+  </UIElement>
   <UIElement id="AiSetupEndpointUrlRow" class="settings-row">
     <Label class="settings-row-label" text="Endpoint URL" />
     <TextField id="AiSetupEndpointUrl" class="settings-row-field" placeholder="http://localhost:11434/v1" />

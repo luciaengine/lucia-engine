@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Providers/LocalServerScan.h"
 #include "Providers/SetupStatus.h"
 #include "UI/UIElement.h"
 #include "UI/UIManagerRef.h"
@@ -55,6 +56,10 @@ private:
     void ShowExecutableRow(const std::string& providerId);
     /// Shows the endpoint rows and the key row for the connections that use them.
     void ShowEndpointAndKeyRows(const std::string& providerId);
+    /// Offers the servers the last scan found in the Server row, the one the URL names selected;
+    /// with no URL set yet, uses the first one found.
+    void ShowLocalServers(std::vector<LocalServerScan::Server> servers);
+    void ChooseLocalServer(const std::string& value);
     void ShowOptions(const std::string& providerId);
     void ShowOptionsSummary(const std::string& providerId);
     /// Shows `status` as the chosen connection's checklist: the summary pill, the line beside
@@ -88,6 +93,8 @@ private:
     UIElement* m_ExecutableRow = nullptr;
     Label* m_ExecutableLabel = nullptr;
     TextField* m_ExecutableField = nullptr;
+    UIElement* m_EndpointServerRow = nullptr;
+    Dropdown* m_EndpointServerDropdown = nullptr;
     UIElement* m_EndpointUrlRow = nullptr;
     TextField* m_EndpointUrlField = nullptr;
     UIElement* m_EndpointModelRow = nullptr;
@@ -108,6 +115,8 @@ private:
     Toggle* m_HoldToSpeak = nullptr;
     Toggle* m_SendWhenMicStops = nullptr;
 
+    /// The servers the Server row offers, in its order.
+    std::vector<LocalServerScan::Server> m_LocalServers;
     /// What the choice fields show, so a choice made on the page does not rebuild the field
     /// the user is working in.
     std::string m_ShownAssistant;

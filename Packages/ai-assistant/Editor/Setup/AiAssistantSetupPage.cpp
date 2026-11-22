@@ -33,6 +33,7 @@
 #include "UI/UIManager.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -65,6 +66,10 @@ constexpr const char* kEndpointUrlTooltip =
     "The server's OpenAI-compatible API URL, the part before /chat/completions: Ollama "
     "http://localhost:11434/v1, LM Studio http://localhost:1234/v1.";
 constexpr const char* kEndpointModelTooltip = "The model the server serves, as the server names it.";
+constexpr const char* kEndpointServerTooltip =
+    "The model servers running on this computer that the check found (TensorFold, Ollama, LM Studio, "
+    "llama.cpp, vLLM). Choosing one fills in the URL and the model; Other keeps what you typed.";
+constexpr const char* kOtherServerValue = "other";
 constexpr const char* kHoldToSpeakTooltip = "Press and hold the microphone beside Send to dictate; releasing it "
                                             "stops. Off: a click starts dictation and a second click stops it.";
 constexpr const char* kSendWhenMicStopsTooltip = "Stopping the microphone sends the dictated prompt once its last "
@@ -206,6 +211,8 @@ struct AiAssistantSetupPage::PendingCheck
     bool Done = false;
     /// The steps that have ended; the whole result once Done.
     SetupStatus Status;
+    /// The model servers on this computer, scanned with a custom endpoint check; else empty.
+    std::optional<std::vector<LocalServerScan::Server>> LocalServers;
     /// Whether an API key is saved, read with a Claude (API key) or custom endpoint check; else empty.
     std::optional<bool> KeySaved;
     /// The key store write that runs before the check; empty for a check alone. Set before the
@@ -256,6 +263,8 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
     m_ExecutableLabel = dynamic_cast<Label*>(FindById("AiSetupExecutableLabel"_sid));
     m_ExecutableField = dynamic_cast<TextField*>(FindById("AiSetupExecutableField"_sid));
     auto* executableBrowse = dynamic_cast<Button*>(FindById("AiSetupExecutableBrowse"_sid));
+    m_EndpointServerRow = FindById("AiSetupEndpointServerRow"_sid);
+    m_EndpointServerDropdown = dynamic_cast<Dropdown*>(FindById("AiSetupEndpointServer"_sid));
     m_EndpointUrlRow = FindById("AiSetupEndpointUrlRow"_sid);
     m_EndpointUrlField = dynamic_cast<TextField*>(FindById("AiSetupEndpointUrl"_sid));
     m_EndpointModelRow = FindById("AiSetupEndpointModelRow"_sid);
@@ -277,7 +286,8 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
     m_HoldToSpeak = dynamic_cast<Toggle*>(FindById("AiSetupHoldToSpeak"_sid));
     m_SendWhenMicStops = dynamic_cast<Toggle*>(FindById("AiSetupSendWhenMicStops"_sid));
     if (!m_AssistantHost || !m_MethodHost || !m_MethodNeeds || !m_SetupHeader || !m_ExecutableRow || !m_ExecutableLabel || !m_ExecutableField || !executableBrowse ||
-        !m_EndpointUrlRow || !m_EndpointUrlField || !m_EndpointModelRow || !m_EndpointModelField ||
+        !m_EndpointServerRow || !m_EndpointServerDropdown || !m_EndpointUrlRow || !m_EndpointUrlField ||
+        !m_EndpointModelRow || !m_EndpointModelField ||
         !stepsHost || !apiKeyHost || !m_Options || !m_ModelRow || !m_ModelDropdown || !m_EffortRow || !m_EffortDropdown ||
         !m_CodexModelRow || !m_CodexModelField || !m_ModeDropdown || !m_NodeRow || !m_NodeField || !nodeBrowse ||
         !m_DictationRows || !m_HoldToSpeak || !m_SendWhenMicStops)
@@ -314,6 +324,8 @@ bool AiAssistantSetupPage::Build(UIManager& ui)
             StoreExecutable(m_ExecutableField->GetValue());
     });
 
+    m_EndpointServerRow->SetTooltip(kEndpointServerTooltip);
+    m_EndpointServerDropdown->SetOnValueChanged([this](const std::string& value) { ChooseLocalServer(value); });
     m_EndpointUrlRow->SetTooltip(kEndpointUrlTooltip);
     OnCommit(*m_EndpointUrlField, [](const std::string& url) { AiAssistantSettings::SetEndpointUrl(url); });
     m_EndpointModelRow->SetTooltip(kEndpointModelTooltip);
@@ -452,6 +464,8 @@ void AiAssistantSetupPage::ShowExecutableRow(const std::string& providerId)
 void AiAssistantSetupPage::ShowEndpointAndKeyRows(const std::string& providerId)
 {
     const bool endpoint = providerId == OpenAiCompatibleProvider::kId;
+    // The Server row appears once a scan found a server.
+    SetHidden(*m_EndpointServerRow, !endpoint || m_LocalServers.empty());
     SetHidden(*m_EndpointUrlRow, !endpoint);
     SetHidden(*m_EndpointModelRow, !endpoint);
     if (endpoint)
@@ -464,6 +478,48 @@ void AiAssistantSetupPage::ShowEndpointAndKeyRows(const std::string& providerId)
     if (claudeKey || endpoint)
         m_ApiKeyRow->SetPurpose(endpoint ? AiAssistantApiKeyRow::EndpointPurpose()
                                          : AiAssistantApiKeyRow::ClaudePurpose());
+}
+
+void AiAssistantSetupPage::ShowLocalServers(std::vector<LocalServerScan::Server> servers)
+{
+    m_LocalServers = std::move(servers);
+    const std::string url = OpenAiCompatibleProvider::NormalizeBaseUrl(AiAssistantSettings::EndpointUrl());
+    if (url.empty() && !m_LocalServers.empty())
+    {
+        // Nothing typed yet: the first server found is the endpoint. The settings change starts a new check.
+        AiAssistantSettings::SetModel(OpenAiCompatibleProvider::kId, m_LocalServers.front().Models.front());
+        AiAssistantSettings::SetEndpointUrl(m_LocalServers.front().BaseUrl);
+    }
+    std::vector<Dropdown::Option> options;
+    int selected = -1;
+    for (size_t index = 0; index < m_LocalServers.size(); ++index)
+    {
+        const LocalServerScan::Server& server = m_LocalServers[index];
+        if (OpenAiCompatibleProvider::NormalizeBaseUrl(AiAssistantSettings::EndpointUrl()) == server.BaseUrl)
+            selected = static_cast<int>(index);
+        options.push_back({.value = std::to_string(index), .label = server.Name + " (" + server.Models.front() + ")"});
+    }
+    if (selected < 0)
+        selected = static_cast<int>(options.size());
+    options.push_back({.value = kOtherServerValue, .label = "Other: type the URL below"});
+    m_EndpointServerDropdown->SetOptions(options, selected);
+    ShowEndpointAndKeyRows(AiAssistantSettings::Provider());
+}
+
+void AiAssistantSetupPage::ChooseLocalServer(const std::string& value)
+{
+    if (value == kOtherServerValue)
+        return;
+    const size_t index = static_cast<size_t>(std::strtoul(value.c_str(), nullptr, 10));
+    if (index >= m_LocalServers.size())
+        return;
+    const LocalServerScan::Server& server = m_LocalServers[index];
+    const std::string model = AiAssistantSettings::Model(OpenAiCompatibleProvider::kId);
+    // Keep a model the server lists; else its first.
+    if (std::find(server.Models.begin(), server.Models.end(), model) == server.Models.end())
+        AiAssistantSettings::SetModel(OpenAiCompatibleProvider::kId, server.Models.front());
+    AiAssistantSettings::SetEndpointUrl(server.BaseUrl);
+    ShowEndpointAndKeyRows(std::string(OpenAiCompatibleProvider::kId));
 }
 
 void AiAssistantSetupPage::StoreExecutable(const std::string& executable)
@@ -666,6 +722,9 @@ void AiAssistantSetupPage::RunCheck(std::shared_ptr<PendingCheck> pending, std::
         Logger::Log::Error("AI Assistant: the setup check for '{}' threw a non-standard exception", provider->Id());
         status = ThrownStatus("The check stopped with an unknown error.");
     }
+    std::optional<std::vector<LocalServerScan::Server>> localServers;
+    if (provider->Id() == OpenAiCompatibleProvider::kId)
+        localServers = LocalServerScan::Scan(LocalServerScan::DefaultCandidates(), pending->Cancel);
     std::optional<bool> keySaved;
     if (provider->Id() == ClaudeApiProvider::kId)
         keySaved = AgentSessionState::Get().ApiKeys().HasSavedKey();
@@ -677,6 +736,7 @@ void AiAssistantSetupPage::RunCheck(std::shared_ptr<PendingCheck> pending, std::
         pending->KeyWriteStatus = Platform::SecretStoreStatus::Failed;
     pending->Status = std::move(status);
     pending->KeySaved = keySaved;
+    pending->LocalServers = std::move(localServers);
     pending->Done = true;
 }
 
@@ -736,6 +796,7 @@ void AiAssistantSetupPage::PollCheck()
     SetupStatus status;
     bool done = false;
     std::optional<bool> keySaved;
+    std::optional<std::vector<LocalServerScan::Server>> localServers;
     std::optional<Platform::SecretStoreStatus> keyWriteStatus;
     {
         std::lock_guard lock(m_Pending->Mutex);
@@ -745,6 +806,7 @@ void AiAssistantSetupPage::PollCheck()
         done = m_Pending->Done;
         status = m_Pending->Status;
         keySaved = m_Pending->KeySaved;
+        localServers = m_Pending->LocalServers;
     }
     if (keyWriteStatus)
         ShowKeyWriteResult(*keyWriteStatus);
@@ -759,6 +821,8 @@ void AiAssistantSetupPage::PollCheck()
     if (keySaved)
         m_ApiKeyRow->ShowSaved(*keySaved);
     ShowStatus(status, keySaved.value_or(false));
+    if (localServers)
+        ShowLocalServers(std::move(*localServers));
 }
 
 void AiAssistantSetupPage::StopRefresh()
