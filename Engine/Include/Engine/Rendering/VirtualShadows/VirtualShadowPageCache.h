@@ -104,27 +104,28 @@ public:
     }
 
 private:
-    struct PageHash
-    {
-        std::size_t operator()(const VirtualShadowPage& page) const noexcept;
-    };
-
     struct Tile
     {
         std::optional<VirtualShadowPage> Page;
         uint64_t LastUse = 0;
         uint64_t Revision = 0;
         uint64_t RenderFrame = 0;
+        /// The Plan call whose resident rows name this tile's page.
+        uint64_t PlanStamp = 0;
         bool Rendered = false;
         bool Deformed = false;
     };
 
     void Invalidate(Tile& tile);
     void RefreshDeformed(std::span<VirtualShadowPageWork> rows, uint64_t frame);
+    void RemoveRepeatedNewPages(std::vector<VirtualShadowPageWork>& work);
+    void MapNewPages(std::span<VirtualShadowPageWork> rows, uint64_t stamp, uint64_t completedFrame);
 
     std::vector<Tile> m_Tiles;
     FlatMap<VirtualShadowPage, uint32_t> m_Mappings;
+    std::vector<uint32_t> m_NewRows; // Rows of the current Plan call whose page has no tile.
     uint64_t m_NextRevision = 1;
+    uint64_t m_PlanStamp = 0;
 };
 
 } // namespace GameEngine::Engine::Renderer

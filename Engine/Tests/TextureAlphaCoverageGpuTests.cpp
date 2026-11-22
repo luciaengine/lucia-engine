@@ -17,6 +17,9 @@
 #include "StagedTestPaths.h"
 #include "TestCameraEye.h"
 #include "TestDeviceHelper.h"
+#include "TextureCookTestFixtures.h"
+#include "UI/UIElement.h"
+#include "UI/UIManager.h"
 
 #include <algorithm>
 #include <array>
@@ -370,6 +373,14 @@ class TextureCoverageGPU : public testing::Test
         return 0;
     }
 
+    static uint64 LevelPayloadBytes(const TextureLevelFile& file)
+    {
+        uint64 bytes = 0;
+        for (const TextureLevelFile::Level& level : file.Levels())
+            bytes += level.Bytes;
+        return bytes;
+    }
+
     uint32 WidthOf(TextureHandle texture)
     {
         uint32 width = 0, height = 0;
@@ -431,6 +442,64 @@ class TextureCoverageGPU : public testing::Test
         m_Device->DestroyDescriptorSet(set);
         return pixels;
     }
+    void CheckBlockCompressedMipStream(const fs::path& source, const char* compression,
+                                       GameEngine::TextureFormat format, uint64 tailBudgetBytes)
+    {
+        using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+        if (!IsTextureCookEncoderAvailable())
+            GTEST_SKIP() << "BC encoder unavailable";
+        if (!m_Device->GetCapabilities().supportsTextureCompressionBC)
+            GTEST_SKIP() << "the device samples no BC format";
+
+        constexpr uint32 kFullWidth = 512;
+        constexpr uint32 kTailWidth = kFullWidth / 2;
+        constexpr uint64 kFullBudgetBytes = 1024 * 1024;
+        Access::SetMipBudget(m_Textures, tailBudgetBytes);
+        const GUID texture = Register(source, false);
+        ASSERT_FALSE(texture.IsNull());
+        Set(source, kTextureCompressionMetaKey, compression);
+        if (format == GameEngine::TextureFormat::BC4 || format == GameEngine::TextureFormat::BC6H)
+            Set(source, kTextureColorSpaceMetaKey, "linear");
+
+        const GUID materialGuid = GUID::Generate();
+        auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingBlockCompressed");
+        ASSERT_NE(material, nullptr);
+        const StringId slot = HashStringId("albedoMap");
+        m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+        m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+        const auto tail = WaitForBoundTexture(*material, slot);
+        ASSERT_EQ(WidthOf(tail), kTailWidth);
+        const auto loaded =
+            std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+        ASSERT_NE(loaded, nullptr);
+        ASSERT_EQ(loaded->GetFormat(), format);
+        EXPECT_EQ(loaded->GetPixelData(), nullptr);
+
+        const auto direct = WaitForUpload(texture);
+        ASSERT_TRUE(direct.IsValid());
+        EXPECT_EQ(WidthOf(direct), kFullWidth);
+        EXPECT_EQ(Render(tail, 16, 16, 0), Render(direct, 16, 16, 1));
+
+        Access::SetMipBudget(m_Textures, kFullBudgetBytes);
+        SettleMipStreams();
+        const auto promoted = material->GetTexture(slot);
+        ASSERT_EQ(WidthOf(promoted), kFullWidth);
+        EXPECT_EQ(Render(promoted, 16, 16, 0), Render(direct, 16, 16, 0));
+        constexpr uint32 kProbeLod = 3;
+        const uint32 probeWidth = kFullWidth >> kProbeLod;
+        const auto promotedPixels = Render(promoted, probeWidth, probeWidth, kProbeLod);
+        EXPECT_EQ(promotedPixels, Render(direct, probeWidth, probeWidth, kProbeLod));
+        if (format == GameEngine::TextureFormat::BC6H)
+        {
+            ASSERT_FALSE(promotedPixels.empty());
+            EXPECT_GT(*std::max_element(promotedPixels.begin(), promotedPixels.end()), 1.0f);
+        }
+
+        m_Textures.OnMaterialUnregistered(materialGuid);
+        m_Materials.Unregister(materialGuid);
+        m_Textures.FlushPendingUploads();
+    }
+
     static double Coverage(const std::vector<float>& pixels)
     {
         size_t passing = 0;
@@ -732,6 +801,54 @@ TEST_F(TextureCoverageGPU, ANewMaterialMipStreamStartsAtTheLargestLevelThatFitsT
     m_Textures.FlushPendingUploads();
 }
 
+TEST_F(TextureCoverageGPU, ANewMaterialMipStreamReservesAnInFlightGain)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    constexpr uint32 kFullWidth = 512;
+    constexpr uint32 kTailWidth = 256;
+    const StringId slot = HashStringId("albedoMap");
+    Access::SetMipBudget(m_Textures, kMiB);
+
+    GUID firstTexture;
+    SharedPtr<TextureAsset> firstAsset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(firstTexture, firstAsset, kFullWidth));
+    const GUID firstMaterialGuid = GUID::Generate();
+    auto* firstMaterial = RegisterStreamingMaterial(firstMaterialGuid, "MipStreamingGain");
+    ASSERT_NE(firstMaterial, nullptr);
+    m_Textures.TrackMaterialTextureRefForTesting(firstMaterialGuid, slot, firstTexture);
+    Access::Queue(m_Textures, firstTexture, firstMaterialGuid, firstAsset, slot);
+    m_Textures.FlushPendingUploads();
+    ASSERT_EQ(WidthOf(firstMaterial->GetTexture(slot)), kTailWidth);
+
+    GUID secondTexture;
+    SharedPtr<TextureAsset> secondAsset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(secondTexture, secondAsset, kFullWidth));
+    const GUID secondMaterialGuid = GUID::Generate();
+    auto* secondMaterial = RegisterStreamingMaterial(secondMaterialGuid, "MipStreamingDuringGain");
+    ASSERT_NE(secondMaterial, nullptr);
+    m_Textures.TrackMaterialTextureRefForTesting(secondMaterialGuid, slot, secondTexture);
+    Access::Queue(m_Textures, secondTexture, secondMaterialGuid, secondAsset, slot);
+
+    // One flush begins the gain read before admitting the new stream.
+    // Two full chains exceed 2 MiB. A full chain and a tail fit.
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    m_Textures.FlushPendingUploads();
+    EXPECT_EQ(WidthOf(firstMaterial->GetTexture(slot)), kTailWidth);
+    EXPECT_EQ(WidthOf(secondMaterial->GetTexture(slot)), kTailWidth);
+
+    SettleMipStreams();
+    EXPECT_EQ(WidthOf(firstMaterial->GetTexture(slot)), kFullWidth);
+    EXPECT_EQ(WidthOf(secondMaterial->GetTexture(slot)), kTailWidth);
+
+    for (const GUID& materialGuid : {firstMaterialGuid, secondMaterialGuid})
+    {
+        m_Textures.OnMaterialUnregistered(materialGuid);
+        m_Materials.Unregister(materialGuid);
+    }
+    m_Textures.FlushPendingUploads();
+}
+
 TEST_F(TextureCoverageGPU, AnEvictedStreamInsideTheBudgetStartsAgainAtFullResolutionFromItsFile)
 {
     using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
@@ -882,50 +999,80 @@ TEST_F(TextureCoverageGPU, MaterialMipStreamOfACookedSourceReleasesThePixelsOfTh
     m_Textures.FlushPendingUploads();
 }
 
-TEST_F(TextureCoverageGPU, AMaterialMipStreamOfABlockCompressedTextureMatchesTheDirectUpload)
+TEST_F(TextureCoverageGPU, AStreamedMaterialTextureAlsoUploadsAsAUiBackground)
 {
     using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
-    if (!IsTextureCookEncoderAvailable())
-        GTEST_SKIP() << "BC encoder unavailable";
-    if (!m_Device->GetCapabilities().supportsTextureCompressionBC)
-        GTEST_SKIP() << "the device samples no BC format";
-    // The tail of a BC7 texture of 512 texels a side is about 85 KiB, and the texture about 341 KiB.
-    constexpr uint64 kTailBudgetBytes = 128 * 1024;
-    constexpr uint64 kFullBudgetBytes = 1024 * 1024;
-    Access::SetMipBudget(m_Textures, kTailBudgetBytes);
-    const fs::path image = Image(false, 512);
-    const GUID texture = Register(image, false);
+    constexpr uint64 kMiB = 1024 * 1024;
+    constexpr uint32 kFullWidth = 512;
+    constexpr uint32 kTailWidth = kFullWidth / 2;
+    constexpr uint32 kProbeWidth = 16;
+    Access::SetMipBudget(m_Textures, kMiB);
+    const GUID texture = Register(Image(false, kFullWidth), false);
     ASSERT_FALSE(texture.IsNull());
-    Set(image, kTextureCompressionMetaKey, "bc7");
 
     const GUID materialGuid = GUID::Generate();
-    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingBlockCompressed");
+    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingUiBackground");
     ASSERT_NE(material, nullptr);
     const StringId slot = HashStringId("albedoMap");
     m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
     m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
     const auto tail = WaitForBoundTexture(*material, slot);
-    ASSERT_EQ(WidthOf(tail), 256u);
-    const auto loaded =
-        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
+    ASSERT_EQ(WidthOf(tail), kTailWidth);
+
+    auto& assets = EngineCore::GetInstance().GetAssetManager();
+    const auto loaded = std::dynamic_pointer_cast<TextureAsset>(assets.GetAsset(texture));
     ASSERT_NE(loaded, nullptr);
-    ASSERT_EQ(loaded->GetFormat(), GameEngine::TextureFormat::BC7);
+    ASSERT_EQ(loaded->GetPixelData(), nullptr);
+
+    UIManager ui(m_Device.get(), &assets);
+    ui.SetRoot(std::make_unique<UIElement>());
+    uint32 width = 0;
+    uint32 height = 0;
+    const auto background = ui.BackgroundImages().TryGetHandle(texture, &width, &height);
+    ASSERT_TRUE(background.IsValid());
+    EXPECT_EQ(width, kFullWidth);
+    EXPECT_EQ(height, kFullWidth);
+    EXPECT_EQ(WidthOf(background), kFullWidth);
+    EXPECT_EQ(ui.BackgroundImages().RasterMipLevelsForTesting(texture),
+              ComputeTextureCookMipCount(kFullWidth, kFullWidth, TextureCookSettings{}));
+    EXPECT_EQ(material->GetTexture(slot), tail);
     EXPECT_EQ(loaded->GetPixelData(), nullptr);
 
-    const auto direct = WaitForUpload(texture);
-    ASSERT_TRUE(direct.IsValid());
-    EXPECT_EQ(Render(tail, 16, 16, 0), Render(direct, 16, 16, 1));
-
-    Access::SetMipBudget(m_Textures, kFullBudgetBytes);
-    SettleMipStreams();
-    const auto promoted = material->GetTexture(slot);
-    ASSERT_EQ(WidthOf(promoted), 512u);
-    EXPECT_EQ(Render(promoted, 16, 16, 0), Render(direct, 16, 16, 0));
-    EXPECT_EQ(Render(promoted, 16, 16, 3), Render(direct, 16, 16, 3));
+    const auto backgroundPixels = Render(background, kProbeWidth, kProbeWidth, 1);
+    ASSERT_FALSE(backgroundPixels.empty());
+    EXPECT_EQ(backgroundPixels, Render(tail, kProbeWidth, kProbeWidth, 0));
 
     m_Textures.OnMaterialUnregistered(materialGuid);
     m_Materials.Unregister(materialGuid);
     m_Textures.FlushPendingUploads();
+}
+
+TEST_F(TextureCoverageGPU, AMaterialMipStreamOfABlockCompressedTextureMatchesTheDirectUpload)
+{
+    CheckBlockCompressedMipStream(Image(false, 512), "bc7", GameEngine::TextureFormat::BC7, 128 * 1024);
+}
+
+TEST_F(TextureCoverageGPU, AStreamedBC1TextureMatchesItsDirectUpload)
+{
+    CheckBlockCompressedMipStream(Image(false, 512), "bc1", GameEngine::TextureFormat::BC1, 64 * 1024);
+}
+
+TEST_F(TextureCoverageGPU, AStreamedBC4TextureMatchesItsDirectUpload)
+{
+    CheckBlockCompressedMipStream(Image(false, 512), "bc4", GameEngine::TextureFormat::BC4, 64 * 1024);
+}
+
+TEST_F(TextureCoverageGPU, AStreamedBC6HTextureKeepsItsHdrRangeAndMatchesItsDirectUpload)
+{
+    constexpr uint32 kSize = 512;
+    const auto path = s_Workspace / "Assets" / (GUID::Generate().ToString() + ".hdr");
+    const auto data = GameEngine::Tests::MakeGradientHdr(kSize);
+    {
+        std::ofstream stream(path, std::ios::binary);
+        stream.write(reinterpret_cast<const char*>(data.data()), data.size());
+        ASSERT_TRUE(stream.good());
+    }
+    CheckBlockCompressedMipStream(path, "bc6h", GameEngine::TextureFormat::BC6H, 128 * 1024);
 }
 
 TEST_F(TextureCoverageGPU, AnEvictedStreamOfAReleasedTextureStartsAgainFromItsFile)
@@ -1005,46 +1152,72 @@ TEST_F(TextureCoverageGPU, ANormalMapStreamReadsItsVarianceCompanionFromItsFile)
 {
     using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
     constexpr uint64 kKiB = 1024;
-    // The tail of a 512 BC5 normal map and of its companion fits. Level 0 does not.
-    Access::SetMipBudget(m_Textures, 200 * kKiB);
-    const auto path = Image(false, 512);
-    Set(path, kTextureUsageMetaKey, "normal");
-    Set(path, kTextureColorSpaceMetaKey, "linear");
-    const GUID texture = EngineCore::GetInstance().GetAssetManager().GetRegistry().GetAssetGUID(path);
-    ASSERT_FALSE(texture.IsNull());
-    const GUID materialGuid = GUID::Generate();
-    auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingNormalMap");
-    ASSERT_NE(material, nullptr);
-    const StringId slot = HashStringId("normalMap");
-    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
-    m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
-    const auto tail = WaitForBoundTexture(*material, slot);
-    ASSERT_TRUE(tail.IsValid());
-    const auto loaded =
-        std::dynamic_pointer_cast<TextureAsset>(EngineCore::GetInstance().GetAssetManager().GetAsset(texture));
-    ASSERT_NE(loaded, nullptr);
-    if (loaded->GetFormat() != GameEngine::TextureFormat::BC5)
-        GTEST_SKIP() << "the cook made no BC5 normal map on this device";
-    ASSERT_NE(loaded->GetNormalVarianceCompanion(), nullptr);
-    ASSERT_EQ(WidthOf(tail), 256u);
-    const auto tailCompanion = Access::StreamedCompanion(m_Textures, texture);
-    ASSERT_TRUE(tailCompanion.IsValid());
-    // The companion holds the variance of the next smaller mip: half the size of its texture.
-    EXPECT_EQ(WidthOf(tailCompanion), 128u);
-    EXPECT_EQ(loaded->GetPixelData(), nullptr);
-    EXPECT_EQ(loaded->GetNormalVarianceCompanion()->GetPixelData(), nullptr);
+    constexpr uint64 kFullBudget = 1024 * kKiB;
+    constexpr uint32 kFullWidth = 512;
+    struct AdmissionCase
+    {
+        uint64 Budget;
+        uint32 FirstWidth;
+    };
+    // At 368 KiB the full BC5 chain fits alone. The variance companion makes it exceed the budget.
+    constexpr std::array kCases{AdmissionCase{368 * kKiB, kFullWidth / 2},
+                                AdmissionCase{kFullBudget, kFullWidth}};
 
-    Access::SetMipBudget(m_Textures, 1024 * kKiB);
-    SettleMipStreams();
-    EXPECT_EQ(WidthOf(material->GetTexture(slot)), 512u);
-    const auto fullCompanion = Access::StreamedCompanion(m_Textures, texture);
-    ASSERT_TRUE(fullCompanion.IsValid());
-    EXPECT_NE(fullCompanion, tailCompanion);
-    EXPECT_EQ(WidthOf(fullCompanion), 256u);
+    for (const AdmissionCase& admission : kCases)
+    {
+        SCOPED_TRACE(admission.Budget);
+        Access::SetMipBudget(m_Textures, admission.Budget);
+        const auto path = Image(false, kFullWidth);
+        Set(path, kTextureUsageMetaKey, "normal");
+        Set(path, kTextureColorSpaceMetaKey, "linear");
+        auto& assets = EngineCore::GetInstance().GetAssetManager();
+        const GUID texture = assets.GetRegistry().GetAssetGUID(path);
+        ASSERT_FALSE(texture.IsNull());
+        const GUID materialGuid = GUID::Generate();
+        auto* material = RegisterStreamingMaterial(materialGuid, "MipStreamingNormalMap");
+        ASSERT_NE(material, nullptr);
+        const StringId slot = HashStringId("normalMap");
+        m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+        m_Textures.ScheduleMaterialTextureLoad(texture, materialGuid, slot);
+        const auto first = WaitForBoundTexture(*material, slot);
+        ASSERT_TRUE(first.IsValid());
+        const auto loaded = std::dynamic_pointer_cast<TextureAsset>(assets.GetAsset(texture));
+        ASSERT_NE(loaded, nullptr);
+        if (loaded->GetFormat() != GameEngine::TextureFormat::BC5)
+            GTEST_SKIP() << "the cook made no BC5 normal map on this device";
+        const auto* variance = loaded->GetNormalVarianceCompanion();
+        ASSERT_NE(variance, nullptr);
+        const auto* normalFile = loaded->GetLevelFile();
+        const auto* varianceFile = variance->GetLevelFile();
+        ASSERT_NE(normalFile, nullptr);
+        ASSERT_NE(varianceFile, nullptr);
+        const uint64 normalBytes = LevelPayloadBytes(*normalFile);
+        const uint64 combinedBytes = normalBytes + LevelPayloadBytes(*varianceFile);
+        EXPECT_LE(normalBytes, admission.Budget);
+        EXPECT_EQ(combinedBytes <= admission.Budget, admission.FirstWidth == kFullWidth);
+        ASSERT_EQ(WidthOf(first), admission.FirstWidth);
+        const auto firstCompanion = Access::StreamedCompanion(m_Textures, texture);
+        ASSERT_TRUE(firstCompanion.IsValid());
+        // The companion holds the variance of the next smaller mip.
+        EXPECT_EQ(WidthOf(firstCompanion), admission.FirstWidth / 2);
+        EXPECT_EQ(loaded->GetPixelData(), nullptr);
+        EXPECT_EQ(variance->GetPixelData(), nullptr);
 
-    m_Textures.OnMaterialUnregistered(materialGuid);
-    m_Materials.Unregister(materialGuid);
-    m_Textures.FlushPendingUploads();
+        if (admission.FirstWidth < kFullWidth)
+        {
+            Access::SetMipBudget(m_Textures, kFullBudget);
+            SettleMipStreams();
+            EXPECT_EQ(WidthOf(material->GetTexture(slot)), kFullWidth);
+            const auto fullCompanion = Access::StreamedCompanion(m_Textures, texture);
+            ASSERT_TRUE(fullCompanion.IsValid());
+            EXPECT_NE(fullCompanion, firstCompanion);
+            EXPECT_EQ(WidthOf(fullCompanion), kFullWidth / 2);
+        }
+
+        m_Textures.OnMaterialUnregistered(materialGuid);
+        m_Materials.Unregister(materialGuid);
+        m_Textures.FlushPendingUploads();
+    }
 }
 
 TEST_F(TextureCoverageGPU, AnEvictDuringAStepReadDropsTheReadAndTheNextStreamSettles)

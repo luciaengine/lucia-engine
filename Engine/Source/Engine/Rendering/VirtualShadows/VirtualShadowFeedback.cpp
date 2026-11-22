@@ -215,11 +215,25 @@ int64_t DoubledDistanceSquaredFromWindowCenter(const VirtualShadowPage& page,
 
 // A sun window is centered on the camera. The physical pool is smaller than the demand,
 // so the pages nearest to the center get tiles first. Equal distances keep the scan order.
+// Each key holds the distance in its high 32 bits and the scan position in its low 32 bits, so a
+// sort of the keys is stable. The distance of a page in a window of 128 pages is below 2^16.
 void OrderByDistanceFromWindowCenter(std::vector<VirtualShadowPage>& pages,
-                                     const VirtualShadowFeedbackProjection& window)
+                                     const VirtualShadowFeedbackProjection& window,
+                                     std::vector<uint64_t>& keys, std::vector<VirtualShadowPage>& scratch)
 {
-    std::ranges::stable_sort(pages, {}, [&window](const VirtualShadowPage& page)
-                             { return DoubledDistanceSquaredFromWindowCenter(page, window); });
+    keys.clear();
+    keys.reserve(pages.size());
+    for (size_t index = 0; index < pages.size(); ++index)
+    {
+        const auto distance = static_cast<uint64_t>(DoubledDistanceSquaredFromWindowCenter(pages[index], window));
+        keys.push_back(distance << 32 | index);
+    }
+    std::ranges::sort(keys);
+    scratch.clear();
+    scratch.reserve(pages.size());
+    for (const uint64_t key : keys)
+        scratch.push_back(pages[static_cast<uint32_t>(key)]);
+    pages.swap(scratch);
 }
 } // namespace
 
@@ -233,6 +247,8 @@ std::vector<VirtualShadowPage> DecodeVirtualShadowFeedback(
         return result;
 
     std::vector<std::vector<VirtualShadowPage>> detail(current.Projections.size());
+    std::vector<uint64_t> orderKeys;
+    std::vector<VirtualShadowPage> orderScratch;
     size_t maxDetailCount = 0;
     for (size_t i = 0; i < current.Projections.size(); ++i)
     {
@@ -267,25 +283,33 @@ std::vector<VirtualShadowPage> DecodeVirtualShadowFeedback(
         {
             const uint32_t side = baseSide >> mip;
             next -= side * side;
-            for (uint32_t offset = 0; offset < side * side; ++offset)
+            const uint64_t last = next + side * side;
+            // Visit only the set bits, in ascending order.
+            for (uint64_t word = next / 32; word * 32 < last; ++word)
             {
-                const uint64_t bit = next + offset;
-                if ((words[bit / 32] & (uint32_t{1} << (bit % 32))) == 0)
-                    continue;
-                VirtualShadowPage page = origin;
-                page.Mip = static_cast<uint8_t>(mip);
-                page.X += offset % side;
-                page.Y += offset / side;
-                if (active.DirectionalGrid && !FindVirtualShadowFeedbackBit(active, page))
-                    continue;
-                if (mip == old->LastMip && origin.Family != VirtualShadowLight::Directional)
-                    result.push_back(page);
-                else
-                    detail[i].push_back(page);
+                uint32_t bits = words[word];
+                if (word * 32 < next)
+                    bits &= ~uint32_t{0} << (next % 32);
+                if ((word + 1) * 32 > last)
+                    bits &= (uint32_t{1} << (last % 32)) - 1;
+                for (; bits != 0; bits &= bits - 1)
+                {
+                    const auto offset = static_cast<uint32_t>(word * 32 + std::countr_zero(bits) - next);
+                    VirtualShadowPage page = origin;
+                    page.Mip = static_cast<uint8_t>(mip);
+                    page.X += offset % side;
+                    page.Y += offset / side;
+                    if (active.DirectionalGrid && !FindVirtualShadowFeedbackBit(active, page))
+                        continue;
+                    if (mip == old->LastMip && origin.Family != VirtualShadowLight::Directional)
+                        result.push_back(page);
+                    else
+                        detail[i].push_back(page);
+                }
             }
         }
         if (active.DirectionalGrid)
-            OrderByDistanceFromWindowCenter(detail[i], active);
+            OrderByDistanceFromWindowCenter(detail[i], active, orderKeys, orderScratch);
         maxDetailCount = std::max(maxDetailCount, detail[i].size());
     }
 

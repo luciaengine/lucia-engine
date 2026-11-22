@@ -40,7 +40,8 @@ namespace Rendering
 // rebuilds it and runs up to three times per frame (thumbnail seam, HZB
 // occlusion recovery), so a poll that reads it zero cannot tell "never skipped"
 // from "skipped and was rebuilt". The total is monotonic for the process and is
-// what the steady-state criterion is checked against; `Refreshes` scopes both,
+// what the steady-state criterion is checked against; `Refreshes` counts the
+// rebuilds (a Refresh with unchanged inputs does not rebuild) and scopes both,
 // because Route A does not run at all with draw consolidation off and a zero
 // from a plan that never refreshed says nothing about the gate.
 struct MeshPoolGroupResidencyStats
@@ -76,7 +77,8 @@ class MeshPoolGroupPlan
     /// indexed by gpuMeshIndex). Existing identities keep their ids; new ones
     /// append. Call on the render thread at declaration time only — consumers
     /// read the map during pass record (same single-writer frame discipline as
-    /// the scatter range map).
+    /// the scatter range map). Returns at once when the registry content
+    /// revision, the table size and the residency of every entry are unchanged.
     void Refresh(const MeshGPURegistry& registry, uint32_t meshTableCount);
 
     /// gpuMeshIndex -> groupId (kAbsentGroup for rows with no live entry).
@@ -146,6 +148,9 @@ class MeshPoolGroupPlan
     uint32_t m_SkippedNonResident      = 0;
     uint64_t m_SkippedNonResidentTotal = 0;
     uint64_t m_Refreshes               = 0;
+    // The registry content revision and mesh table size of the last rebuild.
+    uint64_t m_PlannedRevision         = 0;
+    uint32_t m_PlannedTableCount       = 0;
 };
 
 } // namespace Rendering

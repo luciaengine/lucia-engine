@@ -2,9 +2,9 @@
 
 #include "Assets/ClusterLOD/MeshClusterLODAsset.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
-#include <queue>
 #include <vector>
 
 namespace GameEngine::Engine::Renderer
@@ -37,13 +37,23 @@ double Priority(const ClusterLODCutGroup& group)
     return group.Demand;
 }
 
+// A group refines only above a priority of 1. A candidate at or under 1 stays coarse and does not
+// release its producers, so it is not pushed.
+void Push(std::vector<Candidate>& heap, double priority, uint32 instance, uint32 group)
+{
+    if (priority <= 1.0)
+        return;
+    heap.push_back({priority, instance, group});
+    std::push_heap(heap.begin(), heap.end());
+}
+
 } // namespace
 
 uint64 SelectClusterLODCuts(std::span<const ClusterLODCutInstance> instances, uint64 triangleBudget,
                             uint64 baseTriangles)
 {
     uint64 triangles = baseTriangles;
-    std::priority_queue<Candidate> candidates;
+    std::vector<Candidate> candidates;
     // Per instance and group, one flat array: the produced units whose group is not refined yet.
     std::vector<uint32> firstGroup(instances.size());
     size_t groupCount = 0;
@@ -77,12 +87,13 @@ uint64 SelectClusterLODCuts(std::span<const ClusterLODCutInstance> instances, ui
         }
         for (uint32 local = 0; local < range.GroupCount; ++local)
             if (!manifest.Groups[range.FirstGroup + local].Terminal && pending[firstGroup[index] + local] == 0)
-                candidates.push({Priority(instance.Groups[local]), index, local});
+                Push(candidates, Priority(instance.Groups[local]), index, local);
     }
     while (!candidates.empty())
     {
-        const Candidate candidate = candidates.top();
-        candidates.pop();
+        std::pop_heap(candidates.begin(), candidates.end());
+        const Candidate candidate = candidates.back();
+        candidates.pop_back();
         const auto& instance = instances[candidate.Instance];
         const auto& manifest = *instance.Manifest;
         const auto& range = manifest.Meshes[instance.Mesh];
@@ -111,7 +122,7 @@ uint64 SelectClusterLODCuts(std::span<const ClusterLODCutInstance> instances, ui
                 continue;
             const uint32 local = producer - range.FirstGroup;
             if (--pending[firstGroup[candidate.Instance] + local] == 0)
-                candidates.push({Priority(instance.Groups[local]), candidate.Instance, local});
+                Push(candidates, Priority(instance.Groups[local]), candidate.Instance, local);
         }
     }
     return triangles;
