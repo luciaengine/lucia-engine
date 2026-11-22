@@ -109,3 +109,22 @@ TEST(ShaderCapabilityDetectorTest, MatchesWithWhitespaceBeforeParen)
     // is not present, so this should NOT match.
     EXPECT_FALSE(HasCapability(caps, ShaderCapability::Surface));
 }
+
+TEST(ShaderCapabilityDetectorTest, ReadsThePrimaryLightOcclusionDeclaration)
+{
+    const std::string declared =
+        "// The card shades its crown's own shadow toward the primary light:\n"
+        "// @primaryLightOcclusion\n"
+        "SurfaceOutput EvaluateSurface(SurfaceInput sIn) { return DefaultSurfaceOutput(); }\n";
+    const std::string undeclared =
+        "SurfaceOutput EvaluateSurface(SurfaceInput sIn)\n"
+        "{\n"
+        "    SurfaceOutput o = DefaultSurfaceOutput();\n"
+        "    o.primaryLightOcclusion = 1.0;\n"
+        "    return o;\n"
+        "}\n";
+
+    EXPECT_TRUE(HasCapability(ShaderCapabilityDetector::Detect(declared), ShaderCapability::PrimaryLightOcclusion));
+    EXPECT_FALSE(HasCapability(ShaderCapabilityDetector::Detect(undeclared), ShaderCapability::PrimaryLightOcclusion))
+        << "writing the field without the declaration does not ask for the keyword";
+}
