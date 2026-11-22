@@ -441,6 +441,7 @@ void ge_ApplySkinning8(inout vec3 position, inout vec3 normal,
 //
 // 1. Simple (HAS_VERTEX_MODIFIER): position-only modification.
 //      vec3 ModifyVertex(vec3 position, InstanceData inst);
+//    GE_VERTEX_MODIFIER_FRAME adds a local-space rotation for normals and tangents.
 //
 // 2. Extended (HAS_VERTEX_OUTPUT_MODIFIER): full vertex output control.
 //      void ModifyVertex(inout VertexOutput v, InstanceData inst);
@@ -627,7 +628,13 @@ void main()
     InstanceData gePrevInst = ge_PreviousEndpoint(inst);
     vec3 gePrevLocalPos = ModifyVertex(localPos, gePrevInst);
 #endif
+#ifdef GE_VERTEX_MODIFIER_FRAME
+    mat3 modifierRotation;
+    localPos = ModifyVertexFrame(localPos, inst, modifierRotation);
+    localNormal = modifierRotation * localNormal;
+#else
     localPos = ModifyVertex(localPos, inst);
+#endif
 #endif
 
     // Transform to sector-local world space, then reconstruct the camera-relative
@@ -669,7 +676,11 @@ void main()
     // Shared outputs (both paths).
 #ifndef HAS_VERTEX_OUTPUT_MODIFIER
 #ifdef HAS_TANGENT
-    vTangentWS = vec4(normalize(mat3(inst.modelMatrix) * aTangent.xyz), aTangent.w);
+    vec3 localTangent = aTangent.xyz;
+#ifdef GE_VERTEX_MODIFIER_FRAME
+    localTangent = modifierRotation * localTangent;
+#endif
+    vTangentWS = vec4(normalize(mat3(inst.modelMatrix) * localTangent), aTangent.w);
 #endif
 
 #ifdef HAS_COLOR

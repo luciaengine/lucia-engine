@@ -19,5 +19,6 @@ namespace GameEngine.Scripting
         Neutral = 0,
         Filmic = 1,
         Photographic = 2,
+        GT7 = 3,
     }
 }

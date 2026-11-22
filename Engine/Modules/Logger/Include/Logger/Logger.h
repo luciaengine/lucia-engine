@@ -205,8 +205,8 @@ class Log
     static std::string& GetFormatBuffer();
 
     // Async drain thread
-    static void DrainThreadFunc();
-    static void DispatchToSinks(const LogMessage& message);
+    static void DrainThreadFunc(LoggerState& state);
+    static void DispatchToSinks(LoggerState& state, const LogMessage& message);
 
   private:
     static LoggerState& GetState();

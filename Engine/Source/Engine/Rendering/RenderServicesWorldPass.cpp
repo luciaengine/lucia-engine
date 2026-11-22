@@ -221,9 +221,11 @@ struct OrderedOwnerMeshPush
     ComposedPCInstanced Instances{};
     uint64_t Core = 0, Color = 0, Index = 0, Work = 0, State = 0;
     uint32_t Index16 = 0;
+    uint32_t Padding = 0;
 };
 static_assert(sizeof(OrderedOwnerMeshPush) == 64);
 static_assert(offsetof(OrderedOwnerMeshPush, Index16) == 56);
+static_assert(offsetof(OrderedOwnerMeshPush, Padding) == 60);
 
 struct PreparedForwardDraw
 {

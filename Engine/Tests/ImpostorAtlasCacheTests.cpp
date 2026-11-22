@@ -113,6 +113,56 @@ TEST(ImpostorAtlasCache, AnAtlasUsedInThisFrameIsNeverEvicted)
     EXPECT_TRUE(evicted.empty());
 }
 
+TEST(ImpostorAtlasCache, ARefusedRequestKeepsReadyAtlases)
+{
+    using State = ImpostorAtlasCache::State;
+    ImpostorAtlasKey oldest = KeyFor(1);
+    oldest.FramesPerSide = 6;
+    ImpostorAtlasKey current = oldest;
+    current.MeshHash = 2;
+    const ImpostorAtlasKey larger = KeyFor(3);
+    const uint64 budget = ImpostorAtlasBytes(oldest) + ImpostorAtlasBytes(current);
+    ImpostorAtlasCache cache(budget);
+    std::vector<ImpostorAtlasKey> evicted;
+
+    ASSERT_EQ(cache.Request(oldest, 1, evicted), State::Pending);
+    cache.MarkReady(oldest);
+    ASSERT_EQ(cache.Request(current, 2, evicted), State::Pending);
+    cache.MarkReady(current);
+
+    EXPECT_EQ(cache.Request(larger, 2, evicted), State::Absent);
+    EXPECT_TRUE(evicted.empty());
+    EXPECT_EQ(cache.GetState(oldest), State::Ready);
+    EXPECT_EQ(cache.GetState(current), State::Ready);
+    EXPECT_EQ(cache.GetUsedBytes(), budget);
+
+    EXPECT_EQ(cache.Request(larger, 3, evicted), State::Pending);
+    EXPECT_EQ(evicted, (std::vector<ImpostorAtlasKey>{oldest, current}));
+    EXPECT_EQ(cache.GetUsedBytes(), ImpostorAtlasBytes(larger));
+}
+
+TEST(ImpostorAtlasCache, TouchingAnAbsentAtlasKeepsReservationsUntilAdmission)
+{
+    using State = ImpostorAtlasCache::State;
+    const ImpostorAtlasKey resident = KeyFor(1);
+    const ImpostorAtlasKey incoming = KeyFor(2);
+    const uint64 budget = ImpostorAtlasBytes(resident);
+    ImpostorAtlasCache cache(budget);
+    std::vector<ImpostorAtlasKey> evicted;
+
+    ASSERT_EQ(cache.Request(resident, 1, evicted), State::Pending);
+    cache.MarkReady(resident);
+
+    EXPECT_EQ(cache.Touch(incoming, 2), State::Absent);
+    EXPECT_EQ(cache.GetUsedBytes(), budget);
+    EXPECT_EQ(cache.Touch(resident, 2), State::Ready);
+    EXPECT_EQ(cache.Request(incoming, 2, evicted), State::Absent);
+    EXPECT_TRUE(evicted.empty());
+
+    EXPECT_EQ(cache.Request(incoming, 3, evicted), State::Pending);
+    EXPECT_EQ(evicted, std::vector<ImpostorAtlasKey>{resident});
+}
+
 TEST(ImpostorAtlasCache, AnAtlasLargerThanTheBudgetIsRefused)
 {
     ImpostorAtlasCache cache(ImpostorAtlasBytes(KeyFor(1)) - 1);

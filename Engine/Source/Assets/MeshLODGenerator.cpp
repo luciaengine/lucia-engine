@@ -884,6 +884,20 @@ constexpr float kMinShadingNormalLengthSq = 1e-12f;
 // even to a backwards-facing wedge.
 constexpr float kNoShadingNormalMatch = -2.0f;
 
+bool ExtraTexCoordsMatch(const Mesh& mesh, uint32 from, uint32 to)
+{
+    const size_t fromOffset = static_cast<size_t>(from) * 2u;
+    const size_t toOffset = static_cast<size_t>(to) * 2u;
+    for (const auto& coordinates : mesh.ExtraTexCoords)
+    {
+        if (coordinates.size() == mesh.Vertices.size() * 2u &&
+            (coordinates[fromOffset] != coordinates[toOffset] ||
+             coordinates[fromOffset + 1u] != coordinates[toOffset + 1u]))
+            return false;
+    }
+    return true;
+}
+
 void RepointCornersToBestMatchingWedge(const Mesh& mesh, const ColocatedWedges& groups,
                                        Vector<uint32>& indices) {
     const float uvThresholdSq = kChartProtectUvSpread * kChartProtectUvSpread;
@@ -939,6 +953,8 @@ void RepointCornersToBestMatchingWedge(const Mesh& mesh, const ColocatedWedges& 
                 const float dv = to.TexCoords[1] - from.TexCoords[1];
                 if (du * du + dv * dv > uvThresholdSq)
                     continue; // different chart: re-pointing would smear palette cells
+                if (!ExtraTexCoordsMatch(mesh, current, candidate))
+                    continue;
                 if (to.Tangent[0] * from.Tangent[0] + to.Tangent[1] * from.Tangent[1] +
                             to.Tangent[2] * from.Tangent[2] <
                         0.0f ||

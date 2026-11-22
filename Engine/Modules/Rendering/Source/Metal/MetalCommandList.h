@@ -3,6 +3,7 @@
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/QueryPool.h"
+#include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Types/Types.h"
 
 #include "MetalIndirectCount/MetalIndirectCountEncoder.h"
@@ -184,8 +185,7 @@ class MetalCommandList : public CommandList
 
     // Vulkan vertex binds persist across render-pass boundaries; Metal encoder
     // state does not. Track binds command-list-wide and reapply per encoder.
-    static constexpr uint32_t kMaxVertexBufferSlots = 6;
-    std::array<BufferHandle, kMaxVertexBufferSlots> m_VertexBuffers{};
+    std::array<BufferHandle, VertexBinding::Count> m_VertexBuffers{};
 
     std::array<uint8_t, kMaxPushConstantBytes> m_PushConstantData{};
     uint32_t m_PushConstantDirtyBytes = 0;

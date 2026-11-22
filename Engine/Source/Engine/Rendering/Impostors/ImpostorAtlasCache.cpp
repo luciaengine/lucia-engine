@@ -50,15 +50,22 @@ ImpostorAtlasCache::State ImpostorAtlasCache::GetState(const ImpostorAtlasKey& k
     return entry ? entry->Status : State::Absent;
 }
 
-ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& key,
-                                                      uint64 frame,
-                                                      std::vector<ImpostorAtlasKey>& outEvicted)
+ImpostorAtlasCache::State ImpostorAtlasCache::Touch(const ImpostorAtlasKey& key, uint64 frame)
 {
-    if (Entry* entry = m_Entries.Find(key))
-    {
-        entry->LastUsedFrame = frame;
-        return entry->Status;
-    }
+    Entry* entry = m_Entries.Find(key);
+    if (!entry)
+        return State::Absent;
+    entry->LastUsedFrame = frame;
+    return entry->Status;
+}
+
+ImpostorAtlasCache::State ImpostorAtlasCache::Request(const ImpostorAtlasKey& key,
+                                                     uint64 frame,
+                                                     std::vector<ImpostorAtlasKey>& outEvicted)
+{
+    const State state = Touch(key, frame);
+    if (state != State::Absent)
+        return state;
     const uint64 bytes = ImpostorAtlasBytes(key);
     if (bytes > m_BudgetBytes)
         return State::Absent;
@@ -92,7 +99,20 @@ void ImpostorAtlasCache::Clear()
 
 void ImpostorAtlasCache::EvictLeastRecentlyUsed(uint64 neededBytes, uint64 frame, std::vector<ImpostorAtlasKey>& outEvicted)
 {
-    // An atlas used in this frame stays: its instances already draw it.
+    // Atlases used in this frame stay. Check the full eviction capacity before retiring any texture.
+    uint64 evictableBytes = 0;
+    for (const auto& [key, entry] : m_Entries)
+    {
+        if (entry.LastUsedFrame < frame)
+        {
+            evictableBytes += entry.ReservedBytes;
+            if (evictableBytes >= neededBytes)
+                break;
+        }
+    }
+    if (evictableBytes < neededBytes)
+        return;
+
     uint64 freed = 0;
     while (freed < neededBytes)
     {

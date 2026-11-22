@@ -498,7 +498,7 @@ std::string ShaderComposer::GenerateDeclaredPropertiesBlock(const ShaderProperty
             value = GlslLaneRead(p, lane);
         }
         else if (const std::optional<std::string> legacy =
-                     table.HasSurfaceDeclarations ? std::nullopt : LegacyAdapterLaneFor(p.Name))
+                     table.HasSurfaceDeclarations && !table.UsesLegacySurfaceLanes ? std::nullopt : LegacyAdapterLaneFor(p.Name))
         {
             value = GlslLaneRead(p, "ge_MatData." + *legacy);
         }
@@ -906,7 +906,7 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         ShaderPropertyTableInputs{fsPath, haveSurface ? resolvedSurfacePath : std::filesystem::path{},
                                   vertexModifierPath});
     std::vector<ShaderPropertyDiagnostic> declarationErrors = declared->Errors;
-    if (declarationErrors.empty() && haveSurface && declared->HasSurfaceDeclarations)
+    if (declarationErrors.empty() && haveSurface && declared->HasSurfaceDeclarations && !declared->UsesLegacySurfaceLanes)
         DiagnoseMatReadsOfDeclaredNames(surfaceSource, resolvedSurfacePath.generic_string(), *declared,
                                         declarationErrors);
     if (!declarationErrors.empty())

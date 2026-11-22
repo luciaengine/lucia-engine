@@ -379,7 +379,7 @@ void EZTreeExtractionSystem::RequestImpostors(FrameContext& frame)
         const TreeVariant* variant = frame.Variants.Find(hash);
         if (!variant)
             continue;
-        const Engine::Renderer::ImpostorAtlas atlas = baker.Request(MakeImpostorBakeRequest(*variant), m_UpdateStamp);
+        const Engine::Renderer::ImpostorAtlas atlas = baker.Request(MakeImpostorBakeRequest(*variant), *m_RenderServices);
         ImpostorMaterial* material = m_ImpostorMaterials.Find(hash);
         if (!material)
             material = &m_ImpostorMaterials.InsertOrAssign(hash, ImpostorMaterial{});

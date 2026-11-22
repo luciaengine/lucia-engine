@@ -885,6 +885,7 @@ set(RENDERING_METAL_SOURCES
     Source/Metal/MetalDevice.cpp
     Source/Metal/MetalHdrOutput.cpp
     Source/Metal/MetalCommandList.cpp
+    Source/Metal/MetalCompletedHandler.cpp
     Source/Metal/MetalDirectDescriptorBinding.cpp
     Source/Metal/MetalResources.cpp
     Source/Metal/MetalTransientDescriptorArena.cpp

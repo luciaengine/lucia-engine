@@ -6,8 +6,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <random>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -277,6 +279,52 @@ TEST(VirtualShadowFeedbackTests, DirectionalPageProjectionStaysPreciseAtAPlaneta
     EXPECT_FLOAT_EQ(-matrix[1][1] + matrix[3][1], 0.0f);
     EXPECT_FLOAT_EQ(matrix[3][2], 0.5f);
     EXPECT_LT(matrix[2][2], 0.0f);
+}
+
+// The bits come in the window of the dispatch and the order uses the current window, which can have moved.
+TEST(VirtualShadowFeedbackTests, DirectionalDemandIsAStableOrderByDistanceFromTheCurrentWindowCenter)
+{
+    constexpr uint32_t kSide = 16;
+    const auto rotation = Mathematics::Matrix4x4::Identity();
+    const auto dispatchedWindow = BuildVirtualShadowDirectionalWindow(
+        8, 0, 4, kSide, 32.0f, rotation, Mathematics::WorldPosition{0.1, -0.1, 1.0}, {});
+    const auto currentWindow = BuildVirtualShadowDirectionalWindow(
+        8, 0, 4, kSide, 32.0f, rotation, Mathematics::WorldPosition{1.6, -1.1, 1.0}, {});
+    ASSERT_TRUE(dispatchedWindow && currentWindow);
+    ASSERT_EQ(currentWindow->Origin.X - dispatchedWindow->Origin.X, 3);
+    ASSERT_EQ(currentWindow->Origin.Y - dispatchedWindow->Origin.Y, 2);
+    const VirtualShadowFeedbackProjection dispatchedRow{
+        dispatchedWindow->Origin, dispatchedWindow->WorldToLight, 0, kSide, 0, dispatchedWindow->Grid};
+    const VirtualShadowFeedbackProjection currentRow{
+        currentWindow->Origin, currentWindow->WorldToLight, 0, kSide, 0, currentWindow->Grid};
+    const VirtualShadowFeedbackLayout dispatched{19, 3, kSide * kSide / 32, {dispatchedRow}};
+    const VirtualShadowFeedbackLayout current{19, 3, kSide * kSide / 32, {currentRow}};
+
+    std::mt19937 random(7);
+    std::vector<uint32_t> words(dispatched.WordCount);
+    for (auto& word : words)
+        word = static_cast<uint32_t>(random()) | static_cast<uint32_t>(random());
+
+    std::vector<VirtualShadowPage> expected;
+    for (uint32_t bit = 0; bit < kSide * kSide; ++bit)
+    {
+        if ((words[bit / 32] & (1u << (bit % 32))) == 0)
+            continue;
+        VirtualShadowPage page = dispatchedWindow->Origin;
+        page.X += bit % kSide;
+        page.Y += bit / kSide;
+        if (FindVirtualShadowFeedbackBit(currentRow, page))
+            expected.push_back(page);
+    }
+    const auto distance = [&currentWindow](const VirtualShadowPage& page)
+    {
+        const int64_t x = 2 * (page.X - currentWindow->Origin.X) + 1 - kSide;
+        const int64_t y = 2 * (page.Y - currentWindow->Origin.Y) + 1 - kSide;
+        return x * x + y * y;
+    };
+    std::ranges::stable_sort(expected, {}, distance);
+    ASSERT_GT(expected.size(), 100u);
+    EXPECT_EQ(DecodeVirtualShadowFeedback(words, dispatched, current), expected);
 }
 
 } // namespace

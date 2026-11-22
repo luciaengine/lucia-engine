@@ -276,12 +276,19 @@ TEST_F(VirtualShadowPageMarkTest, MarksSunPageEdgesSpotMipsAndBothPointFaces)
     ASSERT_TRUE(LoadShaderPkg("Shaders/virtual_shadow_receiver_test.shaderpkg", m_Device->PreferredShaderSource(), lookupPackage, &error)) << error;
     const auto lookupShader = lookupPackage.stageBytes.find("cs");
     ASSERT_NE(lookupShader, lookupPackage.stageBytes.end());
+    // The atlas is a separate image at b0 and b61; b142 and b141 are the point and compare samplers
+    // (frame_samplers.glsl).
+    constexpr std::array lookupTypes{DescriptorType::Texture,       DescriptorType::StorageBuffer,
+                                     DescriptorType::StorageBuffer, DescriptorType::StorageBuffer,
+                                     DescriptorType::Texture,       DescriptorType::Sampler,
+                                     DescriptorType::Sampler};
+    constexpr std::array lookupBindings{0u, 1u, 2u, 60u, 61u, 142u, 141u};
     DescriptorSetLayoutDesc lookupLayout{};
-    for (uint32_t binding : {0u, 1u, 2u, 60u, 61u})
+    for (size_t index = 0; index < lookupTypes.size(); ++index)
     {
         DescriptorBinding descriptor{};
-        descriptor.binding = binding;
-        descriptor.type = (binding == 0 || binding == 61) ? DescriptorType::CombinedImageSampler : DescriptorType::StorageBuffer;
+        descriptor.binding = lookupBindings[index];
+        descriptor.type = lookupTypes[index];
         descriptor.count = 1;
         descriptor.shaderStages = kShaderStageCompute;
         lookupLayout.bindings.push_back(descriptor);
@@ -296,8 +303,10 @@ TEST_F(VirtualShadowPageMarkTest, MarksSunPageEdgesSpotMipsAndBothPointFaces)
     lookupSet.layout = lookupLayout;
     m_LookupSet = m_Device->CreateDescriptorSet(lookupSet);
     ASSERT_TRUE(m_LookupSet.IsValid());
-    m_Device->UpdateCombinedImageSamplerBinding(m_LookupSet, 0, m_LookupDepth, m_Sampler);
-    m_Device->UpdateCombinedImageSamplerBinding(m_LookupSet, 61, m_LookupDepth, m_ComparisonSampler);
+    m_Device->UpdateImageBinding(m_LookupSet, 0, m_LookupDepth);
+    m_Device->UpdateSamplerBinding(m_LookupSet, 142, m_Sampler);
+    m_Device->UpdateImageBinding(m_LookupSet, 61, m_LookupDepth);
+    m_Device->UpdateSamplerBinding(m_LookupSet, 141, m_ComparisonSampler);
     m_Device->UpdateStorageBufferBinding(m_LookupSet, 1, table, 0, sizeof(assignments));
     m_Device->UpdateStorageBufferBinding(m_LookupSet, 2, result, 0, sizeof(resultExpected));
     m_Device->UpdateStorageBufferBinding(m_LookupSet, 60, lookupMetadata, 0, sizeof(metadata));
@@ -321,8 +330,9 @@ TEST_F(VirtualShadowPageMarkTest, MarksSunPageEdgesSpotMipsAndBothPointFaces)
         commands->BeginRenderPass(pass);
         commands->EndRenderPass();
     }
+    // A sampled depth image is read in the depth read-only layout (DepthSampled).
     commands->Barrier(ResourceBarrier::CreateTextureBarrier(m_LookupDepth, ResourceState::DepthWrite,
-                                                            ResourceState::ShaderResource, 0, 1, 0, 2));
+                                                            ResourceState::DepthSampled, 0, 1, 0, 2));
     commands->SetPipeline(lookupPipeline);
     commands->BindDescriptorSet(0, m_LookupSet, lookupPipeline);
     commands->Dispatch(1, 1, 1);

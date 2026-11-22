@@ -525,6 +525,23 @@ TEST_F(MeshPoolGroupPlanTest, IdsAreStableAndAppendOnlyAcrossRefresh)
     EXPECT_EQ(plan.GroupCount(), 2u);
 }
 
+// The scatter refreshes the plan every frame. A frame that registers nothing keeps the plan; a
+// registration rebuilds it.
+TEST_F(MeshPoolGroupPlanTest, ARefreshRebuildsOnlyAfterTheRegistryChanges)
+{
+    const uint32_t meshA = RegisterMesh(0, MakeTriangle(false, false));
+    MeshPoolGroupPlan plan;
+    plan.Refresh(m_Registry, MeshTableCount());
+    plan.Refresh(m_Registry, MeshTableCount());
+    EXPECT_EQ(plan.ResidencyStats().Refreshes, 1u);
+
+    const uint32_t meshB = RegisterMesh(1, MakeTriangle(true, false));
+    plan.Refresh(m_Registry, MeshTableCount());
+    EXPECT_EQ(plan.ResidencyStats().Refreshes, 2u);
+    EXPECT_NE(plan.GroupOf(meshA), MeshPoolGroupPlan::kAbsentGroup);
+    EXPECT_NE(plan.GroupOf(meshB), MeshPoolGroupPlan::kAbsentGroup);
+}
+
 // Renderer-core cannot include the engine-layer plan header, so the absent
 // sentinel is duplicated on both sides of the draw stream; the scatter routes
 // by one and consumers filter by the other, so they must stay equal.

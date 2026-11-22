@@ -35,6 +35,7 @@ using namespace GameEngine::Rendering;
 
 #include "TestDeviceHelper.h"
 #include "StagedTestPaths.h"
+#include "ThreadSanitizerBuild.h"
 
 namespace
 {
@@ -92,6 +93,10 @@ class VideoTextureSystemTest : public ::testing::Test
         ASSERT_TRUE(std::filesystem::exists(video))
             << "staged fixture missing: " << video.string()
             << " (StageTestAssets should have copied it)";
+        if constexpr (TestBuild::kThreadSanitizerBuild)
+        {
+            GTEST_SKIP() << TestBuild::kMediaLoadUnderThreadSanitizer;
+        }
         Video::VideoPlayer probe;
         if (!probe.Load(video.string()))
         {
@@ -219,6 +224,11 @@ TEST_F(VideoTextureSystemTest, UnloadablePathRestoresTheMaterialSlot)
 // `playing` proves the entity was never visited.
 TEST_F(VideoTextureSystemTest, DisabledEntityIsNotVisited)
 {
+    // The first Update asks AVFoundation to open the missing path.
+    if constexpr (TestBuild::kThreadSanitizerBuild)
+    {
+        GTEST_SKIP() << TestBuild::kMediaLoadUnderThreadSanitizer;
+    }
     const GUID matGuid = GUID::Generate();
     ASSERT_NE(MakeMaterial(matGuid), nullptr);
 
