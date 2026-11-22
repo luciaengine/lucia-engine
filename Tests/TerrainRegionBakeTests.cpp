@@ -3895,6 +3895,60 @@ TEST(TerrainRegionBake, ABakeRunFiltersEachCoarserPageOnceAtItsFinish)
         }
 }
 
+// TIMING HARNESS (DISABLED: run with --gtest_also_run_disabled_tests). Not an assertion: the wall time of one
+// surface bake run over every level-0 page of a square terrain, in calls of kPagesAJob pages as the driver makes
+// them, then its Finish. GE_TERRAIN_HARNESS_AXIS sets the tiles a side (default 4: the editor's 2048 m terrain).
+TEST(TerrainRegionBake, DISABLED_SurfaceBakeRunTiming)
+{
+    using Clock = std::chrono::steady_clock;
+    uint32 axis = 4;
+    if (const char* a = std::getenv("GE_TERRAIN_HARNESS_AXIS"))
+    {
+        const long v = std::strtol(a, nullptr, 10);
+        if (v >= 2 && v <= 16)
+            axis = static_cast<uint32>(v);
+    }
+    SplatStoreTerrain terrain(axis, axis);
+    ASSERT_NE(terrain.Tiled, nullptr);
+    TiledTerrainData& tiled = *terrain.Tiled;
+    const PageStreaming::GeneratedHeightPageProvider provider(TileNoiseLattice(tiled));
+    JobSystem::WorkStealingThreadPool pool(std::max(2u, std::thread::hardware_concurrency()));
+    const PageStreaming::PageStoreLevel level0 = TileLatticeLevels(tiled).front();
+    std::vector<PageStreaming::PageAddress> pages;
+    for (uint32 pz = 0; pz < level0.PagesZ; ++pz)
+        for (uint32 px = 0; px < level0.PagesX; ++px)
+            pages.push_back(PageStreaming::PageAddress{0, 0, px, pz});
+    ScopedStoreFolder folder("bake-run-timing");
+    for (const PageStreaming::PageFieldKind plane :
+         {PageStreaming::PageFieldKind::Splat, PageStreaming::PageFieldKind::Normal})
+    {
+        TerrainSurfacePageBaker baker(terrain.System.SnapshotSurfaceBake(tiled, {}), plane, SurfaceAccess(tiled, plane),
+                                      GeneratedHeightPages(provider, tiled), &pool);
+        const std::filesystem::path file = folder.Path() / (std::string(SurfacePlaneName(plane)) + ".gepage");
+        ASSERT_EQ(baker.CreateStore(file, 7u, 1u), "");
+        const uint64 before = baker.PagesWritten();
+        const auto start = Clock::now();
+        std::size_t calls = 0;
+        for (std::size_t first = 0; first < pages.size(); first += TerrainSurfacePageDriver::kPagesAJob, ++calls)
+        {
+            const std::size_t count = std::min(TerrainSurfacePageDriver::kPagesAJob, pages.size() - first);
+            ASSERT_EQ(baker.BakePages(file, std::span(pages).subspan(first, count)), "");
+        }
+        ASSERT_EQ(baker.Finish(), "");
+        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        std::printf("[surface bake run] %s, %u x %u tiles: %zu level-0 pages in %zu calls, %llu pages written, "
+                    "%.1f ms (%s)\n",
+                    SurfacePlaneName(plane), axis, axis, pages.size(), calls,
+                    static_cast<unsigned long long>(baker.PagesWritten() - before), ms,
+#ifdef NDEBUG
+                    "release"
+#else
+                    "debug/debugfast"
+#endif
+        );
+    }
+}
+
 // The level-0 pages whose bake by `baker` reads a sample of `changed`.
 std::vector<PageStreaming::PageAddress> Level0PagesReading(const TerrainSurfacePageBaker& baker,
                                                            const PageStreaming::PageSampleRect& changed)
