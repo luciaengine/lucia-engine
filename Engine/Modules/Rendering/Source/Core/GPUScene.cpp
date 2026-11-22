@@ -26,7 +26,6 @@ static_assert(GameEngine::Rendering::kMaxCullingViewsPerDispatch ==
 #include <cassert>
 #include <cstring>
 #include <functional>
-#include <iostream>
 #include <limits>
 #include <unordered_set>
 
@@ -217,8 +216,7 @@ GPUScene::~GPUScene()
 
 bool GPUScene::Initialize(uint32_t maxInstances, uint32_t maxMeshes)
 {
-    std::cout << "GPUScene: Initializing with " << maxInstances << " instances, "
-              << maxMeshes << " meshes" << std::endl;
+    Logger::Log::Debug("GPUScene: initializing with {} instances, {} meshes", maxInstances, maxMeshes);
 
     m_MaxInstances = maxInstances;
     m_MaxMeshes = maxMeshes;
@@ -247,7 +245,6 @@ bool GPUScene::Initialize(uint32_t maxInstances, uint32_t maxMeshes)
     // visibility resources live under GPUCullingPipeline.
     // CreateCullingPipeline();
 
-    std::cout << "✅ GPUScene initialized successfully" << std::endl;
     return true;
 }
 
@@ -978,8 +975,6 @@ bool GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSce
 
 void GPUScene::CreateBuffers()
 {
-    std::cout << "GPUScene: Creating GPU buffers..." << std::endl;
-
     // Fresh (or re-provisioned) physicals: whatever GPU content existed is
     // gone, so the elision epoch must advance even with no CPU dirty bits.
     ++m_ContentEpoch;
@@ -1038,8 +1033,6 @@ void GPUScene::CreateBuffers()
             m_Frames[i].indirectArgsBuffer = m_Device->CreateBuffer(d);
         }
     }
-
-    std::cout << "✅ GPU buffers created successfully" << std::endl;
 }
 
 void GPUScene::CreateInstanceBuffers(uint32_t slot)
@@ -1095,15 +1088,6 @@ void GPUScene::GrowInstanceBuffers(uint32_t rowCount)
 
 void GPUScene::UpdateGPUBuffers()
 {
-// Optional verbose diagnostics (compile-time gated)
-#if defined(GE_DEBUG_GPU_SCENE)
-    std::cout << "GPUScene::UpdateGPUBuffers() called:" << std::endl;
-    std::cout << "  m_InstancesDirty: " << (m_InstancesDirty ? "true" : "false") << std::endl;
-    std::cout << "  m_Instances.empty(): " << (m_Instances.empty() ? "true" : "false") << std::endl;
-    std::cout << "  m_Instances.size(): " << m_Instances.size() << std::endl;
-    std::cout << "  current instance buffer: " << GetInstanceBuffer() << std::endl;
-#endif
-
     // Content-epoch bump BEFORE the per-array uploads: any slot flush this
     // frame advances the generation the elision gates key on (the epoch quiets
     // only once the whole slot ring converged — see GetContentEpoch).

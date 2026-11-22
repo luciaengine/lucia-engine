@@ -58,6 +58,14 @@ MeshPoolGroupPlan::PoolIdentity MeshPoolGroupPlan::MakeIdentity(const MeshGPUEnt
 
 void MeshPoolGroupPlan::Refresh(const MeshGPURegistry& registry, uint32_t meshTableCount)
 {
+    // The plan reads only entry fields that change the content revision, and residency, which
+    // only turns on. A plan that skipped no entry is current while the revision and table hold.
+    const uint64_t revision = registry.GetContentRevision();
+    if (m_Refreshes != 0 && m_SkippedNonResident == 0 && revision == m_PlannedRevision &&
+        meshTableCount == m_PlannedTableCount)
+        return;
+    m_PlannedRevision = revision;
+    m_PlannedTableCount = meshTableCount;
     m_MeshToGroup.assign(meshTableCount, kAbsentGroup);
     m_SkippedNonResident = 0;
     ++m_Refreshes;

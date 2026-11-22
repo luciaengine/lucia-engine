@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -148,9 +149,8 @@ void Log::Initialize(const Config& config)
         SetInitialized(state, true);
         try
         {
-            state.DrainThread = std::thread(&Log::DrainThreadFunc);
-            // DrainThreadId is set by DrainThreadFunc itself as its first action,
-            // eliminating the race where the thread starts before the ID is stored.
+            // The drain thread serves this state for its whole life, also after a later RedirectToSharedState.
+            state.DrainThread = std::thread(&Log::DrainThreadFunc, std::ref(state));
         }
         catch (const std::exception&)
         {
@@ -531,12 +531,12 @@ void Log::DispatchCritical(const LogMessage& msg)
     // Acquiring it again would deadlock (non-recursive mutex).
     if (std::this_thread::get_id() == state.DrainThreadId.load(std::memory_order_acquire))
     {
-        DispatchToSinks(msg);
+        DispatchToSinks(state, msg);
         return;
     }
 
     std::lock_guard<std::mutex> lock(state.Mutex);
-    DispatchToSinks(msg);
+    DispatchToSinks(state, msg);
 }
 
 void Enqueue(const LogChannel& channel, LogLevel level, const char* file, int line, const char* function,
@@ -608,9 +608,8 @@ void Log::PushEntry(LogMessage&& entry)
     }
 }
 
-void Log::DispatchToSinks(const LogMessage& message)
+void Log::DispatchToSinks(LoggerState& state, const LogMessage& message)
 {
-    auto& state = GetState();
     for (auto& sink : state.Sinks)
     {
         if (sink && sink->IsAvailable() && sink->ShouldLog(message.Level))
@@ -624,7 +623,7 @@ void Log::DispatchToSinks(const LogMessage& message)
     }
 }
 
-void Log::DrainThreadFunc()
+void Log::DrainThreadFunc(LoggerState& state)
 {
 #if defined(_WIN32) || defined(_WIN64)
     SetThreadDescription(GetCurrentThread(), L"Logger Drain");
@@ -634,7 +633,6 @@ void Log::DrainThreadFunc()
     pthread_setname_np(pthread_self(), "Logger Drain");
 #endif
 
-    auto& state = GetState();
     state.DrainThreadId.store(std::this_thread::get_id(), std::memory_order_release);
 
     std::vector<LogMessage> localBatch;
@@ -682,7 +680,7 @@ void Log::DrainThreadFunc()
             std::lock_guard<std::mutex> sLock(state.Mutex);
             for (auto& entry : localBatch)
             {
-                DispatchToSinks(entry);
+                DispatchToSinks(state, entry);
             }
             localBatch.clear();
             if (!sinksDirty)
@@ -732,7 +730,7 @@ void Log::DrainThreadFunc()
                 std::lock_guard<std::mutex> sLock(state.Mutex);
                 for (auto& entry : localBatch)
                 {
-                    DispatchToSinks(entry);
+                    DispatchToSinks(state, entry);
                 }
                 localBatch.clear();
             }
