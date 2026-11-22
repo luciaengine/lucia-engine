@@ -290,6 +290,53 @@ TEST_F(AssetTypeLoadingTest, ModelAsset_ReloadWithoutAnimations_DropsPreviousCli
     EXPECT_FALSE(modelAsset.HasAnimations());
 }
 
+// A reload whose bytes do not parse keeps the meshes that the entities draw.
+TEST_F(AssetTypeLoadingTest, ModelAsset_FailedReloadKeepsTheMeshes) {
+    const auto objPath = testDir / "reload.obj";
+    CreateTestOBJFile(objPath);
+    ModelAsset modelAsset(GUID::Generate(), objPath);
+    ASSERT_TRUE(modelAsset.Load());
+    const size_t meshCount = modelAsset.GetMeshCount();
+    const uint32 vertexCount = modelAsset.GetTotalVertexCount();
+    ASSERT_GT(meshCount, 0u);
+
+    std::ofstream(objPath, std::ios::trunc) << "# an OBJ file with no faces\n";
+    EXPECT_EQ(modelAsset.Reload(), ReloadOutcome::Failed);
+    EXPECT_TRUE(modelAsset.IsLoaded());
+    EXPECT_EQ(modelAsset.GetMeshCount(), meshCount);
+    EXPECT_EQ(modelAsset.GetTotalVertexCount(), vertexCount);
+}
+
+TEST_F(AssetTypeLoadingTest, ModelAsset_ReloadReplacesTheMeshes) {
+    const auto objPath = testDir / "reload.obj";
+    CreateTestOBJFile(objPath);
+    ModelAsset modelAsset(GUID::Generate(), objPath);
+    ASSERT_TRUE(modelAsset.Load());
+    const uint32 vertexCount = modelAsset.GetTotalVertexCount();
+
+    std::ofstream(objPath, std::ios::trunc) << "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nf 1 2 3\nf 2 4 3\n";
+    EXPECT_EQ(modelAsset.Reload(), ReloadOutcome::Reloaded);
+    EXPECT_TRUE(modelAsset.IsLoaded());
+    EXPECT_GT(modelAsset.GetTotalVertexCount(), vertexCount);
+}
+
+// A reload whose bytes do not decode keeps the samples of the clip.
+TEST_F(AssetTypeLoadingTest, AudioAsset_FailedReloadKeepsTheSamples) {
+    const auto wavPath = testDir / "reload.wav";
+    CreateTestWAVFile(wavPath);
+    AudioAsset audioAsset(GUID::Generate(), wavPath);
+    ASSERT_TRUE(audioAsset.Load());
+    const uint64 frameCount = audioAsset.GetPCMFrameCount();
+    const uint64 encodedBytes = audioAsset.GetEncodedDataSize();
+    ASSERT_TRUE(frameCount > 0u || encodedBytes > 0u);
+
+    std::ofstream(wavPath, std::ios::binary | std::ios::trunc) << "not an audio file";
+    EXPECT_EQ(audioAsset.Reload(), ReloadOutcome::Failed);
+    EXPECT_TRUE(audioAsset.IsLoaded());
+    EXPECT_EQ(audioAsset.GetPCMFrameCount(), frameCount);
+    EXPECT_EQ(audioAsset.GetEncodedDataSize(), encodedBytes);
+}
+
 // BinaryAsset Tests
 TEST_F(AssetTypeLoadingTest, BinaryAsset_LoadSuccess) {
     // Create test binary file
