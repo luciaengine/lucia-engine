@@ -195,9 +195,13 @@ void SceneViewPanel::BeginViewportSpaceToggle(ViewportSlot fallback)
 
 void SceneViewPanel::EndViewportSpaceToggle()
 {
-    // The release never changes the active pane, and it is no tap while a pane drags.
+    // The release activates the pane under the pointer, then toggles the quad view.
+    // A release after a pan drag, or while a pane drags, is no tap.
     if (m_SpacePressedForQuadToggle && !m_SpacePanDragStarted && !SceneViewport::IsHostDragging(*this, nullptr))
+    {
+        SetActiveViewportSlot(ResolveSpaceToggleViewportSlot(m_ActiveViewportSlot));
         ToggleQuadView();
+    }
     m_SpaceHeld = false;
     m_SpacePressedForQuadToggle = false;
     m_SpacePanDragStarted = false;
