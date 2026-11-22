@@ -501,11 +501,11 @@ layout(constant_id = 306) const uint GE_FORWARD_MATERIAL_ROW = kPerInstanceMater
 #endif
 
 // The mip bias of every material sample. An impostor bake draws a whole object into one atlas
-// frame, so a coarse mip would merge each leaf with its gaps and the alpha test would drop it. The
-// bake samples near mip 0 instead: each atlas texel then passes the alpha test with the leaf
-// coverage at its center, so the atlas keeps the leaf density of the mesh.
+// frame, so the coarse mip that the frame size selects merges each leaf with its gaps and the
+// alpha test drops it. The bake samples 2 mips finer: the weakest bias that keeps the leaf
+// coverage of the mesh, so color and normal move as little as possible.
 #ifdef GE_IMPOSTOR_BAKE
-const float kImpostorBakeMipBias = -8.0;
+const float kImpostorBakeMipBias = -2.0;
 #define GE_MATERIAL_MIP_BIAS kImpostorBakeMipBias
 #else
 #define GE_MATERIAL_MIP_BIAS ge_mipBiasParams.x
