@@ -338,6 +338,14 @@ else()
     )
 endif()
 
+# A macOS executable exports its weak definitions, and dyld binds all images to the copy in the
+# executable. A std:: instantiation from a prebuilt static library (GoogleTest from vcpkg: no
+# sanitizer, no hardening) then replaces the copy in Engine and breaks its AddressSanitizer
+# container annotations. An executable keeps its std:: instantiations private.
+if(APPLE)
+    add_link_options("$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:LINKER:-unexported_symbols_list,${CMAKE_SOURCE_DIR}/cmake/MacExecutableUnexportedSymbols.txt>")
+endif()
+
 # Force MSVC to use UTF-8 encoding for both source and execution character sets 
 # to prevent character encoding warnings (C4819) on multilingual systems.
 # Under strict compilation configurations, this warning is promoted to an error and breaks the build.
