@@ -19,6 +19,9 @@ class ControlAppearanceSettings
 public:
     static ControlAppearanceSettings& Get();
 
+    /// Dropdown Outlines when the preference "ui.dropdownOutlines" is not saved.
+    static constexpr bool kDropdownOutlinesDefault = false;
+
     bool GetInnerShadowEnabled() const { return m_InnerShadowEnabled; }
     bool GetDropdownOutlinesEnabled() const { return m_DropdownOutlinesEnabled; }
 
@@ -38,7 +41,7 @@ private:
     void ApplyClasses(UIManager* ui) const;
 
     bool m_InnerShadowEnabled = false;
-    bool m_DropdownOutlinesEnabled = true;
+    bool m_DropdownOutlinesEnabled = kDropdownOutlinesDefault;
     std::vector<UIManagerRef> m_TrackedManagers;
 };
 

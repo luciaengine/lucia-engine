@@ -158,7 +158,8 @@ void RegisterControlAppearanceSettings()
         "Dropdown Outlines",
         "Draws an outline around dropdowns and asset fields. Off shows only their fill; the outline "
         "still shows under the pointer.",
-        "dropdown outline border asset field picker select", kDropdownOutlinesPrefKey, true,
+        "dropdown outline border asset field picker select", kDropdownOutlinesPrefKey,
+        ControlAppearanceSettings::kDropdownOutlinesDefault,
         &GetDropdownOutlines, &SetDropdownOutlines));
     EditorSettingsRegistry::Get().RegisterCategory(std::move(controls));
 }
