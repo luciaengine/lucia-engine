@@ -72,6 +72,8 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 
     vec2 uvAO = GE_TransformUV(sIn.uv0, sIn.textureST[4], sIn.textureST2[4]);
     o.ao = texture(aoMap, uvAO).r;
+    // UV1.y stores the rest-pose canopy occlusion. UV1.x is the wind seed.
+    o.ao *= 1.0 - clamp(sIn.uv1.y, 0.0, 1.0);
 
 #ifdef HAS_TANGENT
     // Z reconstructed — see GE_DecodeTangentNormal (uniform for RGB8 and BC5 payloads).
