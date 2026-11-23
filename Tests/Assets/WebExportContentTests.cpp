@@ -154,3 +154,41 @@ TEST(WebExportContent, AnAlwaysFolderShipsAndANeverChainFailsTheExport)
                      "uses it: Scenes/Main.scene → Textures/Rock.png. Remove the reference, or change the rule.");
     assets.Shutdown();
 }
+
+TEST(WebExportContent, AStandWhoseArchiveIsNotValidStopsTheExport)
+{
+    const TestUtils::ScopedTempDir root{TestUtils::MakeUniqueTempDirectory("ge_web_export_forest")};
+    const fs::path projectAssets = root.Path() / "project" / "Assets";
+    const fs::path editorAssets = root.Path() / "editor" / "Assets";
+    WriteTextFile(projectAssets / "Forests" / "Broken.geforest", "not a forest");
+    WriteTextFile(editorAssets / GameUIHost::kDefaultFontPath, "TTFDATA");
+    WriteTextFile(editorAssets / kRuntimeHumanoidProfilePath, "{}");
+
+    AssetManager assets;
+    ASSERT_TRUE(assets.Initialize(projectAssets, nullptr, root.Path() / "project" / "AssetDatabase.assetdb",
+                                  root.Path() / "project" / ".Cache" / "AssetDatabase"));
+    AssetSourceDesc editorSource{};
+    editorSource.Alias = std::string(kAssetSourceAliasEditor);
+    editorSource.Root = editorAssets;
+    editorSource.RegisterFileWatcher = false;
+    ASSERT_TRUE(assets.RegisterSource(editorSource));
+    assets.WaitForStartupScan(std::string(kAssetSourceAliasEditor));
+    assets.WaitForStartupScan();
+    const GUID archive = assets.GetRegistry().GetAssetGUID(projectAssets / "Forests" / "Broken.geforest");
+    ASSERT_FALSE(archive.IsNull());
+    WriteTextFile(projectAssets / "Scenes" / "Forest.scene",
+                  "[scene name=\"Forest\" version=1]\n\n[entity id=\"e_stand\"]\n"
+                  "ForestStand.Archive = \"" + archive.ToString() + "\"\n");
+    ASSERT_TRUE(assets.GetRegistry().RegisterAsset(projectAssets / "Scenes" / "Forest.scene"));
+
+    BuildSettings settings;
+    settings.scenes = {"Scenes/Forest.scene"};
+    std::vector<std::string> warnings;
+    std::string error;
+    EXPECT_FALSE(StageWebExportContent(assets, settings, projectAssets, root.Path() / "scratch", warnings, error));
+    EXPECT_NE(error.find("Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive "
+                         "'Forests/Broken.geforest' is not valid"),
+              std::string::npos)
+        << error;
+    assets.Shutdown();
+}

@@ -1,4 +1,6 @@
 #include "Engine/Build/AssetCollector.h"
+
+#include "Engine/Build/ContentCheckRegistry.h"
 #include "AssetCore/EditorOnlyAssetPath.h"
 #include "AssetCore/GUID.h"
 #include "AssetCore/PathNormalization.h"
@@ -363,6 +365,12 @@ bool AssetCollector::CollectGameContent(const std::vector<std::string>& scenePat
     if (!m_ShipErrors.empty())
     {
         outError = Join(m_ShipErrors, "\n");
+        return false;
+    }
+    if (const std::vector<std::string> contentErrors = ContentCheckRegistry::RunAll(outManifest, *this);
+        !contentErrors.empty())
+    {
+        outError = Join(contentErrors, "\n");
         return false;
     }
     return true;
