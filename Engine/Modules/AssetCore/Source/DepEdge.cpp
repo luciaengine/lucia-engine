@@ -30,4 +30,14 @@ bool IsValidDepEdge(const DepEdge& edge) noexcept
     return hasGuid != hasPath; // exactly one populated
 }
 
+std::vector<GUID> DependencyTargets(std::span<const DepEdge> edges)
+{
+    std::vector<GUID> targets;
+    targets.reserve(edges.size());
+    for (const DepEdge& edge : edges)
+        if (!edge.Target.IsNull())
+            targets.push_back(edge.Target);
+    return targets;
+}
+
 } // namespace GameEngine

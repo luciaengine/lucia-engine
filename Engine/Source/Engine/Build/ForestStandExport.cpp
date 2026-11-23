@@ -1,7 +1,5 @@
 #include "ForestStandExport.h"
 
-#include "Assets/AssetRegistry.h"
-#include "Assets/ParserRegistry.h"
 #include "Engine/Build/AssetCollector.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "Types/FlatMap.h"
@@ -9,7 +7,10 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <span>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace GameEngine
 {
@@ -72,45 +73,34 @@ std::string DescribeArchiveProblem(const AssetManifestEntry& archive)
     return {};
 }
 
-// Keeps the edges one parser call emits.
-class CollectingDepEdgeSink final : public DepEdgeSink
+// The entity that holds a field: "entities[e_stand].ForestStand.Archive" gives "e_stand", and
+// "lid/ForestStand.Archive" gives "lid".
+std::string_view LocatorEntity(std::string_view locator, std::string_view field)
 {
-public:
-    void Emit(DepEdge edge) override { Edges.push_back(std::move(edge)); }
-    std::vector<DepEdge> Edges;
-};
-
-// The dependency edges of a scene or prefab as its parser reads them from the file now.
-std::vector<DepEdge> ReadSceneEdges(const AssetManifestEntry& scene, const AssetRegistry& registry,
-                                    const ParserRegistry& parsers)
-{
-    AssetMetadata metadata;
-    const auto parser = parsers.FindParser(scene.sourcePath);
-    if (!parser || !registry.TryGetAssetMetadata(scene.guid, metadata))
-        return {};
-    metadata.Path = scene.sourcePath;
-    CollectingDepEdgeSink sink;
-    if (!parser->ExtractDependencies(scene.guid, metadata, sink))
-        return {};
-    for (DepEdge& edge : sink.Edges)
-        if (edge.Target.IsNull() && !edge.TargetPath.empty())
-            edge.Target = registry.ResolvePathTarget(edge.TargetPath);
-    return std::move(sink.Edges);
+    std::string_view owner = locator.substr(0, locator.size() - field.size());
+    if (!owner.empty())
+        owner.remove_suffix(1);
+    constexpr std::string_view kEntities = "entities[";
+    if (owner.starts_with(kEntities) && owner.ends_with(']'))
+        owner = owner.substr(kEntities.size(), owner.size() - kEntities.size() - 1);
+    return owner;
 }
+
+using ShippedArchive = std::pair<const AssetManifestEntry*, std::string>;
 
 // What the stands of one scene reference, by edge locator: true when one edge of the locator ships.
 struct StandReferences
 {
     FlatMap<std::string, bool> Archives;
     FlatMap<std::string, bool> TreeModels;
+    // Each archive that ships, with the locator of its first field, in edge order.
+    std::vector<ShippedArchive> ShippedArchives;
 };
 
-void CheckScene(const AssetManifestEntry& scene, const AssetManifest& manifest, const AssetRegistry& registry,
-                const ParserRegistry& parsers, std::vector<std::string>& errors)
+StandReferences CollectStandReferences(std::span<const DepEdge> edges, const AssetManifest& manifest)
 {
     StandReferences references;
-    std::vector<const AssetManifestEntry*> archives;
-    for (const DepEdge& edge : ReadSceneEdges(scene, registry, parsers))
+    for (const DepEdge& edge : edges)
     {
         const bool archiveField = NamesField(edge.FieldLocator, kArchiveField);
         if (!archiveField && !NamesField(edge.FieldLocator, kTreeModelField))
@@ -118,33 +108,48 @@ void CheckScene(const AssetManifestEntry& scene, const AssetManifest& manifest, 
         const AssetManifestEntry* target = edge.Target.IsNull() ? nullptr : manifest.FindByGuid(edge.Target);
         auto& shipped = (archiveField ? references.Archives : references.TreeModels).GetOrInsert(edge.FieldLocator);
         shipped = shipped || target != nullptr;
-        if (archiveField && target && std::ranges::find(archives, target) == archives.end())
-            archives.push_back(target);
+        if (archiveField && target &&
+            std::ranges::find(references.ShippedArchives, target, &ShippedArchive::first) == references.ShippedArchives.end())
+            references.ShippedArchives.emplace_back(target, edge.FieldLocator);
     }
+    return references;
+}
 
+// The start of a refusal: the scene and the entity that holds the field.
+std::string DescribeStand(const std::string& sceneName, std::string_view locator, std::string_view field)
+{
+    return sceneName + ", entity '" + std::string(LocatorEntity(locator, field)) + "': the Forest Stand ";
+}
+
+void CheckScene(const AssetManifestEntry& scene, std::span<const DepEdge> edges, const AssetManifest& manifest,
+                std::vector<std::string>& errors)
+{
+    const StandReferences references = CollectStandReferences(edges, manifest);
     const std::string sceneName = "Scene '" + PathToUtf8(AssetRelativePath(scene)) + "'";
     for (const auto& [locator, shipped] : references.Archives)
         if (!shipped)
-            errors.push_back(sceneName + ": the ForestStand archive does not ship. Set Archive to the .geforest "
-                                         "file in the project that the overview mesh was cooked from.");
+            errors.push_back(DescribeStand(sceneName, locator, kArchiveField) +
+                             "archive does not ship. Set Archive to the .geforest file in the project that the "
+                             "overview mesh was cooked from.");
     for (const auto& [locator, shipped] : references.TreeModels)
         if (!shipped)
-            errors.push_back(sceneName + ": the ForestStand tree model does not ship. Set Tree Model to a model "
-                                         "in the project with its impostor setting on, or clear it.");
-    for (const AssetManifestEntry* archive : archives)
+            errors.push_back(DescribeStand(sceneName, locator, kTreeModelField) +
+                             "tree model does not ship. Set Tree Model to a model in the project with its impostor "
+                             "setting on, or clear it.");
+    for (const auto& [archive, locator] : references.ShippedArchives)
         if (std::string problem = DescribeArchiveProblem(*archive); !problem.empty())
-            errors.push_back(sceneName + ": the ForestStand archive '" + PathToUtf8(AssetRelativePath(*archive)) +
-                             "' " + problem);
+            errors.push_back(DescribeStand(sceneName, locator, kArchiveField) + "archive '" +
+                             PathToUtf8(AssetRelativePath(*archive)) + "' " + problem);
 }
 } // namespace
 
-std::vector<std::string> CheckForestStandContent(const AssetManifest& manifest, const AssetRegistry& registry,
-                                                 const ParserRegistry& parsers)
+std::vector<std::string> CheckForestStandContent(const AssetManifest& manifest, const AssetCollector& collector)
 {
     std::vector<std::string> errors;
     for (const AssetManifestEntry& entry : manifest.entries)
         if (entry.type == AssetType::Scene || entry.type == AssetType::Prefab)
-            CheckScene(entry, manifest, registry, parsers, errors);
+            if (const std::vector<DepEdge>* edges = collector.FindReadEdges(entry.guid))
+                CheckScene(entry, *edges, manifest, errors);
     return errors;
 }
 } // namespace GameEngine

@@ -166,8 +166,7 @@ protected:
         if (!treeModel.IsNull())
             body += "ForestStand.TreeModel = \"" + treeModel.ToString() + "\"\n";
         WriteFile(scene, body);
-        const GUID sceneGuid = Register(scene);
-        Engine.GetAssetManager().GetRegistry().RefreshDependencies(sceneGuid);
+        Register(scene);
 
         BuildSettings build;
         build.platformName = "Linux";
@@ -212,7 +211,7 @@ TEST_F(ForestStandExportTest, RefusesACorruptArchive)
     const GUID archive = Register(Assets / "Forests/Broken.geforest");
     BuildProgress progress;
     EXPECT_FALSE(Export(archive, {}, progress));
-    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene': the ForestStand archive 'Forests/Broken.geforest' is not valid"))
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive 'Forests/Broken.geforest' is not valid"))
         << testing::PrintToString(progress.errors);
     EXPECT_FALSE(fs::exists(Output / "Assets/Forests/Broken.geforest"));
 }
@@ -228,8 +227,19 @@ TEST_F(ForestStandExportTest, RefusesAnArchiveLinkedFromOutsideTheAssetFolder)
     const GUID archive = Register(Assets / "Forests/Linked.geforest");
     BuildProgress progress;
     EXPECT_FALSE(Export(archive, {}, progress));
-    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene': the ForestStand archive"));
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive"));
     EXPECT_TRUE(HasError(progress, "resolves outside its asset folder. Replace the link with the archive file."))
+        << testing::PrintToString(progress.errors);
+}
+
+TEST_F(ForestStandExportTest, RefusesAnArchiveThatIsNotAForestFile)
+{
+    const GUID model = Engine.GetAssetManager().GetRegistry().GetAssetGUID(Assets / "Model.obj");
+    ASSERT_FALSE(model.IsNull());
+    BuildProgress progress;
+    EXPECT_FALSE(Export(model, {}, progress));
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive "
+                                   "'Model.obj' is not a .geforest file."))
         << testing::PrintToString(progress.errors);
 }
 
@@ -239,6 +249,6 @@ TEST_F(ForestStandExportTest, RefusesATreeModelThatDoesNotShip)
     const GUID archive = Register(Assets / "Forests/Stand.geforest");
     BuildProgress progress;
     EXPECT_FALSE(Export(archive, GUID::Generate(), progress));
-    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene': the ForestStand tree model does not ship. Set Tree Model"))
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand tree model does not ship. Set Tree Model"))
         << testing::PrintToString(progress.errors);
 }

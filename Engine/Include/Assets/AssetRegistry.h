@@ -752,10 +752,11 @@ class AssetRegistry
      * stale (possibly empty) edge set. Correctness-critical consumers — the
      * build pipeline's asset collector walking the scenes being shipped —
      * re-extract here instead of trusting the cache. Persists the fresh edges
-     * to the derived cache (same as the lazy path) and returns the extracted
-     * targets directly, so the result does not depend on cache availability.
+     * to the derived cache (same as the lazy path) and returns them directly,
+     * so the result does not depend on cache availability. A path-form edge
+     * holds its target GUID when the path resolves, else a null Target.
      */
-    Vector<GUID> RefreshDependencies(const GUID& assetGuid);
+    std::vector<DepEdge> RefreshDependencies(const GUID& assetGuid);
 
     /**
      * @brief Get the assets that reference this asset (reverse edge query).

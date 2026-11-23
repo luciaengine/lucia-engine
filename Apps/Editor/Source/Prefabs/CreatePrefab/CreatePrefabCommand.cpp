@@ -52,7 +52,7 @@ std::optional<std::filesystem::path> FindSceneWrittenSinceThatUses(const GUID& p
         const std::filesystem::file_time_type written = std::filesystem::last_write_time(metadata.Path, ec);
         if (ec || written < since)
             continue;
-        const auto uses = registry.RefreshDependencies(scene);
+        const auto uses = DependencyTargets(registry.RefreshDependencies(scene));
         if (std::find(uses.begin(), uses.end(), prefab) != uses.end())
             return metadata.Path;
     }
