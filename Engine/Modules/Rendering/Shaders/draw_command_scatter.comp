@@ -66,14 +66,14 @@ const float kLodThresholdCeil = 0.5;
 const float kLodThresholdDescendFactor = 0.5;
 
 // Binding-1 instance struct. Two ABI-locked variants, selected at compile time:
-//  - SCATTER_COMPACT: the coalesced 40 B scatter-hot mirror
+//  - SCATTER_COMPACT: the coalesced 44 B scatter-hot mirror
 //    (GPUScene.h::GPUInstanceScatterHot). Consecutive threads read consecutive
 //    bytes → coalesced, attacking the uncoalesced-fetch cost. Field names match
 //    the full struct so main() below is variant-agnostic; the center is three
 //    scalars (a vec3 would align the struct to 16 B and pad it to 48 B), read
 //    through ge_InstanceCenterRelativeToOrigin.
 //  - default: the authoritative 240 B GPUInstance (full-fat fetch; the
-//    GE_SCATTER_COMPACT=0 fallback). 40 B read at a 240 B stride → uncoalesced.
+//    GE_SCATTER_COMPACT=0 fallback). 44 B read at a 240 B stride → uncoalesced.
 #ifdef SCATTER_COMPACT
 struct GPUInstance {
     uint  meshIndex;
@@ -86,6 +86,7 @@ struct GPUInstance {
     float boundingRadius;
     uint  sectorPacked0;
     uint  sectorPacked1;
+    float axisScale;
 };
 #else
 struct GPUInstance {
@@ -355,6 +356,16 @@ layout(push_constant) uniform PushConstants {
 
 // The bounding center of an instance relative to the origin of the slice's origin sector, the frame
 // of cameraPos. The stored center is local to the sector in the instance's sectorPacked words.
+// The instance transform's largest axis scale: carries a radius in the mesh's local space to world.
+float ge_InstanceAxisScale(uint instanceIndex)
+{
+#ifdef SCATTER_COMPACT
+    return instances[instanceIndex].axisScale;
+#else
+    return ge_TransformAxisScale(instances[instanceIndex].transform);
+#endif
+}
+
 vec3 ge_InstanceCenterRelativeToOrigin(uint instanceIndex)
 {
 #ifdef SCATTER_COMPACT
@@ -598,7 +609,12 @@ bool ge_SelectImpostor(uint instanceIndex, uint meshIndex, uint owner)
 {
     vec3 camPos = vec3(pc.cameraPosX, pc.cameraPosY, pc.cameraPosZ);
     float dist = max(distance(camPos, ge_InstanceCenterRelativeToOrigin(instanceIndex)), 1e-4);
-    float coverage = instances[instanceIndex].boundingRadius * pc.projScaleY / dist;
+    // The card's own sphere, not the culling sphere: the switch keeps one atlas texel per pixel even
+    // where the instance sphere is wider than the baked object (a box radius, a wind margin).
+    float cardRadius = meshes[meshIndex].impostorRadius;
+    float radius = cardRadius > 0.0 ? cardRadius * ge_InstanceAxisScale(instanceIndex)
+                                    : instances[instanceIndex].boundingRadius;
+    float coverage = radius * pc.projScaleY / dist;
     coverage *= exp2(instances[instanceIndex].lodBias + pc.lodBiasGlobal);
     bool hasHistory = pc.renderedHistoryEnabled != 0u && pc.impostorExitCoverage > pc.impostorEnterCoverage;
     uint ownerRendered = hasHistory ? prevRendered[owner] : kLodNoHistory;

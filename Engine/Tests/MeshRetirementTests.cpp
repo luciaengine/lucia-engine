@@ -164,7 +164,6 @@ TEST_F(MeshRetirementTest, RemovingMeshRowNeedsNoAllocationAfterAcquisition)
 {
     WithScene();
     GPUMesh mesh{};
-    mesh.vertexCount = 3;
     mesh.indexCount = 3;
     const auto row = Scene->AddMesh(mesh);
     bool failed = false;

@@ -24,6 +24,7 @@ static_assert(GameEngine::Rendering::kMaxCullingViewsPerDispatch ==
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -813,20 +814,22 @@ void GPUScene::UpdateMesh(uint32_t meshIndex, const GPUMesh& mesh)
     const uint32_t impostorCard = m_Meshes[meshIndex].impostorCard;
     const uint32_t nextImpostorPart = m_Meshes[meshIndex].nextImpostorPart;
     const float switchCoverage = m_Meshes[meshIndex].impostorSwitchCoverage;
+    const float impostorRadius = m_Meshes[meshIndex].impostorRadius;
     m_Meshes[meshIndex] = mesh;
     m_Meshes[meshIndex].impostorCard = impostorCard;
     m_Meshes[meshIndex].nextImpostorPart = nextImpostorPart;
     m_Meshes[meshIndex].impostorSwitchCoverage = switchCoverage;
+    m_Meshes[meshIndex].impostorRadius = impostorRadius;
     m_MeshesDirty = true;
     for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_MeshesDirtySlots[s] = true;
 }
 
 bool GPUScene::SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t cardMaterialIndex,
-                                    uint32_t cardMeshIndex, float switchCoverage)
+                                    uint32_t cardMeshIndex, float switchCoverage, float cardRadius)
 {
     if (parts.empty() || cardMeshIndex >= m_Meshes.size() || m_Meshes[cardMeshIndex].indexCount == 0u
         || cardMaterialIndex >= kGPUMeshImpostorMaterialMask
-        || !(switchCoverage >= 0.0f && switchCoverage <= 1.0f))
+        || !(switchCoverage >= 0.0f && switchCoverage <= 1.0f) || !(cardRadius >= 0.0f && std::isfinite(cardRadius)))
         return false;
 
     const uint32_t material = cardMaterialIndex + 1u;
@@ -845,7 +848,7 @@ bool GPUScene::SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t ca
             needsLink = true;
         else if (mesh.impostorCard != word || mesh.nextImpostorPart != parts[(i + 1u) % parts.size()])
             return false;
-        needsCoverageUpdate |= mesh.impostorSwitchCoverage != switchCoverage;
+        needsCoverageUpdate |= mesh.impostorSwitchCoverage != switchCoverage || mesh.impostorRadius != cardRadius;
     }
     if (!needsLink && !needsCoverageUpdate)
         return true;
@@ -856,6 +859,7 @@ bool GPUScene::SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t ca
         mesh.impostorCard = material | (i == 0 ? kGPUMeshImpostorPrimaryBit : 0u);
         mesh.nextImpostorPart = parts[(i + 1u) % parts.size()];
         mesh.impostorSwitchCoverage = switchCoverage;
+        mesh.impostorRadius = cardRadius;
     }
     if (needsLink)
         m_BatchRegistry.SetMeshCardRow(parts.front(), cardMaterialIndex, cardMeshIndex);
@@ -878,6 +882,7 @@ void GPUScene::ClearMeshImpostorGroup(uint32_t meshIndex)
         mesh.impostorCard = 0u;
         mesh.nextImpostorPart = 0u;
         mesh.impostorSwitchCoverage = 0.0f;
+        mesh.impostorRadius = 0.0f;
         part = next;
     } while (part != meshIndex);
     m_MeshesDirty = true;
@@ -905,8 +910,8 @@ void GPUScene::RemoveMesh(uint32_t meshIndex)
 
     // Zero-fill the slot so any GPU read before the slot is reused sees a
     // well-defined empty record. Avoid double-free by treating a row whose
-    // count fields are already zero as already-freed.
-    if (m_Meshes[meshIndex].indexCount == 0 && m_Meshes[meshIndex].vertexCount == 0)
+    // index count is already zero as already-freed.
+    if (m_Meshes[meshIndex].indexCount == 0)
         return;
     ClearMeshImpostorGroup(meshIndex);
     m_Meshes[meshIndex] = GPUMesh{};
@@ -1153,7 +1158,7 @@ void GPUScene::CreateInstanceBuffers(uint32_t slot)
         d.debugName = "GPUScene_InstanceBuffer_PerFrame";
         frame.instanceBuffer = m_Device->CreateBuffer(d);
     }
-    // Coalesced scatter-hot mirror (40 B/instance), read by the scatter compute through a
+    // Coalesced scatter-hot mirror (44 B/instance), read by the scatter compute through a
     // descriptor binding and uploaded on the same runs as the instance buffer.
     if (m_ScatterHotEnabled)
     {
