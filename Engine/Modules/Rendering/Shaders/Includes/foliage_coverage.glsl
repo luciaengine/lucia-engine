@@ -42,12 +42,9 @@ float GE_FoliageCoverageOpacity(float alpha, float cutoff, float coarseWeight, f
     return coverage > threshold ? 1.0 : 0.0;
 }
 
-// The coverage seed of a masked surface without a leaf seed: one uniform threshold per triangle for
-// GE_FoliageCoverageOpacity. The vertex stage hashes the vertex index with the GPUScene instance index,
-// and the flat varying takes the provoking vertex's value. So the seed moves with the surface, is the
-// same in the depth, shadow and color passes, and differs between overlapping triangles and
-// instances. The two triangles of a quad in fan order start at one vertex and share one seed. The
-// compat profile has no screen derivatives (GE_DFDX reads zero), so it keeps the cutoff test.
+// A masked surface without a leaf seed takes one threshold per triangle: the hash of its first vertex
+// index and its GPUScene slot, the same in every pass that draws it. The compat profile reads no screen
+// derivatives (GE_DFDX is zero), so it keeps the cutoff test and has no seed.
 #if defined(ALPHA_TEST) && !defined(GE_COMPAT_PROFILE)
 #define GE_MASK_COVERAGE_SEED
 #endif
@@ -56,6 +53,13 @@ float GE_FoliageCoverageOpacity(float alpha, float cutoff, float coarseWeight, f
 uint GE_MaskCoverageSeed(uint vertexIndex, uint instanceIndex)
 {
     return GE_HashU32(vertexIndex ^ GE_HashU32(instanceIndex));
+}
+
+// The far opacity of a masked surface: texture alpha `alpha` times `alphaScale` (tint and vertex alpha)
+// against `cutoff`. The scale only moves the cutoff, as near, so a scale under the cutoff hides the surface.
+float GE_MaskCoverageOpacity(float alpha, float alphaScale, float cutoff, float coarseWeight, float threshold)
+{
+    return step(cutoff, alphaScale) * GE_FoliageCoverageOpacity(alpha, cutoff / max(alphaScale, 1e-6), coarseWeight, threshold);
 }
 
 // The coverage threshold in [0, 1) of a seed word: its top 24 bits, which a float holds exactly.

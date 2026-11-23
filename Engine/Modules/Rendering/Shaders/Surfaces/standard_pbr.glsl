@@ -235,17 +235,22 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     o.opacity = albedo.a * Mat.uBaseColor.a * sIn.vertexColor.a;
 #endif
 #ifdef GE_MASK_COVERAGE_SEED
-    float maskFootprint = GE_StandardMaskFootprint(sIn);
-    if (maskFootprint > kFoliageShapeFootprint)
+    // In the mip tail the far test keeps the coverage of the texture alpha on average (foliage_coverage.glsl).
+    float maskTail = GE_FoliageTailWeight(GE_StandardMaskFootprint(sIn));
+    if (maskTail > 0.0)
     {
-        float shapeAlpha = GE_StandardMaskShapeAlpha(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
+        float maskAlpha = GE_StandardMaskShapeAlpha(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
   #ifdef GE_STANDARD_UV1_CROSSFADE
-        shapeAlpha = mix(shapeAlpha, GE_StandardMaskShapeAlpha(albedoMap, sIn.uv1, sIn.textureST[0], sIn.textureST2[0]),
-                         uv1Weight);
-        o.opacity = shapeAlpha * Mat.uBaseColor.a;
+        maskAlpha = mix(maskAlpha, GE_StandardMaskShapeAlpha(albedoMap, sIn.uv1, sIn.textureST[0], sIn.textureST2[0]),
+                        uv1Weight);
+        float maskScale = Mat.uBaseColor.a;
   #else
-        o.opacity = shapeAlpha * Mat.uBaseColor.a * sIn.vertexColor.a;
+        float maskScale = Mat.uBaseColor.a * sIn.vertexColor.a;
   #endif
+        o.opacity = GE_MaskCoverageOpacity(maskAlpha, maskScale, clamp(Props.alphaCutoff, 0.0, 1.0), maskTail,
+                                           sIn.maskCoverageThreshold);
+    }
+#endif
     }
     o.opacity = GE_FoliageCoverageOpacity(o.opacity, clamp(Props.alphaCutoff, 0.0, 1.0),
                                           GE_FoliageTailWeight(maskFootprint), sIn.maskCoverageThreshold);

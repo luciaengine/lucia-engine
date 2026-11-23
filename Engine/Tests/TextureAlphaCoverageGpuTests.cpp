@@ -1889,6 +1889,22 @@ TEST_F(TextureCoverageGPU, MaskedCardCoverageOfOverlappingInstancesAddsUp)
                 1.0 - (1.0 - single) * (1.0 - single), 0.03);
 }
 
+// The tint and vertex alpha of a masked surface move its cutoff and add no coverage. A tint under the
+// cutoff hides the cards near and at range; an opaque tint keeps the base coverage at range.
+TEST_F(TextureCoverageGPU, MaskedCardTintUnderTheCutoffStaysHiddenAtRange)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kCutoffMode = 1, kTintedCardMode = 7;
+    constexpr float kTailLod = 6, kHiddenTint = 0.4f, kOpaqueTint = 1.0f; // the probe's cutoff is 0.538
+    const double reference = Coverage(Render(texture, 256, 256, 0, kCutoffMode));
+    ASSERT_GT(reference, 0.2);
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kTintedCardMode, 0.0f, kHiddenTint)), 0.0);
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kTintedCardMode, 0.0f, kHiddenTint)), 0.0);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTintedCardMode, 0.0f, kOpaqueTint)), reference, 0.03);
+}
+
 TEST_F(TextureCoverageGPU, FullChainMaskedCardsMeasureIntegerFractionalAndPhaseCoverage)
 {
 #if defined(GE_HAVE_KTX)

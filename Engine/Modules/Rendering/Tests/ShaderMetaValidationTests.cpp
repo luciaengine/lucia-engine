@@ -90,6 +90,23 @@ TEST(ShaderMetaValidation, OverlappingComponentSpansAreDuplicates) {
     EXPECT_TRUE(HasDuplicateStageIOIssue(rep));
 }
 
+// A mesh shader writes one array element per vertex; the outer dimension takes no location, so two
+// per-vertex flat uints still pack into one location. A vertex shader's array output claims it all.
+TEST(ShaderMetaValidation, MeshPerVertexOutputsPackComponentsLikeVertexOutputs) {
+    ShaderMeta m{};
+    StageMeta ms{};
+    ms.Outputs.push_back(MakeIO(14, 0, 1, "vInstanceFlags"));
+    ms.Outputs.push_back(MakeIO(14, 3, 1, "vMaskCoverageSeed"));
+    for (auto& output : ms.Outputs)
+        output.Type.ArrayDims = {48u};
+    m.Stages["ms"] = ms;
+    EXPECT_FALSE(HasDuplicateStageIOIssue(ValidateShaderMeta(m, 128)));
+
+    m.Stages["vs"] = ms;
+    m.Stages.erase("ms");
+    EXPECT_TRUE(HasDuplicateStageIOIssue(ValidateShaderMeta(m, 128)));
+}
+
 TEST(ShaderMetaValidation, DuplicateSpecConstantIdIsError) {
     ShaderMeta m{};
     m.SpecConstants.push_back(SpecConstantMeta{ 5, "SC5", TypeDesc{}, std::nullopt });
