@@ -31,6 +31,18 @@ KTX/DDS mip chains and SVG rasterization do not use this source-image policy.
 No source-image decoder means enabled coverage is unavailable. A dummy texture
 cannot stand in for successful correction.
 
+## Masked surfaces at long range
+
+A masked `standard_pbr` material keeps its coverage at long range without this
+setting. Where fewer than 32 texels of the albedo map fall across a pixel, the
+alpha test changes from the cutoff to a coverage test: the alpha is read at a
+32-texel footprint and compared with a threshold per triangle, so a far surface
+keeps the coverage of its texture alpha on average. The tint and vertex alpha
+still act as a cutoff: a surface they hide near stays hidden at range. Preserve
+Alpha Coverage corrects the levels a near surface reads, and the coverage test
+takes over in the last levels, where a corrected level still keeps too few
+texels to hold a thin shape.
+
 ## What correction guarantees
 
 The shared cook/raw mip builder first creates the ordinary configured chain,

@@ -160,6 +160,7 @@ Nothing yet cross-checks that a material keyword is consumed by the surface (or 
 | `Light.uTimeParams.x` | Elapsed time, seconds: pulses, sines, flipbooks |
 | `Light.uTimeParams.y` | Bounded scroll clock: UV panners (keeps precision on long sessions) |
 | `sIn.vertexColor` | Vertex color (white when the mesh has none) |
+| `sIn.maskCoverageThreshold` | Masked variants outside the compat profile: a threshold in [0, 1) per triangle for a far coverage test (`GE_MaskCoverageOpacity` in `Includes/foliage_coverage.glsl`), the same in every pass |
 | `GE_DecodeTangentNormal(s)` | Normal-map decode (handles BC5 two-channel payloads) |
 | `GE_EMISSION_PAPERWHITE_NITS` | 203: emission is physical: `o.emissive` of 1.0 == 203 nits on screen. Author luminous surfaces in nits via a scale param, not display-referred guesses. |
 

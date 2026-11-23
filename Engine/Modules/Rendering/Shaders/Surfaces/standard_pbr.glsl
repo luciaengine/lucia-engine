@@ -92,12 +92,19 @@ GE_StandardRelief GE_StandardParallax(SurfaceInput sIn)
     return relief;
 }
 
-// One map at uv0 through its own tiling, with the tiling's linear part applied to
-// the undisplaced footprint: the transforms are affine, so the gradients are exact.
+// The undisplaced uv0 footprint through a map's tiling: the transforms are affine, so the
+// gradients are exact.
+void GE_StandardTiledFootprint(vec4 st, vec4 st2, vec4 uvFootprint, out vec2 uvPerPixelX, out vec2 uvPerPixelY)
+{
+    uvPerPixelX = vec2(dot(uvFootprint.xy, st.xy), dot(uvFootprint.xy, st2.xy));
+    uvPerPixelY = vec2(dot(uvFootprint.zw, st.xy), dot(uvFootprint.zw, st2.xy));
+}
+
+// One map at uv0 through its own tiling, sampled with the undisplaced footprint.
 vec4 GE_StandardSampleAt(GE_MaterialTexture map, vec4 st, vec4 st2, vec2 uv0, vec4 uvFootprint)
 {
-    vec2 uvPerPixelX = vec2(dot(uvFootprint.xy, st.xy), dot(uvFootprint.xy, st2.xy));
-    vec2 uvPerPixelY = vec2(dot(uvFootprint.zw, st.xy), dot(uvFootprint.zw, st2.xy));
+    vec2 uvPerPixelX, uvPerPixelY;
+    GE_StandardTiledFootprint(st, st2, uvFootprint, uvPerPixelX, uvPerPixelY);
     return textureGrad(map, GE_TransformUV(uv0, st, st2), uvPerPixelX, uvPerPixelY);
 }
 #else
@@ -131,8 +138,8 @@ float GE_StandardMaskFootprint(SurfaceInput sIn)
     vec4 st = sIn.textureST[0];
     vec4 st2 = sIn.textureST2[0];
 #ifdef GE_PARALLAX_MARCH
-    vec2 uvDx = vec2(dot(sIn.uvFootprint.xy, st.xy), dot(sIn.uvFootprint.xy, st2.xy));
-    vec2 uvDy = vec2(dot(sIn.uvFootprint.zw, st.xy), dot(sIn.uvFootprint.zw, st2.xy));
+    vec2 uvDx, uvDy;
+    GE_StandardTiledFootprint(st, st2, sIn.uvFootprint, uvDx, uvDy);
 #else
     vec2 uv = GE_TransformUV(sIn.uv0, st, st2);
     vec2 uvDx = GE_DFDX(uv);
