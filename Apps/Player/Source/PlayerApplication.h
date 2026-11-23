@@ -4,7 +4,6 @@
 #include "Engine/Build/GameConfig.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Events/Event.h"
-#include "Forest/PlayerForestStands.h"
 #include "PlayerStartupReadiness.h"
 #include "UI/UITextureSpace.h"
 #if GE_PLAYER_MOVIE_RECORDER
@@ -118,7 +117,6 @@ private:
 #endif
 
     GameConfig m_GameConfig;
-    PlayerForestStands m_ForestStands;
     // True when C# GameSystems must tick each frame (NativeAOT library staged, or
     // CoreCLR with a loadable script assembly). See PlayerNeedsManagedSystemBridge.
     bool m_TickManagedSystems = false;
