@@ -1,5 +1,4 @@
 #include "Engine/Build/BuildPipeline.h"
-#include "ForestStandExport.h"
 #include "Core/ApplicationPaths.h"
 #include "Engine/Build/AppIconGenerator.h"
 #include "Engine/Build/BuildHost.h"
@@ -804,7 +803,6 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     ReportProgress(BuildProgress::Stage::CollectingAssets, 0.45f, "Collecting assets...");
     if (checkCancel()) return false;
     ShipRules shipRules;
-    // The forest check reads the scene edges that the collection read.
     AssetCollector collector(EngineCore::GetInstance().GetAssetManager());
     {
         std::string collectError;
@@ -837,17 +835,6 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
         if (m_Progress.errors.size() > errorsBefore)
         {
             ReportProgress(BuildProgress::Stage::Failed, 0.0f, m_Progress.errors[errorsBefore]);
-            return false;
-        }
-    }
-
-    // 7b. A forest stand whose archive or tree model cannot ship, or whose archive does not open, stops the build.
-    {
-        const auto forestErrors = CheckForestStandContent(manifest, collector);
-        if (!forestErrors.empty())
-        {
-            m_Progress.errors.insert(m_Progress.errors.end(), forestErrors.begin(), forestErrors.end());
-            ReportProgress(BuildProgress::Stage::Failed, 0.0f, forestErrors.front());
             return false;
         }
     }

@@ -116,7 +116,7 @@ struct BuildStep
 ///  3. CompilePlayer          — cmake configure + build
 ///  4. CompileScripts         — dotnet build
 ///  5. hooks: PostCompile
-///  6. CollectAssets           — produces AssetManifest (NOT a hook, core phase)
+///  6. CollectAssets           — produces AssetManifest and runs the export content checks (core phase)
 ///  7. hooks: PreAssetCopy    — receives mutable AssetManifest& (baking hooks go here)
 ///  8. CopyAssets             — copies files listed in manifest
 ///  9. CopyEngineShaders      — engine shaders (not GUID-tracked)
