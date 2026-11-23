@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <thread>
 #include <vector>
@@ -240,8 +241,10 @@ class TextureCoverageGPU : public testing::Test
         std::ifstream stream(path, std::ios::binary);
         return std::vector<uint8>(std::istreambuf_iterator<char>(stream), {});
     }
-    // A square TGA of `size` texels a side (64 unless a test needs a slow decode).
-    fs::path Image(bool grayAlpha = false, int size = 64)
+    // A square TGA of `size` texels a side (64 unless a test needs a slow decode), with one leaf
+    // island every `leafPeriod` texels along each axis.
+    fs::path Image(bool grayAlpha = false, int size = 64, int leafPeriod = 16,
+                   std::optional<uint8> uniformAlpha = std::nullopt)
     {
         const auto path = s_Workspace / "Assets" / (GUID::Generate().ToString() + ".tga");
         std::vector<uint8> bytes(18, 0);
@@ -257,8 +260,10 @@ class TextureCoverageGPU : public testing::Test
             {
                 // Repeated small, irregular leaf islands produce meaningful erosion
                 // at intermediate levels while retaining tied coarse tail levels.
-                const int dx = x % 16 - 7, dy = y % 16 - 7;
-                const uint8 alpha = dx * dx + 2 * dy * dy < 37 ? 255 : 0;
+                const int dx = x % leafPeriod - (leafPeriod / 2 - 1), dy = y % leafPeriod - (leafPeriod / 2 - 1);
+                const int leafScale = leafPeriod / 16;
+                const uint8 leafAlpha = dx * dx + 2 * dy * dy < 37 * leafScale * leafScale ? 255 : 0;
+                const uint8 alpha = uniformAlpha.value_or(leafAlpha);
                 if (grayAlpha)
                     bytes.insert(bytes.end(), {uint8(91 + x + y), alpha});
                 else
@@ -418,7 +423,7 @@ class TextureCoverageGPU : public testing::Test
     }
 
     std::vector<float> Render(TextureHandle texture, uint32 width, uint32 height, float lod,
-                              uint32 mode = 0, float phase = 0.0f)
+                              uint32 mode = 0, float phase = 0.0f, float seed = 0.0f)
     {
         TextureDesc desc{};
         desc.width = width;
@@ -435,9 +440,10 @@ class TextureCoverageGPU : public testing::Test
         struct Push
         {
             float lod, cutoff, phaseX, phaseY;
-            uint32 mode, pad0;
+            uint32 mode;
+            float seed;
         };
-        const Push push{lod, .538f, phase, phase * .37f, mode, 0u};
+        const Push push{lod, .538f, phase, phase * .37f, mode, seed};
         auto commands = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         commands->Begin();
         commands->Barrier(ResourceBarrier::CreateTextureBarrier(target, ResourceState::Undefined, ResourceState::RenderTarget));
@@ -1751,6 +1757,100 @@ TEST_F(TextureCoverageGPU, InvalidMetadataCannotPublishUncorrectedRawTexture)
         m_Textures.Evict(guid);
         EXPECT_TRUE(WaitForUpload(guid).IsValid());
     }
+}
+
+// A far leaf reads the last levels of an ordinary mip chain, where the filtered alpha of a 0/1
+// mask is below the cutoff. The foliage coverage test of a grid of leaves keeps their base coverage
+// at the levels of 16 texels across and fewer, down to 1 x 1, where the cutoff test keeps no pixel.
+TEST_F(TextureCoverageGPU, FoliageCoverageKeepsTheBaseCoverageThroughTheMipTail)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kCutoffMode = 1, kFoliageMode = 2, kLeafCutoffMode = 4;
+    constexpr float kSixteenTexelLod = 2, kTailLod = 6; // 16 x 16 and 1 x 1 for the 64 x 64 image
+    const double reference = Coverage(Render(texture, 256, 256, 0, kCutoffMode));
+    ASSERT_GT(reference, 0.2);
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kFoliageMode)), Coverage(Render(texture, 256, 256, 0, kLeafCutoffMode)));
+    for (float lod = kSixteenTexelLod; lod <= kTailLod; lod += .5f)
+        EXPECT_NEAR(Coverage(Render(texture, 256, 256, lod, kFoliageMode)), reference, 0.03) << "lod " << lod;
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kLeafCutoffMode)), 0.0);
+}
+
+// A leaf fully inside its texture keeps the card border clear even at the coarsest footprint.
+TEST_F(TextureCoverageGPU, FoliageCoverageOfAFarLeafKeepsTheCardBorderClear)
+{
+    const GUID guid = Register(Image(false, 64, 64), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kCutoffMode = 1, kFoliageMode = 2, kSize = 256, kLeafPixels = 16;
+    constexpr float kTailLod = 6;
+    const double reference = Coverage(Render(texture, kSize, kSize, 0, kCutoffMode));
+    ASSERT_GT(reference, 0.2);
+    const auto pixels = Render(texture, kSize, kSize, kTailLod, kFoliageMode);
+    EXPECT_NEAR(Coverage(pixels), reference, 0.03);
+
+    uint32 coveredBorderPixels = 0;
+    for (uint32 pixelY = 0; pixelY < kSize; ++pixelY)
+    {
+        const uint32 localY = pixelY % kLeafPixels;
+        for (uint32 pixelX = 0; pixelX < kSize; ++pixelX)
+        {
+            const uint32 localX = pixelX % kLeafPixels;
+            const bool border = localX == 0 || localX == kLeafPixels - 1 ||
+                                localY == 0 || localY == kLeafPixels - 1;
+            coveredBorderPixels += border && pixels[(size_t(pixelY) * kSize + pixelX) * 4 + 3] > 0.5f;
+        }
+    }
+    EXPECT_EQ(coveredBorderPixels, 0u);
+}
+
+// Uniform alpha isolates the threshold from the shape shared by two aligned leaf textures.
+TEST_F(TextureCoverageGPU, FoliageCoverageOfOverlappingLeavesAddsUpOnlyWithDifferentSeeds)
+{
+    constexpr uint8 kUniformAlpha = 128;
+    const GUID guid = Register(Image(false, 64, 16, kUniformAlpha), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kFoliageMode = 2, kTwoLeafMode = 3;
+    constexpr float kTailLod = 6;
+    const double single = Coverage(Render(texture, 256, 256, kTailLod, kFoliageMode));
+    ASSERT_GT(single, 0.2);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoLeafMode, 0.0f, 0.0f)), single, 0.01);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoLeafMode, 0.0f, 0.5f)),
+                1.0 - (1.0 - single) * (1.0 - single), 0.03);
+}
+
+// The coverage pattern of far leaves is fixed to the leaves, so it does not crawl when they move
+// across the screen: moved by whole pixels, the covered pixels move with them.
+TEST_F(TextureCoverageGPU, FoliageCoverageMovesWithTheSurface)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kFoliageMode = 2, kSize = 256;
+    constexpr float kTailLod = 6;
+    constexpr int kShiftX = 100, kShiftY = 37; // The probe's phase moves x by phase and y by 0.37 phase.
+    const auto still = Render(texture, kSize, kSize, kTailLod, kFoliageMode);
+    const auto moved = Render(texture, kSize, kSize, kTailLod, kFoliageMode, float(kShiftX) / kSize);
+    // The readback row order differs between backends, so try both signs of each axis.
+    double best = 0.0;
+    for (const int signX : {-1, 1})
+        for (const int signY : {-1, 1})
+        {
+            const int dx = signX * kShiftX, dy = signY * kShiftY;
+            size_t same = 0, compared = 0;
+            for (int y = std::max(0, -dy); y < int(kSize) - std::max(0, dy); ++y)
+                for (int x = std::max(0, -dx); x < int(kSize) - std::max(0, dx); ++x)
+                {
+                    const bool a = still[(size_t(y + dy) * kSize + size_t(x + dx)) * 4 + 3] > .5f;
+                    const bool b = moved[(size_t(y) * kSize + size_t(x)) * 4 + 3] > .5f;
+                    same += a == b;
+                    ++compared;
+                }
+            best = std::max(best, double(same) / double(compared));
+        }
+    EXPECT_GT(best, 0.99);
 }
 
 TEST_F(TextureCoverageGPU, FullChainMaskedCardsMeasureIntegerFractionalAndPhaseCoverage)
