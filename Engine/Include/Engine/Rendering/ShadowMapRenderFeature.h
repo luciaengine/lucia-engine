@@ -708,7 +708,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     void CacheFrameData(Rendering::ViewId viewId, const CascadeFrameData& data);
     const CascadeFrameData* GetCachedFrameData(Rendering::ViewId viewId) const;
 
-    // Camera-motion round-robin cap (GE_SHADOW_MOTION_CAP, default 2; 0 = off):
+    // Camera-motion round-robin cap (GE_SHADOW_MOTION_CAP, default 1; 0 = off):
     // at most this many motion-class cascade renders PER (VIEW, FRAME) — each
     // shadow-casting view plans independently, so a frame's total motion
     // renders is cap × active cascade views. The rest keep their retained
@@ -1312,7 +1312,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     };
     std::unordered_map<Rendering::ViewId, MotionFramePlan> m_MotionPlanByView;
     CascadeMotionScheduler m_MotionScheduler;
-    uint32_t m_MotionCap = 2;    // env-overridable in the constructor; 0 = off
+    uint32_t m_MotionCap = 1;    // env-overridable in the constructor; 0 = off
     uint32_t m_MotionMaxAge = 2; // max consecutive deferrals per cascade
 
     // Classify every cascade pair's dirty cause (read-only peeks) and run the

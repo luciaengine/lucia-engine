@@ -2,7 +2,7 @@
 
 // CascadeMotionScheduler — round-robin render budget for camera-motion cascade
 // shadow updates (GE_SHADOW_MOTION_CAP; ShadowMapRenderFeature defaults the
-// cap to 2, env-overridable, 0 = off).
+// cap to 1, env-overridable, 0 = off).
 //
 // The CascadeShadowCache already classifies WHY a cascade slot would re-render.
 // Two of those causes — CameraChanged and CascadeFitChanged — are pure
