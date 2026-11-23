@@ -5,6 +5,7 @@
 #include "Assets/RuntimeHumanoidProfile.h"
 #include "Core/Engine.h"
 #include "Engine/Build/BuildPipeline.h"
+#include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "TestTempDir.h"
 
 #include <gtest/gtest.h>
@@ -127,4 +128,73 @@ TEST_F(PackagedAssetManifestTest, RuntimeSettingsSurviveExportAndPlayerManifestM
     EXPECT_EQ(boneLOD.BoneBudget, 24u);
     EXPECT_EQ(boneLOD.MandatoryPaths, (std::vector<std::vector<std::string>>{{"Root", "Hand"}}));
     playerAssets.Shutdown();
+}
+
+TEST_F(PackagedAssetManifestTest, ForestStandsAndNearBudgetsSurviveDesktopExport)
+{
+    constexpr float kTreeBoundRadius = 4.0f;
+    const std::string archive = "Forests/StandingTrees.geforest";
+    const auto sourceArchive = Assets / archive;
+    fs::create_directories(sourceArchive.parent_path());
+    using PageStreaming::PackedPlacement;
+    const std::array records{PackedPlacement{20, 40, 0, 0, 128}, PackedPlacement{80, 100, 24, 64, 255}};
+    const std::array pages{PageStreaming::PlacementPage{
+        .Origin = {4'000.0, 10.0, -6'000.0}, .LocalMin = {-6, -5, -6}, .LocalMax = {8, 15, 8},
+        .First = 0, .Count = static_cast<uint32>(records.size())}};
+    ASSERT_EQ(PageStreaming::WritePackedPlacementStore(sourceArchive, kTreeBoundRadius, pages, records), "");
+
+    const std::string secondArchive = "Forests/OtherTrees.geforest";
+    auto secondPage = pages.front();
+    secondPage.Count = 1;
+    ASSERT_EQ(PageStreaming::WritePackedPlacementStore(Assets / secondArchive, kTreeBoundRadius, std::span(&secondPage, 1u),
+                                                        std::span(records).first(1)), "");
+
+    GameConfig sourceConfig;
+    sourceConfig.ForestStands.push_back({
+        .Archive = archive, .Entity = "ForestOverview", .ImpostorModel = "Model.obj",
+        .DetailDistance = 275.0f, .NearMeshBudget = 96});
+    sourceConfig.ForestStands.push_back({.Archive = secondArchive, .Entity = "OtherOverview"});
+    ASSERT_TRUE(SaveGameConfig(Project / "game.config", sourceConfig));
+
+    BuildSettings build;
+    build.platformName = "Linux";
+    build.projectRoot = Project;
+    build.prebuiltPlayerDirectory = Runtime;
+    build.outputDirectory = Output;
+    build.compileScripts = false;
+    build.buildConfiguration = "Release";
+    build.playerConfig.gameName = "ForestExportProbe";
+    BuildPipeline pipeline(nullptr);
+    BuildProgress progress;
+    ASSERT_TRUE(pipeline.Execute(build, [&progress](const BuildProgress& current) { progress = current; }))
+        << progress.statusMessage << '\n' << testing::PrintToString(progress.errors);
+
+    const auto packaged = LoadGameConfig(Output / "game.config");
+    ASSERT_EQ(packaged.ForestStands.size(), 2u);
+    EXPECT_EQ(packaged.ForestStands[1].Archive, secondArchive);
+    EXPECT_EQ(packaged.ForestStands[1].Entity, "OtherOverview");
+    EXPECT_EQ(packaged.ForestStands[1].NearMeshBudget, 0u);
+    PageStreaming::PackedPlacementStore exportedSecond;
+    ASSERT_EQ(exportedSecond.Open(Output / "Assets" / secondArchive), "");
+    ASSERT_EQ(exportedSecond.Pages().size(), 1u);
+    EXPECT_EQ(exportedSecond.Pages().front().Count, 1u);
+    EXPECT_EQ(packaged.ForestStands.front().Archive, archive);
+    EXPECT_EQ(packaged.ForestStands.front().Entity, "ForestOverview");
+    EXPECT_EQ(packaged.ForestStands.front().ImpostorModel, "Model.obj");
+    EXPECT_FLOAT_EQ(packaged.ForestStands.front().DetailDistance, 275.0f);
+    EXPECT_EQ(packaged.ForestStands.front().NearMeshBudget, 96u);
+
+    PageStreaming::PackedPlacementStore store;
+    ASSERT_EQ(store.Open(Output / "Assets" / packaged.ForestStands.front().Archive), "");
+    ASSERT_EQ(store.Pages().size(), 1u);
+    EXPECT_EQ(store.Pages().front().Count, records.size());
+    EXPECT_EQ(store.Pages().front().Origin, pages.front().Origin);
+    const auto range = store.ReadRange(0);
+    ASSERT_TRUE(range);
+    ASSERT_EQ(range->Bytes, sizeof(records));
+    std::array<uint8, sizeof(records)> bytes{};
+    std::ifstream data(store.File(), std::ios::binary);
+    data.seekg(static_cast<std::streamoff>(range->Offset));
+    ASSERT_TRUE(data.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())));
+    EXPECT_TRUE(store.VerifyPage(0, bytes));
 }
