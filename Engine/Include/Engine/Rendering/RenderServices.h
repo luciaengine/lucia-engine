@@ -1503,11 +1503,15 @@ class RenderServices
     // synchronously around AddWorldPassForView and reset immediately after;
     // BuildPassResourcesRG reads it at declare time.
     void SetWorldPassExcludeEnvironment(bool exclude) { m_WorldPassExcludeEnvironment = exclude; }
-    // Re-runs every registered depth-emit callback for the view's light-space
-    // passes (cascades, area, spot, point), after clearing those streams.
-    // ShadowMapNode calls it once the frame's cascades are cached. The camera
-    // prepass stream is left alone: its heads come from the forward producers.
-    void EmitProducerDepthCommandsForView(Rendering::ViewId viewId);
+    /// Re-runs every registered depth-emit callback for the view's light-space passes (cascades,
+    /// area, spot, point), after it clears those streams and the view's cascade streams. The
+    /// camera prepass stream is left alone: its heads come from the forward producers.
+    /// @param frame The frame being declared, or null while batch keys are built.
+    /// @param cascades This frame's sun cascades of the view (ShadowMapNode, after the fit), or
+    ///        null when the view has no shadow-casting sun. Given only with DepthPassType::ShadowCascade.
+    void EmitProducerDepthCommandsForView(Rendering::ViewId viewId,
+                                          Rendering::RenderGraph::RGFrame* frame,
+                                          const DepthEmitCascades* cascades);
     // Build batch keys for a single view only (no global material/pipeline switching).
     void BuildWorldBatchKeysForView(Rendering::ViewId viewId);
     /// Adds this frame's world records. `setRevision` names an unchanged record set
@@ -1930,6 +1934,21 @@ class RenderServices
                                                   DepthPassType passType) const;
     bool HasDepthCommands(::GameEngine::Rendering::ViewId viewId,
                           DepthPassType passType) const;
+    /// Adds a draw to one sun cascade of the view. A ShadowCascade draw from EmitDepthCommand
+    /// draws into every cascade. Call only from a depth producer that received
+    /// DepthEmitContext::Cascades, with `cascade` below DepthEmitCascades::Count.
+    void EmitCascadeDepthCommand(::GameEngine::Rendering::ViewId viewId, uint32_t cascade,
+                                 const DrawCommand& command);
+    /// Makes the view's cascade pass `cascade` in `frame` read `buffer`: the indirect arguments
+    /// and the storage that its cascade draws read. This gives the graph the edge from the pass
+    /// that writes the buffer. `frame` is the frame that the buffer was imported into.
+    void EmitCascadeDepthBufferRead(::GameEngine::Rendering::RenderGraph::RGFrame& frame,
+                                    ::GameEngine::Rendering::ViewId viewId, uint32_t cascade,
+                                    ::GameEngine::Rendering::RenderGraph::RGBuffer buffer,
+                                    ::GameEngine::Rendering::RenderGraph::RGBufferRead access);
+    /// True when a producer drew into the sun cascade this frame, through the view-wide
+    /// ShadowCascade stream or through the cascade's own stream.
+    bool HasCascadeDepthCommands(::GameEngine::Rendering::ViewId viewId, uint32_t cascade) const;
     bool HasShadowCasters(::GameEngine::Rendering::ViewId viewId) const;
     bool ViewNeedsShadowCascadePasses(::GameEngine::Rendering::ViewId viewId) const;
     void ClearDepthCommands();

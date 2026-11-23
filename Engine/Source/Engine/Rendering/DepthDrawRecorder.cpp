@@ -16,6 +16,7 @@
 #include "Engine/Rendering/TextureService.h"
 #include "Engine/Rendering/ViewRegistry.h"
 #include "Engine/Rendering/WorldDrawBuilder.h"
+#include "Logger/Logger.h"
 #include "Platform/Environment.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
@@ -26,6 +27,7 @@
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "Types/FlatSet.h"
 
 #include <algorithm>
 #include <array>
@@ -34,6 +36,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <mutex>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -120,6 +123,34 @@ std::span<const DrawCommand> ContributorDepthCommands(const ViewRegistry& views,
         return {};
     const auto& cmds = pv->DepthCommands[static_cast<size_t>(passType)];
     return {cmds.data(), cmds.size()};
+}
+
+std::span<const DrawCommand> CascadeDepthCommands(const ViewRegistry& views, Rendering::ViewId viewId,
+                                                  uint32_t cascade,
+                                                  Rendering::GPUDrawStreamBuilder::SlicePhase phase)
+{
+    if (phase != Rendering::GPUDrawStreamBuilder::SlicePhase::A || cascade >= kMaxDepthEmitCascades)
+        return {};
+    const auto* pv = views.FindPerView(viewId);
+    if (!pv)
+        return {};
+    const auto& cmds = pv->CascadeDepthCommands[cascade];
+    return {cmds.data(), cmds.size()};
+}
+
+bool HasProducerDepthCommands(const ViewRegistry& views, Rendering::ViewId viewId, DepthPassType passType)
+{
+    constexpr auto kPhase = Rendering::GPUDrawStreamBuilder::SlicePhase::A;
+    if (!ContributorDepthCommands(views, viewId, passType, kPhase).empty())
+        return true;
+    if (passType != DepthPassType::ShadowCascade)
+        return false;
+    for (uint32_t cascade = 0; cascade < kMaxDepthEmitCascades; ++cascade)
+    {
+        if (!CascadeDepthCommands(views, viewId, cascade, kPhase).empty())
+            return true;
+    }
+    return false;
 }
 
 std::span<const DrawCommand> NonOccludingPrepassHeads(const ViewRegistry& views, Rendering::ViewId viewId)
@@ -228,6 +259,23 @@ PreparedDepthOnlyPass* AllocatePreparedDepthOnlyPass(Rendering::RenderGraph::RGF
 
 namespace
 {
+// A depth pass cannot draw a producer draw whose material it filters out (FilterDepthPassMaterial).
+// Logs once for each material. The lock keeps the set safe if two graphs prepare at the same time.
+void WarnRefusedContributorMaterial(const Material& material, DepthPassMaterialFilter filter)
+{
+    static std::mutex s_Mutex;
+    static FlatSet<GUID> s_Warned;
+    {
+        std::lock_guard lock(s_Mutex);
+        if (!s_Warned.Insert(material.GetGuid()))
+            return;
+    }
+    Logger::Log::Warning(
+        "A depth producer draw uses material '{}', which this depth pass cannot draw ({}). The draw is skipped. "
+        "Give the draw an Opaque or Mask material without Transmission.",
+        material.GetName(), filter == DepthPassMaterialFilter::AlphaBlend ? "alphaMode Blend" : "Transmission");
+}
+
 struct DepthBatchPreparation
 {
     const WorldDrawBuilder::BatchKey& Key;
@@ -344,6 +392,14 @@ class DepthPassPreparation
              !passView->NonOccludingPrepassDeclared)
                 ? NonOccludingPrepassHeads(m_Services.Views, m_Data.Params.ViewId)
                 : std::span<const DrawCommand>{};
+        // A conventional sun cascade also draws the producer draws of its own cascade. A virtual
+        // page draws none: a view with such draws falls back to the conventional cascade.
+        const auto cascadeCommands =
+            (m_Data.Params.PassType == DepthPassType::ShadowCascade && !virtualPage)
+                ? CascadeDepthCommands(m_Services.Views, m_Data.Params.ViewId, m_Data.Params.CascadeIndex,
+                                       m_Data.Params.Phase)
+                : std::span<const DrawCommand>{};
+        const size_t contributorCount = depthCommands.size() + cascadeCommands.size();
         m_CascadeIndex = Rendering::GPUDrawStreamBuilder::kCascadeIndexNone;
         if (virtualPage)
             m_CascadeIndex = m_Data.Params.VirtualCasterSlice;
@@ -363,7 +419,7 @@ class DepthPassPreparation
         const bool virtualPunctualProducer = virtualRoutePublished &&
             (m_Data.Params.PassType == DepthPassType::SpotShadow ||
              m_Data.Params.PassType == DepthPassType::PointShadow);
-        if (!depthCommands.empty() || !fallbackHeads.empty() || m_Services.CpuDrawStream ||
+        if (contributorCount != 0 || !fallbackHeads.empty() || m_Services.CpuDrawStream ||
             (virtualPage && !virtualRoutePublished) ||
             (m_Data.Params.PassType != DepthPassType::ShadowCascade && !virtualPunctualProducer))
         {
@@ -372,16 +428,16 @@ class DepthPassPreparation
         }
         LogMeshPassDiagnostic(
             "depth", "pass-enter", m_Data.Params.ViewId,
-            entityKeys.size(), depthCommands.size(),
+            entityKeys.size(), contributorCount,
             m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
 
         const bool runEntityDraws = !entityKeys.empty();
-        const bool hasAnyDraws = runEntityDraws || !depthCommands.empty() || !fallbackHeads.empty();
+        const bool hasAnyDraws = runEntityDraws || contributorCount != 0 || !fallbackHeads.empty();
         if (!hasAnyDraws)
         {
             LogMeshPassDiagnostic(
                 "depth", "pass-no-draws", m_Data.Params.ViewId,
-                entityKeys.size(), depthCommands.size(),
+                entityKeys.size(), contributorCount,
                 m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
             return true;
         }
@@ -399,14 +455,14 @@ class DepthPassPreparation
             m_Data.Params.PassType == DepthPassType::PointShadow;
         // The survivor stat is produced by the GPU scatter; the compat profile never
         // runs it, so an unguarded early-out would skip every shadow slice forever.
-        if (kShadowWalkEarlyOut && !virtualPage && !m_Services.CpuDrawStream && isOpaqueShadowSlice && depthCommands.empty() && m_Services.Streams)
+        if (kShadowWalkEarlyOut && !virtualPage && !m_Services.CpuDrawStream && isOpaqueShadowSlice && contributorCount == 0 && m_Services.Streams)
         {
             const uint32_t survivors = m_Services.Streams->PreviousFrameShadowSurvivors(
                 static_cast<uint32_t>(m_Data.Params.ViewId), m_CascadeIndex, m_Data.Params.Phase);
             if (survivors == 0u)
             {
                 LogMeshPassDiagnostic("depth", "walk-skip-empty-slice", m_Data.Params.ViewId,
-                                      entityKeys.size(), depthCommands.size(),
+                                      entityKeys.size(), contributorCount,
                                       m_Services.Streams->GetRangeCount());
                 MarkUnderDraw(DepthUnderDrawReason::EmptySlice);
                 return true;
@@ -504,6 +560,8 @@ class DepthPassPreparation
             }
         }
         for (const auto& command : depthCommands)
+            PrepareContributor(command);
+        for (const auto& command : cascadeCommands)
             PrepareContributor(command);
         for (const auto& command : fallbackHeads)
             PrepareContributor(command);
@@ -954,16 +1012,25 @@ class DepthPassPreparation
         }
     }
 
+    // A contributor draws through the pipeline it pins (InternedPipeline), or, without one, through
+    // the depth variant of its material (PrepareMaterialContributor).
     void PrepareContributor(const DrawCommand& command)
     {
         if (m_Services.Meshes.IsBufferInStorageDomain(command.Geometry.AltGeom.VB, Rendering::MeshGPUStorageDomain::ClusterFine) ||
             m_Services.Meshes.IsBufferInStorageDomain(command.Geometry.AltGeom.IB, Rendering::MeshGPUStorageDomain::ClusterFine))
             return;
-        Rendering::PipelineHandle pipeline{};
-        if (command.InternedPipeline.IsValid())
-            pipeline = m_Context.PreparePipeline(command.InternedPipeline);
-        if (!pipeline.IsValid())
+        if (!command.InternedPipeline.IsValid())
+        {
+            if (command.Material)
+                PrepareMaterialContributor(command, *command.Material);
             return;
+        }
+        const Rendering::PipelineHandle pipeline = m_Context.PreparePipeline(command.InternedPipeline);
+        if (!pipeline.IsValid())
+        {
+            MarkUnderDraw(DepthUnderDrawReason::DepthVariantPending);
+            return;
+        }
         PreparedDrawBindings bindings;
         if (command.Material)
             bindings = m_Services.Materials.Binder().PrepareMaterialForDraw(m_Data.Inputs, *command.Material, pipeline, command.PipelineMeta,
@@ -979,6 +1046,84 @@ class DepthPassPreparation
         geometry.indexType = static_cast<uint32_t>(command.Geometry.AltGeom.IndexType);
         Append(command, bindings, geometry, Rendering::VertexAttributeFlags::None);
         m_Data.Draws.back().ConcretePipeline = m_Context.ResolveGraphicsPipelineId(command.InternedPipeline);
+    }
+
+    // A producer draw that names its material and its keywords (DrawCommand::PassKeywords) and no
+    // pipeline: the recorder resolves the material's depth variant for this pass. The geometry is a
+    // registry mesh (Geometry.Mesh) or raw buffers (AltGeom, laid out as command.VertexFlags).
+    void PrepareMaterialContributor(const DrawCommand& command, const Material& material)
+    {
+        const DepthPassMaterialFilter filter = FilterDepthPassMaterial(
+            m_Data.Params.PassType, material.GetAlphaMode(),
+            Rendering::HasKeyword(material.GetVariantKey().materialKeywords,
+                                  Rendering::MaterialKeyword::Transmission));
+        if (filter != DepthPassMaterialFilter::Draws)
+        {
+            WarnRefusedContributorMaterial(material, filter);
+            return;
+        }
+
+        DrawCommand draw = command;
+        const Rendering::MeshGPUEntry* mesh = nullptr;
+        Rendering::MeshGPUEntryBindings geometry{};
+        Rendering::VertexAttributeFlags vertexFlags = command.VertexFlags;
+        Rendering::PrimitiveTopology topology = Rendering::PrimitiveTopology::TriangleList;
+        if (command.Geometry.Mesh.IsValid())
+        {
+            mesh = m_Services.Meshes.Find(command.Geometry.Mesh);
+            if (!mesh)
+            {
+                MarkUnderDraw(DepthUnderDrawReason::MeshPending);
+                return;
+            }
+            if (!m_Services.Meshes.TryGetDrawableBindings(*mesh, geometry) || mesh->indexCount == 0)
+            {
+                MarkUnderDraw(DepthUnderDrawReason::MeshNotDrawable, mesh);
+                return;
+            }
+            geometry.indexType = mesh->indexType;
+            vertexFlags = Rendering::BoundStreamVertexFlags(*mesh, geometry, material.IgnoresVertexColor());
+            topology = mesh->topology;
+            // A draw without its own index range draws the whole mesh, as the world pass does.
+            if (!draw.UseIndirect && draw.SubDraws.empty() && draw.IndexCount == 0)
+            {
+                draw.IndexCount = mesh->indexCount;
+                draw.FirstIndex = mesh->firstIndex;
+                draw.VertexOffset = static_cast<int32_t>(mesh->vertexOffset);
+            }
+        }
+        else
+        {
+            geometry.coreVB = command.Geometry.AltGeom.VB;
+            geometry.indexBuffer = command.Geometry.AltGeom.IB;
+            geometry.indexType = static_cast<uint32_t>(command.Geometry.AltGeom.IndexType);
+        }
+
+        const bool masked = material.GetAlphaMode() == MaterialAlphaMode::Mask;
+        const Rendering::MaterialKeyword keywords =
+            masked ? command.PassKeywords | Rendering::MaterialKeyword::DepthOnlyFragment : command.PassKeywords;
+        const auto [pipeline, variant, concreteId] = m_Services.Materials.Variants().PrepareDepthInstancedVariant(
+            material, vertexFlags, topology, keywords, m_Data.Params.RasterizationSamples,
+            m_Data.Params.DepthBiasEnable, m_Data.Params.DepthClampEnable, m_Services.FrontFace, m_Context);
+        if (!pipeline.IsValid() || !variant)
+        {
+            MarkUnderDraw(DepthUnderDrawReason::DepthVariantPending, mesh);
+            return;
+        }
+        // A fragment stage brings the material's own sets (0 derives the count from the variant meta).
+        const uint32_t setCount =
+            masked ? 0u : std::max<uint32_t>(1u, static_cast<uint32_t>(variant->SetLayouts.size()));
+        PassBindingContext inputs = m_Data.Inputs;
+        inputs.PassKeywords = keywords;
+        const PreparedDrawBindings bindings = m_Services.Materials.Binder().PrepareMaterialForDraw(
+            inputs, material, pipeline, variant->VariantMeta.get(), command.Bindings, setCount, variant->SetLayouts);
+        if (!bindings.Pipeline.IsValid())
+        {
+            MarkUnderDraw(DepthUnderDrawReason::BindPending, mesh);
+            return;
+        }
+        Append(draw, bindings, geometry, vertexFlags, variant->MaterialVersion, material.GetGpuSceneMaterialIndex());
+        m_Data.Draws.back().ConcretePipeline = concreteId;
     }
 
     DrawStreamLookupKey Lookup(const WorldDrawBuilder::BatchKey& key,

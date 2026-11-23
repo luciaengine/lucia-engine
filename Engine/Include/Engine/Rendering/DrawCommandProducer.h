@@ -1,8 +1,13 @@
 #pragma once
 
+#include "Mathematics/Matrix4x4.h"
+#include "Mathematics/Vector3.h"
+#include "Mathematics/Vector3Int.h"
+#include "Mathematics/Vector4.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Handle.h"
 
+#include <array>
 #include <cstdint>
 
 namespace GameEngine::Rendering
@@ -115,12 +120,43 @@ struct ForwardProducerOptions
     bool RequiresFrame = false;
 };
 
+/// The most sun cascades that a depth producer receives. Equal to kMaxShadowCascades.
+inline constexpr uint32_t kMaxDepthEmitCascades = 4;
+
+/// One cascade of the view's shadow-casting sun, as the shadow feature fitted it for this frame.
+struct DepthEmitCascade
+{
+    /// Light clip space from world space relative to DepthEmitCascades::RenderOriginSector.
+    /// Orthographic, reverse-Z: depth grows toward the light.
+    Mathematics::Matrix4x4 LightViewProjectionRel;
+    /// The planes that the cascade's casters are culled to, relative to the same sector, normals
+    /// toward the inside. The near plane passes everything: a caster nearer the light clamps to
+    /// the near depth. The side planes hold the caster footprint.
+    std::array<Mathematics::Vector4, 6> CasterPlanes{};
+    /// Half the side of the cascade, in meters.
+    float OrthoHalfExtent = 0.0f;
+};
+
+/// The sun cascades of one view for one frame.
+struct DepthEmitCascades
+{
+    /// The sector that the matrices and planes are relative to: the camera's render origin.
+    Mathematics::Vector3Int RenderOriginSector{};
+    /// Unit vector from a surface toward the light.
+    Mathematics::Vector3 TowardLight{};
+    /// Texels on each side of a cascade layer.
+    uint32_t Resolution = 0;
+    uint32_t Count = 0;
+    std::array<DepthEmitCascade, kMaxDepthEmitCascades> Cascades{};
+};
+
 // Parameter bag passed to a registered depth-emit callback. Producers push
 // DrawCommand records into the per-(view, passType) depth command stream via
-// EmitDepthCommand(); the depth-pass execute lambda later iterates that
-// stream and records draws through MaterialBinder. Registered depth producers
-// serve the light-space passes; the camera prepass draws the heads forward
-// producers emit beside their colour draws (ForwardDrawDepth::Prepass and PrepassNonOccluding).
+// EmitDepthCommand(), or into one sun cascade via EmitCascadeDepthCommand();
+// the depth-pass execute lambda later iterates those streams and records draws
+// through MaterialBinder. Registered depth producers serve the light-space
+// passes; the camera prepass draws the heads forward producers emit beside
+// their colour draws (ForwardDrawDepth::Prepass and PrepassNonOccluding).
 //
 // No CommandList here — emit runs before pass execution. The per-cascade
 // camera/light UBO referenced by callback bindings (e.g. terrain's
@@ -134,6 +170,11 @@ struct DepthEmitContext
 
     ::GameEngine::Rendering::ViewId ViewId{};
     uint32_t FrameIndex = 0;
+    /// The frame being declared. Null in the emit that runs while batch keys are built.
+    ::GameEngine::Rendering::RenderGraph::RGFrame* Frame = nullptr;
+    /// This frame's sun cascades. Set only in the ShadowMap node's emit for a view with a
+    /// shadow-casting sun, and only for DepthPassType::ShadowCascade.
+    const DepthEmitCascades* Cascades = nullptr;
 };
 
 } // namespace GameEngine::Engine::Renderer

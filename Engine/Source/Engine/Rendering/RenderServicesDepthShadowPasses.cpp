@@ -196,11 +196,17 @@ bool RenderServices::HasShadowCasters(Rendering::ViewId viewId) const
     // package producer) submits each instance to each view of its world whose
     // layers it overlaps, and the shadow cull drops instances outside the
     // view's layers, so an instance with no submission here casts nothing here.
-    return m_WorldDrawBuilder.HasShadowCastingSubmissions(viewId) ||
-           HasDepthCommands(viewId, DepthPassType::ShadowCascade) ||
-           HasDepthCommands(viewId, DepthPassType::AreaShadow) ||
-           HasDepthCommands(viewId, DepthPassType::SpotShadow) ||
-           HasDepthCommands(viewId, DepthPassType::PointShadow);
+    if (m_WorldDrawBuilder.HasShadowCastingSubmissions(viewId) ||
+        HasDepthCommands(viewId, DepthPassType::AreaShadow) ||
+        HasDepthCommands(viewId, DepthPassType::SpotShadow) ||
+        HasDepthCommands(viewId, DepthPassType::PointShadow))
+        return true;
+    for (uint32_t cascade = 0; cascade < kMaxDepthEmitCascades; ++cascade)
+    {
+        if (HasCascadeDepthCommands(viewId, cascade))
+            return true;
+    }
+    return false;
 }
 
 bool RenderServices::ViewNeedsShadowCascadePasses(Rendering::ViewId viewId) const

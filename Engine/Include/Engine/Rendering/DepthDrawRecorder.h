@@ -361,6 +361,16 @@ std::span<const DrawCommand> ContributorDepthCommands(const ViewRegistry& views,
                                                       DepthPassType passType,
                                                       Rendering::GPUDrawStreamBuilder::SlicePhase phase);
 
+// The registered depth producers' draws for one sun cascade of the view (ViewRegistry::
+// PerViewResources::CascadeDepthCommands). Phase A draws them whole, like ContributorDepthCommands.
+std::span<const DrawCommand> CascadeDepthCommands(const ViewRegistry& views, Rendering::ViewId viewId,
+                                                  uint32_t cascade,
+                                                  Rendering::GPUDrawStreamBuilder::SlicePhase phase);
+
+// True when the registered depth producers drew for `passType` in the view this frame: the view-wide
+// stream, and for ShadowCascade also any cascade stream. A virtual shadow page cannot draw them.
+bool HasProducerDepthCommands(const ViewRegistry& views, Rendering::ViewId viewId, DepthPassType passType);
+
 // The heads of the view's ForwardDrawDepth::PrepassNonOccluding draws this frame: what the
 // non-occluding prepass draws after DepthResolve, or the camera prepass when none was declared.
 std::span<const DrawCommand> NonOccludingPrepassHeads(const ViewRegistry& views, Rendering::ViewId viewId);

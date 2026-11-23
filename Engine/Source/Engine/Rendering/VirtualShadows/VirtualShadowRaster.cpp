@@ -164,9 +164,7 @@ RenderGraph::RGBuffer VirtualShadowRenderFeature::DeclarePages(RenderGraph::RGFr
         if (!bit || *bit >= entryCount)
             continue;
         const auto passType = PagePassType(work.Page.Family);
-        if (passType == DepthPassType::Count ||
-            !ContributorDepthCommands(services.Views(), context.View, passType,
-                                     Rendering::GPUDrawStreamBuilder::SlicePhase::A).empty())
+        if (passType == DepthPassType::Count || HasProducerDepthCommands(services.Views(), context.View, passType))
             continue;
         const auto pageCamera = PageCamera(layout.Projections[index], work.Page, cameras[index]);
         if (!pageCamera)

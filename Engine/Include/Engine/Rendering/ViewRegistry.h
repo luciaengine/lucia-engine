@@ -165,6 +165,21 @@ public:
         // the entity bucketer), so its slot stays empty. Same lifetime as above.
         std::array<std::vector<DrawCommand>, static_cast<size_t>(DepthPassType::Count)>
             DepthCommands;
+        // Sun-cascade draws of the registered depth producers, one stream per cascade
+        // (RenderServices::EmitCascadeDepthCommand). A ShadowCascade draw in DepthCommands draws
+        // into every cascade; a draw here draws only into its own. Same lifetime as DepthCommands.
+        std::array<std::vector<DrawCommand>, kMaxDepthEmitCascades> CascadeDepthCommands;
+        // A buffer that the draws of one cascade read (RenderServices::EmitCascadeDepthBufferRead).
+        // The cascade pass of the frame that the buffer was imported into declares the read.
+        struct CascadeDepthBufferRead
+        {
+            Rendering::RenderGraph::RGBuffer Buffer{};
+            Rendering::RenderGraph::RGBufferRead Access =
+                Rendering::RenderGraph::RGBufferRead::Storage;
+            Rendering::RenderGraph::RGFrameStamp For;
+            uint8_t Cascade = 0;
+        };
+        std::vector<CascadeDepthBufferRead> CascadeDepthBufferReads;
         // Prepass heads of ForwardDrawDepth::PrepassNonOccluding draws. The non-occluding prepass
         // draws them after DepthResolve; when it was not declared for the view this frame
         // (NonOccludingPrepassDeclared false at execution), the camera prepass draws them.

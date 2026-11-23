@@ -475,7 +475,7 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
         // only (no cascades, no tint) through the SAME feature->Declare entry —
         // a null DirectionalLightDirWS makes Declare skip cascade+tint and emit
         // area/spot/point, matching the pre-fold direct rs->Add* calls exactly.
-        rs->EmitProducerDepthCommandsForView(viewId);
+        rs->EmitProducerDepthCommandsForView(viewId, &d.Frame, nullptr);
         FeatureDeclareContext fctx = rs->MakeFeatureDeclareContext(
             d.Frame, viewId, m_NumCascades, PunctualResolution(), /*directionalLightDirWS=*/nullptr,
             [&d](const char* suffix) { return d.PassName(suffix); });
@@ -504,7 +504,10 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
         m_MaxShadowDistance, m_SplitLambda, m_DepthBias, m_NormalBias, m_FitShadowDistanceToScene};
     const CascadeFrameData cascadeFrame =
         feature->FitViewCascades(*rs, viewId, worldId, *camData, *shadowLight, authored);
-    rs->EmitProducerDepthCommandsForView(viewId);
+    // The producers emit after the fit and before the cascades declare, so a producer culls to
+    // the same cascades that this frame draws, and the declares see its draws.
+    const DepthEmitCascades producerCascades = feature->DescribeCascadesForDepthProducers(cascadeFrame);
+    rs->EmitProducerDepthCommandsForView(viewId, &d.Frame, &producerCascades);
 
     // SDSM DepthReduce — GRAPHICS queue deliberately: the frame driver's
     // SubmissionToken contract stamps the GRAPHICS timeline (GPUCulling.h), and
