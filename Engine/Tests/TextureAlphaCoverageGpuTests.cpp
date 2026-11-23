@@ -1755,25 +1755,25 @@ TEST_F(TextureCoverageGPU, InvalidMetadataCannotPublishUncorrectedRawTexture)
 }
 
 // A far leaf reads the last levels of an ordinary mip chain, where the filtered alpha of a 0/1
-// mask is below the cutoff. The foliage coverage test keeps the base coverage at the levels of 4
-// texels across and fewer, down to 1 x 1, where the cutoff test keeps no pixel.
+// mask is below the cutoff. The foliage coverage test of a grid of leaves keeps their base coverage
+// at the levels of 4 texels across and fewer, down to 1 x 1, where the cutoff test keeps no pixel.
 TEST_F(TextureCoverageGPU, FoliageCoverageKeepsTheBaseCoverageThroughTheMipTail)
 {
     const GUID guid = Register(Image(), false);
     const auto texture = WaitForUpload(guid);
     ASSERT_TRUE(texture.IsValid());
-    constexpr uint32 kCutoffMode = 1, kFoliageMode = 2;
+    constexpr uint32 kCutoffMode = 1, kFoliageMode = 2, kLeafCutoffMode = 4;
     constexpr float kFourTexelLod = 4, kTailLod = 6; // 4 x 4 and 1 x 1 for the 64 x 64 image
     const double reference = Coverage(Render(texture, 256, 256, 0, kCutoffMode));
     ASSERT_GT(reference, 0.2);
-    EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kFoliageMode)), reference);
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kFoliageMode)), Coverage(Render(texture, 256, 256, 0, kLeafCutoffMode)));
     for (float lod = kFourTexelLod; lod <= kTailLod; lod += .5f)
         EXPECT_NEAR(Coverage(Render(texture, 256, 256, lod, kFoliageMode)), reference, 0.03) << "lod " << lod;
-    EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kCutoffMode)), 0.0);
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kLeafCutoffMode)), 0.0);
 }
 
-// Two far leaves in one pixel with the same seed pass together and cover only c. With different
-// seeds they pass independently and cover 1 - (1 - c)^2, as separate leaves do.
+// Two layers of far leaves with the same seeds pass together and cover only c. When a leaf covers
+// a leaf of another index, the two pass independently and cover 1 - (1 - c)^2, as separate leaves do.
 TEST_F(TextureCoverageGPU, FoliageCoverageOfOverlappingLeavesAddsUpOnlyWithDifferentSeeds)
 {
     const GUID guid = Register(Image(), false);
@@ -1788,8 +1788,8 @@ TEST_F(TextureCoverageGPU, FoliageCoverageOfOverlappingLeavesAddsUpOnlyWithDiffe
                 1.0 - (1.0 - single) * (1.0 - single), 0.03);
 }
 
-// The coverage pattern of a far leaf is fixed to the leaf, so it does not crawl when the leaf moves
-// across the screen: moved by whole pixels, the covered pixels move with it.
+// The coverage pattern of far leaves is fixed to the leaves, so it does not crawl when they move
+// across the screen: moved by whole pixels, the covered pixels move with them.
 TEST_F(TextureCoverageGPU, FoliageCoverageMovesWithTheSurface)
 {
     const GUID guid = Register(Image(), false);

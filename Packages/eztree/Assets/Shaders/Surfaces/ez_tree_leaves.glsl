@@ -47,21 +47,17 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     float leafAlpha = GE_EZTreeLeafAlpha(albedo);
     // A far leaf is smaller than a pixel, so its sample reads one of the last levels, where the
     // filtered alpha is the leaf's covered share and is below the cutoff. There the coverage test
-    // keeps that share of pixels. Color textures filter their mips with alpha-weighted color
-    // (TextureCook.h), so the color of those levels is the leaf color. The leaf's seed (UV1.x, the
-    // same at every vertex of its cards) keeps overlapping leaves independent.
-    float pixelScale = GE_FoliagePixelScale(dFdx(uvAlbedo), dFdy(uvAlbedo));
-    float tailWeight = GE_FoliageTailWeight(pixelScale, GE_MATERIAL_MIP_BIAS);
+    // keeps that share: the threshold is the leaf's seed (UV1.x, the same at every vertex of its
+    // cards, spread over [0, 1) along the leaf index), so a leaf passes where its filtered alpha is
+    // above its seed. The pattern moves with the leaf, overlapping leaves pass independently, and
+    // the test costs no hash. Color textures filter their mips with alpha-weighted color
+    // (TextureCook.h), so the color of those levels is the leaf color.
+    float tailWeight = GE_FoliageTailWeight(dFdx(uvAlbedo), dFdy(uvAlbedo), GE_MATERIAL_MIP_BIAS);
     float colorTrust = max(smoothstep(0.45, 0.95, leafAlpha), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
-    // At weight 0 the opacity does not depend on the threshold. Near leaves skip the hash, which is
-    // most of the cost of the depth and shadow passes.
-    float threshold = 0.5;
-    if (tailWeight > 0.0)
-        threshold = GE_FoliageSurfaceThreshold(uvAlbedo, pixelScale, sIn.uv1.x);
     o.opacity = GE_FoliageCoverageOpacity(leafAlpha * Mat.uBaseColor.a, clamp(Props.alphaCutoff, 0.0, 1.0),
-                                          tailWeight, threshold);
+                                          tailWeight, sIn.uv1.x);
 
     vec4 mr = texture(metallicRoughnessMap, uvMR);
     o.roughness = mr.g * Mat.uParams0.y;
