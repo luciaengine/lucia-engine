@@ -20,11 +20,18 @@ float GE_FoliageShapeGradient(float mipBias)
     return kFoliageShapeFootprint * exp2(-mipBias);
 }
 
-// UV per pixel of a sample with screen derivatives `uvDx` and `uvDy` and mip bias `mipBias`, along
-// the longer axis. The sampler reads the level with about 1 / footprint texels across.
+// The anisotropy of the material samplers (RendererProfile's material anisotropy).
+const float kFoliageMaxAnisotropy = 16.0;
+
+// UV per pixel of the level a material sampler reads for screen derivatives `uvDx` and `uvDy` and
+// mip bias `mipBias`: the shorter axis, or the longer axis over the anisotropy where that is coarser.
+// A card seen edge-on near the camera keeps its fine level and its cutoff test.
 float GE_FoliageFootprint(vec2 uvDx, vec2 uvDy, float mipBias)
 {
-    return max(max(length(uvDx), length(uvDy)), 1e-6) * exp2(mipBias);
+    float lengthX = length(uvDx);
+    float lengthY = length(uvDy);
+    float level = max(min(lengthX, lengthY), max(lengthX, lengthY) / kFoliageMaxAnisotropy);
+    return max(level, 1e-6) * exp2(mipBias);
 }
 
 // The coverage test blends in from 32 to 16 texels across the footprint.

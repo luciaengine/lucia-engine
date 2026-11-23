@@ -197,7 +197,9 @@ class TextureCoverageGPU : public testing::Test
         m_Materials.Initialize(m_Device.get());
         ASSERT_TRUE(m_Textures.Initialize(m_Device.get(), m_Materials,
                                           RendererProfile::FromCapabilities(m_Device->GetCapabilities())));
-        m_Sampler = m_Device->CreateSampler(SamplerDesc::MaterialLinearRepeat("Coverage.Trilinear"));
+        // The material sampler: trilinear with the profile's anisotropy, as SamplerPreset::LinearRepeat.
+        m_Sampler = m_Device->CreateSampler(ResolveSamplerPreset(
+            SamplerPreset::LinearRepeat, RendererProfile::FromCapabilities(m_Device->GetCapabilities())));
         ASSERT_TRUE(m_Sampler.IsValid());
         DescriptorBinding binding{};
         binding.binding = 0;
@@ -1903,6 +1905,26 @@ TEST_F(TextureCoverageGPU, MaskedCardTintUnderTheCutoffStaysHiddenAtRange)
     EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kTintedCardMode, 0.0f, kHiddenTint)), 0.0);
     EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kTintedCardMode, 0.0f, kHiddenTint)), 0.0);
     EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTintedCardMode, 0.0f, kOpaqueTint)), reference, 0.03);
+}
+
+// A card seen edge-on near the camera has a coarse footprint along one axis only. The anisotropic
+// sampler still reads its fine level, so the mask keeps its cutoff test, pixel for pixel.
+TEST_F(TextureCoverageGPU, MaskedCardSeenEdgeOnKeepsItsCutoffTest)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kProductionMode = 8, kCutoffMode = 9;
+    constexpr float kGrazingLod = 3.5f; // 2^3.5 = 11 texels along x, one along y: inside 16x anisotropy
+    const auto production = Render(texture, 256, 256, kGrazingLod, kProductionMode);
+    const auto cutoff = Render(texture, 256, 256, kGrazingLod, kCutoffMode);
+    if (RendererProfile::FromCapabilities(m_Device->GetCapabilities()).MaterialSamplerAnisotropy < 16.0f)
+        GTEST_SKIP() << "the device filters with less than the 16x anisotropy kFoliageMaxAnisotropy assumes";
+    ASSERT_GT(Coverage(cutoff), 0.2);
+    size_t differing = 0;
+    for (size_t pixel = 0; pixel < production.size() / 4; ++pixel)
+        differing += (production[pixel * 4 + 3] > .5f) != (cutoff[pixel * 4 + 3] > .5f);
+    EXPECT_EQ(differing, 0u);
 }
 
 TEST_F(TextureCoverageGPU, FullChainMaskedCardsMeasureIntegerFractionalAndPhaseCoverage)

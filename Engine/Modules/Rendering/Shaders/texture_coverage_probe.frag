@@ -33,6 +33,26 @@ float MaskedCard(vec2 position,float alphaScale)
     float alpha=textureGrad(sourceImage,fract(position*kLeaves),vec2(shapeFootprint,0.0),vec2(0.0,shapeFootprint)).a;
     return GE_MaskCoverageOpacity(alpha,alphaScale,probe.cutoff,GE_FoliageTailWeight(footprint),CardSeed(position,0u));
 }
+// A grazing card: the sample's footprint is 2^probe.lod texels along x and one texel along y, as a
+// card seen edge-on. Mode 8 selects its test from the production footprint, as standard_pbr does;
+// mode 9 is the cutoff test of the same sample.
+float GrazingCard(vec2 position,bool production)
+{
+    vec2 size=vec2(textureSize(sourceImage,0));
+    vec2 uv=fract(position*kLeaves);
+    vec2 uvDx=vec2(exp2(probe.lod)/size.x,0.0);
+    vec2 uvDy=vec2(0.0,1.0/size.y);
+    float alpha=textureGrad(sourceImage,uv,uvDx,uvDy).a;
+    if(!production)
+        return step(probe.cutoff,alpha);
+    float footprint=GE_FoliageFootprint(uvDx,uvDy,0.0);
+    float tail=GE_FoliageTailWeight(footprint);
+    if(tail<=0.0)
+        return step(probe.cutoff,alpha);
+    float shape=GE_FoliageShapeGradient(0.0);
+    alpha=textureGrad(sourceImage,uv,vec2(shape,0.0),vec2(0.0,shape)).a;
+    return GE_MaskCoverageOpacity(alpha,1.0,probe.cutoff,tail,CardSeed(position,0u));
+}
 // The production coverage test of the leaf at `position`, read at probe.lod as a sampler would.
 float Foliage(vec2 position,float layerSeed)
 {
@@ -62,6 +82,7 @@ void main()
     // Mode 5: the coverage test of masked cards of instance 0.
     // Mode 6: two instances of masked cards, 0 and the instance of probe.seed's bits (0: the same instance).
     // Mode 7: the masked cards of mode 5 with the tint alpha probe.seed.
+    // Modes 8 and 9: grazing cards with the production test and with the cutoff test.
     float opacity=textureLod(sourceImage,fract(position*kLeaves),probe.lod).a;
     if(probe.mode==2u)
         opacity=Foliage(position,LeafSeed(position,0u));
@@ -73,6 +94,8 @@ void main()
         opacity=max(Foliage(position,CardSeed(position,0u)),Foliage(position,CardSeed(position,floatBitsToUint(probe.seed))));
     else if(probe.mode==7u)
         opacity=MaskedCard(position,probe.seed);
+    else if(probe.mode==8u||probe.mode==9u)
+        opacity=GrazingCard(position,probe.mode==8u);
     if(opacity<probe.cutoff) discard;
     result=vec4(1.0);
 }
