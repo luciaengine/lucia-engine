@@ -57,6 +57,7 @@ using OceanFFTCollisionRef = AssetRef<AssetType::OceanFFTCollision>;
 using OceanSettingsRef = AssetRef<AssetType::OceanSettings>;
 using OceanPresetRef = AssetRef<AssetType::OceanPreset>;
 using ParticleStackRef = AssetRef<AssetType::ParticleStack>;
+using ForestPlacementArchiveRef = AssetRef<AssetType::ForestPlacementArchive>;
 
 } // namespace GameEngine::Components
 
