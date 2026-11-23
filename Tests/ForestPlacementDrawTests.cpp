@@ -26,6 +26,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -636,6 +637,8 @@ protected:
         m_Device = Rendering::DeviceFactory::CreateDevice(desc);
         if (!m_Device || !m_Device->Initialize(desc))
             GTEST_SKIP() << "No Vulkan device";
+        ASSERT_TRUE(m_Services.Initialize(m_Device.get()));
+        m_Main = std::make_unique<Window>(m_Device.get());
         const auto file = m_Scratch.Path() / "session.geforest";
         WriteStore(file);
         std::string error;
@@ -655,17 +658,32 @@ protected:
             return;
         m_Session.reset();
         m_Device->WaitForIdle();
+        m_Other.reset();
+        m_Main.reset();
+        m_Services.Shutdown();
         m_Device->Shutdown();
     }
 
-    // Declares one frame of the session into each view in turn and submits it. True where the session drew.
-    std::vector<bool> Emit(uint64 frameIndex, std::initializer_list<Rendering::ViewId> views)
+    // The frame stream of one window: its graph keeps its own frame numbers.
+    struct Window
     {
-        using namespace Rendering::RenderGraph;
-        RGResourcePool persistent(m_Device.get());
-        RGTransientPool transient(m_Device.get());
-        RGUploadRing ring(m_Device.get(), 2, 256 * 1024);
-        RGFrame graph(m_Device.get(), &persistent, &transient, &ring);
+        explicit Window(Rendering::IDevice* device)
+            : Persistent(device), Transient(device), Ring(device, 2, 256 * 1024),
+              Graph(device, &Persistent, &Transient, &Ring)
+        {
+        }
+
+        Rendering::RenderGraph::RGResourcePool Persistent;
+        Rendering::RenderGraph::RGTransientPool Transient;
+        Rendering::RenderGraph::RGUploadRing Ring;
+        Rendering::RenderGraph::RGFrame Graph;
+    };
+
+    // Declares frame `frameIndex` of the window's graph into each view in turn and submits it. Call it
+    // after BeginWorldDrawFrame. True where the session drew.
+    std::vector<bool> EmitInto(Window& window, uint64 frameIndex, std::initializer_list<Rendering::ViewId> views)
+    {
+        auto& graph = window.Graph;
         EXPECT_TRUE(m_Device->BeginFrame());
         graph.BeginFrame(frameIndex);
         std::vector<bool> drew;
@@ -680,6 +698,13 @@ protected:
         m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
         m_Device->WaitForIdle();
         return drew;
+    }
+
+    // Starts an app frame and declares frame `frameIndex` of the main window into the views.
+    std::vector<bool> Emit(uint64 frameIndex, std::initializer_list<Rendering::ViewId> views)
+    {
+        m_Services.BeginWorldDrawFrame();
+        return EmitInto(*m_Main, frameIndex, views);
     }
 
     bool Emit(uint64 frameIndex) { return Emit(frameIndex, {m_View}).front(); }
@@ -703,6 +728,8 @@ protected:
     std::shared_ptr<Engine::Renderer::ForestPlacementSession> m_Session;
     Rendering::ViewId m_View{};
     Rendering::ViewId m_SceneView{};
+    std::unique_ptr<Window> m_Main;
+    std::unique_ptr<Window> m_Other;
 };
 
 // The corner of this card reaches 10 + 4 * sqrt(2) m from the root, past the archive's 12 m.
@@ -762,6 +789,28 @@ TEST_F(ForestPlacementSessionDeviceTest, TheSceneViewTakesTheDetailsWhenTheGameV
     EXPECT_EQ(Emit(4, {m_SceneView}), (std::vector{false}));
     EXPECT_EQ(Emit(5, {m_SceneView}), (std::vector{true}));
     EXPECT_EQ(Emit(6, {m_View, m_SceneView}), (std::vector{true, false}));
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, AGameViewInItsOwnWindowTakesTheDetailsFromTheSceneView)
+{
+    // Each window counts its own frames: the Scene View window is far ahead of the Game view window.
+    m_Other = std::make_unique<Window>(m_Device.get());
+    Emit(100, {m_SceneView});
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EXPECT_EQ(Emit(101, {m_SceneView}), (std::vector{true}));
+    EXPECT_EQ(m_Session->Graph, &m_Main->Graph);
+
+    m_Services.BeginWorldDrawFrame();
+    EXPECT_EQ(EmitInto(*m_Main, 102, {m_SceneView}), (std::vector{true}));
+    EXPECT_EQ(EmitInto(*m_Other, 1, {m_View}), (std::vector{true}));
+    EXPECT_EQ(m_Session->Graph, &m_Other->Graph);
+    EXPECT_TRUE(m_Session->Card);
+
+    m_Services.BeginWorldDrawFrame();
+    EXPECT_EQ(EmitInto(*m_Main, 103, {m_SceneView}), (std::vector{false}));
+    EXPECT_EQ(EmitInto(*m_Other, 2, {m_View}), (std::vector{true}));
 }
 
 } // namespace

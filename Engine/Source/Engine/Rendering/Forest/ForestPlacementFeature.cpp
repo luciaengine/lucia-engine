@@ -5,6 +5,7 @@
 #include "ForestNearMeshCandidates.h"
 #include "ForestPlacementGpuData.h"
 #include "ForestPlacementSession.h"
+#include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/MeshLODThresholds.h"
@@ -356,17 +357,32 @@ void EmitNearMeshes(ForestPlacementSession& session, const ForwardEmitContext& c
     }
 }
 
-// True when a view of `purpose` may draw the session's details this frame. A Game view always may.
-// A Scene View may when no Game view drew in this frame or the frame before.
-bool TakesDetailView(ForestPlacementSession& session, ViewPurpose purpose, const RGFrame& frame)
+// True when a view of `purpose` may draw the session's details in app frame `appFrame`. A Game view
+// always may. A Scene View may when no Game view drew in this app frame or the app frame before.
+// The app frame counts across all windows, so a Game view in another window also takes precedence.
+bool TakesDetailView(ForestPlacementSession& session, ViewPurpose purpose, uint64 appFrame)
 {
     if (purpose == ViewPurpose::Game)
     {
-        session.GameViewFrame = frame.FrameIndex();
+        session.GameViewFrame = appFrame;
         return true;
     }
-    return purpose == ViewPurpose::EditorScene &&
-           (!session.GameViewFrame || *session.GameViewFrame + 1 < frame.FrameIndex());
+    return purpose == ViewPurpose::EditorScene && (!session.GameViewFrame || *session.GameViewFrame + 1 < appFrame);
+}
+
+// True when the session may declare into `frame`. A session streams into one graph. It moves to the
+// graph of another window only when the frame it declared into has finished. The move frees its stream
+// and buffers and keeps its card.
+bool BindGraph(ForestPlacementSession& session, const RGFrame& frame)
+{
+    if (!session.Graph || session.Graph == &frame)
+        return true;
+    if (session.Declared.Frame)
+        return false;
+    auto card = std::move(session.Card);
+    session.Reset(false);
+    session.Card = std::move(card);
+    return true;
 }
 
 // Streams the pages the view plans. False when the session draws no details this frame.
@@ -408,8 +424,8 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     auto& services = *context.Services;
     const auto* desc = services.Views().FindViewDesc(context.ViewId);
     if (!context.Device || !desc || desc->worldPaused || !ImpostorStage::IsEnabled() ||
-        !TakesDetailView(session, desc->purpose, frame) || (session.Graph && session.Graph != &frame) ||
-        session.Declared.IsFor(frame))
+        !TakesDetailView(session, desc->purpose, services.Spine().WorldFrameEpoch()) ||
+        session.Declared.IsFor(frame) || !BindGraph(session, frame))
         return false;
     view.DetailDistance = session.DetailDistance;
     if (!PlanDetails(session, context, view))
@@ -466,6 +482,8 @@ void ForestPlacementFeature::Finish(RGFrame& frame, bool submitted)
         {
             if (session->Stream)
                 session->Stream->Finish(frame, submitted);
+            if (session->Declared.IsFor(frame))
+                session->Declared = {};
             if (!session->PendingNearFrame.IsFor(frame))
                 continue;
             if (submitted)
