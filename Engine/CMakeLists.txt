@@ -901,7 +901,6 @@ target_sources(Engine PRIVATE
     Source/Engine/Build/MobileContentStaging.cpp
     Source/Engine/Build/MobileExportRunner.cpp
     Source/Engine/Build/PythonBuildTool.cpp
-    Source/Engine/Build/ForestPlacementExport.cpp
     Source/Engine/Build/TerrainPageExport.cpp
     Source/Engine/Build/TexturePackageCook.cpp
     Source/Engine/Build/StagedAssetCook.cpp
