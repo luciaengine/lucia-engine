@@ -232,6 +232,70 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     EXPECT_TRUE(candidates.empty());
 }
 
+// Opens a one-page, one-tree archive and makes the page resident for `view`.
+std::shared_ptr<Engine::Renderer::ForestPlacementRuntime> OpenResidentTree(const std::filesystem::path& file,
+    const PlacementPage& page, const PackedPlacement& tree, float boundRadius,
+    const Engine::Renderer::ForestPlacementView& view, Engine::Renderer::ForestPlacementFrame& frame)
+{
+    using namespace Engine::Renderer;
+    EXPECT_EQ(WritePackedPlacementStore(file, boundRadius, std::span(&page, 1u), std::span(&tree, 1u)), "");
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1, .KeepCpuCopy = true}, error);
+    EXPECT_TRUE(runtime) << error;
+    if (!runtime || !runtime->Prepare(view, 1, 0, frame) || frame.Reads.size() != 1u)
+        return nullptr;
+    const auto ticket = frame.Reads.front();
+    std::array<uint8, sizeof(PackedPlacement)> bytes{};
+    std::memcpy(bytes.data(), &tree, sizeof(tree));
+    if (!runtime->CompleteRead(ticket, bytes) || !runtime->CompleteUpload(ticket, ForestUploadResult::Published) ||
+        !runtime->Prepare(view, 2, 1, frame))
+        return nullptr;
+    return runtime;
+}
+
+TEST_F(ForestPlacementDrawTest, NearMeshDistanceTurnsTheModelCenterWithThePlacementYaw)
+{
+    using namespace Engine::Renderer;
+    // A quarter turn moves the model center from +X to -Z: (x cos + z sin, y, -x sin + z cos).
+    const PackedPlacement tree{1000, 0, 0, 64, 0};
+    const PlacementPage page{.Origin = {0.0, 0.0, 0.0}, .LocalMin = {-5, -5, -5}, .LocalMax = {15, 5, 5},
+                             .First = 0, .Count = 1};
+    const ForestPlacementView view{{0.0, 0.0, 5.0}, {}, 100.0f};
+    ForestPlacementFrame frame;
+    const auto runtime = OpenResidentTree(m_Scratch.Path() / "yaw.geforest", page, tree, 4.0f, view, frame);
+    ASSERT_TRUE(runtime);
+
+    std::vector<ForestNearMeshCandidate> candidates;
+    CollectForestNearMeshCandidates(*runtime, frame, {view, 2.0f, 0.0f, 0.0f}, {2, 1, 0, 2}, 1, candidates);
+    ASSERT_EQ(candidates.size(), 1u);
+    // Root (10, 0, 0), center offset (0, 1, -2) at scale 0.75, eye (0, 0, 5).
+    EXPECT_NEAR(candidates.front().DistanceSquared, 10.0 * 10.0 + 0.75 * 0.75 + 6.5 * 6.5, 1e-4);
+}
+
+TEST_F(ForestPlacementDrawTest, NearMeshBroadphaseKeepsAPageWhoseLargestTreeStillCovers)
+{
+    using namespace Engine::Renderer;
+    // A tree at the largest scale, 39 m from the eye, in a page that starts 38 m from the eye.
+    const PackedPlacement tree{2000, 0, 0, 0, 255};
+    const PlacementPage page{.Origin = {0.0, 0.0, 0.0}, .LocalMin = {19, -1, -1}, .LocalMax = {21, 1, 1},
+                             .First = 0, .Count = 1};
+    const ForestPlacementView view{{-19.0, 0.0, 0.0}, {}, 100.0f};
+    ForestPlacementFrame frame;
+    const auto runtime = OpenResidentTree(m_Scratch.Path() / "broadphase.geforest", page, tree, 0.5f, view, frame);
+    ASSERT_TRUE(runtime);
+
+    // The tree covers 1.25 * 1 * 2 / 39 of the view. A sphere at unit scale reaches that coverage only
+    // within 2 / coverage = 31.5 m, short of the page's 38 m, so only the largest scale keeps the page.
+    // The tree already draws its mesh, so the entry hysteresis does not apply.
+    constexpr float kTreeCoverage = 1.25f * 2.0f / 39.0f;
+    ASSERT_EQ(frame.DetailedDraws.size(), 1u);
+    const ForestMeshOwnedPlacement owner{frame.DetailedDraws.front().Ticket, 0};
+    std::vector<ForestNearMeshCandidate> candidates;
+    CollectForestNearMeshCandidates(*runtime, frame, {view, 2.0f, 0.0f, kTreeCoverage * 0.99f}, {0, 0, 0, 1}, 1,
+                                    candidates, std::span(&owner, 1u));
+    EXPECT_EQ(candidates.size(), 1u);
+}
+
 TEST_F(ForestPlacementDrawTest, ACardPastTheBoundRadiusRefusesItsSessionOnce)
 {
     using namespace Engine::Renderer;

@@ -1,6 +1,7 @@
 // The impostor card material composes and compiles: the impostor surface, the card vertex
 // modifier and the cutout, on the instanced world pass and in the depth prepass. The packed
-// forest card and the packed forest near meshes compose too.
+// forest card, the packed forest near meshes and the forest canopy surface of the overview mesh
+// compose too.
 
 #include <gtest/gtest.h>
 
@@ -97,6 +98,21 @@ TEST(ImpostorSurfaceCompose, ThePackedForestCardComposesForColorAndDepth)
         ExpectCompiles(card, MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows, "packed forest color");
         ExpectCompiles(card, MaterialKeyword::DepthOnlyFragment, "packed forest depth");
     }
+}
+
+TEST(ImpostorSurfaceCompose, TheForestCanopySurfaceComposesForColorAndDepth)
+{
+    MaterialDocument canopy{};
+    canopy.materialName = "ForestCanopyProbe";
+    canopy.lightingModel = "StandardPBR";
+    canopy.surfaceShader = "Surfaces/forest_canopy.glsl";
+    canopy.alphaMode = MaterialAlphaMode::Mask;
+    canopy.doubleSided = true;
+    canopy.properties["alphaCutoff"] = 0.25f;
+    canopy.textures["albedoMap"] = std::string{};
+    ExpectCompiles(canopy, MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows,
+                   "canopy color");
+    ExpectCompiles(canopy, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment, "canopy depth");
 }
 
 TEST(ImpostorSurfaceCompose, PackedNearMeshesReflectTheTransformBufferName)
