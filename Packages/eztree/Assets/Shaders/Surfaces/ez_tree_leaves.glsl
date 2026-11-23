@@ -43,13 +43,8 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec2 uvMR = GE_TransformUV(sIn.uv0, sIn.textureST[2], sIn.textureST2[2]);
     vec2 uvNormal = GE_TransformUV(sIn.uv0, sIn.textureST[1], sIn.textureST2[1]);
 
-    // A far leaf reads the last levels, where the filtered alpha is the leaf's covered share and is
-    // below the cutoff. There the coverage test keeps that share: a leaf passes where its filtered
-    // alpha is above its seed (UV1.x, one value in [0, 1) per leaf along the leaf index). The sample
-    // reads no level coarser than 4 texels across, so a passing leaf keeps a leaf shape, not its
-    // card. The pattern moves with the leaf and overlapping leaves pass independently. Color
-    // textures filter their mips with alpha-weighted color (TextureCook.h), so the color of the
-    // coarse levels is the leaf color.
+    // Use the projected footprint for the coverage transition. Use a finer sample
+    // for the leaf outline, and compare its opacity with the seed in UV1.x.
     vec2 uvDx = dFdx(uvAlbedo);
     vec2 uvDy = dFdy(uvAlbedo);
     float footprint = GE_FoliageFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);

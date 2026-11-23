@@ -8,10 +8,9 @@ float GE_FoliageScreenThreshold(vec2 fragCoord)
     return fract(52.9829189 * fract(dot(floor(fragCoord), vec2(0.06711056, 0.00583715))));
 }
 
-// UV per pixel of the level that the coverage test of a leaf reads at the coarsest: the level of 4
-// texels across. Below it the filtered alpha is nearly the same over the whole leaf card, so a
-// passing leaf would draw its card. A box-filtered level keeps the mean alpha, so the coverage stays.
-const float kFoliageShapeFootprint = 0.25;
+// The leaf sample keeps at least 32 texels across. Coarser levels spread opacity
+// into the texture border and flatten the outline of the canopy.
+const float kFoliageShapeFootprint = 1.0 / 32.0;
 
 // UV per pixel of a sample with screen derivatives `uvDx` and `uvDy` and mip bias `mipBias`, along
 // the longer axis. The sampler reads the level with about 1 / footprint texels across.
@@ -20,21 +19,14 @@ float GE_FoliageFootprint(vec2 uvDx, vec2 uvDy, float mipBias)
     return max(max(length(uvDx), length(uvDy)), 1e-6) * exp2(mipBias);
 }
 
-// Weight of the coverage test for a leaf texture at `footprint` (GE_FoliageFootprint): 0 while the
-// read level keeps 32 texels or more across, 1 at 16 texels or fewer. The cutoff test keeps the
-// coverage of a 0/1 alpha mask down to about 16 texels; below that the filtered alpha falls under
-// the cutoff.
+// The coverage test blends in from 32 to 16 texels across the footprint.
 float GE_FoliageTailWeight(float footprint)
 {
     return 1.0 - smoothstep(16.0, 32.0, 1.0 / footprint);
 }
 
-// Opacity, 0 or 1, of an alpha-tested foliage sample. `coarseWeight` 0 is the material cutoff
-// test; 1 compares the filtered alpha with `threshold`, a uniform value in [0, 1). A filtered texel
-// of a 0/1 alpha mask holds the share of covered texels under it, so the share of passing pixels
-// stays at the base coverage, also where the filtered alpha is below the cutoff. The threshold can
-// be one value per pixel or one value per leaf: with a uniform value per leaf, the expected covered
-// area of each leaf is its base coverage.
+// Blend the cutoff mask with filtered alpha. With a uniform threshold per leaf,
+// the expected coverage of the filtered alpha equals its mean.
 float GE_FoliageCoverageOpacity(float alpha, float cutoff, float coarseWeight, float threshold)
 {
     float cutout = step(cutoff, alpha);

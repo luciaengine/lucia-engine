@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <thread>
 #include <vector>
@@ -242,7 +243,8 @@ class TextureCoverageGPU : public testing::Test
     }
     // A square TGA of `size` texels a side (64 unless a test needs a slow decode), with one leaf
     // island every `leafPeriod` texels along each axis.
-    fs::path Image(bool grayAlpha = false, int size = 64, int leafPeriod = 16)
+    fs::path Image(bool grayAlpha = false, int size = 64, int leafPeriod = 16,
+                   std::optional<uint8> uniformAlpha = std::nullopt)
     {
         const auto path = s_Workspace / "Assets" / (GUID::Generate().ToString() + ".tga");
         std::vector<uint8> bytes(18, 0);
@@ -260,7 +262,8 @@ class TextureCoverageGPU : public testing::Test
                 // at intermediate levels while retaining tied coarse tail levels.
                 const int dx = x % leafPeriod - (leafPeriod / 2 - 1), dy = y % leafPeriod - (leafPeriod / 2 - 1);
                 const int leafScale = leafPeriod / 16;
-                const uint8 alpha = dx * dx + 2 * dy * dy < 37 * leafScale * leafScale ? 255 : 0;
+                const uint8 leafAlpha = dx * dx + 2 * dy * dy < 37 * leafScale * leafScale ? 255 : 0;
+                const uint8 alpha = uniformAlpha.value_or(leafAlpha);
                 if (grayAlpha)
                     bytes.insert(bytes.end(), {uint8(91 + x + y), alpha});
                 else
@@ -1774,39 +1777,39 @@ TEST_F(TextureCoverageGPU, FoliageCoverageKeepsTheBaseCoverageThroughTheMipTail)
     EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kLeafCutoffMode)), 0.0);
 }
 
-// A far leaf that passes its seed keeps a leaf shape: the test reads no level coarser than 4 texels
-// across, so it does not draw the whole card of a leaf whose 1 x 1 level is one alpha value. Only a
-// leaf with a seed near 0 fills its card.
-TEST_F(TextureCoverageGPU, FoliageCoverageOfAFarLeafKeepsALeafShape)
+// A leaf fully inside its texture keeps the card border clear even at the coarsest footprint.
+TEST_F(TextureCoverageGPU, FoliageCoverageOfAFarLeafKeepsTheCardBorderClear)
 {
     const GUID guid = Register(Image(false, 64, 64), false);
     const auto texture = WaitForUpload(guid);
     ASSERT_TRUE(texture.IsValid());
     constexpr uint32 kCutoffMode = 1, kFoliageMode = 2, kSize = 256, kLeafPixels = 16;
-    constexpr uint32 kLeaves = (kSize / kLeafPixels) * (kSize / kLeafPixels);
     constexpr float kTailLod = 6;
     const double reference = Coverage(Render(texture, kSize, kSize, 0, kCutoffMode));
     ASSERT_GT(reference, 0.2);
     const auto pixels = Render(texture, kSize, kSize, kTailLod, kFoliageMode);
     EXPECT_NEAR(Coverage(pixels), reference, 0.03);
-    uint32 fullCards = 0;
-    for (uint32 leafY = 0; leafY < kSize / kLeafPixels; ++leafY)
-        for (uint32 leafX = 0; leafX < kSize / kLeafPixels; ++leafX)
+
+    uint32 coveredBorderPixels = 0;
+    for (uint32 pixelY = 0; pixelY < kSize; ++pixelY)
+    {
+        const uint32 localY = pixelY % kLeafPixels;
+        for (uint32 pixelX = 0; pixelX < kSize; ++pixelX)
         {
-            uint32 passing = 0;
-            for (uint32 y = leafY * kLeafPixels; y < (leafY + 1) * kLeafPixels; ++y)
-                for (uint32 x = leafX * kLeafPixels; x < (leafX + 1) * kLeafPixels; ++x)
-                    passing += pixels[(size_t(y) * kSize + x) * 4 + 3] > .5f;
-            fullCards += passing > kLeafPixels * kLeafPixels * 9 / 10;
+            const uint32 localX = pixelX % kLeafPixels;
+            const bool border = localX == 0 || localX == kLeafPixels - 1 ||
+                                localY == 0 || localY == kLeafPixels - 1;
+            coveredBorderPixels += border && pixels[(size_t(pixelY) * kSize + pixelX) * 4 + 3] > 0.5f;
         }
-    EXPECT_LT(double(fullCards) / kLeaves, 0.1) << fullCards << " of " << kLeaves << " leaves fill their card";
+    }
+    EXPECT_EQ(coveredBorderPixels, 0u);
 }
 
-// Two layers of far leaves with the same seeds pass together and cover only c. When a leaf covers
-// a leaf of another index, the two pass independently and cover 1 - (1 - c)^2, as separate leaves do.
+// Uniform alpha isolates the threshold from the shape shared by two aligned leaf textures.
 TEST_F(TextureCoverageGPU, FoliageCoverageOfOverlappingLeavesAddsUpOnlyWithDifferentSeeds)
 {
-    const GUID guid = Register(Image(), false);
+    constexpr uint8 kUniformAlpha = 128;
+    const GUID guid = Register(Image(false, 64, 16, kUniformAlpha), false);
     const auto texture = WaitForUpload(guid);
     ASSERT_TRUE(texture.IsValid());
     constexpr uint32 kFoliageMode = 2, kTwoLeafMode = 3;
