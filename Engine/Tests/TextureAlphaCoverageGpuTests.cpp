@@ -240,8 +240,9 @@ class TextureCoverageGPU : public testing::Test
         std::ifstream stream(path, std::ios::binary);
         return std::vector<uint8>(std::istreambuf_iterator<char>(stream), {});
     }
-    // A square TGA of `size` texels a side (64 unless a test needs a slow decode).
-    fs::path Image(bool grayAlpha = false, int size = 64)
+    // A square TGA of `size` texels a side (64 unless a test needs a slow decode), with one leaf
+    // island every `leafPeriod` texels along each axis.
+    fs::path Image(bool grayAlpha = false, int size = 64, int leafPeriod = 16)
     {
         const auto path = s_Workspace / "Assets" / (GUID::Generate().ToString() + ".tga");
         std::vector<uint8> bytes(18, 0);
@@ -257,8 +258,9 @@ class TextureCoverageGPU : public testing::Test
             {
                 // Repeated small, irregular leaf islands produce meaningful erosion
                 // at intermediate levels while retaining tied coarse tail levels.
-                const int dx = x % 16 - 7, dy = y % 16 - 7;
-                const uint8 alpha = dx * dx + 2 * dy * dy < 37 ? 255 : 0;
+                const int dx = x % leafPeriod - (leafPeriod / 2 - 1), dy = y % leafPeriod - (leafPeriod / 2 - 1);
+                const int leafScale = leafPeriod / 16;
+                const uint8 alpha = dx * dx + 2 * dy * dy < 37 * leafScale * leafScale ? 255 : 0;
                 if (grayAlpha)
                     bytes.insert(bytes.end(), {uint8(91 + x + y), alpha});
                 else
@@ -1756,20 +1758,48 @@ TEST_F(TextureCoverageGPU, InvalidMetadataCannotPublishUncorrectedRawTexture)
 
 // A far leaf reads the last levels of an ordinary mip chain, where the filtered alpha of a 0/1
 // mask is below the cutoff. The foliage coverage test of a grid of leaves keeps their base coverage
-// at the levels of 4 texels across and fewer, down to 1 x 1, where the cutoff test keeps no pixel.
+// at the levels of 16 texels across and fewer, down to 1 x 1, where the cutoff test keeps no pixel.
 TEST_F(TextureCoverageGPU, FoliageCoverageKeepsTheBaseCoverageThroughTheMipTail)
 {
     const GUID guid = Register(Image(), false);
     const auto texture = WaitForUpload(guid);
     ASSERT_TRUE(texture.IsValid());
     constexpr uint32 kCutoffMode = 1, kFoliageMode = 2, kLeafCutoffMode = 4;
-    constexpr float kFourTexelLod = 4, kTailLod = 6; // 4 x 4 and 1 x 1 for the 64 x 64 image
+    constexpr float kSixteenTexelLod = 2, kTailLod = 6; // 16 x 16 and 1 x 1 for the 64 x 64 image
     const double reference = Coverage(Render(texture, 256, 256, 0, kCutoffMode));
     ASSERT_GT(reference, 0.2);
     EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kFoliageMode)), Coverage(Render(texture, 256, 256, 0, kLeafCutoffMode)));
-    for (float lod = kFourTexelLod; lod <= kTailLod; lod += .5f)
+    for (float lod = kSixteenTexelLod; lod <= kTailLod; lod += .5f)
         EXPECT_NEAR(Coverage(Render(texture, 256, 256, lod, kFoliageMode)), reference, 0.03) << "lod " << lod;
     EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kLeafCutoffMode)), 0.0);
+}
+
+// A far leaf that passes its seed keeps a leaf shape: the test reads no level coarser than 4 texels
+// across, so it does not draw the whole card of a leaf whose 1 x 1 level is one alpha value. Only a
+// leaf with a seed near 0 fills its card.
+TEST_F(TextureCoverageGPU, FoliageCoverageOfAFarLeafKeepsALeafShape)
+{
+    const GUID guid = Register(Image(false, 64, 64), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kCutoffMode = 1, kFoliageMode = 2, kSize = 256, kLeafPixels = 16;
+    constexpr uint32 kLeaves = (kSize / kLeafPixels) * (kSize / kLeafPixels);
+    constexpr float kTailLod = 6;
+    const double reference = Coverage(Render(texture, kSize, kSize, 0, kCutoffMode));
+    ASSERT_GT(reference, 0.2);
+    const auto pixels = Render(texture, kSize, kSize, kTailLod, kFoliageMode);
+    EXPECT_NEAR(Coverage(pixels), reference, 0.03);
+    uint32 fullCards = 0;
+    for (uint32 leafY = 0; leafY < kSize / kLeafPixels; ++leafY)
+        for (uint32 leafX = 0; leafX < kSize / kLeafPixels; ++leafX)
+        {
+            uint32 passing = 0;
+            for (uint32 y = leafY * kLeafPixels; y < (leafY + 1) * kLeafPixels; ++y)
+                for (uint32 x = leafX * kLeafPixels; x < (leafX + 1) * kLeafPixels; ++x)
+                    passing += pixels[(size_t(y) * kSize + x) * 4 + 3] > .5f;
+            fullCards += passing > kLeafPixels * kLeafPixels * 9 / 10;
+        }
+    EXPECT_LT(double(fullCards) / kLeaves, 0.1) << fullCards << " of " << kLeaves << " leaves fill their card";
 }
 
 // Two layers of far leaves with the same seeds pass together and cover only c. When a leaf covers

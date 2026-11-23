@@ -17,12 +17,13 @@ float LeafSeed(vec2 position,uint layerKey)
         index=GE_HashU32(index^layerKey)&0xffffu;
     return fract(float(index)*0.6180339887);
 }
-float Foliage(vec4 texel,float layerSeed)
+// The production coverage test of the leaf at `position`, read at probe.lod as a sampler would.
+float Foliage(vec2 position,float layerSeed)
 {
-    // The weight sees the UV per pixel at which a sampler reads level probe.lod of the leaf.
-    float uvPerPixel=exp2(probe.lod)/float(textureSize(sourceImage,0).x);
-    float weight=GE_FoliageTailWeight(vec2(uvPerPixel,0.0),vec2(0.0,uvPerPixel),0.0);
-    return GE_FoliageCoverageOpacity(texel.a,probe.cutoff,weight,layerSeed);
+    float footprint=exp2(probe.lod)/float(textureSize(sourceImage,0).x);
+    float shapeFootprint=min(footprint,kFoliageShapeFootprint);
+    float alpha=textureGrad(sourceImage,fract(position*kLeaves),vec2(shapeFootprint,0.0),vec2(0.0,shapeFootprint)).a;
+    return GE_FoliageCoverageOpacity(alpha,probe.cutoff,GE_FoliageTailWeight(footprint),layerSeed);
 }
 void main()
 {
@@ -39,15 +40,14 @@ void main()
         result=vec4(1.0);
         return;
     }
-    vec4 texel=textureLod(sourceImage,fract(position*kLeaves),probe.lod);
     // Mode 2: the production foliage coverage test of the leaves.
     // Mode 3: two layers of leaves, the second with the layer key of probe.seed (0: the same seeds).
     // Mode 4: the cutoff test of the leaves.
-    float opacity=texel.a;
+    float opacity=textureLod(sourceImage,fract(position*kLeaves),probe.lod).a;
     if(probe.mode==2u)
-        opacity=Foliage(texel,LeafSeed(position,0u));
+        opacity=Foliage(position,LeafSeed(position,0u));
     else if(probe.mode==3u)
-        opacity=max(Foliage(texel,LeafSeed(position,0u)),Foliage(texel,LeafSeed(position,floatBitsToUint(probe.seed))));
+        opacity=max(Foliage(position,LeafSeed(position,0u)),Foliage(position,LeafSeed(position,floatBitsToUint(probe.seed))));
     if(opacity<probe.cutoff) discard;
     result=vec4(1.0);
 }

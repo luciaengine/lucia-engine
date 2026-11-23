@@ -45,18 +45,27 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 
     vec4 albedo = texture(albedoMap, uvAlbedo);
     float leafAlpha = GE_EZTreeLeafAlpha(albedo);
-    // A far leaf is smaller than a pixel, so its sample reads one of the last levels, where the
-    // filtered alpha is the leaf's covered share and is below the cutoff. There the coverage test
-    // keeps that share: the threshold is the leaf's seed (UV1.x, the same at every vertex of its
-    // cards, spread over [0, 1) along the leaf index), so a leaf passes where its filtered alpha is
-    // above its seed. The pattern moves with the leaf, overlapping leaves pass independently, and
-    // the test costs no hash. Color textures filter their mips with alpha-weighted color
-    // (TextureCook.h), so the color of those levels is the leaf color.
-    float tailWeight = GE_FoliageTailWeight(dFdx(uvAlbedo), dFdy(uvAlbedo), GE_MATERIAL_MIP_BIAS);
+    // A far leaf reads the last levels, where the filtered alpha is the leaf's covered share and is
+    // below the cutoff. There the coverage test keeps that share: a leaf passes where its filtered
+    // alpha is above its seed (UV1.x, one value in [0, 1) per leaf along the leaf index). The test
+    // reads no level coarser than 4 texels across, so a passing leaf keeps a leaf shape, not its
+    // card. The pattern moves with the leaf and overlapping leaves pass independently. Color
+    // textures filter their mips with alpha-weighted color (TextureCook.h), so the color of the
+    // coarse levels is the leaf color.
+    vec2 uvDx = dFdx(uvAlbedo);
+    vec2 uvDy = dFdy(uvAlbedo);
+    float footprint = GE_FoliageFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
+    float tailWeight = GE_FoliageTailWeight(footprint);
+    float shapeAlpha = leafAlpha;
+    if (footprint > kFoliageShapeFootprint)
+    {
+        float shapeScale = kFoliageShapeFootprint / footprint;
+        shapeAlpha = GE_EZTreeLeafAlpha(textureGrad(albedoMap, uvAlbedo, uvDx * shapeScale, uvDy * shapeScale));
+    }
     float colorTrust = max(smoothstep(0.45, 0.95, leafAlpha), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
-    o.opacity = GE_FoliageCoverageOpacity(leafAlpha * Mat.uBaseColor.a, clamp(Props.alphaCutoff, 0.0, 1.0),
+    o.opacity = GE_FoliageCoverageOpacity(shapeAlpha * Mat.uBaseColor.a, clamp(Props.alphaCutoff, 0.0, 1.0),
                                           tailWeight, sIn.uv1.x);
 
     vec4 mr = texture(metallicRoughnessMap, uvMR);
