@@ -4,7 +4,6 @@
 // RenderServices class; shared file-scope helpers live in RenderServicesDetail.h.
 #include "Engine/Rendering/RenderServices.h"
 #include "IndexedDepthDraw.h"
-#include "Platform/Environment.h"
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
 #include "Engine/Rendering/Pipeline/ViewMotionVectors.h"
@@ -1046,8 +1045,9 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
         viewFrame.IndexedReplayViewportWidth = params.ViewportWidth;
         viewFrame.IndexedReplayViewportHeight = params.ViewportHeight;
 
-        static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_OWNER_REPLAY", false);
         const auto& caps = m_Device->GetCapabilities();
+        static const bool enabled = IndexedDepthOwnerReplaySwitch(
+            m_Device->GetAPI(), caps.supportsIndexedDepthOwnerReplay, "GE_INDEXED_DEPTH_OWNER_REPLAY");
         const auto& depthDesc = frame.Graph().ResourceDesc(depth.Id);
         const auto format = static_cast<Rendering::TextureFormat>(depthDesc.Format);
         if (enabled && caps.supportsIndexedDepthOwnerReplay && m_DrawStreamBuilder &&
@@ -1063,7 +1063,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
             ownerDesc.format = static_cast<uint32_t>(Rendering::TextureFormat::R32_UINT);
             ownerDesc.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget |
                                                      Rendering::TextureUsage::UnorderedAccess);
-            static const bool useSecond = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_OWNER_SECOND", false);
+            static const bool useSecond = IndexedDepthOwnerReplaySwitch(
+                m_Device->GetAPI(), caps.supportsIndexedDepthOwnerReplay, "GE_INDEXED_DEPTH_OWNER_SECOND");
             const auto owners = frame.CreateTexture("IndexedDepthOwner", ownerDesc);
             const auto second = useSecond && owners.IsValid()
                 ? frame.CreateTexture("IndexedDepthOwner.Second", ownerDesc) : RenderGraph::RGTexture{};
