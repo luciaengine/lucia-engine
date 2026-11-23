@@ -50,14 +50,15 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // keeps that share of pixels. Color textures filter their mips with alpha-weighted color
     // (TextureCook.h), so the color of those levels is the leaf color. The leaf's seed (UV1.x, the
     // same at every vertex of its cards) keeps overlapping leaves independent.
-    vec2 albedoTexels = vec2(textureSize(albedoMap, 0));
-    float mip = GE_FoliageMipLevel(dFdx(uvAlbedo), dFdy(uvAlbedo), albedoTexels) + GE_MATERIAL_MIP_BIAS;
-    float tailWeight = GE_FoliageTailWeight(mip, max(albedoTexels.x, albedoTexels.y));
+    vec2 uvDx = dFdx(uvAlbedo);
+    vec2 uvDy = dFdy(uvAlbedo);
+    float tailWeight = GE_FoliageTailWeight(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
     float colorTrust = max(smoothstep(0.45, 0.95, leafAlpha), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
+    float threshold = GE_FoliageSurfaceThreshold(uvAlbedo, uvDx, uvDy, sIn.uv1.x);
     o.opacity = GE_FoliageCoverageOpacity(leafAlpha * Mat.uBaseColor.a, clamp(Props.alphaCutoff, 0.0, 1.0),
-                                          tailWeight, gl_FragCoord.xy, sIn.uv1.x);
+                                          tailWeight, threshold);
 
     vec4 mr = texture(metallicRoughnessMap, uvMR);
     o.roughness = mr.g * Mat.uParams0.y;

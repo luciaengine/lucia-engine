@@ -1772,9 +1772,8 @@ TEST_F(TextureCoverageGPU, FoliageCoverageKeepsTheBaseCoverageThroughTheMipTail)
     EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kCutoffMode)), 0.0);
 }
 
-// Two far leaves in one pixel with the same seed pass together and cover only c. A seed turns
-// the threshold, so seeds 0 and 0.5 pass on disjoint thresholds and cover 2c (c < 0.5). Over
-// random seeds the expected cover is 1 - (1 - c)^2, as for separate leaves.
+// Two far leaves in one pixel with the same seed pass together and cover only c. With different
+// seeds they pass independently and cover 1 - (1 - c)^2, as separate leaves do.
 TEST_F(TextureCoverageGPU, FoliageCoverageOfOverlappingLeavesAddsUpOnlyWithDifferentSeeds)
 {
     const GUID guid = Register(Image(), false);
@@ -1784,9 +1783,41 @@ TEST_F(TextureCoverageGPU, FoliageCoverageOfOverlappingLeavesAddsUpOnlyWithDiffe
     constexpr float kTailLod = 6;
     const double single = Coverage(Render(texture, 256, 256, kTailLod, kFoliageMode));
     ASSERT_GT(single, 0.2);
-    ASSERT_LT(single, 0.5);
     EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoLeafMode, 0.0f, 0.0f)), single, 0.01);
-    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoLeafMode, 0.0f, 0.5f)), 2.0 * single, 0.03);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoLeafMode, 0.0f, 0.5f)),
+                1.0 - (1.0 - single) * (1.0 - single), 0.03);
+}
+
+// The coverage pattern of a far leaf is fixed to the leaf, so it does not crawl when the leaf moves
+// across the screen: moved by whole pixels, the covered pixels move with it.
+TEST_F(TextureCoverageGPU, FoliageCoverageMovesWithTheSurface)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kFoliageMode = 2, kSize = 256;
+    constexpr float kTailLod = 6;
+    constexpr int kShiftX = 100, kShiftY = 37; // The probe's phase moves x by phase and y by 0.37 phase.
+    const auto still = Render(texture, kSize, kSize, kTailLod, kFoliageMode);
+    const auto moved = Render(texture, kSize, kSize, kTailLod, kFoliageMode, float(kShiftX) / kSize);
+    // The readback row order differs between backends, so try both signs of each axis.
+    double best = 0.0;
+    for (const int signX : {-1, 1})
+        for (const int signY : {-1, 1})
+        {
+            const int dx = signX * kShiftX, dy = signY * kShiftY;
+            size_t same = 0, compared = 0;
+            for (int y = std::max(0, -dy); y < int(kSize) - std::max(0, dy); ++y)
+                for (int x = std::max(0, -dx); x < int(kSize) - std::max(0, dx); ++x)
+                {
+                    const bool a = still[(size_t(y + dy) * kSize + size_t(x + dx)) * 4 + 3] > .5f;
+                    const bool b = moved[(size_t(y) * kSize + size_t(x)) * 4 + 3] > .5f;
+                    same += a == b;
+                    ++compared;
+                }
+            best = std::max(best, double(same) / double(compared));
+        }
+    EXPECT_GT(best, 0.99);
 }
 
 TEST_F(TextureCoverageGPU, FullChainMaskedCardsMeasureIntegerFractionalAndPhaseCoverage)
