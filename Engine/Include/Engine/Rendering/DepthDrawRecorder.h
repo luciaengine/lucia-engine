@@ -361,12 +361,6 @@ std::span<const DrawCommand> ContributorDepthCommands(const ViewRegistry& views,
                                                       DepthPassType passType,
                                                       Rendering::GPUDrawStreamBuilder::SlicePhase phase);
 
-// The registered depth producers' draws for one sun cascade of the view (ViewRegistry::
-// PerViewResources::CascadeDepthCommands). Phase A draws them whole, like ContributorDepthCommands.
-std::span<const DrawCommand> CascadeDepthCommands(const ViewRegistry& views, Rendering::ViewId viewId,
-                                                  uint32_t cascade,
-                                                  Rendering::GPUDrawStreamBuilder::SlicePhase phase);
-
 // True when the registered depth producers drew for `passType` in the view this frame: the view-wide
 // stream, and for ShadowCascade also any cascade stream. A virtual shadow page cannot draw them.
 bool HasProducerDepthCommands(const ViewRegistry& views, Rendering::ViewId viewId, DepthPassType passType);
@@ -462,6 +456,23 @@ inline DepthSegmentPipelineChoice ChooseDepthHeadPipeline(
         sharedDepthOffered && !motion && !tint && !alphaTest && !vertexModified && !depthOffset;
     return choice;
 }
+
+// How a depth pass draws a registered producer's draw that names a material and no pipeline: the head
+// pipeline and the vertex layout that the entity batches of the material take in `passType`
+// (ChooseDepthHeadPipeline, DepthHeadVertexFlags), with the draw's own keywords. `depthVertexFlags` is the
+// stripped depth layout of the mesh and `colorPassVertexFlags` its colour-pass layout; raw geometry passes
+// DrawCommand::VertexFlags for both. Never the shared depth pipeline, which draws GPU-scene instances only.
+struct ContributorDepthHead
+{
+    DepthSegmentPipelineChoice Head;
+    Rendering::VertexAttributeFlags VertexFlags = Rendering::VertexAttributeFlags::None;
+    // The head reads the material's textures (Mask coverage or a vertex modifier).
+    bool ReadsTextures = false;
+};
+ContributorDepthHead ChooseContributorDepthHead(const Material& material, DepthPassType passType,
+                                                Rendering::MaterialKeyword passKeywords,
+                                                Rendering::VertexAttributeFlags depthVertexFlags,
+                                                Rendering::VertexAttributeFlags colorPassVertexFlags);
 
 // The camera prepass may draw eligible heads on the shared depth pipeline
 // (GE_PREPASS_SHARED_DEPTH=0 disables it for triage).

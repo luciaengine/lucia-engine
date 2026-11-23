@@ -4027,6 +4027,62 @@ TEST(RenderPipelineDeclareTests, ABlendMaterialContributorIsRefusedInADepthPass)
     EXPECT_EQ(rig.UnderDrawnCascades(), 0u);
 }
 
+// A producer's material draw takes the depth head that the entity batches of its material take in the same
+// pass, so it uses the variants that the material prewarm builds: the stripped depth layout unless the head
+// reads more, the coverage fragment for Mask, the transmission colour in the glass tint pass, and the relief
+// depth in the camera prepass.
+TEST(RenderPipelineDeclareTests, AMaterialContributorTakesTheEntityDepthHead)
+{
+    using Rendering::MaterialKeyword;
+    using Rendering::VertexAttributeFlags;
+    constexpr VertexAttributeFlags kDepthLayout =
+        VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasUV0;
+    constexpr VertexAttributeFlags kColourLayout = kDepthLayout | VertexAttributeFlags::HasNormal |
+                                                   VertexAttributeFlags::HasTangent | VertexAttributeFlags::HasUV1 |
+                                                   VertexAttributeFlags::HasColor;
+
+    const Material opaque = MakeUncompiledMaterial("OpaqueCaster", MaterialAlphaMode::Opaque);
+    const ContributorDepthHead opaqueHead = ChooseContributorDepthHead(
+        opaque, DepthPassType::ShadowCascade, MaterialKeyword::Instanced, kDepthLayout, kColourLayout);
+    EXPECT_EQ(opaqueHead.Head.Keywords, MaterialKeyword::Instanced);
+    EXPECT_FALSE(opaqueHead.Head.ComposesFragment);
+    EXPECT_FALSE(opaqueHead.Head.UseSharedDepth) << "the shared depth pipeline draws GPU-scene instances only";
+    EXPECT_EQ(opaqueHead.VertexFlags, kDepthLayout) << "an opaque head binds the stripped depth layout";
+    EXPECT_FALSE(opaqueHead.ReadsTextures);
+
+    const Material masked = MakeUncompiledMaterial("MaskedCaster", MaterialAlphaMode::Mask);
+    const ContributorDepthHead maskedHead = ChooseContributorDepthHead(
+        masked, DepthPassType::ShadowCascade, MaterialKeyword::Instanced, kDepthLayout, kColourLayout);
+    EXPECT_EQ(maskedHead.Head.Keywords, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment);
+    EXPECT_TRUE(maskedHead.Head.ComposesFragment);
+    EXPECT_EQ(maskedHead.VertexFlags, kDepthLayout | VertexAttributeFlags::HasColor)
+        << "Mask coverage reads vertex alpha as the colour pass does";
+    EXPECT_TRUE(maskedHead.ReadsTextures);
+
+    Material glass = MakeUncompiledMaterial("GlassCaster", MaterialAlphaMode::Opaque);
+    {
+        Rendering::ShaderVariantKey key{};
+        key.materialKeywords = MaterialKeyword::Transmission;
+        Material::TestFactory::SetVariantKey(glass, key);
+    }
+    const ContributorDepthHead tintHead = ChooseContributorDepthHead(
+        glass, DepthPassType::TransmittanceCascade, MaterialKeyword::Instanced, kDepthLayout, kColourLayout);
+    EXPECT_EQ(tintHead.Head.Keywords, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyTransmissionColor);
+    EXPECT_TRUE(tintHead.Head.ComposesFragment);
+
+    Material relief = MakeUncompiledMaterial("ReliefCaster", MaterialAlphaMode::Opaque);
+    {
+        Rendering::ShaderVariantKey key{};
+        key.materialKeywords = MaterialKeyword::Parallax;
+        Material::TestFactory::SetVariantKey(relief, key);
+    }
+    const ContributorDepthHead prepassHead = ChooseContributorDepthHead(
+        relief, DepthPassType::Prepass, MaterialKeyword::Instanced, kDepthLayout, kColourLayout);
+    if (WritesReliefDepth(MaterialKeyword::Parallax) && !Rendering::IsCompatShaderProfile())
+        EXPECT_EQ(prepassHead.Head.Keywords, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment |
+                                                 MaterialKeyword::ParallaxDepthOffset);
+}
+
 // A virtual sun page cannot draw a depth producer's cascade draws, so a view with such draws keeps its sun
 // pages on the conventional cascades. The page gate reads the cascade streams too, not only the view-wide one.
 TEST(RenderPipelineDeclareTests, AVirtualSunPageGateSeesTheCascadeProducerDraws)

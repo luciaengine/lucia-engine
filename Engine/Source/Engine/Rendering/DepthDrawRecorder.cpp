@@ -110,6 +110,20 @@ OptionalStreamBinds CollectOptionalStreamBinds(Rendering::VertexAttributeFlags d
     return binds;
 }
 
+// The registered depth producers' draws for one sun cascade of the view. Phase A draws them whole,
+// like ContributorDepthCommands.
+std::span<const DrawCommand> CascadeDepthCommands(const ViewRegistry& views, Rendering::ViewId viewId,
+                                                  uint32_t cascade,
+                                                  Rendering::GPUDrawStreamBuilder::SlicePhase phase)
+{
+    if (phase != Rendering::GPUDrawStreamBuilder::SlicePhase::A || cascade >= kMaxDepthEmitCascades)
+        return {};
+    const auto* pv = views.FindPerView(viewId);
+    if (!pv)
+        return {};
+    const auto& cmds = pv->CascadeDepthCommands[cascade];
+    return {cmds.data(), cmds.size()};
+}
 } // namespace
 
 std::span<const DrawCommand> ContributorDepthCommands(const ViewRegistry& views, Rendering::ViewId viewId,
@@ -122,19 +136,6 @@ std::span<const DrawCommand> ContributorDepthCommands(const ViewRegistry& views,
     if (!pv)
         return {};
     const auto& cmds = pv->DepthCommands[static_cast<size_t>(passType)];
-    return {cmds.data(), cmds.size()};
-}
-
-std::span<const DrawCommand> CascadeDepthCommands(const ViewRegistry& views, Rendering::ViewId viewId,
-                                                  uint32_t cascade,
-                                                  Rendering::GPUDrawStreamBuilder::SlicePhase phase)
-{
-    if (phase != Rendering::GPUDrawStreamBuilder::SlicePhase::A || cascade >= kMaxDepthEmitCascades)
-        return {};
-    const auto* pv = views.FindPerView(viewId);
-    if (!pv)
-        return {};
-    const auto& cmds = pv->CascadeDepthCommands[cascade];
     return {cmds.data(), cmds.size()};
 }
 
@@ -151,6 +152,25 @@ bool HasProducerDepthCommands(const ViewRegistry& views, Rendering::ViewId viewI
             return true;
     }
     return false;
+}
+
+ContributorDepthHead ChooseContributorDepthHead(const Material& material, DepthPassType passType,
+                                                Rendering::MaterialKeyword passKeywords,
+                                                Rendering::VertexAttributeFlags depthVertexFlags,
+                                                Rendering::VertexAttributeFlags colorPassVertexFlags)
+{
+    const Rendering::MaterialKeyword materialKeywords = material.GetVariantKey().materialKeywords;
+    const bool alphaTest = material.GetAlphaMode() == MaterialAlphaMode::Mask;
+    const bool vertexModified = Rendering::HasKeyword(materialKeywords, Rendering::MaterialKeyword::HasVertexMod) ||
+                                Rendering::HasKeyword(materialKeywords, Rendering::MaterialKeyword::HasVertexOutputMod);
+    ContributorDepthHead head{};
+    head.Head = ChooseDepthHeadPipeline(passKeywords, passType, alphaTest, vertexModified,
+                                        /*sharedDepthOffered=*/false, WritesReliefDepth(materialKeywords));
+    head.VertexFlags = DepthHeadVertexFlags(depthVertexFlags, colorPassVertexFlags, vertexModified,
+                                            DepthPassReadsVertexColor(passType, material.GetAlphaMode()),
+                                            head.Head.Keywords);
+    head.ReadsTextures = alphaTest || vertexModified;
+    return head;
 }
 
 std::span<const DrawCommand> NonOccludingPrepassHeads(const ViewRegistry& views, Rendering::ViewId viewId)
@@ -260,7 +280,8 @@ PreparedDepthOnlyPass* AllocatePreparedDepthOnlyPass(Rendering::RenderGraph::RGF
 namespace
 {
 // A depth pass cannot draw a producer draw whose material it filters out (FilterDepthPassMaterial).
-// Logs once for each material. The lock keeps the set safe if two graphs prepare at the same time.
+// Logs once for each material for the life of the process. The lock keeps the set safe if two
+// graphs prepare at the same time.
 void WarnRefusedContributorMaterial(const Material& material, DepthPassMaterialFilter filter)
 {
     static std::mutex s_Mutex;
@@ -379,8 +400,8 @@ class DepthPassPreparation
         const uint32_t passInstanceIndex = virtualPage
             ? kVirtualPagePassTag | *m_Data.Params.VirtualPageTile : conventionalPassInstanceIndex;
         // Contributor draws (CBT terrain in the camera prepass, terrain grass in the non-occluding
-        // prepass, registered depth producers in the light-space passes) carry their own pinned
-        // depth pipelines.
+        // prepass, registered depth producers in the light-space passes) draw through the pipeline
+        // they pin, or through their material's depth variant.
         const auto depthCommands =
             nonOccludingPrepass ? NonOccludingPrepassHeads(m_Services.Views, m_Data.Params.ViewId)
                                 : ContributorDepthCommands(m_Services.Views, m_Data.Params.ViewId, m_Data.Params.PassType, m_Data.Params.Phase);
@@ -1039,7 +1060,10 @@ class DepthPassPreparation
             bindings = m_Services.Materials.Binder().PreparePipelineForDraw(m_Data.Inputs, pipeline, *command.PipelineMeta,
                                                                             command.Bindings, command.PipelineSetCount);
         if (!bindings.Pipeline.IsValid())
+        {
+            MarkUnderDraw(DepthUnderDrawReason::BindPending);
             return;
+        }
         Rendering::MeshGPUEntryBindings geometry{};
         geometry.coreVB = command.Geometry.AltGeom.VB;
         geometry.indexBuffer = command.Geometry.AltGeom.IB;
@@ -1066,7 +1090,8 @@ class DepthPassPreparation
         DrawCommand draw = command;
         const Rendering::MeshGPUEntry* mesh = nullptr;
         Rendering::MeshGPUEntryBindings geometry{};
-        Rendering::VertexAttributeFlags vertexFlags = command.VertexFlags;
+        Rendering::VertexAttributeFlags depthVertexFlags = command.VertexFlags;
+        Rendering::VertexAttributeFlags colorPassVertexFlags = command.VertexFlags;
         Rendering::PrimitiveTopology topology = Rendering::PrimitiveTopology::TriangleList;
         if (command.Geometry.Mesh.IsValid())
         {
@@ -1082,7 +1107,8 @@ class DepthPassPreparation
                 return;
             }
             geometry.indexType = mesh->indexType;
-            vertexFlags = Rendering::BoundStreamVertexFlags(*mesh, geometry, material.IgnoresVertexColor());
+            depthVertexFlags = EffectiveVertexFlagsForDepthPass(*mesh, geometry);
+            colorPassVertexFlags = Rendering::BoundStreamVertexFlags(*mesh, geometry, material.IgnoresVertexColor());
             topology = mesh->topology;
             // A draw without its own index range draws the whole mesh, as the world pass does.
             if (!draw.UseIndirect && draw.SubDraws.empty() && draw.IndexCount == 0)
@@ -1099,9 +1125,13 @@ class DepthPassPreparation
             geometry.indexType = static_cast<uint32_t>(command.Geometry.AltGeom.IndexType);
         }
 
-        const bool masked = material.GetAlphaMode() == MaterialAlphaMode::Mask;
-        const Rendering::MaterialKeyword keywords =
-            masked ? command.PassKeywords | Rendering::MaterialKeyword::DepthOnlyFragment : command.PassKeywords;
+        const ContributorDepthHead head = ChooseContributorDepthHead(
+            material, m_Data.Params.PassType, command.PassKeywords, depthVertexFlags, colorPassVertexFlags);
+        const Rendering::VertexAttributeFlags vertexFlags = head.VertexFlags;
+        const Rendering::MaterialKeyword keywords = head.Head.Keywords;
+        if (head.ReadsTextures && m_Services.Textures &&
+            !m_Services.Textures->IsMaterialTextureBindingComplete(material.GetGuid()))
+            MarkUnderDraw(DepthUnderDrawReason::TexturesPending, mesh);
         const auto [pipeline, variant, concreteId] = m_Services.Materials.Variants().PrepareDepthInstancedVariant(
             material, vertexFlags, topology, keywords, m_Data.Params.RasterizationSamples,
             m_Data.Params.DepthBiasEnable, m_Data.Params.DepthClampEnable, m_Services.FrontFace, m_Context);
@@ -1111,8 +1141,9 @@ class DepthPassPreparation
             return;
         }
         // A fragment stage brings the material's own sets (0 derives the count from the variant meta).
-        const uint32_t setCount =
-            masked ? 0u : std::max<uint32_t>(1u, static_cast<uint32_t>(variant->SetLayouts.size()));
+        const uint32_t setCount = head.Head.ComposesFragment
+                                      ? 0u
+                                      : std::max<uint32_t>(1u, static_cast<uint32_t>(variant->SetLayouts.size()));
         PassBindingContext inputs = m_Data.Inputs;
         inputs.PassKeywords = keywords;
         const PreparedDrawBindings bindings = m_Services.Materials.Binder().PrepareMaterialForDraw(

@@ -1936,7 +1936,13 @@ class RenderServices
                           DepthPassType passType) const;
     /// Adds a draw to one sun cascade of the view. A ShadowCascade draw from EmitDepthCommand
     /// draws into every cascade. Call only from a depth producer that received
-    /// DepthEmitContext::Cascades, with `cascade` below DepthEmitCascades::Count.
+    /// DepthEmitContext::Cascades, with `cascade` below DepthEmitCascades::Count: a draw into a
+    /// higher cascade is never drawn, but it still makes the view a shadow caster.
+    /// A draw with a pinned pipeline (InternedPipeline) draws through it. A draw with a Material
+    /// and no pinned pipeline draws through the material's depth variant for the pass, from
+    /// `PassKeywords` (ChooseContributorDepthHead). Its geometry is Geometry.Mesh (the whole mesh
+    /// when IndexCount is 0 and the draw is not indirect) or Geometry.AltGeom laid out as
+    /// `VertexFlags`. The pass skips a Blend or Transmission material and logs a warning.
     void EmitCascadeDepthCommand(::GameEngine::Rendering::ViewId viewId, uint32_t cascade,
                                  const DrawCommand& command);
     /// Makes the view's cascade pass `cascade` in `frame` read `buffer`: the indirect arguments

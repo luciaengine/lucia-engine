@@ -2984,6 +2984,35 @@ TEST(RenderServicesRGPassTests, ACascadeWithoutProducerDrawsStaysCached)
     fixture.Down();
 }
 
+// A depth producer that draws into the view-wide ShadowCascade stream draws into every cascade, so every
+// cascade renders every frame and none of them settles into the cache.
+TEST(RenderServicesRGPassTests, AViewWideProducerKeepsEveryCascadeRendering)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        ASSERT_TRUE(InitializeThreeCascadeFeature(fixture, feature, 0));
+        const CascadeFrameData fit = ThreeCascadeFit(0.0f);
+        CascadeFitFrame cascades(fixture, frame, feature, 128);
+
+        for (uint64_t frameIndex = 0; frameIndex < 3; ++frameIndex)
+        {
+            cascades.Begin(frameIndex, fit);
+            fixture.Rs.EmitDepthCommand(fixture.View, DepthPassType::ShadowCascade, DrawCommand{});
+            cascades.DeclareSunCascades(fit.NumCascades);
+            for (uint32_t c = 0; c < fit.NumCascades; ++c)
+                EXPECT_NE(cascades.CascadePass(c), RenderGraph::kInvalidId)
+                    << "cascade " << c << " renders on frame " << frameIndex;
+            cascades.Execute();
+        }
+    }
+    fixture.Down();
+}
+
 // The camera-motion budget defers cascades whose retained layer is only stale. A cascade with producer draws
 // renders every frame and is never deferred; a cascade of the same view without them stays deferrable.
 TEST(RenderServicesRGPassTests, TheMotionPlanReadsTheCascadeProducer)

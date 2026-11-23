@@ -2325,11 +2325,8 @@ void ShadowMapRenderFeature::CascadeCasterPlanes(const CascadeFrameData& fit, ui
                                                  Mathematics::Vector4 outPlanes[6]) const
 {
     BuildCascadeCasterCullPlanes(fit.LightVPRel[cascade], outPlanes);
-    // Tighten the four side planes to the cascade's caster footprint
-    // (CascadeFrameData::CasterFootprint): the receivers it was fitted to hold,
-    // in light NDC, so it applies to LightVPRel as it is. Far (plane 5) is the
-    // fit's own; near (plane 4) is retired. The slack covers the footprint drift
-    // the fit freeze allows. GE_SHADOW_CASTER_REDUCTION=0 leaves the planes verbatim.
+    // Tighten the side planes to the caster footprint (light NDC; the slack covers the freeze drift).
+    // Near (4) is retired, far (5) is the fit's. GE_SHADOW_CASTER_REDUCTION=0 keeps the planes.
     if (!IsCasterReductionEnabled() || !fit.CasterFootprintApplies[cascade])
         return;
     const float freezeDrift =
