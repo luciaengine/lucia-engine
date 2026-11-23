@@ -52,7 +52,6 @@ public:
     const StandStatus* FindStatus(uint64 worldId, ECS::EntityHandle entity) const;
 
 private:
-
     // What the attached stand was made from. A change to any field attaches the stand again.
     struct StandSource
     {

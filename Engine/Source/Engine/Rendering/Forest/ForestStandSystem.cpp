@@ -118,14 +118,12 @@ void ForestStandSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         return;
 
     // A new world or a new run of entity handles (a scene load clears the world) releases every
-    // stand and starts the gates again. The change counters only increase within one world.
+    // stand. The reset structural version makes the next check read every stand again.
     if (world.GetWorldId() != m_WorldId || world.GetEntityHandleEpoch() != m_EntityHandleEpoch)
     {
         m_Stands.Clear();
         m_WorldId = world.GetWorldId();
         m_EntityHandleEpoch = world.GetEntityHandleEpoch();
-        m_StandGate = {};
-        m_RendererGate = {};
         m_StructuralVersion = static_cast<std::size_t>(-1);
     }
     if (HasStandChanges(world))
