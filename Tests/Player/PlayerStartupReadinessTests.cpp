@@ -86,5 +86,54 @@ TEST(PlayerStartupReadiness, TheGameConfigWaitsForTheRecipesUnlessItSaysFalse)
     EXPECT_FALSE(LoadGameConfig(configPath).waitForSplineRecipes);
 }
 
+TEST(PlayerStartupReadiness, ForestStandArchiveAndEntityRoundTrip)
+{
+    const TestUtils::ScopedTempDir root(TestUtils::MakeUniqueTempDirectory("PlayerStartupForest"));
+    const auto configPath = root.Path() / "game.config";
+    GameConfig config;
+    ASSERT_TRUE(SaveGameConfig(configPath, config));
+    EXPECT_TRUE(LoadGameConfig(configPath).ForestStands.empty());
+    config.ForestStands.push_back({"Forests/Forest.geforest", "Canopy", "Trees/Tree.glb", 275.0f, 64u});
+    ASSERT_TRUE(SaveGameConfig(configPath, config));
+    const auto loaded = LoadGameConfig(configPath);
+    ASSERT_EQ(loaded.ForestStands.size(), 1u);
+    EXPECT_EQ(loaded.ForestStands.front().Archive, "Forests/Forest.geforest");
+    EXPECT_EQ(loaded.ForestStands.front().Entity, "Canopy");
+    EXPECT_EQ(loaded.ForestStands.front().ImpostorModel, "Trees/Tree.glb");
+    EXPECT_FLOAT_EQ(loaded.ForestStands.front().DetailDistance, 275.0f);
+    EXPECT_EQ(loaded.ForestStands.front().NearMeshBudget, 64u);
+}
+
+TEST(PlayerStartupReadiness, ForestStandsRoundTripWithIndependentArchiveSettings)
+{
+    const TestUtils::ScopedTempDir root(TestUtils::MakeUniqueTempDirectory("PlayerStartupForestStands"));
+    const auto configPath = root.Path() / "game.config";
+    {
+        std::ofstream file(configPath);
+        file << R"({
+            "forestStand": {"archive": "Forests/Old.geforest", "entity": "Old"},
+            "forestStands": [
+                {"archive": "Forests/Pines.geforest", "entity": "Pines", "impostorModel": "Trees/Pine.glb",
+                 "detailDistance": 175, "nearMeshBudget": 24},
+                {"archive": "Forests/Oaks.geforest", "entity": "Oaks"}
+            ]
+        })";
+    }
+    auto config = LoadGameConfig(configPath);
+    ASSERT_EQ(config.ForestStands.size(), 2u);
+    ASSERT_TRUE(SaveGameConfig(configPath, config));
+    const auto loaded = LoadGameConfig(configPath);
+    ASSERT_EQ(loaded.ForestStands.size(), 2u);
+    EXPECT_EQ(loaded.ForestStands[0].Archive, "Forests/Pines.geforest");
+    EXPECT_EQ(loaded.ForestStands[0].Entity, "Pines");
+    EXPECT_EQ(loaded.ForestStands[0].ImpostorModel, "Trees/Pine.glb");
+    EXPECT_FLOAT_EQ(loaded.ForestStands[0].DetailDistance, 175.0f);
+    EXPECT_EQ(loaded.ForestStands[0].NearMeshBudget, 24u);
+    EXPECT_EQ(loaded.ForestStands[1].Archive, "Forests/Oaks.geforest");
+    EXPECT_EQ(loaded.ForestStands[1].Entity, "Oaks");
+    EXPECT_TRUE(loaded.ForestStands[1].ImpostorModel.empty());
+    EXPECT_EQ(loaded.ForestStands[1].NearMeshBudget, 0u);
+}
+
 } // namespace
 } // namespace GameEngine

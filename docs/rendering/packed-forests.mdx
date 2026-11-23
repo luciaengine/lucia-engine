@@ -42,6 +42,32 @@ ForestPlacementCook --overview Assets/Forests/Forest.geforest canopy.png Assets/
 
 The cooker draws every tree of a page into that page's tile, at the tree's position, yaw and scale. It embeds the atlas in the model with an alpha-masked material that the importer gives the forest canopy surface. At a distance, the canopy surface uses the filtered alpha as coverage, so the canopy stays visible when its leaf detail becomes smaller than a pixel. Import the model with the default glTF axis settings, and generate it again when the placements change.
 
+## Use a forest in the Player
+
+Add the cooked overview mesh to the startup scene. Give its entity a unique name, leave its transform at identity, and disable all of its render layers. The stand renderer uses the archive's world coordinates and draws the overview as pages.
+
+Add the stand to the project's `game.config`. The archive and model paths are relative to the asset root.
+
+```json title="Configure a packed forest stand"
+{
+  "startupScene": "Scenes/Forest.scene",
+  "forestStand": {
+    "archive": "Forests/Forest.geforest",
+    "entity": "Canopy",
+    "impostorModel": "Trees/Pine.glb",
+    "detailDistance": 400,
+    "nearMeshBudget": 128
+  }
+}
+```
+
+- `archive` and `entity` are required. Use `forestStands` with an array of these objects for multiple stands. Give each stand its own entity.
+- `impostorModel` is optional. To draw individual placements, use a tree model with impostors enabled and its source mesh parts in the startup scene. Without a model, the stand draws only its overview.
+- `detailDistance` sets the distance in meters at which visible pages can draw individual trees. The default is 400 m. Set it to 0 for overview only.
+- `nearMeshBudget` sets the maximum number of placements per stand that can draw source meshes near the camera. It defaults to 0, which uses impostors for all individual placements. The device profile can reduce the budget.
+
+Desktop export copies each configured archive alongside the packaged assets. If the export reports a ship rule that excludes the archive, change the rule or choose a shippable archive.
+
 ## Archive format
 
 A `.geforest` archive is little-endian and has three parts:

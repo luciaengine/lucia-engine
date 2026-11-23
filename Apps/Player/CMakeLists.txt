@@ -42,6 +42,8 @@ if(EMSCRIPTEN)
         Source/PlayerApplication.h
         Source/PlayerStartupReadiness.cpp
         Source/PlayerStartupReadiness.h
+        Source/Forest/PlayerForestStands.cpp
+        Source/Forest/PlayerForestStands.h
     )
     target_include_directories(WebPlayer PRIVATE Source)
     target_compile_features(WebPlayer PRIVATE cxx_std_20)
