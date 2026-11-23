@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Rendering/Forest/ForestPlacementGpuUploads.h"
+#include "ForestPlacementGpuUploads.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrameStamp.h"
 

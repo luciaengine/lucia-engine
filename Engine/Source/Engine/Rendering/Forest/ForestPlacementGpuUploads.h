@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Rendering/Forest/ForestPlacementStream.h"
+#include "ForestPlacementStream.h"
 #include "Rendering/Core/Handle.h"
 
 #include <memory>
