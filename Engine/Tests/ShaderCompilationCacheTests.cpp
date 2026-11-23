@@ -204,17 +204,10 @@ class ShaderCompilationCacheEpochTest : public ::testing::Test
         if (!std::filesystem::exists(m_shaderDir, ec))
             GTEST_SKIP() << "Staged shader directory not found: " << m_shaderDir.string();
 
-        // Per-TEST project root AND cache root. Keyed by test name, not just the
-        // gtest seed (which is 0 without --gtest_shuffle, i.e. the same for every
-        // test): the on-disk shaderpkg key folds the composed source, which
-        // carries the surface's absolute path, so a shared root makes sibling
-        // tests share cache entries.
-        m_projectRoot =
-            std::filesystem::temp_directory_path()
-            / (std::string("ge_shader_epoch_")
-               + ::testing::UnitTest::GetInstance()->current_test_info()->name());
-        std::error_code rmEc;
-        std::filesystem::remove_all(m_projectRoot, rmEc); // residue from a killed run
+        // One project root and cache root for each test and each process. The disk key folds
+        // the surface's absolute path, and another process of this suite removes its own roots.
+        m_projectRoot = TestUtils::MakeUniqueTempDirectory(
+            std::string("ge_shader_epoch_") + ::testing::UnitTest::GetInstance()->current_test_info()->name());
         std::filesystem::create_directories(m_projectRoot);
 
         m_ctx.AdapterShaderDir = m_shaderDir;
@@ -428,14 +421,9 @@ class ShaderCompilationCacheClosureTest : public ::testing::Test
         if (!std::filesystem::exists(m_shaderDir, ec))
             GTEST_SKIP() << "Staged shader directory not found: " << m_shaderDir.string();
 
-        // Per-TEST roots for the same reason as the epoch fixture: the disk key
-        // folds the surface's absolute path via the composed source.
-        m_projectRoot =
-            std::filesystem::temp_directory_path()
-            / (std::string("ge_shader_closure_")
-               + ::testing::UnitTest::GetInstance()->current_test_info()->name());
-        std::error_code rmEc;
-        std::filesystem::remove_all(m_projectRoot, rmEc);
+        // A root of its own for each test and each process, as in the epoch fixture.
+        m_projectRoot = TestUtils::MakeUniqueTempDirectory(
+            std::string("ge_shader_closure_") + ::testing::UnitTest::GetInstance()->current_test_info()->name());
         std::filesystem::create_directories(m_projectRoot);
 
         m_ctx.AdapterShaderDir = m_shaderDir;
