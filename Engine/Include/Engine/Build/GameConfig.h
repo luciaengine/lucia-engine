@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace GameEngine {
 
@@ -39,6 +40,19 @@ struct LodImportConfig
     uint32_t borderRule = 0;
 };
 
+/// A cooked forest and its overview mesh in the Player startup scene.
+struct ForestStandConfig
+{
+    /// Asset-relative placement archive.
+    std::string Archive;
+    /// Name of the stand mesh entity, with its render layers disabled.
+    std::string Entity;
+    /// Optional source model for individual tree meshes and impostors.
+    std::string ImpostorModel;
+    float DetailDistance = 400.0f;
+    uint32_t NearMeshBudget = 0;
+};
+
 struct GameConfig
 {
     std::string gameName = "My Game";
@@ -47,6 +61,7 @@ struct GameConfig
     // The Player waits for startup spline recipes before its ready line and screenshot.
     bool waitForSplineRecipes = true;
 
+    std::vector<ForestStandConfig> ForestStands;
     LodImportConfig lod;
 
     // Runtime LOD SELECTION, distinct from the import defaults above: which
