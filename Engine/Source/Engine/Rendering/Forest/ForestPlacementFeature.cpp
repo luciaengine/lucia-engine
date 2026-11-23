@@ -512,10 +512,11 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
         session.PendingNearOwners.clear();
     }
 
-    view.DetailDistance = session.DetailDistance;
     constexpr float kSplatHandoffWidth = 64.0f;
     const bool fade = ForestSplatHandoffEnabled();
-    view.DetailFadeWidth = fade ? std::min(kSplatHandoffWidth, view.DetailDistance) : 0.0f;
+    view.DetailFadeWidth = fade ? std::min(kSplatHandoffWidth, session.DetailDistance) : 0.0f;
+    // The handoff starts at the detail distance, so full detail reaches as far as a hard switch.
+    view.DetailDistance = session.DetailDistance + view.DetailFadeWidth;
     if (!session.Stream && !session.Placements->CanRequestDetails(view))
     {
         session.WantsCard = session.Placements->CanPrefetchAtlas(view);
