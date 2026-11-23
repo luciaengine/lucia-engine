@@ -1753,6 +1753,23 @@ TEST_F(TextureCoverageGPU, InvalidMetadataCannotPublishUncorrectedRawTexture)
     }
 }
 
+// A far leaf reads the coarse levels of an ordinary mip chain, where the filtered alpha of a 0/1
+// mask is below the cutoff. The foliage coverage test keeps the base coverage at every level
+// down to 1 x 1, where the cutoff test keeps no pixel.
+TEST_F(TextureCoverageGPU, FoliageCoverageKeepsTheBaseCoverageThroughTheMipTail)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kCutoffMode = 1, kFoliageMode = 2;
+    constexpr float kTailLod = 6; // 1 x 1 for the 64 x 64 image
+    const double reference = Coverage(Render(texture, 256, 256, 0, kCutoffMode));
+    ASSERT_GT(reference, 0.2);
+    for (float lod = 0; lod <= kTailLod; lod += .5f)
+        EXPECT_NEAR(Coverage(Render(texture, 256, 256, lod, kFoliageMode)), reference, 0.03) << "lod " << lod;
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kCutoffMode)), 0.0);
+}
+
 TEST_F(TextureCoverageGPU, FullChainMaskedCardsMeasureIntegerFractionalAndPhaseCoverage)
 {
 #if defined(GE_HAVE_KTX)

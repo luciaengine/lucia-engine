@@ -1,4 +1,5 @@
 #version 450
+#include "Includes/foliage_coverage.glsl"
 layout(set=0,binding=0) uniform sampler2D sourceImage;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
@@ -11,7 +12,9 @@ void main()
         return;
     }
     vec4 texel=textureLod(sourceImage,uv+probe.phase,probe.lod);
-    // Same inclusive boundary as the production forward/depth adapters.
-    if(texel.a<probe.cutoff) discard;
+    // Mode 1: the same inclusive cutoff boundary as the production forward/depth adapters.
+    // Mode 2: the production foliage coverage test.
+    float opacity=probe.mode==2u?GE_FoliageCoverageOpacity(texel.a,probe.cutoff,probe.lod,gl_FragCoord.xy):texel.a;
+    if(opacity<probe.cutoff) discard;
     result=vec4(1.0);
 }

@@ -79,10 +79,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     if (filtered)
     {
         vec2 tileTexels = vec2(textureSize(albedoMap, 0)) / gridSize;
-        vec2 dx = uvDx * tileTexels;
-        vec2 dy = uvDy * tileTexels;
-        float footprint = max(dot(dx, dx), dot(dy, dy));
-        mip = min(Props.impostorAtlas.w, 0.5 * log2(max(1.0, footprint)));
+        mip = min(Props.impostorAtlas.w, GE_FoliageMipLevel(uvDx, uvDy, tileTexels));
         halfTexel = 0.5 / tileTexels;
         // Keep both trilinear samples inside one view tile.
         shadingInset = halfTexel * exp2(ceil(mip));
@@ -105,11 +102,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     }
     o.opacity = cardColor.a;
     if (mip > 0.5)
-    {
-        float cutout = step(clamp(Props.alphaCutoff, 0.0, 1.0), cardColor.a);
-        float coverage = mix(cutout, cardColor.a, smoothstep(0.5, 2.0, mip));
-        o.opacity = coverage > GE_FoliageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
-    }
+        o.opacity = GE_FoliageCoverageOpacity(cardColor.a, clamp(Props.alphaCutoff, 0.0, 1.0), mip, gl_FragCoord.xy);
 #ifdef GE_DEPTH_ONLY_FRAGMENT
     return o;
 #endif

@@ -5,6 +5,8 @@
 // Texture names (albedoMap, normalMap, metallicRoughnessMap, aoMap) are
 // provided by the adapter's bindless slot macros.
 
+#include "Includes/foliage_coverage.glsl"
+
 float GE_EZTreeLeafAlpha(vec4 albedo)
 {
     const float kAuthoredAlphaMax = 0.999;
@@ -43,10 +45,16 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 
     vec4 albedo = texture(albedoMap, uvAlbedo);
     float leafAlpha = GE_EZTreeLeafAlpha(albedo);
-    float colorTrust = smoothstep(0.45, 0.95, leafAlpha);
+    // A far leaf is smaller than a pixel, so its sample reads a coarse level where the filtered
+    // alpha is the leaf's covered share and is below the cutoff. The coverage test keeps that
+    // share of pixels. The coarse levels weight color by alpha, so their color is the leaf color.
+    float mip = GE_FoliageMipLevel(dFdx(uvAlbedo), dFdy(uvAlbedo), vec2(textureSize(albedoMap, 0))) +
+                GE_MATERIAL_MIP_BIAS;
+    float colorTrust = max(smoothstep(0.45, 0.95, leafAlpha), GE_FoliageCoarseWeight(mip));
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
-    o.opacity = leafAlpha * Mat.uBaseColor.a;
+    o.opacity = GE_FoliageCoverageOpacity(leafAlpha * Mat.uBaseColor.a, clamp(Props.alphaCutoff, 0.0, 1.0), mip,
+                                          gl_FragCoord.xy);
 
     vec4 mr = texture(metallicRoughnessMap, uvMR);
     o.roughness = mr.g * Mat.uParams0.y;
