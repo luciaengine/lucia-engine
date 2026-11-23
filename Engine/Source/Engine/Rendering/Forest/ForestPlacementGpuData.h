@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
+#include "ForestPlacementRuntime.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector4.h"
 #include "Rendering/Camera/CameraTypes.h"

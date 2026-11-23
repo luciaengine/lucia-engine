@@ -1,10 +1,10 @@
-#include "Engine/Rendering/Forest/ForestStandDraws.h"
+#include "ForestStandDraws.h"
 
 #include "../IdentityMeshDrawConstants.h"
 #include "ForestStandDrawProducer.h"
 
-#include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
-#include "Engine/Rendering/Forest/ForestPlacementFeature.h"
+#include "ForestPlacementRuntime.h"
+#include "ForestPlacementFeature.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"

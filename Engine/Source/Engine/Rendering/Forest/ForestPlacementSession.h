@@ -3,8 +3,8 @@
 #include "ForestNearMeshCandidates.h"
 #include "ForestPlacementCull.h"
 #include "ForestPlacementGpuData.h"
-#include "Engine/Rendering/Forest/ForestPlacementFeature.h"
-#include "Engine/Rendering/Forest/ForestPlacementRenderState.h"
+#include "ForestPlacementFeature.h"
+#include "ForestPlacementRenderState.h"
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Rendering/Core/RenderGraph/RGFrameStamp.h"
@@ -58,6 +58,7 @@ struct ForestPlacementSession
     std::optional<ForestPlacementRenderState> Stream;
     ForestPlacementFrame Plan;
     std::vector<ForestPlacementGpuPage> Pages;
+    // The frame that the session declared into, until that frame submits or aborts.
     Rendering::RenderGraph::RGFrameStamp Declared;
     bool ShaderRequested = false;
     bool ShaderAvailable = false;
@@ -66,6 +67,10 @@ struct ForestPlacementSession
     // The card reaches past the archive's bound radius: the session draws the overview only and streams nothing.
     // A reset keeps it, because the card and the archive stay the same.
     bool Refused = false;
+    // The last app frames (FrameOrchestrator::WorldFrameEpoch) in which a Game view and a Scene View
+    // asked for the details. The view that comes second yields to the other view.
+    std::optional<uint64> GameViewFrame;
+    std::optional<uint64> SceneViewFrame;
 
     ~ForestPlacementSession();
 

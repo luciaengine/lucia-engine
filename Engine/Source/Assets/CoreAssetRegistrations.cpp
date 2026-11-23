@@ -167,6 +167,9 @@ void RegisterCoreAssetTypes(AssetTypeRegistry& typeRegistry)
     RegisterCoreType(typeRegistry, AssetType::OceanSettings, &CreateBinaryAsset, "Ocean Settings");
     RegisterCoreType(typeRegistry, AssetType::OceanPreset, &CreateBinaryAsset, "Ocean Preset");
 
+    // The forest stand system streams the archive by page; nothing loads it whole.
+    RegisterCoreType(typeRegistry, AssetType::ForestPlacementArchive, &CreateBinaryAsset, "Forest Placement Archive");
+
     // Raw terrain heightmaps (.r16/.r32). 16-bit PNG heightmaps import as
     // regular Texture assets; this type covers only the raw formats textures
     // don't own. The HeightfieldData loaders decode them at bake time (square

@@ -1435,18 +1435,19 @@ set_tests_properties(PageStoreTests PROPERTIES
 # ForestPlacementTests: the packed forest runtime (Engine/Source/Engine/Rendering/Forest): page
 # residency, reader fences and fallback cover, coalesced archive reads through the asset reader,
 # the upload plan into the placement slots, the slot copies on a headless device (skipped
-# without Vulkan), the cull kernel on that device, the GPU page records, the stand draw ranges and the
-# near-mesh candidates.
+# without Vulkan), the cull kernel on that device, the GPU page records, the stand draw ranges, the
+# near-mesh candidates and the forest stand system's attach and release per scene load.
 add_executable(ForestPlacementTests
   ForestPlacementRuntimeTests.cpp
   ForestPlacementGpuUploadTests.cpp
   ForestPlacementDrawTests.cpp
   ForestPlacementCullTests.cpp
+  ForestStandSystemTests.cpp
 )
 target_link_libraries(ForestPlacementTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 target_include_directories(ForestPlacementTests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
-  # ForestPlacementUploadPlan.h, the internal upload plan.
+  # The internal forest headers.
   ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Rendering/Forest
   # EngineLogCapture.h, for the forest warnings.
   ${CMAKE_SOURCE_DIR}/Engine/Tests

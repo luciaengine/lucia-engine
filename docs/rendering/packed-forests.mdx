@@ -42,6 +42,41 @@ ForestPlacementCook --overview Assets/Forests/Forest.geforest canopy.png Assets/
 
 The cooker draws every tree of a page into that page's tile, at the tree's position, yaw and scale. It embeds the atlas in the model with an alpha-masked material that the importer gives the forest canopy surface. At a distance, the canopy surface uses the filtered alpha as coverage, so the canopy stays visible when its leaf detail becomes smaller than a pixel. Import the model with the default glTF axis settings, and generate it again when the placements change. The importer finds the canopy material by the cooker's marker in the material's glTF extras. If you add more extras to that material and its extras block becomes larger than 256 bytes, the material loses the canopy surface.
 
+## Place a forest stand in a scene
+
+A forest stand is a `ForestStand` component on the overview entity: the entity whose MeshRenderer holds the cooked overview mesh. The Player draws the stand in every scene that holds it. The Editor draws it in the Scene View and in the Game view.
+
+Each view draws the overview. The trees near the camera draw in one view at a time. In play mode, the Game view draws them and the Scene View shows the overview only. In edit mode, the Scene View draws them and the Game view shows the overview only. When you close or hide the view that draws the trees, the other view draws them within two frames. The rule is the same when a view is in a separate window.
+
+1. Add the cooked overview model to the scene.
+2. On its entity, set the MeshRenderer's render layers to None. The stand draws the overview from the archive's pages, so the MeshRenderer must not draw it too.
+3. Add the Forest Stand component to the same entity and set its fields.
+
+| Field | Default | Use |
+| --- | --- | --- |
+| Archive | none | The `.geforest` file that the overview mesh was cooked from. Required. |
+| Tree Model | none | A tree model with its impostor setting on. Empty draws the overview only. |
+| Detail Distance | 400 | The distance in meters from the camera within which visible pages draw their trees instead of the overview. 0 draws the overview only. |
+| Near Mesh Budget | 0 | The most trees near the camera that draw the tree mesh instead of the impostor card. 0 draws cards only. The Inspector accepts 0 to 256, and the compatibility tier caps it at 128. |
+
+A drag on Detail Distance or Near Mesh Budget in the Inspector applies the value when you release the mouse button, because each change attaches the stand again.
+
+The stand draws at the archive's world positions. The engine ignores the transform of the overview entity, so move the trees by cooking the archive again. The stand draws on the Default render layer.
+
+To draw trees, put at least one instance of the tree model in the same scene. The engine bakes the model's impostor card from the instances that the scene draws.
+
+If the stand cannot attach, the log shows one warning that names the entity and the fix, and the Inspector shows the same text on the component. The rest of the scene loads. For example, a MeshRenderer that still draws on a render layer, or an archive that is not in the project, stops the stand. A tree model that is not in the project, or a Detail Distance that is negative or not a number, draws the overview only.
+
+A scene load releases the stands of the scene that it replaces. Removing the component or its entity releases its stand.
+
+### Export
+
+An export ships the archive and the tree model of each stand in the exported scenes with the other assets of those scenes. The export stops, with an error that names the scene, the entity and the fix, when:
+
+- the archive or the tree model does not ship, for example because it is not in the project or a ship rule excludes it;
+- the archive is not a `.geforest` file, or it is a link to a file outside its asset folder;
+- the archive is not valid.
+
 ## Archive format
 
 A `.geforest` archive is little-endian and has three parts:

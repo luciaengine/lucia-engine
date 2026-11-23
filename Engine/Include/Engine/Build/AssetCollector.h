@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssetCore/Asset.h"
+#include "AssetCore/DepEdge.h"
 #include "AssetCore/GUID.h"
 #include "Engine/Build/ShipRules.h"
 #include "Types/FlatMap.h"
@@ -88,7 +89,6 @@ public:
 
     /// The ship rules the last CollectGameContent read, so later export steps check against the same rules.
     const ShipRules& GetShipRules() const { return m_ShipRules; }
-
     /// Build a manifest by walking transitive dependencies from scene roots.
     AssetManifest CollectFromScenes(const std::vector<std::string>& scenePaths);
 
@@ -195,8 +195,12 @@ private:
     // The project's ship rules while CollectGameContent runs, and the errors they raise.
     ShipRules m_ShipRules;
     std::vector<std::string> m_ShipErrors;
-    // Edges read from the file in this collection (EdgeRefresh::EveryNode), so each file is read once.
-    FlatMap<GUID, Vector<GUID>> m_FreshEdges;
+    // Edges read from each file in this collection. A root is read again on every walk.
+    FlatMap<GUID, std::vector<DepEdge>> m_FreshEdges;
+
+    // Reads the edges of each scene and prefab that the collection walked.
+    friend std::vector<std::string> CheckForestStandContent(const AssetManifest& manifest,
+                                                            const AssetCollector& collector);
 };
 
 } // namespace GameEngine

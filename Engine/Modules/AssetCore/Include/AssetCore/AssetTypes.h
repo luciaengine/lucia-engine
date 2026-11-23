@@ -113,7 +113,9 @@ namespace GameEngine {
     X(Prefab) \
     X(NavigationSurfaceData) \
     X(AiOptionSet) \
-    X(AiStateTree)
+    X(AiStateTree) \
+    /* Packed tree placements of one forest stand (.geforest), streamed by page at run time. */ \
+    X(ForestPlacementArchive)
 
 /**
  * @brief Asset types supported by the engine

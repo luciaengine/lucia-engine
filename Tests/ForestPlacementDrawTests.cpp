@@ -7,9 +7,9 @@
 #include "ForestNearMeshCandidates.h"
 #include "ForestPlacementGpuData.h"
 #include "ForestPlacementSession.h"
-#include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
+#include "ForestPlacementRuntime.h"
 #include "ForestStandDrawProducer.h"
-#include "Engine/Rendering/Forest/ForestPlacementFeature.h"
+#include "ForestPlacementFeature.h"
 #include "EngineLogCapture.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/RenderOrigin.h"
@@ -26,6 +26,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -636,6 +637,8 @@ protected:
         m_Device = Rendering::DeviceFactory::CreateDevice(desc);
         if (!m_Device || !m_Device->Initialize(desc))
             GTEST_SKIP() << "No Vulkan device";
+        ASSERT_TRUE(m_Services.Initialize(m_Device.get()));
+        m_Main = std::make_unique<Window>(m_Device.get());
         const auto file = m_Scratch.Path() / "session.geforest";
         WriteStore(file);
         std::string error;
@@ -646,6 +649,7 @@ protected:
         ASSERT_TRUE(m_Session);
         const auto camera = m_Services.Views().AllocateCamera("ForestSessionCamera");
         m_View = m_Services.Views().AllocateView("ForestSessionView", camera);
+        m_SceneView = m_Services.Views().AllocateView("ForestSessionSceneView", camera, Rendering::ViewPurpose::EditorScene);
     }
 
     void TearDown() override
@@ -654,28 +658,56 @@ protected:
             return;
         m_Session.reset();
         m_Device->WaitForIdle();
+        m_Other.reset();
+        m_Main.reset();
+        m_Services.Shutdown();
         m_Device->Shutdown();
     }
 
-    // Declares one frame of the session into the view and submits it. True when the session drew.
-    bool Emit(uint64 frameIndex)
+    // The frame stream of one window: its graph keeps its own frame numbers.
+    struct Window
     {
-        using namespace Rendering::RenderGraph;
-        RGResourcePool persistent(m_Device.get());
-        RGTransientPool transient(m_Device.get());
-        RGUploadRing ring(m_Device.get(), 2, 256 * 1024);
-        RGFrame graph(m_Device.get(), &persistent, &transient, &ring);
+        explicit Window(Rendering::IDevice* device)
+            : Persistent(device), Transient(device), Ring(device, 2, 256 * 1024),
+              Graph(device, &Persistent, &Transient, &Ring)
+        {
+        }
+
+        Rendering::RenderGraph::RGResourcePool Persistent;
+        Rendering::RenderGraph::RGTransientPool Transient;
+        Rendering::RenderGraph::RGUploadRing Ring;
+        Rendering::RenderGraph::RGFrame Graph;
+    };
+
+    // Declares frame `frameIndex` of the window's graph into each view in turn and submits it. Call it
+    // after BeginWorldDrawFrame. True where the session drew.
+    std::vector<bool> EmitInto(Window& window, uint64 frameIndex, std::initializer_list<Rendering::ViewId> views)
+    {
+        auto& graph = window.Graph;
         EXPECT_TRUE(m_Device->BeginFrame());
         graph.BeginFrame(frameIndex);
-        Engine::Renderer::ForwardEmitContext context{.Device = m_Device.get(), .Services = &m_Services,
-                                                     .Frame = &graph, .ViewId = m_View};
-        std::vector<Engine::Renderer::DrawSubCommand> ranges;
-        const bool drew = m_Feature->EmitDetails(*m_Session, context, {}, m_Near, ranges);
+        std::vector<bool> drew;
+        for (const auto view : views)
+        {
+            Engine::Renderer::ForwardEmitContext context{.Device = m_Device.get(), .Services = &m_Services,
+                                                         .Frame = &graph, .ViewId = view};
+            std::vector<Engine::Renderer::DrawSubCommand> ranges;
+            drew.push_back(m_Feature->EmitDetails(*m_Session, context, {}, m_Near, ranges));
+        }
         graph.Execute();
         m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
         m_Device->WaitForIdle();
         return drew;
     }
+
+    // Starts an app frame and declares frame `frameIndex` of the main window into the views.
+    std::vector<bool> Emit(uint64 frameIndex, std::initializer_list<Rendering::ViewId> views)
+    {
+        m_Services.BeginWorldDrawFrame();
+        return EmitInto(*m_Main, frameIndex, views);
+    }
+
+    bool Emit(uint64 frameIndex) { return Emit(frameIndex, {m_View}).front(); }
 
     // True when the runtime still asks for the near page: no stream has read it.
     bool NoPageWasRead()
@@ -695,6 +727,9 @@ protected:
     Engine::Renderer::ForestPlacementFeature* m_Feature = nullptr;
     std::shared_ptr<Engine::Renderer::ForestPlacementSession> m_Session;
     Rendering::ViewId m_View{};
+    Rendering::ViewId m_SceneView{};
+    std::unique_ptr<Window> m_Main;
+    std::unique_ptr<Window> m_Other;
 };
 
 // The corner of this card reaches 10 + 4 * sqrt(2) m from the root, past the archive's 12 m.
@@ -740,6 +775,89 @@ TEST_F(ForestPlacementSessionDeviceTest, RefusingAStreamingSessionFreesItsSlotsA
     EXPECT_FALSE(m_Session->Slots.IsValid());
     EXPECT_FALSE(m_Session->Indices.IsValid());
     EXPECT_FALSE(m_Session->Stream);
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, WhilePlayingTheGameViewTakesTheDetailsFromTheSceneView)
+{
+    m_Services.Views().SetWorldSimulating(kWorld, true);
+    Emit(1);
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EXPECT_EQ(Emit(2, {m_View, m_SceneView}), (std::vector{true, false}));
+    EXPECT_EQ(Emit(3, {m_SceneView, m_View}), (std::vector{false, true}));
+    // The Scene View waits one frame for a Game view that may still draw.
+    EXPECT_EQ(Emit(4, {m_SceneView}), (std::vector{false}));
+    EXPECT_EQ(Emit(5, {m_SceneView}), (std::vector{true}));
+    EXPECT_EQ(Emit(6, {m_View, m_SceneView}), (std::vector{true, false}));
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, WhileEditingTheSceneViewTakesTheDetailsFromTheGameView)
+{
+    Emit(1);
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EXPECT_EQ(Emit(2, {m_SceneView, m_View}), (std::vector{true, false}));
+    EXPECT_EQ(Emit(3, {m_View, m_SceneView}), (std::vector{false, true}));
+    // The Game view waits one frame for a Scene View that may still draw.
+    EXPECT_EQ(Emit(4, {m_View}), (std::vector{false}));
+    EXPECT_EQ(Emit(5, {m_View}), (std::vector{true}));
+    EXPECT_EQ(Emit(6, {m_SceneView, m_View}), (std::vector{true, false}));
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, AGameViewInItsOwnWindowTakesTheDetailsFromTheSceneView)
+{
+    // Each window counts its own frames: the Scene View window is far ahead of the Game view window.
+    m_Services.Views().SetWorldSimulating(kWorld, true);
+    m_Other = std::make_unique<Window>(m_Device.get());
+    Emit(100, {m_SceneView});
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EXPECT_EQ(Emit(101, {m_SceneView}), (std::vector{true}));
+    EXPECT_EQ(m_Session->Graph, &m_Main->Graph);
+
+    m_Services.BeginWorldDrawFrame();
+    EXPECT_EQ(EmitInto(*m_Main, 102, {m_SceneView}), (std::vector{true}));
+    EXPECT_EQ(EmitInto(*m_Other, 1, {m_View}), (std::vector{true}));
+    EXPECT_EQ(m_Session->Graph, &m_Other->Graph);
+    EXPECT_TRUE(m_Session->Card);
+
+    m_Services.BeginWorldDrawFrame();
+    EXPECT_EQ(EmitInto(*m_Main, 103, {m_SceneView}), (std::vector{false}));
+    EXPECT_EQ(EmitInto(*m_Other, 2, {m_View}), (std::vector{true}));
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, ASessionStaysOnItsGraphWhileItsFrameIsOpen)
+{
+    // The Game view in another window cannot move the session while the Scene View frame is open.
+    m_Services.Views().SetWorldSimulating(kWorld, true);
+    m_Other = std::make_unique<Window>(m_Device.get());
+    Emit(1, {m_SceneView});
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EXPECT_EQ(Emit(2, {m_SceneView}), (std::vector{true}));
+
+    m_Services.BeginWorldDrawFrame();
+    EXPECT_TRUE(m_Device->BeginFrame());
+    m_Main->Graph.BeginFrame(3);
+    std::vector<Engine::Renderer::DrawSubCommand> ranges;
+    Engine::Renderer::ForwardEmitContext scene{.Device = m_Device.get(), .Services = &m_Services,
+                                               .Frame = &m_Main->Graph, .ViewId = m_SceneView};
+    EXPECT_TRUE(m_Feature->EmitDetails(*m_Session, scene, {}, m_Near, ranges));
+    m_Other->Graph.BeginFrame(1);
+    Engine::Renderer::ForwardEmitContext game{.Device = m_Device.get(), .Services = &m_Services,
+                                              .Frame = &m_Other->Graph, .ViewId = m_View};
+    EXPECT_FALSE(m_Feature->EmitDetails(*m_Session, game, {}, m_Near, ranges));
+    EXPECT_EQ(m_Session->Graph, &m_Main->Graph);
+    EXPECT_TRUE(m_Session->Stream);
+    m_Main->Graph.Execute();
+    m_Feature->OnFrameSubmittedRG(m_Main->Graph, m_Main->Graph.SubmissionToken());
+    m_Other->Graph.Execute();
+    m_Feature->OnFrameSubmittedRG(m_Other->Graph, m_Other->Graph.SubmissionToken());
+    m_Device->WaitForIdle();
 }
 
 } // namespace

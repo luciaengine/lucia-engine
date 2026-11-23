@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
+#include "ForestPlacementRuntime.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 
@@ -13,6 +13,7 @@ namespace GameEngine::Engine::Renderer
 {
 
 struct ForwardEmitContext;
+struct ForestPlacementFeatureTestAccess;
 struct ForestPlacementSession;
 struct ImpostorBakePart;
 
@@ -48,8 +49,10 @@ public:
     /// logs one warning, frees its GPU objects, draws the overview only and streams no page.
     void PublishCard(uint64 world, const GUID& model, const ForestImpostorCard& card,
                      std::span<const ImpostorBakePart> sources = {});
-    /// Declares the session's culled cards and near meshes into the view. Return true when standRanges
-    /// accounts for all visible cells not drawn by the packed stream. The stand draw producer calls it.
+    /// Declares the session's culled cards and near meshes into one Game or Scene View per frame. A
+    /// drawing Game view comes first while the world simulates, else a drawing Scene View. Returns true
+    /// when standRanges holds every visible cell that the packed stream does not draw. The stand draw
+    /// producer calls it.
     bool EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
                      const Rendering::CameraData& camera, ForestPlacementView view,
                      std::vector<DrawSubCommand>& standRanges);
@@ -65,6 +68,8 @@ public:
     void OnDeviceRebuilt(Rendering::IDevice* device) override;
 
 private:
+    friend struct ForestPlacementFeatureTestAccess;
+
     void Finish(Rendering::RenderGraph::RGFrame& frame, bool submitted);
     std::vector<std::weak_ptr<ForestPlacementSession>> m_Sessions;
     uint64 m_NextSession = 0;

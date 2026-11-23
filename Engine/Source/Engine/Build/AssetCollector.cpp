@@ -217,22 +217,25 @@ void AssetCollector::WalkDependencies(const GUID& root, AssetManifest& manifest,
         TryAddAsset(current, manifest);
 
         // A cached edge set can be stale: a root (a built scene or pipeline) may be new, and a style
-        // sheet or shader source resolves @import and #include through the thread's manager, which the
-        // cache does not record. These re-extract now; other nodes rely on the modified-file invalidation.
+        // sheet or shader source resolves @import and #include through the thread's manager. Scenes
+        // and prefabs give the export checks their field edges. Other nodes use the cache.
         AssetMetadata meta;
         const bool haveMeta = registry.TryGetAssetMetadata(current, meta);
-        const bool reextract =
-            current == root || (haveMeta && (meta.Type == AssetType::UIStyle || meta.Type == AssetType::Shader));
+        const bool reextract = current == root ||
+            (haveMeta && (meta.Type == AssetType::UIStyle || meta.Type == AssetType::Shader ||
+                          meta.Type == AssetType::Scene || meta.Type == AssetType::Prefab));
         Vector<GUID> deps;
-        // An Always walk re-extracts every node once per collection: the cache can miss by-path references.
-        if (refresh == EdgeRefresh::EveryNode)
+        // An Always walk re-extracts every node: the cache can miss by-path references. A root reads
+        // its file on every walk.
+        if (refresh == EdgeRefresh::EveryNode || reextract)
         {
-            const Vector<GUID>* fresh = m_FreshEdges.Find(current);
-            deps = fresh != nullptr ? *fresh : m_FreshEdges.InsertOrAssign(current, registry.RefreshDependencies(current));
+            const std::vector<DepEdge>* fresh = current == root ? nullptr : m_FreshEdges.Find(current);
+            deps = DependencyTargets(fresh != nullptr ? *fresh
+                                                      : m_FreshEdges.InsertOrAssign(current, registry.RefreshDependencies(current)));
         }
         else
         {
-            deps = reextract ? registry.RefreshDependencies(current) : registry.GetDependencies(current);
+            deps = registry.GetDependencies(current);
         }
 
         // Loud per-asset trace: which assets contributed edges to the shipped
@@ -262,7 +265,6 @@ bool AssetCollector::CollectGameContent(const std::vector<std::string>& scenePat
 {
     namespace fs = std::filesystem;
     m_ShipErrors.clear();
-    m_FreshEdges.Clear();
     m_ShipRules = ShipRules::Load(projectAssetRoot, m_ShipErrors);
     // The folder rules have keys relative to projectAssetRoot, and the walk has keys relative to the registry's root.
     std::error_code rootError;
@@ -436,6 +438,8 @@ AssetManifest AssetCollector::CollectFromScenes(const std::vector<std::string>& 
 {
     AssetManifest manifest;
     auto& registry = m_AssetManager.GetRegistry();
+    // A new collection reads each file again: the files may have changed since the last one.
+    m_FreshEdges.Clear();
 
     // Resolve scene paths to GUIDs and walk their dependencies.
     for (const auto& scenePath : scenePaths)

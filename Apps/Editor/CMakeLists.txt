@@ -404,6 +404,7 @@ set(EDITOR_SOURCES
 	Source/Inspectors/Particles/ParticleRendererInspector.cpp
 	Source/Inspectors/PostProcessVolumeInspector.cpp
 	Source/Inspectors/WindVolumeInspector.cpp
+	Source/Inspectors/ForestStandInspector.cpp
 	Source/Inspectors/PostProcessEffects/BloomEffectInspector.cpp
 	Source/Inspectors/PostProcessEffects/ChromaticAberrationEffectInspector.cpp
     Source/Inspectors/PostProcessEffects/DepthPixelationEffectInspector.cpp
@@ -893,6 +894,7 @@ set(EDITOR_HEADERS
 	Include/Inspectors/Particles/ParticleStack/ParticleStackReference.h
 	Include/Inspectors/Particles/ParticleRendererInspector.h
 	Include/Inspectors/WindVolumeInspector.h
+	Include/Inspectors/ForestStandInspector.h
 	Include/Inspectors/AudioInspector.h
 	Include/Inspectors/AudioEmitterInspector.h
 	Include/Inspectors/SkeletonProfileInspector.h

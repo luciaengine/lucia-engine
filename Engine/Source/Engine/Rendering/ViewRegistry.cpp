@@ -490,6 +490,19 @@ void ViewRegistry::SetActiveCameraViewsWorldPaused(uint64 worldId, bool paused)
     }
 }
 
+void ViewRegistry::SetWorldSimulating(uint64 worldId, bool simulating)
+{
+    if (simulating)
+        m_SimulatingWorlds.Insert(worldId);
+    else
+        m_SimulatingWorlds.Erase(worldId);
+}
+
+bool ViewRegistry::IsWorldSimulating(uint64 worldId) const
+{
+    return m_SimulatingWorlds.Contains(worldId);
+}
+
 void ViewRegistry::SetViewWorldId(ViewId id, uint64 worldId)
 {
     for (auto& view : m_Views)
