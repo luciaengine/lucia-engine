@@ -181,6 +181,24 @@ protected:
         return pipeline.Execute(build, [&progress](const BuildProgress& current) { progress = current; });
     }
 
+    // Stages Scenes/Forest.scene with one ForestStand of `archive` for a mobile export.
+    bool StageMobile(const GUID& archive, std::string& error)
+    {
+        const fs::path scene = Assets / "Scenes/Forest.scene";
+        WriteFile(scene, "[scene name=\"Forest\" version=1]\n\n[entity id=\"e_stand\"]\n"
+                         "ForestStand.Archive = \"" + archive.ToString() + "\"\n");
+        Register(scene);
+        BuildSettings build;
+        build.platformName = "iOS";
+        build.projectRoot = Project;
+        build.outputDirectory = Output;
+        build.playerConfig.gameName = "ForestExportProbe";
+        build.scenes = {"Scenes/Forest.scene"};
+        BuildPipeline pipeline(nullptr);
+        fs::path contentRoot;
+        return pipeline.PrepareMobileContent(build, contentRoot, error);
+    }
+
     static bool HasError(const BuildProgress& progress, std::string_view text)
     {
         return std::ranges::any_of(progress.errors,
@@ -214,6 +232,18 @@ TEST_F(ForestStandExportTest, RefusesACorruptArchive)
     EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive 'Forests/Broken.geforest' is not valid"))
         << testing::PrintToString(progress.errors);
     EXPECT_FALSE(fs::exists(Output / "Assets/Forests/Broken.geforest"));
+}
+
+TEST_F(ForestStandExportTest, AMobileExportRefusesACorruptArchive)
+{
+    WriteFile(Assets / "Forests/Broken.geforest", "not a forest");
+    const GUID archive = Register(Assets / "Forests/Broken.geforest");
+    std::string error;
+    EXPECT_FALSE(StageMobile(archive, error));
+    EXPECT_NE(error.find("Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive "
+                         "'Forests/Broken.geforest' is not valid"),
+              std::string::npos)
+        << error;
 }
 
 TEST_F(ForestStandExportTest, RefusesAnArchiveLinkedFromOutsideTheAssetFolder)

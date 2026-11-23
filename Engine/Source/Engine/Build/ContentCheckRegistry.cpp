@@ -1,8 +1,7 @@
-#include "Engine/Build/ContentCheckRegistry.h"
+#include "ContentCheckRegistry.h"
 
 #include "ForestStandExport.h"
 
-#include <algorithm>
 #include <mutex>
 #include <utility>
 
@@ -34,15 +33,11 @@ void EnsureBuiltInsRegistered()
 
 void ContentCheckRegistry::Register(ContentCheck check)
 {
-    if (check.Name.empty() || !check.Run)
+    if (!check)
         return;
     Registry& registry = GetRegistry();
     const std::scoped_lock lock(registry.Mutex);
-    const auto existing = std::ranges::find(registry.Checks, check.Name, &ContentCheck::Name);
-    if (existing != registry.Checks.end())
-        *existing = std::move(check);
-    else
-        registry.Checks.push_back(std::move(check));
+    registry.Checks.push_back(std::move(check));
 }
 
 std::vector<std::string> ContentCheckRegistry::RunAll(const AssetManifest& manifest, const AssetCollector& collector)
@@ -56,7 +51,7 @@ std::vector<std::string> ContentCheckRegistry::RunAll(const AssetManifest& manif
     }
     std::vector<std::string> errors;
     for (const ContentCheck& check : checks)
-        check.Run(manifest, collector, errors);
+        check(manifest, collector, errors);
     return errors;
 }
 

@@ -1,7 +1,8 @@
 #include "ForestStandExport.h"
 
+#include "ContentCheckRegistry.h"
+
 #include "Engine/Build/AssetCollector.h"
-#include "Engine/Build/ContentCheckRegistry.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "Types/FlatMap.h"
 #include "Types/PathUtils.h"
@@ -157,6 +158,6 @@ void CheckForestStandContent(const AssetManifest& manifest, const AssetCollector
 
 void RegisterForestStandContentCheck()
 {
-    ContentCheckRegistry::Register({.Name = "ForestStand", .Run = &CheckForestStandContent});
+    ContentCheckRegistry::Register(&CheckForestStandContent);
 }
 } // namespace GameEngine

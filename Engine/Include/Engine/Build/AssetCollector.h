@@ -71,8 +71,8 @@ class AssetCollector
 public:
     explicit AssetCollector(AssetManager& assetManager);
 
-    /// Everything a game export ships from the mounted sources, on every target (the
-    /// desktop BuildPipeline, the mobile export and the Web export): the walk from `scenePaths` and from each
+    /// Everything a game export ships from the mounted sources, on every target (the desktop
+    /// BuildPipeline, the mobile export and the Web export): the walk from `scenePaths` and from each
     /// project asset whose ship rule (ShipRules: its own kv rule, else the folder files under
     /// `projectAssetRoot`) is Always (the project's shippable content when the walks find nothing,
     /// and the shippable files under `projectAssetRoot` when the registry holds none), the render
@@ -81,9 +81,10 @@ public:
     /// Every entry passed IsShippableContent, and no project entry is Never. False with
     /// `outError` set (one sentence per line) when a folder file or a stored rule is not valid, a
     /// scene in the list or an engine default is Never, a walk reaches a Never asset (the sentence
-    /// names the chain), the humanoid profile or the font cannot ship, or a ContentCheckRegistry check
-    /// reports a problem; `outWarnings` receives what ships incomplete, and each asset whose own Never
-    /// rule keeps it out of an Always folder.
+    /// names the chain), the humanoid profile or the font cannot ship, or an export content check
+    /// finds a problem (for example a Forest Stand whose archive does not open); `outWarnings`
+    /// receives what ships incomplete, and each asset whose own Never rule keeps it out of an
+    /// Always folder.
     bool CollectGameContent(const std::vector<std::string>& scenePaths, const std::string& renderPipelinePath,
                             const std::filesystem::path& projectAssetRoot, AssetManifest& outManifest,
                             std::vector<std::string>& outWarnings, std::string& outError);

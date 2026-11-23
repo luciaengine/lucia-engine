@@ -1,6 +1,6 @@
 #include "Engine/Build/AssetCollector.h"
 
-#include "Engine/Build/ContentCheckRegistry.h"
+#include "ContentCheckRegistry.h"
 #include "AssetCore/EditorOnlyAssetPath.h"
 #include "AssetCore/GUID.h"
 #include "AssetCore/PathNormalization.h"
