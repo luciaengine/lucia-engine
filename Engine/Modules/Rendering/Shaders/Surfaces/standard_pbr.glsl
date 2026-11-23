@@ -251,10 +251,6 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
                                            sIn.maskCoverageThreshold);
     }
 #endif
-    }
-    o.opacity = GE_FoliageCoverageOpacity(o.opacity, clamp(Props.alphaCutoff, 0.0, 1.0),
-                                          GE_FoliageTailWeight(maskFootprint), sIn.maskCoverageThreshold);
-#endif
 
     // Metallic-roughness (glTF convention: G=roughness, B=metallic)
 #ifdef GE_PARALLAX_MARCH
