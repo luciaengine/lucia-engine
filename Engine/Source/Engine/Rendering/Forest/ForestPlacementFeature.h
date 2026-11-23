@@ -61,9 +61,8 @@ public:
                      const Rendering::CameraData& camera, ForestPlacementView view,
                      std::vector<DrawSubCommand>& standRanges);
     /// Plans the session's frame for the sun cascades of the context's view: residency for `view`, the
-    /// camera's view, and for shadowPages (ForestPlacementRuntime::GatherShadowPages). The same view
-    /// arbitration as EmitDetails applies, and EmitDetails of the same view and frame draws this plan.
-    /// True when Plan holds this frame's draws for the view. The shadow caster producer calls it.
+    /// camera's view, and for shadowPages (ForestPlacementRuntime::GatherShadowPages). The view
+    /// arbitration of EmitDetails applies. True when Plan holds this frame's draws for the view.
     bool PlanShadowFrame(ForestPlacementSession& session, const DepthEmitContext& context,
                          ForestPlacementView view, std::span<const ForestShadowPage> shadowPages);
 

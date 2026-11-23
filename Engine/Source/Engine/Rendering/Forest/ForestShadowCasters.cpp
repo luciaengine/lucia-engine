@@ -13,7 +13,6 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <array>
-#include <format>
 #include <span>
 #include <utility>
 
@@ -29,18 +28,6 @@ struct ShadowCasterSource
     Rendering::RenderLayerMask Layers;
     std::shared_ptr<ForestPlacementSession> Session;
 };
-
-// The camera of a world view of the stand's world that shows one of its layers, else null.
-const Rendering::CameraData* FindCasterCamera(RenderServices& services, Rendering::ViewId viewId,
-                                              const ShadowCasterSource& source)
-{
-    auto& views = services.Views();
-    const auto* view = views.FindViewDesc(viewId);
-    if (!view || view->worldId != source.WorldId || !source.Layers.Intersects(view->ActiveRenderLayerMask()))
-        return nullptr;
-    const auto* camera = views.FindCameraData(view->cameraId);
-    return camera && camera->renderOriginSector[3] != 0 ? camera : nullptr;
-}
 
 // Culls the cascade's resident placements to its caster planes and emits their light-facing cards.
 void EmitCascadeCards(ForestPlacementSession& session, const DepthEmitContext& context, uint32 cascade,
@@ -61,9 +48,8 @@ void EmitCascadeCards(ForestPlacementSession& session, const DepthEmitContext& c
             MakeForestShadowGpuViewSource(*context.Cascades, cascade), slotCount, ForestCardReach(card),
             card.Bounds, gpuView, session.Pages))
         return;
-    const auto scope = std::format("{}.Shadow{}", session.Scope, cascade);
-    const auto buffers = session.ShadowCulls[cascade].Declare(*context.Frame, scope, session.Slots, slotCount,
-                                                              gpuView, session.Pages);
+    const auto buffers = session.ShadowCulls[cascade].Declare(*context.Frame, session.ShadowScopes[cascade],
+                                                              session.Slots, slotCount, gpuView, session.Pages);
     if (buffers)
         EmitForestImpostorShadowDraw(context, cascade, *buffers, session.Indices, card.Sway,
                                      DrawCommand{.Material = &material});
@@ -76,9 +62,9 @@ void EmitShadowCasters(const ShadowCasterSource& source, DepthEmitContext& conte
         context.Cascades->Count == 0 || !session.CastsShadows || session.Refused)
         return;
     auto& services = *context.Services;
-    const auto* camera = FindCasterCamera(services, context.ViewId, source);
+    const auto* camera = FindForestStandCamera(services, context.ViewId, source.WorldId, source.Layers);
     auto* feature = services.GetFeature<ForestPlacementFeature>();
-    if (!camera || !feature)
+    if (!camera || camera->renderOriginSector[3] == 0 || !feature)
         return;
     const DepthEmitCascades& cascades = *context.Cascades;
     // The cascades and the cards share the camera's render origin (CascadeFrameData::RenderOriginSector).

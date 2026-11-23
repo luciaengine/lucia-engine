@@ -322,7 +322,7 @@ TEST_F(ForestStandSystemTest, DetailSettingsApplyToTheAttachedSession)
     EXPECT_EQ(CountLines(lines, "attached with"), 1u);
 }
 
-TEST_F(ForestStandSystemTest, ShadowCastingOffRegistersNoCasterDraws)
+TEST_F(ForestStandSystemTest, ShadowCastingOffTurnsTheSessionCastingOff)
 {
     ECS::World world;
     const auto entity = CreateStand(world);

@@ -47,6 +47,16 @@ ForestPlacementView MakeForestStandView(const Rendering::CameraData& camera)
     return view;
 }
 
+const Rendering::CameraData* FindForestStandCamera(RenderServices& services, Rendering::ViewId viewId,
+                                                   uint64 worldId, Rendering::RenderLayerMask layers)
+{
+    auto& views = services.Views();
+    const auto* view = views.FindViewDesc(viewId);
+    if (!view || view->worldId != worldId || !layers.Intersects(view->ActiveRenderLayerMask()))
+        return nullptr;
+    return views.FindCameraData(view->cameraId);
+}
+
 namespace
 {
 
@@ -71,11 +81,7 @@ const Rendering::CameraData* FindStandCamera(const ForwardEmitContext& ctx, cons
 {
     if (!ctx.Frame || ctx.Purpose != ForwardEmitPurpose::World)
         return nullptr;
-    auto& views = ctx.Services->Views();
-    const auto* view = views.FindViewDesc(ctx.ViewId);
-    if (!view || view->worldId != stand.WorldId || !stand.Layers.Intersects(view->ActiveRenderLayerMask()))
-        return nullptr;
-    return views.FindCameraData(view->cameraId);
+    return FindForestStandCamera(*ctx.Services, ctx.ViewId, stand.WorldId, stand.Layers);
 }
 
 // True when the heads draw directly and a depth head addresses the same indices as the color head.

@@ -77,11 +77,9 @@ std::optional<ForestPlacementGpuViewSource> MakeForestPlacementGpuViewSource(con
 /// The view of sun cascade `cascade`: its light view-projection and its caster planes.
 ForestPlacementGpuViewSource MakeForestShadowGpuViewSource(const DepthEmitCascades& cascades, uint32 cascade);
 
-/// GPU inputs for the resident pages of `draws`. Page positions
-/// are rebased in double before converting to floats. rootRadius includes
-/// the maximum wind envelope and draw culling margin at unit scale.
-/// meshOwned names placements with a complete mesh submission for this view.
-/// Only identities matching a draw's ticket can suppress cards; with meshOwned, draws are in page order.
+/// GPU inputs for the resident pages of `draws`, rebased in double. rootRadius includes the wind envelope
+/// and the cull margin at unit scale. meshOwned names placements whose mesh this view drew; a claim
+/// suppresses a card only on a draw with its ticket, and draws are then in page order.
 bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, std::span<const ForestDetailDraw> draws,
     const ForestPlacementGpuViewSource& source, uint32 slotCount, float rootRadius,
     const Mathematics::Vector4& atlasBounds, ForestPlacementGpuView& view,

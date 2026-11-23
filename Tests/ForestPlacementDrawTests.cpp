@@ -11,14 +11,17 @@
 #include "ForestPlacementRuntime.h"
 #include "ForestStandDrawProducer.h"
 #include "ForestPlacementFeature.h"
+#include "ForestShadowCasters.h"
 #include "EngineLogCapture.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
+#include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Mathematics/MatrixOps.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Materials/MaterialDocument.h"
 #include "Tests/ScopedEnvVar.h"
 
 #include <gtest/gtest.h>
@@ -28,6 +31,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -810,6 +814,74 @@ protected:
         return {.Device = m_Device.get(), .Services = &m_Services, .ViewId = view, .Frame = &graph};
     }
 
+    // The cascade draws that one frame of the casters gave a view, and the viewer of the first card in
+    // cascade 1.
+    struct CasterFrame
+    {
+        size_t Cascade0 = 0;
+        size_t Cascade1 = 0;
+        bool Indirect = false;
+        std::optional<Mathematics::Vector4> Viewer;
+    };
+
+    // Starts an app frame, runs the depth producers of `view` for `cascades` and submits the frame.
+    CasterFrame EmitCasters(uint64 frameIndex, Rendering::ViewId view, const Engine::Renderer::DepthEmitCascades& cascades)
+    {
+        m_Services.BeginWorldDrawFrame();
+        auto& graph = m_Main->Graph;
+        EXPECT_TRUE(m_Device->BeginFrame());
+        graph.BeginFrame(frameIndex);
+        m_Services.EmitProducerDepthCommandsForView(view, &graph, &cascades);
+        const auto& streams = m_Services.Views().PerView(view).CascadeDepthCommands;
+        CasterFrame result{streams[0].size(), streams[1].size()};
+        if (!streams[1].empty())
+        {
+            const auto& card = streams[1].front();
+            result.Indirect = card.UseIndirect;
+            for (const auto& buffer : card.Bindings.Buffers)
+                if (buffer.Name == HashStringId("forestCard"))
+                {
+                    // forestCard: atlas, wind, material, then the viewer at byte 48.
+                    const auto* bytes = static_cast<const std::byte*>(m_Device->MapBuffer(buffer.Buffer));
+                    Mathematics::Vector4 viewer{};
+                    if (bytes)
+                        std::memcpy(viewer.v, bytes + buffer.Offset + 48, sizeof(viewer.v));
+                    result.Viewer = viewer;
+                }
+        }
+        graph.Execute();
+        m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
+        m_Device->WaitForIdle();
+        return result;
+    }
+
+    // A packed card material, registered as the MeshImpostor system registers one.
+    GUID RegisterCardMaterial()
+    {
+        MaterialDocument doc{};
+        doc.schemaVersion = 3;
+        doc.materialName = "ForestShadowCard";
+        doc.lightingModel = "StandardPBR";
+        doc.surfaceShader = "Surfaces/impostor.glsl";
+        doc.vertexModifier = "VertexModifiers/forest_impostor.glsl";
+        doc.customVertexShader = true;
+        doc.alphaMode = MaterialAlphaMode::Mask;
+        doc.doubleSided = true;
+        doc.properties["alphaCutoff"] = 0.5f;
+        doc.properties["impostorBounds"] = std::vector<float>{0.0f, 5.0f, 0.0f, 2.0f};
+        doc.textures["albedoMap"] = std::string{};
+        doc.textures["normalMap"] = std::string{};
+        const GUID guid = GUID::Generate();
+        Engine::Renderer::Material* material = m_Services.Materials().RegisterMaterialFromDocument(guid, doc);
+        if (!material)
+            return {};
+        // The surface's property table comes with the compile, which no frame here drains.
+        constexpr std::array<float, 4> kAtlas{8.0f, 0.0f, 0.0f, 0.0f};
+        Engine::Renderer::Material::TestFactory::AddPropertyLayout(*material, HashStringId("impostorAtlas"), 0u, sizeof(kAtlas));
+        material->SetVector(HashStringId("impostorAtlas"), kAtlas.data(), 4u);
+        return guid;
+    }
+
     void PublishCard()
     {
         Engine::Renderer::ForestImpostorCard card{};
@@ -1015,6 +1087,59 @@ TEST_F(ForestPlacementSessionDeviceTest, OnlyTheDetailViewCastsForestShadows)
     EXPECT_EQ(PlanShadows(2, {m_View, m_SceneView}, m_Near), (std::vector{false, true}));
     m_Services.Views().SetWorldSimulating(kWorld, true);
     EXPECT_EQ(PlanShadows(3, {m_SceneView, m_View}, m_Near), (std::vector{false, true}));
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, TheCastersDrawLightFacingCardsIntoTheCascadesThatHoldThePage)
+{
+    using namespace Engine::Renderer;
+    const auto layers = Rendering::RenderLayerMask::Default();
+    const auto view = AddForestStandView(m_Services, 512'000'054.0, kWorld, layers);
+    const auto casters = RegisterForestShadowCasters(m_Services, kWorld, layers, m_Session);
+    ASSERT_TRUE(casters);
+    ForestImpostorCard card{};
+    card.Material = RegisterCardMaterial();
+    ASSERT_FALSE(card.Material.IsNull());
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+
+    // Two cascades: cascade 0 holds nothing, cascade 1 holds every page.
+    const auto* camera = m_Services.Views().FindCameraData(m_Services.Views().FindViewDesc(view)->cameraId);
+    ASSERT_NE(camera, nullptr);
+    DepthEmitCascades cascades{};
+    cascades.RenderOriginSector = CameraRenderOriginSector(*camera);
+    cascades.TowardLight = {0.0f, 1.0f, 0.0f};
+    cascades.Count = 2;
+    for (auto& cascade : cascades.Cascades)
+        cascade.CasterPlanes.fill({0.0f, 0.0f, 0.0f, 1.0f});
+    cascades.Cascades[0].CasterPlanes[0] = {0.0f, 0.0f, 0.0f, -1.0f};
+
+    // The first frame asks for the card and the second reads the near page, which the test makes resident.
+    EmitCasters(1, view, cascades);
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EmitCasters(2, view, cascades);
+    ASSERT_EQ(m_Session->Plan.Reads.size(), 1u);
+    const auto ticket = m_Session->Plan.Reads.front();
+    ASSERT_TRUE(m_Runtime->CompleteRead(ticket, kSecondPage));
+    ASSERT_TRUE(m_Runtime->CompleteUpload(ticket, Engine::Renderer::ForestUploadResult::Published));
+
+    // The cull pipeline builds in the background: the cards draw once it is warm.
+    CasterFrame drawn{};
+    uint64 frame = 3;
+    for (constexpr uint64 kLastFrame = 200; frame < kLastFrame && drawn.Cascade1 == 0; ++frame)
+        drawn = EmitCasters(frame, view, cascades);
+    EXPECT_EQ(drawn.Cascade0, 0u);
+    ASSERT_EQ(drawn.Cascade1, 1u);
+    EXPECT_TRUE(drawn.Indirect);
+    ASSERT_TRUE(drawn.Viewer);
+    EXPECT_EQ(drawn.Viewer->x, 0.0f);
+    EXPECT_EQ(drawn.Viewer->y, 1.0f);
+    EXPECT_EQ(drawn.Viewer->z, 0.0f);
+    EXPECT_EQ(drawn.Viewer->w, 0.0f) << "a cascade card faces a direction";
+
+    // Shadow Casting Off: the stand casts nothing.
+    m_Session->CastsShadows = false;
+    const auto off = EmitCasters(frame, view, cascades);
+    EXPECT_EQ(off.Cascade0, 0u);
+    EXPECT_EQ(off.Cascade1, 0u);
 }
 
 } // namespace

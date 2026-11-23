@@ -2,7 +2,6 @@
 
 #include "Engine/Rendering/DrawCommand.h"
 #include "Engine/Rendering/DrawCommandProducer.h"
-#include "ForestPlacementRuntime.h"
 #include "Rendering/RenderLayerMask.h"
 #include "Types/ScopedSubscription.h"
 
@@ -16,6 +15,7 @@ namespace GameEngine::Engine::Renderer
 class ForestPlacementRuntime;
 class RenderServices;
 struct ForestPlacementSession;
+struct ForestPlacementView;
 
 struct ForestStandDrawHeads
 {
@@ -30,6 +30,9 @@ using PrepareForestStandDraw = std::function<std::optional<ForestStandDrawHeads>
 
 /// The view that a stand plans for `camera`: the camera eye, and the frustum planes relative to it.
 ForestPlacementView MakeForestStandView(const Rendering::CameraData& camera);
+/// The camera of `viewId` when it is a view of world `worldId` that shows one of `layers`, else null.
+const Rendering::CameraData* FindForestStandCamera(RenderServices& services, Rendering::ViewId viewId,
+                                                   uint64 worldId, Rendering::RenderLayerMask layers);
 
 /// Registers the stand in the world forward draw stream. The caller owns the
 /// subscription for the scene's lifetime. Uses each view's own camera and layers. Main thread.

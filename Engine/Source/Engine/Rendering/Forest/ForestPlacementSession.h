@@ -51,6 +51,8 @@ struct ForestPlacementSession
     std::optional<ForestImpostorCard> Card;
     bool WantsCard = false;
     std::string Scope;
+    // The scope of each cascade's cull: Scope.Shadow<c>.
+    std::array<std::string, kMaxDepthEmitCascades> ShadowScopes;
     Rendering::IDevice* Device = nullptr;
     Rendering::RenderGraph::RGFrame* Graph = nullptr;
     Rendering::BufferHandle Slots;
@@ -70,8 +72,8 @@ struct ForestPlacementSession
     Rendering::ViewId PlannedView{};
     bool PlanReady = false;
     // The color and the cascade draws of Plan are declared. Each is declared once.
-    bool ColorEmitted = false;
-    bool ShadowsEmitted = false;
+    bool ColorDeclared = false;
+    bool ShadowsDeclared = false;
     // From the overview MeshRenderer's shadowCasting: the stand casts sun shadows, and it draws in color.
     bool CastsShadows = true;
     bool DrawsColor = true;

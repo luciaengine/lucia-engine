@@ -41,6 +41,8 @@ std::shared_ptr<ForestPlacementSession> ForestPlacementFeature::Attach(
     session->World = world;
     session->Model = model;
     session->Scope = "Forest.Detail." + std::to_string(++m_NextSession);
+    for (uint32 cascade = 0; cascade < kMaxDepthEmitCascades; ++cascade)
+        session->ShadowScopes[cascade] = session->Scope + ".Shadow" + std::to_string(cascade);
     m_Sessions.push_back(session);
     return session;
 }
@@ -430,8 +432,8 @@ bool PlanFrame(ForestPlacementSession& session, RenderServices& services, RGFram
         return false;
     session.Planned.Stamp(frame);
     session.PlannedView = viewId;
-    session.ColorEmitted = false;
-    session.ShadowsEmitted = false;
+    session.ColorDeclared = false;
+    session.ShadowsDeclared = false;
     session.PlanReady = PlanDetails(session, frame, device, viewId, view, shadowPages);
     return session.PlanReady;
 }
@@ -445,9 +447,9 @@ bool ForestPlacementFeature::PlanShadowFrame(ForestPlacementSession& session, co
         return false;
     view.DetailDistance = session.DetailDistance;
     if (!PlanFrame(session, *context.Services, *context.Frame, *context.Device, context.ViewId, view, shadowPages) ||
-        session.ShadowsEmitted)
+        session.ShadowsDeclared)
         return false;
-    session.ShadowsEmitted = true;
+    session.ShadowsDeclared = true;
     return true;
 }
 
@@ -460,9 +462,9 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     auto& services = *context.Services;
     view.DetailDistance = session.DetailDistance;
     if (!context.Device || !PlanFrame(session, services, frame, *context.Device, context.ViewId, view, {}) ||
-        session.ColorEmitted)
+        session.ColorDeclared)
         return false;
-    session.ColorEmitted = true;
+    session.ColorDeclared = true;
     if (session.Plan.DetailedDraws.empty())
     {
         standRanges.swap(session.Plan.StandDraws);
