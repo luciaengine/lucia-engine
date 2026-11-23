@@ -10,9 +10,6 @@ PlayerLog.h
 PlayerStartupReadiness.cpp
 PlayerStartupReadiness.h
 
-Forest/PlayerForestStands.cpp
-Forest/PlayerForestStands.h
-
 PlayerRunOptions.cpp
 PlayerRunOptions.h
 

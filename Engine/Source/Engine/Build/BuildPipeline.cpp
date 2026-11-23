@@ -1,4 +1,5 @@
 #include "Engine/Build/BuildPipeline.h"
+#include "ForestStandExport.h"
 #include "Core/ApplicationPaths.h"
 #include "Engine/Build/AppIconGenerator.h"
 #include "Engine/Build/BuildHost.h"
@@ -447,18 +448,6 @@ bool BuildPipeline::Execute(const BuildSettings& settings, ProgressCallback prog
 
     try
     {
-        const fs::path gameConfig = settings.projectRoot / "game.config";
-        std::error_code configError;
-        if (settings.playerConfig.ForestStands.empty() && !settings.projectRoot.empty() && fs::is_regular_file(gameConfig, configError))
-        {
-            auto forests = LoadGameConfig(gameConfig).ForestStands;
-            if (!forests.empty())
-            {
-                BuildSettings configured = settings;
-                configured.playerConfig.ForestStands = std::move(forests);
-                return ExecuteImpl(configured);
-            }
-        }
         return ExecuteImpl(settings);
     }
     catch (const std::exception& e)
@@ -851,6 +840,18 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
         }
     }
 
+    // 7b. A forest stand whose archive or tree model cannot ship, or whose archive does not open, stops the build.
+    {
+        const AssetManager& assets = EngineCore::GetInstance().GetAssetManager();
+        const auto forestErrors = CheckForestStandContent(manifest, assets.GetRegistry(), assets.GetParserRegistry());
+        if (!forestErrors.empty())
+        {
+            m_Progress.errors.insert(m_Progress.errors.end(), forestErrors.begin(), forestErrors.end());
+            ReportProgress(BuildProgress::Stage::Failed, 0.0f, forestErrors.front());
+            return false;
+        }
+    }
+
     // 8. Copy assets. Always the FULL manifest: the staging dir is recreated
     // from scratch every build (and renamed away on success), so an incremental
     // diff against a persisted manifest starves the fresh staging of every
@@ -867,18 +868,6 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
             if (m_Progress.cancelled)
                 return false;
             ReportProgress(BuildProgress::Stage::Failed, 0.0f, "Failed to copy assets");
-            return false;
-        }
-    }
-
-    for (const auto& forest : settings.playerConfig.ForestStands)
-    {
-        const std::string error = StageForestPlacementArchive(forest,
-            EngineCore::GetInstance().GetResolvedAssetRoot(), contentRoot / "Assets", shipRules);
-        if (!error.empty())
-        {
-            m_Progress.errors.push_back(error);
-            ReportProgress(BuildProgress::Stage::Failed, 0.0f, "Failed to stage forest placements");
             return false;
         }
     }

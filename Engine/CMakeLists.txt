@@ -374,6 +374,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Forest/ForestPlacementGpuData.cpp
 	Source/Engine/Rendering/Forest/ForestPlacementSession.cpp
 	Source/Engine/Rendering/Forest/ForestStandDraws.cpp
+	Source/Engine/Rendering/Forest/ForestStandSystem.cpp
 	Source/Engine/Rendering/RenderServicesDetail.cpp
 	Source/Engine/Rendering/PointShadowFaceCull.cpp
 	Source/Engine/Rendering/PointShadowAtlasPlanner.cpp
@@ -905,6 +906,7 @@ target_sources(Engine PRIVATE
     Source/Engine/Build/TerrainPageExport.cpp
     Source/Engine/Build/TexturePackageCook.cpp
     Source/Engine/Build/StagedAssetCook.cpp
+    Source/Engine/Build/ForestStandExport.cpp
     Source/Engine/Build/SceneExportStrip.cpp
     Source/Engine/Build/ShipRules.cpp
     Source/Engine/Build/BuildPlatforms.cpp

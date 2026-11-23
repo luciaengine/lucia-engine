@@ -42,31 +42,36 @@ ForestPlacementCook --overview Assets/Forests/Forest.geforest canopy.png Assets/
 
 The cooker draws every tree of a page into that page's tile, at the tree's position, yaw and scale. It embeds the atlas in the model with an alpha-masked material that the importer gives the forest canopy surface. At a distance, the canopy surface uses the filtered alpha as coverage, so the canopy stays visible when its leaf detail becomes smaller than a pixel. Import the model with the default glTF axis settings, and generate it again when the placements change. The importer finds the canopy material by the cooker's marker in the material's glTF extras. If you add more extras to that material and its extras block becomes larger than 256 bytes, the material loses the canopy surface.
 
-## Use a forest in the Player
+## Place a forest stand in a scene
 
-Add the cooked overview mesh to the startup scene. Give its entity a unique name, leave its transform at identity, and disable all of its render layers. The stand renderer uses the archive's world coordinates and draws the overview as pages.
+A forest stand is a `ForestStand` component on the overview entity: the entity whose MeshRenderer holds the cooked overview mesh. The Editor draws the stand in the Scene View and in play mode, and the Player draws it in every scene that holds it.
 
-Add the stand to the project's `game.config`. The archive and model paths are relative to the asset root.
+1. Add the cooked overview model to the scene.
+2. On its entity, set the MeshRenderer's render layers to None. The stand draws the overview from the archive's pages, so the MeshRenderer must not draw it too.
+3. Add the Forest Stand component to the same entity and set its fields.
 
-```json title="Configure a packed forest stand"
-{
-  "startupScene": "Scenes/Forest.scene",
-  "forestStand": {
-    "archive": "Forests/Forest.geforest",
-    "entity": "Canopy",
-    "impostorModel": "Trees/Pine.glb",
-    "detailDistance": 400,
-    "nearMeshBudget": 128
-  }
-}
-```
+| Field | Default | Use |
+| --- | --- | --- |
+| Archive | none | The `.geforest` file that the overview mesh was cooked from. Required. |
+| Tree Model | none | A tree model with its impostor setting on. Empty draws the overview only. |
+| Detail Distance | 400 | The distance in meters from the camera within which visible pages draw their trees instead of the overview. |
+| Near Mesh Budget | 0 | The most trees near the camera that draw the tree mesh instead of the impostor card. 0 draws cards only. The device tier caps it at 256, and at 128 on the compatibility tier. |
 
-- `archive` and `entity` are required. Use `forestStands` with an array of these objects for multiple stands. Give each stand its own entity.
-- `impostorModel` is optional. To draw individual placements, use a tree model with impostors enabled and its source mesh parts in the startup scene. Without a model, the stand draws only its overview.
-- `detailDistance` sets the distance in meters at which visible pages can draw individual trees. The default is 400 m. Set it to 0 for overview only.
-- `nearMeshBudget` sets the maximum number of placements per stand that can draw source meshes near the camera. It defaults to 0, which uses impostors for all individual placements. The device profile can reduce the budget.
+The stand draws at the archive's world positions. The engine ignores the transform of the overview entity, so move the trees by cooking the archive again. The stand draws on the Default render layer.
 
-Desktop export copies each configured archive alongside the packaged assets. If the export reports a ship rule that excludes the archive, change the rule or choose a shippable archive.
+To draw trees, put at least one instance of the tree model in the same scene. The engine bakes the model's impostor card from the instances that the scene draws.
+
+If the stand cannot attach, the log shows one warning that names the entity and the fix, and the rest of the scene loads. For example, a MeshRenderer that still draws on a render layer, or an archive that is not in the project, stops the stand. A tree model that is not in the project, or a Detail Distance of 0, draws the overview only.
+
+A scene load releases the stands of the scene that it replaces. Removing the component or its entity releases its stand.
+
+### Export
+
+An export ships the archive and the tree model of each stand in the exported scenes with the other assets of those scenes. The export stops, with an error that names the scene and the fix, when:
+
+- the archive or the tree model does not ship, for example because it is not in the project or a ship rule excludes it;
+- the archive is not a `.geforest` file, or it is a link to a file outside its asset folder;
+- the archive is not valid.
 
 ## Archive format
 

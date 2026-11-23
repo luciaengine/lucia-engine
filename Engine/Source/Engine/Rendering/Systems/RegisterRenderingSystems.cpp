@@ -15,6 +15,7 @@
 #include "ECSModules/Rendering/Systems/MorphTargetSystem.h"
 #include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
 #include "ECSModules/Rendering/Systems/HLODSelectSystem.h"
+#include "Engine/Rendering/Forest/ForestStandSystem.h"
 #include "Engine/Rendering/Impostors/MeshImpostorSystem.h"
 #include "ECSModules/Rendering/Systems/MaterialMipDemandSystem.h"
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
@@ -62,6 +63,7 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     constexpr const char* kMorph = "MorphTarget";
     constexpr const char* kHierarchy = "TransformHierarchy";
     constexpr const char* kHlodSelect = "HLODSelect";
+    constexpr const char* kForestStand = "ForestStand";
     constexpr const char* kMeshImpostor = "MeshImpostor";
     constexpr const char* kExtract = "RenderExtraction";
     constexpr const char* kClusterPrepare = "ClusterLODPrepare";
@@ -116,10 +118,16 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     // extraction (kExtract depends on it).
     schedule.Add<HLODSelectSystem>(kHlodSelect, SystemPhase::Extraction, 5, {kHierarchy}, renderServices);
 
+    // The packed forest stands of the world's ForestStand entities. Before the impostor links, so
+    // that a stand attached this frame gets its tree card this frame.
+    schedule.Add<ForestStandSystem>(kForestStand, SystemPhase::Extraction, 5, {}, renderServices,
+                                    EngineCore::GetInstance().TryGetAssetManager());
+
     // Impostor links of the opted-in models. It writes GPUScene mesh rows and batch counts, so it
     // runs apart from every other GPUScene writer and before extraction.
     schedule.Add<MeshImpostorSystem>(kMeshImpostor, SystemPhase::Extraction, 5,
-                                     {kMorph, kHlodSelect, OptionalDependency("EZTreeExtraction")}, renderServices);
+                                     {kMorph, kHlodSelect, kForestStand, OptionalDependency("EZTreeExtraction")},
+                                     renderServices);
 
     // The systems that write WorldTransform after the hierarchy. The wave
     // solver orders by declared edges only (phase and order sort within a

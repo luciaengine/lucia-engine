@@ -504,7 +504,6 @@ void PlayerApplication::Shutdown()
         world && GameEngine::NativeScripting::AreUserSystemsStarted(*world))
         GameEngine::NativeScripting::StopUserSystems(*world);
     GameUI::NotifyGameplayStopped();
-    m_ForestStands.Clear();
 
     Application::Shutdown();
 }
@@ -652,8 +651,6 @@ void PlayerApplication::LoadStartupScene()
 void PlayerApplication::OnStartupSceneInstantiated(SceneLoadInstantiated& instantiated)
 {
     m_Host->EnsureCamera(instantiated.World());
-    if (!m_ForestStands.Attach(instantiated, m_GameConfig.ForestStands))
-        return;
     if (m_TickManagedSystems)
         RegisterManagedSystemBridge();
 }
