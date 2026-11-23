@@ -61,15 +61,14 @@ void ForestPlacementFeature::ClearCards(uint64 world)
             session->Card.reset();
 }
 
-namespace
-{
-// The farthest point of the card from the tree root at unit scale: its corner and its largest sway.
-float CardReach(const ForestImpostorCard& card)
+float ForestCardReach(const ForestImpostorCard& card)
 {
     const Mathematics::Vector3 center{card.Bounds.x, card.Bounds.y, card.Bounds.z};
     return center.Length() + card.Bounds.w * std::numbers::sqrt2_v<float> + card.Sway.MaxDisplacement;
 }
 
+namespace
+{
 void RefuseCard(ForestPlacementSession& session, float reach)
 {
     session.Reset(false);
@@ -84,7 +83,7 @@ void RefuseCard(ForestPlacementSession& session, float reach)
 void ForestPlacementFeature::PublishCard(uint64 world, const GUID& model, const ForestImpostorCard& card,
                                         std::span<const ImpostorBakePart> sources)
 {
-    const float reach = CardReach(card);
+    const float reach = ForestCardReach(card);
     for (const auto& entry : m_Sessions)
     {
         const auto session = entry.lock();
@@ -385,35 +384,72 @@ bool BindGraph(ForestPlacementSession& session, const RGFrame& frame)
     return true;
 }
 
-// Streams the pages the view plans. False when the session draws no details this frame.
-bool PlanDetails(ForestPlacementSession& session, const ForwardEmitContext& context, const ForestPlacementView& view)
+// Streams the pages that the view and the cascades plan. False when the session draws no details this frame.
+bool PlanDetails(ForestPlacementSession& session, RGFrame& frame, IDevice& device, ViewId viewId,
+                 const ForestPlacementView& view, std::span<const ForestShadowPage> shadowPages)
 {
-    auto& frame = *context.Frame;
     if (session.NearBudget != 0)
     {
         session.PendingNearFrame.Stamp(frame);
-        session.PendingNearView = context.ViewId;
+        session.PendingNearView = viewId;
         session.PendingNearOwners.clear();
     }
 
+    // The cascades need the card too when the camera wants no trees.
+    const bool shadowDemand = !shadowPages.empty();
     if (!session.Stream)
     {
         // The MeshImpostor system publishes or refuses the card first: a session without one streams nothing.
-        session.WantsCard = session.Placements->CanPrefetchDetails(view);
+        session.WantsCard = session.Placements->CanPrefetchDetails(view) || shadowDemand;
         if (!session.WantsCard || !session.Card)
             return false;
     }
-    if (!session.EnsureGpu(*context.Device))
+    if (!session.EnsureGpu(device))
         return false;
-    if (!session.Stream->Prepare(*session.Assets, *context.Device, frame, view, session.Plan))
+    if (!session.Stream->Prepare(*session.Assets, device, frame, view, session.Plan, shadowPages))
         return false;
     session.Graph = &frame;
     session.Declared.Stamp(frame);
-    session.WantsCard = session.Plan.WantsDetails;
+    session.WantsCard = session.Plan.WantsDetails || shadowDemand;
     return true;
 }
 
+// Plans the session's frame once, for the first view that takes the details. A later call for the
+// same view and frame returns the stored result; a call for another view returns false.
+bool PlanFrame(ForestPlacementSession& session, RenderServices& services, RGFrame& frame, IDevice& device,
+               ViewId viewId, const ForestPlacementView& view, std::span<const ForestShadowPage> shadowPages)
+{
+    const auto* desc = services.Views().FindViewDesc(viewId);
+    if (!desc || desc->worldPaused || !ImpostorStage::IsEnabled() ||
+        !TakesDetailView(session, desc->purpose, services.Spine().WorldFrameEpoch(),
+                         services.Views().IsWorldSimulating(session.World)))
+        return false;
+    if (session.Planned.IsFor(frame))
+        return session.PlannedView == viewId && session.PlanReady;
+    if (!BindGraph(session, frame))
+        return false;
+    session.Planned.Stamp(frame);
+    session.PlannedView = viewId;
+    session.ColorEmitted = false;
+    session.ShadowsEmitted = false;
+    session.PlanReady = PlanDetails(session, frame, device, viewId, view, shadowPages);
+    return session.PlanReady;
+}
+
 } // namespace
+
+bool ForestPlacementFeature::PlanShadowFrame(ForestPlacementSession& session, const DepthEmitContext& context,
+    ForestPlacementView view, std::span<const ForestShadowPage> shadowPages)
+{
+    if (session.Refused || !context.Frame || !context.Device || !context.Services)
+        return false;
+    view.DetailDistance = session.DetailDistance;
+    if (!PlanFrame(session, *context.Services, *context.Frame, *context.Device, context.ViewId, view, shadowPages) ||
+        session.ShadowsEmitted)
+        return false;
+    session.ShadowsEmitted = true;
+    return true;
+}
 
 bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
     const CameraData& camera, ForestPlacementView view, std::vector<DrawSubCommand>& standRanges)
@@ -422,15 +458,11 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
         return false;
     auto& frame = *context.Frame;
     auto& services = *context.Services;
-    const auto* desc = services.Views().FindViewDesc(context.ViewId);
-    if (!context.Device || !desc || desc->worldPaused || !ImpostorStage::IsEnabled() ||
-        !TakesDetailView(session, desc->purpose, services.Spine().WorldFrameEpoch(),
-                         services.Views().IsWorldSimulating(session.World)) ||
-        session.Declared.IsFor(frame) || !BindGraph(session, frame))
-        return false;
     view.DetailDistance = session.DetailDistance;
-    if (!PlanDetails(session, context, view))
+    if (!context.Device || !PlanFrame(session, services, frame, *context.Device, context.ViewId, view, {}) ||
+        session.ColorEmitted)
         return false;
+    session.ColorEmitted = true;
     if (session.Plan.DetailedDraws.empty())
     {
         standRanges.swap(session.Plan.StandDraws);
@@ -455,9 +487,10 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     const ForestNearDraw* near = PrepareNearDraw(session, context, camera, view, *pass, format);
     const std::span<const ForestMeshOwnedPlacement> owners = near ? std::span(near->Owners) :
         std::span<const ForestMeshOwnedPlacement>{};
+    const auto source = MakeForestPlacementGpuViewSource(camera);
     ForestPlacementGpuView gpuView{};
-    if (!BuildForestPlacementGpuInputs(*session.Placements, session.Plan, camera, session.Placements->SlotCount(),
-            CardReach(*card), card->Bounds, gpuView, session.Pages, owners))
+    if (!source || !BuildForestPlacementGpuInputs(*session.Placements, session.Plan.DetailedDraws, *source,
+            session.Placements->SlotCount(), ForestCardReach(*card), card->Bounds, gpuView, session.Pages, owners))
         return false;
     const auto buffers = session.Cull.Declare(frame, session.Scope, session.Slots, session.Placements->SlotCount(),
                                               gpuView, session.Pages);

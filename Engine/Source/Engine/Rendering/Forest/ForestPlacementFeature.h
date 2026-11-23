@@ -12,6 +12,7 @@ namespace GameEngine { class AssetManager; }
 namespace GameEngine::Engine::Renderer
 {
 
+struct DepthEmitContext;
 struct ForwardEmitContext;
 struct ForestPlacementFeatureTestAccess;
 struct ForestPlacementSession;
@@ -24,6 +25,9 @@ struct ForestImpostorCard
     ImpostorFoliageSway Sway;
     float SwitchCoverage = 0.0f;
 };
+
+/// The farthest point of the card from the tree root at unit scale: its corner and its largest sway.
+float ForestCardReach(const ForestImpostorCard& card);
 
 /// Owns placement sessions through render graph submission and device recovery.
 /// Thread contract: Attach and the frame members run on the main thread. ClearCards, WantsCard and
@@ -56,6 +60,12 @@ public:
     bool EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
                      const Rendering::CameraData& camera, ForestPlacementView view,
                      std::vector<DrawSubCommand>& standRanges);
+    /// Plans the session's frame for the sun cascades of the context's view: residency for `view`, the
+    /// camera's view, and for shadowPages (ForestPlacementRuntime::GatherShadowPages). The same view
+    /// arbitration as EmitDetails applies, and EmitDetails of the same view and frame draws this plan.
+    /// True when Plan holds this frame's draws for the view. The shadow caster producer calls it.
+    bool PlanShadowFrame(ForestPlacementSession& session, const DepthEmitContext& context,
+                         ForestPlacementView view, std::span<const ForestShadowPage> shadowPages);
 
     /// Fences the frame's detail draws and keeps the near-mesh owners it drew.
     void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,

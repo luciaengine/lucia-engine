@@ -71,9 +71,24 @@ If the overview mesh does not match the pages of its archive, the stand draws no
 
 When you cook the archive again, every stand that uses it attaches again with the new pages. A scene load releases the stands of the scene that it replaces. Removing the component or its entity releases its stand.
 
+### Shadows
+
+The trees of a stand cast sun shadows. Each tree within Detail Distance of the camera casts the shadow of its impostor card, turned to face the sun. Only the view that draws the trees casts their shadows: the Game view while the world simulates, else the Scene View.
+
+The Shadow Casting field of the overview MeshRenderer (`MeshRenderer.shadowCasting` in a scene file) sets what the stand does. A change applies to the attached stand at once.
+
+| Shadow Casting | Use |
+| --- | --- |
+| On | The stand draws and casts shadows. This is the default. |
+| Off | The stand draws and casts no shadows. |
+| ShadowsOnly | The trees cast shadows and the stand does not draw. A stand without a tree model draws its overview. |
+
 ### Limits
 
-- A stand casts no shadows.
+- Only trees within Detail Distance cast shadows. The overview casts no shadows, so past Detail Distance the stand casts none.
+- Only the sun casts the shadows of a stand. Spot, point, and area lights do not.
+- A sun shadow cascade that holds the shadows of a stand renders again in each frame.
+- At most 128 pages are resident for shadows only, in addition to the pages that draw as trees. On the compatibility tier the limit is 32 pages. A page past the limit casts no shadow until a slot is free.
 - Reflection probes and planar reflections do not show the stand.
 - A stand does not draw into the depth prepass, so ambient occlusion and contact shadows do not see it.
 - At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. The pages nearest to the camera draw as trees, and the other pages within Detail Distance draw the overview.

@@ -9,6 +9,7 @@
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Rendering/Core/RenderGraph/RGFrameStamp.h"
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -55,15 +56,30 @@ struct ForestPlacementSession
     Rendering::BufferHandle Slots;
     Rendering::BufferHandle Indices;
     ForestPlacementCull Cull;
+    // One cull for each sun cascade: each keeps its own visible and argument buffers.
+    std::array<ForestPlacementCull, kMaxDepthEmitCascades> ShadowCulls;
     std::optional<ForestPlacementRenderState> Stream;
     ForestPlacementFrame Plan;
     std::vector<ForestPlacementGpuPage> Pages;
+    std::vector<ForestDetailDraw> CascadeDraws;
     // The frame that the session declared into, until that frame submits or aborts.
     Rendering::RenderGraph::RGFrameStamp Declared;
+    // The frame and the view that Plan is for. The first emit of a frame plans; the later emits
+    // of the same view reuse the plan.
+    Rendering::RenderGraph::RGFrameStamp Planned;
+    Rendering::ViewId PlannedView{};
+    bool PlanReady = false;
+    // The color and the cascade draws of Plan are declared. Each is declared once.
+    bool ColorEmitted = false;
+    bool ShadowsEmitted = false;
+    // From the overview MeshRenderer's shadowCasting: the stand casts sun shadows, and it draws in color.
+    bool CastsShadows = true;
+    bool DrawsColor = true;
     bool ShaderRequested = false;
     bool ShaderAvailable = false;
     bool EmittedDetails = false;
     bool EmittedNearMeshes = false;
+    bool EmittedShadows = false;
     // The card reaches past the archive's bound radius: the session draws the overview only and streams nothing.
     // A reset keeps it, because the card and the archive stay the same.
     bool Refused = false;

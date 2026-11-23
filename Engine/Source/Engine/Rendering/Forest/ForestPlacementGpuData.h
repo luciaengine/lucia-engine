@@ -2,8 +2,11 @@
 
 #include "ForestPlacementRuntime.h"
 #include "Mathematics/Matrix4x4.h"
+#include "Mathematics/Vector3Int.h"
 #include "Mathematics/Vector4.h"
 #include "Rendering/Camera/CameraTypes.h"
+
+#include <optional>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -58,13 +61,29 @@ struct ForestPlacementIndirectDraw
 };
 static_assert(sizeof(ForestPlacementIndirectDraw) == 20);
 
-/// GPU inputs for one primary view's admitted detail pages. Page positions
+/// The view that a placement cull and its card draw use, relative to the render origin Sector.
+struct ForestPlacementGpuViewSource
+{
+    Mathematics::Matrix4x4 ViewProjectionRelative;
+    /// Normals toward the inside (Rendering::ExtractFrustumPlanes).
+    std::array<Mathematics::Vector4, 6> Planes;
+    /// The eye. Zero for a sun cascade, which has no eye point.
+    Mathematics::Vector3 EyeRelative;
+    Mathematics::Vector3Int Sector;
+};
+
+/// The camera's view, or none when the camera has no eye (SetCameraEye).
+std::optional<ForestPlacementGpuViewSource> MakeForestPlacementGpuViewSource(const Rendering::CameraData& camera);
+/// The view of sun cascade `cascade`: its light view-projection and its caster planes.
+ForestPlacementGpuViewSource MakeForestShadowGpuViewSource(const DepthEmitCascades& cascades, uint32 cascade);
+
+/// GPU inputs for the resident pages of `draws`. Page positions
 /// are rebased in double before converting to floats. rootRadius includes
 /// the maximum wind envelope and draw culling margin at unit scale.
 /// meshOwned names placements with a complete mesh submission for this view.
-/// Only identities matching this frame's ready detail pages can suppress cards.
-bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, const ForestPlacementFrame& plan,
-    const Rendering::CameraData& camera, uint32 slotCount, float rootRadius,
+/// Only identities matching a draw's ticket can suppress cards; with meshOwned, draws are in page order.
+bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, std::span<const ForestDetailDraw> draws,
+    const ForestPlacementGpuViewSource& source, uint32 slotCount, float rootRadius,
     const Mathematics::Vector4& atlasBounds, ForestPlacementGpuView& view,
     std::vector<ForestPlacementGpuPage>& pages, std::span<const ForestMeshOwnedPlacement> meshOwned = {});
 

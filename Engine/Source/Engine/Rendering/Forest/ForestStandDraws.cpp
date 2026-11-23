@@ -5,6 +5,7 @@
 
 #include "ForestPlacementRuntime.h"
 #include "ForestPlacementFeature.h"
+#include "ForestPlacementSession.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -34,7 +35,9 @@ bool ApplyStandIndexRange(const DrawCommand& head, std::span<DrawSubCommand> ran
     return true;
 }
 
-ForestPlacementView MakeStandView(const Rendering::CameraData& camera)
+} // namespace
+
+ForestPlacementView MakeForestStandView(const Rendering::CameraData& camera)
 {
     ForestPlacementView view{CameraEye(camera), {}};
     Rendering::ExtractFrustumPlanes(camera.viewProjRel, view.EyeRelativePlanes.data());
@@ -43,6 +46,9 @@ ForestPlacementView MakeStandView(const Rendering::CameraData& camera)
         plane.w += plane.x * eye.x + plane.y * eye.y + plane.z * eye.z;
     return view;
 }
+
+namespace
+{
 
 // What one registered stand draws, shared by its forward-emit callback.
 struct StandEmitSource
@@ -100,11 +106,11 @@ void EmitStandCommands(ForwardEmitContext& ctx, ForestStandDrawHeads& heads, std
 void EmitStand(const StandEmitSource& stand, ForwardEmitContext& ctx)
 {
     const auto* camera = FindStandCamera(ctx, stand);
-    if (!camera)
+    if (!camera || (stand.Details && !stand.Details->DrawsColor))
         return;
 
     auto* draws = ctx.Frame->AllocatePassData<std::vector<DrawSubCommand>>();
-    const auto placementView = MakeStandView(*camera);
+    const auto placementView = MakeForestStandView(*camera);
     if (!stand.Details)
     {
         stand.Placements->GatherStand(placementView, *draws);

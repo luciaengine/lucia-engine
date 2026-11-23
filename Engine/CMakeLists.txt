@@ -373,6 +373,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Forest/ForestPlacementFeature.cpp
 	Source/Engine/Rendering/Forest/ForestPlacementGpuData.cpp
 	Source/Engine/Rendering/Forest/ForestPlacementSession.cpp
+	Source/Engine/Rendering/Forest/ForestShadowCasters.cpp
 	Source/Engine/Rendering/Forest/ForestStandDraws.cpp
 	Source/Engine/Rendering/Forest/ForestStandSystem.cpp
 	Source/Engine/Rendering/RenderServicesDetail.cpp

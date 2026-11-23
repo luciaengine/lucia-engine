@@ -100,6 +100,33 @@ TEST(ImpostorSurfaceCompose, ThePackedForestCardComposesForColorAndDepth)
     }
 }
 
+TEST(ImpostorSurfaceCompose, TheForestCardFacesADirectionalViewer)
+{
+    MaterialDocument card = ImpostorDocument();
+    card.vertexModifier = "VertexModifiers/forest_impostor.glsl";
+    card.customVertexShader = true;
+    const auto result = Build(card, MaterialKeyword::DepthOnlyFragment);
+    if (ShadercMissing(result))
+        GTEST_SKIP() << "shaderc not built into this target";
+    for (const auto& error : result.errors)
+        ADD_FAILURE() << error;
+    ASSERT_TRUE(result.success);
+    ASSERT_NE(result.package, nullptr);
+
+    // forestCard (set 2, binding 4) ends with the viewer: a point (w = 1) or a direction (w = 0).
+    const auto& sets = result.package->meta.Sets;
+    const auto set = std::ranges::find(sets, 2u, &DescriptorSetMeta::Set);
+    ASSERT_NE(set, sets.end());
+    const auto binding = std::ranges::find(set->Bindings, 4u, &DescriptorBindingMeta::Binding);
+    ASSERT_NE(binding, set->Bindings.end());
+    ASSERT_TRUE(binding->Block);
+    EXPECT_EQ(binding->Block->Size, 64u);
+    const auto& members = binding->Block->Members;
+    const auto viewer = std::ranges::find(members, std::string("viewer"), &Member::Name);
+    ASSERT_NE(viewer, members.end());
+    EXPECT_EQ(viewer->Offset, 48u);
+}
+
 TEST(ImpostorSurfaceCompose, TheForestCanopySurfaceComposesForColorAndDepth)
 {
     MaterialDocument canopy{};

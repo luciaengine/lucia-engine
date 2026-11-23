@@ -3,10 +3,13 @@
 #include "ForestPlacementGpuData.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 
 #include <array>
 #include <cstring>
+#include <optional>
+#include <span>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -18,8 +21,17 @@ struct alignas(16) ForestCardParameters
     Mathematics::Vector4 Atlas;
     Mathematics::Vector4 Wind;
     std::array<uint32, 4> Material;
+    Mathematics::Vector4 Viewer;
 };
-static_assert(sizeof(ForestCardParameters) == 48);
+static_assert(sizeof(ForestCardParameters) == 64);
+
+// The buffers that a card draw binds and the graph buffers that its pass reads.
+struct ForestCardBindings
+{
+    std::span<const DrawBindings::BufferEntry> Buffers;
+    Rendering::RenderGraph::RGBuffer Parameters;
+    Rendering::BufferHandle Args;
+};
 
 void BindForestCard(DrawCommand& command, Rendering::BufferHandle indices, Rendering::BufferHandle args,
                     std::span<const DrawBindings::BufferEntry> buffers)
@@ -37,31 +49,31 @@ void BindForestCard(DrawCommand& command, Rendering::BufferHandle indices, Rende
     command.Producer = producer;
 }
 
-} // namespace
-
-bool EmitForestImpostorDraw(const ForwardEmitContext& context, const ForestPlacementCull::DrawBuffers& buffers,
-    Rendering::BufferHandle cardIndices, const ImpostorFoliageSway& sway, DrawCommand color)
+// True when `material` is a packed card material that the GPU scene knows.
+bool IsPackedCardMaterial(const Material* material)
 {
-    using namespace Rendering::RenderGraph;
-    if (!context.Frame || !context.Services || context.Purpose != ForwardEmitPurpose::World ||
-        !cardIndices.IsValid() || !color.Material || !color.Material->GetCompileSpec().customVertexShader ||
-        color.Material->GetCompileSpec().vertexModifierPath != "VertexModifiers/forest_impostor.glsl" ||
-        color.Material->GetGpuSceneMaterialIndex() == 0xFFFFFFFFu)
-        return false;
+    return material && material->GetCompileSpec().customVertexShader &&
+           material->GetCompileSpec().vertexModifierPath == "VertexModifiers/forest_impostor.glsl" &&
+           material->GetGpuSceneMaterialIndex() != 0xFFFFFFFFu;
+}
 
+// Uploads the card parameters for `viewer` and allocates the draw's bindings in the frame.
+std::optional<ForestCardBindings> PrepareForestCard(Rendering::RenderGraph::RGFrame& frame,
+    const ForestPlacementCull::DrawBuffers& buffers, const Material& material, const ImpostorFoliageSway& sway,
+    const Mathematics::Vector4& viewer)
+{
     ForestCardParameters params{};
-    if (!color.Material->GetVector(HashStringId("impostorAtlas"), params.Atlas.v, 4u) || params.Atlas.x < 1.0f)
-        return false;
+    if (!material.GetVector(HashStringId("impostorAtlas"), params.Atlas.v, 4u) || params.Atlas.x < 1.0f)
+        return std::nullopt;
     params.Wind = {sway.BaseY, sway.Height, sway.MaxDisplacement, 0};
-    params.Material[0] = color.Material->GetGpuSceneMaterialIndex();
+    params.Material[0] = material.GetGpuSceneMaterialIndex();
+    params.Viewer = viewer;
 
-    auto& frame = *context.Frame;
     const auto paramUpload = frame.AllocUpload(sizeof(params));
     if (!paramUpload.Valid())
-        return false;
+        return std::nullopt;
     std::memcpy(paramUpload.Ptr, &params, sizeof(params));
     const auto parameterBuffer = frame.ImportExternalBuffer("Forest.CardParameters", paramUpload.Buffer);
-    const auto args = frame.PhysicalBuffer(buffers.Args);
     auto& bindings = *frame.AllocatePassData<std::array<DrawBindings::BufferEntry, 5>>();
     bindings = {{
         {HashStringId("ForestPlacementSlots"), frame.PhysicalBuffer(buffers.Slots), 0, buffers.SlotBytes},
@@ -70,17 +82,71 @@ bool EmitForestImpostorDraw(const ForwardEmitContext& context, const ForestPlace
         {HashStringId("forestView"), frame.PhysicalBuffer(buffers.View), buffers.ViewOffset, sizeof(ForestPlacementGpuView)},
         {HashStringId("forestCard"), paramUpload.Buffer, paramUpload.Offset, sizeof(params)},
     }};
+    return ForestCardBindings{bindings, parameterBuffer, frame.PhysicalBuffer(buffers.Args)};
+}
 
-    constexpr auto readers = ForwardBufferReaders::WorldPass;
+} // namespace
+
+Mathematics::Vector4 ForestCardEyeViewer(const Rendering::CameraData& camera)
+{
+    return {CameraEyeRelativeToOrigin(camera), 1.0f};
+}
+
+bool EmitForestImpostorDraw(const ForwardEmitContext& context, const ForestPlacementCull::DrawBuffers& buffers,
+    Rendering::BufferHandle cardIndices, const ImpostorFoliageSway& sway, DrawCommand color)
+{
+    using namespace Rendering::RenderGraph;
+    if (!context.Frame || !context.Services || context.Purpose != ForwardEmitPurpose::World ||
+        !cardIndices.IsValid() || !IsPackedCardMaterial(color.Material))
+        return false;
     auto& services = *context.Services;
+    const auto* view = services.Views().FindViewDesc(context.ViewId);
+    const auto* camera = view ? services.Views().FindCameraData(view->cameraId) : nullptr;
+    if (!camera || camera->renderOriginSector[3] == 0)
+        return false;
+
+    auto& frame = *context.Frame;
+    const auto card = PrepareForestCard(frame, buffers, *color.Material, sway, ForestCardEyeViewer(*camera));
+    if (!card)
+        return false;
+    constexpr auto readers = ForwardBufferReaders::WorldPass;
     services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Slots, RGBufferRead::Storage, readers);
     services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Pages, RGBufferRead::Storage, readers);
     services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Visible, RGBufferRead::Storage, readers);
     services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.View, RGBufferRead::Uniform, readers);
-    services.EmitForwardSampledBufferRead(frame, context.ViewId, parameterBuffer, RGBufferRead::Uniform, readers);
+    services.EmitForwardSampledBufferRead(frame, context.ViewId, card->Parameters, RGBufferRead::Uniform, readers);
     services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Args, RGBufferRead::Indirect, readers);
-    BindForestCard(color, cardIndices, args, bindings);
+    BindForestCard(color, cardIndices, card->Args, card->Buffers);
     services.EmitForwardCommand(context.ViewId, color, ForwardDrawDepth::ColourPass);
+    return true;
+}
+
+bool EmitForestImpostorShadowDraw(const DepthEmitContext& context, uint32 cascade,
+    const ForestPlacementCull::DrawBuffers& buffers, Rendering::BufferHandle cardIndices,
+    const ImpostorFoliageSway& sway, DrawCommand card)
+{
+    using namespace Rendering::RenderGraph;
+    if (!context.Frame || !context.Services || !context.Cascades || cascade >= context.Cascades->Count ||
+        !cardIndices.IsValid() || !IsPackedCardMaterial(card.Material))
+        return false;
+
+    // A cascade is orthographic: every card faces the light along one direction (w = 0).
+    auto& frame = *context.Frame;
+    const auto prepared = PrepareForestCard(frame, buffers, *card.Material, sway,
+                                            {context.Cascades->TowardLight, 0.0f});
+    if (!prepared)
+        return false;
+    auto& services = *context.Services;
+    services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, buffers.Slots, RGBufferRead::Storage);
+    services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, buffers.Pages, RGBufferRead::Storage);
+    services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, buffers.Visible, RGBufferRead::Storage);
+    services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, buffers.View, RGBufferRead::Uniform);
+    services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, prepared->Parameters, RGBufferRead::Uniform);
+    services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, buffers.Args, RGBufferRead::Indirect);
+    BindForestCard(card, cardIndices, prepared->Args, prepared->Buffers);
+    static const auto producer = Rendering::DrawProducerRegistry::Register("ForestImpostorShadow");
+    card.Producer = producer;
+    services.EmitCascadeDepthCommand(context.ViewId, cascade, card);
     return true;
 }
 

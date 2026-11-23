@@ -28,7 +28,7 @@ public:
     /// the pages that sun cascades want (ForestPlacementRuntime::Prepare).
     bool Prepare(AssetManager& assets, Rendering::IDevice& device, Rendering::RenderGraph::RGFrame& graph,
                  const ForestPlacementView& view, ForestPlacementFrame& plan,
-                 std::span<const ForestShadowPage> shadowPages = {});
+                 std::span<const ForestShadowPage> shadowPages);
     /// Ends the frame of `graph`: a submitted frame fences its detail and shadow draws, an aborted
     /// one abandons its uploads.
     void Finish(Rendering::RenderGraph::RGFrame& graph, bool submitted);
