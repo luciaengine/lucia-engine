@@ -33,6 +33,7 @@
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Engine/Rendering/RenderDeviceContext.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/ViewRegistry.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Image/Encode.h"
 #include "Input/InputSystem.h"
@@ -651,6 +652,8 @@ void PlayerApplication::LoadStartupScene()
 void PlayerApplication::OnStartupSceneInstantiated(SceneLoadInstantiated& instantiated)
 {
     m_Host->EnsureCamera(instantiated.World());
+    if (auto* renderCtx = m_Host->GetRenderDeviceContext(); renderCtx && renderCtx->GetRenderServices())
+        renderCtx->GetRenderServices()->Views().SetWorldSimulating(instantiated.World().GetWorldId(), true);
     if (m_TickManagedSystems)
         RegisterManagedSystemBridge();
 }

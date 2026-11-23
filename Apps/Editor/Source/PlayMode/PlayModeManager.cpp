@@ -21,6 +21,8 @@
 #include "NativeScripting/NativeScriptManager.h" // SetHotReloadDeferred during play
 #include "NativeScripting/UserSystemRegistry.h"  // user C++ system play-mode tick
 #include "Engine/GameUI/GameplayUI.h"
+#include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/ViewRegistry.h"
 #include "PhysicsECS/PhysicsWorldService.h"
 #include "TerrainECS/TerrainService.h"
 #include "MarkupECS/MarkupService.h"
@@ -142,6 +144,13 @@ static void SetRuntimeSimulationSystemsEnabled(bool enabled)
         "Animation", enabled || keepAnimationForPreview);
 
     SetRuntimeAudioSystemsEnabled(enabled);
+}
+
+// Tells the renderer whether a game runs the world.
+static void SetWorldSimulating(const ECS::World& world, bool simulating)
+{
+    if (auto* renderServices = EngineCore::GetInstance().GetRenderServices())
+        renderServices->Views().SetWorldSimulating(world.GetWorldId(), simulating);
 }
 
 static void ResetTransientRenderState(ECS::World& world)
@@ -473,6 +482,7 @@ void PlayModeManager::EnterPlayMode()
 
     // TODO(p4_runtime_gating): enable runtime systems (physics step, animation, user tick, etc).
     SetRuntimeSimulationSystemsEnabled(true);
+    SetWorldSimulating(*m_World, true);
 
     ApplyAnimatorOnEnterPlayMode(*m_World);
 
@@ -586,6 +596,8 @@ void PlayModeManager::ExitPlayMode()
 
     // Disable runtime simulation systems first (rendering continues).
     SetRuntimeSimulationSystemsEnabled(false);
+    if (m_World)
+        SetWorldSimulating(*m_World, false);
 
     // Hard-reset the singleton physics world when leaving play.
     // Otherwise, PhysicsECS can retain bodies/contacts across sessions even after the ECS snapshot is restored,
