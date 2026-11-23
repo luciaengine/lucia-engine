@@ -25,6 +25,12 @@ namespace
 
 using Stand = Components::ForestStand;
 using StandStatus = Engine::Renderer::ForestStandSystem::StandStatus;
+using Far = Components::ForestFarRepresentation;
+
+constexpr EnumEntry<Far> kFarRepresentations[] = {
+    {Far::Cards, "Cards"},
+    {Far::Splats, "Splats"},
+};
 
 // The problem of the stand on `entity`, or empty while it draws all it is set to draw.
 std::string FindStandProblem(const ECS::World& world, ECS::EntityHandle entity)
@@ -133,6 +139,30 @@ void BuildForestStandInspector(const InspectorContext& ctx)
         "The most trees near the camera that draw their mesh instead of the impostor card, at most 256, or 128 on "
         "the compatibility tier. 0 draws cards only.");
     budgetField->SetRange(0, static_cast<int>(Stand::kMaxNearMeshBudget));
+
+    auto* farField = InspectorUI::AddEnumRow(ctx.Parent, "Far Representation", kFarRepresentations,
+        stand->FarRepresentation,
+        "What the trees beyond the near meshes draw as. Cards: the impostor card that the engine bakes from the "
+        "tree model. Splats: animated splats from a splat bake, which cost less to draw and fade into the overview "
+        "over 64 meters past Detail Distance.");
+    farField->SetOnValueChanged([w, e, n, undo, refresh = ctx.RequestInspectorRefresh](Far picked)
+        {
+            InspectorDrag::CommitComponentWithUndo<Stand>(w, e, n, undo, "Change Forest Stand Far Representation",
+                [picked](Stand& u) { u.FarRepresentation = picked; });
+            // The Splats row shows only for the Splats representation.
+            if (refresh)
+                refresh();
+        });
+    if (stand->FarRepresentation != Far::Splats)
+        return;
+    InspectorUI::AddAssetFieldRow(ctx.Parent, "Splats", stand->Splats.ToGuid(), {AssetType::ForestSplats}, &registry,
+        [w, e, n, undo](const GUID& picked)
+        {
+            InspectorDrag::CommitComponentWithUndo<Stand>(w, e, n, undo, "Change Forest Stand Splats",
+                [picked](Stand& u) { u.Splats.Set(picked); });
+        },
+        nullptr, "The .geforestsplats file that ForestPlacementCook --splats baked from the tree model. Without it "
+                 "the stand draws cards.");
 }
 
 } // namespace

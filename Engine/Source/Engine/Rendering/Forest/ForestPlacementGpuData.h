@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ForestPlacementRuntime.h"
+#include "Engine/Rendering/WindVolumeResolver.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector4.h"
 #include "Rendering/Camera/CameraTypes.h"
@@ -10,7 +11,7 @@ namespace GameEngine::Engine::Renderer
 
 struct alignas(16) ForestPlacementGpuPage
 {
-    std::array<uint32, 4> Range; // First slot, count, roots fully inside the frustum, padding.
+    std::array<uint32, 4> Range; // First slot, count, roots fully inside the frustum, handoff fade code.
     Mathematics::Vector4 OriginRelative;
     // One bit per page-local placement. Only a mesh already submitted for this
     // view can claim a bit. The shader reads five of these eight words.
@@ -48,6 +49,25 @@ struct ForestPlacementGpuVisible
 };
 static_assert(sizeof(ForestPlacementGpuVisible) == 8);
 
+/// One visible tree of a splat draw: its placement and its wind sway in meters at full bend.
+struct ForestPlacementGpuVisibleSplat
+{
+    ForestPlacementGpuVisible Placement;
+    Mathematics::Vector2 Sway;
+};
+static_assert(sizeof(ForestPlacementGpuVisibleSplat) == 16);
+
+/// The wind that the splat cull resolves once per visible tree (forest_placement_cull.glsl).
+struct alignas(16) ForestSplatWindGpu
+{
+    std::array<int32, 4> Sector;
+    float TimeSeconds = 0.0f;
+    float MaxDisplacement = 0.0f;
+    std::array<float, 2> Padding{};
+    WeatherWindGPU Weather;
+};
+static_assert(offsetof(ForestSplatWindGpu, Weather) == 32);
+
 struct ForestPlacementIndirectDraw
 {
     uint32 IndexCount = 6;
@@ -57,6 +77,10 @@ struct ForestPlacementIndirectDraw
     uint32 FirstInstance = 0;
 };
 static_assert(sizeof(ForestPlacementIndirectDraw) == 20);
+
+/// The LOD crossfade code (lod_crossfade.glsl) of a page in the handoff band: 0 for a weight of 1. The trees
+/// keep the weight's share of the pixels; the overview quad (overview true) keeps the other pixels.
+uint32 ForestHandoffFadeCode(float detailWeight, bool overview);
 
 /// GPU inputs for one primary view's admitted detail pages. Page positions
 /// are rebased in double before converting to floats. rootRadius includes

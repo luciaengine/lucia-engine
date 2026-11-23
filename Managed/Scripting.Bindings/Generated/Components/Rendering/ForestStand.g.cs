@@ -12,9 +12,18 @@ using System.Runtime.InteropServices;
 namespace GameEngine.Scripting
 {
     /// <summary>
+    /// What the trees beyond the near meshes draw as, out to Detail Distance.
+    /// </summary>
+    public enum ForestFarRepresentation : byte
+    {
+        Cards = 0,
+        Splats = 1,
+    }
+
+    /// <summary>
     /// A cooked forest stand on the entity whose MeshRenderer holds its overview mesh, with render layers None. It draws the overview and, with a tree model, the trees near the camera, at the archive's world positions; the entity's transform has no effect.
     /// </summary>
-    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    [StructLayout(LayoutKind.Explicit, Size = 60)]
     [BuiltInComponent("GameEngine::Components::ForestStand")]
     public partial struct ForestStand : IComponent
     {
@@ -37,5 +46,18 @@ namespace GameEngine.Scripting
 
         [FieldOffset(36)]
         public uint NearMeshBudget;
+
+        [FieldOffset(40)]
+        public AssetGuid Splats;
+
+        [FieldOffset(56)]
+        private ForestFarRepresentation m_FarRepresentation;
+        public ForestFarRepresentation FarRepresentation
+        {
+            readonly get => m_FarRepresentation;
+            set => m_FarRepresentation = (byte)value <= 1
+                ? value
+                : throw new ArgumentOutOfRangeException(nameof(value), value, "ForestStand.FarRepresentation is Cards or Splats.");
+        }
     }
 }

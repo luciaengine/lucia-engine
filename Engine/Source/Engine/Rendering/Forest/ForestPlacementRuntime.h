@@ -42,6 +42,16 @@ struct ForestDetailDraw
     ForestPageTicket Ticket;
     uint32 FirstPlacement;
     uint32 PlacementCount;
+    /// The share of the page's pixels that its trees draw, in (0, 1]. Below 1 the page is in the
+    /// handoff band, and its overview quad draws the other pixels (ForestPlacementFrame::StandFades).
+    float DetailWeight = 1.0f;
+};
+
+/// The overview quad of a page in the handoff band, with the share of the page's pixels that its trees draw.
+struct ForestStandFade
+{
+    DrawSubCommand Range;
+    float DetailWeight;
 };
 
 /// The view that a forest is planned for.
@@ -52,6 +62,8 @@ struct ForestPlacementView
     std::array<Mathematics::Vector4, 6> EyeRelativePlanes;
     /// Meters from the eye within which visible pages draw their trees. 0 draws the overview only.
     float DetailDistance = 0;
+    /// Meters past DetailDistance over which the trees fade into the overview. 0 switches at DetailDistance.
+    float HandoffWidth = 0;
 };
 
 /// The plan of one frame for one view.
@@ -61,6 +73,8 @@ struct ForestPlacementFrame
     std::vector<DrawSubCommand> StandDraws;
     /// Visible pages whose placements are resident.
     std::vector<ForestDetailDraw> DetailedDraws;
+    /// Overview quads of the detailed pages in the handoff band. StandDraws does not hold them.
+    std::vector<ForestStandFade> StandFades;
     /// New reads for the caller to submit.
     std::vector<ForestPageTicket> Reads;
     /// Reads that the runtime cancelled; the caller withdraws them from the asset reader.
@@ -112,7 +126,7 @@ public:
     /// The number of slots, detail and transition together.
     uint32 SlotCount() const { return static_cast<uint32>(m_Slots.size()); }
 
-    /// True when a visible page is within the prefetch distance (1.4 times the detail distance).
+    /// True when a visible page is within the prefetch distance (1.4 times the detail and handoff distance).
     bool CanPrefetchDetails(const ForestPlacementView& view) const;
 
     /// Forgets every slot and read. Call it after the slot buffer and its uploads are gone.
@@ -187,6 +201,8 @@ private:
     uint32 FindReusableSlot() const;
     uint32 CountReusableSlots() const;
     void AppendReads(std::vector<ForestPageTicket>& reads);
+    // The DetailWeight of a page that draws its trees for the demand view.
+    float HandoffWeight(uint32 page) const;
     void EmitDraws(uint64 frame, ForestPlacementFrame& out);
     void EmitStand(uint32 first, uint32 end, std::vector<DrawSubCommand>& draws) const;
 

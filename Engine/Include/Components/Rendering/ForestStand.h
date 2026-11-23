@@ -8,6 +8,16 @@
 namespace GameEngine {
 namespace Components {
 
+/// What the trees beyond the near meshes draw as, out to Detail Distance.
+enum class ForestFarRepresentation : uint8
+{
+    /// The impostor card that the engine bakes from the tree model.
+    Cards = 0,
+    /// Animated splats from the stand's splat bake (ForestPlacementCook --splats). The splats fade into the
+    /// overview over the last 64 meters past Detail Distance.
+    Splats = 1,
+};
+
 /// A cooked forest stand on the entity whose MeshRenderer holds its overview mesh, with render layers
 /// None. It draws the overview and, with a tree model, the trees near the camera, at the archive's
 /// world positions; the entity's transform has no effect.
@@ -26,6 +36,11 @@ struct ForestStand
     /// The most placements near the camera that draw the tree mesh instead of its impostor card.
     /// 0 draws cards only. The device tier caps it at kMaxNearMeshBudget, or 128 on the compatibility tier.
     uint32 NearMeshBudget = 0;
+    /// The splat bake (.geforestsplats) of the tree model, which Splats draws. ForestPlacementCook --splats
+    /// writes it.
+    ForestSplatsRef Splats;
+    /// What the trees beyond the near meshes draw as.
+    ForestFarRepresentation FarRepresentation = ForestFarRepresentation::Cards;
 };
 
 static_assert(std::is_trivially_copyable_v<ForestStand>, "ForestStand must be trivially copyable for ECS");

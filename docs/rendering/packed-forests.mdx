@@ -58,6 +58,8 @@ Each view draws the overview. The trees near the camera draw in one view at a ti
 | Tree Model | none | A tree model with its impostor setting on. Empty draws the overview only. |
 | Detail Distance | 400 | The distance in meters from the camera within which visible pages draw their trees instead of the overview. 0 draws the overview only. |
 | Near Mesh Budget | 0 | The most trees near the camera that draw the tree mesh instead of the impostor card. 0 draws cards only. The Inspector accepts 0 to 256, and the compatibility tier caps it at 128. |
+| Far Representation | Cards | What the trees beyond the near meshes draw as: impostor cards, or animated splats. See [Draw far trees as splats](#draw-far-trees-as-splats). |
+| Splats | none | The `.geforestsplats` file that Splats draws. The Inspector shows it when Far Representation is Splats. |
 
 A change to Detail Distance or Near Mesh Budget applies to the attached stand, also while you drag the value in the Inspector. A change from 0 to another value, or back to 0, attaches the stand again.
 
@@ -70,6 +72,32 @@ If the stand cannot attach, the log shows one warning that names the entity and 
 If the overview mesh does not match the pages of its archive, the stand draws nothing and shows a warning that tells you to cook the overview mesh again from the archive.
 
 When you cook the archive again, every stand that uses it attaches again with the new pages. A scene load releases the stands of the scene that it replaces. Removing the component or its entity releases its stand.
+
+### Draw far trees as splats
+
+A splat draws a tree as about a thousand small disks, one for each cell of a grid around the tree. Each disk has the color, the normal and the leaf coverage of the tree's surface in its cell, and moves with the wind. Splats cost less to draw than impostor cards, and they keep their shape from every direction, also from above. Close up, they look coarser than cards, so the near meshes still draw the trees nearest to the camera.
+
+With Splats, the trees draw in full to Detail Distance. Over the next 64 meters, the splats fade into the overview mesh with a dither, so the stand has no hard edge where the trees end. Pages in that band stay resident, so the stand streams the pages up to Detail Distance plus 64 meters.
+
+1. Bake the tree model into splats with `ForestPlacementCook --splats` (see below).
+2. On the Forest Stand, set Far Representation to Splats and set Splats to the baked file.
+
+The stand still needs its tree model and the model's impostor card: the card gives the tree's bounds and wind sway. If the Splats file is missing or not valid, the stand draws cards and the Inspector shows a warning that names the fix.
+
+#### Bake the splats
+
+Supply the asset root, the tree model, the output path and, for each mesh of the model that the scene draws with a project material, that mesh's index and material. The model and material paths are relative to the asset root.
+
+```sh title="Bake a tree model into splats"
+ForestPlacementCook --splats Assets Models/Forest/StandingTree.glb Forests/StandingTree.geforestsplats 0=Materials/Forest/StandingTreeBark.material 1=Materials/Forest/StandingTreeLeaves.material
+```
+
+- A mesh without a material argument uses the material that the model imports with it.
+- An alpha-masked material (Mask) counts as leaves; any other material counts as bark. On views from above, leaf disks turn toward the camera and grow, so the crown keeps its coverage.
+- The bake reads the material's base color, its albedo map and its alpha cutoff. Texels below the cutoff add nothing.
+- The model must be in its rest pose: no skin, no instances and no node transforms.
+
+Bake the splats again when the tree model or its materials change. A stand attaches again when its splat file changes.
 
 ### Limits
 
@@ -85,6 +113,15 @@ An export ships the archive and the tree model of each stand in the exported sce
 - the archive or the tree model does not ship, for example because it is not in the project or a ship rule excludes it;
 - the archive is not a `.geforest` file, or it is a link to a file outside its asset folder;
 - the archive is not valid.
+
+## Splat file format
+
+A `.geforestsplats` file is little-endian and has two parts:
+
+| Part | Size | Content |
+| --- | --- | --- |
+| Header | 32 bytes | magic `GEFS`, version 1, cell count (1 to 16,384), the center of cell (0, 0, 0) (3 floats, meters, model space), cell size (float, meters), 4 zero bytes |
+| Cells | 12 bytes per cell | grid X, Y and Z; coverage; linear red, green and blue; octahedral normal X and Y; wind bend weight; leaf fraction; a zero byte |
 
 ## Archive format
 

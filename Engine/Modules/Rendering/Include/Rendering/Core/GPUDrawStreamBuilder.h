@@ -284,6 +284,9 @@ class GPUDrawStreamBuilder
     static constexpr uint32_t kLodFadeWeightMask  = 0x7Fu;
     static constexpr uint32_t kLodFadeMaxWeight   = 127u;
     static constexpr uint32_t kLodFadePhaseBit    = 0x80000000u;
+    /// Selects the interleaved gradient dither instead of Bayer 4x4. Only a code that a draw sets
+    /// explicitly carries it (the forest handoff): the scatter's code keeps no index bit.
+    static constexpr uint32_t kLodFadeGradientBit = 0x00800000u;
     /// Fade-state packing in the binding-11 buffer's uvec2.x (.y is the start
     /// time as float bits). Four bits per level covers kMaxMeshLODs.
     static constexpr uint32_t kLodFadeLevelMask    = 0xFu;

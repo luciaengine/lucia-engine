@@ -1,0 +1,6 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// The splat kernel also resolves the wind sway of each visible tree.
+#define GE_FOREST_SPLAT_CULL
+#include "Includes/forest_placement_cull.glsl"

@@ -56,6 +56,7 @@ kPackages: dict[str, dict[str, str | tuple[str, list[str]]]] = {
     "clear_color_backdrop": {"vs": "fullscreen_noinput.vert", "fs": "clear_color_backdrop.frag"},
     "impostor_mip": {"vs": "fullscreen_noinput.vert", "fs": "impostor_mip.frag"},
     "forest_placement_cull": {"cs": "forest_placement_cull.comp"},
+    "forest_splat_cull": {"cs": "forest_splat_cull.comp"},
     "solidcolor": {"vs": "fullscreen_noinput.vert", "fs": "solidcolor.frag"},
     "clustered_light_cull": {"cs": "clustered_light_cull.comp"},
     "cluster_depth_minmax": {"cs": "cluster_depth_minmax.comp"},

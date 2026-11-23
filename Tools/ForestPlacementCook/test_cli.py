@@ -53,6 +53,104 @@ def check_overview(tool, root, cook, header, output):
     assert mesh.read_bytes() == glb
 
 
+def png_rgba(width, height, pixels):
+    rows = b"".join(b"\x00" + pixels[row * width * 4:(row + 1) * width * 4] for row in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)) +
+            png_chunk(b"IDAT", zlib.compress(rows)) + png_chunk(b"IEND", b""))
+
+
+def write_splat_tree(path):
+    # Mesh 0: a masked leaf quad at y 4, x 0..2, facing +Y, with glTF material 1. Its texture cuts out
+    # u > 0.5, which is glTF x > 1. Mesh 1: an opaque bark quad, x 0..1, y 0..3, facing -Z, material 0.
+    bark = [(0, 0, 0), (1, 0, 0), (1, 3, 0), (0, 3, 0)], (0, 0, -1)
+    leaves = [(0, 4, 0), (2, 4, 0), (2, 4, 1), (0, 4, 1)], (0, 1, 0)
+    texture = png_rgba(2, 1, b"\x00\xff\x00\xff\x00\xff\x00\x00")
+    blob, views, accessors, primitives = b"", [], [], []
+
+    def add(data, **accessor):
+        nonlocal blob
+        views.append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(data)})
+        blob += data + b"\x00" * (-len(data) % 4)
+        if accessor:
+            accessors.append({"bufferView": len(views) - 1, **accessor})
+        return len(accessors) - 1
+
+    for material, (corners, normal) in ((1, leaves), (0, bark)):
+        attributes = {
+            "POSITION": add(b"".join(struct.pack("<3f", *c) for c in corners), componentType=5126, count=4,
+                            type="VEC3", min=[min(c[i] for c in corners) for i in range(3)],
+                            max=[max(c[i] for c in corners) for i in range(3)]),
+            "NORMAL": add(struct.pack("<3f", *normal) * 4, componentType=5126, count=4, type="VEC3"),
+            "TEXCOORD_0": add(b"".join(struct.pack("<2f", c[0] / 2, c[2]) for c in corners),
+                              componentType=5126, count=4, type="VEC2"),
+        }
+        indices = add(struct.pack("<6H", 0, 1, 2, 0, 2, 3), componentType=5123, count=6, type="SCALAR")
+        primitives.append({"attributes": attributes, "indices": indices, "material": material})
+    add(texture)
+    asset = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+             "meshes": [{"primitives": primitives}], "buffers": [{"byteLength": len(blob)}],
+             "bufferViews": views, "accessors": accessors,
+             "images": [{"bufferView": len(views) - 1, "mimeType": "image/png"}], "textures": [{"source": 0}],
+             "materials": [{"pbrMetallicRoughness": {"baseColorFactor": [0.5, 0.25, 0.125, 1]}},
+                           {"alphaMode": "MASK", "alphaCutoff": 0.5,
+                            "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]}
+    text = json.dumps(asset).encode()
+    text += b" " * (-len(text) % 4)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(struct.pack("<4sII", b"glTF", 2, 28 + len(text) + len(blob)) +
+                     struct.pack("<I4s", len(text), b"JSON") + text + struct.pack("<I4s", len(blob), b"BIN\x00") + blob)
+
+
+def bake_splats(tool, assets, output, *materials):
+    result = subprocess.run([tool, "--splats", assets, "Models/Tree.glb", output, *materials],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        return result, None
+    data = output.read_bytes()
+    magic, version, count, x, y, z, size, reserved = struct.unpack_from("<4sII4fI", data)
+    assert (magic, version, reserved, len(data)) == (b"GEFS", 1, 0, 32 + 12 * count)
+    assert abs(x + 2) < 1e-6 and y == 0 and z == 0 and abs(size - 4 / 19) < 1e-6
+    # Grid X, Y, Z, coverage, R, G, B, normal X, normal Y, bend, leaf, zero.
+    cells = list(struct.iter_unpack("<12B", data[32:]))
+    assert all(cell[11] == 0 for cell in cells)
+    return result, [(x + cell[0] * size, cell) for cell in cells]
+
+
+def check_splats(tool, root):
+    assets = root / "Assets"
+    write_splat_tree(assets / "Models/Tree.glb")
+    output = root / "tree.geforestsplats"
+    result, cells = bake_splats(tool, assets, output)
+    assert result.returncode == 0, result.stderr
+    bark = [cell for x, cell in cells if cell[1] < 19]
+    leaves = [(x, cell) for x, cell in cells if cell[1] == 19]
+    # The engine model space mirrors glTF X: the bark spans x -1..0.
+    assert bark and all(cell[10] == 0 and cell[4:7] == (128, 64, 32) for cell in bark)
+    assert all(cell[0] >= 4 for cell in bark)
+    assert all(90 <= cell[3] <= 110 for cell in bark if 0 < cell[1] < 14 and 5 < cell[0] < 9)
+    # Cut-out texels at glTF x > 1 leave no cells. Leaf area counts 0.12 times; an upward leaf cell
+    # then gets four times its coverage.
+    assert leaves and all(cell[10] == 255 and cell[4:7] == (0, 255, 0) for x, cell in leaves)
+    assert all(x > -1.1 for x, cell in leaves) and min(x for x, cell in leaves) < -0.9
+    assert all(48 <= cell[3] <= 72 and cell[3] % 4 == 0 for x, cell in leaves if 0 < cell[2] < 4 and x > -0.8)
+
+    material = assets / "Materials/Opaque.material"
+    material.parent.mkdir()
+    material.write_text(json.dumps({"schemaVersion": 3, "materialName": "Opaque", "alphaMode": "Opaque",
+                                    "properties": {"baseColor": [1, 0.5, 0.25, 1]}}))
+    result, cells = bake_splats(tool, assets, output, "0=Materials/Opaque.material")
+    assert result.returncode == 0, result.stderr
+    leaves = [(x, cell) for x, cell in cells if cell[1] == 19]
+    assert all(cell[10] == 0 and cell[4:7] == (255, 128, 64) for x, cell in leaves)
+    assert min(x for x, cell in leaves) < -1.9
+    valid = output.read_bytes()
+    for bad, message in (("2=Materials/Opaque.material", "no mesh 2"),
+                         ("1=Materials/Missing.material", "Materials/Missing.material")):
+        result, cells = bake_splats(tool, assets, output, bad)
+        assert result.returncode != 0 and message in result.stderr, result.stderr
+        assert output.read_bytes() == valid
+
+
 def main():
     tool = pathlib.Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="forest-placement-cook-") as root:
@@ -119,6 +217,7 @@ def main():
         result = subprocess.run(command, capture_output=True, text=True)
         assert result.returncode == 0 and output.read_bytes() == ordered, result.stderr
         check_overview(tool, root, cook, header, output)
+        check_splats(tool, root)
 
 
 if __name__ == "__main__":

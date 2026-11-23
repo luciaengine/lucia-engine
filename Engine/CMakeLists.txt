@@ -373,6 +373,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Forest/ForestPlacementFeature.cpp
 	Source/Engine/Rendering/Forest/ForestPlacementGpuData.cpp
 	Source/Engine/Rendering/Forest/ForestPlacementSession.cpp
+	Source/Engine/Rendering/Forest/ForestSplatCells.cpp
 	Source/Engine/Rendering/Forest/ForestStandDraws.cpp
 	Source/Engine/Rendering/Forest/ForestStandSystem.cpp
 	Source/Engine/Rendering/RenderServicesDetail.cpp
@@ -2302,7 +2303,8 @@ endif()
                 Tests/MeshReloadBoundsRefreshTests.cpp
                 Tests/RenderOriginTests.cpp
                 Tests/RenderOriginDecodeComputeTests.cpp
-                Tests/LodCrossfadeShaderContractTests.cpp)
+                Tests/LodCrossfadeShaderContractTests.cpp
+                Tests/ForestSplatDiskShaderTests.cpp)
             # Engine/Source: the private headers the world-draw tests reach (ECS/SceneViewHiddenInHierarchySystem.h,
             # Engine/Rendering/MaterialSystemTesting.h).
             target_include_directories(EngineWorldDrawTests PRIVATE

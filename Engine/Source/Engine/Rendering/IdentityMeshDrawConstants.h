@@ -21,7 +21,8 @@ struct alignas(16) IdentityMeshDrawConstants
     Mathematics::Vector4 NormalColumn2{0, 0, 1, 0};
     uint32 MaterialIndex;
     uint32 SkinPaletteOffset = 0;
-    uint32 Reserved0 = 0;
+    /// The LOD crossfade code (lod_crossfade.glsl) of a draw with the LodCrossfade keyword; 0 draws every pixel.
+    uint32 LodFadeCode = 0;
     uint32 Reserved1 = 0;
 };
 static_assert(std::is_trivially_copyable_v<IdentityMeshDrawConstants>);
@@ -31,5 +32,6 @@ static_assert(offsetof(IdentityMeshDrawConstants, NormalColumn1) == 80);
 static_assert(offsetof(IdentityMeshDrawConstants, NormalColumn2) == 96);
 static_assert(offsetof(IdentityMeshDrawConstants, MaterialIndex) == 112);
 static_assert(offsetof(IdentityMeshDrawConstants, SkinPaletteOffset) == 116);
+static_assert(offsetof(IdentityMeshDrawConstants, LodFadeCode) == 120);
 
 } // namespace GameEngine::Engine::Renderer

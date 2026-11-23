@@ -278,6 +278,47 @@ TEST_F(ForestPlacementRuntimeTest, PrefetchKeepsTheStandUntilThePageEntersTheDet
     EXPECT_EQ(frame.StandDraws.front().IndexCount, 6u);
 }
 
+TEST_F(ForestPlacementRuntimeTest, HandoffBandStartsAtTheDetailDistanceAndFadesIntoTheOverview)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "handoff.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+
+    // Page 0 is 32 m from the eye: past Detail Distance 25, inside the 16 m band that ends at 41 m.
+    ForestPlacementView view{{512'000'000.0 - 34.0, 8.0, 512'000'001.0}, {}, 25.0f, 16.0f};
+    auto hardSwitch = view;
+    hardSwitch.HandoffWidth = 0.0f;
+    EXPECT_FALSE(WithinDetailRange(*runtime, hardSwitch));
+    ForestPlacementFrame frame;
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_EQ(frame.Reads.size(), 1u);
+    const auto ticket = frame.Reads.front();
+    ASSERT_EQ(ticket.Page, 0u);
+    ASSERT_TRUE(runtime->CompleteRead(ticket, kFirstPage));
+    ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
+
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    ASSERT_EQ(frame.DetailedDraws.size(), 1u);
+    EXPECT_NEAR(frame.DetailedDraws.front().DetailWeight, (41.0f - 32.0f) / 16.0f, 1e-4f);
+    ASSERT_EQ(frame.StandFades.size(), 1u);
+    EXPECT_EQ(frame.StandFades.front().Range.FirstIndex, 0u);
+    EXPECT_EQ(frame.StandFades.front().Range.IndexCount, 6u);
+    EXPECT_EQ(frame.StandFades.front().DetailWeight, frame.DetailedDraws.front().DetailWeight);
+    // The faded quad is not also a full overview draw.
+    ASSERT_EQ(frame.StandDraws.size(), 1u);
+    EXPECT_EQ(frame.StandDraws.front().FirstIndex, 6u);
+
+    // Within Detail Distance the trees draw in full, as far as a hard switch draws them.
+    view.Eye.X = 512'000'000.0 - 22.0;
+    ASSERT_TRUE(runtime->Prepare(view, 3, 2, frame));
+    ASSERT_EQ(frame.DetailedDraws.size(), 1u);
+    EXPECT_EQ(frame.DetailedDraws.front().DetailWeight, 1.0f);
+    EXPECT_TRUE(frame.StandFades.empty());
+}
+
 TEST_F(ForestPlacementRuntimeTest, TransitionSlotStartsDemandWhilePreviousDetailDrawIsInFlight)
 {
     using namespace Engine::Renderer;

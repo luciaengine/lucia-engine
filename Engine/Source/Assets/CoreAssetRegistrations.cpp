@@ -169,6 +169,7 @@ void RegisterCoreAssetTypes(AssetTypeRegistry& typeRegistry)
 
     // The forest stand system streams the archive by page; nothing loads it whole.
     RegisterCoreType(typeRegistry, AssetType::ForestPlacementArchive, &CreateBinaryAsset, "Forest Placement Archive");
+    RegisterCoreType(typeRegistry, AssetType::ForestSplats, &CreateBinaryAsset, "Forest Splats");
 
     // Raw terrain heightmaps (.r16/.r32). 16-bit PNG heightmaps import as
     // regular Texture assets; this type covers only the raw formats textures

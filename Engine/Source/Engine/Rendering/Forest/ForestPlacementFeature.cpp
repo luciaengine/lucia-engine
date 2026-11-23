@@ -5,6 +5,8 @@
 #include "ForestNearMeshCandidates.h"
 #include "ForestPlacementGpuData.h"
 #include "ForestPlacementSession.h"
+#include "Core/Time.h"
+#include "Engine/Rendering/Forest/ForestSplatCells.h"
 #include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
@@ -26,9 +28,32 @@ namespace GameEngine::Engine::Renderer
 using namespace Rendering;
 using namespace Rendering::RenderGraph;
 
+namespace
+{
+// The largest radius scale of a splat disk (forest_splat_disk.glsl: kForestSplatOverheadGrowth).
+constexpr float kSplatDiskGrowth = 1.15f;
+// The disk radius in cells at full coverage (forest_splats.glsl: kForestSplatDiskRadius).
+constexpr float kSplatDiskRadius = 0.79788456f;
+// The smallest sway in meters of a splat crown; a calm card still lets the splats move.
+constexpr float kSplatMinimumSway = 0.35f;
+
+float SplatReach(const ForestSplatCells& splats)
+{
+    float reach = 0.0f;
+    for (const ForestSplatCell& cell : splats.Cells)
+    {
+        const uint32 word = cell.PositionCoverage;
+        const Mathematics::Vector3 grid{static_cast<float>(word & 0xffu), static_cast<float>((word >> 8u) & 0xffu),
+                                        static_cast<float>((word >> 16u) & 0xffu)};
+        reach = std::max(reach, (splats.Origin + grid * splats.CellSize).Length());
+    }
+    return reach + splats.CellSize * kSplatDiskRadius * kSplatDiskGrowth;
+}
+} // namespace
+
 std::shared_ptr<ForestPlacementSession> ForestPlacementFeature::Attach(
     std::shared_ptr<ForestPlacementRuntime> placements, AssetManager& assets, uint64 world, const GUID& model,
-    float detailDistance, uint32 nearBudget)
+    float detailDistance, uint32 nearBudget, std::shared_ptr<const ForestSplatCells> splats)
 {
     if (!placements || placements->SlotCount() == 0 || !std::isfinite(detailDistance) || detailDistance <= 0 || model.IsNull())
         return {};
@@ -40,6 +65,8 @@ std::shared_ptr<ForestPlacementSession> ForestPlacementFeature::Attach(
     session->NearBudget = nearBudget;
     session->World = world;
     session->Model = model;
+    session->SplatReach = splats ? SplatReach(*splats) : 0.0f;
+    session->Splats = std::move(splats);
     session->Scope = "Forest.Detail." + std::to_string(++m_NextSession);
     m_Sessions.push_back(session);
     return session;
@@ -413,10 +440,51 @@ bool PlanDetails(ForestPlacementSession& session, const ForwardEmitContext& cont
     return true;
 }
 
+// The splat material, shared by every stand. It registers on first use and compiles off the main thread.
+const Material* EnsureSplatMaterial(RenderServices& services)
+{
+    static const GUID kSplatMaterial = GUID::Derive(GUID{}, "forest-splats");
+    if (const Material* material = services.Materials().Registry().Find(kSplatMaterial))
+        return material;
+    MaterialDocument doc{};
+    doc.schemaVersion = 3;
+    doc.materialName = "Forest splats";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/forest_splat.glsl";
+    doc.vertexModifier = "VertexModifiers/forest_splats.glsl";
+    doc.customVertexShader = true;
+    doc.doubleSided = true;
+    doc.alphaMode = MaterialAlphaMode::Mask;
+    doc.properties["alphaCutoff"] = 0.5f;
+    return services.Materials().RegisterMaterialFromDocument(kSplatMaterial, doc, MaterialKeyword::None,
+                                                             MaterialSystem::BaseCompileMode::Async);
+}
+
+// The farthest point of a drawn tree from its root at unit scale, wind included: the cull radius.
+float DrawReach(const ForestPlacementSession& session, const ForestImpostorCard& card)
+{
+    if (!session.Splats)
+        return CardReach(card);
+    return session.SplatReach + std::max(kSplatMinimumSway, card.Sway.MaxDisplacement);
+}
+
+// The wind that the splat cull resolves for each visible tree.
+void ResolveSplatWind(RenderServices& services, ViewId viewId, uint64 worldId, const CameraData& camera,
+                      const ForestImpostorCard& card, ForestSplatWindGpu& wind)
+{
+    ForwardLightUBO light{};
+    services.PackViewWeather(viewId, worldId, light);
+    std::copy_n(camera.renderOriginSector, wind.Sector.size(), wind.Sector.begin());
+    wind.TimeSeconds = services.TemporalHistory().ResolveDeformationClock(Time::GetCumulativeSeconds()).TimeSeconds;
+    wind.MaxDisplacement = std::max(kSplatMinimumSway, card.Sway.MaxDisplacement);
+    wind.Weather = light.WeatherWind;
+}
+
 } // namespace
 
 bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
-    const CameraData& camera, ForestPlacementView view, std::vector<DrawSubCommand>& standRanges)
+    const CameraData& camera, ForestPlacementView view, std::vector<DrawSubCommand>& standRanges,
+    std::vector<ForestStandFade>& standFades)
 {
     if (session.Refused)
         return false;
@@ -429,27 +497,31 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
         session.Declared.IsFor(frame) || !BindGraph(session, frame))
         return false;
     view.DetailDistance = session.DetailDistance;
+    view.HandoffWidth = session.Splats ? std::min(kSplatHandoffWidth, session.DetailDistance) : 0.0f;
     if (!PlanDetails(session, context, view))
         return false;
     if (session.Plan.DetailedDraws.empty())
     {
         standRanges.swap(session.Plan.StandDraws);
+        standFades.swap(session.Plan.StandFades);
         return true;
     }
     const auto& card = session.Card;
     if (!card)
         return false;
 
-    // The keywords and formats are the view's previous frame: on the frame they change, the card
+    // The keywords and formats are the view's previous frame: on the frame they change, the material
     // warms the old variant, the record skips it, and the near forest comes back a frame later.
-    const Material* material = services.Materials().Registry().Find(card->Material);
     const auto pass = services.Views().GetViewDeclaredWorldPassKeywords(context.ViewId);
     const auto format = services.Views().GetViewWorldColorFormatKey(context.ViewId);
+    const Material* material = session.Splats ? EnsureSplatMaterial(services) :
+        services.Materials().Registry().Find(card->Material);
     if (!material || !pass || format.ColorCount == 0)
         return false;
-    const auto keywords = *pass & ~MaterialKeyword::Instanced;
+    const auto fadeKeyword = session.Splats ? MaterialKeyword::LodCrossfade : MaterialKeyword::None;
     if (!services.Materials().Variants().WarmColorVariant(*material, VertexAttributeFlags::None,
-            PrimitiveTopology::TriangleList, keywords, services.GetFrontFace(), format))
+            PrimitiveTopology::TriangleList, (*pass & ~MaterialKeyword::Instanced) | fadeKeyword,
+            services.GetFrontFace(), format))
         return false;
 
     const ForestNearDraw* near = PrepareNearDraw(session, context, camera, view, *pass, format);
@@ -457,12 +529,21 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
         std::span<const ForestMeshOwnedPlacement>{};
     ForestPlacementGpuView gpuView{};
     if (!BuildForestPlacementGpuInputs(*session.Placements, session.Plan, camera, session.Placements->SlotCount(),
-            CardReach(*card), card->Bounds, gpuView, session.Pages, owners))
+            DrawReach(session, *card), card->Bounds, gpuView, session.Pages, owners))
         return false;
+    ForestSplatWindGpu wind{};
+    if (session.Splats)
+        ResolveSplatWind(services, context.ViewId, desc->worldId, camera, *card, wind);
     const auto buffers = session.Cull.Declare(frame, session.Scope, session.Slots, session.Placements->SlotCount(),
-                                              gpuView, session.Pages);
-    if (!buffers || !EmitForestImpostorDraw(context, *buffers, session.Indices, card->Sway,
-            DrawCommand{.Material = material}))
+                                              gpuView, session.Pages, session.TreeIndexCount(),
+                                              session.Splats ? &wind : nullptr);
+    if (!buffers)
+        return false;
+    const bool drawn = session.Splats
+        ? EmitForestSplatDraw(context, *buffers, {session.Splats.get(), session.SplatCells, session.Indices},
+                              DrawCommand{.Material = material, .PassKeywords = fadeKeyword})
+        : EmitForestImpostorDraw(context, *buffers, session.Indices, card->Sway, DrawCommand{.Material = material});
+    if (!drawn)
         return false;
     if (near)
         EmitNearMeshes(session, context, *near);
@@ -470,9 +551,11 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     if (!session.EmittedDetails)
     {
         session.EmittedDetails = true;
-        LOG_INFO("Forest: registered packed impostor draw with {} detail pages", session.Plan.DetailedDraws.size());
+        LOG_INFO("Forest: registered packed {} draw with {} detail pages", session.Splats ? "splat" : "impostor",
+                 session.Plan.DetailedDraws.size());
     }
     standRanges.swap(session.Plan.StandDraws);
+    standFades.swap(session.Plan.StandFades);
     return true;
 }
 
