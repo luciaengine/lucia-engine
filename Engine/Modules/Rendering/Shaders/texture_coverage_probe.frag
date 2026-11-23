@@ -6,11 +6,10 @@ layout(location=0) out vec4 result;
 layout(push_constant) uniform Probe { float lod; float cutoff; vec2 phase; uint mode; float seed; } probe;
 float Foliage(vec4 texel,float layerSeed)
 {
-    // The weight sees the UV per pixel at which a sampler reads level probe.lod; the threshold sees
+    // The weight sees the pixel scale at which a sampler reads level probe.lod; the threshold sees
     // the quad's own UV per pixel, as in a draw.
-    float uvPerPixel=exp2(probe.lod)/float(textureSize(sourceImage,0).x);
-    float weight=GE_FoliageTailWeight(vec2(uvPerPixel,0.0),vec2(0.0,uvPerPixel),0.0);
-    float threshold=GE_FoliageSurfaceThreshold(uv+probe.phase,dFdx(uv),dFdy(uv),layerSeed);
+    float weight=GE_FoliageTailWeight(log2(float(textureSize(sourceImage,0).x))-probe.lod,0.0);
+    float threshold=GE_FoliageSurfaceThreshold(uv+probe.phase,GE_FoliagePixelScale(dFdx(uv),dFdy(uv)),layerSeed);
     return GE_FoliageCoverageOpacity(texel.a,probe.cutoff,weight,threshold);
 }
 void main()

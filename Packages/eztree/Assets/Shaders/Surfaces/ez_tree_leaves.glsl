@@ -50,13 +50,16 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // keeps that share of pixels. Color textures filter their mips with alpha-weighted color
     // (TextureCook.h), so the color of those levels is the leaf color. The leaf's seed (UV1.x, the
     // same at every vertex of its cards) keeps overlapping leaves independent.
-    vec2 uvDx = dFdx(uvAlbedo);
-    vec2 uvDy = dFdy(uvAlbedo);
-    float tailWeight = GE_FoliageTailWeight(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
+    float pixelScale = GE_FoliagePixelScale(dFdx(uvAlbedo), dFdy(uvAlbedo));
+    float tailWeight = GE_FoliageTailWeight(pixelScale, GE_MATERIAL_MIP_BIAS);
     float colorTrust = max(smoothstep(0.45, 0.95, leafAlpha), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
-    float threshold = GE_FoliageSurfaceThreshold(uvAlbedo, uvDx, uvDy, sIn.uv1.x);
+    // At weight 0 the opacity does not depend on the threshold. Near leaves skip the hash, which is
+    // most of the cost of the depth and shadow passes.
+    float threshold = 0.5;
+    if (tailWeight > 0.0)
+        threshold = GE_FoliageSurfaceThreshold(uvAlbedo, pixelScale, sIn.uv1.x);
     o.opacity = GE_FoliageCoverageOpacity(leafAlpha * Mat.uBaseColor.a, clamp(Props.alphaCutoff, 0.0, 1.0),
                                           tailWeight, threshold);
 
