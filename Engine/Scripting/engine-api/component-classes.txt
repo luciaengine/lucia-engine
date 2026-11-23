@@ -27,6 +27,7 @@ DepthPixelationEffect: game data, a full mirror
 ExposureAdjustmentEffect: game data, a full mirror
 FastBlurEffect: game data, a full mirror
 FilmSimulationEffect: game data, a full mirror
+ForestStand: game data, a full mirror
 GIEmitter: game data, a full mirror
 GameLogicGraphRef: game data, a full mirror
 GeneratedEntity: engine-internal, no mirror (@ge-engine-internal)

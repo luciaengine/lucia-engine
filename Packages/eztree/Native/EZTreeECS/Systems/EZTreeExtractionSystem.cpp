@@ -364,7 +364,7 @@ void EZTreeExtractionSystem::RequestImpostors(FrameContext& frame)
         const Engine::Renderer::Material* card = Engine::Renderer::ImpostorStage::RegisterCardMaterial(
             *m_RenderServices, variant.Materials.Impostor, "Tree Generator Impostor", atlas, variant.Bounds.center,
             variant.ImpostorRadius, Engine::Renderer::ImpostorAtlasKey{}.FramesPerSide,
-            Mathematics::OctahedralLayout::Hemisphere);
+            Mathematics::OctahedralLayout::Hemisphere, Engine::Renderer::ImpostorCardSource::SceneInstance);
         ImpostorLink& link = m_ImpostorLinks.GetOrInsert(hash);
         const std::vector<uint32> meshes =
             card ? Engine::Renderer::ImpostorStage::PartMeshIndices(*m_RenderServices, ImpostorParts(variant))

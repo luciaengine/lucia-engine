@@ -611,6 +611,15 @@ void AssetManager::SubmitRead(AssetIOService::ReadRequest request)
         request.OnFailure("Asset IO is unavailable; initialize the AssetManager before requesting pages");
 }
 
+void AssetManager::CancelRead(const std::shared_ptr<std::atomic<bool>>& cancelRequested)
+{
+    if (!cancelRequested)
+        return;
+    cancelRequested->store(true, std::memory_order_release);
+    if (m_IOService)
+        m_IOService->CancelRequest(GUID{}, cancelRequested);
+}
+
 void AssetManager::Update()
 {
     if (!m_Initialized)

@@ -19,6 +19,23 @@ class Material;
 class RenderServices;
 struct ImpostorAtlas;
 
+/// Whole-tree sway of a card: the foliage_wind.glsl height range and sway amplitude of its source parts.
+struct ImpostorFoliageSway
+{
+    float BaseY = 0.0f;
+    float Height = 1.0f;
+    float MaxDisplacement = 0.0f; // Meters at the top of the height range.
+
+    bool operator==(const ImpostorFoliageSway&) const = default;
+};
+
+/// What places a card: a scene instance's transform, or a packed forest placement.
+enum class ImpostorCardSource : uint8
+{
+    SceneInstance,
+    PackedForest,
+};
+
 /// The impostor last stage on the GPU (docs/development/tree-impostor-stage.mdx, Step 4). A mesh
 /// part linked to a card draws that card past the switch coverage: the scatter
 /// (draw_command_scatter.comp) selects per instance and moves the primary part's record to the
@@ -28,6 +45,12 @@ class ImpostorStage final : public IRenderFeature
 public:
     /// The card stays until the coverage is the switch coverage * (1 + kSwitchHysteresis).
     static constexpr float kSwitchHysteresis = 0.15f;
+
+    /// False when GE_IMPOSTORS=0 keeps every model on its meshes.
+    static bool IsEnabled();
+
+    /// The automatic switch coverage of a view: one atlas frame's pixels over the view height.
+    static float DefaultSwitchCoverage(const RenderServices& services, Rendering::ViewId viewId);
 
     /// Registers the card quad, a [0,1] UV square that impostor_card.glsl places, and publishes its
     /// GPU-scene index to the slices. Call each frame before linking; a dedup hit costs a lookup.
@@ -39,11 +62,14 @@ public:
                       Rendering::ViewId viewId) const;
 
     /// Registers (or points at a new atlas) the card material `material` of an atlas: the engine's
-    /// Surfaces/impostor.glsl and VertexModifiers/impostor_card.glsl, fitted to the sphere
-    /// (`center`, `radius`) in object space. Returns the material once its pipeline is built.
+    /// Surfaces/impostor.glsl, fitted to the sphere (`center`, `radius`) in object space. A scene card
+    /// uses VertexModifiers/impostor_card.glsl; a packed forest card uses VertexModifiers/forest_impostor.glsl,
+    /// which reads its placement and its sway from the forest draw. Returns the material once its
+    /// pipeline is built.
     static const Material* RegisterCardMaterial(RenderServices& services, const GUID& material, std::string_view name,
                                                 const ImpostorAtlas& atlas, const Mathematics::Vector3& center,
-                                                float radius, uint32 framesPerSide, Mathematics::OctahedralLayout layout);
+                                                float radius, uint32 framesPerSide, Mathematics::OctahedralLayout layout,
+                                                ImpostorCardSource source);
 
     /// The GPU-scene mesh indices of `parts`, in order; empty when a part is not resident yet.
     static std::vector<uint32> PartMeshIndices(const RenderServices& services,

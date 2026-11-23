@@ -24,6 +24,7 @@
 #include "Engine/Rendering/PostProcessSettings.h" // PostProcessSettings
 #include "Engine/Rendering/ExposureScale.h"
 #include "Engine/Rendering/VolumetricFogTypes.h"  // VolumetricFogLocalVolume
+#include "Types/FlatSet.h"
 #include "Types/Types.h"
 
 #include <array>
@@ -394,6 +395,11 @@ public:
     /// Pauses or resumes the world drawing of each view of `worldId` whose pause follows its
     /// world's active camera.
     void SetActiveCameraViewsWorldPaused(uint64 worldId, bool paused);
+    /// Sets whether a game runs world `worldId`: the Player's world, and the editor's world in play
+    /// mode. A world that the host did not set does not simulate. Main thread.
+    void SetWorldSimulating(uint64 worldId, bool simulating);
+    /// True when the host set world `worldId` to simulate.
+    bool IsWorldSimulating(uint64 worldId) const;
 
     void SetViewWorldId(Rendering::ViewId id, uint64 worldId);
     void SetViewCullingStrategy(Rendering::ViewId id,
@@ -587,6 +593,7 @@ private:
     Rendering::ViewId m_NextViewId{1};
     std::unordered_map<Rendering::ViewId, uint64> m_ViewExtractionFrames;
     std::unordered_map<uint64, uint64> m_WorldExtractionFrames;
+    FlatSet<uint64> m_SimulatingWorlds;
 
     // Per-camera volume layers (every layer when absent).
     std::unordered_map<Rendering::CameraId, Rendering::RenderLayerMask> m_CameraVolumeLayers;

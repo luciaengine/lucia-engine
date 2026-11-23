@@ -5,9 +5,11 @@
 #include "Assets/RuntimeHumanoidProfile.h"
 #include "Core/Engine.h"
 #include "Engine/Build/BuildPipeline.h"
+#include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "TestTempDir.h"
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -127,4 +129,126 @@ TEST_F(PackagedAssetManifestTest, RuntimeSettingsSurviveExportAndPlayerManifestM
     EXPECT_EQ(boneLOD.BoneBudget, 24u);
     EXPECT_EQ(boneLOD.MandatoryPaths, (std::vector<std::vector<std::string>>{{"Root", "Hand"}}));
     playerAssets.Shutdown();
+}
+
+namespace
+{
+class ForestStandExportTest : public PackagedAssetManifestTest
+{
+protected:
+    static constexpr float kTreeBoundRadius = 4.0f;
+
+    static void WriteArchive(const fs::path& path)
+    {
+        using PageStreaming::PackedPlacement;
+        const std::array records{PackedPlacement{20, 40, 0, 0, 128}, PackedPlacement{80, 100, 24, 64, 255}};
+        const std::array pages{PageStreaming::PlacementPage{
+            .Origin = {4'000.0, 10.0, -6'000.0}, .LocalMin = {-6, -5, -6}, .LocalMax = {8, 15, 8},
+            .First = 0, .Count = static_cast<uint32>(records.size())}};
+        fs::create_directories(path.parent_path());
+        ASSERT_EQ(PageStreaming::WritePackedPlacementStore(path, kTreeBoundRadius, pages, records), "");
+    }
+
+    // Registers an asset written after the startup scan and returns its GUID.
+    GUID Register(const fs::path& path)
+    {
+        auto& registry = Engine.GetAssetManager().GetRegistry();
+        EXPECT_TRUE(registry.RegisterAsset(path)) << path;
+        return registry.GetAssetGUID(path);
+    }
+
+    // Exports Scenes/Forest.scene with one ForestStand of `archive` and `treeModel`.
+    bool Export(const GUID& archive, const GUID& treeModel, BuildProgress& progress)
+    {
+        const fs::path scene = Assets / "Scenes/Forest.scene";
+        std::string body = "[scene name=\"Forest\" version=1]\n\n[entity id=\"e_stand\"]\n"
+                           "ForestStand.Archive = \"" + archive.ToString() + "\"\n";
+        if (!treeModel.IsNull())
+            body += "ForestStand.TreeModel = \"" + treeModel.ToString() + "\"\n";
+        WriteFile(scene, body);
+        Register(scene);
+
+        BuildSettings build;
+        build.platformName = "Linux";
+        build.projectRoot = Project;
+        build.prebuiltPlayerDirectory = Runtime;
+        build.outputDirectory = Output;
+        build.compileScripts = false;
+        build.buildConfiguration = "Release";
+        build.playerConfig.gameName = "ForestExportProbe";
+        build.scenes = {"Scenes/Forest.scene"};
+        BuildPipeline pipeline(nullptr);
+        return pipeline.Execute(build, [&progress](const BuildProgress& current) { progress = current; });
+    }
+
+    static bool HasError(const BuildProgress& progress, std::string_view text)
+    {
+        return std::ranges::any_of(progress.errors,
+            [text](const std::string& error) { return error.find(text) != std::string::npos; });
+    }
+};
+} // namespace
+
+TEST_F(ForestStandExportTest, ASceneStandShipsItsArchiveAndTreeModel)
+{
+    WriteArchive(Assets / "Forests/Stand.geforest");
+    const GUID archive = Register(Assets / "Forests/Stand.geforest");
+    const GUID model = Engine.GetAssetManager().GetRegistry().GetAssetGUID(Assets / "Model.obj");
+    ASSERT_FALSE(model.IsNull());
+    BuildProgress progress;
+    ASSERT_TRUE(Export(archive, model, progress)) << testing::PrintToString(progress.errors);
+
+    PageStreaming::PackedPlacementStore store;
+    ASSERT_EQ(store.Open(Output / "Assets/Forests/Stand.geforest"), "");
+    ASSERT_EQ(store.Pages().size(), 1u);
+    EXPECT_EQ(store.Pages().front().Count, 2u);
+    EXPECT_TRUE(fs::exists(Output / "Assets/Model.obj"));
+}
+
+TEST_F(ForestStandExportTest, RefusesACorruptArchive)
+{
+    WriteFile(Assets / "Forests/Broken.geforest", "not a forest");
+    const GUID archive = Register(Assets / "Forests/Broken.geforest");
+    BuildProgress progress;
+    EXPECT_FALSE(Export(archive, {}, progress));
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive 'Forests/Broken.geforest' is not valid"))
+        << testing::PrintToString(progress.errors);
+    EXPECT_FALSE(fs::exists(Output / "Assets/Forests/Broken.geforest"));
+}
+
+TEST_F(ForestStandExportTest, RefusesAnArchiveLinkedFromOutsideTheAssetFolder)
+{
+    WriteArchive(Temporary.Path() / "Outside/Stand.geforest");
+    fs::create_directories(Assets / "Forests");
+    std::error_code error;
+    fs::create_symlink(Temporary.Path() / "Outside/Stand.geforest", Assets / "Forests/Linked.geforest", error);
+    if (error)
+        GTEST_SKIP() << "This file system cannot make a symbolic link: " << error.message();
+    const GUID archive = Register(Assets / "Forests/Linked.geforest");
+    BuildProgress progress;
+    EXPECT_FALSE(Export(archive, {}, progress));
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive"));
+    EXPECT_TRUE(HasError(progress, "resolves outside its asset folder. Replace the link with the archive file."))
+        << testing::PrintToString(progress.errors);
+}
+
+TEST_F(ForestStandExportTest, RefusesAnArchiveThatIsNotAForestFile)
+{
+    const GUID model = Engine.GetAssetManager().GetRegistry().GetAssetGUID(Assets / "Model.obj");
+    ASSERT_FALSE(model.IsNull());
+    BuildProgress progress;
+    EXPECT_FALSE(Export(model, {}, progress));
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive "
+                                   "'Model.obj' is not a .geforest file."))
+        << testing::PrintToString(progress.errors);
+}
+
+TEST_F(ForestStandExportTest, RefusesATreeModelThatDoesNotShip)
+{
+    WriteArchive(Assets / "Forests/Stand.geforest");
+    const GUID archive = Register(Assets / "Forests/Stand.geforest");
+    BuildProgress progress;
+    EXPECT_FALSE(Export(archive, GUID::Generate(), progress));
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand tree model does not ship. Set Tree Model"))
+        << testing::PrintToString(progress.errors);
 }

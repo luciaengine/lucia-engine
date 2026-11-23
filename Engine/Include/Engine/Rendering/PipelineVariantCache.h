@@ -251,8 +251,8 @@ class PipelineVariantCache
     // at declare time (a forward producer's prepass head) emits that command
     // only once this holds, so a pass never relies on a draw it cannot record.
     // Declaration thread.
-    /// Request a scene draw's color variant and concrete pass formats before it is shown.
-    void WarmColorVariant(const Material& material, VertexAttributeFlags vertexFlags,
+    /// Requests a draw's color variant and pass formats; true once that pipeline can draw.
+    bool WarmColorVariant(const Material& material, VertexAttributeFlags vertexFlags,
                           PrimitiveTopology topology, MaterialKeyword passKeywords,
                           FrontFace frontFace, const Rendering::PipelineFormatKey& format);
 

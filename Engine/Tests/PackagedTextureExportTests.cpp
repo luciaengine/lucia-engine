@@ -366,7 +366,7 @@ TEST_F(PackagedTextureExportTest, ATerrainHeightmapWithAUsageShipsItsSource)
     ASSERT_TRUE(registry.RegisterAsset(scene));
     const GUID sceneGuid = registry.GetAssetGUID(scene);
     ASSERT_FALSE(sceneGuid.IsNull());
-    ASSERT_FALSE(registry.RefreshDependencies(sceneGuid).empty()) << "the scene names no asset";
+    ASSERT_FALSE(DependencyTargets(registry.RefreshDependencies(sceneGuid)).empty()) << "the scene names no asset";
     ASSERT_FALSE(registry.GetResolvedDependencyEdges(sceneGuid).empty()) << "the scene has no dependency edge";
 
     BuildSettings build;

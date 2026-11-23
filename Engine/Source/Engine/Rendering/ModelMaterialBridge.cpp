@@ -176,6 +176,8 @@ ConvertedModelMaterial ModelMaterialBridge::Convert(const GUID& modelGuid,
 
 std::string_view ModelMaterialBridge::SurfaceShaderOf(const ImportedMaterialData& material)
 {
+    if (material.ForestCanopyCoverage && material.AlphaMode == AlphaMode::Mask && !material.DiffuseTexture.empty())
+        return "Surfaces/forest_canopy.glsl";
     return NeedsExtendedSurface(material) ? "Surfaces/standard_pbr_extended.glsl" : "Surfaces/standard_pbr.glsl";
 }
 

@@ -22,6 +22,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -1007,6 +1008,20 @@ std::string_view ExtrasText(const cgltf_data& document, const cgltf_extras& obje
         return {};
     return std::string_view(document.json + objectExtras.start_offset,
                             objectExtras.end_offset - objectExtras.start_offset);
+}
+
+// True when a material's extras carry the forest cooker's canopy marker. The marker block is small, so
+// a larger block is an authored one and is left to the model extras API.
+bool HasForestCanopyMarker(std::string_view extras)
+{
+    constexpr size_t kMarkerBlockBytes = 256;
+    if (extras.empty() || extras.size() > kMarkerBlockBytes)
+        return false;
+    const auto data = nlohmann::json::parse(extras, nullptr, false);
+    if (!data.is_object())
+        return false;
+    const auto found = data.find("luciaForestCanopyCoverage");
+    return found != data.end() && found->is_boolean() && found->get<bool>();
 }
 
 // Keeps `text`, the extras of object `index` of `kind`, in `extras`. A block over the object bound is named
@@ -2057,6 +2072,8 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
                 default:                      mat.AlphaMode = AlphaMode::Opaque; break;
             }
             mat.AlphaCutoff = (float)m.alpha_cutoff;
+            if (mat.AlphaMode == AlphaMode::Mask)
+                mat.ForestCanopyCoverage = HasForestCanopyMarker(ExtrasText(*gltf, m.extras));
 
             // Populate basic PBR parameters from glTF metallic-roughness block
             const cgltf_pbr_metallic_roughness& pbr = m.pbr_metallic_roughness;

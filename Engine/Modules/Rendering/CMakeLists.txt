@@ -377,6 +377,7 @@ if(GLSLC_EXECUTABLE)
         visibility_union.comp
         runtime_visibility_aggregate.comp
         draw_command_scatter.comp
+        forest_placement_cull.comp
         compact_visible_transforms.comp
         minimal_test.comp
         pc_compute.comp
@@ -1416,6 +1417,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_graphics(sky_stars_billboard sky_stars_billboard.vert sky_stars_billboard.frag)
     _ge_add_shaderpkg_graphics(sky_stars_billboard_fog sky_stars_billboard_fog.vert sky_stars_billboard.frag)
     _ge_add_shaderpkg_compute(volumetric_fog_cull volumetric_fog_cull.comp)
+    _ge_add_shaderpkg_compute(forest_placement_cull forest_placement_cull.comp)
     # Ocean. The module asks ShaderCompileService for these by name; without a
     # cooked package the request falls through to a runtime GLSL compile, which
     # only a developer desktop can serve.

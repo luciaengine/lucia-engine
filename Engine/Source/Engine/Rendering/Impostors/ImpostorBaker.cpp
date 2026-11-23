@@ -1,5 +1,7 @@
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 
+#include "../IdentityMeshDrawConstants.h"
+
 #include "Engine/Rendering/DrawCommand.h"
 #include "Engine/Rendering/Impostors/ImpostorFrameCamera.h"
 #include "Engine/Rendering/Material.h"
@@ -33,27 +35,11 @@ constexpr Rendering::MaterialKeyword kBakeKeywords = Rendering::MaterialKeyword:
 constexpr uint32 kSettleFrames = 2;
 constexpr uint32 kMaxMipAttemptsWithoutProgress = 8;
 
-// The vertex adapter's push-constant block on the non-instanced path (adapter_vertex.glsl, PC).
-struct BakePushConstants
+// The parts draw untransformed, with the non-instanced push constants of adapter_vertex.glsl.
+std::array<std::byte, sizeof(IdentityMeshDrawConstants)> MakePushConstants(uint32 materialIndex)
 {
-    float Model[16];
-    float NormalColumn0[4];
-    float NormalColumn1[4];
-    float NormalColumn2[4];
-    float Extra[4]; // x = material index bits, y = skin palette offset bits.
-};
-static_assert(sizeof(BakePushConstants) == 128, "BakePushConstants must match adapter_vertex.glsl's PC block");
-
-std::array<std::byte, 128> MakePushConstants(uint32 materialIndex)
-{
-    BakePushConstants push{};
-    // The parts draw untransformed: identity model and normal matrices.
-    push.Model[0] = push.Model[5] = push.Model[10] = push.Model[15] = 1.0f;
-    push.NormalColumn0[0] = 1.0f;
-    push.NormalColumn1[1] = 1.0f;
-    push.NormalColumn2[2] = 1.0f;
-    std::memcpy(&push.Extra[0], &materialIndex, sizeof(materialIndex));
-    std::array<std::byte, 128> bytes{};
+    const IdentityMeshDrawConstants push(materialIndex);
+    std::array<std::byte, sizeof(push)> bytes{};
     std::memcpy(bytes.data(), &push, sizeof(push));
     return bytes;
 }

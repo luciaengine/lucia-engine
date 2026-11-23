@@ -87,6 +87,7 @@ enum class MaterialKeyword : uint64_t
     ImpostorBake = 1ull << 50, // Pass keyword (set on the draws of an impostor bake, ImpostorBaker): the forward adapter runs the material's surface and its alpha cutoff and writes the surface instead of shading it: location 0 base colour and coverage, location 1 the normal (the bake draws the mesh untransformed, so object space) and the depth along the frame axis. No lighting, fog, exposure or SSSR. Mutually exclusive with DepthOnlyFragment, MotionVectors and DepthOnlyTransmissionColor (the adapter refuses each pairing by name). Without the keyword none of it is in the SPIR-V
     IndexedDepthOwner = 1ull << 51, // Internal masked camera depth variant that also writes the primitive owner.
     SurfaceLightOcclusion = 1ull << 52, // Per material, never authored: ApplySurfaceLightOcclusionKeyword (MaterialKeywordDerivation.h) derives it from a surface that declares `// @primaryLightOcclusion`. The shading shapes then give the surface SurfaceInput.primaryLightDirectionWS and multiply the primary light's direct term by SurfaceOutput.primaryLightOcclusion (GE_PRIMARY_LIGHT_OCCLUSION in surface_io.glsl). A key that shades nothing drops it. Without the keyword none of it is in the SPIR-V
+    ForestMeshInstances = 1ull << 53, // Internal: instanced source meshes of a packed forest read their transforms from the forest draw's ForestMeshTransforms buffer (Includes/instance_io.glsl) instead of the GPU scene.
 };
 
 inline constexpr MaterialKeyword operator|(MaterialKeyword a, MaterialKeyword b)
@@ -245,6 +246,8 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
         defs.push_back("GE_ALPHA_BLEND");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::Instanced))
         defs.push_back("GE_INSTANCED");
+    if (HasKeyword(key.materialKeywords, MaterialKeyword::ForestMeshInstances))
+        defs.push_back("GE_FOREST_MESH_INSTANCES");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::HasVertexMod))
         defs.push_back("HAS_VERTEX_MODIFIER");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::HasVertexOutputMod))

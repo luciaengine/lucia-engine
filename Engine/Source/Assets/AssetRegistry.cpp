@@ -5828,7 +5828,7 @@ GUID AssetRegistry::ResolveByAlias(std::string_view aliasUrl) const
     return *bound;
 }
 
-Vector<GUID> AssetRegistry::RefreshDependencies(const GUID& assetGuid)
+std::vector<DepEdge> AssetRegistry::RefreshDependencies(const GUID& assetGuid)
 {
     // Strategy: try parser-driven format-aware extraction first (richer
     // edge_kind + field_locator metadata). Fall back to the syntactic
@@ -5929,14 +5929,13 @@ Vector<GUID> AssetRegistry::RefreshDependencies(const GUID& assetGuid)
         }
     }
 
-    // Return the freshly extracted targets directly (null targets are path-form
-    // edges that resolved to nothing — not dependencies).
-    Vector<GUID> out;
-    out.reserve(info.Dependencies.size());
+    if (parserHandled)
+        return parserEdges;
+    std::vector<DepEdge> edges;
+    edges.reserve(info.Dependencies.size());
     for (const GUID& dep : info.Dependencies)
-        if (!dep.IsNull())
-            out.push_back(dep);
-    return out;
+        edges.push_back({.Referrer = assetGuid, .Target = dep});
+    return edges;
 }
 
 Vector<GUID> AssetRegistry::GetDependencies(const GUID& assetGuid)
@@ -5951,7 +5950,7 @@ Vector<GUID> AssetRegistry::GetDependencies(const GUID& assetGuid)
         if (found && !found->DependenciesExtracted)
         {
             readLock.unlock();
-            return RefreshDependencies(assetGuid);
+            return DependencyTargets(RefreshDependencies(assetGuid));
         }
     }
 

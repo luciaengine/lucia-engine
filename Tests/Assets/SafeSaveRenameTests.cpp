@@ -284,7 +284,7 @@ TEST_F(SafeSaveRenameStoreBackedTest, LingeringTempRenameAfterConsumedDeleteRest
     ASSERT_TRUE(reg.RegisterAsset(referrer));
     const GUID referrerGuid = reg.GetAssetGUID(referrer);
     ASSERT_FALSE(referrerGuid.IsNull());
-    const Vector<GUID> deps = reg.RefreshDependencies(referrerGuid);
+    const Vector<GUID> deps = DependencyTargets(reg.RefreshDependencies(referrerGuid));
     ASSERT_NE(std::find(deps.begin(), deps.end(), targetGuid), deps.end())
         << "referrer must depend on the target for the tombstone to survive";
 
@@ -343,7 +343,7 @@ TEST_F(SafeSaveRenameStoreBackedTest, LingeringTempRenameRestoresTheTargetWithIt
     ASSERT_FALSE(targetGuid.IsNull());
     WriteBinaryFile(referrer, "{ \"texture\": \"" + targetGuid.ToString() + "\" }");
     ASSERT_TRUE(reg.RegisterAsset(referrer));
-    const Vector<GUID> deps = reg.RefreshDependencies(reg.GetAssetGUID(referrer));
+    const Vector<GUID> deps = DependencyTargets(reg.RefreshDependencies(reg.GetAssetGUID(referrer)));
     ASSERT_NE(std::find(deps.begin(), deps.end(), targetGuid), deps.end());
 
     WriteBinaryFile(temp, "v1");

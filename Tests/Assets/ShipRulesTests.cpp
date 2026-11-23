@@ -266,7 +266,7 @@ TEST_F(ShipRulesCollection, AnAlwaysClosureShipsByPathReferencesTheEdgeCacheDrop
     Mount();
     // The editor refreshes a prefab's edges when it saves it; the edge cache then drops the by-path edge (#2844).
     AssetRegistry& registry = m_AssetManager.GetRegistry();
-    ASSERT_EQ(registry.RefreshDependencies(registry.GetAssetGUID(m_ProjectAssets / "Prefabs" / "Unit.prefab")).size(), 1u);
+    ASSERT_EQ(DependencyTargets(registry.RefreshDependencies(registry.GetAssetGUID(m_ProjectAssets / "Prefabs" / "Unit.prefab"))).size(), 1u);
 
     const std::set<std::string> expected = WithEngineDefaults(
         {"Assets/Scenes/Main.scene", "Assets/Data/units.json", "Assets/Prefabs/Unit.prefab", "Assets/Textures/Unit.png"});

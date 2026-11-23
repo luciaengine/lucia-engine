@@ -3,7 +3,9 @@
 #include "AssetCore/GUID.h"
 
 #include <cstdint>
+#include <span>
 #include <string>
+#include <vector>
 
 namespace GameEngine
 {
@@ -74,6 +76,9 @@ struct DepEdge
 // this check are dropped on write (with a debug log) — they carry no usable
 // dependency information.
 bool IsValidDepEdge(const DepEdge& edge) noexcept;
+
+// The resolved targets of `edges`, in order. An edge without a target GUID adds nothing.
+std::vector<GUID> DependencyTargets(std::span<const DepEdge> edges);
 
 // Importer interface for emitting dep edges during scan/import. The registry
 // supplies an implementation that buffers edges and persists them in the

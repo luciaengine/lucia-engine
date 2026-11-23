@@ -1,0 +1,99 @@
+---
+title: Packed forests
+description: Cook large tree stands into a paged placement archive and its overview mesh.
+---
+
+A packed forest stores the transforms of one tree species in a single `.geforest` archive instead of one scene entity per tree. The archive groups the trees into pages of up to 144 trees. An overview mesh has one canopy quad for each page.
+
+Use scene entities for trees that need their own components. Use a packed forest for large stands of one species.
+
+## Cook a placement archive
+
+`ForestPlacementCook` turns a CSV of tree transforms into a `.geforest` archive. The tool is in the `Tools` folder next to the editor. Supply the CSV, the output path and the tree's bound radius in meters.
+
+```sh title="Cook tree placements"
+ForestPlacementCook placements.csv Assets/Forests/Forest.geforest 12
+```
+
+The CSV starts with the header `page,x,y,z,yawDegrees,scale`. Each row is one tree, with its root position in world meters:
+
+- `page` is the page of the tree. Pages are numbered from 0 without gaps, and the rows of one page are together. A page holds 1 to 144 trees. An archive holds at most 1,048,576 pages.
+- Within a page, each tree is at most 655.35 meters from the page's lowest corner on each axis, including the vertical axis. The archive stores the offset to the nearest centimeter.
+- `yawDegrees` is the rotation around the vertical axis. The archive stores it in steps of 1.4 degrees.
+- `scale` is a uniform scale from 0.75 to 1.25. The archive stores it in steps of 0.002.
+
+The bound radius is the distance from the root to the farthest point of the tree at unit scale: the farthest mesh vertex or card corner, including the largest wind displacement. Each page's bounds include this radius at the largest scale. The archive stores the radius, so the renderer can check that the tree it draws fits inside the bounds.
+
+Add `--spatial-order` after the bound radius to sort the pages so that nearby pages are next to each other in the archive. The sort moves whole pages and keeps each tree with its page. Generate the overview mesh from the sorted archive. If you use a hand-authored overview mesh, quad N of that mesh belongs to page N, so keep the default order.
+
+The cooker writes the archive to a temporary file and replaces the target only after a complete write. A rejected CSV leaves the previous archive unchanged. The error message gives the line that failed, or the page that is too large.
+
+## Cook the overview mesh
+
+The overview mesh has one quad for each archive page, in page order. To generate it, supply the archive, a top-down RGBA image of the tree's canopy, the output `.glb` path, the canopy bounds, the canopy height and the tile size.
+
+```sh title="Cook an overview mesh from an archive"
+ForestPlacementCook --overview Assets/Forests/Forest.geforest canopy.png Assets/Forests/Canopy.glb -5 -6 5 6 9 32
+```
+
+- The bounds `minX minZ maxX maxZ` are in meters, in the imported tree's local XZ plane. The first image row is at the minimum Z.
+- The canopy height is a typical height of the canopy above the root at unit scale, in meters. Each quad is at the mean canopy height of its page's trees.
+- The tile size is 16 to 64 pixels per page. A larger tile keeps more canopy detail and uses more graphics memory. The atlas is at most 8192 pixels on each side.
+
+The cooker draws every tree of a page into that page's tile, at the tree's position, yaw and scale. It embeds the atlas in the model with an alpha-masked material that the importer gives the forest canopy surface. At a distance, the canopy surface uses the filtered alpha as coverage, so the canopy stays visible when its leaf detail becomes smaller than a pixel. Import the model with the default glTF axis settings, and generate it again when the placements change. The importer finds the canopy material by the cooker's marker in the material's glTF extras. If you add more extras to that material and its extras block becomes larger than 256 bytes, the material loses the canopy surface.
+
+## Place a forest stand in a scene
+
+A forest stand is a `ForestStand` component on the overview entity: the entity whose MeshRenderer holds the cooked overview mesh. The Player draws the stand in every scene that holds it. The Editor draws it in the Scene View and in the Game view.
+
+Each view draws the overview. The trees near the camera draw in one view at a time. In play mode, the Game view draws them and the Scene View shows the overview only. In edit mode, the Scene View draws them and the Game view shows the overview only. When you close or hide the view that draws the trees, the other view draws them within two frames. The rule is the same when a view is in a separate window.
+
+1. Add the cooked overview model to the scene.
+2. On its entity, set the MeshRenderer's render layers to None. The stand draws the overview from the archive's pages, so the MeshRenderer must not draw it too.
+3. Add the Forest Stand component to the same entity and set its fields.
+
+| Field | Default | Use |
+| --- | --- | --- |
+| Archive | none | The `.geforest` file that the overview mesh was cooked from. Required. |
+| Tree Model | none | A tree model with its impostor setting on. Empty draws the overview only. |
+| Detail Distance | 400 | The distance in meters from the camera within which visible pages draw their trees instead of the overview. 0 draws the overview only. |
+| Near Mesh Budget | 0 | The most trees near the camera that draw the tree mesh instead of the impostor card. 0 draws cards only. The Inspector accepts 0 to 256, and the compatibility tier caps it at 128. |
+
+A change to Detail Distance or Near Mesh Budget applies to the attached stand, also while you drag the value in the Inspector. A change from 0 to another value, or back to 0, attaches the stand again.
+
+The stand draws at the archive's world positions. The engine ignores the transform of the overview entity, so move the trees by cooking the archive again. The stand draws on the Default render layer.
+
+To draw trees, put at least one instance of the tree model in the same scene. The engine bakes the model's impostor card from the instances that the scene draws.
+
+If the stand cannot attach, the log shows one warning that names the entity and the fix, and the Inspector shows the same text on the component. The rest of the scene loads. For example, a MeshRenderer that still draws on a render layer, or an archive that is not in the project, stops the stand. A tree model that is not in the project, or a Detail Distance that is negative or not a number, draws the overview only.
+
+If the overview mesh does not match the pages of its archive, the stand draws nothing and shows a warning that tells you to cook the overview mesh again from the archive.
+
+When you cook the archive again, every stand that uses it attaches again with the new pages. A scene load releases the stands of the scene that it replaces. Removing the component or its entity releases its stand.
+
+### Limits
+
+- A stand casts no shadows.
+- Reflection probes and planar reflections do not show the stand.
+- A stand does not draw into the depth prepass, so ambient occlusion and contact shadows do not see it.
+- At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. The pages nearest to the camera draw as trees, and the other pages within Detail Distance draw the overview.
+
+### Export
+
+An export ships the archive and the tree model of each stand in the exported scenes with the other assets of those scenes. The export stops, with an error that names the scene, the entity and the fix, when:
+
+- the archive or the tree model does not ship, for example because it is not in the project or a ship rule excludes it;
+- the archive is not a `.geforest` file, or it is a link to a file outside its asset folder;
+- the archive is not valid.
+
+## Archive format
+
+A `.geforest` archive is little-endian and has three parts:
+
+| Part | Size | Content |
+| --- | --- | --- |
+| Header | 40 bytes | magic `GEFP`, version 1, page count, placement count, bound radius (float, meters), 4 zero bytes, payload offset, directory hash |
+| Page directory | 64 bytes per page | page origin (3 doubles, meters), bounds minimum and maximum (3 floats each, meters from the origin), payload hash, first placement, placement count |
+| Payload | 8 bytes per tree | X, Z and height in centimeters from the page origin (16 bits each), yaw in 1/256 turns, scale in 1/255 steps from 0.75 to 1.25 |
+
+The engine refuses an archive whose header, directory hash, page ranges or page bounds are not valid. The hash of each page's payload is in the directory, so a reader can check each page that it reads.

@@ -1401,10 +1401,11 @@ set_tests_properties(TerrainPagePublicationTests PROPERTIES WORKING_DIRECTORY ${
 # .gepage round trip, the apron's bit-equality under the store-wide height quantum, the sparse
 # resolve, the incremental re-cook, the lattice-preserving tent, the generated provider's level 0
 # against the terrain's tile fill (FillTiledBaseRegion), the cook key, the terrain container, the
-# PNG decoder limit and the asynchronous page loader. Links Engine for the tile fill and the
-# asset reader threads.
+# PNG decoder limit, the asynchronous page loader and the .geforest packed placement store. Links
+# Engine for the tile fill and the asset reader threads.
 add_executable(PageStoreTests
   PageStoreTests.cpp
+  PackedPlacementStoreTests.cpp
 )
 if(MSVC)
   target_compile_options(PageStoreTests PRIVATE /wd6326)
@@ -1430,6 +1431,44 @@ add_test(NAME PageStoreTests COMMAND $<TARGET_FILE:PageStoreTests>)
 set_tests_properties(PageStoreTests PROPERTIES
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+
+# ForestPlacementTests: the packed forest runtime (Engine/Source/Engine/Rendering/Forest): page
+# residency, reader fences and fallback cover, coalesced archive reads through the asset reader,
+# the upload plan into the placement slots, the slot copies on a headless device (skipped
+# without Vulkan), the cull kernel on that device, the GPU page records, the stand draw ranges, the
+# near-mesh candidates and the forest stand system's attach and release per scene load.
+add_executable(ForestPlacementTests
+  ForestPlacementRuntimeTests.cpp
+  ForestPlacementGpuUploadTests.cpp
+  ForestPlacementDrawTests.cpp
+  ForestPlacementCullTests.cpp
+  ForestStandSystemTests.cpp
+)
+target_link_libraries(ForestPlacementTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+target_include_directories(ForestPlacementTests PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  # The internal forest headers.
+  ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Rendering/Forest
+  # EngineLogCapture.h, for the forest warnings.
+  ${CMAKE_SOURCE_DIR}/Engine/Tests
+  # Tests/ScopedEnvVar.h and the Vulkan device for the headless device tests.
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Source
+  ${CMAKE_SOURCE_DIR}/Engine/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/PageStreaming/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Types/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Mathematics/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/JobSystem/Include
+)
+# The cull kernel test loads Shaders/forest_placement_cull.shaderpkg from the build directory.
+if(TARGET CompileShaderPkgs)
+  add_dependencies(ForestPlacementTests CompileShaderPkgs)
+endif()
+ge_set_output_tests(ForestPlacementTests)
+ge_stage_runtime_dependencies(ForestPlacementTests)
+add_test(NAME ForestPlacementTests COMMAND $<TARGET_FILE:ForestPlacementTests>)
+set_tests_properties(ForestPlacementTests PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 
 # WorldHookOwnershipTests: "register, don't accrete" for component teardown —
 # a source scan asserting every production RegisterOnRemove lives in its owning

@@ -1402,6 +1402,11 @@ elseif(TARGET Editor)
   # The Editor's desktop export runs MaterialVariantCook (BuildPipeline::CookMaterialVariants), so the
   # Editor builds it whatever BUILD_TOOLS says, staged into bin/<config>/Tools beside ShaderReflect.
   add_subdirectory(Tools/MaterialVariantCook)
+  # Packed forests are cooked by hand with ForestPlacementCook from the same Tools folder.
+  add_subdirectory(Tools/ForestPlacementCook)
+endif()
+if(TARGET ForestPlacementCook AND TARGET Editor)
+  add_dependencies(Editor ForestPlacementCook)
 endif()
 if(TARGET MaterialVariantCook)
   if(TARGET Editor)

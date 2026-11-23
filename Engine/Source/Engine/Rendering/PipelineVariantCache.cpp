@@ -175,7 +175,7 @@ PipelineVariantCache::InstancedVariantKey PipelineVariantCache::MakeColorVariant
             frontFace, false, false, target};
 }
 
-void PipelineVariantCache::WarmColorVariant(const Material& material, Rendering::VertexAttributeFlags vertexFlags,
+bool PipelineVariantCache::WarmColorVariant(const Material& material, Rendering::VertexAttributeFlags vertexFlags,
                                             Rendering::PrimitiveTopology topology,
                                             Rendering::MaterialKeyword passKeywords, Rendering::FrontFace frontFace,
                                             const Rendering::PipelineFormatKey& fk)
@@ -193,8 +193,13 @@ void PipelineVariantCache::WarmColorVariant(const Material& material, Rendering:
     }
     if (published.IsValid())
     {
+        const auto* device = m_Materials->GetDevice();
+        if (!device)
+            return false;
+        if (device->TryGetWarmGraphicsPipeline(published, fk).IsValid())
+            return true;
         RequestConcreteWarm(*key.material, published, fk);
-        return;
+        return device->TryGetWarmGraphicsPipeline(published, fk).IsValid();
     }
     {
         std::lock_guard lock(m_PendingVariantMutex);
@@ -203,6 +208,7 @@ void PipelineVariantCache::WarmColorVariant(const Material& material, Rendering:
             formats.push_back(fk);
     }
     EnqueueVariantCompile(key, /*isDepth=*/false);
+    return false;
 }
 
 void PipelineVariantCache::RequestConcreteWarm(const Material& material,

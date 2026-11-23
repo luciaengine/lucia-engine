@@ -5,7 +5,8 @@ project(PageStreaming LANGUAGES CXX)
 # Page streaming: the .gepage store of a terrain field (a pyramid of fixed-size pages), its
 # codecs, cooker, reader and asynchronous page loader, the generated provider of noise and flat bases,
 # and the shipped terrain container. Device-free: the GPU half (physical caches, page tables, the
-# resolve) lives with the terrain renderer in TerrainECS and CBTTerrain.
+# resolve) lives with the terrain renderer in TerrainECS and CBTTerrain. Also reads the
+# .geforest directory of packed vegetation placements.
 add_library(PageStreaming OBJECT
     Source/PageAddress.cpp
     Source/PageStore/PageStoreFormat.cpp
@@ -17,6 +18,7 @@ add_library(PageStreaming OBJECT
     Source/PageStore/PageStoreAccess.cpp
     Source/PageStore/PageStoreWriter.cpp
     Source/PageStore/PageStoreReader.cpp
+    Source/Placement/PackedPlacementStore.cpp
     Source/PageLoader.cpp
     Source/PageCache.cpp
     Source/CpuPage/CpuPageEntries.cpp
