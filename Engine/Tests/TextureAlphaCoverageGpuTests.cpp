@@ -418,7 +418,7 @@ class TextureCoverageGPU : public testing::Test
     }
 
     std::vector<float> Render(TextureHandle texture, uint32 width, uint32 height, float lod,
-                              uint32 mode = 0, float phase = 0.0f)
+                              uint32 mode = 0, float phase = 0.0f, float seed = 0.0f)
     {
         TextureDesc desc{};
         desc.width = width;
@@ -435,9 +435,10 @@ class TextureCoverageGPU : public testing::Test
         struct Push
         {
             float lod, cutoff, phaseX, phaseY;
-            uint32 mode, pad0;
+            uint32 mode;
+            float seed;
         };
-        const Push push{lod, .538f, phase, phase * .37f, mode, 0u};
+        const Push push{lod, .538f, phase, phase * .37f, mode, seed};
         auto commands = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         commands->Begin();
         commands->Barrier(ResourceBarrier::CreateTextureBarrier(target, ResourceState::Undefined, ResourceState::RenderTarget));
@@ -1753,21 +1754,39 @@ TEST_F(TextureCoverageGPU, InvalidMetadataCannotPublishUncorrectedRawTexture)
     }
 }
 
-// A far leaf reads the coarse levels of an ordinary mip chain, where the filtered alpha of a 0/1
-// mask is below the cutoff. The foliage coverage test keeps the base coverage at every level
-// down to 1 x 1, where the cutoff test keeps no pixel.
+// A far leaf reads the last levels of an ordinary mip chain, where the filtered alpha of a 0/1
+// mask is below the cutoff. The foliage coverage test keeps the base coverage at the levels of 4
+// texels across and fewer, down to 1 x 1, where the cutoff test keeps no pixel.
 TEST_F(TextureCoverageGPU, FoliageCoverageKeepsTheBaseCoverageThroughTheMipTail)
 {
     const GUID guid = Register(Image(), false);
     const auto texture = WaitForUpload(guid);
     ASSERT_TRUE(texture.IsValid());
     constexpr uint32 kCutoffMode = 1, kFoliageMode = 2;
-    constexpr float kTailLod = 6; // 1 x 1 for the 64 x 64 image
+    constexpr float kFourTexelLod = 4, kTailLod = 6; // 4 x 4 and 1 x 1 for the 64 x 64 image
     const double reference = Coverage(Render(texture, 256, 256, 0, kCutoffMode));
     ASSERT_GT(reference, 0.2);
-    for (float lod = 0; lod <= kTailLod; lod += .5f)
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kFoliageMode)), reference);
+    for (float lod = kFourTexelLod; lod <= kTailLod; lod += .5f)
         EXPECT_NEAR(Coverage(Render(texture, 256, 256, lod, kFoliageMode)), reference, 0.03) << "lod " << lod;
     EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kCutoffMode)), 0.0);
+}
+
+// Two far leaves in one pixel with the same seed pass together and cover only c. A seed turns
+// the threshold, so seeds 0 and 0.5 pass on disjoint thresholds and cover 2c (c < 0.5). Over
+// random seeds the expected cover is 1 - (1 - c)^2, as for separate leaves.
+TEST_F(TextureCoverageGPU, FoliageCoverageOfOverlappingLeavesAddsUpOnlyWithDifferentSeeds)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kFoliageMode = 2, kTwoLeafMode = 3;
+    constexpr float kTailLod = 6;
+    const double single = Coverage(Render(texture, 256, 256, kTailLod, kFoliageMode));
+    ASSERT_GT(single, 0.2);
+    ASSERT_LT(single, 0.5);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoLeafMode, 0.0f, 0.0f)), single, 0.01);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoLeafMode, 0.0f, 0.5f)), 2.0 * single, 0.03);
 }
 
 TEST_F(TextureCoverageGPU, FullChainMaskedCardsMeasureIntegerFractionalAndPhaseCoverage)

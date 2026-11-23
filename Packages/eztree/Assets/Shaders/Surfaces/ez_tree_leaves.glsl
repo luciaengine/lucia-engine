@@ -45,18 +45,19 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 
     vec4 albedo = texture(albedoMap, uvAlbedo);
     float leafAlpha = GE_EZTreeLeafAlpha(albedo);
-    // A far leaf is smaller than a pixel, so its sample reads a coarse level where the filtered
-    // alpha is the leaf's covered share and is below the cutoff. The coverage test keeps that
-    // share of pixels. The coarse levels weight color by alpha, so their color is the leaf color.
-    // The leaf's seed (UV1.x, the same at every vertex of its cards) keeps overlapping leaves
-    // independent.
-    float mip = GE_FoliageMipLevel(dFdx(uvAlbedo), dFdy(uvAlbedo), vec2(textureSize(albedoMap, 0))) +
-                GE_MATERIAL_MIP_BIAS;
-    float colorTrust = max(smoothstep(0.45, 0.95, leafAlpha), GE_FoliageCoarseWeight(mip));
+    // A far leaf is smaller than a pixel, so its sample reads one of the last levels, where the
+    // filtered alpha is the leaf's covered share and is below the cutoff. There the coverage test
+    // keeps that share of pixels. Color textures filter their mips with alpha-weighted color
+    // (TextureCook.h), so the color of those levels is the leaf color. The leaf's seed (UV1.x, the
+    // same at every vertex of its cards) keeps overlapping leaves independent.
+    vec2 albedoTexels = vec2(textureSize(albedoMap, 0));
+    float mip = GE_FoliageMipLevel(dFdx(uvAlbedo), dFdy(uvAlbedo), albedoTexels) + GE_MATERIAL_MIP_BIAS;
+    float tailWeight = GE_FoliageTailWeight(mip, max(albedoTexels.x, albedoTexels.y));
+    float colorTrust = max(smoothstep(0.45, 0.95, leafAlpha), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
-    o.opacity = GE_FoliageCoverageOpacity(leafAlpha * Mat.uBaseColor.a, clamp(Props.alphaCutoff, 0.0, 1.0), mip,
-                                          gl_FragCoord.xy, sIn.uv1.x);
+    o.opacity = GE_FoliageCoverageOpacity(leafAlpha * Mat.uBaseColor.a, clamp(Props.alphaCutoff, 0.0, 1.0),
+                                          tailWeight, gl_FragCoord.xy, sIn.uv1.x);
 
     vec4 mr = texture(metallicRoughnessMap, uvMR);
     o.roughness = mr.g * Mat.uParams0.y;
