@@ -100,7 +100,7 @@ TEST_F(ForestPlacementDrawTest, DeformationWidensTheNearMeshFrustumWithoutMoving
     ASSERT_TRUE(runtime) << error;
     const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
     ForestPlacementFrame frame;
-    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, {}, frame));
     ASSERT_EQ(frame.Reads.size(), 1u);
     const auto ticket = frame.Reads.front();
     ASSERT_EQ(ticket.Page, 0u);
@@ -110,14 +110,14 @@ TEST_F(ForestPlacementDrawTest, DeformationWidensTheNearMeshFrustumWithoutMoving
     ForestNearMeshView near{view, 2.0f, 0.0f, 0.0f};
     const Mathematics::Vector4 bounds{0, 1, 0, 2};
     std::vector<ForestNearMeshCandidate> candidates;
-    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
     CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     const float restCoverage = candidates.front().Coverage;
 
     // Outside the rest sphere even with the shared 1.5x draw guard band.
     near.PlacementView.EyeRelativePlanes[0] = {1, 0, 0, -3.7f};
-    ASSERT_TRUE(runtime->Prepare(near.PlacementView, 3, 2, frame));
+    ASSERT_TRUE(runtime->Prepare(near.PlacementView, 3, 2, {}, frame));
     ASSERT_EQ(frame.DetailedDraws.size(), 1u);
     CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
     EXPECT_TRUE(candidates.empty());
@@ -138,13 +138,13 @@ TEST_F(ForestPlacementDrawTest, NearMeshHysteresisKeepsOnlyTheSamePlacementGener
     ASSERT_TRUE(runtime) << error;
     const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
     ForestPlacementFrame frame;
-    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, {}, frame));
     ASSERT_EQ(frame.Reads.size(), 1u);
     const auto ticket = frame.Reads.front();
     ASSERT_EQ(ticket.Page, 0u);
     ASSERT_TRUE(runtime->CompleteRead(ticket, kFirstPage));
     ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
-    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
 
     const Mathematics::Vector4 bounds{0, 1, 0, 2};
     ForestNearMeshView near{view, 2.0f, 0.0f, 0.0f};
@@ -183,7 +183,7 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     ASSERT_TRUE(runtime) << error;
     const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
     ForestPlacementFrame frame;
-    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, {}, frame));
     ASSERT_EQ(frame.Reads.size(), 2u);
     const auto first = frame.Reads[0];
     const auto second = frame.Reads[1];
@@ -199,7 +199,7 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     ASSERT_TRUE(runtime->CompleteUpload(first, ForestUploadResult::Published));
     ASSERT_TRUE(runtime->CompleteUpload(second, ForestUploadResult::Published));
 
-    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
     std::vector<ForestNearMeshCandidate> candidates;
     const ForestNearMeshView near{view, 2.0f, 0.0f, 0.01f};
     CollectForestNearMeshCandidates(*runtime, frame, near, {0, 1, 0, 2}, 1, candidates);
@@ -224,7 +224,7 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
 
     auto turned = near;
     turned.PlacementView.EyeRelativePlanes[0] = {1, 0, 0, -40};
-    ASSERT_TRUE(runtime->Prepare(turned.PlacementView, 3, 2, frame));
+    ASSERT_TRUE(runtime->Prepare(turned.PlacementView, 3, 2, {}, frame));
     EXPECT_TRUE(runtime->ReadyPlacements(first).empty());
     CollectForestNearMeshCandidates(*runtime, frame, turned, {0, 1, 0, 2}, 4, candidates);
     ASSERT_EQ(candidates.size(), 2u);
@@ -246,13 +246,13 @@ std::shared_ptr<Engine::Renderer::ForestPlacementRuntime> OpenResidentTree(const
     std::string error;
     auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1, .KeepCpuCopy = true}, error);
     EXPECT_TRUE(runtime) << error;
-    if (!runtime || !runtime->Prepare(view, 1, 0, frame) || frame.Reads.size() != 1u)
+    if (!runtime || !runtime->Prepare(view, 1, 0, {}, frame) || frame.Reads.size() != 1u)
         return nullptr;
     const auto ticket = frame.Reads.front();
     std::array<uint8, sizeof(PackedPlacement)> bytes{};
     std::memcpy(bytes.data(), &tree, sizeof(tree));
     if (!runtime->CompleteRead(ticket, bytes) || !runtime->CompleteUpload(ticket, ForestUploadResult::Published) ||
-        !runtime->Prepare(view, 2, 1, frame))
+        !runtime->Prepare(view, 2, 1, {}, frame))
         return nullptr;
     return runtime;
 }
@@ -597,13 +597,13 @@ TEST_F(ForestPlacementDrawTest, BuildsPackedGpuPagesInTheCamerasRenderOrigin)
     const WorldPosition position{512'000'054.0, 8.0, 511'999'990.0};
     const ForestPlacementView visible{position, {}, 100.0f};
     ForestPlacementFrame plan;
-    ASSERT_TRUE(runtime->Prepare(visible, 1, 0, plan));
+    ASSERT_TRUE(runtime->Prepare(visible, 1, 0, {}, plan));
     ASSERT_EQ(plan.Reads.size(), 1u);
     const auto ticket = plan.Reads.front();
     ASSERT_EQ(ticket.Page, 1u);
     ASSERT_TRUE(runtime->CompleteRead(ticket, kSecondPage));
     ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
-    ASSERT_TRUE(runtime->Prepare(visible, 2, 1, plan));
+    ASSERT_TRUE(runtime->Prepare(visible, 2, 1, {}, plan));
 
     Rendering::CameraData camera{};
     camera.view = MakeLookAtLH({}, {0, 0, 1}, {0, 1, 0});
@@ -740,7 +740,7 @@ protected:
     bool NoPageWasRead()
     {
         Engine::Renderer::ForestPlacementFrame plan;
-        return m_Runtime->Prepare(m_Near, 100, 0, plan) && plan.Reads.size() == 1;
+        return m_Runtime->Prepare(m_Near, 100, 0, {}, plan) && plan.Reads.size() == 1;
     }
 
     static constexpr uint64 kWorld = 7;

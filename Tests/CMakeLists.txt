@@ -1433,12 +1433,14 @@ set_tests_properties(PageStoreTests PROPERTIES
 )
 
 # ForestPlacementTests: the packed forest runtime (Engine/Source/Engine/Rendering/Forest): page
-# residency, reader fences and fallback cover, coalesced archive reads through the asset reader,
+# residency, reader fences and fallback cover, the shadow pages of sun cascades in the slot pool,
+# coalesced archive reads through the asset reader,
 # the upload plan into the placement slots, the slot copies on a headless device (skipped
 # without Vulkan), the cull kernel on that device, the GPU page records, the stand draw ranges, the
 # near-mesh candidates and the forest stand system's attach and release per scene load.
 add_executable(ForestPlacementTests
   ForestPlacementRuntimeTests.cpp
+  ForestPlacementShadowTests.cpp
   ForestPlacementGpuUploadTests.cpp
   ForestPlacementDrawTests.cpp
   ForestPlacementCullTests.cpp

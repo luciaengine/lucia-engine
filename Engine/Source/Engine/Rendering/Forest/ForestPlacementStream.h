@@ -36,7 +36,8 @@ public:
 
     /// Plans the frame (ForestPlacementRuntime::Prepare), consumes finished reads and submits new ones.
     bool Prepare(AssetManager& assets, const ForestPlacementView& view, uint64 frame, uint64 completedReaders,
-                 ForestPlacementFrame& plan, std::vector<ForestPlacementUpload>& uploads);
+                 std::span<const ForestShadowPage> shadowPages, ForestPlacementFrame& plan,
+                 std::vector<ForestPlacementUpload>& uploads);
 
 private:
     struct ReadPage
