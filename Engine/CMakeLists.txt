@@ -367,6 +367,12 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Forest/ForestPlacementStream.cpp
 	Source/Engine/Rendering/Forest/ForestPlacementGpuUploads.cpp
 	Source/Engine/Rendering/Forest/ForestPlacementRenderState.cpp
+	Source/Engine/Rendering/Forest/ForestImpostorDraw.cpp
+	Source/Engine/Rendering/Forest/ForestNearMeshCandidates.cpp
+	Source/Engine/Rendering/Forest/ForestPlacementCull.cpp
+	Source/Engine/Rendering/Forest/ForestPlacementFeature.cpp
+	Source/Engine/Rendering/Forest/ForestPlacementGpuData.cpp
+	Source/Engine/Rendering/Forest/ForestStandDraws.cpp
 	Source/Engine/Rendering/RenderServicesDetail.cpp
 	Source/Engine/Rendering/PointShadowFaceCull.cpp
 	Source/Engine/Rendering/PointShadowAtlasPlanner.cpp

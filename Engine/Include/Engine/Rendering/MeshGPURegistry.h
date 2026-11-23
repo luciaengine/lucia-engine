@@ -174,6 +174,21 @@ struct MeshGPUEntry
     // lodFirstIndex, which is ABSOLUTE within the index allocation.
     uint32_t lodVertexOffset[kMaxEntryLODs] = {0, 0, 0, 0};
 
+    struct LodDraw
+    {
+        uint32_t IndexCount;
+        uint32_t FirstIndex;
+        uint32_t VertexOffset;
+    };
+
+    // The index range and absolute vertex offset of a level. A level without its own indices draws LOD0.
+    LodDraw DrawForLod(uint32_t level) const
+    {
+        if (level == 0u || level >= lodCount || level >= kMaxEntryLODs || lodIndexCount[level] == 0u)
+            return {indexCount, firstIndex, vertexOffset};
+        return {lodIndexCount[level], lodFirstIndex[level], vertexOffset + lodVertexOffset[level]};
+    }
+
     // Achieved meshopt relative error per LOD, absolute-LOD indexed (lodError[0]
     // is LOD0 = 0). lodSloppy[k]!=0 marks a sloppy-simplified level whose error
     // is on a different scale. BuildGpuMeshRow derives per-mesh coverage

@@ -20,9 +20,10 @@ namespace {
 
 // Bump when the record layout or what a field means changes; a reader rejects
 // any other version and the next model load rewrites the record. Version 3
-// preserves the imported material's vertex-color policy for project warm-up.
-constexpr int kImportedMaterialCacheVersion = 3;
-constexpr int kImportedMaterialEncodingVersion = 1;
+// preserves the imported material's vertex-color policy for project warm-up; version 4 adds the
+// forest canopy coverage flag.
+constexpr int kImportedMaterialCacheVersion = 4;
+constexpr int kImportedMaterialEncodingVersion = 2;
 constexpr const char* kImportedMaterialCacheDirectory = "ModelMaterials";
 
 std::optional<Vector<ImportedMaterialData>> ParseImportedMaterials(std::string_view text, int version);
@@ -98,6 +99,7 @@ nlohmann::json MaterialToJson(const ImportedMaterialData& material)
         {"alphaCutoff", FloatToJson(material.AlphaCutoff)},
         {"alphaModeInferred", material.AlphaModeInferred},
         {"ignoresVertexColor", material.IgnoresVertexColor},
+        {"forestCanopyCoverage", material.ForestCanopyCoverage},
     };
 }
 
@@ -133,6 +135,7 @@ ImportedMaterialData MaterialFromJson(const nlohmann::json& value)
     material.AlphaCutoff = FloatFromJson(value.at("alphaCutoff"));
     material.AlphaModeInferred = value.at("alphaModeInferred").get<bool>();
     material.IgnoresVertexColor = value.at("ignoresVertexColor").get<bool>();
+    material.ForestCanopyCoverage = value.at("forestCanopyCoverage").get<bool>();
     return material;
 }
 

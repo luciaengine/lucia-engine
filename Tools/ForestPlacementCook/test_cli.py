@@ -28,6 +28,7 @@ def check_overview(tool, root, cook, header, output):
     assert (magic, version, size, kind) == (b"glTF", 2, len(glb), b"JSON")
     asset = json.loads(glb[20:20 + json_size])
     assert asset["materials"][0]["alphaMode"] == "MASK"
+    assert asset["materials"][0]["extras"] == {"luciaForestCanopyCoverage": True}
     primitive = asset["meshes"][0]["primitives"][0]
     payload = glb[28 + json_size:]
 

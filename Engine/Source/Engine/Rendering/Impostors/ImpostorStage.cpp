@@ -10,6 +10,7 @@
 #include "Engine/Rendering/ViewRegistry.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "Logger/Logger.h"
+#include "Mathematics/Vector4.h"
 #include "Platform/Environment.h"
 #include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
@@ -34,23 +35,34 @@ void ImpostorStage::EnsureCardMesh(RenderServices& services)
     m_CardMeshIndex.store(entry ? entry->gpuMeshIndex : kNoCardMesh, std::memory_order_relaxed);
 }
 
+bool ImpostorStage::IsEnabled()
+{
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_IMPOSTORS", true);
+    return enabled;
+}
+
+float ImpostorStage::DefaultSwitchCoverage(const RenderServices& services, Rendering::ViewId viewId)
+{
+    const uint32 height = services.Views().GetViewWorldViewportHeight(viewId);
+    const uint32 renderHeight = height > 0u ? height : Rendering::kLodSseFallbackViewportH;
+    return static_cast<float>(ImpostorAtlasKey{}.FrameSize) / static_cast<float>(renderHeight);
+}
+
 void ImpostorStage::ApplyToSlice(Rendering::GPUDrawStreamBuilder::ViewLODParams& lod, const RenderServices& services,
                                  Rendering::ViewId viewId) const
 {
-    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_IMPOSTORS", true);
-    if (!enabled || services.GetMeshGPURegistry().GetLodSelectionMode() == Rendering::LodSelectionMode::Off)
+    if (!IsEnabled() || services.GetMeshGPURegistry().GetLodSelectionMode() == Rendering::LodSelectionMode::Off)
         return;
-    const uint32 height = services.Views().GetViewWorldViewportHeight(viewId);
-    const uint32 renderHeight = height > 0u ? height : Rendering::kLodSseFallbackViewportH;
     lod.impostorCardMesh = m_CardMeshIndex.load(std::memory_order_relaxed);
-    lod.impostorSwitchCoverage = static_cast<float>(ImpostorAtlasKey{}.FrameSize) / static_cast<float>(renderHeight);
+    lod.impostorSwitchCoverage = DefaultSwitchCoverage(services, viewId);
     lod.impostorSwitchHysteresis = kSwitchHysteresis;
 }
 
 const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, const GUID& material,
                                                     std::string_view name, const ImpostorAtlas& atlas,
                                                     const Mathematics::Vector3& center, float radius,
-                                                    uint32 framesPerSide, Mathematics::OctahedralLayout layout)
+                                                    uint32 framesPerSide, Mathematics::OctahedralLayout layout,
+                                                    ImpostorCardSource source)
 {
     if (!atlas.Color.IsValid() || !atlas.NormalDepth.IsValid())
         return nullptr;
@@ -58,10 +70,10 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
     const StringId albedo = HashStringId("albedoMap");
     const StringId normal = HashStringId("normalMap");
     // impostorAtlas: frames per side, layout, debug tint, highest ready mip.
-    const float atlasParams[4] = {
+    const Mathematics::Vector4 atlasParams(
         static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f,
         Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f,
-        static_cast<float>(atlas.HighestReadyMip)};
+        static_cast<float>(atlas.HighestReadyMip));
     const StringId atlasProperty = HashStringId("impostorAtlas");
     if (!registered || registered->GetTexture(albedo) != atlas.Color)
     {
@@ -70,12 +82,14 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
         doc.materialName = std::string(name);
         doc.lightingModel = "StandardPBR";
         doc.surfaceShader = "Surfaces/impostor.glsl";
-        doc.vertexModifier = "VertexModifiers/impostor_card.glsl";
+        const bool packed = source == ImpostorCardSource::PackedForest;
+        doc.vertexModifier = packed ? "VertexModifiers/forest_impostor.glsl" : "VertexModifiers/impostor_card.glsl";
+        doc.customVertexShader = packed;
         doc.alphaMode = MaterialAlphaMode::Mask;
         doc.doubleSided = true;
         doc.properties["alphaCutoff"] = 0.5f;
         doc.properties["impostorBounds"] = std::vector<float>{center.x, center.y, center.z, radius};
-        doc.properties["impostorAtlas"] = std::vector<float>(std::begin(atlasParams), std::end(atlasParams));
+        doc.properties["impostorAtlas"] = std::vector<float>(std::begin(atlasParams.v), std::end(atlasParams.v));
         doc.textures["albedoMap"] = std::string{};
         doc.textures["normalMap"] = std::string{};
         registered = services.Materials().RegisterMaterialFromDocument(material, doc);
@@ -90,9 +104,9 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
     else
     {
         // The same atlas gains its mips over several frames: only the ready mip changes.
-        float current[4]{};
-        if (!registered->GetVector(atlasProperty, current, 4) || current[3] != atlasParams[3])
-            registered->SetVector(atlasProperty, atlasParams, 4);
+        Mathematics::Vector4 current{};
+        if (!registered->GetVector(atlasProperty, current.v, 4) || current.w != atlasParams.w)
+            registered->SetVector(atlasProperty, atlasParams.v, 4);
     }
     return registered->GetGraphicsPipelineId().IsValid() ? registered : nullptr;
 }

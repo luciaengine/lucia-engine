@@ -42,6 +42,9 @@ SwitchConfig MakeSwitchConfig(float switchCoverage, float switchHysteresis);
 // is disabled (ProjScaleY <= 0) so the caller keeps members.
 float ClusterCoverage(const ViewLod& view, const float sphereCenter[3], float sphereRadius);
 
+/// The coverage of a sphere at `distance` meters: radius * projectionScale / distance * biasScale.
+float SphereCoverageAtDistance(double distance, float sphereRadius, float projectionScale, float biasScale);
+
 // Coverage returned when LOD is disabled — above any EnterCoverage, so the
 // cluster stays on members.
 inline constexpr float kAlwaysMembersCoverage = 1.0e9f;

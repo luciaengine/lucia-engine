@@ -8,7 +8,9 @@
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
+#include "Engine/Rendering/Forest/ForestPlacementFeature.h"
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
@@ -19,6 +21,8 @@
 #include "Types/Fnv1a.h"
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 #include <string>
 
 namespace GameEngine::Engine::Renderer
@@ -80,6 +84,34 @@ std::string_view ModelRefusal(const ModelAsset& model)
 
 // The placement key of a renderer: a hash of its exact world transform. The parts of one placement
 // share the transform bit for bit.
+// The foliage_wind.glsl sway that every part shares. Parts without the modifier do not sway.
+std::optional<ImpostorFoliageSway> SharedFoliageSway(const std::vector<MeshImpostorSystem::Part>& parts,
+                                                     const MaterialRegistry& materials)
+{
+    std::optional<ImpostorFoliageSway> shared;
+    for (const auto& part : parts)
+    {
+        const Material* material = materials.Find(part.Material);
+        if (!material)
+            return std::nullopt;
+        ImpostorFoliageSway sway{};
+        if (material->GetCompileSpec().vertexModifierPath == "VertexModifiers/foliage_wind.glsl")
+        {
+            Mathematics::Vector2 motion{};
+            material->GetVector(HashStringId("foliageWindMotion"), motion.v, 2u);
+            Mathematics::Vector2 range{sway.BaseY, sway.Height};
+            material->GetVector(HashStringId("foliageWindHeight"), range.v, 2u);
+            sway = {range.x, range.y, motion.x};
+        }
+        const bool valid = std::isfinite(sway.BaseY) && std::isfinite(sway.Height) && sway.Height > 0.0f &&
+                           std::isfinite(sway.MaxDisplacement) && sway.MaxDisplacement >= 0.0f;
+        if (!valid || (shared && *shared != sway))
+            return std::nullopt;
+        shared = sway;
+    }
+    return shared;
+}
+
 uint64 PlacementKey(const Components::WorldTransform& transform)
 {
     uint64 hash = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, transform.Position);
@@ -123,6 +155,8 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 {
     if (!m_RenderServices || !m_RenderServices->GetGPUScene())
         return;
+    if (auto* forest = m_RenderServices->GetFeature<ForestPlacementFeature>())
+        forest->ClearCards(world.GetWorldId());
     // The system runs on a job worker; registering the card quad and reading part entries take
     // the registry's table lock for the whole pass.
     Rendering::MeshGPURegistry::TableScope registryScope(m_RenderServices->GetMeshGPURegistry());
@@ -164,7 +198,7 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     std::vector<const Material*> cards;
     for (auto& [model, impostor] : m_Models)
     {
-        if (const Material* card = UpdateModel(model, impostor, baker, stage))
+        if (const Material* card = UpdateModel(model, impostor, baker, stage, world.GetWorldId()))
             cards.push_back(card);
     }
     stage.SubmitCards(*m_RenderServices, world.GetWorldId(), cards);
@@ -299,7 +333,7 @@ void MeshImpostorSystem::LogRefusal(const GUID& model, std::string_view reason)
 }
 
 const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
-                                                ImpostorStage& stage)
+                                                ImpostorStage& stage, uint64 worldId)
 {
     if (impostor.HasConflictingParts)
     {
@@ -333,10 +367,12 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     }
     // A request each frame keeps the atlas in the baker's least-recently-used budget.
     const ImpostorAtlas atlas = baker.Request(request, *m_RenderServices);
+    PublishForestCard(model, impostor, atlas, request, worldId);
     const GUID cardGuid = GUID::Derive(model, "impostor-card-" + std::to_string(materialIdentity));
     const Material* card = ImpostorStage::RegisterCardMaterial(*m_RenderServices, cardGuid, "Impostor", atlas,
                                                                impostor.Center, impostor.Radius,
-                                                               request.Key.FramesPerSide, kLayout);
+                                                               request.Key.FramesPerSide, kLayout,
+                                                               ImpostorCardSource::SceneInstance);
     // Every part must be resident: a part that is not would draw its mesh beside the card.
     const std::vector<uint32> meshes = card ? ImpostorStage::PartMeshIndices(*m_RenderServices, PartMeshes(impostor.Parts))
                                             : std::vector<uint32>{};
@@ -362,6 +398,30 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     impostor.LinkedMaterial = card->GetGpuSceneMaterialIndex();
     impostor.LinkedMeshes = meshes;
     return card;
+}
+
+void MeshImpostorSystem::PublishForestCard(const GUID& model, const ModelImpostor& impostor,
+                                           const ImpostorAtlas& atlas, const ImpostorBakeRequest& request,
+                                           uint64 worldId)
+{
+    auto* forest = m_RenderServices->GetFeature<ForestPlacementFeature>();
+    if (!forest || !forest->WantsCard(worldId, model))
+        return;
+    const auto sway = SharedFoliageSway(impostor.Parts, m_RenderServices->Materials().Registry());
+    if (!sway)
+    {
+        LogRefusal(model, "its parts use different foliage wind settings, so a packed forest draws it as a stand");
+        return;
+    }
+    const GUID cardGuid = GUID::Derive(model, "forest-impostor-" + std::to_string(request.Key.MaterialHash));
+    if (!ImpostorStage::RegisterCardMaterial(*m_RenderServices, cardGuid, "Forest Impostor", atlas, impostor.Center,
+                                             impostor.Radius, request.Key.FramesPerSide, kLayout,
+                                             ImpostorCardSource::PackedForest))
+        return;
+    const ForestImpostorCard card{cardGuid,
+                                  {impostor.Center.x, impostor.Center.y, impostor.Center.z, impostor.Radius},
+                                  *sway, impostor.SwitchCoverage};
+    forest->PublishCard(worldId, model, card, request.Parts);
 }
 
 void MeshImpostorSystem::UnlinkModel(ModelImpostor& impostor)

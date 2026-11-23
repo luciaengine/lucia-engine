@@ -1,0 +1,413 @@
+#include "PackedPlacementTestArchive.h"
+
+#include "Components/Transform.h"
+#include "ECS/ECSTemplates.h"
+#include "Engine/Rendering/Forest/ForestNearMeshCandidates.h"
+#include "Engine/Rendering/Forest/ForestPlacementGpuData.h"
+#include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
+#include "Engine/Rendering/Forest/ForestStandDraws.h"
+#include "Engine/Rendering/Impostors/ImpostorStage.h"
+#include "Engine/Rendering/RenderOrigin.h"
+#include "Engine/Rendering/RenderServices.h"
+#include "Mathematics/MatrixOps.h"
+#include "Rendering/Core/GPUScene.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <limits>
+#include <string>
+#include <vector>
+
+namespace GameEngine::PageStreaming
+{
+namespace
+{
+
+class ForestPlacementDrawTest : public PackedPlacementArchiveTest
+{
+};
+
+TEST_F(ForestPlacementDrawTest, NearMeshTransformsRetainPackedSectorYawAndScale)
+{
+    using namespace Engine::Renderer;
+    ForestNearMeshCandidate tree{{}, 0, {512'000'000.25, 8.5, -511'999'999.875}, 1.5707963f, 1.25f, 0};
+    const auto row = PackForestMeshTransform(tree);
+    ASSERT_TRUE(row);
+    Mathematics::Vector3Int sector;
+    Rendering::UnpackSector(row->SectorPacked[0], row->SectorPacked[1], sector.X, sector.Y, sector.Z);
+    const auto world = Mathematics::WorldPosition::FromSector(
+        sector, {row->LocalAndScale.x, row->LocalAndScale.y, row->LocalAndScale.z});
+    EXPECT_DOUBLE_EQ(world.X, tree.Root.X);
+    EXPECT_DOUBLE_EQ(world.Y, tree.Root.Y);
+    EXPECT_DOUBLE_EQ(world.Z, tree.Root.Z);
+    EXPECT_FLOAT_EQ(row->LocalAndScale.w, 1.25f);
+    EXPECT_FLOAT_EQ(row->YawSin, 1.0f);
+    EXPECT_NEAR(row->YawCos, 0.0f, 1e-6f);
+
+    tree.Root.X = (static_cast<double>(Rendering::kSectorAxisMax) + 1.0) * Mathematics::kWorldSectorSize;
+    EXPECT_FALSE(PackForestMeshTransform(tree));
+}
+
+TEST_F(ForestPlacementDrawTest, CardEntryRespectsTheCoarsestLevelOfEveryPart)
+{
+    using namespace Engine::Renderer;
+    Rendering::GPUMesh bark{};
+    bark.lodCount = 2;
+    bark.lodThreshold[0] = 0.2f;
+    Rendering::GPUMesh leaves{};
+    leaves.lodCount = 3;
+    leaves.lodFlags = Rendering::kGPUMeshLodTightClassBit | 1u;
+    leaves.lodThreshold[0] = 0.4f;
+    leaves.lodThreshold[1] = 0.1f;
+    leaves.lodSseScaleCeil = 0.12f;
+    leaves.lodCoverageScale = 0.5f;
+
+    const float margin = 1.0f + ImpostorStage::kSwitchHysteresis;
+    EXPECT_FLOAT_EQ(ForestPartCardEntryCoverage(bark, 0.4f, 0.2f), 0.2f / margin);
+    // The first leaf threshold becomes .048. The authored .1 threshold must
+    // descend below it to .024. The model-sphere threshold is .048.
+    EXPECT_FLOAT_EQ(ForestPartCardEntryCoverage(leaves, 0.4f, 0.2f), 0.048f / margin);
+    EXPECT_FLOAT_EQ(ForestPartCardEntryCoverage(leaves, 0.4f, 0.06f), 0.024f / margin);
+    EXPECT_EQ(SelectForestMeshLod(leaves, 0.12f, 0.4f, 0.2f, 0xFFFFFFFFu), 0u);
+    EXPECT_EQ(SelectForestMeshLod(leaves, 0.07f, 0.4f, 0.2f, 0xFFFFFFFFu), 1u);
+    EXPECT_EQ(SelectForestMeshLod(leaves, 0.03f, 0.4f, 0.2f, 0xFFFFFFFFu), 2u);
+    EXPECT_EQ(SelectForestMeshLod(leaves, 0.03f, 0.4f, 0.2f, 1u), 1u);
+    leaves.lodThreshold[0] = 0.0f;
+    EXPECT_EQ(ForestPartCardEntryCoverage(leaves, 0.4f, 0.2f), 0.0f);
+    leaves.lodCount = 1;
+    EXPECT_GT(ForestPartCardEntryCoverage(leaves, 0.4f, 0.2f), 1.0f);
+}
+
+TEST_F(ForestPlacementDrawTest, DeformationWidensTheNearMeshFrustumWithoutMovingItsLodSwitch)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "wind-frustum.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1, .KeepCpuCopy = true}, error);
+    ASSERT_TRUE(runtime) << error;
+    const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
+    ForestPlacementFrame frame;
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_EQ(frame.Reads.size(), 1u);
+    const auto ticket = frame.Reads.front();
+    ASSERT_EQ(ticket.Page, 0u);
+    ASSERT_TRUE(runtime->CompleteRead(ticket, kFirstPage));
+    ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
+
+    ForestNearMeshView near{view, 2.0f, 0.0f, 0.0f};
+    const Mathematics::Vector4 bounds{0, 1, 0, 2};
+    std::vector<ForestNearMeshCandidate> candidates;
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    ASSERT_EQ(candidates.size(), 1u);
+    const float restCoverage = candidates.front().Coverage;
+
+    // Outside the rest sphere even with the shared 1.5x draw guard band.
+    near.PlacementView.EyeRelativePlanes[0] = {1, 0, 0, -3.7f};
+    ASSERT_TRUE(runtime->Prepare(near.PlacementView, 3, 2, frame));
+    ASSERT_EQ(frame.DetailedDraws.size(), 1u);
+    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    EXPECT_TRUE(candidates.empty());
+    near.DeformationMargin = 0.8f;
+    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    ASSERT_EQ(candidates.size(), 1u);
+    EXPECT_FLOAT_EQ(candidates.front().Coverage, restCoverage);
+    EXPECT_EQ(candidates.front().Ticket, ticket);
+}
+
+TEST_F(ForestPlacementDrawTest, NearMeshHysteresisKeepsOnlyTheSamePlacementGeneration)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "hysteresis.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1, .KeepCpuCopy = true}, error);
+    ASSERT_TRUE(runtime) << error;
+    const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
+    ForestPlacementFrame frame;
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_EQ(frame.Reads.size(), 1u);
+    const auto ticket = frame.Reads.front();
+    ASSERT_EQ(ticket.Page, 0u);
+    ASSERT_TRUE(runtime->CompleteRead(ticket, kFirstPage));
+    ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+
+    const Mathematics::Vector4 bounds{0, 1, 0, 2};
+    ForestNearMeshView near{view, 2.0f, 0.0f, 0.0f};
+    std::vector<ForestNearMeshCandidate> candidates;
+    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    ASSERT_EQ(candidates.size(), 1u);
+    const float coverage = candidates.front().Coverage;
+    const ForestMeshOwnedPlacement current{ticket, candidates.front().LocalPlacement};
+
+    near.ImpostorCoverage = coverage * 0.95f;
+    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    EXPECT_TRUE(candidates.empty());
+    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates, std::span(&current, 1));
+    ASSERT_EQ(candidates.size(), 1u);
+
+    auto retired = current;
+    ++retired.Ticket.Generation;
+    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates, std::span(&retired, 1));
+    EXPECT_TRUE(candidates.empty());
+
+    near.ImpostorCoverage = coverage * 1.01f;
+    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates, std::span(&current, 1));
+    EXPECT_TRUE(candidates.empty());
+    near.ImpostorCoverage = coverage * 0.75f;
+    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    EXPECT_EQ(candidates.size(), 1u);
+}
+
+TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTransforms)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "near-mesh.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 2, .ReadsPerFrame = 2, .KeepCpuCopy = true}, error);
+    ASSERT_TRUE(runtime) << error;
+    const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
+    ForestPlacementFrame frame;
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_EQ(frame.Reads.size(), 2u);
+    const auto first = frame.Reads[0];
+    const auto second = frame.Reads[1];
+    EXPECT_EQ(first.Page, 0u);
+    EXPECT_EQ(second.Page, 1u);
+    EXPECT_TRUE(runtime->ReadyPlacements(first).empty());
+
+    auto returned = kFirstPage;
+    ASSERT_TRUE(runtime->CompleteRead(first, returned));
+    returned.fill(0); // The I/O span does not outlive the read callback.
+    ASSERT_TRUE(runtime->CompleteRead(second, kSecondPage));
+    EXPECT_TRUE(runtime->ReadyPlacements(first).empty());
+    ASSERT_TRUE(runtime->CompleteUpload(first, ForestUploadResult::Published));
+    ASSERT_TRUE(runtime->CompleteUpload(second, ForestUploadResult::Published));
+
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    std::vector<ForestNearMeshCandidate> candidates;
+    const ForestNearMeshView near{view, 2.0f, 0.0f, 0.01f};
+    CollectForestNearMeshCandidates(*runtime, frame, near, {0, 1, 0, 2}, 1, candidates);
+    ASSERT_EQ(candidates.size(), 1u);
+    const auto& placement = candidates.front();
+    EXPECT_EQ(placement.Ticket, first);
+    EXPECT_EQ(placement.LocalPlacement, 0u);
+    EXPECT_DOUBLE_EQ(placement.Root.X, 512'000'000.12);
+    EXPECT_DOUBLE_EQ(placement.Root.Y, 8.0);
+    EXPECT_DOUBLE_EQ(placement.Root.Z, 512'000'001.99);
+    EXPECT_FLOAT_EQ(placement.Scale, 0.75f + 0.5f * 128.0f / 255.0f);
+    const auto secondRecords = runtime->ReadyPlacements(second);
+    ASSERT_EQ(secondRecords.size(), 2u);
+    EXPECT_EQ(secondRecords[0].Height, 23u);
+    std::vector<ForestNearMeshCandidate> all;
+    CollectForestNearMeshCandidates(*runtime, frame, near, {0, 1, 0, 2}, 3, all);
+    const auto raised = std::ranges::find_if(all, [&second](const ForestNearMeshCandidate& tree)
+                                             { return tree.Ticket == second && tree.LocalPlacement == 0; });
+    ASSERT_NE(raised, all.end());
+    EXPECT_DOUBLE_EQ(raised->Root.Y, 8.23);
+    EXPECT_NEAR(secondRecords[0].YawRadians(), 255.0 * 6.283185307179586 / 256.0, 1e-12);
+
+    auto turned = near;
+    turned.PlacementView.EyeRelativePlanes[0] = {1, 0, 0, -40};
+    ASSERT_TRUE(runtime->Prepare(turned.PlacementView, 3, 2, frame));
+    EXPECT_TRUE(runtime->ReadyPlacements(first).empty());
+    CollectForestNearMeshCandidates(*runtime, frame, turned, {0, 1, 0, 2}, 4, candidates);
+    ASSERT_EQ(candidates.size(), 2u);
+    EXPECT_EQ(candidates.front().Ticket, second);
+
+    runtime->ResetResidency();
+    EXPECT_TRUE(runtime->ReadyPlacements(second).empty());
+    CollectForestNearMeshCandidates(*runtime, frame, turned, {0, 1, 0, 2}, 4, candidates);
+    EXPECT_TRUE(candidates.empty());
+}
+
+TEST_F(ForestPlacementDrawTest, EmitsStandRangesAndMatchingDepthOnlyIntoEligibleViews)
+{
+    using namespace Engine::Renderer;
+    using namespace Mathematics;
+
+    const auto file = m_Scratch.Path() / "valid.geforest";
+    WriteStore(file);
+    std::string error;
+    std::shared_ptr<ForestPlacementRuntime> runtime = ForestPlacementRuntime::Open(file, {}, error);
+    ASSERT_TRUE(runtime) << error;
+
+    RenderServices services;
+    constexpr uint64 kForestWorld = 45;
+    const auto makeView = [&](double x, uint64 world, Rendering::RenderLayerMask layers)
+    {
+        Rendering::CameraData camera{};
+        camera.view = MakeLookAtLH({}, {0, 0, 1}, {0, 1, 0});
+        camera.proj = MakeOrthographicLH_ZO_ReverseZ(-25, 25, -25, 30, 0.1f, 80.0f);
+        camera.viewProj = camera.proj * camera.view;
+        SetCameraEye(camera, {x, 8.0, 511'999'990.0});
+        const auto cam = services.Views().AllocateCamera("ForestStandCamera");
+        services.Views().SetCameraData(cam, camera, {});
+        const auto view = services.Views().AllocateView("ForestStandView", cam);
+        services.Views().SetViewWorldId(view, world);
+        services.Views().SetViewRenderLayerMask(view, layers);
+        return view;
+    };
+    const auto defaultLayer = Rendering::RenderLayerMask::Default();
+    const auto first = makeView(512'000'000.0, kForestWorld, defaultLayer);
+    const auto second = makeView(512'000'055.0, kForestWorld, defaultLayer);
+    const auto missed = makeView(512'000'500.0, kForestWorld, defaultLayer);
+    const auto otherWorld = makeView(512'000'000.0, kForestWorld + 1, defaultLayer);
+    const auto hiddenLayer = makeView(512'000'000.0, kForestWorld, Rendering::RenderLayerMask::FromLayer(2));
+    unsigned prepared = 0;
+    const auto subscription = RegisterForestStandDraws(services, kForestWorld, defaultLayer, runtime,
+        [&](const ForwardEmitContext& ctx) -> std::optional<ForestStandDrawHeads>
+        {
+            ++prepared;
+            ForestStandDrawHeads heads{};
+            heads.Color.FirstIndex = 512;
+            heads.Color.VertexOffset = 19;
+            heads.Color.IndexCount = 12;
+            if (ctx.ViewId == first)
+                heads.Depth = heads.Color;
+            return heads;
+        });
+
+    Rendering::RenderGraph::RGFrame graph(nullptr, nullptr, nullptr, nullptr);
+    for (const auto view : {first, second, missed, otherWorld, hiddenLayer, first})
+        services.EmitFrameForwardCommandsForView(graph, view);
+
+    const size_t prepass = static_cast<size_t>(DepthPassType::Prepass);
+    const auto& firstView = services.Views().PerView(first);
+    const auto& secondView = services.Views().PerView(second);
+    ASSERT_EQ(firstView.ForwardCommands.size(), 1u);
+    ASSERT_EQ(secondView.ForwardCommands.size(), 1u);
+    ASSERT_EQ(firstView.DepthCommands[prepass].size(), 1u);
+    EXPECT_TRUE(secondView.DepthCommands[prepass].empty());
+    const auto firstDraws = firstView.ForwardCommands.front().SubDraws;
+    const auto secondDraws = secondView.ForwardCommands.front().SubDraws;
+    const auto depthDraws = firstView.DepthCommands[prepass].front().SubDraws;
+    ASSERT_EQ(firstDraws.size(), 1u);
+    ASSERT_EQ(secondDraws.size(), 1u);
+    EXPECT_EQ(firstDraws.front().FirstIndex, 512u);
+    EXPECT_EQ(firstDraws.front().VertexOffset, 19);
+    EXPECT_EQ(firstDraws.front().IndexCount, 6u);
+    EXPECT_EQ(secondDraws.front().FirstIndex, 518u);
+    EXPECT_EQ(secondDraws.front().VertexOffset, 19);
+    EXPECT_EQ(secondDraws.front().IndexCount, 6u);
+    EXPECT_EQ(depthDraws.data(), firstDraws.data());
+    EXPECT_EQ(depthDraws.size(), firstDraws.size());
+    EXPECT_EQ(prepared, 2u);
+    for (const auto view : {missed, otherWorld, hiddenLayer})
+        EXPECT_TRUE(services.Views().PerView(view).ForwardCommands.empty());
+}
+
+TEST_F(ForestPlacementDrawTest, SuppressesOnlyCardsOwnedByTheMatchingMeshSubmission)
+{
+    using namespace Engine::Renderer;
+    using namespace Mathematics;
+
+    const auto file = m_Scratch.Path() / "mesh-ownership.geforest";
+    std::array<PackedPlacement, PackedPlacementStore::kPlacementsPerPage> all{};
+    auto page = m_Pages[0];
+    page.Count = static_cast<uint32>(all.size());
+    ASSERT_TRUE(WritePackedPlacementStore(file, kTestBoundRadius, std::span(&page, 1), all).empty());
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    const ForestPageTicket ticket{0, 0, 14};
+    ForestPlacementFrame plan;
+    plan.DetailedDraws.push_back({ticket, 0, page.Count});
+    const std::array claims{
+        ForestMeshOwnedPlacement{ticket, 0}, ForestMeshOwnedPlacement{ticket, 31},
+        ForestMeshOwnedPlacement{ticket, 32}, ForestMeshOwnedPlacement{ticket, 127},
+        ForestMeshOwnedPlacement{ticket, 128}, ForestMeshOwnedPlacement{ticket, 143},
+        ForestMeshOwnedPlacement{{0, 0, 13}, 1}, // Stale mesh from the preceding slot generation.
+        ForestMeshOwnedPlacement{{1, 0, 14}, 2}, // Wrong slot.
+        ForestMeshOwnedPlacement{{0, 1, 14}, 3}, // No detail draw for this page.
+        ForestMeshOwnedPlacement{ticket, 144},   // Outside the placement packet.
+    };
+    Rendering::CameraData camera{};
+    SetCameraEye(camera, {512'000'000.0, 8.0, 511'999'990.0});
+    ForestPlacementGpuView gpu{};
+    std::vector<ForestPlacementGpuPage> pages;
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages, claims));
+    ASSERT_EQ(pages.size(), 1u);
+    constexpr std::array<uint32, 8> mask{0x80000001u, 1u, 0u, 0x80000000u, 0x8001u, 0u, 0u, 0u};
+    EXPECT_EQ(pages.front().MeshOwned, mask);
+
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    ASSERT_EQ(pages.size(), 1u);
+    EXPECT_EQ(pages.front().MeshOwned, (std::array<uint32, 8>{}));
+}
+
+TEST_F(ForestPlacementDrawTest, BuildsPackedGpuPagesInTheCamerasRenderOrigin)
+{
+    using namespace Engine::Renderer;
+    using namespace Mathematics;
+    const auto file = m_Scratch.Path() / "valid.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    const WorldPosition position{512'000'054.0, 8.0, 511'999'990.0};
+    const ForestPlacementView visible{position, {}, 100.0f};
+    ForestPlacementFrame plan;
+    ASSERT_TRUE(runtime->Prepare(visible, 1, 0, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    const auto ticket = plan.Reads.front();
+    ASSERT_EQ(ticket.Page, 1u);
+    ASSERT_TRUE(runtime->CompleteRead(ticket, kSecondPage));
+    ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
+    ASSERT_TRUE(runtime->Prepare(visible, 2, 1, plan));
+
+    Rendering::CameraData camera{};
+    camera.view = MakeLookAtLH({}, {0, 0, 1}, {0, 1, 0});
+    camera.proj = MakeOrthographicLH_ZO_ReverseZ(-30, 30, -25, 30, 0.1f, 80.0f);
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, position);
+    ForestPlacementGpuView gpu{};
+    std::vector<ForestPlacementGpuPage> pages;
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    ASSERT_EQ(pages.size(), 1u);
+    EXPECT_EQ(pages[0].Range, (std::array<uint32, 4>{0, 2, 1, 0}));
+    EXPECT_FLOAT_EQ(pages[0].OriginRelative.x - gpu.EyeRelativeAndRadius.x, 1.0f);
+    EXPECT_FLOAT_EQ(pages[0].OriginRelative.z - gpu.EyeRelativeAndRadius.z, 12.0f);
+    EXPECT_FLOAT_EQ(gpu.EyeRelativeAndRadius.w, 15.0f);
+    EXPECT_FLOAT_EQ(gpu.AtlasBounds.x, 0.0f);
+    EXPECT_FLOAT_EQ(gpu.AtlasBounds.y, 7.0f);
+    EXPECT_FLOAT_EQ(gpu.AtlasBounds.z, 0.0f);
+    EXPECT_FLOAT_EQ(gpu.AtlasBounds.w, 8.0f);
+    auto missing = plan;
+    ++missing.DetailedDraws.front().Ticket.Generation;
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, missing, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    EXPECT_EQ(pages[0].Range[2], 0u);
+
+    camera.proj = MakeOrthographicLH_ZO_ReverseZ(-1, 1.5f, -25, 30, 0.1f, 80.0f);
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, position);
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    ASSERT_EQ(pages.size(), 1u);
+    EXPECT_EQ(pages[0].Range[2], 0u); // A verified root lies outside the right edge.
+
+    // Page 1's roots stand 0 and 0.23 meters above its origin, at the eye's height.
+    camera.proj = MakeOrthographicLH_ZO_ReverseZ(-30, 30, -25, 0.3f, 0.1f, 80.0f);
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, position);
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    EXPECT_EQ(pages[0].Range[2], 1u);
+    camera.proj = MakeOrthographicLH_ZO_ReverseZ(-30, 30, -25, 0.1f, 0.1f, 80.0f);
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, position);
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    EXPECT_EQ(pages[0].Range[2], 0u); // The higher root lies above the top edge.
+
+    ++plan.DetailedDraws.front().FirstPlacement;
+    EXPECT_FALSE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    EXPECT_TRUE(pages.empty());
+}
+
+} // namespace
+} // namespace GameEngine::PageStreaming

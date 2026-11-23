@@ -469,13 +469,12 @@ void RecordForwardDrawCommand(const PreparedForwardDraw& prepared, RenderService
 
     if (command.UseIndirect && command.IndirectCommandBuffer.IsValid())
     {
-        pass.Cmd->DrawIndexedIndirectCount(
-            command.IndirectCommandBuffer,
-            replay.Counts.IsValid() ? replay.Counts : command.IndirectCountBuffer,
-            command.IndirectMaxDrawCount,
-            command.IndirectStride,
-            command.IndirectCommandOffset,
-            replay.Counts.IsValid() ? 0u : command.IndirectCountOffset);
+        if (replay.Counts.IsValid())
+            pass.Cmd->DrawIndexedIndirectCount(command.IndirectCommandBuffer, replay.Counts,
+                                               command.IndirectMaxDrawCount, command.IndirectStride,
+                                               command.IndirectCommandOffset, 0u);
+        else
+            command.RecordIndirect(*pass.Cmd);
         if (prepared.IndexedDepthEqual && LogIndexedDepthReplayDiagnostics())
         {
             static std::atomic_flag logged = ATOMIC_FLAG_INIT;
