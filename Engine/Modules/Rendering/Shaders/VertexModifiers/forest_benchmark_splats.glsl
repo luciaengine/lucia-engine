@@ -33,9 +33,6 @@ void ModifyVertex(inout VertexOutput vertex, inout InstanceData instance)
         vec3(p & 255u, (p >> 8u) & 255u, (p >> 16u) & 255u);
     vec3 center = sourceCenter * vec3(-1, 1, 1);
     vec3 normal = GE_OctDecode(vec2(n >> 24u, q & 255u) / 255.0) * vec3(-1, 1, 1);
-    vec3 axis = abs(normal.y) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
-    vec3 right = normalize(cross(axis, normal));
-    vec3 up = cross(normal, right);
     float coverage = float(p >> 24u) / 255.0;
     vec2 diskUV = kCorners[index & 3u];
     vec2 corner = diskUV * sqrt(coverage);
@@ -56,14 +53,33 @@ void ModifyVertex(inout VertexOutput vertex, inout InstanceData instance)
     instance.flags = 2u;
     instance.sector = Cam.uRenderOriginSector.xyz;
 
-    vec3 offset = (right * corner.x + up * corner.y) * (forestCard.grid.w * 0.79788456);
     float bend = float((q >> 8u) & 255u) / 255.0;
+    float leafFraction = float((q >> 16u) & 255u) / 255.0;
+    vec3 diskNormal = rotation * normal;
+    vec3 viewAxis = vec3(Cam.uVRel[0].z, Cam.uVRel[1].z, Cam.uVRel[2].z);
+    float overhead = smoothstep(0.53, 0.78, abs(viewAxis.y));
+    if (bend > 0.0 && leafFraction >= 0.5 && overhead > 0.0)
+    {
+        // Increase projected coverage of steep leaf disks on descending views.
+        // The baked normal still drives lighting.
+        vec3 facing = dot(diskNormal, viewAxis) < 0.0 ? -viewAxis : viewAxis;
+        diskNormal = transpose(rotation) * normalize(mix(diskNormal, facing, overhead));
+        // Grow leaf disks on descending views to close the pinholes between them.
+        corner *= mix(1.0, 1.15, overhead);
+    }
+    else
+    {
+        diskNormal = normal;
+    }
+    vec3 axis = abs(diskNormal.y) < 0.9 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 right = normalize(cross(axis, diskNormal));
+    vec3 up = cross(diskNormal, right);
+    vec3 offset = (right * corner.x + up * corner.y) * (forestCard.grid.w * 0.79788456);
     vec3 sway = vec3(row.sway.x, 0, row.sway.y) * bend;
     vertex.position = root + (rotation * (center + offset) + sway) * scale;
     vertex.sector = instance.sector;
     vertex.useSector = true;
     vertex.normal = rotation * normal;
     vertex.uv0 = diskUV;
-    float leafFraction = float((q >> 16u) & 255u) / 255.0;
     vertex.custom0 = vec4(vec3(n & 255u, (n >> 8u) & 255u, (n >> 16u) & 255u) / 255.0, leafFraction);
 }
