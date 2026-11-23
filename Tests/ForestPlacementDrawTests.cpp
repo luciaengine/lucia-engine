@@ -330,6 +330,76 @@ TEST_F(ForestPlacementDrawTest, ACardPastTheBoundRadiusRefusesItsSessionOnce)
     EXPECT_FALSE(feature.WantsCard(kWorld, model));
 }
 
+TEST_F(ForestPlacementDrawTest, ClearCardsForgetsOnlyItsWorldsCardsUntilTheNextPublish)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "cards.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    RenderServices services;
+    AssetManager assets;
+    auto& feature = services.EnsureFeature<ForestPlacementFeature>();
+    const GUID model = GUID::Generate();
+    const auto cleared = feature.Attach(runtime, assets, 7, model, 100.0f);
+    const auto other = feature.Attach(runtime, assets, 8, model, 100.0f);
+    ASSERT_TRUE(cleared && other);
+    cleared->WantsCard = true;
+    other->WantsCard = true;
+    ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    feature.PublishCard(7, model, card);
+    feature.PublishCard(8, model, card);
+    ASSERT_TRUE(cleared->Card && other->Card);
+
+    feature.ClearCards(7);
+    EXPECT_FALSE(cleared->Card);
+    EXPECT_TRUE(other->Card);
+    EXPECT_TRUE(feature.WantsCard(7, model));
+    feature.PublishCard(7, model, card);
+    ASSERT_TRUE(cleared->Card);
+    EXPECT_EQ(cleared->Card->Bounds.y, 5.0f);
+}
+
+TEST_F(ForestPlacementDrawTest, FinishKeepsTheNearOwnersOfASubmittedFrameAndDropsAnAbortedOne)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "owners.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    RenderServices services;
+    AssetManager assets;
+    auto& feature = services.EnsureFeature<ForestPlacementFeature>();
+    const auto session = feature.Attach(runtime, assets, 7, GUID::Generate(), 100.0f, 4);
+    ASSERT_TRUE(session);
+    const ForestMeshOwnedPlacement kept{{0, 0, 1}, 3};
+    const ForestMeshOwnedPlacement planned{{0, 0, 1}, 5};
+    session->NearOwners = {kept};
+    session->NearOwnerView = 2;
+
+    Rendering::RenderGraph::RGFrame aborted(nullptr, nullptr, nullptr, nullptr);
+    session->PendingNearOwners = {planned};
+    session->PendingNearFrame.Stamp(aborted);
+    session->PendingNearView = 3;
+    feature.OnFrameAbortedRG(aborted);
+    EXPECT_EQ(session->NearOwners, std::vector{kept});
+    EXPECT_EQ(session->NearOwnerView, 2u);
+    EXPECT_TRUE(session->PendingNearOwners.empty());
+
+    Rendering::RenderGraph::RGFrame submitted(nullptr, nullptr, nullptr, nullptr);
+    session->PendingNearOwners = {planned};
+    session->PendingNearFrame.Stamp(submitted);
+    feature.OnFrameSubmittedRG(aborted, {});
+    EXPECT_EQ(session->NearOwners, std::vector{kept});
+    feature.OnFrameSubmittedRG(submitted, {});
+    EXPECT_EQ(session->NearOwners, std::vector{planned});
+    EXPECT_EQ(session->NearOwnerView, 3u);
+    EXPECT_TRUE(session->PendingNearOwners.empty());
+}
+
 Rendering::ViewId AddForestStandView(Engine::Renderer::RenderServices& services, double x,
                                      uint64 world, Rendering::RenderLayerMask layers)
 {
@@ -414,6 +484,38 @@ TEST_F(ForestPlacementDrawTest, EmitsStandRangesAndMatchingDepthOnlyIntoEligible
     EXPECT_EQ(prepared, 2u);
     for (const auto view : {missed, otherWorld, hiddenLayer})
         EXPECT_TRUE(services.Views().PerView(view).ForwardCommands.empty());
+}
+
+TEST_F(ForestPlacementDrawTest, AStandDrawsItsOverviewWhenItsSessionDrawsNoDetails)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "fallback.geforest";
+    WriteStore(file);
+    std::string error;
+    std::shared_ptr<ForestPlacementRuntime> runtime =
+        ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    RenderServices services;
+    AssetManager assets;
+    constexpr uint64 kForestWorld = 45;
+    const auto defaultLayer = Rendering::RenderLayerMask::Default();
+    const auto view = AddForestStandView(services, 512'000'000.0, kForestWorld, defaultLayer);
+    // Without a device or a card, the session declares nothing into the view.
+    const auto session = services.EnsureFeature<ForestPlacementFeature>().Attach(
+        runtime, assets, kForestWorld, GUID::Generate(), 100.0f);
+    ASSERT_TRUE(session);
+    const auto subscription = RegisterForestStandDraws(services, kForestWorld, defaultLayer, runtime,
+        [](const ForwardEmitContext&) -> std::optional<ForestStandDrawHeads> { return MakeForestStandDrawHeads(false); },
+        session);
+
+    Rendering::RenderGraph::RGFrame graph(nullptr, nullptr, nullptr, nullptr);
+    services.EmitFrameForwardCommandsForView(graph, view);
+    const auto& commands = services.Views().PerView(view).ForwardCommands;
+    ASSERT_EQ(commands.size(), 1u);
+    ASSERT_EQ(commands.front().SubDraws.size(), 1u);
+    EXPECT_EQ(commands.front().SubDraws.front().FirstIndex, 512u);
+    EXPECT_EQ(commands.front().SubDraws.front().IndexCount, 6u);
+    EXPECT_FALSE(session->Stream);
 }
 
 TEST_F(ForestPlacementDrawTest, SuppressesOnlyCardsOwnedByTheMatchingMeshSubmission)
