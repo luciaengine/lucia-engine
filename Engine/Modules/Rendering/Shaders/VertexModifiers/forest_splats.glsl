@@ -3,6 +3,7 @@
 #define GE_FOREST_CARD_DRAW
 #include "Includes/forest_placement.glsl"
 #include "Includes/forest_splat_disk.glsl"
+#include "Includes/integer_hash.glsl"
 #include "Includes/octahedral_normal.glsl"
 
 layout(std430, set = 2, binding = 2) readonly buffer ForestVisiblePlacements
@@ -24,6 +25,9 @@ layout(std430, set = 2, binding = 5) readonly buffer ForestSplatCells
 };
 
 const vec2 kForestSplatCorners[4] = vec2[4](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, 1));
+// The largest offset of a disk center from its cell center, in cells on each axis. It hides the bake grid.
+const float kForestSplatJitter = 0.3;
+
 // The disk radius in cells at full coverage: sqrt(2 / pi), a disk with the area of two cell faces.
 const float kForestSplatDiskRadius = 0.79788456;
 
@@ -41,8 +45,13 @@ void ModifyVertex(inout VertexOutput outputVertex, inout InstanceData instance)
     const float bend = float((normalYBendLeaf >> 8u) & 255u) / 255.0;
     const float leafFraction = float((normalYBendLeaf >> 16u) & 255u) / 255.0;
     const vec2 diskUv = kForestSplatCorners[vertexIndex & 3u];
+    const uint cellKey = GE_HashU32(vertexIndex >> 2u);
 
     const ForestVisibleSplat row = visiblePlacements[gl_InstanceIndex];
+    // Each tree moves its disks differently, so neighboring trees show no common pattern.
+    const uint diskKey = cellKey ^ GE_HashU32(row.placement);
+    const vec3 jitter = (vec3(GE_HashUnit(diskKey), GE_HashUnit(diskKey + 1u), GE_HashUnit(diskKey + 2u)) - 0.5) *
+                        (2.0 * kForestSplatJitter * forestCard.grid.w);
     const uvec2 packed = forestPlacements[row.placement];
     const vec3 root = GE_ForestPlacementRoot(packed, forestPages[row.page]);
     const float scale = GE_ForestPlacementScale(packed);
@@ -65,10 +74,13 @@ void ModifyVertex(inout VertexOutput outputVertex, inout InstanceData instance)
     const vec2 corner = diskUv * sqrt(coverage) * disk.growth;
     const vec3 offset = (right * corner.x + up * corner.y) * (forestCard.grid.w * kForestSplatDiskRadius);
     const vec3 sway = vec3(row.sway.x, 0, row.sway.y) * bend;
-    outputVertex.position = root + (rotation * (center + offset) + sway) * scale;
+    outputVertex.position = root + (rotation * (center + jitter + offset) + sway) * scale;
     outputVertex.sector = instance.sector;
     outputVertex.useSector = true;
-    outputVertex.normal = rotation * normal;
+    // A leaf is lit on the side the camera sees, as a two-sided leaf mesh is; bark keeps its outward normal.
+    const vec3 worldNormal = rotation * normal;
+    const bool leafBackFace = leafFraction >= 0.5 && dot(worldNormal, viewAxis) > 0.0;
+    outputVertex.normal = leafBackFace ? -worldNormal : worldNormal;
     outputVertex.uv0 = diskUv;
     outputVertex.custom0 = vec4(vec3(colorNormalX & 255u, (colorNormalX >> 8u) & 255u,
                                      (colorNormalX >> 16u) & 255u) / 255.0, leafFraction);

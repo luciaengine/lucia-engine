@@ -1,4 +1,6 @@
 // A round splat disk of a packed forest stand, with the baked cell color in custom0.rgb.
+// The vertex stage turns a leaf normal to the side the camera sees; the back face keeps it.
+#define GE_TWO_SIDED_KEEP_NORMAL
 SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 {
     SurfaceOutput o = DefaultSurfaceOutput();
