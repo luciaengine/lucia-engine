@@ -86,10 +86,10 @@ The stand still needs its tree model and the model's impostor card: the card giv
 
 #### Bake the splats
 
-Supply the asset root, the tree model, the output path and, for each mesh of the model that the scene draws with a project material, that mesh's index and material. The model and material paths are relative to the asset root.
+Supply the asset root, the tree model, the output path and, for each mesh of the model that the scene draws with a project material, that mesh's index and material. The model and material paths are relative to the asset root, as the project stores them; the output path is not.
 
 ```sh title="Bake a tree model into splats"
-ForestPlacementCook --splats Assets Models/Forest/StandingTree.glb Forests/StandingTree.geforestsplats 0=Materials/Forest/StandingTreeBark.material 1=Materials/Forest/StandingTreeLeaves.material
+ForestPlacementCook --splats Assets Models/Forest/StandingTree.glb Assets/Forests/StandingTree.geforestsplats 0=Materials/Forest/StandingTreeBark.material 1=Materials/Forest/StandingTreeLeaves.material
 ```
 
 - A mesh without a material argument uses the material that the model imports with it.
