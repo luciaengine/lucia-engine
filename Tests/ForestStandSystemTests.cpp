@@ -322,6 +322,38 @@ TEST_F(ForestStandSystemTest, DetailSettingsApplyToTheAttachedSession)
     EXPECT_EQ(CountLines(lines, "attached with"), 1u);
 }
 
+TEST_F(ForestStandSystemTest, ANearMeshBudgetFromOrToZeroAttachesTheStandAgain)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto stand = *world.GetComponent<Components::ForestStand>(entity);
+    stand.TreeModel = Components::ModelRef(m_Archive);
+    stand.DetailDistance = 275.0f;
+    world.AddComponentImmediate(entity, stand);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    system.Update(world, 0.0f);
+    const auto* feature = m_Services.GetFeature<ForestPlacementFeature>();
+    ASSERT_NE(feature, nullptr);
+    // The test holds each replaced session, so the newest session is the last one.
+    const auto cardsOnly = ForestPlacementFeatureTestAccess::Sessions(*feature).back();
+
+    world.GetComponentForWrite<Components::ForestStand>(entity)->NearMeshBudget = 12;
+    system.Update(world, 0.0f);
+    const auto withMeshes = ForestPlacementFeatureTestAccess::Sessions(*feature).back();
+    EXPECT_NE(withMeshes, cardsOnly);
+    EXPECT_EQ(withMeshes->NearBudget, 12u);
+
+    world.GetComponentForWrite<Components::ForestStand>(entity)->NearMeshBudget = 24;
+    system.Update(world, 0.0f);
+    EXPECT_EQ(ForestPlacementFeatureTestAccess::Sessions(*feature).back(), withMeshes);
+    EXPECT_EQ(withMeshes->NearBudget, 24u);
+
+    world.GetComponentForWrite<Components::ForestStand>(entity)->NearMeshBudget = 0;
+    system.Update(world, 0.0f);
+    const auto backToCards = ForestPlacementFeatureTestAccess::Sessions(*feature).back();
+    EXPECT_NE(backToCards, withMeshes);
+}
+
 TEST_F(ForestStandSystemTest, AChangedArchiveFileAttachesTheStandAgain)
 {
     ECS::World world;

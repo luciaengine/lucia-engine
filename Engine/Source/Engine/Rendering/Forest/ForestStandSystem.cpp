@@ -82,6 +82,9 @@ GUID ResolveStandMaterial(uint64 worldId, uint64 epoch, ECS::EntityHandle entity
     return renderer->materialAssetGuid.ToGuid();
 }
 
+// The overview mesh has one quad of two triangles for each archive page.
+constexpr uint32 kIndicesPerQuad = 6;
+
 uint32 CountPlacements(const ForestPlacementRuntime& placements)
 {
     const auto pages = placements.Store().Pages();
@@ -176,9 +179,9 @@ void ForestStandSystem::CheckOverviews(ECS::World& world)
             stand.Status.Problem = stand.AttachProblem;
             continue;
         }
-        stand.Status.Problem = std::format("has an overview mesh with {} indices, but the pages of its archive "
-                                           "address {}. Cook the overview mesh again from this archive.",
-                                           mesh->indexCount, stand.OverviewIndexEnd);
+        stand.Status.Problem = std::format("has an overview mesh with {} quads, but its archive has {} pages. Cook "
+                                           "the overview mesh again from this archive.",
+                                           mesh->indexCount / kIndicesPerQuad, stand.OverviewIndexEnd / kIndicesPerQuad);
         Logger::Log::Warning("Forest stand {} {}", DescribeEntity(world, entity), stand.Status.Problem);
     }
 }
