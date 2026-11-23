@@ -1,0 +1,56 @@
+---
+title: Packed forests
+description: Cook large tree stands into a streamed placement archive and its overview mesh.
+---
+
+A packed forest stores the transforms of one tree species in a single `.geforest` archive instead of one scene entity per tree. The archive groups the trees into pages of up to 144 trees. A page is the unit that the renderer streams and culls. An overview mesh with one canopy quad per page covers the stand at a distance.
+
+Use scene entities for trees that need their own components. Use a packed forest for large stands of one species.
+
+## Cook a placement archive
+
+`ForestPlacementCook` turns a CSV of tree transforms into a `.geforest` archive. Supply the CSV, the output path and the tree's root radius in meters.
+
+```sh title="Cook tree placements"
+ForestPlacementCook placements.csv Assets/Forests/Forest.geforest 12
+```
+
+The CSV starts with the header `page,x,y,z,yawDegrees,scale`. Each row is one tree in world meters:
+
+- `page` groups the rows. Pages start at 0 and are contiguous, in the order of the overview mesh. A page holds 1 to 144 trees.
+- All trees of a page have the same root elevation `y`.
+- The horizontal offset of a tree from the page's minimum corner is at most 655.35 meters. The archive stores it to the nearest centimeter.
+- `yawDegrees` is the rotation around the vertical axis.
+- `scale` is a uniform scale from 0.75 to 1.25.
+
+At unit scale, the root radius must reach the farthest card corner and the farthest mesh vertex of the tree, including the maximum wind displacement. The cooker extends each page's bounds by this radius at the largest scale.
+
+Add `--spatial-order` after the root radius to sort the pages so that nearby pages are adjacent in the archive. This makes culling and streaming more efficient. The sort moves whole pages, so generate the overview mesh from the sorted archive. For an existing hand-authored overview mesh, keep the default order.
+
+The cooker writes the archive to a temporary file and replaces the target only after a complete write. A rejected CSV leaves the previous archive unchanged. The error message gives the line or the page that failed.
+
+## Cook the overview mesh
+
+The overview mesh has one quad per archive page, in archive order. To generate it, supply the archive, a top-down RGBA projection of the tree's canopy, the output `.glb` path, the canopy bounds, the canopy height and the tile size.
+
+```sh title="Cook an overview mesh from an archive"
+ForestPlacementCook --overview Assets/Forests/Forest.geforest canopy.png Assets/Forests/Canopy.glb -5 -6 5 6 9 32
+```
+
+- The bounds `minX minZ maxX maxZ` are in meters in the imported tree's local XZ plane. The first image row is at the minimum Z.
+- The canopy height is a representative height of the canopy above the root, in meters. Each quad uses the page's mean tree scale.
+- The tile size is 16 to 64 pixels per page. A larger tile keeps more canopy detail and uses more graphics memory. The atlas is at most 8192 pixels on each side.
+
+The cooker stamps every tree of a page into that page's tile, with the tree's packed position, yaw and scale. It embeds the atlas in the model with an alpha-masked material. Import the model with the default glTF axis settings, and regenerate it when the placements change.
+
+## Archive format
+
+A `.geforest` archive is little-endian and has three parts:
+
+| Part | Size | Content |
+| --- | --- | --- |
+| Header | 32 bytes | magic `GEFP`, version 1, page count, placement count, payload offset, directory hash |
+| Page directory | 64 bytes per page | page origin (3 doubles, meters), local bounds minimum and maximum (3 floats each, meters from the origin), payload hash, first placement, placement count |
+| Payload | 8 bytes per tree | X and Z in centimeters from the origin, yaw in 1/65536 turns, scale in 1/65535 steps from 0.75 to 1.25 |
+
+The engine rejects an archive when the directory hash, a page range or a page bound is not valid. It verifies the payload hash of each page when the page arrives from disk.
