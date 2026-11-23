@@ -11209,9 +11209,10 @@ struct MissingUploadPassReports
 };
 } // namespace
 
-// The missing-pass diagnostic fires exactly once, on the eighth extraction tick that finds a
-// texture still awaiting its GPU initialization with no flush ever recorded, and names the pass.
-TEST(RenderPipelineDeclareTests, TerrainMissingUploadPassIsReportedOnceOnTheEighthTick)
+// Extraction ticks with no frame drawing terrain behind them, as while the editor starts up or opens
+// a project, report nothing. The missing-pass diagnostic fires once, on the eighth frame that draws
+// terrain with no TerrainUpload node declared, and counts a frame once however many nodes draw it.
+TEST(RenderPipelineDeclareTests, TerrainMissingUploadPassIsReportedOnceOnTheEighthDrawnFrame)
 {
     TerrainFixture f;
     if (!f.Up())
@@ -11225,22 +11226,28 @@ TEST(RenderPipelineDeclareTests, TerrainMissingUploadPassIsReportedOnceOnTheEigh
         const std::vector<float32> heights(static_cast<size_t>(dim) * dim, 0.5f);
         terrain.UploadHeightmap(TerrainECS::TerrainHandle{3u, 1u}, heights.data(), dim, dim);
 
-        for (uint32 frame = 0; frame < 7; ++frame)
+        for (uint32 tick = 0; tick < 24; ++tick)
+            TickExtraction(terrain, tick);
+        ASSERT_EQ(reports.Read(), 0) << "ticks with no frame drawing terrain are not evidence of a missing pass";
+
+        for (uint64 frame = 0; frame < 7; ++frame)
         {
-            TickExtraction(terrain, frame);
-            ASSERT_EQ(reports.Read(), 0) << "reported after only " << (frame + 1) << " tick(s)";
+            // The CBT node and the grass node both draw the frame: one frame, not two.
+            terrain.NoteTerrainDrawnRG(frame);
+            terrain.NoteTerrainDrawnRG(frame);
+            ASSERT_EQ(reports.Read(), 0) << "reported after only " << (frame + 1) << " drawn frame(s)";
         }
-        TickExtraction(terrain, 7u);
-        EXPECT_EQ(reports.Read(), 1) << "the eighth tick with no flush ever recorded must report";
-        for (uint32 frame = 8; frame < 16; ++frame)
-            TickExtraction(terrain, frame);
+        terrain.NoteTerrainDrawnRG(7u);
+        EXPECT_EQ(reports.Read(), 1) << "the eighth frame drawing terrain with no upload node must report";
+        for (uint64 frame = 8; frame < 16; ++frame)
+            terrain.NoteTerrainDrawnRG(frame);
         EXPECT_EQ(reports.Read(), 1) << "the diagnostic is once-only";
     }
     f.Down();
 }
 
-// A pipeline that declares the pass flushes on its first declared frame, which disarms the
-// diagnostic for the rest of the session: later ticks, and later texture creations, stay silent.
+// A pipeline that declares the upload node disarms the diagnostic for the rest of the session:
+// later drawn frames, and later texture creations, stay silent.
 TEST(RenderPipelineDeclareTests, TerrainMissingUploadPassIsSilentWhenThePassDeclares)
 {
     TerrainFixture f;
@@ -11279,11 +11286,14 @@ TEST(RenderPipelineDeclareTests, TerrainMissingUploadPassIsSilentWhenThePassDecl
             f.Device->WaitForIdle();
         }
 
-        // A second texture created after the first flush, then far more ticks than the limit.
+        // A second texture created after the first flush, then far more drawn frames than the limit.
         terrain.UploadHeightmap(TerrainECS::TerrainHandle{4u, 1u}, heights.data(), dim, dim);
         for (uint32 frame = 1; frame < 24; ++frame)
+        {
             TickExtraction(terrain, frame);
-        EXPECT_EQ(reports.Read(), 0) << "a pipeline that has flushed once must never be reported";
+            terrain.NoteTerrainDrawnRG(frame);
+        }
+        EXPECT_EQ(reports.Read(), 0) << "a pipeline that declares the upload node must never be reported";
     }
     f.Down();
 }

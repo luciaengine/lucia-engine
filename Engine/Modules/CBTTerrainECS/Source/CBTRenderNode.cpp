@@ -203,9 +203,10 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
     if (!feature.IsActive())
         return;
     // A view whose layers miss the terrain's declares nothing of it: no update, draw or shadow.
-    const auto* terrainRender = rs.GetFeature<TerrainECS::TerrainRenderFeature>();
+    auto* terrainRender = rs.GetFeature<TerrainECS::TerrainRenderFeature>();
     if (!terrainRender || !terrainRender->ViewDrawsActiveTerrain(d.View.ActiveRenderLayerMask()))
         return;
+    terrainRender->NoteTerrainDrawnRG(d.Frame.FrameIndex());
     if (!feature.EnsureInitialized(*device, rs))
         return;
 

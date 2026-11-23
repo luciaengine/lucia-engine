@@ -23,9 +23,9 @@ namespace GameEngine::TerrainECS
 {
 namespace
 {
-// Extraction frames a texture may sit uninitialized before the missing-"TerrainUpload"-pass
-// diagnostic fires. A pipeline that declares the pass flushes on its first declared frame, so
-// this only has to outlast startup ordering (extraction runs ahead of the first graph declare).
+// Frames that draw terrain without the upload node before the missing-"TerrainUpload"-pass
+// diagnostic fires. A pipeline that has the node declares it in its first frame, so this only
+// has to outlast a pipeline that orders the node after the nodes that draw terrain.
 constexpr uint32 kUploadPassAbsentFrameLimit = 8;
 } // namespace
 
@@ -1574,8 +1574,6 @@ void TerrainRenderFeature::FlushPendingUploads(Rendering::CommandList* cl)
     if (!cl)
         return;
 
-    ++m_FlushCount;
-
     // Zero-clear freshly (re)created unified textures first: UNDEFINED -> CopyDest ->
     // clear(0) -> ShaderResource, so the per-tile region patches below (which preserve
     // untouched texels from the ShaderResource resting layout) start from a defined
@@ -1710,27 +1708,42 @@ void TerrainRenderFeature::EnsureMaterialTableBuffer(uint32 fi, uint32 capacity)
     }
 }
 
+void TerrainRenderFeature::NoteTerrainDrawnRG(uint64_t rgFrameIndex)
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    if (rgFrameIndex == m_LastDrawnFrameRG)
+        return;
+    m_LastDrawnFrameRG = rgFrameIndex;
+    WarnIfUploadPassMissing();
+}
+
+void TerrainRenderFeature::NoteUploadNodeDeclared()
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    m_UploadNodeDeclared = true;
+}
+
 void TerrainRenderFeature::WarnIfUploadPassMissing()
 {
-    if (m_MissingUploadPassReported || m_FlushCount != 0)
+    if (m_MissingUploadPassReported || m_UploadNodeDeclared)
         return;
     if (m_TexturesAwaitingGpuInit.empty())
         return;
-    if (++m_FramesAwaitingUploadPass < kUploadPassAbsentFrameLimit)
+    if (++m_DrawnFramesWithoutUploadNode < kUploadPassAbsentFrameLimit)
         return;
 
     m_MissingUploadPassReported = true;
     Logger::Log::Error(
-        "TerrainRenderFeature: {} terrain texture(s) have waited {} frames for their GPU "
-        "zero-clear/upload and FlushPendingUploads has never run — the active render pipeline "
-        "declares no \"TerrainUpload\" pass. Their bindless slots stay unpublished, so every "
+        "TerrainRenderFeature: {} frames drew terrain while {} terrain texture(s) wait for their GPU "
+        "zero-clear/upload — the active render pipeline declares no \"TerrainUpload\" pass, so "
+        "nothing runs FlushPendingUploads. Their bindless slots stay unpublished, so every "
         "bindless tap takes its no-texture branch: the surface skips its splat and grass roots "
         "collapse to the terrain's origin height. The CBT height sample is bound directly rather "
         "than bindlessly, so it is not gated at all and reads an image nothing has written — "
         "undefined per driver, which on MoltenVK comes back zero and renders as flat terrain. "
         "Add a TerrainUpload node to the pipeline's .rendergraph (see "
         "Engine/Assets/RenderPipelines/ForwardPlus.rendergraph).",
-        m_TexturesAwaitingGpuInit.size(), m_FramesAwaitingUploadPass);
+        m_DrawnFramesWithoutUploadNode, m_TexturesAwaitingGpuInit.size());
 }
 
 void TerrainRenderFeature::UploadTerrainParamsArray(std::span<const Terrain::TerrainGPUParams> params,
@@ -1741,11 +1754,6 @@ void TerrainRenderFeature::UploadTerrainParamsArray(std::span<const Terrain::Ter
     assert(infos.size() == params.size() && "one info row per params row");
     const uint32 count = static_cast<uint32>(params.size());
     std::lock_guard<std::mutex> lock(m_Mutex);
-
-    // The extraction system's once-per-frame tick, and the only one that still runs when the
-    // render graph has no terrain pass at all — so it is where a never-draining upload queue
-    // becomes observable.
-    WarnIfUploadPassMissing();
 
     // One element per device frame, not one per value of the device's wrapped slot — see the
     // reuse-distance argument on the declaration. The unwrapped counter doubles as the
