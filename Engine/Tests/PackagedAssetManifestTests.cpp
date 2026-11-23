@@ -9,6 +9,7 @@
 #include "TestTempDir.h"
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -130,71 +131,114 @@ TEST_F(PackagedAssetManifestTest, RuntimeSettingsSurviveExportAndPlayerManifestM
     playerAssets.Shutdown();
 }
 
-TEST_F(PackagedAssetManifestTest, ForestStandsAndNearBudgetsSurviveDesktopExport)
+namespace
 {
-    constexpr float kTreeBoundRadius = 4.0f;
-    const std::string archive = "Forests/StandingTrees.geforest";
-    const auto sourceArchive = Assets / archive;
-    fs::create_directories(sourceArchive.parent_path());
-    using PageStreaming::PackedPlacement;
-    const std::array records{PackedPlacement{20, 40, 0, 0, 128}, PackedPlacement{80, 100, 24, 64, 255}};
-    const std::array pages{PageStreaming::PlacementPage{
-        .Origin = {4'000.0, 10.0, -6'000.0}, .LocalMin = {-6, -5, -6}, .LocalMax = {8, 15, 8},
-        .First = 0, .Count = static_cast<uint32>(records.size())}};
-    ASSERT_EQ(PageStreaming::WritePackedPlacementStore(sourceArchive, kTreeBoundRadius, pages, records), "");
+class ForestStandExportTest : public PackagedAssetManifestTest
+{
+protected:
+    static constexpr float kTreeBoundRadius = 4.0f;
 
-    const std::string secondArchive = "Forests/OtherTrees.geforest";
-    auto secondPage = pages.front();
-    secondPage.Count = 1;
-    ASSERT_EQ(PageStreaming::WritePackedPlacementStore(Assets / secondArchive, kTreeBoundRadius, std::span(&secondPage, 1u),
-                                                        std::span(records).first(1)), "");
+    static void WriteArchive(const fs::path& path)
+    {
+        using PageStreaming::PackedPlacement;
+        const std::array records{PackedPlacement{20, 40, 0, 0, 128}, PackedPlacement{80, 100, 24, 64, 255}};
+        const std::array pages{PageStreaming::PlacementPage{
+            .Origin = {4'000.0, 10.0, -6'000.0}, .LocalMin = {-6, -5, -6}, .LocalMax = {8, 15, 8},
+            .First = 0, .Count = static_cast<uint32>(records.size())}};
+        fs::create_directories(path.parent_path());
+        ASSERT_EQ(PageStreaming::WritePackedPlacementStore(path, kTreeBoundRadius, pages, records), "");
+    }
 
-    GameConfig sourceConfig;
-    sourceConfig.ForestStands.push_back({
-        .Archive = archive, .Entity = "ForestOverview", .ImpostorModel = "Model.obj",
-        .DetailDistance = 275.0f, .NearMeshBudget = 96});
-    sourceConfig.ForestStands.push_back({.Archive = secondArchive, .Entity = "OtherOverview"});
-    ASSERT_TRUE(SaveGameConfig(Project / "game.config", sourceConfig));
+    // Registers an asset written after the startup scan and returns its GUID.
+    GUID Register(const fs::path& path)
+    {
+        auto& registry = Engine.GetAssetManager().GetRegistry();
+        EXPECT_TRUE(registry.RegisterAsset(path)) << path;
+        return registry.GetAssetGUID(path);
+    }
 
-    BuildSettings build;
-    build.platformName = "Linux";
-    build.projectRoot = Project;
-    build.prebuiltPlayerDirectory = Runtime;
-    build.outputDirectory = Output;
-    build.compileScripts = false;
-    build.buildConfiguration = "Release";
-    build.playerConfig.gameName = "ForestExportProbe";
-    BuildPipeline pipeline(nullptr);
+    // Exports Scenes/Forest.scene with one ForestStand of `archive` and `treeModel`.
+    bool Export(const GUID& archive, const GUID& treeModel, BuildProgress& progress)
+    {
+        const fs::path scene = Assets / "Scenes/Forest.scene";
+        std::string body = "[scene name=\"Forest\" version=1]\n\n[entity id=\"e_stand\"]\n"
+                           "ForestStand.Archive = \"" + archive.ToString() + "\"\n";
+        if (!treeModel.IsNull())
+            body += "ForestStand.TreeModel = \"" + treeModel.ToString() + "\"\n";
+        WriteFile(scene, body);
+        const GUID sceneGuid = Register(scene);
+        Engine.GetAssetManager().GetRegistry().RefreshDependencies(sceneGuid);
+
+        BuildSettings build;
+        build.platformName = "Linux";
+        build.projectRoot = Project;
+        build.prebuiltPlayerDirectory = Runtime;
+        build.outputDirectory = Output;
+        build.compileScripts = false;
+        build.buildConfiguration = "Release";
+        build.playerConfig.gameName = "ForestExportProbe";
+        build.scenes = {"Scenes/Forest.scene"};
+        BuildPipeline pipeline(nullptr);
+        return pipeline.Execute(build, [&progress](const BuildProgress& current) { progress = current; });
+    }
+
+    static bool HasError(const BuildProgress& progress, std::string_view text)
+    {
+        return std::ranges::any_of(progress.errors,
+            [text](const std::string& error) { return error.find(text) != std::string::npos; });
+    }
+};
+} // namespace
+
+TEST_F(ForestStandExportTest, ASceneStandShipsItsArchiveAndTreeModel)
+{
+    WriteArchive(Assets / "Forests/Stand.geforest");
+    const GUID archive = Register(Assets / "Forests/Stand.geforest");
+    const GUID model = Engine.GetAssetManager().GetRegistry().GetAssetGUID(Assets / "Model.obj");
+    ASSERT_FALSE(model.IsNull());
     BuildProgress progress;
-    ASSERT_TRUE(pipeline.Execute(build, [&progress](const BuildProgress& current) { progress = current; }))
-        << progress.statusMessage << '\n' << testing::PrintToString(progress.errors);
-
-    const auto packaged = LoadGameConfig(Output / "game.config");
-    ASSERT_EQ(packaged.ForestStands.size(), 2u);
-    EXPECT_EQ(packaged.ForestStands[1].Archive, secondArchive);
-    EXPECT_EQ(packaged.ForestStands[1].Entity, "OtherOverview");
-    EXPECT_EQ(packaged.ForestStands[1].NearMeshBudget, 0u);
-    PageStreaming::PackedPlacementStore exportedSecond;
-    ASSERT_EQ(exportedSecond.Open(Output / "Assets" / secondArchive), "");
-    ASSERT_EQ(exportedSecond.Pages().size(), 1u);
-    EXPECT_EQ(exportedSecond.Pages().front().Count, 1u);
-    EXPECT_EQ(packaged.ForestStands.front().Archive, archive);
-    EXPECT_EQ(packaged.ForestStands.front().Entity, "ForestOverview");
-    EXPECT_EQ(packaged.ForestStands.front().ImpostorModel, "Model.obj");
-    EXPECT_FLOAT_EQ(packaged.ForestStands.front().DetailDistance, 275.0f);
-    EXPECT_EQ(packaged.ForestStands.front().NearMeshBudget, 96u);
+    ASSERT_TRUE(Export(archive, model, progress)) << testing::PrintToString(progress.errors);
 
     PageStreaming::PackedPlacementStore store;
-    ASSERT_EQ(store.Open(Output / "Assets" / packaged.ForestStands.front().Archive), "");
+    ASSERT_EQ(store.Open(Output / "Assets/Forests/Stand.geforest"), "");
     ASSERT_EQ(store.Pages().size(), 1u);
-    EXPECT_EQ(store.Pages().front().Count, records.size());
-    EXPECT_EQ(store.Pages().front().Origin, pages.front().Origin);
-    const auto range = store.ReadRange(0);
-    ASSERT_TRUE(range);
-    ASSERT_EQ(range->Bytes, sizeof(records));
-    std::array<uint8, sizeof(records)> bytes{};
-    std::ifstream data(store.File(), std::ios::binary);
-    data.seekg(static_cast<std::streamoff>(range->Offset));
-    ASSERT_TRUE(data.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())));
-    EXPECT_TRUE(store.VerifyPage(0, bytes));
+    EXPECT_EQ(store.Pages().front().Count, 2u);
+    EXPECT_TRUE(fs::exists(Output / "Assets/Model.obj"));
+}
+
+TEST_F(ForestStandExportTest, RefusesACorruptArchive)
+{
+    WriteFile(Assets / "Forests/Broken.geforest", "not a forest");
+    const GUID archive = Register(Assets / "Forests/Broken.geforest");
+    BuildProgress progress;
+    EXPECT_FALSE(Export(archive, {}, progress));
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene': the ForestStand archive 'Forests/Broken.geforest' is not valid"))
+        << testing::PrintToString(progress.errors);
+    EXPECT_FALSE(fs::exists(Output / "Assets/Forests/Broken.geforest"));
+}
+
+TEST_F(ForestStandExportTest, RefusesAnArchiveLinkedFromOutsideTheAssetFolder)
+{
+    WriteArchive(Temporary.Path() / "Outside/Stand.geforest");
+    fs::create_directories(Assets / "Forests");
+    std::error_code error;
+    fs::create_symlink(Temporary.Path() / "Outside/Stand.geforest", Assets / "Forests/Linked.geforest", error);
+    if (error)
+        GTEST_SKIP() << "This file system cannot make a symbolic link: " << error.message();
+    const GUID archive = Register(Assets / "Forests/Linked.geforest");
+    BuildProgress progress;
+    EXPECT_FALSE(Export(archive, {}, progress));
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene': the ForestStand archive"));
+    EXPECT_TRUE(HasError(progress, "resolves outside its asset folder. Replace the link with the archive file."))
+        << testing::PrintToString(progress.errors);
+}
+
+TEST_F(ForestStandExportTest, RefusesATreeModelThatDoesNotShip)
+{
+    WriteArchive(Assets / "Forests/Stand.geforest");
+    const GUID archive = Register(Assets / "Forests/Stand.geforest");
+    BuildProgress progress;
+    EXPECT_FALSE(Export(archive, GUID::Generate(), progress));
+    EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene': the ForestStand tree model does not ship. Set Tree Model"))
+        << testing::PrintToString(progress.errors);
 }

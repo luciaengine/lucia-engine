@@ -67,6 +67,7 @@
 #include "Inspectors/PostProcessEffects/VignetteEffectInspector.h"
 #include "Inspectors/PostProcessEffects/VolumetricFogEffectInspector.h"
 #include "Inspectors/WindVolumeInspector.h"
+#include "Inspectors/ForestStandInspector.h"
 #include "SceneView/SceneViewEye.h"
 #include "Terrain/TerrainHeightmapInspector.h"
 #include "Terrain/TerrainInspector.h"
@@ -101,6 +102,7 @@ void RegisterBuiltInInspectors()
     Editor::RegisterSceneViewEyeTraits();
     RegisterPostProcessVolumeInspector();
     RegisterWindVolumeInspector();
+    RegisterForestStandInspector();
     RegisterNavigationAgentInspector();
     RegisterNavigationSurfaceInspector();
     RegisterSplineWallInspector();
