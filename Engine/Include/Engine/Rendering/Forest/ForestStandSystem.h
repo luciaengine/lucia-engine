@@ -85,7 +85,6 @@ private:
     FlatMap<ECS::EntityHandle, Stand> m_Stands;
     uint64 m_WorldId = 0;
     uint64 m_EntityHandleEpoch = 0;
-    uint64 m_ResetGeneration = 0;
     std::size_t m_StructuralVersion = static_cast<std::size_t>(-1);
     ECS::ChangeGate m_StandGate;
     ECS::ChangeGate m_RendererGate;
