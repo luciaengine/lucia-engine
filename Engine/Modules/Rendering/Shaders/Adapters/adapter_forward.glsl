@@ -500,6 +500,10 @@ const uint kPerInstanceMaterialRow = 0xffffffffu;
 layout(constant_id = 306) const uint GE_FORWARD_MATERIAL_ROW = kPerInstanceMaterialRow;
 #endif
 
+#if defined(GE_IMPOSTOR_BAKE) && defined(GE_TWO_SIDED)
+#include "../Includes/impostor_bake_normal.glsl"
+#endif
+
 // The mip bias of every material sample. An impostor bake draws a whole object into one atlas
 // frame, so the coarse mip that the frame size selects merges each leaf with its gaps and the
 // alpha test drops it. The bake samples 2 mips finer: the weakest bias that keeps the leaf
@@ -974,7 +978,9 @@ void main()
         discard;
   #endif
     vec3 bakeNormal = normalize(so.normalWS);
-  #ifndef GE_TWO_SIDED_KEEP_NORMAL
+  #if defined(GE_TWO_SIDED) && !defined(GE_TWO_SIDED_KEEP_NORMAL)
+    bakeNormal = GE_ImpostorTwoSidedBakeNormal(bakeNormal, normalize(si.viewDirWS));
+  #elif !defined(GE_TWO_SIDED_KEEP_NORMAL)
     if (!gl_FrontFacing)
         bakeNormal = -bakeNormal;
   #endif
