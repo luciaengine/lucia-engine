@@ -164,6 +164,9 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         // An AI state-tree program
         {".scribe", AssetType::AiStateTree},
 
+        // Packed tree placements of a forest stand
+        {".geforest", AssetType::ForestPlacementArchive},
+
         // Ocean formats
         {".oceandepth", AssetType::OceanDepthCache},
         {".oceanspectrum", AssetType::OceanWaveSpectrum},
