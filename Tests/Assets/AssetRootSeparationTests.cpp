@@ -1438,7 +1438,7 @@ TEST(AssetRootSeparation, AssetRegistry_GltfImageUriEdgeIsItsSiblingWhenAnotherM
     ASSERT_FALSE(sibling.IsNull());
     ASSERT_FALSE(editorFile.IsNull());
 
-    const Vector<GUID> deps = reg.RefreshDependencies(model);
+    const Vector<GUID> deps = DependencyTargets(reg.RefreshDependencies(model));
     EXPECT_TRUE(ContainsGuid(deps, sibling)) << "the glTF's own image is not its dependency";
     EXPECT_FALSE(ContainsGuid(deps, editorFile)) << "the dependency went to another mount's file of the same name";
 
@@ -1466,7 +1466,7 @@ TEST(AssetRootSeparation, AssetRegistry_ProjectSceneNamingAnEditorMaterialByPath
     ASSERT_FALSE(scene.IsNull());
     ASSERT_FALSE(material.IsNull());
 
-    EXPECT_TRUE(ContainsGuid(reg.RefreshDependencies(scene), material))
+    EXPECT_TRUE(ContainsGuid(DependencyTargets(reg.RefreshDependencies(scene)), material))
         << "the scene does not depend on the editor-mount material it names by path";
 
     am.Shutdown();

@@ -804,8 +804,9 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
     ReportProgress(BuildProgress::Stage::CollectingAssets, 0.45f, "Collecting assets...");
     if (checkCancel()) return false;
     ShipRules shipRules;
+    // The forest check reads the scene edges that the collection read.
+    AssetCollector collector(EngineCore::GetInstance().GetAssetManager());
     {
-        AssetCollector collector(EngineCore::GetInstance().GetAssetManager());
         std::string collectError;
         if (!collector.CollectGameContent(settings.scenes, settings.renderPipelinePath,
                                           EngineCore::GetInstance().GetResolvedAssetRoot(), manifest,
@@ -842,8 +843,7 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
 
     // 7b. A forest stand whose archive or tree model cannot ship, or whose archive does not open, stops the build.
     {
-        const AssetManager& assets = EngineCore::GetInstance().GetAssetManager();
-        const auto forestErrors = CheckForestStandContent(manifest, assets.GetRegistry(), assets.GetParserRegistry());
+        const auto forestErrors = CheckForestStandContent(manifest, collector);
         if (!forestErrors.empty())
         {
             m_Progress.errors.insert(m_Progress.errors.end(), forestErrors.begin(), forestErrors.end());

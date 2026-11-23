@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AssetCore/Asset.h"
+#include "AssetCore/DepEdge.h"
 #include "AssetCore/GUID.h"
 #include "Engine/Build/ShipRules.h"
 #include "Types/FlatMap.h"
@@ -88,6 +89,9 @@ public:
 
     /// The ship rules the last CollectGameContent read, so later export steps check against the same rules.
     const ShipRules& GetShipRules() const { return m_ShipRules; }
+    /// The edges that the collector read from the asset's file since CollectFromScenes began, or null.
+    /// Every scene and prefab that the collection walked has them.
+    const std::vector<DepEdge>* FindReadEdges(const GUID& asset) const { return m_FreshEdges.Find(asset); }
 
     /// Build a manifest by walking transitive dependencies from scene roots.
     AssetManifest CollectFromScenes(const std::vector<std::string>& scenePaths);
@@ -195,8 +199,8 @@ private:
     // The project's ship rules while CollectGameContent runs, and the errors they raise.
     ShipRules m_ShipRules;
     std::vector<std::string> m_ShipErrors;
-    // Edges read from the file in this collection (EdgeRefresh::EveryNode), so each file is read once.
-    FlatMap<GUID, Vector<GUID>> m_FreshEdges;
+    // Edges read from the file in this collection, so each file is read once.
+    FlatMap<GUID, std::vector<DepEdge>> m_FreshEdges;
 };
 
 } // namespace GameEngine
