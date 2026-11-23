@@ -19,9 +19,8 @@ namespace GameEngine {
 namespace {
 
 // Bump when the record layout or what a field means changes; a reader rejects
-// any other version and the next model load rewrites the record. Version 3
-// preserves the imported material's vertex-color policy for project warm-up; version 4 adds the
-// forest canopy coverage flag.
+// any other version and the next model load rewrites the record. A record holds each
+// material's vertex-color policy and forest canopy coverage flag for project warm-up.
 constexpr int kImportedMaterialCacheVersion = 4;
 constexpr int kImportedMaterialEncodingVersion = 2;
 constexpr const char* kImportedMaterialCacheDirectory = "ModelMaterials";

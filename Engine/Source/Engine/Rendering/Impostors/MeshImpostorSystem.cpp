@@ -82,8 +82,6 @@ std::string_view ModelRefusal(const ModelAsset& model)
     return {};
 }
 
-// The placement key of a renderer: a hash of its exact world transform. The parts of one placement
-// share the transform bit for bit.
 // The foliage_wind.glsl sway that every part shares. Parts without the modifier do not sway.
 std::optional<ImpostorFoliageSway> SharedFoliageSway(const std::vector<MeshImpostorSystem::Part>& parts,
                                                      const MaterialRegistry& materials)
@@ -112,6 +110,8 @@ std::optional<ImpostorFoliageSway> SharedFoliageSway(const std::vector<MeshImpos
     return shared;
 }
 
+// The placement key of a renderer: a hash of its exact world transform. The parts of one placement
+// share the transform bit for bit.
 uint64 PlacementKey(const Components::WorldTransform& transform)
 {
     uint64 hash = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, transform.Position);
