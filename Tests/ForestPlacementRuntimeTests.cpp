@@ -2,6 +2,7 @@
 
 #include "Assets/AssetManager.h"
 #include "Engine/Rendering/Forest/ForestPlacementGpuUploads.h"
+#include "Engine/Rendering/Forest/ForestPlacementRenderState.h"
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
 #include "Engine/Rendering/Forest/ForestPlacementStream.h"
 #include "ForestPlacementUploadPlan.h"
@@ -697,6 +698,33 @@ TEST_F(ForestPlacementRuntimeTest, OnlyAPublishedUploadExposesItsPlacements)
     ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
     ASSERT_EQ(frame.Reads.size(), 1u);
     EXPECT_EQ(frame.Reads.front().Page, second.Page);
+}
+
+TEST_F(ForestPlacementRuntimeTest, DestroyingTheRenderStateResetsResidency)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "render-state.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
+    ForestPlacementFrame frame;
+    {
+        // The slot uploads and fences end with the render state that owns them.
+        ForestPlacementRenderState state(runtime, {}, runtime->SlotCount());
+        ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+        ASSERT_EQ(frame.Reads.size(), 1u);
+        const auto ticket = frame.Reads.front();
+        ASSERT_TRUE(runtime->CompleteRead(ticket, kFirstPage));
+        ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
+        ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+        ASSERT_EQ(frame.DetailedDraws.size(), 1u);
+    }
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    EXPECT_TRUE(frame.DetailedDraws.empty());
+    ASSERT_EQ(frame.Reads.size(), 1u);
+    EXPECT_EQ(frame.Reads.front().Page, 0u);
 }
 
 } // namespace

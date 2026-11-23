@@ -147,33 +147,39 @@ bool ForestPlacementGpuUploads::Record(Rendering::RenderGraph::RGFrame& frame,
     return true;
 }
 
+bool ForestPlacementGpuUploads::AbandonIfUnsubmitted(const Batch& batch, const Rendering::RenderGraph::RGFrame& frame)
+{
+    if (!batch.Frame.IsFor(frame) || batch.Submitted)
+        return false;
+    for (const auto& ticket : batch.Tickets)
+        m_Placements->CompleteUpload(ticket, ForestUploadResult::Abandoned);
+    return true;
+}
+
+bool ForestPlacementGpuUploads::PublishIfComplete(const Batch& batch, const Rendering::IDevice& device,
+                                                  uint32& published)
+{
+    if (!batch.Submitted ||
+        device.QueryGpuSyncToken(batch.Completion) != Rendering::IDevice::GpuSyncStatus::Complete)
+        return false;
+    const ForestUploadResult result =
+        batch.Recorded.load(std::memory_order_acquire) ? ForestUploadResult::Published : ForestUploadResult::Failed;
+    for (const auto& ticket : batch.Tickets)
+        published += m_Placements->CompleteUpload(ticket, result);
+    return true;
+}
+
 void ForestPlacementGpuUploads::FinishFrame(Rendering::RenderGraph::RGFrame& frame)
 {
     std::erase_if(m_Batches, [this, &frame](const std::shared_ptr<Batch>& batch)
-    {
-        if (!batch->Frame.IsFor(frame) || batch->Submitted)
-            return false;
-        for (const auto& ticket : batch->Tickets)
-            m_Placements->CompleteUpload(ticket, ForestUploadResult::Abandoned);
-        return true;
-    });
+                  { return AbandonIfUnsubmitted(*batch, frame); });
 }
 
 uint32 ForestPlacementGpuUploads::DrainCompleted(const Rendering::IDevice& device)
 {
     uint32 published = 0;
     std::erase_if(m_Batches, [this, &device, &published](const std::shared_ptr<Batch>& batch)
-    {
-        if (!batch->Submitted ||
-            device.QueryGpuSyncToken(batch->Completion) != Rendering::IDevice::GpuSyncStatus::Complete)
-            return false;
-        const ForestUploadResult result = batch->Recorded.load(std::memory_order_acquire)
-                                              ? ForestUploadResult::Published
-                                              : ForestUploadResult::Failed;
-        for (const auto& ticket : batch->Tickets)
-            published += m_Placements->CompleteUpload(ticket, result);
-        return true;
-    });
+                  { return PublishIfComplete(*batch, device, published); });
     return published;
 }
 

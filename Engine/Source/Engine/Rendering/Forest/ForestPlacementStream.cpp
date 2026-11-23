@@ -55,7 +55,7 @@ void ForestPlacementStream::Submit(AssetManager& assets, std::span<const ReadPag
     auto result = std::make_shared<ReadResult>();
     auto cancel = std::make_shared<std::atomic<bool>>(false);
     m_Reads.push_back({std::vector<ReadPage>(pages.begin(), pages.end()), cancel, result});
-    // A cancelled read leaves m_Reads before its flag is set, so nothing consumes its result.
+    // CancelRetiredReads removes a cancelled read from m_Reads, so nothing consumes its result.
 
     AssetIOService::ReadRequest request;
     request.SharedRangePath = m_ArchivePath;

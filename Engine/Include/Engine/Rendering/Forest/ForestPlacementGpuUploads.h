@@ -48,6 +48,10 @@ private:
     bool HasOutstandingCopy(ForestPageTicket ticket) const;
     // Fails each upload that has no outstanding copy. Always returns false.
     bool RejectUploads(std::span<const ForestPlacementUpload> uploads);
+    // Abandons the uploads of a batch of `frame` that did not submit. True removes the batch.
+    bool AbandonIfUnsubmitted(const Batch& batch, const Rendering::RenderGraph::RGFrame& frame);
+    // Reports a submitted batch whose fence is complete. True removes the batch.
+    bool PublishIfComplete(const Batch& batch, const Rendering::IDevice& device, uint32& published);
 
     std::shared_ptr<ForestPlacementRuntime> m_Placements;
     Rendering::BufferHandle m_Destination;

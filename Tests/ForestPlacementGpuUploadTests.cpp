@@ -1,6 +1,6 @@
 // The forest slot uploads on a headless device: a copy that never submits is abandoned and its page
-// reads again, and a submitted copy publishes its slot only after its queue fence. Device-gated:
-// each test skips without a Vulkan device.
+// reads again, a submitted copy publishes its slot only after its queue fence, and an outstanding
+// copy blocks only its own ticket. Device-gated: each test skips without a Vulkan device.
 
 #include "PackedPlacementTestArchive.h"
 
@@ -10,10 +10,15 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Tests/ScopedEnvVar.h"
+#if defined(RENDERING_HAS_VULKAN)
+#include "Vulkan/VulkanDevice/VulkanDevice.h"
+#endif
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace GameEngine::PageStreaming
@@ -26,6 +31,24 @@ using namespace Rendering::RenderGraph;
 
 constexpr uint64 kUploadRingBytes = 64 * 1024;
 
+#if defined(RENDERING_HAS_VULKAN)
+// Reports a timeline value no higher than HeldValue, so a test decides when a submission is complete.
+class HeldTimelineDevice final : public VulkanDevice
+{
+public:
+    std::optional<uint64_t> HeldValue;
+
+    bool GetTimelineSemaphoreValue(SemaphoreHandle semaphore, uint64_t& value) const override
+    {
+        if (!VulkanDevice::GetTimelineSemaphoreValue(semaphore, value))
+            return false;
+        if (HeldValue)
+            value = std::min(value, *HeldValue);
+        return true;
+    }
+};
+#endif
+
 std::unique_ptr<IDevice> MakeHeadlessDevice()
 {
     // Every device of this process is headless.
@@ -33,7 +56,11 @@ std::unique_ptr<IDevice> MakeHeadlessDevice()
     DeviceDesc desc{};
     desc.preferredAPI = GraphicsAPI::Vulkan;
     desc.enableDynamicRendering = true;
+#if defined(RENDERING_HAS_VULKAN)
+    std::unique_ptr<IDevice> device = std::make_unique<HeldTimelineDevice>();
+#else
     auto device = DeviceFactory::CreateDevice(desc);
+#endif
     if (!device || !device->Initialize(desc))
         return nullptr;
     return device;
@@ -136,6 +163,12 @@ TEST_F(ForestPlacementGpuUploadTest, ASubmittedCopyPublishesItsSlotAfterItsFence
     graph.Execute();
     uploader.FinishFrame(graph);
     m_Device->WaitForIdle();
+#if defined(RENDERING_HAS_VULKAN)
+    auto& held = static_cast<HeldTimelineDevice&>(*m_Device);
+    held.HeldValue = 0;
+    EXPECT_EQ(uploader.DrainCompleted(*m_Device), 0u) << "a copy published before its fence completed";
+    held.HeldValue.reset();
+#endif
     ASSERT_EQ(m_Device->QueryGpuSyncToken(graph.SubmissionToken()), IDevice::GpuSyncStatus::Complete);
     EXPECT_EQ(uploader.DrainCompleted(*m_Device), 1u);
     EXPECT_EQ(uploader.DrainCompleted(*m_Device), 0u);
@@ -144,6 +177,40 @@ TEST_F(ForestPlacementGpuUploadTest, ASubmittedCopyPublishesItsSlotAfterItsFence
     ASSERT_EQ(plan.DetailedDraws.size(), 1u);
     EXPECT_EQ(plan.DetailedDraws.front().Ticket, ticket);
 }
+
+#if defined(RENDERING_HAS_VULKAN)
+TEST_F(ForestPlacementGpuUploadTest, AnOutstandingCopyBlocksOnlyItsOwnTicket)
+{
+    const ForestPageTicket stale = ReadFirstPage();
+    FramePools pools(m_Device.get());
+    RGFrame graph(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    ASSERT_TRUE(m_Device->BeginFrame());
+    graph.BeginFrame(0);
+    ForestPlacementGpuUploads uploader(m_Runtime, m_Slots, 1);
+    const ForestPlacementUpload staleUpload{stale, kFirstPage};
+    ASSERT_TRUE(uploader.Record(graph, std::span(&staleUpload, 1)));
+    graph.Execute();
+    uploader.FinishFrame(graph);
+    m_Device->WaitForIdle();
+    auto& held = static_cast<HeldTimelineDevice&>(*m_Device);
+    held.HeldValue = 0;
+
+    // A residency reset admits the page again into the same slot while the old copy is outstanding.
+    m_Runtime->ResetResidency();
+    const ForestPageTicket fresh = ReadFirstPage();
+    ASSERT_EQ(fresh.Slot, stale.Slot);
+    ASSERT_NE(fresh.Generation, stale.Generation);
+    ASSERT_TRUE(m_Device->BeginFrame());
+    graph.BeginFrame(1);
+    const ForestPlacementUpload freshUpload{fresh, kFirstPage};
+    EXPECT_TRUE(uploader.Record(graph, std::span(&freshUpload, 1)));
+    graph.Execute();
+    uploader.FinishFrame(graph);
+    m_Device->WaitForIdle();
+    held.HeldValue.reset();
+    EXPECT_EQ(uploader.DrainCompleted(*m_Device), 1u);
+}
+#endif
 
 } // namespace
 } // namespace GameEngine::PageStreaming
