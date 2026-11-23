@@ -50,6 +50,7 @@ protected:
     uint32 m_Version = 1;
     uint32 m_PlacementCount = 3;
     float m_BoundRadius = kTestBoundRadius;
+    uint32 m_Padding = 0;
     uint64 m_DataOffset = kDataOffset;
     uint32 m_TrailingBytes = 0;
 
@@ -62,7 +63,7 @@ protected:
         WriteValue(out, uint32{2});
         WriteValue(out, m_PlacementCount);
         WriteValue(out, m_BoundRadius);
-        WriteValue(out, uint32{0});
+        WriteValue(out, m_Padding);
         WriteValue(out, m_DataOffset);
         const uint64 hash = Hashing::Fnv1a64(m_Pages.data(), kDirectoryBytes);
         WriteValue(out, corruptDirectory ? hash ^ 1 : hash);

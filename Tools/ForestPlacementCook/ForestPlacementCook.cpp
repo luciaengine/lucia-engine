@@ -41,15 +41,12 @@ constexpr double kCentimetersPerMeter = 100.0;
 constexpr double kDegreesPerTurn = 360.0;
 constexpr uint16 kLargestOffset = std::numeric_limits<uint16>::max();
 constexpr uint8 kLargestScale = std::numeric_limits<uint8>::max();
+// Cells per axis of the grid that orders pages by Morton code.
+constexpr double kMortonGridSteps = 65535.0;
 // The largest world coordinate in meters; WorldPosition splits it into int32 sectors.
 constexpr double kMaxWorldCoordinate = 1.0e12;
 // A packed offset may round up by half a centimeter.
 constexpr float kRoundingMargin = 0.005f;
-
-std::string_view Field(std::string_view text)
-{
-    return TrimWhitespaceView(text);
-}
 
 bool InWorld(double coordinate)
 {
@@ -62,13 +59,13 @@ bool ParseTree(std::string_view line, int64& page, Tree& tree)
     const std::vector<std::string_view> fields = Split(line, ',');
     if (fields.size() != kCsvFields)
         return false;
-    const auto pageId = ParseInt(Field(fields[0]));
+    const auto pageId = ParseInt(TrimWhitespaceView(fields[0]));
     if (!pageId || *pageId < 0)
         return false;
     page = *pageId;
-    return ParseStrictDecimal(Field(fields[1]), tree.X) && ParseStrictDecimal(Field(fields[2]), tree.Y) &&
-           ParseStrictDecimal(Field(fields[3]), tree.Z) && ParseStrictDecimal(Field(fields[4]), tree.Yaw) &&
-           ParseStrictDecimal(Field(fields[5]), tree.Scale) && InWorld(tree.X) && InWorld(tree.Y) &&
+    return ParseStrictDecimal(TrimWhitespaceView(fields[1]), tree.X) && ParseStrictDecimal(TrimWhitespaceView(fields[2]), tree.Y) &&
+           ParseStrictDecimal(TrimWhitespaceView(fields[3]), tree.Z) && ParseStrictDecimal(TrimWhitespaceView(fields[4]), tree.Yaw) &&
+           ParseStrictDecimal(TrimWhitespaceView(fields[5]), tree.Scale) && InWorld(tree.X) && InWorld(tree.Y) &&
            InWorld(tree.Z) && std::isfinite(tree.Yaw) && tree.Scale >= PackedPlacement::kMinScale &&
            tree.Scale <= PackedPlacement::kMaxScale;
 }
@@ -134,7 +131,7 @@ uint32 QuantizePageCenter(double center, double min, double max)
 {
     if (min == max)
         return 0;
-    return static_cast<uint32>(std::clamp((center - min) / (max - min), 0.0, 1.0) * kLargestOffset);
+    return static_cast<uint32>(std::clamp((center - min) / (max - min), 0.0, 1.0) * kMortonGridSteps);
 }
 
 void OrderPagesSpatially(std::vector<PlacementPage>& pages, std::vector<PackedPlacement>& placements)

@@ -61,6 +61,7 @@ protected:
         m_Version = 1;
         m_PlacementCount = 3;
         m_BoundRadius = kTestBoundRadius;
+        m_Padding = 0;
         m_DataOffset = kDataOffset;
         m_TrailingBytes = 0;
         WriteStore(m_Valid);
@@ -109,10 +110,11 @@ TEST_F(PackedPlacementStoreTest, WriterRefusesMorePagesThanTheDirectoryLimit)
 
 TEST_F(PackedPlacementStoreTest, ResolvesVariablePageRangesAndVerifiesPayload)
 {
+    m_BoundRadius = 7.5f;
     WriteStore(m_Valid);
     ASSERT_TRUE(m_Store.Open(m_Valid).empty());
     EXPECT_EQ(m_Store.File(), m_Valid);
-    EXPECT_EQ(m_Store.BoundRadius(), kTestBoundRadius);
+    EXPECT_EQ(m_Store.BoundRadius(), 7.5f);
     ASSERT_EQ(m_Store.Pages().size(), 2u);
     EXPECT_EQ(m_Store.Pages()[1].Origin.X, m_Pages[1].Origin.X);
     EXPECT_EQ(m_Store.Pages()[1].Origin.Z, m_Pages[1].Origin.Z);
@@ -176,6 +178,8 @@ TEST_F(PackedPlacementStoreTest, RejectsMalformedHeadersAndLengths)
     m_BoundRadius = 0.0f;
     ExpectRejected();
     m_BoundRadius = std::numeric_limits<float>::quiet_NaN();
+    ExpectRejected();
+    m_Padding = 1;
     ExpectRejected();
     m_TrailingBytes = 1;
     ExpectRejected();

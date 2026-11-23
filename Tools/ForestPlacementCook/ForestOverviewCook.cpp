@@ -326,7 +326,8 @@ void CookForestOverview(const std::filesystem::path& archive, const std::filesys
         if (tile.MinX < page.LocalMin.x || tile.MinZ < page.LocalMin.z ||
             tile.MaxX > page.LocalMax.x || tile.MaxZ > page.LocalMax.z ||
             canopyHeight < page.LocalMin.y || canopyHeight > page.LocalMax.y)
-            throw std::runtime_error("The canopy projection exceeds the placement bounds on page " + std::to_string(index));
+            throw std::runtime_error("The canopy projection exceeds the placement bounds on page " + std::to_string(index) +
+                                     ". Use canopy bounds and a height inside the bound radius the archive was cooked with, or cook it with a larger radius.");
 
         const uint32 x = index % columns * cell + gutter;
         const uint32 z = index / columns * cell + gutter;
