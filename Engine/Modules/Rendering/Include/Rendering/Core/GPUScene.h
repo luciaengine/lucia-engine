@@ -765,10 +765,10 @@ class GPUScene
     // Cumulative bytes uploaded to the instance buffer FAMILY since creation:
     // the authoritative 240 B GPUInstance buffer plus, when the compact scatter
     // fetch is enabled, its 44 B/instance scatter-hot mirror (uploaded on the
-    // same dirty-instance runs, so the mirror adds exactly 40/240 of the instance
+    // same dirty-instance runs, so the mirror adds exactly 44/240 of the instance
     // bytes). Monotonic; diff across frames for per-frame upload bandwidth
     // (R1.1 metric). Enabling the mirror re-baselines this metric upward by
-    // 40/240 (see baselines/scatter-fetch-lever1 note).
+    // 44/240 (see baselines/scatter-fetch-lever1 note).
     uint64_t GetInstanceUploadBytesTotal() const
     {
         return m_InstanceUploadBytesTotal.load(std::memory_order_relaxed);

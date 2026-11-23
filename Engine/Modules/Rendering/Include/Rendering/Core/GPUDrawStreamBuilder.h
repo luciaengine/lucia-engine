@@ -1159,7 +1159,7 @@ class GPUDrawStreamBuilder
     // GE_SCATTER_COMPACT (default on), read once; Active is the variant the
     // pipeline actually compiled to — false if the compact shaderpkg was
     // unavailable and we fell back to the full-fat package. When Active, the
-    // X instead of the 240 B
+    // scatter binds GPUScene's 44 B mirror at binding 1 instead of the 240 B
     // instance buffer. GPUScene reads the same env var, so the mirror it
     // maintains and this variant agree by construction.
     bool           m_ScatterCompactRequested      = false;

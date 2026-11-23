@@ -354,8 +354,6 @@ layout(push_constant) uniform PushConstants {
     float impostorExitCoverage;
 } pc;
 
-// The bounding center of an instance relative to the origin of the slice's origin sector, the frame
-// of cameraPos. The stored center is local to the sector in the instance's sectorPacked words.
 // The instance transform's largest axis scale: carries a radius in the mesh's local space to world.
 float ge_InstanceAxisScale(uint instanceIndex)
 {
@@ -366,6 +364,8 @@ float ge_InstanceAxisScale(uint instanceIndex)
 #endif
 }
 
+// The bounding center of an instance relative to the origin of the slice's origin sector, the frame
+// of cameraPos. The stored center is local to the sector in the instance's sectorPacked words.
 vec3 ge_InstanceCenterRelativeToOrigin(uint instanceIndex)
 {
 #ifdef SCATTER_COMPACT
