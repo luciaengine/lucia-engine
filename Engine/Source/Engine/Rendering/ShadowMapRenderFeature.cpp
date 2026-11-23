@@ -274,10 +274,9 @@ ShadowMapRenderFeature::ShadowMapRenderFeature()
         if (end != value && *end == '\0' && mode >= 0 && mode < static_cast<long>(ShadowDebugMode::Count))
             m_DebugMode = static_cast<ShadowDebugMode>(mode);
     }
-    // Motion round-robin: the built-in default (cap 2 / maxAge 2, the measured
-    // lane from the 2026-07 design gates) applies unless the environment
-    // overrides it (runtime setters can still override; the env is the
-    // launch-time A/B lane and kill switch). Cap 0 = off.
+    // Motion round-robin: the default is cap 1 / maxAge 2. With cap 1 the two near cascades
+    // refresh together when both fits change. The environment overrides the default at launch
+    // (the A/B lane and kill switch); the runtime setters override both. Cap 0 = off.
     if (const char* cap = std::getenv("GE_SHADOW_MOTION_CAP"))
         m_MotionCap = static_cast<uint32_t>(std::strtoul(cap, nullptr, 10));
     if (const char* age = std::getenv("GE_SHADOW_MOTION_MAX_AGE"))
