@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
+#include "ForestPlacementRuntime.h"
 #include "Types/ByteBuffer.h"
 
 #include <atomic>

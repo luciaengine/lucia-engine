@@ -1447,7 +1447,7 @@ add_executable(ForestPlacementTests
 target_link_libraries(ForestPlacementTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 target_include_directories(ForestPlacementTests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
-  # ForestPlacementUploadPlan.h, the internal upload plan.
+  # The internal forest headers.
   ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Rendering/Forest
   # EngineLogCapture.h, for the forest warnings.
   ${CMAKE_SOURCE_DIR}/Engine/Tests

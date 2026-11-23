@@ -4,8 +4,8 @@
 
 #include "PackedPlacementTestArchive.h"
 
-#include "Engine/Rendering/Forest/ForestPlacementGpuUploads.h"
-#include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
+#include "ForestPlacementGpuUploads.h"
+#include "ForestPlacementRuntime.h"
 #include "ForestPlacementUploadPlan.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"

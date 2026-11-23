@@ -8,7 +8,7 @@
 #include "Core/Engine.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
-#include "Engine/Rendering/Forest/ForestPlacementFeature.h"
+#include "../Forest/ForestPlacementFeature.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
