@@ -16,7 +16,6 @@
 #include "TestTempDir.h"
 #include "TestUtils.h"
 
-#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -205,22 +204,16 @@ TEST(ImpostorBakeVariant, FoliageWindKeepsAuthoredLeafPivotsAndBakesTheRestPose)
     EXPECT_TRUE(HasWindSine(sway));
 }
 
-TEST(ImpostorBakeVariant, ATwoSidedLeafBakesWithTheTwoSidedNormalRule)
+TEST(ImpostorBakeVariant, ACutoutLeafBakeCarriesTheTwoSidedNormalRule)
 {
-    auto leaves = LeafDocument();
-    leaves.doubleSided = true;
-    const auto twoSided = Build(leaves, kBakePass);
-    if (ShadercMissing(twoSided))
+    // The runtime builds variants from the shader-relevant fields only, so two-sidedness reaches the
+    // bake as an instance flag the baker sets, and the cutout bake variant always carries the rule.
+    const auto leaves = Build(LeafDocument(), kBakePass);
+    if (ShadercMissing(leaves))
         GTEST_SKIP() << "shaderc not built into this target";
-    ASSERT_TRUE(twoSided.success) << (twoSided.errors.empty() ? "" : twoSided.errors.front());
-    const auto& defines = twoSided.composedDefines;
-    EXPECT_NE(std::find(defines.begin(), defines.end(), "GE_TWO_SIDED"), defines.end());
-
-    const auto bark = Build(BarkDocument(), kBakePass);
-    ASSERT_TRUE(bark.success) << (bark.errors.empty() ? "" : bark.errors.front());
-    EXPECT_EQ(std::find(bark.composedDefines.begin(), bark.composedDefines.end(), "GE_TWO_SIDED"),
-              bark.composedDefines.end())
-        << "a one-sided surface keeps its own normal";
+    ASSERT_TRUE(leaves.success) << (leaves.errors.empty() ? "" : leaves.errors.front());
+    EXPECT_NE(leaves.composedFragmentSource.find("GE_ImpostorTwoSidedBakeNormal"), std::string::npos);
+    EXPECT_NE(leaves.composedFragmentSource.find("kImpostorBakeTwoSidedFlag"), std::string::npos);
 }
 
 TEST(ImpostorBakeVariant, AnEdgeOnLeafKeepsItsUpperSideInAHorizonFrame)

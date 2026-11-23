@@ -500,7 +500,7 @@ const uint kPerInstanceMaterialRow = 0xffffffffu;
 layout(constant_id = 306) const uint GE_FORWARD_MATERIAL_ROW = kPerInstanceMaterialRow;
 #endif
 
-#if defined(GE_IMPOSTOR_BAKE) && defined(GE_TWO_SIDED)
+#ifdef GE_IMPOSTOR_BAKE
 #include "../Includes/impostor_bake_normal.glsl"
 #endif
 
@@ -978,10 +978,17 @@ void main()
         discard;
   #endif
     vec3 bakeNormal = normalize(so.normalWS);
-  #if defined(GE_TWO_SIDED) && !defined(GE_TWO_SIDED_KEEP_NORMAL)
-    bakeNormal = GE_ImpostorTwoSidedBakeNormal(bakeNormal, normalize(si.viewDirWS));
-  #elif !defined(GE_TWO_SIDED_KEEP_NORMAL)
-    if (!gl_FrontFacing)
+  #ifndef GE_TWO_SIDED_KEEP_NORMAL
+    // A cutout surface drawn on both faces is foliage: it takes the two-sided rule. A closed
+    // surface keeps the normal of the face that the frame camera sees.
+    #ifdef ALPHA_TEST
+    const bool twoSidedCutout = (vInstanceFlags & kImpostorBakeTwoSidedFlag) != 0u;
+    #else
+    const bool twoSidedCutout = false;
+    #endif
+    if (twoSidedCutout)
+        bakeNormal = GE_ImpostorTwoSidedBakeNormal(bakeNormal, normalize(si.viewDirWS));
+    else if (!gl_FrontFacing)
         bakeNormal = -bakeNormal;
   #endif
     // The bake camera is orthographic, so the window depth is linear along the frame axis.

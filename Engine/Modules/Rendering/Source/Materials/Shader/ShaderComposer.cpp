@@ -428,9 +428,6 @@ static void MergeSurfaceShaderVariantDefines(std::vector<std::string>& defines,
 
     if (doc.surfaceShader.find("terrain_grass_surface.glsl") != std::string::npos)
         addDefine("GE_TWO_SIDED_KEEP_NORMAL");
-    // A material drawn on both faces: the impostor bake turns its normal by the two-sided rule.
-    if (doc.doubleSided)
-        addDefine("GE_TWO_SIDED");
 
     if (ShaderGraph::IsShaderGraphSource(surfaceSource))
     {
