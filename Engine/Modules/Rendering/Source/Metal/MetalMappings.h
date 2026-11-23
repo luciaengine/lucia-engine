@@ -9,6 +9,8 @@
 
 #include <Metal/Metal.hpp>
 
+#include <string_view>
+
 namespace GameEngine::Rendering::MetalMappings
 {
 
@@ -260,6 +262,14 @@ inline MTL::SamplerAddressMode ToMTLAddressMode(uint32_t mode)
     case 3:  return MTL::SamplerAddressModeClampToBorderColor;
     default: return MTL::SamplerAddressModeRepeat;
     }
+}
+
+// The present-mode field of the swapchain Info log line, in the Vulkan names.
+// With CAMetalLayer.displaySyncEnabled the layer presents at the display refresh
+// (FIFO); without it the layer presents at once and can tear (IMMEDIATE).
+inline std::string_view PresentModeLogField(bool displaySyncEnabled)
+{
+    return displaySyncEnabled ? "presentMode=FIFO displayPaced=true" : "presentMode=IMMEDIATE displayPaced=false";
 }
 
 } // namespace GameEngine::Rendering::MetalMappings

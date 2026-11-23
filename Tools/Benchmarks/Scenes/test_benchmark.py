@@ -72,6 +72,15 @@ class LogTests(unittest.TestCase):
         self.assertEqual(benchmark.feature_failures(log), ["Scene: no registered type is named 'EZTree' (on 'a')"])
         self.assertEqual(benchmark.parse_swapchain(log)[:2], (1920, 1080))
 
+    def test_the_metal_swapchain_line_gives_the_size_and_present_mode(self):
+        log = "\n".join([
+            "[1] [INFO] [T:1] MetalSwapchain: Created window swapchain 1920x1080, MTLPixelFormat=80 TextureFormat=5 "
+            "images=3 presentMode=IMMEDIATE displayPaced=false",
+            "[2] [INFO] [T:1] [Startup] Swapchain: 0.3ms"])
+        self.assertEqual(benchmark.parse_swapchain(log), (1920, 1080, "IMMEDIATE"))
+        log += "\n[3] [INFO] [T:1] MetalSwapchain: presentMode=FIFO displayPaced=true"
+        self.assertEqual(benchmark.parse_swapchain(log), (1920, 1080, "FIFO"))
+
 
 class CompareTests(unittest.TestCase):
     def test_a_slowdown_beyond_the_threshold_is_a_regression_and_within_it_is_not(self):

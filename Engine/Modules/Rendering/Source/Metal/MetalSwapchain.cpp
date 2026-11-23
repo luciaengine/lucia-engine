@@ -40,6 +40,9 @@ bool MetalSwapchain::Initialize(MetalDevice& device, void* glfwWindow, uint32_t 
 
     // No frames are in flight during initialization, so no drain is needed.
     SyncDrawableSizeToLayerBounds(nullptr);
+    Logger::Log::Info("MetalSwapchain: Created window swapchain {}x{}, MTLPixelFormat={} TextureFormat={} images={} {}",
+                      m_Width, m_Height, static_cast<int>(MetalMappings::ToMTLPixelFormat(m_Format)),
+                      static_cast<int>(m_Format), kImageCount, MetalMappings::PresentModeLogField(vsync));
 
     // Stable slot handles; the underlying texture is repointed per acquire.
     std::lock_guard<std::recursive_mutex> lock(device.m_ResourceMutex);
@@ -85,6 +88,7 @@ void MetalSwapchain::SetDisplaySync(bool enabled)
     if (m_Layer != nullptr)
     {
         MetalLayerBridge::SetLayerDisplaySyncEnabled(m_Layer, enabled);
+        Logger::Log::Info("MetalSwapchain: {}", MetalMappings::PresentModeLogField(enabled));
     }
 }
 
