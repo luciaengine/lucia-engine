@@ -361,6 +361,10 @@ public:
     /// Owner-thread only; initialize/shutdown must not run concurrently.
     void SubmitRead(AssetIOService::ReadRequest request);
 
+    /// Cancel an auxiliary read submitted without an asset GUID.
+    /// Owner-thread only. A queued read may run OnFailure inline.
+    void CancelRead(const std::shared_ptr<std::atomic<bool>>& cancelRequested);
+
 
     /**
      * @brief Register an asset source. "project" is a valid alias.
