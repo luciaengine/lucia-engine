@@ -3,6 +3,7 @@
 #include "Engine/Rendering/CascadeShadowCache.h"
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <span>
 
@@ -109,7 +110,7 @@ CascadeMotionScheduler::FramePlan CascadeMotionScheduler::PlanFrame(
     uint32_t viewId, uint32_t numCascades,
     const std::array<CascadeUpdateClass, kMaxCascades>& classes,
     const std::array<uint64_t, kMaxCascades>& staleness, uint32_t motionCap, uint32_t maxAge,
-    CascadeMotionSource source)
+    CascadeMotionSource source, uint32_t protectedFitMask)
 {
     assert(numCascades <= kMaxCascades);
     numCascades = std::min(numCascades, kMaxCascades);
@@ -151,7 +152,6 @@ CascadeMotionScheduler::FramePlan CascadeMotionScheduler::PlanFrame(
               });
     const bool forcedTakesBudget = source == CascadeMotionSource::Camera;
     uint32_t budget = motionCap;
-    uint32_t renders = 0;
     uint32_t outside[kMaxCascades];
     uint32_t outsideCount = 0;
     for (uint32_t i = 0; i < motionCount; ++i)
@@ -163,7 +163,6 @@ CascadeMotionScheduler::FramePlan CascadeMotionScheduler::PlanFrame(
         if (budget > 0 && (!isForced || forcedTakesBudget))
         {
             --budget;
-            ++renders;
             continue;
         }
         if (!forcedTakesBudget)
@@ -171,23 +170,16 @@ CascadeMotionScheduler::FramePlan CascadeMotionScheduler::PlanFrame(
             outside[outsideCount++] = c;
             continue;
         }
-        if (isForced)
-        {
-            ++renders;
-            continue;
-        }
-        plan.DeferMask |= 1u << c;
-        ++stats.Deferred;
+        if (!isForced)
+            plan.DeferMask |= 1u << c;
     }
-    const uint32_t deferMask = StaggerOutsideBudget({outside, outsideCount}, staleness, maxAge);
-    for (uint32_t i = 0; i < outsideCount; ++i)
-    {
-        if ((deferMask >> outside[i]) & 1u)
-            ++stats.Deferred;
-        else
-            ++renders;
-    }
-    plan.DeferMask |= deferMask;
+    plan.DeferMask |= StaggerOutsideBudget({outside, outsideCount}, staleness, maxAge);
+    if (motionCap == 1u && source == CascadeMotionSource::Camera)
+        plan.DeferMask &= ~protectedFitMask;
+
+    const auto deferred = static_cast<uint32_t>(std::popcount(plan.DeferMask));
+    const uint32_t renders = motionCount - deferred;
+    stats.Deferred += deferred;
     if (renders > motionCap)
         stats.ForcedBeyondCap += renders - motionCap;
     return plan;

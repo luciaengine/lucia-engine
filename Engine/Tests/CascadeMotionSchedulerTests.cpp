@@ -75,6 +75,29 @@ struct SchedulerDriver
     }
 };
 
+TEST(CascadeMotionScheduler, AOneSlotCameraBudgetRefreshesBothProtectedFits)
+{
+    constexpr uint32_t kNearPair = 0b11u;
+    const Staleness fresh{0u, 0u, 0u, 0u};
+    CascadeMotionScheduler scheduler;
+    const auto plan = scheduler.PlanFrame(kView, kN, AllMotion(), fresh, 1u, 2u,
+                                          CascadeMotionSource::Camera, kNearPair);
+    EXPECT_EQ(plan.DeferMask, 0b1100u);
+    EXPECT_EQ(scheduler.GetStats(kView).Deferred, 2u);
+    EXPECT_EQ(scheduler.GetStats(kView).ForcedBeyondCap, 1u);
+}
+
+TEST(CascadeMotionScheduler, FitProtectionLeavesCasterDeformationOnItsOriginalSchedule)
+{
+    const Staleness fresh{0u, 0u, 0u, 0u};
+    CascadeMotionScheduler scheduler;
+    const auto original = scheduler.PlanFrame(kView, kN, AllMotion(), fresh, 1u, 2u,
+                                              CascadeMotionSource::CasterDeformation);
+    const auto protectedFits = scheduler.PlanFrame(kView, kN, AllMotion(), fresh, 1u, 2u,
+                                                   CascadeMotionSource::CasterDeformation, 0b11u);
+    EXPECT_EQ(protectedFits.DeferMask, original.DeferMask);
+}
+
 TEST(CascadeMotionScheduler, CapZeroNeverDefers)
 {
     SchedulerDriver drv;

@@ -27,6 +27,7 @@ void TerrainUploadNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& 
     auto& feature = rs.EnsureFeature<TerrainRenderFeature>();
     if (!feature.IsInitialized() && !feature.Initialize(device))
         return;
+    feature.NoteUploadNodeDeclared();
 
     // Retires deferred texture/buffer destroys (ReleaseTerrainResources) once per frame.
     // `rs` frees each retired terrain texture's bindless slot before its image is destroyed.

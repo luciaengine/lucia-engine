@@ -65,8 +65,9 @@ float32 ClampNonNegativeFinite(float32 value)
     return std::isfinite(value) ? std::max(value, 0.0f) : 0.0f;
 }
 
-// The RG copy of the texture asset `guid`. `cache` holds the copy of a texture that the
-// AssetManager has loaded, so the next update takes no pixels from the asset.
+// The RG copy of the texture asset `guid`, which the AssetManager loads. `cache` holds the copy, so
+// the next update takes no pixels from the asset. Null when the AssetManager has no loaded texture
+// for `guid`: it keeps a failed load suppressed, so the next update reads no file.
 std::shared_ptr<const OceanCpuTextureRG> LoadOceanCpuTextureRG(const GUID& guid, OceanCpuTextureCache& cache)
 {
     if (guid.IsNull())
@@ -74,24 +75,12 @@ std::shared_ptr<const OceanCpuTextureRG> LoadOceanCpuTextureRG(const GUID& guid,
 
     AssetManager& assetManager = EngineCore::GetInstance().GetAssetManager();
     SharedPtr<Asset> asset = assetManager.GetAsset(guid);
-    if ((!asset || !asset->IsLoaded()) && !guid.IsNull())
+    if (!asset || !asset->IsLoaded())
         asset = assetManager.LoadAssetAsync(guid).get();
-    if (auto* texture = dynamic_cast<TextureAsset*>(asset.get()))
-    {
-        if (texture->IsLoaded())
-            return cache.Get(guid, *texture);
-    }
-
-    AssetMetadata metadata{};
-    if (assetManager.GetRegistry().TryGetAssetMetadata(guid, metadata) &&
-        !metadata.Path.empty())
-    {
-        TextureAsset texture(guid, metadata.Path);
-        if (texture.Load())
-            return std::make_shared<const OceanCpuTextureRG>(OceanCpuTextureCache::Convert(texture.AcquirePixels()));
-    }
-
-    return {};
+    auto* texture = dynamic_cast<TextureAsset*>(asset.get());
+    if (!texture || !texture->IsLoaded())
+        return {};
+    return cache.Get(guid, *texture);
 }
 
 float Hash01(uint32 i)

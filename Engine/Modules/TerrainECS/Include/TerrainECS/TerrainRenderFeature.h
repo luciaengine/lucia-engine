@@ -475,6 +475,15 @@ public:
     // RenderServices builds exactly one graph per frame.
     bool HeightmapUploadClaimedInOtherGraph(uint64_t rgFrameIndex, const void* graph) const;
 
+    // A node that draws terrain (CBT, grass) declared a view in the render graph frame
+    // `rgFrameIndex`. Frames that draw terrain while textures wait for their initialization and no
+    // "TerrainUpload" node has declared are what the missing-pass diagnostic counts; a frame counts
+    // once, however many nodes draw it.
+    void NoteTerrainDrawnRG(uint64_t rgFrameIndex);
+    // The "TerrainUpload" node declared a view: the pipeline has the pass, so the missing-pass
+    // diagnostic stays silent for the rest of the session.
+    void NoteUploadNodeDeclared();
+
     // Records the "TerrainUpload" pass the claim winner actually declared. Ignored unless
     // (rgFrameIndex, graph) still match the live claim, so a losing graph cannot overwrite it.
     void RecordHeightmapUploadPassRG(uint64_t rgFrameIndex, const void* graph,
@@ -919,22 +928,19 @@ private:
                m_ExtractionFrame.load(std::memory_order_relaxed);
     }
 
-    // FlushPendingUploads calls that reached a command list. Zero forever means no pass is
-    // draining the queue, which is the one condition the missing-pass diagnostic reports.
-    uint64 m_FlushCount = 0;
-
-    // Consecutive extraction frames (UploadTerrainParamsArray ticks) that found textures still
-    // awaiting initialization with m_FlushCount == 0. A pipeline that declares TerrainUpload
-    // flushes on its first declared frame and disarms this permanently, so the diagnostic
-    // cannot false-fire on startup ordering or on a mid-session texture (re)creation.
-    //
-    // Keyed on m_FlushCount, NOT on m_UploadPassSeenExtractionFrame: extraction ticks with no
-    // render behind it whenever the render half is skipped (a minimized editor window's 0x0
-    // framebuffer, a swapchain acquire failure, a Player scene with no enabled camera), at
-    // uncapped loop rate, so a stamp-keyed limit would report a healthy pipeline.
-    uint32 m_FramesAwaitingUploadPass = 0;
+    // Render graph frames (NoteTerrainDrawnRG) that drew terrain while textures awaited their
+    // initialization and no "TerrainUpload" node had declared. Extraction ticks do not count: they
+    // run at loop rate while the render half is skipped (the editor starting up or opening a
+    // project, a minimized window, a Player scene with no enabled camera), so a tick says nothing
+    // about the pipeline.
+    uint32 m_DrawnFramesWithoutUploadNode = 0;
+    // The last render graph frame NoteTerrainDrawnRG counted.
+    uint64 m_LastDrawnFrameRG = UINT64_MAX;
+    // Set once the "TerrainUpload" node declares (NoteUploadNodeDeclared).
+    bool m_UploadNodeDeclared = false;
     bool m_MissingUploadPassReported = false;
-    // Reports the missing "TerrainUpload" pass once. Call with m_Mutex held, once per frame.
+    // Reports the missing "TerrainUpload" pass once. Call with m_Mutex held, once per frame that
+    // draws terrain.
     void WarnIfUploadPassMissing();
 
     // Full-width horizontal band (or whole-texture) upload of a full-size source.
