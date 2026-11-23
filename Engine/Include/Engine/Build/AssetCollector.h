@@ -89,10 +89,6 @@ public:
 
     /// The ship rules the last CollectGameContent read, so later export steps check against the same rules.
     const ShipRules& GetShipRules() const { return m_ShipRules; }
-    /// The edges that the collector read from the asset's file since CollectFromScenes began, or null.
-    /// Every scene and prefab that the collection walked has them.
-    const std::vector<DepEdge>* FindReadEdges(const GUID& asset) const { return m_FreshEdges.Find(asset); }
-
     /// Build a manifest by walking transitive dependencies from scene roots.
     AssetManifest CollectFromScenes(const std::vector<std::string>& scenePaths);
 
@@ -199,8 +195,12 @@ private:
     // The project's ship rules while CollectGameContent runs, and the errors they raise.
     ShipRules m_ShipRules;
     std::vector<std::string> m_ShipErrors;
-    // Edges read from the file in this collection, so each file is read once.
+    // Edges read from each file in this collection. A root is read again on every walk.
     FlatMap<GUID, std::vector<DepEdge>> m_FreshEdges;
+
+    // Reads the edges of each scene and prefab that the collection walked.
+    friend std::vector<std::string> CheckForestStandContent(const AssetManifest& manifest,
+                                                            const AssetCollector& collector);
 };
 
 } // namespace GameEngine

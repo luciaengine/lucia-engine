@@ -115,40 +115,43 @@ StandReferences CollectStandReferences(std::span<const DepEdge> edges, const Ass
     return references;
 }
 
-// The start of a refusal: the scene and the entity that holds the field.
-std::string DescribeStand(const std::string& sceneName, std::string_view locator, std::string_view field)
+// The start of a refusal: the scene or prefab and the entity that holds the field.
+std::string DescribeStand(const std::string& fileName, std::string_view locator, std::string_view field)
 {
-    return sceneName + ", entity '" + std::string(LocatorEntity(locator, field)) + "': the Forest Stand ";
+    return fileName + ", entity '" + std::string(LocatorEntity(locator, field)) + "': the Forest Stand ";
 }
 
 void CheckScene(const AssetManifestEntry& scene, std::span<const DepEdge> edges, const AssetManifest& manifest,
                 std::vector<std::string>& errors)
 {
     const StandReferences references = CollectStandReferences(edges, manifest);
-    const std::string sceneName = "Scene '" + PathToUtf8(AssetRelativePath(scene)) + "'";
+    const std::string fileName = (scene.type == AssetType::Prefab ? "Prefab '" : "Scene '") +
+                                  PathToUtf8(AssetRelativePath(scene)) + "'";
     for (const auto& [locator, shipped] : references.Archives)
         if (!shipped)
-            errors.push_back(DescribeStand(sceneName, locator, kArchiveField) +
+            errors.push_back(DescribeStand(fileName, locator, kArchiveField) +
                              "archive does not ship. Set Archive to the .geforest file in the project that the "
                              "overview mesh was cooked from.");
     for (const auto& [locator, shipped] : references.TreeModels)
         if (!shipped)
-            errors.push_back(DescribeStand(sceneName, locator, kTreeModelField) +
+            errors.push_back(DescribeStand(fileName, locator, kTreeModelField) +
                              "tree model does not ship. Set Tree Model to a model in the project with its impostor "
                              "setting on, or clear it.");
     for (const auto& [archive, locator] : references.ShippedArchives)
         if (std::string problem = DescribeArchiveProblem(*archive); !problem.empty())
-            errors.push_back(DescribeStand(sceneName, locator, kArchiveField) + "archive '" +
+            errors.push_back(DescribeStand(fileName, locator, kArchiveField) + "archive '" +
                              PathToUtf8(AssetRelativePath(*archive)) + "' " + problem);
 }
 } // namespace
 
 std::vector<std::string> CheckForestStandContent(const AssetManifest& manifest, const AssetCollector& collector)
 {
+    // Only a file that a dependency walk read has edges. The fallbacks of CollectGameContent walk no
+    // file and ship every project asset, so the check does not find an archive that does not open there.
     std::vector<std::string> errors;
     for (const AssetManifestEntry& entry : manifest.entries)
         if (entry.type == AssetType::Scene || entry.type == AssetType::Prefab)
-            if (const std::vector<DepEdge>* edges = collector.FindReadEdges(entry.guid))
+            if (const std::vector<DepEdge>* edges = collector.m_FreshEdges.Find(entry.guid))
                 CheckScene(entry, *edges, manifest, errors);
     return errors;
 }
