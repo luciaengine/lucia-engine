@@ -1432,6 +1432,34 @@ set_tests_properties(PageStoreTests PROPERTIES
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
+# ForestPlacementTests: the packed forest runtime (Engine/Source/Engine/Rendering/Forest): page
+# residency, reader fences and fallback cover, coalesced archive reads through the asset reader,
+# the upload plan into the placement slots, and the slot copies on a headless device (skipped
+# without Vulkan).
+add_executable(ForestPlacementTests
+  ForestPlacementRuntimeTests.cpp
+  ForestPlacementGpuUploadTests.cpp
+)
+target_link_libraries(ForestPlacementTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+target_include_directories(ForestPlacementTests PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  # ForestPlacementUploadPlan.h, the internal upload plan.
+  ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Rendering/Forest
+  # Tests/ScopedEnvVar.h and the Vulkan device for the headless device tests.
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Source
+  ${CMAKE_SOURCE_DIR}/Engine/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/PageStreaming/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Types/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Mathematics/Include
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/JobSystem/Include
+)
+ge_set_output_tests(ForestPlacementTests)
+ge_stage_runtime_dependencies(ForestPlacementTests)
+add_test(NAME ForestPlacementTests COMMAND $<TARGET_FILE:ForestPlacementTests>)
+set_tests_properties(ForestPlacementTests PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
 # WorldHookOwnershipTests: "register, don't accrete" for component teardown —
 # a source scan asserting every production RegisterOnRemove lives in its owning
 # module's registrar and that Core registers none itself. Pure filesystem, no Engine.

@@ -27,8 +27,8 @@ struct ResidentSlotRef
 /// still sample a slot several frames after the CPU reassigns it. A released or evicted slot is
 /// quarantined for framesInFlight frames before another key can take it, as descriptor recycling
 /// defers reuse, so no in-flight draw samples a new key's texels through an old table entry (the
-/// one-frame wrong-terrain flash). framesInFlight 0 disables the quarantine, which only the
-/// disable-and-fail discriminator uses.
+/// one-frame wrong-terrain flash). framesInFlight 0 disables the quarantine: use it only when the
+/// owner fences slot reuse itself, as the packed forest runtime does with its reader fence.
 ///
 /// Eviction is driven by the residency update (keys leaving the wanted set Release; a nearer key
 /// may evict a farther one in Acquire), never as a side effect of a lookup. Acquire places a key

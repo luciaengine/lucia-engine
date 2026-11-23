@@ -363,6 +363,10 @@ add_library(RenderServices OBJECT
     Source/Engine/Rendering/RenderSorting.cpp
     Source/Engine/Rendering/ViewExposureScale.cpp
 	Source/Engine/Rendering/HlodRuntime.cpp
+	Source/Engine/Rendering/Forest/ForestPlacementRuntime.cpp
+	Source/Engine/Rendering/Forest/ForestPlacementStream.cpp
+	Source/Engine/Rendering/Forest/ForestPlacementGpuUploads.cpp
+	Source/Engine/Rendering/Forest/ForestPlacementRenderState.cpp
 	Source/Engine/Rendering/RenderServicesDetail.cpp
 	Source/Engine/Rendering/PointShadowFaceCull.cpp
 	Source/Engine/Rendering/PointShadowAtlasPlanner.cpp
@@ -551,6 +555,8 @@ target_include_directories(RenderServices
 		# from SceneBvh's threaded-BVH types. Same header-only pattern: SceneBvh
 		# links into Engine.dll alongside these objects (GE_ENGINE_MODULES).
 		$<TARGET_PROPERTY:SceneBvh,INTERFACE_INCLUDE_DIRECTORIES>
+		# Forest placements use the directory and slot pool linked into Engine.dll.
+		$<TARGET_PROPERTY:PageStreaming,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
 target_link_libraries(RenderServices
