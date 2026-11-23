@@ -22,6 +22,15 @@
 namespace GameEngine::Engine::Renderer
 {
 
+// The owner replay (switch GE_INDEXED_DEPTH_OWNER_REPLAY) and its second packet (GE_INDEXED_DEPTH_OWNER_SECOND)
+// run by default on Vulkan. On Metal they stay opt-in. The switch overrides the default on both.
+inline bool IndexedDepthOwnerReplaySwitch(Rendering::GraphicsAPI api, bool supported, const char* switchName)
+{
+    if (!supported)
+        return false;
+    return Platform::EnvironmentSwitchEnabled(switchName, api == Rendering::GraphicsAPI::Vulkan);
+}
+
 inline bool IndexedDepthReuseEnabled(const Rendering::IDevice& device)
 {
     static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_REUSE", true);
@@ -34,7 +43,8 @@ inline bool IndexedDepthReuseEnabled(const Rendering::IDevice& device)
     if (api != Rendering::GraphicsAPI::Metal || !device.GetCapabilities().supportsIndexedDepthOwnerReplay)
         return false;
 
-    static const bool metalReplayEnabled = Platform::EnvironmentSwitchEnabled("GE_INDEXED_DEPTH_OWNER_REPLAY", false);
+    static const bool metalReplayEnabled =
+        IndexedDepthOwnerReplaySwitch(api, true, "GE_INDEXED_DEPTH_OWNER_REPLAY");
     return metalReplayEnabled;
 }
 

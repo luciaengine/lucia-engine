@@ -61,6 +61,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -989,6 +990,38 @@ TEST(IndexedDepthReuse, DestinationColorLogicKeepsOriginalTriangleContributions)
     EXPECT_TRUE(MatchesIndexedDepthRaster(depth, forward, false));
     forward.ColorBlend.logicOpEnable = true;
     EXPECT_FALSE(MatchesIndexedDepthRaster(depth, forward, false));
+}
+
+namespace
+{
+void SetTestSwitch(const char* name, const char* value)
+{
+#if defined(_WIN32)
+    _putenv_s(name, value ? value : "");
+#else
+    if (value)
+        setenv(name, value, 1);
+    else
+        unsetenv(name);
+#endif
+}
+} // namespace
+
+TEST(IndexedDepthReuse, OwnerReplayRunsByDefaultOnVulkanAndStaysOptInOnMetal)
+{
+    using GameEngine::Rendering::GraphicsAPI;
+    constexpr const char* kSwitch = "GE_TEST_INDEXED_DEPTH_OWNER_REPLAY";
+    SetTestSwitch(kSwitch, nullptr);
+    EXPECT_TRUE(IndexedDepthOwnerReplaySwitch(GraphicsAPI::Vulkan, true, kSwitch));
+    EXPECT_FALSE(IndexedDepthOwnerReplaySwitch(GraphicsAPI::Metal, true, kSwitch));
+    EXPECT_FALSE(IndexedDepthOwnerReplaySwitch(GraphicsAPI::Vulkan, false, kSwitch));
+
+    SetTestSwitch(kSwitch, "0");
+    EXPECT_FALSE(IndexedDepthOwnerReplaySwitch(GraphicsAPI::Vulkan, true, kSwitch));
+    SetTestSwitch(kSwitch, "1");
+    EXPECT_TRUE(IndexedDepthOwnerReplaySwitch(GraphicsAPI::Metal, true, kSwitch));
+    EXPECT_FALSE(IndexedDepthOwnerReplaySwitch(GraphicsAPI::Metal, false, kSwitch));
+    SetTestSwitch(kSwitch, nullptr);
 }
 
 TEST(IndexedDepthReuse, AnInterveningDepthWriterInvalidatesThePrepass)
