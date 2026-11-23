@@ -1,12 +1,13 @@
 #pragma once
 
 #include "AssetCore/GUID.h"
-#include "Engine/Rendering/MeshGPURegistry.h"
 #include "Rendering/RenderLayerMask.h"
 #include "Types/ScopedSubscription.h"
 
 #include <functional>
 #include <memory>
+
+namespace GameEngine::Rendering { struct MeshGPUKey; }
 
 namespace GameEngine::Engine::Renderer
 {

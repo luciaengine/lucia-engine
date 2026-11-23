@@ -17,11 +17,12 @@
 #include <set>
 #include <vector>
 
-namespace GameEngine::PageStreaming
+namespace GameEngine::Engine::Renderer
 {
 namespace
 {
-using namespace Engine::Renderer;
+using PageStreaming::PackedPlacement;
+using PageStreaming::PackedPlacementStore;
 using namespace Rendering;
 using namespace Rendering::RenderGraph;
 
@@ -49,8 +50,6 @@ class ForestPlacementCullTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        // Every device of this process is headless.
-        Rendering::Tests::SetEnvVar("GE_HEADLESS_TEST", "1");
         DeviceDesc desc{};
         desc.preferredAPI = GraphicsAPI::Vulkan;
         desc.enableDynamicRendering = true;
@@ -126,6 +125,7 @@ protected:
         return page;
     }
 
+    Rendering::Tests::ScopedEnvVar m_Headless{"GE_HEADLESS_TEST", "1"};
     std::unique_ptr<IDevice> m_Device;
     BufferHandle m_Slots;
     ForestPlacementCull m_Cull;
@@ -177,4 +177,4 @@ TEST_F(ForestPlacementCullTest, TwoPagesCompactIntoDisjointTailRanges)
 }
 
 } // namespace
-} // namespace GameEngine::PageStreaming
+} // namespace GameEngine::Engine::Renderer

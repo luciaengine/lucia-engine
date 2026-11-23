@@ -5,6 +5,7 @@
 
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
 #include "Engine/Rendering/Forest/ForestPlacementFeature.h"
+#include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Common/Frustum.h"
@@ -42,7 +43,6 @@ ForestPlacementView MakeStandView(const Rendering::CameraData& camera)
         plane.w += plane.x * eye.x + plane.y * eye.y + plane.z * eye.z;
     return view;
 }
-
 
 // What one registered stand draws, shared by its forward-emit callback.
 struct StandEmitSource
