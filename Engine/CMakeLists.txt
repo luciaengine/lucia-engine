@@ -907,6 +907,7 @@ target_sources(Engine PRIVATE
     Source/Engine/Build/TerrainPageExport.cpp
     Source/Engine/Build/TexturePackageCook.cpp
     Source/Engine/Build/StagedAssetCook.cpp
+    Source/Engine/Build/ContentCheckRegistry.cpp
     Source/Engine/Build/ForestStandExport.cpp
     Source/Engine/Build/SceneExportStrip.cpp
     Source/Engine/Build/ShipRules.cpp

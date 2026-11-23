@@ -1,5 +1,7 @@
 #include "ForestStandExport.h"
 
+#include "ContentCheckRegistry.h"
+
 #include "AssetCore/SharedFileRead.h"
 #include "Engine/Build/AssetCollector.h"
 #include "Engine/Rendering/Forest/ForestSplatCells.h"
@@ -173,17 +175,20 @@ void CheckScene(const AssetManifestEntry& scene, std::span<const DepEdge> edges,
             errors.push_back(DescribeStand(fileName, locator, kArchiveField) + "archive '" +
                              PathToUtf8(AssetRelativePath(*archive)) + "' " + problem);
 }
-} // namespace
-
-std::vector<std::string> CheckForestStandContent(const AssetManifest& manifest, const AssetCollector& collector)
+// Only a file that a dependency walk read has edges. The fallbacks of CollectGameContent walk no
+// file and ship every project asset, so the check cannot see a broken archive there.
+void CheckForestStandContent(const AssetManifest& manifest, const AssetCollector& collector,
+                             std::vector<std::string>& errors)
 {
-    // Only a file that a dependency walk read has edges. The fallbacks of CollectGameContent walk no
-    // file and ship every project asset, so the check cannot see a broken archive there.
-    std::vector<std::string> errors;
     for (const AssetManifestEntry& entry : manifest.entries)
         if (entry.type == AssetType::Scene || entry.type == AssetType::Prefab)
             if (const std::vector<DepEdge>* edges = collector.FindWalkedEdges(entry.guid))
                 CheckScene(entry, *edges, manifest, errors);
-    return errors;
+}
+} // namespace
+
+void RegisterForestStandContentCheck()
+{
+    ContentCheckRegistry::Register(&CheckForestStandContent);
 }
 } // namespace GameEngine
