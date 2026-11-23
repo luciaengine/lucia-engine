@@ -1401,10 +1401,11 @@ set_tests_properties(TerrainPagePublicationTests PROPERTIES WORKING_DIRECTORY ${
 # .gepage round trip, the apron's bit-equality under the store-wide height quantum, the sparse
 # resolve, the incremental re-cook, the lattice-preserving tent, the generated provider's level 0
 # against the terrain's tile fill (FillTiledBaseRegion), the cook key, the terrain container, the
-# PNG decoder limit and the asynchronous page loader. Links Engine for the tile fill and the
-# asset reader threads.
+# PNG decoder limit, the asynchronous page loader and the .geforest packed placement store. Links
+# Engine for the tile fill and the asset reader threads.
 add_executable(PageStoreTests
   PageStoreTests.cpp
+  PackedPlacementStoreTests.cpp
 )
 if(MSVC)
   target_compile_options(PageStoreTests PRIVATE /wd6326)

@@ -1,0 +1,55 @@
+---
+title: Packed forests
+description: Cook large tree stands into a paged placement archive and its overview mesh.
+---
+
+A packed forest stores the transforms of one tree species in a single `.geforest` archive instead of one scene entity per tree. The archive groups the trees into pages of up to 144 trees. An overview mesh has one canopy quad for each page.
+
+Use scene entities for trees that need their own components. Use a packed forest for large stands of one species.
+
+## Cook a placement archive
+
+`ForestPlacementCook` turns a CSV of tree transforms into a `.geforest` archive. Supply the CSV, the output path and the tree's bound radius in meters.
+
+```sh title="Cook tree placements"
+ForestPlacementCook placements.csv Assets/Forests/Forest.geforest 12
+```
+
+The CSV starts with the header `page,x,y,z,yawDegrees,scale`. Each row is one tree, with its root position in world meters:
+
+- `page` is the page of the tree. Pages are numbered from 0 without gaps, and the rows of one page are together. A page holds 1 to 144 trees. An archive holds at most 1,048,576 pages.
+- Within a page, each tree is at most 655.35 meters from the page's lowest corner on each axis, including the vertical axis. The archive stores the offset to the nearest centimeter.
+- `yawDegrees` is the rotation around the vertical axis. The archive stores it in steps of 1.4 degrees.
+- `scale` is a uniform scale from 0.75 to 1.25. The archive stores it in steps of 0.002.
+
+The bound radius is the distance from the root to the farthest point of the tree at unit scale: the farthest mesh vertex or card corner, including the largest wind displacement. Each page's bounds include this radius at the largest scale. The archive stores the radius, so the renderer can check that the tree it draws fits inside the bounds.
+
+Add `--spatial-order` after the bound radius to sort the pages so that nearby pages are next to each other in the archive. The sort moves whole pages and keeps each tree with its page. Generate the overview mesh from the sorted archive. If you use a hand-authored overview mesh, quad N of that mesh belongs to page N, so keep the default order.
+
+The cooker writes the archive to a temporary file and replaces the target only after a complete write. A rejected CSV leaves the previous archive unchanged. The error message gives the line that failed, or the page that is too large.
+
+## Cook the overview mesh
+
+The overview mesh has one quad for each archive page, in page order. To generate it, supply the archive, a top-down RGBA image of the tree's canopy, the output `.glb` path, the canopy bounds, the canopy height and the tile size.
+
+```sh title="Cook an overview mesh from an archive"
+ForestPlacementCook --overview Assets/Forests/Forest.geforest canopy.png Assets/Forests/Canopy.glb -5 -6 5 6 9 32
+```
+
+- The bounds `minX minZ maxX maxZ` are in meters, in the imported tree's local XZ plane. The first image row is at the minimum Z.
+- The canopy height is a typical height of the canopy above the root at unit scale, in meters. Each quad is at the mean canopy height of its page's trees.
+- The tile size is 16 to 64 pixels per page. A larger tile keeps more canopy detail and uses more graphics memory. The atlas is at most 8192 pixels on each side.
+
+The cooker draws every tree of a page into that page's tile, at the tree's position, yaw and scale. It embeds the atlas in the model with an alpha-masked material. Import the model with the default glTF axis settings, and generate it again when the placements change.
+
+## Archive format
+
+A `.geforest` archive is little-endian and has three parts:
+
+| Part | Size | Content |
+| --- | --- | --- |
+| Header | 40 bytes | magic `GEFP`, version 1, page count, placement count, bound radius (float, meters), 4 zero bytes, payload offset, directory hash |
+| Page directory | 64 bytes per page | page origin (3 doubles, meters), bounds minimum and maximum (3 floats each, meters from the origin), payload hash, first placement, placement count |
+| Payload | 8 bytes per tree | X, Z and height in centimeters from the page origin (16 bits each), yaw in 1/256 turns, scale in 1/255 steps from 0.75 to 1.25 |
+
+The engine refuses an archive whose header, directory hash, page ranges or page bounds are not valid. The hash of each page's payload is in the directory, so a reader can check each page that it reads.
