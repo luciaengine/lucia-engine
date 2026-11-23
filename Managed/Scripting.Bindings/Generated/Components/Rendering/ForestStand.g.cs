@@ -12,7 +12,7 @@ using System.Runtime.InteropServices;
 namespace GameEngine.Scripting
 {
     /// <summary>
-    /// A cooked forest stand on its overview entity: the entity whose MeshRenderer holds the cooked overview mesh with its render layers set to None. The forest stand system draws the overview from the archive's pages and, with a tree model, the trees near the camera. The stand draws at the archive's world positions; the system ignores the entity's transform.
+    /// A cooked forest stand on the entity whose MeshRenderer holds its overview mesh, with render layers None. It draws the overview and, with a tree model, the trees near the camera, at the archive's world positions; the entity's transform has no effect.
     /// </summary>
     [StructLayout(LayoutKind.Explicit, Size = 40)]
     [BuiltInComponent("GameEngine::Components::ForestStand")]

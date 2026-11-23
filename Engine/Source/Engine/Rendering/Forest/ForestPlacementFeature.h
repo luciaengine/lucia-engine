@@ -13,6 +13,7 @@ namespace GameEngine::Engine::Renderer
 {
 
 struct ForwardEmitContext;
+struct ForestPlacementFeatureTestAccess;
 struct ForestPlacementSession;
 struct ImpostorBakePart;
 
@@ -66,6 +67,8 @@ public:
     void OnDeviceRebuilt(Rendering::IDevice* device) override;
 
 private:
+    friend struct ForestPlacementFeatureTestAccess;
+
     void Finish(Rendering::RenderGraph::RGFrame& frame, bool submitted);
     std::vector<std::weak_ptr<ForestPlacementSession>> m_Sessions;
     uint64 m_NextSession = 0;

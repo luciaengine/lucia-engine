@@ -118,8 +118,8 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     // extraction (kExtract depends on it).
     schedule.Add<HLODSelectSystem>(kHlodSelect, SystemPhase::Extraction, 5, {kHierarchy}, renderServices);
 
-    // The packed forest stands of the world's ForestStand entities. Before the impostor links, so
-    // that a stand attached this frame gets its tree card this frame.
+    // The packed forest stands of the world's ForestStand entities. A stand attach and the impostor
+    // card updates do not run in the same wave.
     schedule.Add<ForestStandSystem>(kForestStand, SystemPhase::Extraction, 5, {}, renderServices,
                                     EngineCore::GetInstance().TryGetAssetManager());
 

@@ -1,5 +1,8 @@
 #include "Engine/Rendering/Forest/ForestStandSystem.h"
 
+#include "ForestPlacementFeature.h"
+#include "ForestPlacementSession.h"
+
 #include "Assets/AssetManager.h"
 #include "Components/Rendering/ForestStand.h"
 #include "Components/Rendering/MeshRenderer.h"
@@ -13,17 +16,22 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace GameEngine::Engine::Renderer
 {
-struct ForestStandSystemTestAccess
+struct ForestPlacementFeatureTestAccess
 {
-    static size_t LiveRegistrations(const ForestStandSystem& system)
+    static std::vector<std::shared_ptr<ForestPlacementSession>> Sessions(const ForestPlacementFeature& feature)
     {
-        return static_cast<size_t>(std::ranges::count_if(
-            system.m_Stands, [](const auto& entry) { return static_cast<bool>(entry.second.Registration); }));
+        std::vector<std::shared_ptr<ForestPlacementSession>> sessions;
+        for (const auto& entry : feature.m_Sessions)
+            if (auto session = entry.lock())
+                sessions.push_back(std::move(session));
+        return sessions;
     }
 };
 } // namespace GameEngine::Engine::Renderer
@@ -32,8 +40,9 @@ namespace GameEngine
 {
 namespace
 {
+using Engine::Renderer::ForestPlacementFeature;
+using Engine::Renderer::ForestPlacementFeatureTestAccess;
 using Engine::Renderer::ForestStandSystem;
-using Engine::Renderer::ForestStandSystemTestAccess;
 
 size_t CountLines(const std::vector<std::string>& lines, std::string_view text)
 {
@@ -44,6 +53,21 @@ size_t CountLines(const std::vector<std::string>& lines, std::string_view text)
 class ForestStandSystemTest : public PageStreaming::PackedPlacementArchiveTest
 {
 protected:
+    static bool IsAttached(const ForestStandSystem& system, const ECS::World& world, ECS::EntityHandle entity)
+    {
+        const auto* status = system.FindStatus(world.GetWorldId(), entity);
+        return status && status->Attached;
+    }
+
+    // The one stand entity of the world.
+    static ECS::EntityHandle FindStand(ECS::World& world)
+    {
+        ECS::EntityHandle found{};
+        world.Query<ECS::Read<Components::ForestStand>>().Each(
+            [&found](ECS::EntityHandle entity, const Components::ForestStand&) { found = entity; });
+        return found;
+    }
+
     void SetUp() override
     {
         std::filesystem::create_directories(m_Scratch.Path() / "Assets");
@@ -117,7 +141,7 @@ TEST_F(ForestStandSystemTest, EachSceneLoadAttachesOneStandAndReleasesTheLast)
             ASSERT_TRUE(Scene::ReadSceneInto(world, scene));
             system.Update(world, 0.0f);
             system.Update(world, 0.0f);
-            EXPECT_EQ(ForestStandSystemTestAccess::LiveRegistrations(system), 1u) << "load " << load;
+            EXPECT_TRUE(IsAttached(system, world, FindStand(world))) << "load " << load;
         }
         Logger::Log::Flush();
     }
@@ -130,11 +154,11 @@ TEST_F(ForestStandSystemTest, RemovingTheComponentReleasesTheStand)
     const auto entity = CreateStand(world);
     ForestStandSystem system(&m_Services, &m_Assets);
     system.Update(world, 0.0f);
-    ASSERT_EQ(ForestStandSystemTestAccess::LiveRegistrations(system), 1u);
+    ASSERT_TRUE(IsAttached(system, world, entity));
 
     world.RemoveComponentImmediate<Components::ForestStand>(entity);
     system.Update(world, 0.0f);
-    EXPECT_EQ(ForestStandSystemTestAccess::LiveRegistrations(system), 0u);
+    EXPECT_EQ(system.FindStatus(world.GetWorldId(), entity), nullptr);
 }
 
 TEST_F(ForestStandSystemTest, AnOverviewThatDrawsItselfWarnsOnceAndAttachesWhenFixed)
@@ -147,14 +171,109 @@ TEST_F(ForestStandSystemTest, AnOverviewThatDrawsItselfWarnsOnceAndAttachesWhenF
         TestLog::ScopedEngineLogCapture capture(&lines);
         system.Update(world, 0.0f);
         system.Update(world, 0.0f);
-        EXPECT_EQ(ForestStandSystemTestAccess::LiveRegistrations(system), 0u);
+        EXPECT_FALSE(IsAttached(system, world, entity));
+        EXPECT_NE(system.FindStatus(world.GetWorldId(), entity)->Problem.find("Set its render layers to None"),
+                  std::string::npos);
 
         world.GetComponentForWrite<Components::MeshRenderer>(entity)->RenderLayers = Rendering::RenderLayerMask::None();
         system.Update(world, 0.0f);
-        EXPECT_EQ(ForestStandSystemTestAccess::LiveRegistrations(system), 1u);
+        EXPECT_TRUE(IsAttached(system, world, entity));
+        EXPECT_TRUE(system.FindStatus(world.GetWorldId(), entity)->Problem.empty());
         Logger::Log::Flush();
     }
     EXPECT_EQ(CountLines(lines, "Set its render layers to None"), 1u);
+}
+
+TEST_F(ForestStandSystemTest, UnrelatedSpawnsKeepTheStand)
+{
+    ECS::World world;
+    CreateStand(world);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    std::vector<std::string> lines;
+    {
+        TestLog::ScopedEngineLogCapture capture(&lines);
+        for (int frame = 0; frame < 5; ++frame)
+        {
+            world.AddComponentImmediate(world.CreateEntity(), Components::MeshRenderer{});
+            system.Update(world, 0.0f);
+        }
+        Logger::Log::Flush();
+    }
+    EXPECT_EQ(CountLines(lines, "attached with"), 1u);
+}
+
+TEST_F(ForestStandSystemTest, ANanDetailDistanceWarnsOnceAndDrawsTheOverview)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto stand = *world.GetComponent<Components::ForestStand>(entity);
+    stand.TreeModel = Components::ModelRef(m_Archive);
+    stand.DetailDistance = std::numeric_limits<float>::quiet_NaN();
+    world.AddComponentImmediate(entity, stand);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    std::vector<std::string> lines;
+    {
+        TestLog::ScopedEngineLogCapture capture(&lines);
+        for (int frame = 0; frame < 5; ++frame)
+        {
+            (void)world.GetComponentForWrite<Components::MeshRenderer>(entity);
+            system.Update(world, 0.0f);
+        }
+        Logger::Log::Flush();
+    }
+    EXPECT_EQ(CountLines(lines, "Detail Distance must be a number of meters"), 1u);
+    EXPECT_EQ(CountLines(lines, "attached with"), 1u);
+    EXPECT_TRUE(IsAttached(system, world, entity));
+}
+
+TEST_F(ForestStandSystemTest, ATreeModelAttachesADetailSessionWithTheBudgetCapped)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto stand = *world.GetComponent<Components::ForestStand>(entity);
+    stand.TreeModel = Components::ModelRef(m_Archive);
+    stand.DetailDistance = 275.0f;
+    stand.NearMeshBudget = 100'000;
+    world.AddComponentImmediate(entity, stand);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    system.Update(world, 0.0f);
+    ASSERT_TRUE(IsAttached(system, world, entity));
+    const auto* feature = m_Services.GetFeature<ForestPlacementFeature>();
+    ASSERT_NE(feature, nullptr);
+    {
+        const auto sessions = ForestPlacementFeatureTestAccess::Sessions(*feature);
+        ASSERT_EQ(sessions.size(), 1u);
+        EXPECT_EQ(sessions.front()->DetailDistance, 275.0f);
+        EXPECT_GT(sessions.front()->NearBudget, 0u);
+        EXPECT_LE(sessions.front()->NearBudget, Components::ForestStand::kMaxNearMeshBudget);
+    }
+
+    // A Detail Distance of 0 draws the overview only, with no warning.
+    world.GetComponentForWrite<Components::ForestStand>(entity)->DetailDistance = 0.0f;
+    system.Update(world, 0.0f);
+    EXPECT_TRUE(IsAttached(system, world, entity));
+    EXPECT_TRUE(system.FindStatus(world.GetWorldId(), entity)->Problem.empty());
+    EXPECT_TRUE(ForestPlacementFeatureTestAccess::Sessions(*feature).empty());
+}
+
+TEST_F(ForestStandSystemTest, ASnapshotRestoreBringsBackARemovedStand)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    system.Update(world, 0.0f);
+    const auto snapshot = world.SerializeWorld();
+    world.RemoveComponentImmediate<Components::ForestStand>(entity);
+    system.Update(world, 0.0f);
+    ASSERT_EQ(system.FindStatus(world.GetWorldId(), entity), nullptr);
+
+    world.DeserializeWorld(snapshot);
+    system.Update(world, 0.0f);
+    EXPECT_TRUE(IsAttached(system, world, entity));
+    world.GetComponentForWrite<Components::ForestStand>(entity)->TreeModel = Components::ModelRef(GUID::Generate());
+    system.Update(world, 0.0f);
+    EXPECT_NE(system.FindStatus(world.GetWorldId(), entity)->Problem.find("tree model is not in the project"),
+              std::string::npos);
 }
 
 } // namespace
