@@ -1,11 +1,15 @@
 #include "PackedPlacementTestArchive.h"
 
+#include "Assets/AssetManager.h"
+
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ForestNearMeshCandidates.h"
 #include "ForestPlacementGpuData.h"
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
 #include "ForestStandDrawProducer.h"
+#include "Engine/Rendering/Forest/ForestPlacementFeature.h"
+#include "EngineLogCapture.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -226,6 +230,37 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     EXPECT_TRUE(runtime->ReadyPlacements(second).empty());
     CollectForestNearMeshCandidates(*runtime, frame, turned, {0, 1, 0, 2}, 4, candidates);
     EXPECT_TRUE(candidates.empty());
+}
+
+TEST_F(ForestPlacementDrawTest, ACardPastTheBoundRadiusRefusesItsSessionOnce)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "refused.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    RenderServices services;
+    AssetManager assets;
+    auto& feature = services.EnsureFeature<ForestPlacementFeature>();
+    constexpr uint64 kWorld = 7;
+    const GUID model = GUID::Generate();
+    const auto session = feature.Attach(runtime, assets, kWorld, model, 100.0f);
+    ASSERT_TRUE(session);
+
+    // The card corner reaches 10 + 4 * sqrt(2) m from the root, past the archive's 12 m.
+    ForestImpostorCard card{};
+    card.Bounds = {0.0f, 10.0f, 0.0f, 4.0f};
+    std::vector<std::string> lines;
+    {
+        TestLog::ScopedEngineLogCapture capture(&lines);
+        feature.PublishCard(kWorld, model, card);
+        feature.PublishCard(kWorld, model, card);
+        Logger::Log::Flush();
+    }
+    EXPECT_EQ(std::ranges::count_if(lines, [](const std::string& line)
+              { return line.find("cooked with a bound radius of 12.00 m") != std::string::npos; }), 1);
+    EXPECT_FALSE(feature.WantsCard(kWorld, model));
 }
 
 Rendering::ViewId AddForestStandView(Engine::Renderer::RenderServices& services, double x,

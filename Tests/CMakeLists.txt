@@ -1446,6 +1446,8 @@ target_include_directories(ForestPlacementTests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   # ForestPlacementUploadPlan.h, the internal upload plan.
   ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Rendering/Forest
+  # EngineLogCapture.h, for the forest warnings.
+  ${CMAKE_SOURCE_DIR}/Engine/Tests
   # Tests/ScopedEnvVar.h and the Vulkan device for the headless device tests.
   ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering
   ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Source

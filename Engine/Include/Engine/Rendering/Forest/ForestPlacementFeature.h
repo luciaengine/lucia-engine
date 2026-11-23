@@ -30,6 +30,9 @@ struct ForestImpostorCard
 class ForestPlacementFeature final : public IRenderFeature
 {
 public:
+    /// Frees the GPU objects of every session that a stand still holds; the device outlives the feature.
+    ~ForestPlacementFeature() override;
+
     /// Starts a session that draws the trees of `model` from `placements` within `detailDistance` meters.
     /// The scene's stand producer owns the returned session; the feature keeps a weak reference.
     /// Null when the archive has no detail slots, the distance is not positive or the model is empty.
@@ -41,6 +44,8 @@ public:
     /// Forgets the cards of the world's sessions; the MeshImpostor system publishes them again each update.
     void ClearCards(uint64 world);
     /// Gives the model's card, and the parts its near meshes draw, to the world's sessions that want it.
+    /// A card that reaches past a session's archive bound radius refuses that session for good: it
+    /// logs one warning, draws the overview only and streams no page.
     void PublishCard(uint64 world, const GUID& model, const ForestImpostorCard& card,
                      std::span<const ImpostorBakePart> sources = {});
     /// Declares the session's culled cards and near meshes into the view. Return true when standRanges

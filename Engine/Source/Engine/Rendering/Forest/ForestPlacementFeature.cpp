@@ -69,7 +69,9 @@ struct ForestPlacementSession
     bool ShaderAvailable = false;
     bool EmittedDetails = false;
     bool EmittedNearMeshes = false;
-    bool ReportedBoundRadius = false;
+    // The card reaches past the archive's bound radius: the session draws the overview only and streams nothing.
+    // A reset keeps it, because the card and the archive stay the same.
+    bool Refused = false;
 
     ~ForestPlacementSession() { Reset(false); }
 
@@ -182,15 +184,33 @@ float CardReach(const ForestImpostorCard& card)
     return center.Length() + card.Bounds.w * std::numbers::sqrt2_v<float> + card.Sway.MaxDisplacement;
 }
 
+void RefuseCard(ForestPlacementSession& session, float reach)
+{
+    session.Refused = true;
+    session.WantsCard = false;
+    session.Card.reset();
+    const auto& store = session.Placements->Store();
+    LOG_WARNING("Forest: {} was cooked with a bound radius of {:.2f} m, but the tree reaches {:.2f} m from its root. "
+                "The forest draws its overview mesh only. Cook the archive again with a radius of at least {}.",
+                store.File().string(), store.BoundRadius(), reach, std::ceil(reach));
+}
 } // namespace
 
 void ForestPlacementFeature::PublishCard(uint64 world, const GUID& model, const ForestImpostorCard& card,
                                         std::span<const ImpostorBakePart> sources)
 {
+    const float reach = CardReach(card);
     for (const auto& entry : m_Sessions)
     {
         const auto session = entry.lock();
-        if (!session || session->World != world || session->Model != model || !session->WantsCard)
+        if (!session || session->World != world || session->Model != model || session->Refused)
+            continue;
+        if (reach > session->Placements->Store().BoundRadius())
+        {
+            RefuseCard(*session, reach);
+            continue;
+        }
+        if (!session->WantsCard)
             continue;
         session->Card = card;
         if (session->NearBudget == 0)
@@ -484,6 +504,8 @@ bool PlanDetails(ForestPlacementSession& session, const ForwardEmitContext& cont
 bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
     const CameraData& camera, ForestPlacementView view, std::vector<DrawSubCommand>& standRanges)
 {
+    if (session.Refused)
+        return false;
     auto& frame = *context.Frame;
     auto& services = *context.Services;
     const auto* desc = services.Views().FindViewDesc(context.ViewId);
@@ -519,21 +541,8 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     const std::span<const ForestMeshOwnedPlacement> owners = near ? std::span(near->Owners) :
         std::span<const ForestMeshOwnedPlacement>{};
     ForestPlacementGpuView gpuView{};
-    const float radius = CardReach(*card);
-    if (radius > session.Placements->Store().BoundRadius())
-    {
-        if (!session.ReportedBoundRadius)
-        {
-            session.ReportedBoundRadius = true;
-            LOG_WARNING("Forest: {} was cooked with a bound radius of {} m, but the tree reaches {} m from its root. "
-                        "The forest draws its overview mesh only. Cook the archive again with a radius of at least {}.",
-                        session.Placements->Store().File().string(), session.Placements->Store().BoundRadius(),
-                        radius, std::ceil(radius));
-        }
-        return false;
-    }
     if (!BuildForestPlacementGpuInputs(*session.Placements, session.Plan, camera, session.Placements->SlotCount(),
-            radius, card->Bounds, gpuView, session.Pages, owners))
+            CardReach(*card), card->Bounds, gpuView, session.Pages, owners))
         return false;
     const auto buffers = session.Cull.Declare(frame, session.Scope, session.Slots, session.Placements->SlotCount(),
                                               gpuView, session.Pages);
@@ -586,6 +595,18 @@ void ForestPlacementFeature::OnFrameStreamRetiredRG(RGFrame& frame)
     for (const auto& entry : m_Sessions)
         if (const auto session = entry.lock(); session && session->Graph == &frame)
             session->Reset(false);
+}
+
+ForestPlacementFeature::~ForestPlacementFeature()
+{
+    // The feature dies in RenderServices::Shutdown while the device lives. A session that a stand
+    // still holds frees its GPU objects now and forgets the device.
+    for (const auto& entry : m_Sessions)
+        if (const auto session = entry.lock())
+        {
+            session->Reset(false);
+            session->Device = nullptr;
+        }
 }
 
 void ForestPlacementFeature::OnDeviceRebuilt(IDevice*)
