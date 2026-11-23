@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include "GlslShim.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
@@ -15,6 +16,7 @@
 #include "TestTempDir.h"
 #include "TestUtils.h"
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -23,6 +25,11 @@
 #ifndef EZTREE_PACKAGE_SHADERS_DIR
 #error "EZTREE_PACKAGE_SHADERS_DIR must be defined by CMake (target_compile_definitions)"
 #endif
+
+namespace GameEngine::GlslShim::ImpostorBakeNormal
+{
+#include "Shaders/Includes/impostor_bake_normal.glsl"
+} // namespace GameEngine::GlslShim::ImpostorBakeNormal
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -196,4 +203,41 @@ TEST(ImpostorBakeVariant, FoliageWindKeepsAuthoredLeafPivotsAndBakesTheRestPose)
     const auto sway = Build(bark, MaterialKeyword::Instanced, VertexAttributeFlags::StandardMesh);
     ASSERT_TRUE(sway.success) << (sway.errors.empty() ? "" : sway.errors.front());
     EXPECT_TRUE(HasWindSine(sway));
+}
+
+TEST(ImpostorBakeVariant, ATwoSidedLeafBakesWithTheTwoSidedNormalRule)
+{
+    auto leaves = LeafDocument();
+    leaves.doubleSided = true;
+    const auto twoSided = Build(leaves, kBakePass);
+    if (ShadercMissing(twoSided))
+        GTEST_SKIP() << "shaderc not built into this target";
+    ASSERT_TRUE(twoSided.success) << (twoSided.errors.empty() ? "" : twoSided.errors.front());
+    const auto& defines = twoSided.composedDefines;
+    EXPECT_NE(std::find(defines.begin(), defines.end(), "GE_TWO_SIDED"), defines.end());
+
+    const auto bark = Build(BarkDocument(), kBakePass);
+    ASSERT_TRUE(bark.success) << (bark.errors.empty() ? "" : bark.errors.front());
+    EXPECT_EQ(std::find(bark.composedDefines.begin(), bark.composedDefines.end(), "GE_TWO_SIDED"),
+              bark.composedDefines.end())
+        << "a one-sided surface keeps its own normal";
+}
+
+TEST(ImpostorBakeVariant, AnEdgeOnLeafKeepsItsUpperSideInAHorizonFrame)
+{
+    using GameEngine::GlslShim::vec3;
+    using GameEngine::GlslShim::ImpostorBakeNormal::GE_ImpostorTwoSidedBakeNormal;
+    // A horizon frame looks along -X. A level leaf is edge-on to it: either side may face the frame
+    // camera by a hair, and both sides bake facing up.
+    const vec3 towardHorizonFrame(1.0f, 0.0f, 0.0f);
+    for (const vec3 leaf : {vec3(0.05f, -0.998f, 0.0f), vec3(-0.05f, 0.998f, 0.0f), vec3(0.0f, -1.0f, 0.0f)})
+        EXPECT_GT(GE_ImpostorTwoSidedBakeNormal(leaf, towardHorizonFrame).y, 0.0f);
+
+    // A leaf that faces the frame camera keeps facing it; one that faces away turns toward it.
+    EXPECT_GT(GE_ImpostorTwoSidedBakeNormal(vec3(1.0f, 0.0f, 0.0f), towardHorizonFrame).x, 0.0f);
+    EXPECT_GT(GE_ImpostorTwoSidedBakeNormal(vec3(-1.0f, 0.0f, 0.0f), towardHorizonFrame).x, 0.0f);
+
+    // From above, the rule is the plain two-sided flip toward the camera.
+    const vec3 fromAbove(0.0f, 1.0f, 0.0f);
+    EXPECT_GT(GE_ImpostorTwoSidedBakeNormal(vec3(0.0f, -1.0f, 0.0f), fromAbove).y, 0.0f);
 }

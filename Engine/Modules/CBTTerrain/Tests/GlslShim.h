@@ -93,6 +93,7 @@ struct vec3
 inline float dot(const vec3& a, const vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline vec3 operator+(const vec3& a, const vec3& b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 inline vec3 operator-(const vec3& a, const vec3& b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+inline vec3 operator-(const vec3& a) { return {-a.x, -a.y, -a.z}; }
 inline vec3 operator*(const vec3& a, float s) { return {a.x * s, a.y * s, a.z * s}; }
 inline vec3 operator*(float s, const vec3& a) { return a * s; }
 // GLSL broadcasts the scalar: the Fresnel term's `1.0f - F0` subtracts each component from 1.
