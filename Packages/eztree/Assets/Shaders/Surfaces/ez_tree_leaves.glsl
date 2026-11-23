@@ -5,6 +5,8 @@
 // Texture names (albedoMap, normalMap, metallicRoughnessMap, aoMap) are
 // provided by the adapter's bindless slot macros.
 
+#include "Includes/foliage_coverage.glsl"
+
 float GE_EZTreeLeafAlpha(vec4 albedo)
 {
     const float kAuthoredAlphaMax = 0.999;
@@ -41,12 +43,28 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec2 uvMR = GE_TransformUV(sIn.uv0, sIn.textureST[2], sIn.textureST2[2]);
     vec2 uvNormal = GE_TransformUV(sIn.uv0, sIn.textureST[1], sIn.textureST2[1]);
 
-    vec4 albedo = texture(albedoMap, uvAlbedo);
-    float leafAlpha = GE_EZTreeLeafAlpha(albedo);
-    float colorTrust = smoothstep(0.45, 0.95, leafAlpha);
+    // A far leaf reads the last levels, where the filtered alpha falls under the cutoff. There the
+    // coverage test compares the alpha with the leaf's seed (UV1.x). The alpha of that test keeps at
+    // least 32 texels across, so a passing leaf keeps a leaf shape. The color keeps the sampler's
+    // own level, because a finer color level makes far leaves grainy. Depth-only variants read no
+    // color, so they make one sample.
+    vec2 uvDx = dFdx(uvAlbedo);
+    vec2 uvDy = dFdy(uvAlbedo);
+    float footprint = GE_FoliageFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
+    float tailWeight = GE_FoliageTailWeight(footprint);
+    bool boundShape = footprint > kFoliageShapeFootprint;
+    float shapeGradient = kFoliageShapeFootprint * exp2(-GE_MATERIAL_MIP_BIAS);
+    vec2 shapeDx = boundShape ? vec2(shapeGradient, 0.0) : uvDx;
+    vec2 shapeDy = boundShape ? vec2(0.0, shapeGradient) : uvDy;
+    vec4 shapeSample = textureGrad(albedoMap, uvAlbedo, shapeDx, shapeDy);
+    vec4 albedo = shapeSample;
+    if (boundShape)
+        albedo = textureGrad(albedoMap, uvAlbedo, uvDx, uvDy);
+    float colorTrust = max(smoothstep(0.45, 0.95, GE_EZTreeLeafAlpha(albedo)), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
-    o.opacity = leafAlpha * Mat.uBaseColor.a;
+    o.opacity = GE_FoliageCoverageOpacity(GE_EZTreeLeafAlpha(shapeSample) * Mat.uBaseColor.a,
+                                          clamp(Props.alphaCutoff, 0.0, 1.0), tailWeight, sIn.uv1.x);
 
     vec4 mr = texture(metallicRoughnessMap, uvMR);
     o.roughness = mr.g * Mat.uParams0.y;
