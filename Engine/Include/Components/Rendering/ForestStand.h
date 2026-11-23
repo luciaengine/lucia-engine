@@ -8,20 +8,23 @@
 namespace GameEngine {
 namespace Components {
 
-/// A cooked forest stand on its overview entity: the entity whose MeshRenderer holds the cooked
-/// overview mesh with its render layers set to None. The forest stand system draws the overview
-/// from the archive's pages and, with a tree model, the trees near the camera. The stand draws at
-/// the archive's world positions; the system ignores the entity's transform.
+/// A cooked forest stand on the entity whose MeshRenderer holds its overview mesh, with render layers
+/// None. It draws the overview and, with a tree model, the trees near the camera, at the archive's
+/// world positions; the entity's transform has no effect.
 struct ForestStand
 {
+    /// The highest Near Mesh Budget that a device tier draws.
+    static constexpr uint32 kMaxNearMeshBudget = 256;
+
     /// The packed placement archive (.geforest) that the overview mesh was cooked from.
     ForestPlacementArchiveRef Archive;
     /// The tree model with its impostor setting on. Empty draws the overview only.
     ModelRef TreeModel;
-    /// Meters from the camera within which the stand draws trees instead of the overview.
+    /// Meters from the camera within which the stand draws trees instead of the overview. 0 draws
+    /// the overview only.
     float32 DetailDistance = 400.0f;
     /// The most placements near the camera that draw the tree mesh instead of its impostor card.
-    /// 0 draws cards only. The device tier caps it.
+    /// 0 draws cards only. The device tier caps it at kMaxNearMeshBudget, or 128 on the compatibility tier.
     uint32 NearMeshBudget = 0;
 };
 

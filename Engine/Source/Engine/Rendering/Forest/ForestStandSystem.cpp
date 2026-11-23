@@ -13,9 +13,11 @@
 #include "Types/PathUtils.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <memory>
 #include <numeric>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,8 +38,8 @@ struct ForestStandResidency
 
 constexpr ForestStandResidency kCompatibilityResidency{
     .DetailSlots = 128, .TransitionSlots = 4, .ReadsPerFrame = 4, .NearMeshCap = 128};
-constexpr ForestStandResidency kDefaultResidency{
-    .DetailSlots = 512, .TransitionSlots = 0, .ReadsPerFrame = 12, .NearMeshCap = 256};
+constexpr ForestStandResidency kDefaultResidency{.DetailSlots = 512, .TransitionSlots = 0, .ReadsPerFrame = 12,
+                                                  .NearMeshCap = Components::ForestStand::kMaxNearMeshBudget};
 
 const ForestStandResidency& ResidencyFor(const Rendering::RendererProfile& profile)
 {
@@ -52,7 +54,7 @@ std::string DescribeEntity(const ECS::World& world, ECS::EntityHandle entity)
 }
 
 // The overview mesh problem of a MeshRenderer, or empty when the stand can draw it.
-std::string DescribeRendererProblem(const Components::MeshRenderer* renderer)
+std::string_view DescribeRendererProblem(const Components::MeshRenderer* renderer)
 {
     if (!renderer)
         return "has no MeshRenderer. Add a MeshRenderer with the overview mesh that ForestPlacementCook wrote.";
@@ -86,10 +88,11 @@ uint32 CountPlacements(const ForestPlacementRuntime& placements)
 
 } // namespace
 
+// Detail Distance compares by bits, so a NaN distance equals itself and does not attach again.
 bool ForestStandSystem::StandSource::operator==(const StandSource& other) const
 {
     return Settings.Archive == other.Settings.Archive && Settings.TreeModel == other.Settings.TreeModel &&
-           Settings.DetailDistance == other.Settings.DetailDistance &&
+           std::bit_cast<uint32>(Settings.DetailDistance) == std::bit_cast<uint32>(other.Settings.DetailDistance) &&
            Settings.NearMeshBudget == other.Settings.NearMeshBudget && OverviewModel == other.OverviewModel &&
            OverviewMesh == other.OverviewMesh && RendererValid == other.RendererValid;
 }
@@ -100,6 +103,14 @@ ForestStandSystem::ForestStandSystem(RenderServices* renderServices, AssetManage
 }
 
 ForestStandSystem::~ForestStandSystem() = default;
+
+const ForestStandSystem::StandStatus* ForestStandSystem::FindStatus(uint64 worldId, ECS::EntityHandle entity) const
+{
+    if (worldId != m_WorldId)
+        return nullptr;
+    const Stand* stand = m_Stands.Find(entity);
+    return stand ? &stand->Status : nullptr;
+}
 
 void ForestStandSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 {
@@ -169,11 +180,11 @@ void ForestStandSystem::Reconcile(ECS::World& world)
             stands.InsertOrAssign(entity, std::move(*kept));
             continue;
         }
-        std::string problem;
         Stand stand{.Source = source};
-        stand.Registration = Attach(world, entity, source, problem);
-        if (!problem.empty())
-            Logger::Log::Warning("Forest stand {} {}", DescribeEntity(world, entity), problem);
+        stand.Registration = Attach(world, entity, source, stand.Status.Problem);
+        stand.Status.Attached = static_cast<bool>(stand.Registration);
+        if (!stand.Status.Problem.empty())
+            Logger::Log::Warning("Forest stand {} {}", DescribeEntity(world, entity), stand.Status.Problem);
         stands.InsertOrAssign(entity, std::move(stand));
     }
     m_Stands = std::move(stands);
@@ -197,10 +208,11 @@ ScopedSubscription ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandl
     }
 
     const ForestStandResidency& residency = ResidencyFor(m_RenderServices->GetProfile());
-    bool wantsTrees = !settings.TreeModel.IsNull();
+    // A Detail Distance of 0 draws the overview only.
+    bool wantsTrees = !settings.TreeModel.IsNull() && settings.DetailDistance != 0.0f;
     if (wantsTrees && !(std::isfinite(settings.DetailDistance) && settings.DetailDistance > 0.0f))
     {
-        problem = "draws the overview only: Detail Distance must be more than 0 meters.";
+        problem = "draws the overview only: Detail Distance must be a number of meters, 0 or more.";
         wantsTrees = false;
     }
     if (wantsTrees && !m_Assets->GetRegistry().IsAssetRegistered(settings.TreeModel.ToGuid()))

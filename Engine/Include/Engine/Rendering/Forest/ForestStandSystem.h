@@ -24,16 +24,21 @@ namespace GameEngine::Engine::Renderer
 {
 
 class RenderServices;
-struct ForestStandSystemTestAccess;
 
-/// Attaches a packed forest stand for each entity with a ForestStand component, in the Editor and
-/// the Player alike. It attaches when the entity appears or when its ForestStand or MeshRenderer
-/// changes, and it releases the stand when the entity or the component goes, and when the world
-/// starts a new run of entity handles (a scene load clears the world). A stand that cannot attach
-/// logs one warning with the fix and does not stop the scene. Main thread: it registers draws.
+/// Attaches the packed forest stand of each ForestStand entity, and releases it when the entity, the
+/// component or the scene goes. A stand that cannot attach logs one warning. Main thread.
 class ForestStandSystem : public ECS::ISystem
 {
 public:
+    /// What the stand of one entity draws.
+    struct StandStatus
+    {
+        /// True when the stand draws at least its overview.
+        bool Attached = false;
+        /// The warning the stand logged, after the entity name, or empty. For example "has no MeshRenderer. ..."
+        std::string Problem;
+    };
+
     ForestStandSystem(RenderServices* renderServices, AssetManager* assets);
     ~ForestStandSystem() override;
 
@@ -42,8 +47,11 @@ public:
     // Draw registration and the archive open run on the main thread.
     bool RequiresExclusiveUpdate() const override { return true; }
 
+    /// The stand of `entity` in world `worldId` as of the last update, or null when the system holds no
+    /// stand for it.
+    const StandStatus* FindStatus(uint64 worldId, ECS::EntityHandle entity) const;
+
 private:
-    friend struct ForestStandSystemTestAccess;
 
     // What the attached stand was made from. A change to any field attaches the stand again.
     struct StandSource
@@ -61,6 +69,7 @@ private:
         StandSource Source;
         // Empty when the stand could not attach; the source then holds the warning back until it changes.
         ScopedSubscription Registration;
+        StandStatus Status;
     };
 
     // True when a ForestStand or the MeshRenderer of a stand changed, or an entity came or went.
