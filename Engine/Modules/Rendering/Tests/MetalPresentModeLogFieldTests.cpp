@@ -4,7 +4,7 @@
 
 using namespace GameEngine::Rendering;
 
-// A timing window reads the present mode back from the swapchain Info log line.
+// The scene benchmark reads the present mode from the swapchain Info log line.
 // The Metal line uses the Vulkan names, so one parser reads both backends.
 TEST(MetalPresentModeLogField, NamesTheDisplaySyncSettingAsAVulkanPresentMode)
 {
