@@ -102,7 +102,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     }
     o.opacity = cardColor.a;
     if (mip > 0.5)
-        o.opacity = GE_FoliageCoverageOpacity(cardColor.a, clamp(Props.alphaCutoff, 0.0, 1.0), mip, gl_FragCoord.xy);
+        o.opacity = GE_FoliageCoverageOpacity(cardColor.a, clamp(Props.alphaCutoff, 0.0, 1.0), mip, gl_FragCoord.xy, 0.0);
 #ifdef GE_DEPTH_ONLY_FRAGMENT
     return o;
 #endif

@@ -26,13 +26,14 @@ float GE_FoliageCoarseWeight(float mip)
 // test is the material cutoff. At coarse levels it is a screen-space threshold on the filtered
 // alpha. A filtered texel of a 0/1 alpha mask holds the share of covered texels under it, so the
 // share of passing pixels stays at the base coverage at every level, also where the filtered
-// alpha is below the cutoff. The threshold depends only on the pixel, so every pass keeps the
-// same pixels.
-float GE_FoliageCoverageOpacity(float alpha, float cutoff, float mip, vec2 fragCoord)
+// alpha is below the cutoff. The threshold depends only on the pixel and on `layerSeed`, so every
+// pass keeps the same pixels. Overlapping surfaces with different seeds in [0, 1) pass
+// independently, so their coverage adds up as the coverage of separate leaves does.
+float GE_FoliageCoverageOpacity(float alpha, float cutoff, float mip, vec2 fragCoord, float layerSeed)
 {
     float cutout = step(cutoff, alpha);
     float coverage = mix(cutout, alpha, GE_FoliageCoarseWeight(mip));
-    return coverage > GE_FoliageScreenThreshold(fragCoord) ? 1.0 : 0.0;
+    return coverage > fract(GE_FoliageScreenThreshold(fragCoord) + layerSeed) ? 1.0 : 0.0;
 }
 
 #endif

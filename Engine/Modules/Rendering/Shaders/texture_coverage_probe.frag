@@ -14,7 +14,7 @@ void main()
     vec4 texel=textureLod(sourceImage,uv+probe.phase,probe.lod);
     // Mode 1: the same inclusive cutoff boundary as the production forward/depth adapters.
     // Mode 2: the production foliage coverage test.
-    float opacity=probe.mode==2u?GE_FoliageCoverageOpacity(texel.a,probe.cutoff,probe.lod,gl_FragCoord.xy):texel.a;
+    float opacity=probe.mode==2u?GE_FoliageCoverageOpacity(texel.a,probe.cutoff,probe.lod,gl_FragCoord.xy,0.0):texel.a;
     if(opacity<probe.cutoff) discard;
     result=vec4(1.0);
 }
