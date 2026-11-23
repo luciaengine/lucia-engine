@@ -59,7 +59,13 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec4 shapeSample = textureGrad(albedoMap, uvAlbedo, shapeDx, shapeDy);
     vec4 albedo = shapeSample;
     if (boundShape)
-        albedo = textureGrad(albedoMap, uvAlbedo, uvDx, uvDy);
+    {
+        // On a card seen almost edge-on, the sampler's level can hold no leaf where the shape sample
+        // passes, and the color of an empty texel is not the leaf color. There the shape sample
+        // gives the color.
+        vec4 colorSample = textureGrad(albedoMap, uvAlbedo, uvDx, uvDy);
+        albedo = mix(shapeSample, colorSample, smoothstep(0.02, 0.1, GE_EZTreeLeafAlpha(colorSample)));
+    }
     float colorTrust = max(smoothstep(0.45, 0.95, GE_EZTreeLeafAlpha(albedo)), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
