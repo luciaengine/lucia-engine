@@ -1,6 +1,6 @@
-#include "Engine/Rendering/Forest/ForestImpostorDraw.h"
+#include "ForestImpostorDraw.h"
 
-#include "Engine/Rendering/Forest/ForestPlacementGpuData.h"
+#include "ForestPlacementGpuData.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/RenderServices.h"

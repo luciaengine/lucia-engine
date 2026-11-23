@@ -1,9 +1,9 @@
 #include "Engine/Rendering/Forest/ForestPlacementFeature.h"
 
 #include "Assets/AssetManager.h"
-#include "Engine/Rendering/Forest/ForestImpostorDraw.h"
-#include "Engine/Rendering/Forest/ForestNearMeshCandidates.h"
-#include "Engine/Rendering/Forest/ForestPlacementGpuData.h"
+#include "ForestImpostorDraw.h"
+#include "ForestNearMeshCandidates.h"
+#include "ForestPlacementGpuData.h"
 #include "Engine/Rendering/Forest/ForestPlacementRenderState.h"
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <numbers>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -172,6 +173,17 @@ void ForestPlacementFeature::ClearCards(uint64 world)
             session->Card.reset();
 }
 
+namespace
+{
+// The farthest point of the card from the tree root at unit scale: its corner and its largest sway.
+float CardReach(const ForestImpostorCard& card)
+{
+    const Mathematics::Vector3 center{card.Bounds.x, card.Bounds.y, card.Bounds.z};
+    return center.Length() + card.Bounds.w * std::numbers::sqrt2_v<float> + card.Sway.MaxDisplacement;
+}
+
+} // namespace
+
 void ForestPlacementFeature::PublishCard(uint64 world, const GUID& model, const ForestImpostorCard& card,
                                         std::span<const ImpostorBakePart> sources)
 {
@@ -258,26 +270,24 @@ struct ForestSourcePart
     VertexAttributeFlags Attributes;
 };
 
-ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEmitContext& context,
-    const CameraData& camera, const ForestPlacementView& view, MaterialKeyword pass, const PipelineFormatKey& format)
+// The drawable source parts of the tree, with the card entry coverage and the deformation margin
+// of their materials. Call inside the registry's table scope.
+struct ForestNearParts
 {
-    RenderServices& services = *context.Services;
-    const auto* scene = services.GetGPUScene();
-    if (session.NearBudget == 0 || session.SourceParts.empty() || !scene || camera.cameraPos.w == 1.0f)
-        return nullptr;
+    std::vector<ForestSourcePart> Parts;
+    float Cutoff = 0.0f;
+    float DeformationMargin = 0.0f;
+};
 
+std::optional<ForestNearParts> ResolveNearParts(const ForestPlacementSession& session, RenderServices& services,
+    const MeshGPURegistry& registry, const RenderServices::ViewSseScales& scales, ViewId viewId)
+{
     const auto& card = *session.Card;
-    float cutoff = card.SwitchCoverage > 0.0f ? card.SwitchCoverage :
-        ImpostorStage::DefaultSwitchCoverage(services, context.ViewId);
-    const uint32 force = services.ResolveViewForceLOD(context.ViewId);
-    const auto scales = services.ComputeViewSseScales(context.ViewId);
-    const auto& registry = services.GetMeshGPURegistry();
-    const MeshGPURegistry::TableScope scope(registry);
-    const auto& meshRows = scene->GetMeshes();
+    const auto& meshRows = services.GetGPUScene()->GetMeshes();
     const auto deformationMargins = services.Materials().MaterialDeformationMarginSpan();
-    float deformationMargin = 0.0f;
-    std::vector<ForestSourcePart> parts;
-    parts.reserve(session.SourceParts.size());
+    ForestNearParts near;
+    near.Cutoff = card.SwitchCoverage > 0.0f ? card.SwitchCoverage : ImpostorStage::DefaultSwitchCoverage(services, viewId);
+    near.Parts.reserve(session.SourceParts.size());
     for (const auto& source : session.SourceParts)
     {
         const auto* mesh = registry.Find(source.Mesh);
@@ -286,32 +296,110 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
         if (!mesh || !surface || mesh->gpuMeshIndex >= meshRows.size() || mesh->indexCount == 0 ||
             surface->GetGpuSceneMaterialIndex() == 0xFFFFFFFFu || IsSkinned(mesh->vertexFlags) ||
             !registry.TryGetDrawableBindings(*mesh, bindings))
-            return nullptr;
+            return std::nullopt;
         const auto& lod = meshRows[mesh->gpuMeshIndex];
-        cutoff = std::min(cutoff, ForestPartCardEntryCoverage(lod, scales.Default, scales.Tight));
+        near.Cutoff = std::min(near.Cutoff, ForestPartCardEntryCoverage(lod, scales.Default, scales.Tight));
         const uint32 materialIndex = surface->GetGpuSceneMaterialIndex();
         if (materialIndex < deformationMargins.size())
-            deformationMargin = std::max(deformationMargin, deformationMargins[materialIndex]);
-        parts.push_back({mesh, &lod, surface, source.Mesh,
-                         BoundStreamVertexFlags(*mesh, bindings, surface->IgnoresVertexColor())});
+            near.DeformationMargin = std::max(near.DeformationMargin, deformationMargins[materialIndex]);
+        near.Parts.push_back({mesh, &lod, surface, source.Mesh,
+                              BoundStreamVertexFlags(*mesh, bindings, surface->IgnoresVertexColor())});
     }
-    if (force != 0xFFFFFFFFu || registry.GetLodSelectionMode() == LodSelectionMode::Off)
-        cutoff = 0.0f;
+    return near;
+}
 
-    const ForestNearMeshView nearView{view, std::abs(camera.proj[1][1]), services.GetLODGlobalBias(),
-                                    cutoff, deformationMargin};
-    const std::span<const ForestMeshOwnedPlacement> previous = session.NearOwnerView == context.ViewId
-        ? std::span<const ForestMeshOwnedPlacement>(session.NearOwners) : std::span<const ForestMeshOwnedPlacement>{};
-    CollectForestNearMeshCandidates(*session.Placements, session.Plan, nearView, card.Bounds,
-                                    session.NearBudget, session.NearDemand, previous);
-    if (session.NearDemand.empty())
-        return nullptr;
-
+// True when every part's color variant for the near-mesh pass is ready to record.
+bool WarmNearParts(RenderServices& services, std::span<const ForestSourcePart> parts, MaterialKeyword pass,
+                   const PipelineFormatKey& format)
+{
     bool warm = true;
     for (const auto& part : parts)
         warm = services.Materials().Variants().WarmColorVariant(*part.Surface, part.Attributes,
             part.Mesh->topology, pass | kForestMeshKeywords, services.GetFrontFace(), format) && warm;
-    if (!warm)
+    return warm;
+}
+
+// Writes one draw per part and LOD, and each tree's transform into that draw's range of the upload.
+bool WriteNearCommands(RGFrame& frame, ForestNearDraw& draw, std::span<const ForestSourcePart> parts,
+                       std::span<const ForestMeshTransform> treeTransforms, std::span<const float> coverages,
+                       const RenderServices::ViewSseScales& scales, uint32 force, std::byte* transforms)
+{
+    static const auto producer = DrawProducerRegistry::Register("ForestNearMeshes");
+    std::vector<uint32> treeLods(treeTransforms.size());
+    uint32 firstTransform = 0;
+    for (const auto& part : parts)
+    {
+        std::array<uint32, kMaxMeshLODs> lodCounts{};
+        for (size_t tree = 0; tree < treeTransforms.size(); ++tree)
+        {
+            const uint32 lod = SelectForestMeshLod(*part.Lod, coverages[tree], scales.Default, scales.Tight, force);
+            treeLods[tree] = lod;
+            ++lodCounts[lod];
+        }
+
+        std::array<uint32, kMaxMeshLODs> writeOffsets{};
+        for (uint32 lod = 0; lod < lodCounts.size(); ++lod)
+        {
+            const uint32 count = lodCounts[lod];
+            if (count == 0)
+                continue;
+            const auto range = part.Mesh->DrawForLod(lod);
+            if (range.IndexCount == 0 || range.VertexOffset > static_cast<uint32>(std::numeric_limits<int32>::max()))
+                return false;
+            auto* constants = frame.AllocatePassData<ForestMeshDrawConstants>();
+            *constants = {firstTransform, part.Surface->GetGpuSceneMaterialIndex()};
+            writeOffsets[lod] = firstTransform;
+            firstTransform += count;
+
+            DrawCommand command{};
+            command.Material = part.Surface;
+            command.Geometry.Mesh = part.Handle;
+            command.PassKeywords = kForestMeshKeywords;
+            command.IndexCount = range.IndexCount;
+            command.FirstIndex = range.FirstIndex;
+            command.VertexOffset = static_cast<int32>(range.VertexOffset);
+            command.InstanceCount = count;
+            command.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
+            command.Bindings.Buffers = std::span(&draw.Buffer, 1u);
+            command.Producer = producer;
+            draw.Commands.push_back(command);
+        }
+        // Write each LOD range directly to the upload ring in candidate order.
+        for (size_t tree = 0; tree < treeTransforms.size(); ++tree)
+        {
+            const uint32 offset = writeOffsets[treeLods[tree]]++;
+            std::memcpy(transforms + size_t{offset} * sizeof(ForestMeshTransform),
+                        &treeTransforms[tree], sizeof(ForestMeshTransform));
+        }
+    }
+    return true;
+}
+
+ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEmitContext& context,
+    const CameraData& camera, const ForestPlacementView& view, MaterialKeyword pass, const PipelineFormatKey& format)
+{
+    RenderServices& services = *context.Services;
+    const bool orthographic = camera.cameraPos.w == 1.0f;
+    if (session.NearBudget == 0 || session.SourceParts.empty() || !services.GetGPUScene() || orthographic)
+        return nullptr;
+
+    const uint32 force = services.ResolveViewForceLOD(context.ViewId);
+    const auto scales = services.ComputeViewSseScales(context.ViewId);
+    const auto& registry = services.GetMeshGPURegistry();
+    const MeshGPURegistry::TableScope scope(registry);
+    auto near = ResolveNearParts(session, services, registry, scales, context.ViewId);
+    if (!near)
+        return nullptr;
+    if (force != 0xFFFFFFFFu || registry.GetLodSelectionMode() == LodSelectionMode::Off)
+        near->Cutoff = 0.0f;
+
+    const ForestNearMeshView nearView{view, std::abs(camera.proj[1][1]), services.GetLODGlobalBias(),
+                                    near->Cutoff, near->DeformationMargin};
+    const std::span<const ForestMeshOwnedPlacement> previous = session.NearOwnerView == context.ViewId
+        ? std::span<const ForestMeshOwnedPlacement>(session.NearOwners) : std::span<const ForestMeshOwnedPlacement>{};
+    CollectForestNearMeshCandidates(*session.Placements, session.Plan, nearView, session.Card->Bounds,
+                                    session.NearBudget, session.NearDemand, previous);
+    if (session.NearDemand.empty() || !WarmNearParts(services, near->Parts, pass, format))
         return nullptr;
 
     auto& frame = *context.Frame;
@@ -333,7 +421,7 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
     if (draw->Owners.empty())
         return nullptr;
 
-    const auto bytes = treeTransforms.size() * parts.size() * sizeof(ForestMeshTransform);
+    const auto bytes = treeTransforms.size() * near->Parts.size() * sizeof(ForestMeshTransform);
     const auto upload = frame.AllocUpload(bytes);
     if (!upload.Valid())
         return nullptr;
@@ -341,57 +429,54 @@ ForestNearDraw* PrepareNearDraw(ForestPlacementSession& session, const ForwardEm
     if (!draw->Upload.IsValid())
         return nullptr;
     draw->Buffer = {HashStringId("ForestMeshTransforms"), upload.Buffer, upload.Offset, bytes};
-
-    auto* transforms = static_cast<std::byte*>(upload.Ptr);
-    std::vector<uint32> treeLods(treeTransforms.size());
-    uint32 firstTransform = 0;
-    static const auto producer = DrawProducerRegistry::Register("ForestNearMeshes");
-    for (const auto& part : parts)
-    {
-        std::array<uint32, kMaxMeshLODs> lodCounts{};
-        for (size_t tree = 0; tree < treeTransforms.size(); ++tree)
-        {
-            const uint32 lod = SelectForestMeshLod(*part.Lod, coverages[tree], scales.Default, scales.Tight, force);
-            treeLods[tree] = lod;
-            ++lodCounts[lod];
-        }
-
-        std::array<uint32, kMaxMeshLODs> writeOffsets{};
-        for (uint32 lod = 0; lod < lodCounts.size(); ++lod)
-        {
-            const uint32 count = lodCounts[lod];
-            if (count == 0)
-                continue;
-            const auto range = part.Mesh->DrawForLod(lod);
-            if (range.IndexCount == 0 || range.VertexOffset > static_cast<uint32>(std::numeric_limits<int32>::max()))
-                return nullptr;
-            auto* constants = frame.AllocatePassData<ForestMeshDrawConstants>();
-            *constants = {firstTransform, part.Surface->GetGpuSceneMaterialIndex()};
-            writeOffsets[lod] = firstTransform;
-            firstTransform += count;
-
-            DrawCommand command{};
-            command.Material = part.Surface;
-            command.Geometry.Mesh = part.Handle;
-            command.PassKeywords = kForestMeshKeywords;
-            command.IndexCount = range.IndexCount;
-            command.FirstIndex = range.FirstIndex;
-            command.VertexOffset = static_cast<int32>(range.VertexOffset);
-            command.InstanceCount = count;
-            command.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
-            command.Bindings.Buffers = std::span(&draw->Buffer, 1u);
-            command.Producer = producer;
-            draw->Commands.push_back(command);
-        }
-        // Write each LOD range directly to the upload ring in candidate order.
-        for (size_t tree = 0; tree < treeTransforms.size(); ++tree)
-        {
-            const uint32 offset = writeOffsets[treeLods[tree]]++;
-            std::memcpy(transforms + size_t{offset} * sizeof(ForestMeshTransform),
-                        &treeTransforms[tree], sizeof(ForestMeshTransform));
-        }
-    }
+    if (!WriteNearCommands(frame, *draw, near->Parts, treeTransforms, coverages, scales, force,
+                           static_cast<std::byte*>(upload.Ptr)))
+        return nullptr;
     return draw;
+}
+
+// Emits the near meshes and records the placements they own for the frame.
+void EmitNearMeshes(ForestPlacementSession& session, const ForwardEmitContext& context, const ForestNearDraw& near)
+{
+    auto& services = *context.Services;
+    session.PendingNearOwners.assign(near.Owners.begin(), near.Owners.end());
+    std::ranges::sort(session.PendingNearOwners);
+    services.EmitForwardSampledBufferRead(*context.Frame, context.ViewId, near.Upload, RGBufferRead::Storage,
+                                         ForwardBufferReaders::WorldPass);
+    for (const auto& command : near.Commands)
+        services.EmitForwardCommand(context.ViewId, command, ForwardDrawDepth::ColourPass);
+    if (!session.EmittedNearMeshes)
+    {
+        session.EmittedNearMeshes = true;
+        LOG_INFO("Forest: registered {} near mesh placements in {} batches", near.Owners.size(), near.Commands.size());
+    }
+}
+
+// Streams the pages the view plans. False when the session draws no details this frame.
+bool PlanDetails(ForestPlacementSession& session, const ForwardEmitContext& context, const ForestPlacementView& view)
+{
+    auto& frame = *context.Frame;
+    if (session.NearBudget != 0)
+    {
+        session.PendingNearFrame.Stamp(frame);
+        session.PendingNearView = context.ViewId;
+        session.PendingNearOwners.clear();
+    }
+
+    if (!session.Stream)
+    {
+        session.WantsCard = session.Placements->CanPrefetchDetails(view);
+        if (!session.WantsCard)
+            return false;
+    }
+    if (!session.EnsureGpu(*context.Device))
+        return false;
+    if (!session.Stream->Prepare(*session.Assets, *context.Device, frame, view, session.Plan))
+        return false;
+    session.Graph = &frame;
+    session.Declared.Stamp(frame);
+    session.WantsCard = session.Plan.WantsDetails;
+    return true;
 }
 
 } // namespace
@@ -406,28 +491,9 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
         (session.Graph && session.Graph != &frame) || session.Declared.IsFor(frame) ||
         !ImpostorStage::IsEnabled())
         return false;
-
-    if (session.NearBudget != 0)
-    {
-        session.PendingNearFrame.Stamp(frame);
-        session.PendingNearView = context.ViewId;
-        session.PendingNearOwners.clear();
-    }
-
     view.DetailDistance = session.DetailDistance;
-    if (!session.Stream)
-    {
-        session.WantsCard = session.Placements->CanPrefetchDetails(view);
-        if (!session.WantsCard)
-            return false;
-    }
-    if (!session.EnsureGpu(*context.Device))
+    if (!PlanDetails(session, context, view))
         return false;
-    if (!session.Stream->Prepare(*session.Assets, *context.Device, frame, view, session.Plan))
-        return false;
-    session.Graph = &frame;
-    session.Declared.Stamp(frame);
-    session.WantsCard = session.Plan.WantsDetails;
     if (session.Plan.DetailedDraws.empty())
     {
         standRanges.swap(session.Plan.StandDraws);
@@ -437,6 +503,8 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     if (!card)
         return false;
 
+    // The keywords and formats are the view's previous frame: on the frame they change, the card
+    // warms the old variant, the record skips it, and the near forest comes back a frame later.
     const Material* material = services.Materials().Registry().Find(card->Material);
     const auto pass = services.Views().GetViewDeclaredWorldPassKeywords(context.ViewId);
     const auto format = services.Views().GetViewWorldColorFormatKey(context.ViewId);
@@ -451,9 +519,7 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     const std::span<const ForestMeshOwnedPlacement> owners = near ? std::span(near->Owners) :
         std::span<const ForestMeshOwnedPlacement>{};
     ForestPlacementGpuView gpuView{};
-    constexpr float kCardCornerRadiusScale = 1.414214f;
-    const Mathematics::Vector3 center{card->Bounds.x, card->Bounds.y, card->Bounds.z};
-    const float radius = center.Length() + card->Bounds.w * kCardCornerRadiusScale + card->Sway.MaxDisplacement;
+    const float radius = CardReach(*card);
     if (radius > session.Placements->Store().BoundRadius())
     {
         if (!session.ReportedBoundRadius)
@@ -475,20 +541,7 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
             DrawCommand{.Material = material}))
         return false;
     if (near)
-    {
-        session.PendingNearOwners.assign(owners.begin(), owners.end());
-        std::ranges::sort(session.PendingNearOwners);
-        services.EmitForwardSampledBufferRead(frame, context.ViewId, near->Upload, RGBufferRead::Storage,
-                                             ForwardBufferReaders::WorldPass);
-        for (const auto& command : near->Commands)
-            services.EmitForwardCommand(context.ViewId, command, ForwardDrawDepth::ColourPass);
-        if (!session.EmittedNearMeshes)
-        {
-            session.EmittedNearMeshes = true;
-            LOG_INFO("Forest: registered {} near mesh placements in {} batches",
-                     near->Owners.size(), near->Commands.size());
-        }
-    }
+        EmitNearMeshes(session, context, *near);
     ObservePlacementCounts(session, context, *buffers, near);
     if (!session.EmittedDetails)
     {

@@ -1,4 +1,4 @@
-#include "Engine/Rendering/Forest/ForestPlacementGpuData.h"
+#include "ForestPlacementGpuData.h"
 
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Rendering/Common/Frustum.h"

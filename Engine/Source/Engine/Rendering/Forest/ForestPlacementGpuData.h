@@ -19,6 +19,8 @@ struct alignas(16) ForestPlacementGpuPage
 static_assert(offsetof(ForestPlacementGpuPage, OriginRelative) == 16);
 static_assert(offsetof(ForestPlacementGpuPage, MeshOwned) == 32);
 static_assert(sizeof(ForestPlacementGpuPage) == 64);
+// The shader holds one page in kForestPlacementsPerSlot (forest_placement.glsl) and reads five MeshOwned words.
+static_assert(PageStreaming::PackedPlacementStore::kPlacementsPerPage <= 5 * 32);
 
 struct ForestMeshOwnedPlacement
 {

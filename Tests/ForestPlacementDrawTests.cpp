@@ -2,10 +2,10 @@
 
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
-#include "Engine/Rendering/Forest/ForestNearMeshCandidates.h"
-#include "Engine/Rendering/Forest/ForestPlacementGpuData.h"
+#include "ForestNearMeshCandidates.h"
+#include "ForestPlacementGpuData.h"
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
-#include "Engine/Rendering/Forest/ForestStandDraws.h"
+#include "ForestStandDrawProducer.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"

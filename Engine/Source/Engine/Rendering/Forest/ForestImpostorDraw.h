@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/DrawCommand.h"
-#include "Engine/Rendering/Forest/ForestPlacementCull.h"
+#include "ForestPlacementCull.h"
 
 namespace GameEngine::Engine::Renderer
 {

@@ -43,7 +43,7 @@ Apps/Editor/Source/UI/Controls/SetupStepList.cpp:files_assembling_ui:1          
 Apps/Editor/Source/main.cpp:debug_output:1                                                   # crash handler: writes to the debugger after the logger may be gone
 Apps/Editor/Source/main.cpp:printf_output:14                                                 # crash handler: writes to stderr after the logger may be gone
 Engine/Include/Engine/Build/ExportRequirements.h:named_for_a_function:1                      # the struct ExportRequirement; the rule ignores the classes a file defines (#5208)
-Engine/Include/Engine/Rendering/Forest/ForestImpostorDraw.h:one_free_function_file:1             # the packed forest card draw; the #351 splat draw of the same placements joins it
+Engine/Source/Engine/Rendering/Forest/ForestImpostorDraw.h:one_free_function_file:1              # the packed forest card draw, the one draw of the cull output, apart from the feature that declares it
 Engine/Include/Engine/Rendering/WorldDrawBuilder.h:std_thread_id_info:1                      # a thread-affinity check: the one off-pool submitter
 Engine/Include/Platform/Thread.h:sleep_poll:1                                                # Platform::SleepPrecise, the engine's one sleep
 Engine/Include/Scripting/ScriptingABI.h:float_ptr:1                                          # C ABI out-parameter: a scalar, the bar's max, as every GE_UIElement getter returns one

@@ -1,7 +1,7 @@
-#include "Engine/Rendering/Forest/ForestNearMeshCandidates.h"
+#include "ForestNearMeshCandidates.h"
 
 #include "Assets/HlodSelect.h"
-#include "Engine/Rendering/Forest/ForestPlacementGpuData.h"
+#include "ForestPlacementGpuData.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/MeshLODThresholds.h"
 #include "Rendering/Core/GPUScene.h"

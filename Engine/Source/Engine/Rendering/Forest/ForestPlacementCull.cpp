@@ -1,6 +1,6 @@
-#include "Engine/Rendering/Forest/ForestPlacementCull.h"
+#include "ForestPlacementCull.h"
 
-#include "Engine/Rendering/Forest/ForestPlacementGpuData.h"
+#include "ForestPlacementGpuData.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
 #include "Rendering/Core/PassPhase.h"
