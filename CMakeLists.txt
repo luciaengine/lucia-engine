@@ -743,12 +743,8 @@ if(WIN32)
 	endif()
 
 elseif(APPLE)
-	# macOS: locate libnethost.dylib from the installed .NET SDK/runtime
-	# Prefer DOTNET_ROOT when set, otherwise fall back to the standard install root
-	set(DOTNET_ROOT_HINT "$ENV{DOTNET_ROOT}")
-	if(DOTNET_ROOT_HINT STREQUAL "")
-	    set(DOTNET_ROOT_HINT "/usr/local/share/dotnet")
-	endif()
+	# macOS: locate libnethost.dylib in the first .NET install root that has the host pack.
+	ge_dotnet_install_roots(DOTNET_ROOT_HINTS "/usr/local/share/dotnet")
 
     # Derive RID based on architecture (osx-x64 / osx-arm64)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -764,13 +760,11 @@ elseif(APPLE)
         set(DOTNET_OSX_RID "osx-x86")
     endif()
 
-	set(DOTNET_HOST_PACK_ROOT "${DOTNET_ROOT_HINT}/packs/Microsoft.NETCore.App.Host.${DOTNET_OSX_RID}")
-	file(GLOB DOTNET_HOST_VERSIONS "${DOTNET_HOST_PACK_ROOT}/*")
-
-	if(DOTNET_HOST_VERSIONS)
+	foreach(DOTNET_ROOT_HINT ${DOTNET_ROOT_HINTS})
+	    set(DOTNET_HOST_PACK_ROOT "${DOTNET_ROOT_HINT}/packs/Microsoft.NETCore.App.Host.${DOTNET_OSX_RID}")
+	    file(GLOB DOTNET_HOST_VERSIONS "${DOTNET_HOST_PACK_ROOT}/*")
 	    # Try the newest version first
 	    ge_dotnet_versions_newest_first(DOTNET_HOST_VERSIONS)
-
 	    foreach(VERSION_PATH ${DOTNET_HOST_VERSIONS})
 	        set(DOTNET_NATIVE_PATH "${VERSION_PATH}/runtimes/${DOTNET_OSX_RID}/native")
 	        message(STATUS "Checking: ${DOTNET_NATIVE_PATH}")
@@ -783,22 +777,20 @@ elseif(APPLE)
 	            break()
 	        endif()
 	    endforeach()
-	endif()
+	    if(NETHOST_LIBRARY)
+	        break()
+	    endif()
+	endforeach()
 
 	if(NOT NETHOST_LIBRARY)
-	    message(WARNING "libnethost.dylib not found under ${DOTNET_ROOT_HINT}; CoreCLR hosting will be disabled on macOS.")
-	    message(STATUS "Searched under: ${DOTNET_HOST_PACK_ROOT}")
+	    message(WARNING "libnethost.dylib not found in the .NET host pack under ${DOTNET_ROOT_HINTS}; CoreCLR hosting will be disabled on macOS. Install the .NET 10 SDK or set DOTNET_ROOT, then configure again.")
 	else()
 	    message(STATUS "Using .NET hosting library on macOS: ${NETHOST_LIBRARY}")
 	endif()
 
 elseif(UNIX AND NOT APPLE)
-    # Linux: locate libnethost.so from the installed .NET SDK/runtime
-    # Prefer DOTNET_ROOT when set, otherwise fall back to the standard install root
-    set(DOTNET_ROOT_HINT "$ENV{DOTNET_ROOT}")
-    if(DOTNET_ROOT_HINT STREQUAL "")
-        set(DOTNET_ROOT_HINT "/usr/share/dotnet")
-    endif()
+    # Linux: locate libnethost.so in the first .NET install root that has the host pack.
+    ge_dotnet_install_roots(DOTNET_ROOT_HINTS "/usr/share/dotnet")
 
     # Derive RID based on architecture (x64 / arm64)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -813,12 +805,10 @@ elseif(UNIX AND NOT APPLE)
         set(DOTNET_LINUX_RID "linux-x86")
     endif()
 
-    set(DOTNET_HOST_PACK_ROOT "${DOTNET_ROOT_HINT}/packs/Microsoft.NETCore.App.Host.${DOTNET_LINUX_RID}")
-    file(GLOB DOTNET_HOST_VERSIONS "${DOTNET_HOST_PACK_ROOT}/*")
-
-    if(DOTNET_HOST_VERSIONS)
+    foreach(DOTNET_ROOT_HINT ${DOTNET_ROOT_HINTS})
+        set(DOTNET_HOST_PACK_ROOT "${DOTNET_ROOT_HINT}/packs/Microsoft.NETCore.App.Host.${DOTNET_LINUX_RID}")
+        file(GLOB DOTNET_HOST_VERSIONS "${DOTNET_HOST_PACK_ROOT}/*")
         ge_dotnet_versions_newest_first(DOTNET_HOST_VERSIONS)
-
         foreach(VERSION_PATH ${DOTNET_HOST_VERSIONS})
             set(DOTNET_NATIVE_PATH "${VERSION_PATH}/runtimes/${DOTNET_LINUX_RID}/native")
             message(STATUS "Checking: ${DOTNET_NATIVE_PATH}")
@@ -831,11 +821,13 @@ elseif(UNIX AND NOT APPLE)
                 break()
             endif()
         endforeach()
-    endif()
+        if(NETHOST_LIBRARY)
+            break()
+        endif()
+    endforeach()
 
     if(NOT NETHOST_LIBRARY)
-        message(WARNING "libnethost.so not found under ${DOTNET_ROOT_HINT}; CoreCLR hosting will be disabled on Linux.")
-        message(STATUS "Searched under: ${DOTNET_HOST_PACK_ROOT}")
+        message(WARNING "libnethost.so not found in the .NET host pack under ${DOTNET_ROOT_HINTS}; CoreCLR hosting will be disabled on Linux. Install the .NET 10 SDK or set DOTNET_ROOT, then configure again.")
     else()
         message(STATUS "Using .NET hosting library on Linux: ${NETHOST_LIBRARY}")
     endif()
