@@ -49,8 +49,11 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec2 uvDy = dFdy(uvAlbedo);
     float footprint = GE_FoliageFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
     float tailWeight = GE_FoliageTailWeight(footprint);
-    float shapeScale = min(1.0, kFoliageShapeFootprint / footprint);
-    vec4 albedo = textureGrad(albedoMap, uvAlbedo, uvDx * shapeScale, uvDy * shapeScale);
+    bool boundShape = footprint > kFoliageShapeFootprint;
+    float shapeGradient = kFoliageShapeFootprint * exp2(-GE_MATERIAL_MIP_BIAS);
+    vec2 sampleDx = boundShape ? vec2(shapeGradient, 0.0) : uvDx;
+    vec2 sampleDy = boundShape ? vec2(0.0, shapeGradient) : uvDy;
+    vec4 albedo = textureGrad(albedoMap, uvAlbedo, sampleDx, sampleDy);
     float leafAlpha = GE_EZTreeLeafAlpha(albedo);
     float colorTrust = max(smoothstep(0.45, 0.95, leafAlpha), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
