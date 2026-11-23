@@ -228,6 +228,35 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     EXPECT_TRUE(candidates.empty());
 }
 
+Rendering::ViewId AddForestStandView(Engine::Renderer::RenderServices& services, double x,
+                                     uint64 world, Rendering::RenderLayerMask layers)
+{
+    using namespace Engine::Renderer;
+    using namespace Mathematics;
+    Rendering::CameraData camera{};
+    camera.view = MakeLookAtLH({}, {0, 0, 1}, {0, 1, 0});
+    camera.proj = MakeOrthographicLH_ZO_ReverseZ(-25, 25, -25, 30, 0.1f, 80.0f);
+    camera.viewProj = camera.proj * camera.view;
+    SetCameraEye(camera, {x, 8.0, 511'999'990.0});
+    const auto cameraId = services.Views().AllocateCamera("ForestStandCamera");
+    services.Views().SetCameraData(cameraId, camera, {});
+    const auto view = services.Views().AllocateView("ForestStandView", cameraId);
+    services.Views().SetViewWorldId(view, world);
+    services.Views().SetViewRenderLayerMask(view, layers);
+    return view;
+}
+
+Engine::Renderer::ForestStandDrawHeads MakeForestStandDrawHeads(bool includeDepth)
+{
+    Engine::Renderer::ForestStandDrawHeads heads{};
+    heads.Color.FirstIndex = 512;
+    heads.Color.VertexOffset = 19;
+    heads.Color.IndexCount = 12;
+    if (includeDepth)
+        heads.Depth = heads.Color;
+    return heads;
+}
+
 TEST_F(ForestPlacementDrawTest, EmitsStandRangesAndMatchingDepthOnlyIntoEligibleViews)
 {
     using namespace Engine::Renderer;
@@ -241,38 +270,19 @@ TEST_F(ForestPlacementDrawTest, EmitsStandRangesAndMatchingDepthOnlyIntoEligible
 
     RenderServices services;
     constexpr uint64 kForestWorld = 45;
-    const auto makeView = [&](double x, uint64 world, Rendering::RenderLayerMask layers)
-    {
-        Rendering::CameraData camera{};
-        camera.view = MakeLookAtLH({}, {0, 0, 1}, {0, 1, 0});
-        camera.proj = MakeOrthographicLH_ZO_ReverseZ(-25, 25, -25, 30, 0.1f, 80.0f);
-        camera.viewProj = camera.proj * camera.view;
-        SetCameraEye(camera, {x, 8.0, 511'999'990.0});
-        const auto cam = services.Views().AllocateCamera("ForestStandCamera");
-        services.Views().SetCameraData(cam, camera, {});
-        const auto view = services.Views().AllocateView("ForestStandView", cam);
-        services.Views().SetViewWorldId(view, world);
-        services.Views().SetViewRenderLayerMask(view, layers);
-        return view;
-    };
     const auto defaultLayer = Rendering::RenderLayerMask::Default();
-    const auto first = makeView(512'000'000.0, kForestWorld, defaultLayer);
-    const auto second = makeView(512'000'055.0, kForestWorld, defaultLayer);
-    const auto missed = makeView(512'000'500.0, kForestWorld, defaultLayer);
-    const auto otherWorld = makeView(512'000'000.0, kForestWorld + 1, defaultLayer);
-    const auto hiddenLayer = makeView(512'000'000.0, kForestWorld, Rendering::RenderLayerMask::FromLayer(2));
+    const auto first = AddForestStandView(services, 512'000'000.0, kForestWorld, defaultLayer);
+    const auto second = AddForestStandView(services, 512'000'055.0, kForestWorld, defaultLayer);
+    const auto missed = AddForestStandView(services, 512'000'500.0, kForestWorld, defaultLayer);
+    const auto otherWorld = AddForestStandView(services, 512'000'000.0, kForestWorld + 1, defaultLayer);
+    const auto hiddenLayer = AddForestStandView(services, 512'000'000.0, kForestWorld,
+                                               Rendering::RenderLayerMask::FromLayer(2));
     unsigned prepared = 0;
     const auto subscription = RegisterForestStandDraws(services, kForestWorld, defaultLayer, runtime,
-        [&](const ForwardEmitContext& ctx) -> std::optional<ForestStandDrawHeads>
+        [&prepared, first](const ForwardEmitContext& context) -> std::optional<ForestStandDrawHeads>
         {
             ++prepared;
-            ForestStandDrawHeads heads{};
-            heads.Color.FirstIndex = 512;
-            heads.Color.VertexOffset = 19;
-            heads.Color.IndexCount = 12;
-            if (ctx.ViewId == first)
-                heads.Depth = heads.Color;
-            return heads;
+            return MakeForestStandDrawHeads(context.ViewId == first);
         });
 
     Rendering::RenderGraph::RGFrame graph(nullptr, nullptr, nullptr, nullptr);
