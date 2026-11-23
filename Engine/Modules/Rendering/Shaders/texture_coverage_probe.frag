@@ -60,8 +60,8 @@ void main()
     // Mode 3: two layers of leaves, the second with the layer key of probe.seed (0: the same seeds).
     // Mode 4: the cutoff test of the leaves.
     // Mode 5: the coverage test of masked cards of instance 0.
-    // Mode 7: the masked cards of mode 5 with the tint alpha probe.seed.
     // Mode 6: two instances of masked cards, 0 and the instance of probe.seed's bits (0: the same instance).
+    // Mode 7: the masked cards of mode 5 with the tint alpha probe.seed.
     float opacity=textureLod(sourceImage,fract(position*kLeaves),probe.lod).a;
     if(probe.mode==2u)
         opacity=Foliage(position,LeafSeed(position,0u));

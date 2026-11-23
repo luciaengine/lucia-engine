@@ -34,10 +34,12 @@ cannot stand in for successful correction.
 ## Masked surfaces at long range
 
 A masked `standard_pbr` material keeps its coverage at long range without this
-setting. Where fewer than 32 texels of the albedo map fall across a pixel, the
-alpha test changes from the cutoff to a coverage test: the alpha is read at a
-32-texel footprint and compared with a threshold per triangle, so a far surface
-keeps the coverage of its texture alpha on average. The tint and vertex alpha
+setting. Where the albedo map covers fewer than 32 pixels across the screen, the
+alpha test changes from the cutoff to a coverage test: the alpha is read from the
+mip level that is 32 texels across and compared with a threshold per triangle, so
+a far surface keeps the coverage of its texture alpha on average. The average is
+exact for a 0/1 mask; a soft or uniform texture alpha keeps its mean alpha at
+range, not its near coverage. The tint and vertex alpha
 still act as a cutoff: a surface they hide near stays hidden at range. Preserve
 Alpha Coverage corrects the levels a near surface reads, and the coverage test
 takes over in the last levels, where a corrected level still keeps too few

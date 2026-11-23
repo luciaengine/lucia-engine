@@ -16,11 +16,11 @@ static void AddIssue(ValidationReport& r, IssueSeverity s, const char* code, con
 // the interface slot is (location, component), not location alone. Matrices,
 // structs and arrays straddle locations in ways this meta does not model, so
 // they claim the whole location, which is the pre-component behaviour for them.
-// A mesh shader's outputs are arrays over its vertices or primitives (`perVertex`): that outer
+// A mesh shader's outputs are arrays over its vertices or primitives (`meshArrayed`): that outer
 // dimension takes no location, so the element claims what a vertex shader's output would.
-static uint32_t StageIOComponentMask(const StageIO& io, bool perVertex) {
+static uint32_t StageIOComponentMask(const StageIO& io, bool meshArrayed) {
     constexpr uint32_t kAllComponents = 0xFu;
-    if (io.Type.ArrayDims.size() > (perVertex ? 1u : 0u))
+    if (io.Type.ArrayDims.size() > (meshArrayed ? 1u : 0u))
         return kAllComponents;
     if (io.Type.Kind != TypeKind::Scalar && io.Type.Kind != TypeKind::Vector)
         return kAllComponents;
@@ -34,8 +34,8 @@ static uint32_t StageIOComponentMask(const StageIO& io, bool perVertex) {
 // the same location. Returns the issue text, or an empty string when the slot
 // is free; `claimed` accumulates across the direction being checked.
 static std::string ClaimStageIOSlot(std::unordered_map<uint32_t, uint32_t>& claimed,
-                                    const StageIO& io, bool perVertex) {
-    const uint32_t mask = StageIOComponentMask(io, perVertex);
+                                    const StageIO& io, bool meshArrayed) {
+    const uint32_t mask = StageIOComponentMask(io, meshArrayed);
     uint32_t& occupied = claimed[io.Location];
     if ((occupied & mask) == 0u) {
         occupied |= mask;
