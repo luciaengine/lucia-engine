@@ -57,6 +57,7 @@ using namespace GameEngine::Rendering;
 #include "EngineLogCapture.h"
 #include "TestDeviceHelper.h"
 #include "StagedTestPaths.h"
+#include "TestTempDir.h"
 
 class MaterialBridgeIntegrationTest : public ::testing::Test
 {
@@ -221,9 +222,7 @@ TEST_F(MaterialPipelineCompilationTest, ShaderGraphSurface_MaterializesUnderCach
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_sg_materialize_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_sg_materialize");
     fs::create_directories(projectRoot);
 
     // Minimal @sg-* tag-block graph. The tag block is authoritative; the body is
@@ -372,9 +371,7 @@ TEST_F(MaterialPipelineCompilationTest, ConvertedUnityGraphShape_MaterializesAnd
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_sg_converted_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_sg_converted");
     fs::create_directories(projectRoot);
     {
         std::ofstream out(projectRoot / "converted_graph.glsl", std::ios::binary);
@@ -708,9 +705,7 @@ namespace
 struct DeclaredSurfaceProject
 {
     DeclaredSurfaceProject(MaterialSystem& materials, const std::filesystem::path& shaderDir)
-        : Root(std::filesystem::temp_directory_path() /
-               ("ge_declared_publish_" +
-                std::to_string(::testing::UnitTest::GetInstance()->random_seed())))
+        : Root(TestUtils::MakeUniqueTempDirectory("ge_declared_publish"))
     {
         std::filesystem::create_directories(Root);
         MaterialBuildContext ctx{};
@@ -1022,9 +1017,7 @@ TEST_F(MaterialPipelineCompilationTest, RecompileRefreshesUserTextureSlotMap)
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_recompile_slotmap_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_recompile_slotmap");
     fs::create_directories(projectRoot);
 
     // v1: flowMask is the only user name -> packs to ordinal 2.
@@ -1313,9 +1306,7 @@ TEST_F(MaterialPipelineCompilationTest, ShaderSourceEditPropagatesToRegisteredMa
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_edit_prop_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_edit_prop");
     fs::create_directories(projectRoot);
 
     // No mtime handling: the disk shaderpkg key hashes the CONTENT of the surface
@@ -1391,9 +1382,7 @@ TEST_F(MaterialPipelineCompilationTest, ShaderSourceEditPropagatesToRegisteredMa
 TEST_F(MaterialPipelineCompilationTest, AWatcherEventForAnEditedIncludeMakesTheNextBuildReadIt)
 {
     namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() /
-                          ("ge_watched_include_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
-    fs::remove_all(root);
+    const fs::path root = TestUtils::MakeUniqueTempDirectory("ge_watched_include");
     fs::create_directories(root);
     const fs::path include = root / "watched_probe.glsl";
     const ShaderProgramCompileRequest request =
@@ -1434,9 +1423,7 @@ TEST_F(MaterialPipelineCompilationTest, AWatcherEventForAnEditedIncludeMakesTheN
 TEST_F(MaterialPipelineCompilationTest, AWatcherEventForAnEditedSlangModuleIsAnnounced)
 {
     namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() /
-                          ("ge_watched_slang_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
-    fs::remove_all(root);
+    const fs::path root = TestUtils::MakeUniqueTempDirectory("ge_watched_slang");
     fs::create_directories(root);
     const fs::path include = root / "slang_probe.glsl";
     const ShaderProgramCompileRequest request =
@@ -1470,9 +1457,7 @@ TEST_F(MaterialPipelineCompilationTest, AWatcherEventForAnEditedSlangModuleIsAnn
 TEST_F(MaterialPipelineCompilationTest, AnEditNoticeWithNoSurfaceStillMakesTheNextBuildReadAnUnreportedEdit)
 {
     namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() /
-                          ("ge_recompile_no_surface_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
-    fs::remove_all(root);
+    const fs::path root = TestUtils::MakeUniqueTempDirectory("ge_recompile_no_surface");
     fs::create_directories(root);
     const fs::path include = root / "recompile_probe.glsl";
     const ShaderProgramCompileRequest request =
@@ -1506,9 +1491,7 @@ TEST_F(MaterialPipelineCompilationTest, AnEditNoticeWithNoSurfaceRecompilesTheMa
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_recompile_default_surface_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
-    fs::remove_all(projectRoot);
+        TestUtils::MakeUniqueTempDirectory("ge_recompile_default_surface");
     fs::create_directories(projectRoot / "Surfaces");
     WriteSurface(projectRoot / "Surfaces" / "standard_surface.glsl", "vec3(0.0, 1.0, 0.0)");
     WriteSurface(projectRoot / "named_surface.glsl", "vec3(0.5, 0.5, 0.5)");
@@ -1549,8 +1532,7 @@ TEST_F(MaterialPipelineCompilationTest, ReregistrationKeepsTheDeclaredTableUntil
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_declared_rereg_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_declared_rereg");
     fs::create_directories(projectRoot);
     auto writeSurface = [&](const char* file, const char* declarations)
     {
@@ -1769,9 +1751,7 @@ TEST_F(MaterialPipelineCompilationTest, ShaderEditRecompilesAreBudgetedAcrossFra
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_edit_budget_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_edit_budget");
     fs::create_directories(projectRoot);
 
     // No mtime handling: the disk shaderpkg key hashes the CONTENT of the surface
@@ -1881,9 +1861,7 @@ TEST_F(MaterialPipelineCompilationTest, IncludeEditPropagatesToMaterialsWhoseSur
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_include_edit_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_include_edit");
     fs::create_directories(projectRoot);
 
     auto writeFile = [&](const char* file, const std::string& text)
@@ -1985,9 +1963,7 @@ TEST_F(MaterialPipelineCompilationTest, RepeatEditMidCarry_StillRequeuesSweptMat
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_repeat_edit_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_repeat_edit");
     fs::create_directories(projectRoot);
 
     auto writeFile = [&](const std::string& file, const std::string& text)
@@ -2084,9 +2060,7 @@ TEST_F(MaterialPipelineCompilationTest, ProjectSwitchDropsRetainedShaderCache)
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_project_switch_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_project_switch");
     fs::create_directories(projectRoot);
 
     auto writeSurface = [&](const char* colorExpr)
@@ -2157,9 +2131,7 @@ TEST_F(MaterialPipelineCompilationTest, SameNamedSurfaceInTwoDirs_RequeueOnlyThe
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_twodir_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_twodir");
     const fs::path dirA = projectRoot / "matA";
     const fs::path dirB = projectRoot / "matB";
     fs::create_directories(dirA);
@@ -2277,8 +2249,7 @@ TEST_F(MaterialPipelineCompilationTest, RootResolvedSurfaceHelperEdit_RequeuesEv
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_shared_root_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_shared_root");
     const fs::path dirA = projectRoot / "Data" / "planes";
     const fs::path dirB = projectRoot / "Data" / "ground";
     fs::create_directories(dirA);
@@ -2361,8 +2332,7 @@ TEST_F(MaterialPipelineCompilationTest, RootResolvedSurface_UserKeywordKeepsItsO
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_shared_keyword_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_shared_keyword");
     fs::create_directories(projectRoot / "Data" / "tinted");
     fs::create_directories(projectRoot / "Data" / "plain");
     {
@@ -2417,8 +2387,7 @@ TEST_F(MaterialPipelineCompilationTest, RootResolvedSurface_LightingModelSpellin
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_shared_lighting_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_shared_lighting");
     fs::create_directories(projectRoot / "A");
     fs::create_directories(projectRoot / "B");
     std::ofstream(projectRoot / "lm_surface.glsl")
@@ -2475,9 +2444,7 @@ TEST_F(MaterialPipelineCompilationTest, NeverCompiledMaterial_RequeuedByDirectSu
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_late_surface_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_late_surface");
     fs::create_directories(projectRoot);
 
     MaterialBuildContext ctx{};
@@ -2537,9 +2504,7 @@ TEST_F(MaterialPipelineCompilationTest, ProjectSwitchKeepsClosureRowsForSurvivin
 {
     namespace fs = std::filesystem;
     const fs::path projectRoot =
-        fs::temp_directory_path() /
-        ("ge_shader_switch_rows_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+        TestUtils::MakeUniqueTempDirectory("ge_shader_switch_rows");
     fs::create_directories(projectRoot);
 
     auto writeFile = [&](const char* file, const std::string& text)
