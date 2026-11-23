@@ -188,10 +188,10 @@ static_assert(offsetof(GPUInstanceScatterHot, axisScale) == 40, "GPUInstanceScat
 /// three mutators write the mirror without indirection.
 inline GPUInstanceScatterHot MakeScatterHot(const GPUInstance& instance)
 {
-    const Matrix4x4& t = instance.transform;
-    const float axisScale = std::max({Vector3(t[0][0], t[0][1], t[0][2]).Length(),
-                                      Vector3(t[1][0], t[1][1], t[1][2]).Length(),
-                                      Vector3(t[2][0], t[2][1], t[2][2]).Length()});
+    const Matrix4x4& transform = instance.transform;
+    const float axisScale = std::max({Vector3(transform[0][0], transform[0][1], transform[0][2]).Length(),
+                                      Vector3(transform[1][0], transform[1][1], transform[1][2]).Length(),
+                                      Vector3(transform[2][0], transform[2][1], transform[2][2]).Length()});
     return GPUInstanceScatterHot{instance.meshIndex,
                                  instance.materialIndex,
                                  instance.flags,

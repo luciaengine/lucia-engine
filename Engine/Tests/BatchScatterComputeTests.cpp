@@ -4560,8 +4560,9 @@ void BatchScatterComputeTest::ExpectImpostorSwitchesOnTheCardSphereNotTheCulling
     GPUInstance wide = MakeInstance(kPartMaterial, part);
     wide.boundingRadius = kCullingRadius;
     GPUInstance scaled = wide;
-    const float scaleTwo[16]{2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1};
-    scaled.transform = Mathematics::Matrix4x4::FromColumnMajor(scaleTwo);
+    scaled.transform = Mathematics::Matrix4x4::Identity();
+    for (int axis = 0; axis < 3; ++axis)
+        scaled.transform[axis][axis] = 2.0f;
     const uint32_t parts[] = {part};
 
     struct Row
