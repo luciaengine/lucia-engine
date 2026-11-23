@@ -1853,6 +1853,42 @@ TEST_F(TextureCoverageGPU, FoliageCoverageMovesWithTheSurface)
     EXPECT_GT(best, 0.99);
 }
 
+// A masked surface has no leaf seed: its threshold is the seed of the triangle's first vertex and its
+// instance (foliage_coverage.glsl). A grid of masked cards keeps the base coverage through the mip
+// tail, where the cutoff test keeps no pixel.
+TEST_F(TextureCoverageGPU, MaskedCardCoverageKeepsTheBaseCoverageThroughTheMipTail)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kCutoffMode = 1, kLeafCutoffMode = 4, kMaskedCardMode = 5;
+    constexpr float kSixteenTexelLod = 2, kTailLod = 6; // 16 x 16 and 1 x 1 for the 64 x 64 image
+    const double reference = Coverage(Render(texture, 256, 256, 0, kCutoffMode));
+    ASSERT_GT(reference, 0.2);
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kMaskedCardMode)), Coverage(Render(texture, 256, 256, 0, kLeafCutoffMode)));
+    for (float lod = kSixteenTexelLod; lod <= kTailLod; lod += .5f)
+        EXPECT_NEAR(Coverage(Render(texture, 256, 256, lod, kMaskedCardMode)), reference, 0.03) << "lod " << lod;
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kLeafCutoffMode)), 0.0);
+}
+
+// Two instances of the same card mesh overlap with independent thresholds, so their far coverage adds
+// up as two independent layers. One instance drawn twice adds nothing.
+TEST_F(TextureCoverageGPU, MaskedCardCoverageOfOverlappingInstancesAddsUp)
+{
+    constexpr uint8 kUniformAlpha = 128;
+    const GUID guid = Register(Image(false, 64, 16, kUniformAlpha), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kMaskedCardMode = 5, kTwoInstanceMode = 6;
+    constexpr float kTailLod = 6;
+    const float secondInstance = std::bit_cast<float>(uint32(1)); // the probe reads the bits
+    const double single = Coverage(Render(texture, 256, 256, kTailLod, kMaskedCardMode));
+    ASSERT_GT(single, 0.2);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoInstanceMode, 0.0f, 0.0f)), single, 0.01);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoInstanceMode, 0.0f, secondInstance)),
+                1.0 - (1.0 - single) * (1.0 - single), 0.03);
+}
+
 TEST_F(TextureCoverageGPU, FullChainMaskedCardsMeasureIntegerFractionalAndPhaseCoverage)
 {
 #if defined(GE_HAVE_KTX)

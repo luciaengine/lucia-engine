@@ -121,6 +121,44 @@ vec3 GE_StandardSampleHexNormal(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 s
 }
 #endif
 
+#ifdef GE_MASK_COVERAGE_SEED
+// The far mask (foliage_coverage.glsl): the albedo footprint selects the coverage test, and past the
+// 32-texel bound the alpha is read at the bound, so a triangle that passes keeps the mask's shape.
+
+// UV per pixel of the albedo map at uv0, through its tiling, along the longer axis.
+float GE_StandardMaskFootprint(SurfaceInput sIn)
+{
+    vec4 st = sIn.textureST[0];
+    vec4 st2 = sIn.textureST2[0];
+#ifdef GE_PARALLAX_MARCH
+    vec2 uvDx = vec2(dot(sIn.uvFootprint.xy, st.xy), dot(sIn.uvFootprint.xy, st2.xy));
+    vec2 uvDy = vec2(dot(sIn.uvFootprint.zw, st.xy), dot(sIn.uvFootprint.zw, st2.xy));
+#else
+    vec2 uv = GE_TransformUV(sIn.uv0, st, st2);
+    vec2 uvDx = GE_DFDX(uv);
+    vec2 uvDy = GE_DFDY(uv);
+#endif
+    return GE_FoliageFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
+}
+
+// The alpha of `map` at `uv` through its tiling, read at the 32-texel bound. The bound is the same
+// along both axes, so the hex rotation does not change it.
+float GE_StandardMaskShapeAlpha(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 st2)
+{
+    float shapeGradient = GE_FoliageShapeGradient(GE_MATERIAL_MIP_BIAS);
+    vec2 shapeDx = vec2(shapeGradient, 0.0);
+    vec2 shapeDy = vec2(0.0, shapeGradient);
+#ifdef GE_PARALLAX_MARCH
+    return textureGrad(map, GE_TransformUV(uv, st, st2), shapeDx, shapeDy).a;
+#else
+    vec2 uvA, uvB;
+    float blend = 0.0;
+    GE_ComputeHexBlendUV(uv, st, st2, Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x, uvA, uvB, blend);
+    return mix(textureGrad(map, uvA, shapeDx, shapeDy).a, textureGrad(map, uvB, shapeDx, shapeDy).a, blend);
+#endif
+}
+#endif
+
 // The crossfade (material keyword UV1Crossfade): the albedo, metallic-roughness, occlusion and normal
 // maps also sample at uv1, and the vertex alpha is the weight of the uv1 samples, not an opacity.
 #if defined(GE_UV1_CROSSFADE) && defined(HAS_UV1) && defined(HAS_COLOR) && !defined(GE_PARALLAX_MARCH)
@@ -195,6 +233,22 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     o.opacity = albedo.a * Mat.uBaseColor.a;
 #else
     o.opacity = albedo.a * Mat.uBaseColor.a * sIn.vertexColor.a;
+#endif
+#ifdef GE_MASK_COVERAGE_SEED
+    float maskFootprint = GE_StandardMaskFootprint(sIn);
+    if (maskFootprint > kFoliageShapeFootprint)
+    {
+        float shapeAlpha = GE_StandardMaskShapeAlpha(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
+  #ifdef GE_STANDARD_UV1_CROSSFADE
+        shapeAlpha = mix(shapeAlpha, GE_StandardMaskShapeAlpha(albedoMap, sIn.uv1, sIn.textureST[0], sIn.textureST2[0]),
+                         uv1Weight);
+        o.opacity = shapeAlpha * Mat.uBaseColor.a;
+  #else
+        o.opacity = shapeAlpha * Mat.uBaseColor.a * sIn.vertexColor.a;
+  #endif
+    }
+    o.opacity = GE_FoliageCoverageOpacity(o.opacity, clamp(Props.alphaCutoff, 0.0, 1.0),
+                                          GE_FoliageTailWeight(maskFootprint), sIn.maskCoverageThreshold);
 #endif
 
     // Metallic-roughness (glTF convention: G=roughness, B=metallic)

@@ -17,6 +17,14 @@ float LeafSeed(vec2 position,uint layerKey)
         index=GE_HashU32(index^layerKey)&0xffffu;
     return fract(float(index)*0.6180339887);
 }
+// Modes 5 and 6 draw the same grid as masked cards, with the seed of a masked surface: each card is a
+// quad of four vertices in fan order, so its triangles start at the card's first vertex.
+float CardSeed(vec2 position,uint instanceIndex)
+{
+    uvec2 cell=uvec2(ivec2(floor(position*kLeaves)))&uvec2(15u);
+    uint firstVertex=(cell.y*16u+cell.x)*4u;
+    return GE_MaskCoverageThreshold(GE_MaskCoverageSeed(firstVertex,instanceIndex));
+}
 // The production coverage test of the leaf at `position`, read at probe.lod as a sampler would.
 float Foliage(vec2 position,float layerSeed)
 {
@@ -43,11 +51,17 @@ void main()
     // Mode 2: the production foliage coverage test of the leaves.
     // Mode 3: two layers of leaves, the second with the layer key of probe.seed (0: the same seeds).
     // Mode 4: the cutoff test of the leaves.
+    // Mode 5: the coverage test of masked cards of instance 0.
+    // Mode 6: two instances of masked cards, 0 and the instance of probe.seed's bits (0: the same instance).
     float opacity=textureLod(sourceImage,fract(position*kLeaves),probe.lod).a;
     if(probe.mode==2u)
         opacity=Foliage(position,LeafSeed(position,0u));
     else if(probe.mode==3u)
         opacity=max(Foliage(position,LeafSeed(position,0u)),Foliage(position,LeafSeed(position,floatBitsToUint(probe.seed))));
+    else if(probe.mode==5u)
+        opacity=Foliage(position,CardSeed(position,0u));
+    else if(probe.mode==6u)
+        opacity=max(Foliage(position,CardSeed(position,0u)),Foliage(position,CardSeed(position,floatBitsToUint(probe.seed))));
     if(opacity<probe.cutoff) discard;
     result=vec4(1.0);
 }
