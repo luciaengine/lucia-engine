@@ -1,5 +1,6 @@
 #include "ForestOverviewCook.h"
 
+#include "AssetCore/SharedFileRead.h"
 #include "FileSystem/FileSystem.h"
 #include "Image/Decode.h"
 #include "Image/Encode.h"
@@ -26,11 +27,12 @@ using Rgba = std::array<uint8, 4>;
 using Json = nlohmann::json;
 
 // Keep page boundaries aligned through mip 3. Center at least four transparent texels on each side.
-constexpr unsigned kMipAlignedTile = 8;
-constexpr unsigned kMinGutter = kMipAlignedTile / 2;
-constexpr unsigned kMaxAtlasSide = 8192;
-constexpr unsigned kSamplesPerAxis = 2;
-constexpr unsigned kSampleCount = kSamplesPerAxis * kSamplesPerAxis;
+constexpr uint32 kMipAlignedTile = 8;
+constexpr uint32 kMinGutter = kMipAlignedTile / 2;
+constexpr uint32 kMaxAtlasSide = 8192;
+constexpr uint32 kSamplesPerAxis = 2;
+constexpr uint32 kSampleCount = kSamplesPerAxis * kSamplesPerAxis;
+constexpr uint64 kMaxImageBytes = 256ull << 20;
 
 // glTF 2.0 buffer view targets, accessor component types and GLB container words.
 constexpr int kGltfArrayBuffer = 34962;
@@ -62,15 +64,10 @@ struct Tile
 
 TopView ReadTopView(const std::filesystem::path& image, const ForestOverviewSource& source)
 {
-    std::ifstream file(image, std::ios::binary | std::ios::ate);
-    const auto size = file.tellg();
-    if (size <= 0 || size > std::numeric_limits<int32>::max())
-        throw std::runtime_error("Could not open the canopy source image");
-    std::vector<uint8> bytes(static_cast<size_t>(size));
-    file.seekg(0);
-    if (!file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
-        throw std::runtime_error("Could not read the canopy source image");
-    auto decoded = Image::Decode8(bytes, PathToUtf8(image), Image::DecodeChannels::Rgba);
+    ByteBuffer bytes;
+    if (!ReadFileBytesShared(image, bytes, kMaxImageBytes) || bytes.Size() == 0)
+        throw std::runtime_error("Could not read the canopy source image (at most 256 MiB)");
+    auto decoded = Image::Decode8({bytes.Data(), bytes.Size()}, PathToUtf8(image), Image::DecodeChannels::Rgba);
     if (!decoded.Valid)
         throw std::runtime_error("Could not decode the canopy source image");
     std::array<uint64, 3> color{};
@@ -92,15 +89,15 @@ TopView ReadTopView(const std::filesystem::path& image, const ForestOverviewSour
 }
 
 // The first sample whose center is at or past distance, clamped to [0, side].
-unsigned FirstSampleAt(double distance, double step, unsigned side)
+uint32 FirstSampleAt(double distance, double step, uint32 side)
 {
-    return static_cast<unsigned>(std::clamp(std::ceil(distance / step - 0.5), 0.0, static_cast<double>(side)));
+    return static_cast<uint32>(std::clamp(std::ceil(distance / step - 0.5), 0.0, static_cast<double>(side)));
 }
 
 void StampTree(std::span<Rgba> samples, const Tile& tile, const TopView& view, const PackedPlacement& tree)
 {
     const auto& src = view.Source;
-    const unsigned side = src.TileSize * kSamplesPerAxis;
+    const uint32 side = src.TileSize * kSamplesPerAxis;
     const double stepX = (tile.MaxX - tile.MinX) / side;
     const double stepZ = (tile.MaxZ - tile.MinZ) / side;
     if (!std::isnormal(stepX) || !std::isnormal(stepZ))
@@ -112,22 +109,22 @@ void StampTree(std::span<Rgba> samples, const Tile& tile, const TopView& view, c
     const double yaw = tree.YawRadians();
     const double cosine = std::cos(yaw) / scale;
     const double sine = std::sin(yaw) / scale;
-    const unsigned xBegin = FirstSampleAt(x - radius - tile.MinX, stepX, side);
-    const unsigned xEnd = FirstSampleAt(x + radius - tile.MinX, stepX, side);
-    const unsigned zEnd = FirstSampleAt(z + radius - tile.MinZ, stepZ, side);
+    const uint32 xBegin = FirstSampleAt(x - radius - tile.MinX, stepX, side);
+    const uint32 xEnd = FirstSampleAt(x + radius - tile.MinX, stepX, side);
+    const uint32 zEnd = FirstSampleAt(z + radius - tile.MinZ, stepZ, side);
     const auto& image = view.ImageData;
-    for (unsigned row = FirstSampleAt(z - radius - tile.MinZ, stepZ, side); row < zEnd; ++row)
+    for (uint32 row = FirstSampleAt(z - radius - tile.MinZ, stepZ, side); row < zEnd; ++row)
     {
         const double dz = tile.MinZ + (row + 0.5) * stepZ - z;
-        for (unsigned col = xBegin; col < xEnd; ++col)
+        for (uint32 col = xBegin; col < xEnd; ++col)
         {
             const double dx = tile.MinX + (col + 0.5) * stepX - x;
             const double u = (dx * cosine - dz * sine - src.MinX) / (src.MaxX - src.MinX);
             const double v = (dx * sine + dz * cosine - src.MinZ) / (src.MaxZ - src.MinZ);
             if (u < 0.0 || v < 0.0 || u >= 1.0 || v >= 1.0)
                 continue;
-            const size_t imageRow = static_cast<unsigned>(v * image.Height);
-            const size_t imageCol = static_cast<unsigned>(u * image.Width);
+            const size_t imageRow = static_cast<uint32>(v * image.Height);
+            const size_t imageCol = static_cast<uint32>(u * image.Width);
             const size_t offset = (imageRow * image.Width + imageCol) * 4;
             auto& sample = samples[row * side + col];
             // Keep the most opaque canopy hit. Placements from other pages never write this tile.
@@ -137,19 +134,19 @@ void StampTree(std::span<Rgba> samples, const Tile& tile, const TopView& view, c
     }
 }
 
-bool ResolveTile(std::span<uint8> atlas, unsigned width, unsigned x, unsigned z, const TopView& view,
+bool ResolveTile(std::span<uint8> atlas, uint32 width, uint32 x, uint32 z, const TopView& view,
                  std::span<const Rgba> samples)
 {
-    const unsigned side = view.Source.TileSize;
-    const unsigned sampleSide = side * kSamplesPerAxis;
+    const uint32 side = view.Source.TileSize;
+    const uint32 sampleSide = side * kSamplesPerAxis;
     bool visible = false;
-    for (unsigned row = 0; row < side; ++row)
-        for (unsigned col = 0; col < side; ++col)
+    for (uint32 row = 0; row < side; ++row)
+        for (uint32 col = 0; col < side; ++col)
         {
-            std::array<unsigned, 3> color{};
-            unsigned weight = 0;
-            for (unsigned subZ = 0; subZ < kSamplesPerAxis; ++subZ)
-                for (unsigned subX = 0; subX < kSamplesPerAxis; ++subX)
+            std::array<uint32, 3> color{};
+            uint32 weight = 0;
+            for (uint32 subZ = 0; subZ < kSamplesPerAxis; ++subZ)
+                for (uint32 subX = 0; subX < kSamplesPerAxis; ++subX)
                 {
                     const auto& pixel = samples[(row * kSamplesPerAxis + subZ) * sampleSide +
                                                 col * kSamplesPerAxis + subX];
@@ -280,13 +277,13 @@ void CookForestOverview(const std::filesystem::path& archive, const std::filesys
     PackedPlacementStore store;
     if (const std::string error = store.Open(archive); !error.empty())
         throw std::runtime_error(error);
-    const unsigned cell = (source.TileSize + 2 * kMinGutter + kMipAlignedTile - 1) &
+    const uint32 cell = (source.TileSize + 2 * kMinGutter + kMipAlignedTile - 1) &
                           ~(kMipAlignedTile - 1);
-    const unsigned gutter = (cell - source.TileSize) / 2;
-    const unsigned columns = static_cast<unsigned>(std::ceil(std::sqrt(static_cast<double>(store.Pages().size()))));
-    const unsigned rows = (static_cast<unsigned>(store.Pages().size()) + columns - 1) / columns;
-    const unsigned width = columns * cell;
-    const unsigned height = rows * cell;
+    const uint32 gutter = (cell - source.TileSize) / 2;
+    const uint32 columns = static_cast<uint32>(std::ceil(std::sqrt(static_cast<double>(store.Pages().size()))));
+    const uint32 rows = (static_cast<uint32>(store.Pages().size()) + columns - 1) / columns;
+    const uint32 width = columns * cell;
+    const uint32 height = rows * cell;
     if (width > kMaxAtlasSide || height > kMaxAtlasSide)
         throw std::runtime_error("Overview atlas exceeds 8192 pixels per side. Reduce tile size or split the forest.");
 
@@ -296,26 +293,28 @@ void CookForestOverview(const std::filesystem::path& archive, const std::filesys
         std::copy(view.Transparent.begin(), view.Transparent.end(), atlas.data() + offset);
     std::vector<Rgba> samples(static_cast<size_t>(source.TileSize) * source.TileSize * kSampleCount);
     OverviewMesh mesh;
-    std::ifstream file(archive, std::ios::binary);
+    SharedFileReader file;
+    if (!file.Open(archive))
+        throw std::runtime_error("Could not open the placement archive");
     std::array<PackedPlacement, PackedPlacementStore::kPlacementsPerPage> packed;
     for (uint32 index = 0; index < store.Pages().size(); ++index)
     {
         const auto& page = store.Pages()[index];
         const auto range = *store.ReadRange(index);
         const auto trees = std::span(packed).first(page.Count);
-        file.seekg(static_cast<std::streamoff>(range.Offset));
-        if (!file.read(reinterpret_cast<char*>(trees.data()), static_cast<std::streamsize>(range.Bytes)) ||
+        if (!file.SeekTo(range.Offset) ||
+            file.Read(trees.data(), range.Bytes) != static_cast<int64>(range.Bytes) ||
             !store.VerifyPage(index, {reinterpret_cast<const uint8*>(trees.data()), trees.size_bytes()}))
             throw std::runtime_error("Could not verify placement page " + std::to_string(index));
 
         Tile tile{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
                   -std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
-        double scaleSum = 0;
+        double heightSum = 0;
         for (const auto& tree : trees)
         {
             const double scale = tree.UniformScale();
             const double radius = view.Radius * scale;
-            scaleSum += scale;
+            heightSum += tree.LocalY() + source.Height * scale;
             const double x = tree.LocalX();
             const double z = tree.LocalZ();
             tile.MinX = std::min(tile.MinX, x - radius);
@@ -323,14 +322,14 @@ void CookForestOverview(const std::filesystem::path& archive, const std::filesys
             tile.MaxX = std::max(tile.MaxX, x + radius);
             tile.MaxZ = std::max(tile.MaxZ, z + radius);
         }
-        const double canopyHeight = source.Height * scaleSum / page.Count;
+        const double canopyHeight = heightSum / page.Count;
         if (tile.MinX < page.LocalMin.x || tile.MinZ < page.LocalMin.z ||
             tile.MaxX > page.LocalMax.x || tile.MaxZ > page.LocalMax.z ||
             canopyHeight < page.LocalMin.y || canopyHeight > page.LocalMax.y)
             throw std::runtime_error("The canopy projection exceeds the placement bounds on page " + std::to_string(index));
 
-        const unsigned x = index % columns * cell + gutter;
-        const unsigned z = index / columns * cell + gutter;
+        const uint32 x = index % columns * cell + gutter;
+        const uint32 z = index / columns * cell + gutter;
         std::fill(samples.begin(), samples.end(), Rgba{});
         for (const auto& tree : trees)
             StampTree(samples, tile, view, tree);

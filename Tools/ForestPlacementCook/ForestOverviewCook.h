@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Types/Types.h"
+
 #include <filesystem>
 
 namespace GameEngine
@@ -13,7 +15,7 @@ struct ForestOverviewSource
     double MaxX;
     double MaxZ;
     double Height; // Canopy height above the root at unit scale, in meters.
-    unsigned TileSize; // Atlas pixels per page tile.
+    uint32 TileSize; // Atlas pixels per page tile.
 };
 
 /// Writes a GLB with one canopy quad per archive page and an embedded atlas. Throws std::runtime_error.

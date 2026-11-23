@@ -7,7 +7,6 @@ import tempfile
 import zlib
 
 
-
 def png_chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
@@ -38,8 +37,8 @@ def check_overview(tool, root, cook, header, output):
 
     positions = list(struct.iter_unpack("<3f", view(primitive["attributes"]["POSITION"])))
     assert len(positions) == 8 and all(19 < -x < 23 and -9 < z < -5 for x, y, z in positions)
-    assert all(abs(y - 11) < 0.001 for x, y, z in positions[:4])
-    assert all(abs(y - 6) < 0.001 for x, y, z in positions[4:])
+    assert all(abs(y - 11) < 0.01 for x, y, z in positions[:4])
+    assert all(abs(y - 6) < 0.01 for x, y, z in positions[4:])
     assert struct.unpack("<12I", view(primitive["indices"])) == (0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7)
     uvs = list(struct.iter_unpack("<2f", view(primitive["attributes"]["TEXCOORD_0"])))
     assert max(u for u, v in uvs[:4]) < min(u for u, v in uvs[4:])
@@ -51,6 +50,7 @@ def check_overview(tool, root, cook, header, output):
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode != 0 and "Could not verify placement page 1" in result.stderr
     assert mesh.read_bytes() == glb
+
 
 def main():
     tool = pathlib.Path(sys.argv[1]).resolve()
@@ -68,25 +68,37 @@ def main():
         result = cook(header + rows)
         assert result.returncode == 0, result.stderr
         valid = output.read_bytes()
-        assert struct.unpack_from("<4sIIIQ", valid) == (b"GEFP", 1, 2, 3, 160)
+        assert struct.unpack_from("<4sIIIfIQ", valid) == (b"GEFP", 1, 2, 3, 12.0, 0, 168)
         page_format = "<3d6fQII"
-        first = struct.unpack_from(page_format, valid, 32)
-        second = struct.unpack_from(page_format, valid, 96)
+        first = struct.unpack_from(page_format, valid, 40)
+        second = struct.unpack_from(page_format, valid, 104)
         assert first[:3] == (512000000, 8, -7) and second[:3] == (8, 3, 9)
         assert first[-2:] == (0, 2) and second[-2:] == (2, 1)
-        assert first[3:6] == (-first[7],) * 3 and first[6] >= 25 and first[8] >= 16
-        assert list(struct.iter_unpack("<4H", valid[160:])) == [
-            (0, 0, 0, 0), (1000, 100, 16384, 65535), (0, 0, 49152, 32768)
+        assert first[3] == first[4] == first[5] <= -15
+        assert first[6] >= 25 and first[7] >= 15 and first[8] >= 16
+        assert list(struct.iter_unpack("<3HBB", valid[168:])) == [
+            (0, 0, 0, 0, 0), (1000, 100, 0, 64, 255), (0, 0, 0, 192, 128)
         ]
-        for bad in (
-            "0,0,0,0,0,1\n0,1,1,1,0,1\n",
-            "1,0,0,0,0,1\n",
-            "0,0,0,0,0,1\n0,800,0,0,0,1\n",
-            "0,0,0,0,0,2\n",
-            "0,0,0,0,0,1\n" * 145,
+        for bad, message in (
+            ("", "no trees"),
+            ("0,0,0,0,0,1\n0,1,700,1,0,1\n", "655.35 meters"),
+            ("1,0,0,0,0,1\n", "Line 2 has page 1"),
+            ("0,0,0,0,0,1\n2,0,0,0,0,1\n", "Line 3 has page 2"),
+            ("0,0,0,0,0,1\n0,800,0,0,0,1\n", "655.35 meters"),
+            ("0,0,0,0,0,2\n", "Line 2 is not a valid placement"),
+            ("0,0,nan,0,0,1\n", "Line 2 is not a valid placement"),
+            ("0,0,0,0,0,1\n" * 145, "Line 146 is tree 145"),
         ):
             result = cook(header + bad)
             assert result.returncode != 0 and output.read_bytes() == valid, result.stderr
+            assert message in result.stderr, result.stderr
+        # Trees of one page may stand at different heights.
+        result = cook(header + "0,0,2,0,0,1\n0, 1 ,7.5,1,0,1\n")
+        assert result.returncode == 0, result.stderr
+        sloped = output.read_bytes()
+        page = struct.unpack_from(page_format, sloped, 40)
+        assert page[1] == 2 and page[7] >= 5.5 + 15
+        assert [tree[2] for tree in struct.iter_unpack("<3HBB", sloped[104:])] == [0, 550]
         result = cook(header + rows)
         assert result.returncode == 0 and output.read_bytes() == valid, result.stderr
         # Keep the input archive unchanged by default. The spatial mode moves whole pages
@@ -97,12 +109,12 @@ def main():
         result = subprocess.run(command, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         ordered = output.read_bytes()
-        assert struct.unpack_from(page_format, ordered, 32)[:3] == (0, 0, 0)
-        assert struct.unpack_from(page_format, ordered, 32)[-2:] == (0, 1)
-        assert struct.unpack_from(page_format, ordered, 96)[:3] == (100, 0, 100)
-        assert struct.unpack_from(page_format, ordered, 96)[-2:] == (1, 2)
-        assert list(struct.iter_unpack("<4H", ordered[160:])) == [
-            (0, 0, 49152, 32768), (0, 0, 16384, 32768), (100, 0, 32768, 32768)]
+        assert struct.unpack_from(page_format, ordered, 40)[:3] == (0, 0, 0)
+        assert struct.unpack_from(page_format, ordered, 40)[-2:] == (0, 1)
+        assert struct.unpack_from(page_format, ordered, 104)[:3] == (100, 0, 100)
+        assert struct.unpack_from(page_format, ordered, 104)[-2:] == (1, 2)
+        assert list(struct.iter_unpack("<3HBB", ordered[168:])) == [
+            (0, 0, 0, 192, 128), (0, 0, 0, 64, 128), (100, 0, 0, 128, 128)]
         result = subprocess.run(command, capture_output=True, text=True)
         assert result.returncode == 0 and output.read_bytes() == ordered, result.stderr
         check_overview(tool, root, cook, header, output)

@@ -4,6 +4,7 @@
 #include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "Types/ParseNumber.h"
 #include "Types/PathUtils.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,13 +12,19 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <ranges>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
+#include <vector>
 
+namespace GameEngine
+{
 namespace
 {
-using namespace GameEngine;
-using namespace GameEngine::PageStreaming;
+using PageStreaming::PackedPlacement;
+using PageStreaming::PackedPlacementStore;
+using PageStreaming::PlacementPage;
 
 struct Tree
 {
@@ -28,72 +35,98 @@ struct Tree
     double Scale;
 };
 
-constexpr double kMinScale = PackedPlacement::kMinScale;
-constexpr double kMaxScale = PackedPlacement::kMaxScale;
+constexpr std::string_view kCsvHeader = "page,x,y,z,yawDegrees,scale";
+constexpr size_t kCsvFields = 6;
 constexpr double kCentimetersPerMeter = 100.0;
-constexpr uint16 kLargestWord = std::numeric_limits<uint16>::max();
+constexpr double kDegreesPerTurn = 360.0;
+constexpr uint16 kLargestOffset = std::numeric_limits<uint16>::max();
+constexpr uint8 kLargestScale = std::numeric_limits<uint8>::max();
+// The largest world coordinate in meters; WorldPosition splits it into int32 sectors.
+constexpr double kMaxWorldCoordinate = 1.0e12;
+// A packed offset may round up by half a centimeter.
+constexpr float kRoundingMargin = 0.005f;
 
+std::string_view Field(std::string_view text)
+{
+    return TrimWhitespaceView(text);
+}
+
+bool InWorld(double coordinate)
+{
+    return std::abs(coordinate) <= kMaxWorldCoordinate;
+}
+
+// Parses one CSV row. Every field may have spaces around it.
 bool ParseTree(std::string_view line, int64& page, Tree& tree)
 {
-    std::array<std::string_view, 6> fields{};
-    for (size_t field = 0; field + 1 < fields.size(); ++field)
-    {
-        const size_t comma = line.find(',');
-        if (comma == std::string_view::npos)
-            return false;
-        fields[field] = line.substr(0, comma);
-        line.remove_prefix(comma + 1);
-    }
-    fields.back() = line;
-    const auto pageId = ParseInt(fields.front());
+    const std::vector<std::string_view> fields = Split(line, ',');
+    if (fields.size() != kCsvFields)
+        return false;
+    const auto pageId = ParseInt(Field(fields[0]));
     if (!pageId || *pageId < 0)
         return false;
     page = *pageId;
-    return ParseStrictDecimal(fields[1], tree.X) && ParseStrictDecimal(fields[2], tree.Y) &&
-           ParseStrictDecimal(fields[3], tree.Z) && ParseStrictDecimal(fields[4], tree.Yaw) &&
-           ParseStrictDecimal(fields[5], tree.Scale) && tree.Scale >= kMinScale && tree.Scale <= kMaxScale;
+    return ParseStrictDecimal(Field(fields[1]), tree.X) && ParseStrictDecimal(Field(fields[2]), tree.Y) &&
+           ParseStrictDecimal(Field(fields[3]), tree.Z) && ParseStrictDecimal(Field(fields[4]), tree.Yaw) &&
+           ParseStrictDecimal(Field(fields[5]), tree.Scale) && InWorld(tree.X) && InWorld(tree.Y) &&
+           InWorld(tree.Z) && std::isfinite(tree.Yaw) && tree.Scale >= PackedPlacement::kMinScale &&
+           tree.Scale <= PackedPlacement::kMaxScale;
 }
 
-void AppendPage(std::span<const Tree> trees, float rootRadius, std::vector<PlacementPage>& pages,
+uint16 PackOffset(double meters, const std::string& label)
+{
+    const double centimeters = meters * kCentimetersPerMeter;
+    if (centimeters >= kLargestOffset + 0.5)
+        throw std::runtime_error(label + " spans more than 655.35 meters on one axis. Split it into smaller pages.");
+    return static_cast<uint16>(std::lround(centimeters));
+}
+
+uint8 PackYaw(double degrees)
+{
+    const double turn = std::fmod(degrees, kDegreesPerTurn) / kDegreesPerTurn;
+    return static_cast<uint8>(static_cast<int64>(std::lround(turn * PackedPlacement::kYawSteps)) & 0xFF);
+}
+
+uint8 PackScale(double scale)
+{
+    constexpr double kRange = PackedPlacement::kMaxScale - PackedPlacement::kMinScale;
+    return static_cast<uint8>(std::lround((scale - PackedPlacement::kMinScale) * (kLargestScale / kRange)));
+}
+
+void AppendPage(std::span<const Tree> trees, float boundRadius, std::vector<PlacementPage>& pages,
                 std::vector<PackedPlacement>& placements)
 {
     const std::string label = "Page " + std::to_string(pages.size());
-    if (placements.size() > std::numeric_limits<uint32>::max() - trees.size())
-        throw std::runtime_error("Placement count exceeds the archive limit");
     double x = trees.front().X;
-    const double y = trees.front().Y;
+    double y = trees.front().Y;
     double z = trees.front().Z;
     for (const Tree& tree : trees)
     {
-        if (tree.Y != y)
-            throw std::runtime_error(label + " requires one common root elevation");
         x = std::min(x, tree.X);
+        y = std::min(y, tree.Y);
         z = std::min(z, tree.Z);
     }
 
     PlacementPage page{{x, y, z}, {}, {}, 0, static_cast<uint32>(placements.size()), static_cast<uint32>(trees.size())};
-    // Use the largest representable scale so rounding and shader decoding cannot shrink the bounds.
-    const float radius = std::nextafter(rootRadius * static_cast<float>(kMaxScale), std::numeric_limits<float>::infinity());
+    // Use the largest scale so that rounding and the shader decode cannot shrink the bounds.
+    const float radius =
+        std::nextafter(boundRadius * PackedPlacement::kMaxScale, std::numeric_limits<float>::infinity());
     page.LocalMin = Mathematics::Vector3(-radius, -radius, -radius);
     page.LocalMax = Mathematics::Vector3(radius, radius, radius);
     for (const Tree& tree : trees)
     {
-        const double localX = (tree.X - x) * kCentimetersPerMeter;
-        const double localZ = (tree.Z - z) * kCentimetersPerMeter;
-        if (localX >= kLargestWord + 0.5 || localZ >= kLargestWord + 0.5)
-            throw std::runtime_error(label + " exceeds the 655.35 meter horizontal packing range");
-        const auto encodedX = static_cast<uint16>(std::lround(localX));
-        const auto encodedZ = static_cast<uint16>(std::lround(localZ));
-        const uint16 yaw = static_cast<uint16>(std::lround(std::fmod(tree.Yaw, 360.0) * (PackedPlacement::kYawSteps / 360.0)));
-        const auto scale = static_cast<uint16>(std::lround((tree.Scale - kMinScale) *
-                                                          (kLargestWord / (kMaxScale - kMinScale))));
-        placements.push_back({encodedX, encodedZ, yaw, scale});
-        page.LocalMax.x = std::max(page.LocalMax.x, static_cast<float>(localX / kCentimetersPerMeter) + radius);
-        page.LocalMax.z = std::max(page.LocalMax.z, static_cast<float>(localZ / kCentimetersPerMeter) + radius);
+        const PackedPlacement packed{PackOffset(tree.X - x, label), PackOffset(tree.Z - z, label),
+                                     PackOffset(tree.Y - y, label), PackYaw(tree.Yaw), PackScale(tree.Scale)};
+        placements.push_back(packed);
+        for (size_t axis = 0; axis < 3; ++axis)
+        {
+            const double local = axis == 0 ? packed.LocalX() : axis == 1 ? packed.LocalY() : packed.LocalZ();
+            page.LocalMax[axis] = std::max(page.LocalMax[axis], static_cast<float>(local) + radius);
+        }
     }
-    // A packed position may round up by half a centimeter.
-    page.LocalMax.x = std::nextafter(page.LocalMax.x + 0.005f, std::numeric_limits<float>::infinity());
-    page.LocalMax.z = std::nextafter(page.LocalMax.z + 0.005f, std::numeric_limits<float>::infinity());
+    for (size_t axis = 0; axis < 3; ++axis)
+        page.LocalMax[axis] =
+            std::nextafter(page.LocalMax[axis] + kRoundingMargin, std::numeric_limits<float>::infinity());
     pages.push_back(page);
 }
 
@@ -101,48 +134,28 @@ uint32 QuantizePageCenter(double center, double min, double max)
 {
     if (min == max)
         return 0;
-    // Halve first when the full interval is wider than a double can represent.
-    if (!std::isfinite(max - min))
-    {
-        center *= 0.5;
-        min *= 0.5;
-        max *= 0.5;
-    }
-    return static_cast<uint32>(std::clamp((center - min) / (max - min), 0.0, 1.0) * 65535.0);
+    return static_cast<uint32>(std::clamp((center - min) / (max - min), 0.0, 1.0) * kLargestOffset);
 }
 
 void OrderPagesSpatially(std::vector<PlacementPage>& pages, std::vector<PackedPlacement>& placements)
 {
     if (pages.size() < 2)
         return;
-    std::vector<std::array<double, 2>> centers;
+    // The center of each page's bounds on the ground plane.
+    std::vector<std::pair<double, double>> centers;
     centers.reserve(pages.size());
     for (const auto& page : pages)
-    {
-        // Bounds and their centers come from the same extents used by stand culling.
-        const double x = std::midpoint(page.Origin.X + page.LocalMin.x, page.Origin.X + page.LocalMax.x);
-        const double z = std::midpoint(page.Origin.Z + page.LocalMin.z, page.Origin.Z + page.LocalMax.z);
-        if (!std::isfinite(x) || !std::isfinite(z))
-            throw std::runtime_error("Page center is outside the supported coordinate range");
-        centers.push_back({x, z});
-    }
-    auto min = centers.front();
-    auto max = min;
-    for (const auto& center : centers)
-        for (size_t axis = 0; axis < center.size(); ++axis)
-        {
-            min[axis] = std::min(min[axis], center[axis]);
-            max[axis] = std::max(max[axis], center[axis]);
-        }
+        centers.emplace_back(std::midpoint(page.Origin.X + page.LocalMin.x, page.Origin.X + page.LocalMax.x),
+                             std::midpoint(page.Origin.Z + page.LocalMin.z, page.Origin.Z + page.LocalMax.z));
+    auto [minX, maxX] = std::ranges::minmax(centers | std::views::keys);
+    auto [minZ, maxZ] = std::ranges::minmax(centers | std::views::values);
 
     std::vector<std::pair<uint64, size_t>> order;
     order.reserve(pages.size());
     for (size_t page = 0; page < pages.size(); ++page)
-    {
-        const uint32 x = QuantizePageCenter(centers[page][0], min[0], max[0]);
-        const uint32 z = QuantizePageCenter(centers[page][1], min[1], max[1]);
-        order.emplace_back(PageMortonCode(x, z), page);
-    }
+        order.emplace_back(PageStreaming::PageMortonCode(QuantizePageCenter(centers[page].first, minX, maxX),
+                                                         QuantizePageCenter(centers[page].second, minZ, maxZ)),
+                           page);
     std::ranges::sort(order);
     std::vector<PlacementPage> sortedPages;
     std::vector<PackedPlacement> sortedPlacements;
@@ -160,14 +173,19 @@ void OrderPagesSpatially(std::vector<PlacementPage>& pages, std::vector<PackedPl
     placements = std::move(sortedPlacements);
 }
 
-void Cook(std::istream& input, const std::filesystem::path& output, float radius, bool spatialOrder)
+std::string LineLabel(size_t lineNumber)
+{
+    return "Line " + std::to_string(lineNumber);
+}
+
+void Cook(std::istream& input, const std::filesystem::path& output, float boundRadius, bool spatialOrder)
 {
     std::string line;
     std::getline(input, line);
     if (!line.empty() && line.back() == '\r')
         line.pop_back();
-    if (line != "page,x,y,z,yawDegrees,scale")
-        throw std::runtime_error("CSV header must be page,x,y,z,yawDegrees,scale");
+    if (line != kCsvHeader)
+        throw std::runtime_error("The first CSV line must be " + std::string(kCsvHeader));
     std::vector<PlacementPage> pages;
     std::vector<PackedPlacement> placements;
     std::vector<Tree> page;
@@ -176,66 +194,91 @@ void Cook(std::istream& input, const std::filesystem::path& output, float radius
     while (std::getline(input, line))
     {
         ++lineNumber;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
         Tree tree{};
         int64 id = 0;
         if (!ParseTree(line, id, tree))
-            throw std::runtime_error("Invalid placement on line " + std::to_string(lineNumber));
+            throw std::runtime_error(LineLabel(lineNumber) + " is not a valid placement. Each row needs a page "
+                                     "number from 0, finite coordinates within 1e12 meters, a yaw in degrees and a "
+                                     "scale from 0.75 to 1.25.");
         if (!page.empty() && id == static_cast<int64>(pages.size()) + 1)
         {
-            AppendPage(page, radius, pages, placements);
+            if (pages.size() + 1 == PackedPlacementStore::kMaxPages)
+                throw std::runtime_error(LineLabel(lineNumber) + " starts page " + std::to_string(id) +
+                                         ". An archive holds at most 1048576 pages. Split the forest into more "
+                                         "archives.");
+            AppendPage(page, boundRadius, pages, placements);
             page.clear();
         }
-        if (id != static_cast<int64>(pages.size()) || page.size() == PackedPlacementStore::kPlacementsPerPage)
-            throw std::runtime_error("Page IDs must be contiguous in stand mesh order, with at most 144 trees per page");
+        if (id != static_cast<int64>(pages.size()))
+            throw std::runtime_error(LineLabel(lineNumber) + " has page " + std::to_string(id) + ", but page " +
+                                     std::to_string(pages.size()) + " or " + std::to_string(pages.size() + 1) +
+                                     " comes next. Number the pages from 0 without gaps, in page order.");
+        if (page.size() == PackedPlacementStore::kPlacementsPerPage)
+            throw std::runtime_error(LineLabel(lineNumber) + " is tree 145 of page " + std::to_string(id) +
+                                     ". A page holds at most 144 trees.");
         page.push_back(tree);
     }
     if (!input.eof())
-        throw std::runtime_error("Could not read placement CSV");
-    if (!page.empty())
-        AppendPage(page, radius, pages, placements);
+        throw std::runtime_error("Could not read the placement CSV");
+    if (page.empty())
+        throw std::runtime_error("The placement CSV has no trees after its header");
+    AppendPage(page, boundRadius, pages, placements);
     if (spatialOrder)
         OrderPagesSpatially(pages, placements);
-    if (const std::string error = WritePackedPlacementStore(output, pages, placements); !error.empty())
+    if (const std::string error = WritePackedPlacementStore(output, boundRadius, pages, placements); !error.empty())
         throw std::runtime_error(error);
     std::cout << "Wrote " << pages.size() << " pages and " << placements.size() << " placements\n";
 }
+
+constexpr std::string_view kUsage =
+    "Usage: ForestPlacementCook placements.csv output.geforest boundRadiusMeters [--spatial-order]\n"
+    "       ForestPlacementCook --overview input.geforest canopy.png output.glb minX minZ maxX maxZ "
+    "canopyHeight tileSize";
+
+void CookOverview(int argc, char** argv)
+{
+    ForestOverviewSource source{};
+    if (argc != 11 || !ParseStrictDecimal(argv[5], source.MinX) || !ParseStrictDecimal(argv[6], source.MinZ) ||
+        !ParseStrictDecimal(argv[7], source.MaxX) || !ParseStrictDecimal(argv[8], source.MaxZ) ||
+        !ParseStrictDecimal(argv[9], source.Height) || source.MinX >= source.MaxX || source.MinZ >= source.MaxZ)
+        throw std::runtime_error(std::string(kUsage));
+    const auto size = ParseInt(argv[10]);
+    const auto output = PathFromUtf8(argv[4]);
+    if (!size || *size < 16 || *size > 64 || output.extension() != ".glb")
+        throw std::runtime_error("Use a .glb output path and a tile size between 16 and 64 pixels");
+    source.TileSize = static_cast<uint32>(*size);
+    CookForestOverview(PathFromUtf8(argv[2]), PathFromUtf8(argv[3]), output, source);
+    std::cout << "Wrote forest overview mesh and atlas\n";
+}
+
+void CookArchive(int argc, char** argv)
+{
+    float boundRadius = 0;
+    const bool spatialOrder = argc == 5 && std::string_view(argv[4]) == "--spatial-order";
+    if ((argc != 4 && !spatialOrder) || !ParseStrictDecimalFloat(argv[3], boundRadius) || boundRadius <= 0 ||
+        boundRadius > std::numeric_limits<float>::max() / 2)
+        throw std::runtime_error(std::string(kUsage));
+    const auto source = PathFromUtf8(argv[1]);
+    const auto output = PathFromUtf8(argv[2]);
+    std::ifstream input(source);
+    if (!input || output.extension() != ".geforest")
+        throw std::runtime_error("A readable CSV and a .geforest output path are required");
+    Cook(input, output, boundRadius, spatialOrder);
+}
+
 } // namespace
+} // namespace GameEngine
 
 int main(int argc, char** argv)
 {
     try
     {
         if (argc >= 2 && std::string_view(argv[1]) == "--overview")
-        {
-            GameEngine::ForestOverviewSource source{};
-            if (argc != 11 || !GameEngine::ParseStrictDecimal(argv[5], source.MinX) ||
-                !GameEngine::ParseStrictDecimal(argv[6], source.MinZ) ||
-                !GameEngine::ParseStrictDecimal(argv[7], source.MaxX) ||
-                !GameEngine::ParseStrictDecimal(argv[8], source.MaxZ) ||
-                !GameEngine::ParseStrictDecimal(argv[9], source.Height) ||
-                source.MinX >= source.MaxX || source.MinZ >= source.MaxZ)
-                throw std::runtime_error("Usage: ForestPlacementCook --overview input.geforest canopy.png output.glb "
-                                         "minX minZ maxX maxZ canopyHeight tileSize");
-            const auto size = GameEngine::ParseInt(argv[10]);
-            const auto output = GameEngine::PathFromUtf8(argv[4]);
-            if (!size || *size < 16 || *size > 64 || output.extension() != ".glb")
-                throw std::runtime_error("Use a .glb output path and a tile size between 16 and 64 pixels");
-            source.TileSize = static_cast<unsigned>(*size);
-            GameEngine::CookForestOverview(GameEngine::PathFromUtf8(argv[2]), GameEngine::PathFromUtf8(argv[3]), output, source);
-            std::cout << "Wrote forest overview mesh and atlas\n";
-            return 0;
-        }
-        float radius = 0;
-        const bool spatialOrder = argc == 5 && std::string_view(argv[4]) == "--spatial-order";
-        if ((argc != 4 && !spatialOrder) || !GameEngine::ParseStrictDecimalFloat(argv[3], radius) || radius <= 0 ||
-            radius > std::numeric_limits<float>::max() / 2)
-            throw std::runtime_error("Usage: ForestPlacementCook placements.csv output.geforest rootRadiusMeters [--spatial-order]");
-        const auto source = GameEngine::PathFromUtf8(argv[1]);
-        const auto output = GameEngine::PathFromUtf8(argv[2]);
-        std::ifstream input(source);
-        if (!input || output.extension() != ".geforest")
-            throw std::runtime_error("A readable CSV and a .geforest output path are required");
-        Cook(input, output, radius, spatialOrder);
+            GameEngine::CookOverview(argc, argv);
+        else
+            GameEngine::CookArchive(argc, argv);
         return 0;
     }
     catch (const std::exception& error)

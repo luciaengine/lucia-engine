@@ -19,7 +19,6 @@ namespace
 
 constexpr std::array<char, 4> kMagic{'G', 'E', 'F', 'P'};
 constexpr uint32 kVersion = 1;
-constexpr uint64 kMaxDirectoryBytes = 64ull * 1024 * 1024;
 
 struct PlacementStoreHeader
 {
@@ -27,12 +26,15 @@ struct PlacementStoreHeader
     uint32 Version;
     uint32 PageCount;
     uint32 PlacementCount;
+    float32 BoundRadius;
+    uint32 Padding;
     uint64 DataOffset;
     uint64 DirectoryHash;
 };
-static_assert(sizeof(PlacementStoreHeader) == 32);
-static_assert(offsetof(PlacementStoreHeader, DataOffset) == 16);
-static_assert(offsetof(PlacementStoreHeader, DirectoryHash) == 24);
+static_assert(sizeof(PlacementStoreHeader) == 40);
+static_assert(offsetof(PlacementStoreHeader, BoundRadius) == 16);
+static_assert(offsetof(PlacementStoreHeader, DataOffset) == 24);
+static_assert(offsetof(PlacementStoreHeader, DirectoryHash) == 32);
 static_assert(offsetof(PlacementPage, LocalMin) == 24);
 static_assert(offsetof(PlacementPage, LocalMax) == 36);
 static_assert(offsetof(PlacementPage, ContentHash) == 48);
@@ -47,37 +49,45 @@ bool ValidAxis(double origin, float32 localMin, float32 localMax)
            std::isfinite(origin + localMin) && std::isfinite(origin + localMax);
 }
 
-bool ValidPageBounds(const PlacementPage& page)
+// A page that starts at placement `first` and has finite, ordered bounds.
+bool ValidPage(const PlacementPage& page, uint64 first)
 {
-    return ValidAxis(page.Origin.X, page.LocalMin.x, page.LocalMax.x) &&
+    return page.First == first && page.Count != 0 && page.Count <= PackedPlacementStore::kPlacementsPerPage &&
+           ValidAxis(page.Origin.X, page.LocalMin.x, page.LocalMax.x) &&
            ValidAxis(page.Origin.Y, page.LocalMin.y, page.LocalMax.y) &&
            ValidAxis(page.Origin.Z, page.LocalMin.z, page.LocalMax.z);
 }
 
+bool ValidBoundRadius(float32 radius)
+{
+    return std::isfinite(radius) && radius > 0.0f;
+}
+
 } // namespace
 
-std::string WritePackedPlacementStore(const std::filesystem::path& target, std::span<const PlacementPage> pages,
-                                      std::span<const PackedPlacement> placements)
+std::string WritePackedPlacementStore(const std::filesystem::path& target, float boundRadius,
+                                      std::span<const PlacementPage> pages, std::span<const PackedPlacement> placements)
 {
-    if (pages.empty() || pages.size_bytes() > kMaxDirectoryBytes || placements.size() > std::numeric_limits<uint32>::max())
-        return "invalid placement store size";
+    if (pages.empty() || pages.size() > PackedPlacementStore::kMaxPages)
+        return "a placement store holds 1 to " + std::to_string(PackedPlacementStore::kMaxPages) + " pages";
+    if (!ValidBoundRadius(boundRadius))
+        return "the bound radius must be a positive number of meters";
 
     std::vector<PlacementPage> directory(pages.begin(), pages.end());
-    size_t first = 0;
+    uint64 first = 0;
     for (auto& page : directory)
     {
-        if (page.First != first || page.Count == 0 || page.Count > PackedPlacementStore::kPlacementsPerPage ||
-            page.Count > placements.size() - first || !ValidPageBounds(page))
+        if (!ValidPage(page, first) || page.Count > placements.size() - first)
             return "invalid placement page " + std::to_string(&page - directory.data());
         const auto payload = placements.subspan(first, page.Count);
         page.ContentHash = Hashing::Fnv1a64(payload.data(), payload.size_bytes());
         first += page.Count;
     }
     if (first != placements.size())
-        return "placement pages do not cover the payload";
+        return "the placement pages do not cover the payload";
 
     const PlacementStoreHeader header{kMagic, kVersion, static_cast<uint32>(pages.size()),
-        static_cast<uint32>(placements.size()), sizeof(PlacementStoreHeader) + pages.size_bytes(),
+        static_cast<uint32>(placements.size()), boundRadius, 0, sizeof(PlacementStoreHeader) + pages.size_bytes(),
         Hashing::Fnv1a64(directory.data(), pages.size_bytes())};
     std::error_code error;
     if (const auto parent = target.parent_path(); !parent.empty())
@@ -108,21 +118,21 @@ std::string PackedPlacementStore::Open(const std::filesystem::path& file)
     m_File.clear();
     m_Pages.clear();
     m_DataOffset = 0;
-    m_PlacementCount = 0;
+    m_BoundRadius = 0.0f;
 
     SharedFileReader reader;
     if (!reader.Open(file))
         return "could not open the placement store";
     PlacementStoreHeader header{};
     if (reader.Read(&header, sizeof(header)) != static_cast<int64>(sizeof(header)) ||
-        header.Magic != kMagic || header.Version != kVersion)
+        header.Magic != kMagic || header.Version != kVersion || header.Padding != 0 ||
+        !ValidBoundRadius(header.BoundRadius))
         return "invalid placement store header";
 
     const uint64 directoryBytes = static_cast<uint64>(header.PageCount) * sizeof(PlacementPage);
     const uint64 payloadBytes = static_cast<uint64>(header.PlacementCount) * sizeof(PackedPlacement);
     const int64 fileBytes = reader.Size();
-    if (header.PageCount == 0 || header.PlacementCount < header.PageCount ||
-        directoryBytes > kMaxDirectoryBytes || fileBytes < 0 ||
+    if (header.PageCount == 0 || header.PageCount > kMaxPages || fileBytes < 0 ||
         header.DataOffset != sizeof(header) + directoryBytes ||
         header.DataOffset + payloadBytes != static_cast<uint64>(fileBytes))
         return "invalid placement store length";
@@ -135,18 +145,17 @@ std::string PackedPlacementStore::Open(const std::filesystem::path& file)
     uint64 covered = 0;
     for (const PlacementPage& page : pages)
     {
-        if (page.First != covered || page.Count == 0 || page.Count > kPlacementsPerPage ||
-            !ValidPageBounds(page))
+        if (!ValidPage(page, covered))
             return "invalid placement page";
         covered += page.Count;
     }
     if (covered != header.PlacementCount)
-        return "placement pages do not cover the payload";
+        return "the placement pages do not cover the payload";
 
     m_File = file;
     m_Pages = std::move(pages);
     m_DataOffset = header.DataOffset;
-    m_PlacementCount = header.PlacementCount;
+    m_BoundRadius = header.BoundRadius;
     return {};
 }
 
