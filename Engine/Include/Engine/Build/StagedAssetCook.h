@@ -15,9 +15,16 @@ namespace GameEngine
 {
 class AssetRegistry;
 class ParserRegistry;
+class ShipRules;
+struct ForestStandConfig;
 struct AssetManifest;
 struct TexturePackageCookStats;
 class TextureCookWorkers;
+
+/// Copy a configured placement archive to the packaged Player's asset root.
+/// Empty means success. A configured archive is required for scene startup.
+std::string StageForestPlacementArchive(const ForestStandConfig& forest,
+    const std::filesystem::path& projectAssets, const std::filesystem::path& stagedAssets, const ShipRules& rules);
 
 /// The build's cook of the content it staged: strips the editor-only components from the staged
 /// scenes (StripEditorOnlyComponentsFromStagedScenes), bakes the staged textures from the tree's
