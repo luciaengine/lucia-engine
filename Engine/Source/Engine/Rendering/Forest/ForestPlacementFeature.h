@@ -48,8 +48,9 @@ public:
     /// logs one warning, frees its GPU objects, draws the overview only and streams no page.
     void PublishCard(uint64 world, const GUID& model, const ForestImpostorCard& card,
                      std::span<const ImpostorBakePart> sources = {});
-    /// Declares the session's culled cards and near meshes into the view. Return true when standRanges
-    /// accounts for all visible cells not drawn by the packed stream. The stand draw producer calls it.
+    /// Declares the session's culled cards and near meshes into one Game or Scene View per frame; a
+    /// drawing Game view comes first. Returns true when standRanges holds every visible cell that the
+    /// packed stream does not draw. The stand draw producer calls it.
     bool EmitDetails(ForestPlacementSession& session, const ForwardEmitContext& context,
                      const Rendering::CameraData& camera, ForestPlacementView view,
                      std::vector<DrawSubCommand>& standRanges);

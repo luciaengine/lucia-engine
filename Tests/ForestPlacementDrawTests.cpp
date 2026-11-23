@@ -646,6 +646,7 @@ protected:
         ASSERT_TRUE(m_Session);
         const auto camera = m_Services.Views().AllocateCamera("ForestSessionCamera");
         m_View = m_Services.Views().AllocateView("ForestSessionView", camera);
+        m_SceneView = m_Services.Views().AllocateView("ForestSessionSceneView", camera, Rendering::ViewPurpose::EditorScene);
     }
 
     void TearDown() override
@@ -657,8 +658,8 @@ protected:
         m_Device->Shutdown();
     }
 
-    // Declares one frame of the session into the view and submits it. True when the session drew.
-    bool Emit(uint64 frameIndex)
+    // Declares one frame of the session into each view in turn and submits it. True where the session drew.
+    std::vector<bool> Emit(uint64 frameIndex, std::initializer_list<Rendering::ViewId> views)
     {
         using namespace Rendering::RenderGraph;
         RGResourcePool persistent(m_Device.get());
@@ -667,15 +668,21 @@ protected:
         RGFrame graph(m_Device.get(), &persistent, &transient, &ring);
         EXPECT_TRUE(m_Device->BeginFrame());
         graph.BeginFrame(frameIndex);
-        Engine::Renderer::ForwardEmitContext context{.Device = m_Device.get(), .Services = &m_Services,
-                                                     .Frame = &graph, .ViewId = m_View};
-        std::vector<Engine::Renderer::DrawSubCommand> ranges;
-        const bool drew = m_Feature->EmitDetails(*m_Session, context, {}, m_Near, ranges);
+        std::vector<bool> drew;
+        for (const auto view : views)
+        {
+            Engine::Renderer::ForwardEmitContext context{.Device = m_Device.get(), .Services = &m_Services,
+                                                         .Frame = &graph, .ViewId = view};
+            std::vector<Engine::Renderer::DrawSubCommand> ranges;
+            drew.push_back(m_Feature->EmitDetails(*m_Session, context, {}, m_Near, ranges));
+        }
         graph.Execute();
         m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
         m_Device->WaitForIdle();
         return drew;
     }
+
+    bool Emit(uint64 frameIndex) { return Emit(frameIndex, {m_View}).front(); }
 
     // True when the runtime still asks for the near page: no stream has read it.
     bool NoPageWasRead()
@@ -695,6 +702,7 @@ protected:
     Engine::Renderer::ForestPlacementFeature* m_Feature = nullptr;
     std::shared_ptr<Engine::Renderer::ForestPlacementSession> m_Session;
     Rendering::ViewId m_View{};
+    Rendering::ViewId m_SceneView{};
 };
 
 // The corner of this card reaches 10 + 4 * sqrt(2) m from the root, past the archive's 12 m.
@@ -740,6 +748,20 @@ TEST_F(ForestPlacementSessionDeviceTest, RefusingAStreamingSessionFreesItsSlotsA
     EXPECT_FALSE(m_Session->Slots.IsValid());
     EXPECT_FALSE(m_Session->Indices.IsValid());
     EXPECT_FALSE(m_Session->Stream);
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, TheSceneViewTakesTheDetailsWhenTheGameViewStopsDrawing)
+{
+    Emit(1);
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EXPECT_EQ(Emit(2, {m_View, m_SceneView}), (std::vector{true, false}));
+    EXPECT_EQ(Emit(3, {m_SceneView, m_View}), (std::vector{false, true}));
+    // The Scene View waits one frame for a Game view that may still draw.
+    EXPECT_EQ(Emit(4, {m_SceneView}), (std::vector{false}));
+    EXPECT_EQ(Emit(5, {m_SceneView}), (std::vector{true}));
+    EXPECT_EQ(Emit(6, {m_View, m_SceneView}), (std::vector{true, false}));
 }
 
 } // namespace
