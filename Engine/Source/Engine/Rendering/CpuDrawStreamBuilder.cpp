@@ -1,6 +1,7 @@
 #include "Engine/Rendering/CpuDrawStreamBuilder.h"
 
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/MaterialDeformationMargins.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/ViewRegistry.h"
@@ -66,6 +67,8 @@ struct CpuDrawStreamBuilder::CullInputs
     Rendering::Vector4 Planes[6];
     // The view is the editor Scene View: its camera and caster sets leave out what the eye hides.
     bool DropEditorHidden = false;
+    // The culling margin per materialIndex: a deforming instance culls with its grown sphere.
+    std::span<const float> DeformationMargins;
 };
 
 void CpuDrawStreamBuilder::Clear()
@@ -77,6 +80,7 @@ void CpuDrawStreamBuilder::Clear()
 void CpuDrawStreamBuilder::Build(const WorldDrawBuilder& drawBuilder,
                                  const Rendering::MeshGPURegistry& meshRegistry,
                                  const Rendering::GPUScene& scene, const ViewRegistry& views,
+                                 std::span<const float> deformationMargins,
                                  JobSystem::WorkStealingThreadPool* pool)
 {
     m_Stats = {};
@@ -90,13 +94,14 @@ void CpuDrawStreamBuilder::Build(const WorldDrawBuilder& drawBuilder,
     }
 
     for (const Rendering::ViewDesc& view : views.GetViews())
-        BuildView(view.id, drawBuilder, meshRegistry, scene, views, pool);
+        BuildView(view.id, drawBuilder, meshRegistry, scene, views, deformationMargins, pool);
 }
 
 void CpuDrawStreamBuilder::BuildForView(Rendering::ViewId viewId,
                                         const WorldDrawBuilder& drawBuilder,
                                         const Rendering::MeshGPURegistry& meshRegistry,
                                         const Rendering::GPUScene& scene, const ViewRegistry& views,
+                                        std::span<const float> deformationMargins,
                                         JobSystem::WorkStealingThreadPool* pool)
 {
     auto it = m_ByView.find(viewId);
@@ -106,12 +111,13 @@ void CpuDrawStreamBuilder::BuildForView(Rendering::ViewId viewId,
         it->second.Index[0].clear();
         it->second.Index[1].clear();
     }
-    BuildView(viewId, drawBuilder, meshRegistry, scene, views, pool);
+    BuildView(viewId, drawBuilder, meshRegistry, scene, views, deformationMargins, pool);
 }
 
 void CpuDrawStreamBuilder::BuildView(Rendering::ViewId viewId, const WorldDrawBuilder& drawBuilder,
                                      const Rendering::MeshGPURegistry& meshRegistry,
                                      const Rendering::GPUScene& scene, const ViewRegistry& views,
+                                     std::span<const float> deformationMargins,
                                      JobSystem::WorkStealingThreadPool* pool)
 {
     const std::span<const WorldSubmissionRecord> submissions = drawBuilder.GetSubmissions(viewId);
@@ -126,6 +132,7 @@ void CpuDrawStreamBuilder::BuildView(Rendering::ViewId viewId, const WorldDrawBu
     inputs.MeshRegistry = &meshRegistry;
     inputs.Instances = instances.data();
     inputs.InstanceCount = instances.size();
+    inputs.DeformationMargins = deformationMargins;
     const Rendering::ViewDesc* view = views.FindViewDesc(viewId);
     inputs.DropEditorHidden = view != nullptr && view->DropsEditorHidden();
     // Cull relative to the view's render origin, in the arithmetic the GPU frustum
@@ -196,7 +203,7 @@ void CpuDrawStreamBuilder::ResolveAndCullRange(CullInputs inputs, Candidate* can
             inst.boundingCenter, inst.sectorPacked[0], inst.sectorPacked[1], inputs.OriginSector);
         out.State = kResolvedBit;
         if (Rendering::InstanceInColorPass(rec.flags, inputs.DropEditorHidden) &&
-            Rendering::TestSphereFrustum(center, inst.boundingRadius, inputs.Planes))
+            Rendering::TestSphereFrustum(center, DeformedCullRadius(inst, inputs.DeformationMargins), inputs.Planes))
             out.State |= kVisibleBit;
         if (Rendering::InstanceInShadowPass(rec.flags, inputs.DropEditorHidden))
             out.State |= kCasterBit;

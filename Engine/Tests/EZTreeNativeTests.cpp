@@ -16,6 +16,7 @@
 #include "EZTreeECS/EZTreePlugin.h"
 #include "EZTreeECS/EZTreeRuntimeMaterials.h"
 #include "EZTreeECS/EZTreeService.h"
+#include "EZTreeECS/EZTreeVariantMaterials.h"
 #include "EZTreeECS/Systems/RegisterEZTreeSystems.h"
 #include "PluginAPI/EnginePlugin.h"
 
@@ -548,6 +549,25 @@ TEST(EZTreeNativeTests, ComponentFactoryCreatorIsAddableAndReloadSafe)
     ASSERT_NE(tree, nullptr);
     EXPECT_EQ(tree->RuntimeMeshHandleId, 0u);
     EXPECT_EQ(tree->RuntimeVertexCount, 0u);
+}
+
+// The wind material's @deformationEnvelope covers the authored wind in the cull kernels, so the
+// culling sphere grows only by what the wind volumes can add: nothing without volumes, however
+// strong the authored wind, and the envelope times the strongest part's scale per m/s of volume wind.
+TEST(EZTreeNativeTests, TheCullingSphereGrowsOnlyByTheWindVolumesShare)
+{
+    EZTree::TreeOptions options{};
+    options.wind.enabled = true;
+    options.wind.strength = {6.0f, 0.0f, 2.0f};
+    EXPECT_FLOAT_EQ(EZTreeECS::WindVolumeCullMargin(options, 0.0f), 0.0f);
+
+    const float perMeterPerSecond = EZTreeECS::WindVolumeCullMargin(options, 1.0f);
+    EXPECT_GT(perMeterPerSecond, 0.0f);
+    EXPECT_FLOAT_EQ(EZTreeECS::WindVolumeCullMargin(options, 4.0f), 4.0f * perMeterPerSecond);
+    EXPECT_FLOAT_EQ(perMeterPerSecond, 1.21f * EZTreeECS::WindScaleBound(options));
+
+    options.wind.enabled = false;
+    EXPECT_FLOAT_EQ(EZTreeECS::WindVolumeCullMargin(options, 4.0f), 0.0f);
 }
 
 TEST(EZTreeNativeTests, RuntimeMaterialShapesCarryWindAndLeafSurface)
