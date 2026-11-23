@@ -131,8 +131,8 @@ Engine/Source/Engine/Build/CancellableShellProcess.cpp:atomic_spin:1            
 Engine/Source/Engine/Build/CancellableShellProcess.cpp:std_thread:2                          # a process host (pipes block)
 Engine/Source/Engine/Build/ExportRequirements.cpp:named_for_a_function:1                     # the struct ExportRequirement; the rule ignores the classes a file defines (#5208)
 Engine/Source/Engine/Rendering/DepthDrawRecorder.cpp:manual_barrier:2                       # compute dispatches share scratch within the owner pass; cascade clear reopens one depth layer within its pass
-Engine/Source/Engine/Rendering/Forest/ForestPlacementFeature.cpp:create_buffer:2                  # the forest session owns its placement slot buffer and card index buffer across graph frames; resident pages outlive the graph's idle eviction
-Engine/Source/Engine/Rendering/Forest/ForestPlacementFeature.cpp:destroy_resource:2               # the forest session owns its placement slot buffer and card index buffer across graph frames; resident pages outlive the graph's idle eviction
+Engine/Source/Engine/Rendering/Forest/ForestPlacementSession.cpp:create_buffer:2                  # the forest session owns its placement slot buffer and card index buffer across graph frames; resident pages outlive the graph's idle eviction
+Engine/Source/Engine/Rendering/Forest/ForestPlacementSession.cpp:destroy_resource:2               # the forest session owns its placement slot buffer and card index buffer across graph frames; resident pages outlive the graph's idle eviction
 Engine/Source/Engine/Rendering/Impostors/ImpostorBaker.cpp:create_texture:3                   # the atlas cache owns textures and source mip views across render graph frames
 Engine/Source/Engine/Rendering/Impostors/ImpostorBaker.cpp:destroy_resource:2                 # atlas eviction releases its source mip views and textures together
 Engine/Source/Engine/Rendering/MaterialSystemTesting.h:free_functions_beside_hub:1           # test seams of MaterialSystem; the game-facing MaterialSystem.h holds no test-only symbol

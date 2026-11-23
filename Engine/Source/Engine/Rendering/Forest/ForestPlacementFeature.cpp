@@ -4,7 +4,7 @@
 #include "ForestImpostorDraw.h"
 #include "ForestNearMeshCandidates.h"
 #include "ForestPlacementGpuData.h"
-#include "Engine/Rendering/Forest/ForestPlacementRenderState.h"
+#include "ForestPlacementSession.h"
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/MeshLODThresholds.h"
@@ -24,121 +24,6 @@ namespace GameEngine::Engine::Renderer
 {
 using namespace Rendering;
 using namespace Rendering::RenderGraph;
-
-struct ForestPlacementCountSample
-{
-    std::shared_ptr<RGBufferReadbackTicket> Ticket;
-    uint64 Frame = 0;
-    ViewId View{};
-    uint32 StandPages = 0;
-    uint32 DetailPages = 0;
-    uint32 DetailPlacements = 0;
-    uint32 Meshes = 0;
-    uint32 MeshBatches = 0;
-};
-
-struct ForestPlacementSession
-{
-    ForestPlacementCountSample CountSample;
-    std::shared_ptr<ForestPlacementRuntime> Placements;
-    AssetManager* Assets = nullptr;
-    float DetailDistance = 0;
-    uint32 NearBudget = 0;
-    std::vector<ForestNearMeshCandidate> NearDemand;
-    std::vector<ForestMeshOwnedPlacement> NearOwners;
-    std::vector<ForestMeshOwnedPlacement> PendingNearOwners;
-    RGFrameStamp PendingNearFrame;
-    ViewId NearOwnerView{};
-    ViewId PendingNearView{};
-    std::vector<ImpostorBakePart> SourceParts;
-    uint64 World = 0;
-    GUID Model;
-    std::optional<ForestImpostorCard> Card;
-    bool WantsCard = false;
-    std::string Scope;
-    IDevice* Device = nullptr;
-    RGFrame* Graph = nullptr;
-    BufferHandle Slots;
-    BufferHandle Indices;
-    ForestPlacementCull Cull;
-    std::optional<ForestPlacementRenderState> Stream;
-    ForestPlacementFrame Plan;
-    std::vector<ForestPlacementGpuPage> Pages;
-    RGFrameStamp Declared;
-    bool ShaderRequested = false;
-    bool ShaderAvailable = false;
-    bool EmittedDetails = false;
-    bool EmittedNearMeshes = false;
-    // The card reaches past the archive's bound radius: the session draws the overview only and streams nothing.
-    // A reset keeps it, because the card and the archive stay the same.
-    bool Refused = false;
-
-    ~ForestPlacementSession() { Reset(false); }
-
-    void Reset(bool deviceRebuilt)
-    {
-        Stream.reset();
-        CountSample = {};
-        if (Device && !deviceRebuilt)
-        {
-            if (Indices.IsValid())
-                Device->DestroyBuffer(Indices);
-            if (Slots.IsValid())
-                Device->DestroyBuffer(Slots);
-        }
-        Indices = {};
-        Slots = {};
-        Cull = {};
-        Graph = nullptr;
-        Declared = {};
-        ShaderRequested = false;
-        ShaderAvailable = false;
-        EmittedDetails = false;
-        EmittedNearMeshes = false;
-        WantsCard = false;
-        Card.reset();
-        NearDemand.clear();
-        NearOwners.clear();
-        PendingNearOwners.clear();
-        PendingNearFrame = {};
-    }
-
-    bool EnsureGpu(IDevice& device)
-    {
-        Device = &device;
-        if (!ShaderRequested)
-        {
-            ShaderRequested = true;
-            ShaderAvailable = Cull.Initialize(device);
-        }
-        if (!ShaderAvailable)
-            return false;
-        if (!Slots.IsValid())
-        {
-            constexpr size_t kSlotBytes = PageStreaming::PackedPlacementStore::kPlacementsPerPage *
-                                          sizeof(PageStreaming::PackedPlacement);
-            const BufferDesc desc{.size = Placements->SlotCount() * kSlotBytes,
-                .usage = static_cast<uint32>(BufferUsage::Storage | BufferUsage::TransferDst),
-                .memoryUsage = BufferMemoryUsage::DeviceLocal, .debugName = "Forest.PlacementSlots"};
-            Slots = device.CreateBuffer(desc);
-        }
-        if (!Indices.IsValid())
-        {
-            constexpr std::array<uint16, 6> kIndices{0, 1, 2, 3, 4, 5};
-            const BufferDesc desc{.size = sizeof(kIndices),
-                .usage = static_cast<uint32>(BufferUsage::Index | BufferUsage::TransferDst),
-                .memoryUsage = BufferMemoryUsage::DeviceLocal, .debugName = "Forest.CardIndices"};
-            Indices = device.CreateBuffer(desc);
-            if (Indices.IsValid())
-                device.UpdateBuffer(Indices, 0, sizeof(kIndices), kIndices.data());
-        }
-        if (!Slots.IsValid() || !Indices.IsValid())
-            return false;
-        if (!Stream)
-            Stream.emplace(Placements, Slots, Placements->SlotCount());
-        return true;
-    }
-};
 
 std::shared_ptr<ForestPlacementSession> ForestPlacementFeature::Attach(
     std::shared_ptr<ForestPlacementRuntime> placements, AssetManager& assets, uint64 world, const GUID& model,
