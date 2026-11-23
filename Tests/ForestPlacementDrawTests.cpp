@@ -6,6 +6,7 @@
 #include "ECS/ECSTemplates.h"
 #include "ForestNearMeshCandidates.h"
 #include "ForestPlacementGpuData.h"
+#include "ForestPlacementSession.h"
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
 #include "ForestStandDrawProducer.h"
 #include "Engine/Rendering/Forest/ForestPlacementFeature.h"
@@ -14,8 +15,10 @@
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Mathematics/MatrixOps.h"
+#include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Tests/ScopedEnvVar.h"
 
 #include <gtest/gtest.h>
 
@@ -516,6 +519,125 @@ TEST_F(ForestPlacementDrawTest, BuildsPackedGpuPagesInTheCamerasRenderOrigin)
     ++plan.DetailedDraws.front().FirstPlacement;
     EXPECT_FALSE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
     EXPECT_TRUE(pages.empty());
+}
+
+
+// A session on a headless device. Device-gated: each test skips without a Vulkan device.
+class ForestPlacementSessionDeviceTest : public PackedPlacementArchiveTest
+{
+protected:
+    void SetUp() override
+    {
+        Rendering::DeviceDesc desc{};
+        desc.preferredAPI = Rendering::GraphicsAPI::Vulkan;
+        desc.enableDynamicRendering = true;
+        m_Device = Rendering::DeviceFactory::CreateDevice(desc);
+        if (!m_Device || !m_Device->Initialize(desc))
+            GTEST_SKIP() << "No Vulkan device";
+        const auto file = m_Scratch.Path() / "session.geforest";
+        WriteStore(file);
+        std::string error;
+        m_Runtime = Engine::Renderer::ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+        ASSERT_TRUE(m_Runtime) << error;
+        m_Feature = &m_Services.EnsureFeature<Engine::Renderer::ForestPlacementFeature>();
+        m_Session = m_Feature->Attach(m_Runtime, m_Assets, kWorld, m_Model, 100.0f);
+        ASSERT_TRUE(m_Session);
+        const auto camera = m_Services.Views().AllocateCamera("ForestSessionCamera");
+        m_View = m_Services.Views().AllocateView("ForestSessionView", camera);
+    }
+
+    void TearDown() override
+    {
+        if (!m_Device)
+            return;
+        m_Session.reset();
+        m_Device->WaitForIdle();
+        m_Device->Shutdown();
+    }
+
+    // Declares one frame of the session into the view and submits it. True when the session drew.
+    bool Emit(uint64 frameIndex)
+    {
+        using namespace Rendering::RenderGraph;
+        RGResourcePool persistent(m_Device.get());
+        RGTransientPool transient(m_Device.get());
+        RGUploadRing ring(m_Device.get(), 2, 256 * 1024);
+        RGFrame graph(m_Device.get(), &persistent, &transient, &ring);
+        EXPECT_TRUE(m_Device->BeginFrame());
+        graph.BeginFrame(frameIndex);
+        Engine::Renderer::ForwardEmitContext context{.Device = m_Device.get(), .Services = &m_Services,
+                                                     .Frame = &graph, .ViewId = m_View};
+        std::vector<Engine::Renderer::DrawSubCommand> ranges;
+        const bool drew = m_Feature->EmitDetails(*m_Session, context, {}, m_Near, ranges);
+        graph.Execute();
+        m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
+        m_Device->WaitForIdle();
+        return drew;
+    }
+
+    // True when the runtime still asks for the near page: no stream has read it.
+    bool NoPageWasRead()
+    {
+        Engine::Renderer::ForestPlacementFrame plan;
+        return m_Runtime->Prepare(m_Near, 100, 0, plan) && plan.Reads.size() == 1;
+    }
+
+    static constexpr uint64 kWorld = 7;
+    Rendering::Tests::ScopedEnvVar m_Headless{"GE_HEADLESS_TEST", "1"};
+    const Engine::Renderer::ForestPlacementView m_Near{{512'000'054.0, 8.0, 511'999'990.0}, {}, 100.0f};
+    const GUID m_Model = GUID::Generate();
+    std::unique_ptr<Rendering::IDevice> m_Device;
+    Engine::Renderer::RenderServices m_Services;
+    AssetManager m_Assets;
+    std::shared_ptr<Engine::Renderer::ForestPlacementRuntime> m_Runtime;
+    Engine::Renderer::ForestPlacementFeature* m_Feature = nullptr;
+    std::shared_ptr<Engine::Renderer::ForestPlacementSession> m_Session;
+    Rendering::ViewId m_View{};
+};
+
+// The corner of this card reaches 10 + 4 * sqrt(2) m from the root, past the archive's 12 m.
+Engine::Renderer::ForestImpostorCard OversizedCard()
+{
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 10.0f, 0.0f, 4.0f};
+    return card;
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, ARefusedSessionAllocatesNoSlotsAndReadsNoPage)
+{
+    EXPECT_FALSE(Emit(1));
+    EXPECT_TRUE(m_Feature->WantsCard(kWorld, m_Model));
+    EXPECT_FALSE(m_Session->Slots.IsValid());
+    EXPECT_FALSE(m_Session->Stream);
+    EXPECT_TRUE(NoPageWasRead());
+    m_Feature->PublishCard(kWorld, m_Model, OversizedCard());
+    EXPECT_FALSE(Emit(2));
+    EXPECT_FALSE(m_Session->Slots.IsValid());
+    EXPECT_FALSE(m_Session->Stream);
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, ARefusedSessionDoesNotAskForItsCardAgain)
+{
+    Emit(1);
+    m_Feature->PublishCard(kWorld, m_Model, OversizedCard());
+    Emit(2);
+    Emit(3);
+    EXPECT_FALSE(m_Feature->WantsCard(kWorld, m_Model));
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, RefusingAStreamingSessionFreesItsSlotsAndStream)
+{
+    Emit(1);
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    Emit(2);
+    ASSERT_TRUE(m_Session->Slots.IsValid());
+    ASSERT_TRUE(m_Session->Stream);
+    m_Feature->PublishCard(kWorld, m_Model, OversizedCard());
+    EXPECT_FALSE(m_Session->Slots.IsValid());
+    EXPECT_FALSE(m_Session->Indices.IsValid());
+    EXPECT_FALSE(m_Session->Stream);
 }
 
 } // namespace

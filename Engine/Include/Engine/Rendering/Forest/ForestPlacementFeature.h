@@ -45,7 +45,7 @@ public:
     void ClearCards(uint64 world);
     /// Gives the model's card, and the parts its near meshes draw, to the world's sessions that want it.
     /// A card that reaches past a session's archive bound radius refuses that session for good: it
-    /// logs one warning, draws the overview only and streams no page.
+    /// logs one warning, frees its GPU objects, draws the overview only and streams no page.
     void PublishCard(uint64 world, const GUID& model, const ForestImpostorCard& card,
                      std::span<const ImpostorBakePart> sources = {});
     /// Declares the session's culled cards and near meshes into the view. Return true when standRanges

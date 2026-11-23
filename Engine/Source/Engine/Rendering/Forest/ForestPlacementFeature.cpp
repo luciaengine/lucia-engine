@@ -71,9 +71,8 @@ float CardReach(const ForestImpostorCard& card)
 
 void RefuseCard(ForestPlacementSession& session, float reach)
 {
+    session.Reset(false);
     session.Refused = true;
-    session.WantsCard = false;
-    session.Card.reset();
     const auto& store = session.Placements->Store();
     LOG_WARNING("Forest: {} was cooked with a bound radius of {:.2f} m, but the tree reaches {:.2f} m from its root. "
                 "The forest draws its overview mesh only. Cook the archive again with a radius of at least {}.",
@@ -370,8 +369,9 @@ bool PlanDetails(ForestPlacementSession& session, const ForwardEmitContext& cont
 
     if (!session.Stream)
     {
+        // The MeshImpostor system publishes or refuses the card first: a session without one streams nothing.
         session.WantsCard = session.Placements->CanPrefetchDetails(view);
-        if (!session.WantsCard)
+        if (!session.WantsCard || !session.Card)
             return false;
     }
     if (!session.EnsureGpu(*context.Device))
