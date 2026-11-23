@@ -1434,13 +1434,19 @@ set_tests_properties(PageStoreTests PROPERTIES
 
 # ForestPlacementTests: the packed forest runtime (Engine/Source/Engine/Rendering/Forest): page
 # residency, reader fences and fallback cover, coalesced archive reads through the asset reader,
-# and the upload plan into the placement slots. Pure CPU: no device.
+# the upload plan into the placement slots, and the slot copies on a headless device (skipped
+# without Vulkan).
 add_executable(ForestPlacementTests
   ForestPlacementRuntimeTests.cpp
+  ForestPlacementGpuUploadTests.cpp
 )
 target_link_libraries(ForestPlacementTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 target_include_directories(ForestPlacementTests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
+  # ForestPlacementUploadPlan.h, the internal upload plan.
+  ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Rendering/Forest
+  # Tests/ScopedEnvVar.h for the headless device.
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering
   ${CMAKE_SOURCE_DIR}/Engine/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/PageStreaming/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Include

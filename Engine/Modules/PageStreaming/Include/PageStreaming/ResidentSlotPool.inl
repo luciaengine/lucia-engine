@@ -93,8 +93,8 @@ void ResidentSlotPool<Key>::QuarantineSlot(uint32 slotIndex)
     --m_ResidentCount;
     if (m_FramesInFlight == 0)
     {
-        // Quarantine disabled (discriminator): the slot is immediately reusable,
-        // which is exactly the wrong-terrain hazard the eviction-churn oracle catches.
+        // No quarantine: the slot is reusable at once. Without a fence of the owner's own, this
+        // is the wrong-terrain hazard that the eviction-churn oracle catches.
         s.State = SlotState::Free;
         m_FreeList.push_back(slotIndex);
     }

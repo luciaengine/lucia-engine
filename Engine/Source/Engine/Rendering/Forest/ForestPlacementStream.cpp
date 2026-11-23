@@ -19,7 +19,7 @@ ForestPlacementStream::~ForestPlacementStream()
     for (const auto& read : m_Reads)
     {
         read.Cancel->store(true, std::memory_order_release);
-        // Retire planner state as well if the owner keeps it for stand rendering.
+        // The runtime outlives the stream when its owner keeps drawing the overview.
         for (const auto& page : read.Pages)
             m_Placements->CompleteRead(page.Ticket, {});
     }
@@ -31,6 +31,22 @@ void ForestPlacementStream::Publish(ReadResult& result, ByteBuffer bytes)
     result.Done.store(true, std::memory_order_release);
 }
 
+void ForestPlacementStream::CancelRetiredReads(AssetManager& assets, std::span<const ForestPageTicket> cancelled)
+{
+    for (auto read = m_Reads.begin(); read != m_Reads.end();)
+    {
+        for (auto& page : read->Pages)
+            page.Cancelled |= std::ranges::find(cancelled, page.Ticket) != cancelled.end();
+        if (!std::ranges::all_of(read->Pages, &ReadPage::Cancelled))
+        {
+            ++read;
+            continue;
+        }
+        assets.CancelRead(read->Cancel);
+        read = m_Reads.erase(read);
+    }
+}
+
 void ForestPlacementStream::Submit(AssetManager& assets, std::span<const ReadPage> pages)
 {
     const uint64 first = pages.front().Range.Offset;
@@ -39,6 +55,7 @@ void ForestPlacementStream::Submit(AssetManager& assets, std::span<const ReadPag
     auto result = std::make_shared<ReadResult>();
     auto cancel = std::make_shared<std::atomic<bool>>(false);
     m_Reads.push_back({std::vector<ReadPage>(pages.begin(), pages.end()), cancel, result});
+    // A cancelled read leaves m_Reads before its flag is set, so nothing consumes its result.
 
     AssetIOService::ReadRequest request;
     request.SharedRangePath = m_ArchivePath;
@@ -46,9 +63,9 @@ void ForestPlacementStream::Submit(AssetManager& assets, std::span<const ReadPag
     request.RangeOffset = first;
     request.RangeBytes = request.MaximumBytes = bytes;
     request.CancelRequested = cancel;
-    request.ProcessData = [result, cancel](ByteBuffer data) -> SharedPtr<Asset>
+    request.ProcessData = [result](ByteBuffer data) -> SharedPtr<Asset>
     {
-        Publish(*result, cancel->load(std::memory_order_acquire) ? ByteBuffer{} : std::move(data));
+        Publish(*result, std::move(data));
         return {};
     };
     request.OnFailure = [result](const String&) { Publish(*result, {}); };
@@ -129,17 +146,7 @@ bool ForestPlacementStream::Prepare(AssetManager& assets, const ForestPlacementV
         return false;
 
     if (!plan.CancelReads.empty())
-    {
-        std::erase_if(m_Reads, [&plan, &assets](Read& read)
-        {
-            for (auto& page : read.Pages)
-                page.Cancelled |= std::ranges::find(plan.CancelReads, page.Ticket) != plan.CancelReads.end();
-            if (!std::ranges::all_of(read.Pages, &ReadPage::Cancelled))
-                return false;
-            assets.CancelRead(read.Cancel);
-            return true;
-        });
-    }
+        CancelRetiredReads(assets, plan.CancelReads);
 
     // A batch can still feed live tickets after a neighboring page has been retired.
     bool rejectedRead = false;

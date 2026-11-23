@@ -1,36 +1,28 @@
 #pragma once
 
 #include "Engine/Rendering/Forest/ForestPlacementStream.h"
-#include "Rendering/Core/Device.h"
-#include "Rendering/Core/RenderGraph/RGFrameStamp.h"
+#include "Rendering/Core/Handle.h"
 
-#include <optional>
+#include <memory>
+#include <span>
+#include <vector>
+
+namespace GameEngine::Rendering
+{
+class IDevice;
+namespace RenderGraph
+{
+class RGFrame;
+}
+} // namespace GameEngine::Rendering
 
 namespace GameEngine::Engine::Renderer
 {
 
-struct ForestPlacementCopyRun
-{
-    uint64 StagingOffset;
-    uint64 SlotOffset;
-    uint64 Bytes;
-};
-
-struct ForestPlacementUploadPlan
-{
-    std::vector<const ForestPlacementUpload*> SlotOrder;
-    std::vector<ForestPlacementCopyRun> Runs;
-    uint64 Bytes = 0;
-};
-
-/// Plans exact byte copies in slot order. The plan borrows the upload records
-/// only until the caller packs the staging bytes.
-std::optional<ForestPlacementUploadPlan> BuildForestPlacementUploadPlan(
-    std::span<const ForestPlacementUpload> uploads, uint32 slotCount);
-
-/// Copies verified placement pages into their device-local slots. The owner
-/// keeps the destination and graph stream alive through outstanding submissions.
-/// On device rebuild, replace both this uploader and the placement runtime.
+/// Copies verified placement pages into their device-local slots on the graphics queue. The owner
+/// keeps the destination and the graph stream alive through outstanding submissions. On a device
+/// rebuild the owner destroys the uploader with its ForestPlacementRenderState, which resets the
+/// runtime's residency. Runs on the render thread.
 class ForestPlacementGpuUploads
 {
 public:
@@ -40,21 +32,21 @@ public:
     ForestPlacementGpuUploads(const ForestPlacementGpuUploads&) = delete;
     ForestPlacementGpuUploads& operator=(const ForestPlacementGpuUploads&) = delete;
 
-    /// Records a graphics-queue copy from the frame's upload ring. A rejected
-    /// batch ends those uploads with failure, so the stand remains visible.
+    /// Records a graphics-queue copy from the frame's upload ring. A rejected batch fails those uploads,
+    /// so their pages keep drawing the overview.
     bool Record(Rendering::RenderGraph::RGFrame& frame, std::span<const ForestPlacementUpload> uploads);
 
-    /// Call once after graph execution or abort. An unsubmitted copy can be
-    /// discarded. A submitted copy is retained through its exact queue fence.
+    /// Call once after the graph submits or aborts. An unsubmitted copy is abandoned. A submitted copy
+    /// waits for its queue fence.
     void FinishFrame(Rendering::RenderGraph::RGFrame& frame);
 
-    /// Polls completion without blocking; returns how many tickets published.
+    /// Polls the fences without blocking and reports finished copies. Returns how many slots publish.
     uint32 DrainCompleted(const Rendering::IDevice& device);
 
 private:
     struct Batch;
     bool HasOutstandingCopy(ForestPageTicket ticket) const;
-    // Ends each upload without an outstanding copy as failed. Always returns false.
+    // Fails each upload that has no outstanding copy. Always returns false.
     bool RejectUploads(std::span<const ForestPlacementUpload> uploads);
 
     std::shared_ptr<ForestPlacementRuntime> m_Placements;

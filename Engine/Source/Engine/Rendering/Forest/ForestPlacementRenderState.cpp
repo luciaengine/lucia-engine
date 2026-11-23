@@ -7,8 +7,14 @@ namespace GameEngine::Engine::Renderer
 
 ForestPlacementRenderState::ForestPlacementRenderState(std::shared_ptr<ForestPlacementRuntime> placements,
     Rendering::BufferHandle destination, uint32 slots)
-    : m_Stream(placements), m_Uploader(std::move(placements), destination, slots)
+    : m_Placements(placements), m_Stream(placements), m_Uploader(std::move(placements), destination, slots)
 {
+}
+
+ForestPlacementRenderState::~ForestPlacementRenderState()
+{
+    if (m_Placements)
+        m_Placements->ResetResidency();
 }
 
 bool ForestPlacementRenderState::Prepare(AssetManager& assets, Rendering::IDevice& device,

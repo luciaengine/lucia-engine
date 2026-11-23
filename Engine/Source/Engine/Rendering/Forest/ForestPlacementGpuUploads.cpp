@@ -1,20 +1,18 @@
 #include "Engine/Rendering/Forest/ForestPlacementGpuUploads.h"
 
+#include "ForestPlacementUploadPlan.h"
+#include "Rendering/Core/Device.h"
+
 #include "Rendering/Core/PassPhase.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <optional>
 
 namespace GameEngine::Engine::Renderer
 {
-namespace
-{
-constexpr uint64 kPlacementSlotBytes = PageStreaming::PackedPlacementStore::kPlacementsPerPage *
-                                       sizeof(PageStreaming::PackedPlacement);
-}
-
 std::optional<ForestPlacementUploadPlan> BuildForestPlacementUploadPlan(
     std::span<const ForestPlacementUpload> uploads, uint32 slotCount)
 {
@@ -25,13 +23,12 @@ std::optional<ForestPlacementUploadPlan> BuildForestPlacementUploadPlan(
     plan.SlotOrder.reserve(uploads.size());
     for (const auto& upload : uploads)
         plan.SlotOrder.push_back(&upload);
-    const auto slot = [](const ForestPlacementUpload* upload) { return upload->Ticket.Slot; };
-    std::ranges::sort(plan.SlotOrder, {}, slot);
+    std::ranges::sort(plan.SlotOrder, {}, [](const ForestPlacementUpload* upload) { return upload->Ticket.Slot; });
 
     uint32 previous = slotCount;
     for (const auto* upload : plan.SlotOrder)
     {
-        const auto destination = slot(upload);
+        const uint32 destination = upload->Ticket.Slot;
         const uint64 bytes = upload->Bytes.size();
         if (destination >= slotCount || destination == previous || bytes == 0 || bytes > kPlacementSlotBytes)
             return std::nullopt;
@@ -68,7 +65,7 @@ bool ForestPlacementGpuUploads::HasOutstandingCopy(ForestPageTicket ticket) cons
 {
     for (const auto& batch : m_Batches)
         for (const ForestPageTicket& pending : batch->Tickets)
-            if (pending.Slot == ticket.Slot)
+            if (pending == ticket)
                 return true;
     return false;
 }
@@ -77,7 +74,7 @@ bool ForestPlacementGpuUploads::RejectUploads(std::span<const ForestPlacementUpl
 {
     for (const auto& upload : uploads)
         if (!HasOutstandingCopy(upload.Ticket))
-            m_Placements->CompleteUpload(upload.Ticket, false);
+            m_Placements->CompleteUpload(upload.Ticket, ForestUploadResult::Failed);
     return false;
 }
 
@@ -157,7 +154,7 @@ void ForestPlacementGpuUploads::FinishFrame(Rendering::RenderGraph::RGFrame& fra
         if (!batch->Frame.IsFor(frame) || batch->Submitted)
             return false;
         for (const auto& ticket : batch->Tickets)
-            m_Placements->CompleteUpload(ticket, false);
+            m_Placements->CompleteUpload(ticket, ForestUploadResult::Abandoned);
         return true;
     });
 }
@@ -167,11 +164,14 @@ uint32 ForestPlacementGpuUploads::DrainCompleted(const Rendering::IDevice& devic
     uint32 published = 0;
     std::erase_if(m_Batches, [this, &device, &published](const std::shared_ptr<Batch>& batch)
     {
-        if (!batch->Submitted || device.QueryGpuSyncToken(batch->Completion) != Rendering::IDevice::GpuSyncStatus::Complete)
+        if (!batch->Submitted ||
+            device.QueryGpuSyncToken(batch->Completion) != Rendering::IDevice::GpuSyncStatus::Complete)
             return false;
-        const bool recorded = batch->Recorded.load(std::memory_order_acquire);
+        const ForestUploadResult result = batch->Recorded.load(std::memory_order_acquire)
+                                              ? ForestUploadResult::Published
+                                              : ForestUploadResult::Failed;
         for (const auto& ticket : batch->Tickets)
-            published += m_Placements->CompleteUpload(ticket, recorded);
+            published += m_Placements->CompleteUpload(ticket, result);
         return true;
     });
     return published;

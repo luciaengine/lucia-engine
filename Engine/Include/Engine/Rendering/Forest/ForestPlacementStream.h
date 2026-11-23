@@ -14,16 +14,18 @@ class AssetManager;
 namespace Engine::Renderer
 {
 
+/// Verified bytes of one page for its slot.
 struct ForestPlacementUpload
 {
     ForestPageTicket Ticket;
     std::span<const uint8> Bytes;
 };
 
-/// The asset IO side of a forest placement runtime. Prepare runs on the asset
-/// owner thread and returns only verified bytes for GPU upload. The caller
-/// reports upload completion (or a failed/aborted upload) to the runtime.
-/// Upload bytes borrow the stream's completed reads until the next Prepare.
+/// The asset IO side of a forest placement runtime. It merges reads of byte-adjacent pages, submits
+/// them through the AssetManager and returns only verified bytes for upload. The caller reports
+/// each upload to the runtime. Upload bytes borrow the stream's completed reads until the next
+/// Prepare. Runs on the render thread, which is also the AssetManager's owner thread. The
+/// destructor fails the runtime's open reads; reads already queued run to completion and are dropped.
 class ForestPlacementStream
 {
 public:
@@ -32,6 +34,7 @@ public:
     ForestPlacementStream(const ForestPlacementStream&) = delete;
     ForestPlacementStream& operator=(const ForestPlacementStream&) = delete;
 
+    /// Plans the frame (ForestPlacementRuntime::Prepare), consumes finished reads and submits new ones.
     bool Prepare(AssetManager& assets, const ForestPlacementView& view, uint64 frame, uint64 completedReaders,
                  ForestPlacementFrame& plan, std::vector<ForestPlacementUpload>& uploads);
 
@@ -49,7 +52,7 @@ private:
         size_t Count;
         size_t Priority;
     };
-    // Written once on an asset reader thread, then published by Done.
+    // Written once by the read's ProcessData or OnFailure, then published by Done.
     struct ReadResult
     {
         ByteBuffer Bytes;
@@ -62,6 +65,8 @@ private:
         std::shared_ptr<ReadResult> Result;
     };
     static void Publish(ReadResult& result, ByteBuffer bytes);
+    // Withdraws each read whose pages the runtime all cancelled.
+    void CancelRetiredReads(AssetManager& assets, std::span<const ForestPageTicket> cancelled);
     // Hands the pages of a finished read to the runtime. Returns false while the read is in flight.
     bool ConsumeRead(Read& read, std::vector<ForestPlacementUpload>& uploads, bool& rejectedRead);
 

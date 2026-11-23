@@ -1,5 +1,6 @@
 #include "Engine/Rendering/Forest/ForestPlacementRuntime.h"
 
+#include "PageStreaming/PageLoader.h"
 #include "Rendering/Common/Frustum.h"
 
 #include <algorithm>
@@ -14,7 +15,8 @@ namespace GameEngine::Engine::Renderer
 namespace
 {
 constexpr uint32 kPlacementsPerSlot = PageStreaming::PackedPlacementStore::kPlacementsPerPage;
-constexpr uint64 kRetryDelayFrames = 30;
+// All six frustum planes still to test.
+constexpr uint32 kAllPlanes = 0x3fu;
 constexpr float kDetailPrefetchDistanceScale = 1.4f;
 constexpr uint8 kDrawDetail = 1;
 constexpr uint8 kPrefetchDetail = 2;
@@ -77,80 +79,43 @@ bool SameStandView(const ForestPlacementView& a, const ForestPlacementView& b)
         });
 }
 
-uint64 RetryAfter(uint64 frame)
-{
-    return std::min(frame, std::numeric_limits<uint64>::max() - kRetryDelayFrames) + kRetryDelayFrames;
-}
-
 } // namespace
 
-std::unique_ptr<ForestPlacementRuntime> ForestPlacementRuntime::Open(
-    const std::filesystem::path& archive, std::span<const uint32> standIndexOffsets,
-    uint32 slotCount, uint32 readsPerFrame, std::string& error)
+std::shared_ptr<ForestPlacementRuntime> ForestPlacementRuntime::Open(const std::filesystem::path& archive,
+                                                                     const ForestPlacementRuntimeDesc& desc,
+                                                                     std::string& error)
 {
     PageStreaming::PackedPlacementStore store;
     error = store.Open(archive);
     if (!error.empty())
         return {};
-    if (standIndexOffsets.size() != store.Pages().size() + 1 ||
-        std::adjacent_find(standIndexOffsets.begin(), standIndexOffsets.end(), std::greater_equal<uint32>{}) !=
-            standIndexOffsets.end())
-    {
-        error = "Invalid stand index offsets for the placement pages";
-        return {};
-    }
-    if (slotCount > std::numeric_limits<uint32>::max() / kPlacementsPerSlot)
-    {
-        error = "Forest detail slots exceed the indexed placement address range";
-        return {};
-    }
-    slotCount = std::min(slotCount, static_cast<uint32>(store.Pages().size()));
-    if (readsPerFrame == 0)
-        slotCount = 0;
-    return std::unique_ptr<ForestPlacementRuntime>(
-        new ForestPlacementRuntime(std::move(store), standIndexOffsets, slotCount, readsPerFrame));
-}
-
-std::shared_ptr<ForestPlacementRuntime> ForestPlacementRuntime::OpenQuadStand(
-    const std::filesystem::path& archive, std::string& error, uint32 slots, uint32 readsPerFrame,
-    bool retainPlacements, uint32 transitionSlots)
-{
-    PageStreaming::PackedPlacementStore store;
-    error = store.Open(archive);
-    if (!error.empty())
-        return {};
-    constexpr uint32 kIndicesPerQuad = 6;
-    std::vector<uint32> offsets(store.Pages().size() + 1);
-    for (uint32 page = 1; page < offsets.size(); ++page)
-        offsets[page] = page * kIndicesPerQuad;
     const auto pages = static_cast<uint32>(store.Pages().size());
-    slots = readsPerFrame == 0 ? 0 : std::min(slots, pages);
-    transitionSlots = slots == 0 ? 0 : std::min(transitionSlots, pages - slots);
-    if (uint64{slots} + transitionSlots > std::numeric_limits<uint32>::max() / kPlacementsPerSlot)
+    ForestPlacementRuntimeDesc clamped = desc;
+    clamped.DetailSlots = desc.ReadsPerFrame == 0 ? 0 : std::min(desc.DetailSlots, pages);
+    clamped.TransitionSlots = clamped.DetailSlots == 0 ? 0 : std::min(desc.TransitionSlots, pages - clamped.DetailSlots);
+    if (uint64{clamped.DetailSlots} + clamped.TransitionSlots > std::numeric_limits<uint32>::max() / kPlacementsPerSlot)
     {
-        error = "Forest detail slots exceed the indexed placement address range";
+        error = "The forest detail slots exceed the placement address range. Use fewer detail slots.";
         return {};
     }
-    return std::shared_ptr<ForestPlacementRuntime>(
-        new ForestPlacementRuntime(std::move(store), offsets, slots, readsPerFrame, retainPlacements, transitionSlots));
+    return std::shared_ptr<ForestPlacementRuntime>(new ForestPlacementRuntime(std::move(store), clamped));
 }
 
 ForestPlacementRuntime::ForestPlacementRuntime(PageStreaming::PackedPlacementStore store,
-    std::span<const uint32> offsets, uint32 slots, uint32 readsPerFrame, bool retainPlacements, uint32 transitionSlots)
-    : m_Store(std::move(store)), m_IndexOffsets(offsets.begin(), offsets.end()), m_Slots(slots + transitionSlots),
-      m_Wanted(slots != 0 ? m_Store.Pages().size() : 0), m_RetryAt(m_Wanted.size()),
-      m_ReadsPerFrame(std::min(slots, readsPerFrame)), m_DetailCapacity(slots), m_RetainPlacements(retainPlacements)
+                                               const ForestPlacementRuntimeDesc& desc)
+    : m_Store(std::move(store)), m_Slots(desc.DetailSlots + desc.TransitionSlots),
+      m_Wanted(desc.DetailSlots != 0 ? m_Store.Pages().size() : 0), m_RetryAt(m_Wanted.size()),
+      m_FailedReads(m_Wanted.size()), m_ReadsPerFrame(std::min(desc.DetailSlots, desc.ReadsPerFrame)),
+      m_DetailCapacity(desc.DetailSlots), m_KeepCpuCopy(desc.KeepCpuCopy)
 {
     m_Leaves.reserve(m_Store.Pages().size());
     for (const auto& page : m_Store.Pages())
-    {
         m_Leaves.push_back({page.Origin + page.LocalMin, page.Origin + page.LocalMax});
-    }
     BuildNodes(0, static_cast<uint32>(m_Leaves.size()));
-    // ReleaseIfRetired already uses the completed draw fence. No additional frame-delay quarantine.
+    // The reader fence guards slot reuse, so the pool has no quarantine.
     m_Residency.Initialize(static_cast<uint32>(m_Slots.size()), 0);
-    m_Ready.reserve(slots);
-    m_Priority.reserve(slots);
+    m_Ready.reserve(m_Slots.size());
+    m_Priority.reserve(m_Slots.size());
 }
 
 void ForestPlacementRuntime::ResetResidency()
@@ -158,6 +123,7 @@ void ForestPlacementRuntime::ResetResidency()
     std::ranges::fill(m_Slots, Slot{});
     std::ranges::fill(m_Wanted, uint8{0});
     std::ranges::fill(m_RetryAt, uint64{0});
+    std::ranges::fill(m_FailedReads, uint32{0});
     m_Residency.Reset();
     m_DemandView.reset();
     m_DemandRetryFrame.reset();
@@ -165,11 +131,6 @@ void ForestPlacementRuntime::ResetResidency()
     m_Ready.clear();
     m_Frame = 0;
     m_ReadersDone = 0;
-}
-
-bool ForestPlacementRuntime::CanRequestDetails(const ForestPlacementView& view) const
-{
-    return CanRequestWithin(view, view.DetailDistance);
 }
 
 bool ForestPlacementRuntime::CanPrefetchDetails(const ForestPlacementView& view) const
@@ -180,7 +141,7 @@ bool ForestPlacementRuntime::CanPrefetchDetails(const ForestPlacementView& view)
 bool ForestPlacementRuntime::CanRequestWithin(const ForestPlacementView& view, double distance) const
 {
     return !m_Slots.empty() && std::isfinite(distance) && distance > 0.0 &&
-           HasVisibleDetailPage(0, view, 0x3fu, distance * distance);
+           HasVisibleDetailPage(0, view, kAllPlanes, distance * distance);
 }
 
 bool ForestPlacementRuntime::HasVisibleDetailPage(uint32 index, const ForestPlacementView& view, uint32 mask,
@@ -294,7 +255,7 @@ void ForestPlacementRuntime::GatherStand(const ForestPlacementView& view, std::v
     {
         m_StandView = view;
         m_StandVisible.clear();
-        Visit(0, view, 0x3fu, 0, m_StandVisible);
+        Visit(0, view, kAllPlanes, 0, m_StandVisible);
     }
     for (const CellRun& run : m_StandVisible)
         EmitStand(run.First, run.First + run.Count, draws);
@@ -316,7 +277,7 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
         0.0 : std::max(0.0f, view.DetailDistance);
     const double distanceSquared = detail * detail;
     const double prefetchDistance = detail * kDetailPrefetchDistanceScale;
-    Visit(0, view, 0x3fu,
+    Visit(0, view, kAllPlanes,
           prefetchDistance * prefetchDistance, m_Visible);
 
     const size_t count = std::min(m_Candidates.size(), static_cast<size_t>(m_DetailCapacity));
@@ -338,8 +299,10 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
 void ForestPlacementRuntime::ReleaseIfRetired(uint32 slotIndex)
 {
     Slot& slot = m_Slots[slotIndex];
-    if (slot.Current != Stage::Ready || !slot.Retiring || slot.LastReader > m_ReadersDone)
+    if (slot.Current != Stage::Ready || !slot.Retiring)
         return;
+    // Every caller passes a slot that was never drawn or whose last draw is complete.
+    assert(slot.LastReader <= m_ReadersDone);
     const bool released = m_Residency.Release(slot.Ticket.Page, slot.Ticket.Generation);
     assert(released);
     (void)released;
@@ -353,7 +316,7 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
     out.DetailedDraws.clear();
     out.Reads.clear();
     out.CancelReads.clear();
-    out.VisibleCells = 0;
+    out.VisiblePages = 0;
     out.WantsDetails = false;
     if (frame <= m_Frame || completedReaders < m_ReadersDone || completedReaders >= frame)
         return false;
@@ -369,10 +332,10 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
         if (slot.Current == Stage::Empty)
             continue;
         const bool wanted = m_Wanted[slot.Ticket.Page] != 0;
-        if (wanted && slot.Current == Stage::Ready && slot.LastReader != 0)
+        if (wanted && ((slot.Current == Stage::Ready && slot.LastReader != 0) || slot.Current == Stage::Uploading))
         {
-            // The validated slot is still ours. A returning view can read it again
-            // and EmitDraws will extend its fence before it can be reused.
+            // A verified page is still ours. A returning view draws it again, and EmitDraws
+            // extends its fence before the slot can be reused.
             slot.Retiring = false;
         }
         else if (!wanted && !slot.Retiring)
@@ -403,25 +366,15 @@ void ForestPlacementRuntime::AppendReads(std::vector<ForestPageTicket>& reads)
         // A page whose read failed waits for its retry frame.
         if (m_Frame < m_RetryAt[page] || m_Residency.Find(page).IsResident())
             continue;
+        // An unwanted page stays warm in its slot until a read needs the slot. A prefetch read keeps
+        // the transition slots for demand; free slots and reusable slots count alike.
         const uint32 freeSlots = m_Residency.FreeCount();
-        if (m_Wanted[page] == kPrefetchDetail && freeSlots <= m_Slots.size() - m_DetailCapacity)
-            break; // Reserve slots for demand even when the previous view has readers in flight.
+        if (m_Wanted[page] == kPrefetchDetail &&
+            freeSlots + CountReusableSlots() <= m_Slots.size() - m_DetailCapacity)
+            break;
         if (freeSlots == 0)
         {
-            // Keep unused GPU pages warm until a visible page needs the slot.
-            // Pending readers and wanted pages cannot be displaced.
-            uint32 victim = static_cast<uint32>(m_Slots.size());
-            uint64 oldest = std::numeric_limits<uint64>::max();
-            for (uint32 slotIndex = 0; slotIndex < m_Slots.size(); ++slotIndex)
-            {
-                const Slot& slot = m_Slots[slotIndex];
-                if (slot.Current == Stage::Ready && slot.Retiring &&
-                    slot.LastReader <= m_ReadersDone && slot.LastReader < oldest)
-                {
-                    victim = slotIndex;
-                    oldest = slot.LastReader;
-                }
-            }
+            const uint32 victim = FindReusableSlot();
             if (victim == m_Slots.size())
                 break;
             ReleaseIfRetired(victim);
@@ -434,9 +387,32 @@ void ForestPlacementRuntime::AppendReads(std::vector<ForestPageTicket>& reads)
     }
 }
 
+uint32 ForestPlacementRuntime::FindReusableSlot() const
+{
+    uint32 victim = static_cast<uint32>(m_Slots.size());
+    uint64 oldest = std::numeric_limits<uint64>::max();
+    for (uint32 slotIndex = 0; slotIndex < m_Slots.size(); ++slotIndex)
+    {
+        const Slot& slot = m_Slots[slotIndex];
+        if (slot.Current == Stage::Ready && slot.Retiring && slot.LastReader <= m_ReadersDone &&
+            slot.LastReader < oldest)
+        {
+            victim = slotIndex;
+            oldest = slot.LastReader;
+        }
+    }
+    return victim;
+}
+
+uint32 ForestPlacementRuntime::CountReusableSlots() const
+{
+    return static_cast<uint32>(std::ranges::count_if(m_Slots, [this](const Slot& slot)
+        { return slot.Current == Stage::Ready && slot.Retiring && slot.LastReader <= m_ReadersDone; }));
+}
+
 void ForestPlacementRuntime::DelayRetry(uint32 page)
 {
-    m_RetryAt[page] = RetryAfter(m_Frame);
+    m_RetryAt[page] = PageStreaming::NextPageFetchRetryFrame(m_Frame, m_FailedReads[page]++);
     m_DemandView.reset();
 }
 
@@ -470,7 +446,7 @@ bool ForestPlacementRuntime::CompleteRead(ForestPageTicket ticket, std::span<con
         roots.MaxZ = std::max(roots.MaxZ, packed.Z);
     }
     slot.RootBounds = roots;
-    if (m_RetainPlacements)
+    if (m_KeepCpuCopy)
     {
         if (m_PlacementMirror.empty())
             m_PlacementMirror.resize(static_cast<size_t>(m_Slots.size()) * kPlacementsPerSlot);
@@ -510,7 +486,7 @@ bool ForestPlacementRuntime::CanRecordUpload(ForestPageTicket ticket) const
     return slot.Ticket == ticket && slot.Current == Stage::Uploading && !slot.Retiring;
 }
 
-bool ForestPlacementRuntime::CompleteUpload(ForestPageTicket ticket, bool succeeded)
+bool ForestPlacementRuntime::CompleteUpload(ForestPageTicket ticket, ForestUploadResult result)
 {
     if (ticket.Slot >= m_Slots.size())
         return false;
@@ -518,13 +494,14 @@ bool ForestPlacementRuntime::CompleteUpload(ForestPageTicket ticket, bool succee
     if (slot.Ticket != ticket || slot.Current != Stage::Uploading)
         return false;
     slot.Current = Stage::Ready;
-    if (!slot.Retiring && !succeeded)
+    if (!slot.Retiring && result == ForestUploadResult::Published)
     {
-        DelayRetry(ticket.Page);
-        slot.Retiring = true;
-    }
-    if (!slot.Retiring)
+        m_FailedReads[ticket.Page] = 0;
         return true;
+    }
+    if (!slot.Retiring && result == ForestUploadResult::Failed)
+        DelayRetry(ticket.Page);
+    slot.Retiring = true;
     ReleaseIfRetired(ticket.Slot);
     return false;
 }
@@ -533,8 +510,7 @@ void ForestPlacementRuntime::EmitStand(uint32 first, uint32 end, std::vector<Dra
 {
     if (first == end)
         return;
-    const uint32 offset = m_IndexOffsets[first];
-    draws.push_back({.IndexCount = m_IndexOffsets[end] - offset, .FirstIndex = offset});
+    draws.push_back({.IndexCount = (end - first) * kIndicesPerPage, .FirstIndex = first * kIndicesPerPage});
 }
 
 void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
@@ -555,7 +531,7 @@ void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
     {
         const uint32 end = run.First + run.Count;
         uint32 cursor = run.First;
-        out.VisibleCells += run.Count;
+        out.VisiblePages += run.Count;
         while (ready != m_Ready.end() && ready->first < end)
         {
             const auto [page, slot] = *ready++;
