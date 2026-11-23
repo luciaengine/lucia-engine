@@ -147,7 +147,7 @@ void CheckScene(const AssetManifestEntry& scene, std::span<const DepEdge> edges,
 std::vector<std::string> CheckForestStandContent(const AssetManifest& manifest, const AssetCollector& collector)
 {
     // Only a file that a dependency walk read has edges. The fallbacks of CollectGameContent walk no
-    // file and ship every project asset, so the check does not find an archive that does not open there.
+    // file and ship every project asset, so the check cannot see a broken archive there.
     std::vector<std::string> errors;
     for (const AssetManifestEntry& entry : manifest.entries)
         if (entry.type == AssetType::Scene || entry.type == AssetType::Prefab)

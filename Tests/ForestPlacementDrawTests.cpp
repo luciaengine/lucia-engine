@@ -829,5 +829,36 @@ TEST_F(ForestPlacementSessionDeviceTest, AGameViewInItsOwnWindowTakesTheDetailsF
     EXPECT_EQ(EmitInto(*m_Other, 2, {m_View}), (std::vector{true}));
 }
 
+TEST_F(ForestPlacementSessionDeviceTest, ASessionStaysOnItsGraphWhileItsFrameIsOpen)
+{
+    // The Game view in another window cannot move the session while the Scene View frame is open.
+    m_Services.Views().SetWorldSimulating(kWorld, true);
+    m_Other = std::make_unique<Window>(m_Device.get());
+    Emit(1, {m_SceneView});
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EXPECT_EQ(Emit(2, {m_SceneView}), (std::vector{true}));
+
+    m_Services.BeginWorldDrawFrame();
+    EXPECT_TRUE(m_Device->BeginFrame());
+    m_Main->Graph.BeginFrame(3);
+    std::vector<Engine::Renderer::DrawSubCommand> ranges;
+    Engine::Renderer::ForwardEmitContext scene{.Device = m_Device.get(), .Services = &m_Services,
+                                               .Frame = &m_Main->Graph, .ViewId = m_SceneView};
+    EXPECT_TRUE(m_Feature->EmitDetails(*m_Session, scene, {}, m_Near, ranges));
+    m_Other->Graph.BeginFrame(1);
+    Engine::Renderer::ForwardEmitContext game{.Device = m_Device.get(), .Services = &m_Services,
+                                              .Frame = &m_Other->Graph, .ViewId = m_View};
+    EXPECT_FALSE(m_Feature->EmitDetails(*m_Session, game, {}, m_Near, ranges));
+    EXPECT_EQ(m_Session->Graph, &m_Main->Graph);
+    EXPECT_TRUE(m_Session->Stream);
+    m_Main->Graph.Execute();
+    m_Feature->OnFrameSubmittedRG(m_Main->Graph, m_Main->Graph.SubmissionToken());
+    m_Other->Graph.Execute();
+    m_Feature->OnFrameSubmittedRG(m_Other->Graph, m_Other->Graph.SubmissionToken());
+    m_Device->WaitForIdle();
+}
+
 } // namespace
 } // namespace GameEngine::PageStreaming
