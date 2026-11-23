@@ -74,6 +74,28 @@ static Rendering::HdrSwapchainBitDepth ParseHdrSwapchainBitDepth(const json& val
     return Rendering::HdrSwapchainBitDepth::Bit10;
 }
 
+static bool ReadForestStand(const json& stand, std::vector<ForestStandConfig>& stands)
+{
+    if (!stand.is_object())
+        return false;
+    const auto archive = stand.find("archive");
+    const auto entity = stand.find("entity");
+    if (archive == stand.end() || !archive->is_string() || archive->get_ref<const std::string&>().empty() ||
+        entity == stand.end() || !entity->is_string() || entity->get_ref<const std::string&>().empty())
+        return false;
+
+    auto& forest = stands.emplace_back();
+    forest.Archive = archive->get<std::string>();
+    forest.Entity = entity->get<std::string>();
+    if (const auto model = stand.find("impostorModel"); model != stand.end() && model->is_string())
+        forest.ImpostorModel = model->get<std::string>();
+    if (const auto distance = stand.find("detailDistance"); distance != stand.end() && distance->is_number())
+        forest.DetailDistance = distance->get<float>();
+    if (const auto budget = stand.find("nearMeshBudget"); budget != stand.end() && budget->is_number_unsigned())
+        forest.NearMeshBudget = static_cast<uint32_t>(std::min(budget->get<uint64_t>(), uint64_t{256}));
+    return true;
+}
+
 GameConfig LoadGameConfig(const std::filesystem::path& path)
 {
     GameConfig cfg;
@@ -107,6 +129,20 @@ GameConfig LoadGameConfig(const std::filesystem::path& path)
 
     if (doc.contains("waitForSplineRecipes") && doc["waitForSplineRecipes"].is_boolean())
         cfg.waitForSplineRecipes = doc["waitForSplineRecipes"].get<bool>();
+
+    if (const auto stands = doc.find("forestStands"); stands != doc.end() && stands->is_array())
+    {
+        for (const auto& stand : *stands)
+        {
+            if (!ReadForestStand(stand, cfg.ForestStands))
+                Logger::Log::Warning("GameConfig: Ignoring a forestStands entry without an archive and entity");
+        }
+    }
+    else if (const auto stand = doc.find("forestStand"); stand != doc.end())
+    {
+        if (!ReadForestStand(*stand, cfg.ForestStands))
+            Logger::Log::Warning("GameConfig: Ignoring forestStand without an archive and entity");
+    }
 
     if (doc.contains("scriptAssemblyPath") && doc["scriptAssemblyPath"].is_string())
         cfg.scriptAssemblyPath = doc["scriptAssemblyPath"].get<std::string>();
@@ -210,6 +246,19 @@ GameConfig LoadGameConfig(const std::filesystem::path& path)
     return cfg;
 }
 
+static json WriteForestStand(const ForestStandConfig& forest)
+{
+    json stand = {{"archive", forest.Archive}, {"entity", forest.Entity}};
+    if (!forest.ImpostorModel.empty())
+    {
+        stand["impostorModel"] = forest.ImpostorModel;
+        stand["detailDistance"] = forest.DetailDistance;
+        if (forest.NearMeshBudget != 0)
+            stand["nearMeshBudget"] = forest.NearMeshBudget;
+    }
+    return stand;
+}
+
 bool SaveGameConfig(const std::filesystem::path& path, const GameConfig& cfg)
 {
     json doc = json::object();
@@ -218,6 +267,14 @@ bool SaveGameConfig(const std::filesystem::path& path, const GameConfig& cfg)
     doc["startupScene"] = cfg.startupScene;
     doc["renderPipeline"] = cfg.renderPipeline;
     doc["waitForSplineRecipes"] = cfg.waitForSplineRecipes;
+    if (cfg.ForestStands.size() == 1)
+        doc["forestStand"] = WriteForestStand(cfg.ForestStands.front());
+    else if (!cfg.ForestStands.empty())
+    {
+        doc["forestStands"] = json::array();
+        for (const auto& forest : cfg.ForestStands)
+            doc["forestStands"].push_back(WriteForestStand(forest));
+    }
     doc["scriptAssemblyPath"] = cfg.scriptAssemblyPath;
 
     if (!cfg.appIconPath.empty())

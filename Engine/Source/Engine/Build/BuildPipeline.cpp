@@ -1,4 +1,5 @@
 #include "Engine/Build/BuildPipeline.h"
+#include "Engine/Build/ForestPlacementExport.h"
 #include "Core/ApplicationPaths.h"
 #include "Engine/Build/AppIconGenerator.h"
 #include "Engine/Build/BuildHost.h"
@@ -447,6 +448,18 @@ bool BuildPipeline::Execute(const BuildSettings& settings, ProgressCallback prog
 
     try
     {
+        const fs::path gameConfig = settings.projectRoot / "game.config";
+        std::error_code configError;
+        if (settings.playerConfig.ForestStands.empty() && !settings.projectRoot.empty() && fs::is_regular_file(gameConfig, configError))
+        {
+            auto forests = LoadGameConfig(gameConfig).ForestStands;
+            if (!forests.empty())
+            {
+                BuildSettings configured = settings;
+                configured.playerConfig.ForestStands = std::move(forests);
+                return ExecuteImpl(configured);
+            }
+        }
         return ExecuteImpl(settings);
     }
     catch (const std::exception& e)
@@ -855,6 +868,18 @@ bool BuildPipeline::ExecuteImpl(const BuildSettings& settings)
             if (m_Progress.cancelled)
                 return false;
             ReportProgress(BuildProgress::Stage::Failed, 0.0f, "Failed to copy assets");
+            return false;
+        }
+    }
+
+    for (const auto& forest : settings.playerConfig.ForestStands)
+    {
+        const std::string error = StageForestPlacementArchive(forest,
+            EngineCore::GetInstance().GetResolvedAssetRoot(), contentRoot / "Assets", shipRules);
+        if (!error.empty())
+        {
+            m_Progress.errors.push_back(error);
+            ReportProgress(BuildProgress::Stage::Failed, 0.0f, "Failed to stage forest placements");
             return false;
         }
     }
