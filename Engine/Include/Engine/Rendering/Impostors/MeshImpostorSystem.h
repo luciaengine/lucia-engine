@@ -30,6 +30,8 @@ namespace GameEngine::Engine::Renderer
 {
 
 class ImpostorBaker;
+struct ImpostorAtlas;
+struct ImpostorBakeRequest;
 class Material;
 class ImpostorStage;
 class RenderServices;
@@ -110,7 +112,10 @@ private:
     void ApplyOwners();
     // Returns the card material once the parts are linked to it, else null.
     const Material* UpdateModel(const GUID& model, ModelImpostor& impostor, ImpostorBaker& baker,
-                                ImpostorStage& stage);
+                                ImpostorStage& stage, uint64 worldId);
+    // Registers the packed forest card of a model's atlas and publishes it to the forest sessions that draw the model.
+    void PublishForestCard(const GUID& model, const ModelImpostor& impostor, const ImpostorAtlas& atlas,
+                           const ImpostorBakeRequest& request, uint64 worldId);
     void UnlinkModel(ModelImpostor& impostor);
     // Warns once that an opted-in model keeps its meshes, and why.
     void LogRefusal(const GUID& model, std::string_view reason);

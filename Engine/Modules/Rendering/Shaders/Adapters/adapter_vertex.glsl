@@ -1,6 +1,6 @@
 #version 450
 
-#ifdef GE_INSTANCED
+#if defined(GE_INSTANCED) && !defined(GE_FOREST_MESH_INSTANCES)
 // Instanced path reads the instance-indirection buffer + GPUInstances via
 // GL_EXT_buffer_reference with device addresses in push constants,
 // leaving set 0 free of per-frame-rotating handles. See instance_io.glsl.

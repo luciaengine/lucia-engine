@@ -1619,9 +1619,7 @@ void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
             binder.BindPreparedForDraw(pass, draw.Bindings, draw.Command.Bindings.PushConstants);
         const auto& command = draw.Command;
         if (command.UseIndirect && command.IndirectCommandBuffer.IsValid())
-            commands->DrawIndexedIndirectCount(command.IndirectCommandBuffer, command.IndirectCountBuffer,
-                                               command.IndirectMaxDrawCount, command.IndirectStride,
-                                               command.IndirectCommandOffset, command.IndirectCountOffset);
+            command.RecordIndirect(*commands);
         else if (command.SubDraws.empty())
             commands->DrawIndexed(command.IndexCount, command.InstanceCount, command.FirstIndex, command.VertexOffset, command.FirstInstance);
         else

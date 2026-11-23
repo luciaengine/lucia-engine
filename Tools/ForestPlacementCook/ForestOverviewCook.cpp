@@ -234,7 +234,7 @@ void WriteGlb(const std::filesystem::path& output, const OverviewMesh& mesh, con
     Json primitive{{"attributes", {{"POSITION", 0}, {"NORMAL", 1}, {"TEXCOORD_0", 2}}},
                    {"indices", 3}, {"material", 0}};
     Json maskedMaterial{{"name", "Forest Canopy"}, {"alphaMode", "MASK"}, {"alphaCutoff", 0.25},
-                        {"doubleSided", true},
+                        {"doubleSided", true}, {"extras", {{"luciaForestCanopyCoverage", true}}},
                         {"pbrMetallicRoughness", {{"baseColorTexture", {{"index", 0}}},
                                                   {"metallicFactor", 0}, {"roughnessFactor", 1}}}};
     Json asset{{"asset", {{"version", "2.0"}}}, {"scene", 0},

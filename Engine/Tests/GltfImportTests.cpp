@@ -16,6 +16,7 @@
 #include "AnimationClipSchema.h"
 #include "Assets/AssetDecodeInputFiles.h"
 #include "Assets/FbxLoaderOptions.h"
+#include "Assets/ImportedMaterialCache.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/ModelExtras.h"
 #include "Engine/Rendering/ModelMaterialBridge.h"
@@ -3465,6 +3466,27 @@ TEST(GltfImport, ClipSchemaRejectsCoincidentSyncMarkers)
         "syncMarkers": [{"frame": 2, "name": "left"}, {"frame": 2, "name": "right"}]}})");
     EXPECT_NE(read.Refusal.find("distinct frames"), std::string::npos);
     EXPECT_TRUE(read.Settings.SyncMarkers.empty());
+}
+
+TEST(GltfImport, CookedForestCanopyCoverageSurvivesMaterialEncoding)
+{
+    using Engine::Renderer::ModelMaterialBridge;
+    const ImportedMaterialData canopy = ImportOnlyMaterial(R"({
+        "alphaMode": "MASK",
+        "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+        "extras": {"luciaForestCanopyCoverage": true}
+    })");
+    const auto restored = DeserializeImportedMaterials(SerializeImportedMaterials({canopy}));
+    ASSERT_TRUE(restored);
+    ASSERT_EQ(restored->size(), 1u);
+    EXPECT_EQ(ModelMaterialBridge::SurfaceShaderOf(restored->front()), "Surfaces/forest_canopy.glsl");
+
+    const ImportedMaterialData standard = ImportOnlyMaterial(R"({
+        "alphaMode": "MASK",
+        "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+        "extras": {"luciaForestCanopyCoverage": "true"}
+    })");
+    EXPECT_EQ(ModelMaterialBridge::SurfaceShaderOf(standard), "Surfaces/standard_pbr.glsl");
 }
 
 } // namespace GameEngine

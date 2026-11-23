@@ -21,11 +21,15 @@ float ClusterCoverage(const ViewLod& view, const float sphereCenter[3], float sp
     const float dx = view.CameraPos[0] - sphereCenter[0];
     const float dy = view.CameraPos[1] - sphereCenter[1];
     const float dz = view.CameraPos[2] - sphereCenter[2];
-    const float dist = std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 1e-4f);
+    return SphereCoverageAtDistance(std::sqrt(dx * dx + dy * dy + dz * dz), sphereRadius, view.ProjScaleY,
+                                    std::exp2(view.LodBiasGlobal));
+}
 
-    float coverage = sphereRadius * view.ProjScaleY / dist;
-    coverage *= std::exp2(view.LodBiasGlobal);
-    return coverage;
+float SphereCoverageAtDistance(double distance, float sphereRadius, float projectionScale, float biasScale)
+{
+    constexpr double kMinimumDistance = 1.0e-4;
+    const float clampedDistance = static_cast<float>(std::max(distance, kMinimumDistance));
+    return (sphereRadius * projectionScale / clampedDistance) * biasScale;
 }
 
 bool UpdateProxyActive(bool wasProxyActive, float coverage, const SwitchConfig& config) {

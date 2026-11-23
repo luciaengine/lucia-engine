@@ -40,7 +40,7 @@ ForestPlacementCook --overview Assets/Forests/Forest.geforest canopy.png Assets/
 - The canopy height is a typical height of the canopy above the root at unit scale, in meters. Each quad is at the mean canopy height of its page's trees.
 - The tile size is 16 to 64 pixels per page. A larger tile keeps more canopy detail and uses more graphics memory. The atlas is at most 8192 pixels on each side.
 
-The cooker draws every tree of a page into that page's tile, at the tree's position, yaw and scale. It embeds the atlas in the model with an alpha-masked material. Import the model with the default glTF axis settings, and generate it again when the placements change.
+The cooker draws every tree of a page into that page's tile, at the tree's position, yaw and scale. It embeds the atlas in the model with an alpha-masked material that the importer gives the forest canopy surface. At a distance, the canopy surface uses the filtered alpha as coverage, so the canopy stays visible when its leaf detail becomes smaller than a pixel. Import the model with the default glTF axis settings, and generate it again when the placements change. The importer finds the canopy material by the cooker's marker in the material's glTF extras. If you add more extras to that material and its extras block becomes larger than 256 bytes, the material loses the canopy surface.
 
 ## Archive format
 
