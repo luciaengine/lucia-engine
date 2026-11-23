@@ -204,10 +204,8 @@ class ShaderCompilationCacheEpochTest : public ::testing::Test
         if (!std::filesystem::exists(m_shaderDir, ec))
             GTEST_SKIP() << "Staged shader directory not found: " << m_shaderDir.string();
 
-        // A project root AND cache root of its own for each test and each process:
-        // the on-disk shaderpkg key folds the surface's absolute path, so a shared
-        // root makes sibling tests share cache entries, and another process running
-        // this suite at the same time removes a shared root in its TearDown.
+        // One project root and cache root for each test and each process. The disk key folds
+        // the surface's absolute path, and another process of this suite removes its own roots.
         m_projectRoot = TestUtils::MakeUniqueTempDirectory(
             std::string("ge_shader_epoch_") + ::testing::UnitTest::GetInstance()->current_test_info()->name());
         std::filesystem::create_directories(m_projectRoot);
