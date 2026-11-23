@@ -356,6 +356,19 @@ void EmitNearMeshes(ForestPlacementSession& session, const ForwardEmitContext& c
     }
 }
 
+// True when a view of `purpose` may draw the session's details this frame. A Game view always may.
+// A Scene View may when no Game view drew in this frame or the frame before.
+bool TakesDetailView(ForestPlacementSession& session, ViewPurpose purpose, const RGFrame& frame)
+{
+    if (purpose == ViewPurpose::Game)
+    {
+        session.GameViewFrame = frame.FrameIndex();
+        return true;
+    }
+    return purpose == ViewPurpose::EditorScene &&
+           (!session.GameViewFrame || *session.GameViewFrame + 1 < frame.FrameIndex());
+}
+
 // Streams the pages the view plans. False when the session draws no details this frame.
 bool PlanDetails(ForestPlacementSession& session, const ForwardEmitContext& context, const ForestPlacementView& view)
 {
@@ -394,9 +407,9 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     auto& frame = *context.Frame;
     auto& services = *context.Services;
     const auto* desc = services.Views().FindViewDesc(context.ViewId);
-    if (!context.Device || !desc || desc->purpose != ViewPurpose::Game || desc->worldPaused ||
-        (session.Graph && session.Graph != &frame) || session.Declared.IsFor(frame) ||
-        !ImpostorStage::IsEnabled())
+    if (!context.Device || !desc || desc->worldPaused || !ImpostorStage::IsEnabled() ||
+        !TakesDetailView(session, desc->purpose, frame) || (session.Graph && session.Graph != &frame) ||
+        session.Declared.IsFor(frame))
         return false;
     view.DetailDistance = session.DetailDistance;
     if (!PlanDetails(session, context, view))
