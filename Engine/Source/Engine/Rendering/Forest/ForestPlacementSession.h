@@ -67,9 +67,10 @@ struct ForestPlacementSession
     // The card reaches past the archive's bound radius: the session draws the overview only and streams nothing.
     // A reset keeps it, because the card and the archive stay the same.
     bool Refused = false;
-    // The last app frame (FrameOrchestrator::WorldFrameEpoch) in which a Game view asked for the details.
-    // A Scene View yields to it.
+    // The last app frames (FrameOrchestrator::WorldFrameEpoch) in which a Game view and a Scene View
+    // asked for the details. The view that comes second yields to the other view.
     std::optional<uint64> GameViewFrame;
+    std::optional<uint64> SceneViewFrame;
 
     ~ForestPlacementSession();
 

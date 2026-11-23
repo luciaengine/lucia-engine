@@ -357,17 +357,17 @@ void EmitNearMeshes(ForestPlacementSession& session, const ForwardEmitContext& c
     }
 }
 
-// True when a view of `purpose` may draw the session's details in app frame `appFrame`. A Game view
-// always may. A Scene View may when no Game view drew in this app frame or the app frame before.
-// The app frame counts across all windows, so a Game view in another window also takes precedence.
-bool TakesDetailView(ForestPlacementSession& session, ViewPurpose purpose, uint64 appFrame)
+// True when a Game view or a Scene View may draw the session's details in app frame `appFrame`. The
+// Game view comes first while the world simulates, else the Scene View. The other view may draw when
+// the first view did not ask in this app frame or the one before. The app frame counts across windows.
+bool TakesDetailView(ForestPlacementSession& session, ViewPurpose purpose, uint64 appFrame, bool simulating)
 {
-    if (purpose == ViewPurpose::Game)
-    {
-        session.GameViewFrame = appFrame;
-        return true;
-    }
-    return purpose == ViewPurpose::EditorScene && (!session.GameViewFrame || *session.GameViewFrame + 1 < appFrame);
+    if (purpose != ViewPurpose::Game && purpose != ViewPurpose::EditorScene)
+        return false;
+    const bool game = purpose == ViewPurpose::Game;
+    (game ? session.GameViewFrame : session.SceneViewFrame) = appFrame;
+    const std::optional<uint64>& other = game ? session.SceneViewFrame : session.GameViewFrame;
+    return game == simulating || !other || *other + 1 < appFrame;
 }
 
 // True when the session may declare into `frame`. A session streams into one graph. It moves to the
@@ -424,7 +424,8 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     auto& services = *context.Services;
     const auto* desc = services.Views().FindViewDesc(context.ViewId);
     if (!context.Device || !desc || desc->worldPaused || !ImpostorStage::IsEnabled() ||
-        !TakesDetailView(session, desc->purpose, services.Spine().WorldFrameEpoch()) ||
+        !TakesDetailView(session, desc->purpose, services.Spine().WorldFrameEpoch(),
+                         services.Views().IsWorldSimulating(session.World)) ||
         session.Declared.IsFor(frame) || !BindGraph(session, frame))
         return false;
     view.DetailDistance = session.DetailDistance;

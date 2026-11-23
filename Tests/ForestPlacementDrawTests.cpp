@@ -777,8 +777,9 @@ TEST_F(ForestPlacementSessionDeviceTest, RefusingAStreamingSessionFreesItsSlotsA
     EXPECT_FALSE(m_Session->Stream);
 }
 
-TEST_F(ForestPlacementSessionDeviceTest, TheSceneViewTakesTheDetailsWhenTheGameViewStopsDrawing)
+TEST_F(ForestPlacementSessionDeviceTest, WhilePlayingTheGameViewTakesTheDetailsFromTheSceneView)
 {
+    m_Services.Views().SetWorldSimulating(kWorld, true);
     Emit(1);
     Engine::Renderer::ForestImpostorCard card{};
     card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
@@ -791,9 +792,24 @@ TEST_F(ForestPlacementSessionDeviceTest, TheSceneViewTakesTheDetailsWhenTheGameV
     EXPECT_EQ(Emit(6, {m_View, m_SceneView}), (std::vector{true, false}));
 }
 
+TEST_F(ForestPlacementSessionDeviceTest, WhileEditingTheSceneViewTakesTheDetailsFromTheGameView)
+{
+    Emit(1);
+    Engine::Renderer::ForestImpostorCard card{};
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EXPECT_EQ(Emit(2, {m_SceneView, m_View}), (std::vector{true, false}));
+    EXPECT_EQ(Emit(3, {m_View, m_SceneView}), (std::vector{false, true}));
+    // The Game view waits one frame for a Scene View that may still draw.
+    EXPECT_EQ(Emit(4, {m_View}), (std::vector{false}));
+    EXPECT_EQ(Emit(5, {m_View}), (std::vector{true}));
+    EXPECT_EQ(Emit(6, {m_SceneView, m_View}), (std::vector{true, false}));
+}
+
 TEST_F(ForestPlacementSessionDeviceTest, AGameViewInItsOwnWindowTakesTheDetailsFromTheSceneView)
 {
     // Each window counts its own frames: the Scene View window is far ahead of the Game view window.
+    m_Services.Views().SetWorldSimulating(kWorld, true);
     m_Other = std::make_unique<Window>(m_Device.get());
     Emit(100, {m_SceneView});
     Engine::Renderer::ForestImpostorCard card{};

@@ -118,9 +118,9 @@ void BuildForestStandInspector(const InspectorContext& ctx)
             InspectorDrag::CommitComponentWithUndo<Stand>(w, e, n, undo, "Change Forest Stand Tree Model",
                 [picked](Stand& u) { u.TreeModel.Set(picked); });
         },
-        nullptr, "The tree model with its impostor setting on. Empty draws the overview only. The trees draw in the "
-                 "Game view while it draws, else in the Scene View: with both views open, in edit mode or in play "
-                 "mode, the Scene View shows the overview only.");
+        nullptr, "The tree model with its impostor setting on. Empty draws the overview only. The trees draw in one "
+                 "view: in play mode the Game view, in edit mode the Scene View. The other view shows the overview, "
+                 "and draws the trees when the first view is hidden.");
 
     auto distance = InspectorDrag::MakeComponentInteractiveHandlers<Stand, float>(w, e, n, undo,
         "Change Forest Stand Detail Distance", &KeepDuringDrag<float>,
