@@ -18,6 +18,7 @@
 #include "Components/Name.h"
 #include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
+#include "Core/Time.h"
 #include "ECS/ECSTemplates.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
 #include "Engine/Build/PackagedGameLayout.h"
@@ -182,6 +183,12 @@ PlayerApplication::PlayerApplication(const ApplicationConfig& config, const Game
             if (parsed > 0)
                 m_ScreenshotWarmupFrames = static_cast<uint32_t>(parsed);
         }
+        // A comparison of two builds or settings needs the same wind, sway and sky in every arm:
+        // GE_SCREENSHOT_FROZEN_TIME=1 holds the animation clock at 0, however many frames the load
+        // takes. The frame delta also reads 0, so game UI transitions do not move. Off by default, so
+        // a capture of motion keeps its clock.
+        if (Platform::EnvironmentSwitchEnabled("GE_SCREENSHOT_FROZEN_TIME", false))
+            Time::SetDeterministicStep(0.0f);
     }
 }
 
