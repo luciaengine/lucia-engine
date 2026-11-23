@@ -9,7 +9,7 @@ Use scene entities for trees that need their own components. Use a packed forest
 
 ## Cook a placement archive
 
-`ForestPlacementCook` turns a CSV of tree transforms into a `.geforest` archive. Supply the CSV, the output path and the tree's bound radius in meters.
+`ForestPlacementCook` turns a CSV of tree transforms into a `.geforest` archive. The tool is in the `Tools` folder next to the editor. Supply the CSV, the output path and the tree's bound radius in meters.
 
 ```sh title="Cook tree placements"
 ForestPlacementCook placements.csv Assets/Forests/Forest.geforest 12
@@ -59,7 +59,7 @@ Each view draws the overview. The trees near the camera draw in one view at a ti
 | Detail Distance | 400 | The distance in meters from the camera within which visible pages draw their trees instead of the overview. 0 draws the overview only. |
 | Near Mesh Budget | 0 | The most trees near the camera that draw the tree mesh instead of the impostor card. 0 draws cards only. The Inspector accepts 0 to 256, and the compatibility tier caps it at 128. |
 
-A drag on Detail Distance or Near Mesh Budget in the Inspector applies the value when you release the mouse button, because each change attaches the stand again.
+A change to Detail Distance or Near Mesh Budget applies to the attached stand, also while you drag the value in the Inspector. A change from 0 to another value, or back to 0, attaches the stand again.
 
 The stand draws at the archive's world positions. The engine ignores the transform of the overview entity, so move the trees by cooking the archive again. The stand draws on the Default render layer.
 
@@ -67,7 +67,16 @@ To draw trees, put at least one instance of the tree model in the same scene. Th
 
 If the stand cannot attach, the log shows one warning that names the entity and the fix, and the Inspector shows the same text on the component. The rest of the scene loads. For example, a MeshRenderer that still draws on a render layer, or an archive that is not in the project, stops the stand. A tree model that is not in the project, or a Detail Distance that is negative or not a number, draws the overview only.
 
-A scene load releases the stands of the scene that it replaces. Removing the component or its entity releases its stand.
+If the overview mesh does not match the pages of its archive, the stand draws nothing and shows a warning that tells you to cook the overview mesh again from the archive.
+
+When you cook the archive again, every stand that uses it attaches again with the new pages. A scene load releases the stands of the scene that it replaces. Removing the component or its entity releases its stand.
+
+### Limits
+
+- A stand casts no shadows.
+- Reflection probes and planar reflections do not show the stand.
+- A stand does not draw into the depth prepass, so ambient occlusion and contact shadows do not see it.
+- At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. The pages nearest to the camera draw as trees, and the other pages within Detail Distance draw the overview.
 
 ### Export
 

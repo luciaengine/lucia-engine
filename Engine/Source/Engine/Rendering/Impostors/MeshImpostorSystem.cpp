@@ -157,8 +157,7 @@ void MeshImpostorSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         return;
     if (auto* forest = m_RenderServices->GetFeature<ForestPlacementFeature>())
         forest->ClearCards(world.GetWorldId());
-    // The system runs on a job worker; registering the card quad and reading part entries take
-    // the registry's table lock for the whole pass.
+    // Registering the card quad and reading part entries take the registry's table lock for the whole pass.
     Rendering::MeshGPURegistry::TableScope registryScope(m_RenderServices->GetMeshGPURegistry());
 
     // A device rebuild freed the meshes and the atlases: unlink, then scan and link again.

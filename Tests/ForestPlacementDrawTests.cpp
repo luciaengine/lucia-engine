@@ -487,6 +487,33 @@ TEST_F(ForestPlacementDrawTest, EmitsStandRangesAndMatchingDepthOnlyIntoEligible
         EXPECT_TRUE(services.Views().PerView(view).ForwardCommands.empty());
 }
 
+TEST_F(ForestPlacementDrawTest, AStandDrawsNothingWhenItsPagesReachPastTheOverviewMesh)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "short.geforest";
+    WriteStore(file);
+    std::string error;
+    std::shared_ptr<ForestPlacementRuntime> runtime = ForestPlacementRuntime::Open(file, {}, error);
+    ASSERT_TRUE(runtime) << error;
+
+    RenderServices services;
+    constexpr uint64 kForestWorld = 46;
+    const auto defaultLayer = Rendering::RenderLayerMask::Default();
+    // This view sees the second page, which addresses indices 6 to 12.
+    const auto view = AddForestStandView(services, 512'000'055.0, kForestWorld, defaultLayer);
+    const auto subscription = RegisterForestStandDraws(services, kForestWorld, defaultLayer, runtime,
+        [](const ForwardEmitContext&) -> std::optional<ForestStandDrawHeads>
+        {
+            auto heads = MakeForestStandDrawHeads(false);
+            heads.Color.IndexCount = 6;
+            return heads;
+        });
+
+    Rendering::RenderGraph::RGFrame graph(nullptr, nullptr, nullptr, nullptr);
+    services.EmitFrameForwardCommandsForView(graph, view);
+    EXPECT_TRUE(services.Views().PerView(view).ForwardCommands.empty());
+}
+
 TEST_F(ForestPlacementDrawTest, AStandDrawsItsOverviewWhenItsSessionDrawsNoDetails)
 {
     using namespace Engine::Renderer;

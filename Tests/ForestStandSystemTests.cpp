@@ -4,14 +4,18 @@
 #include "ForestPlacementSession.h"
 
 #include "Assets/AssetManager.h"
+#include "Assets/ModelAsset.h"
 #include "Components/Rendering/ForestStand.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
+#include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "EngineLogCapture.h"
 #include "PackedPlacementTestArchive.h"
+#include "Rendering/Core/Device.h"
 #include "Scene/SceneIO.h"
+#include "Tests/ScopedEnvVar.h"
 
 #include <gtest/gtest.h>
 
@@ -43,6 +47,16 @@ namespace
 using Engine::Renderer::ForestPlacementFeature;
 using Engine::Renderer::ForestPlacementFeatureTestAccess;
 using Engine::Renderer::ForestStandSystem;
+
+// An overview mesh of `quads` quads.
+Mesh MakeOverviewMesh(uint32 quads)
+{
+    Mesh mesh{};
+    mesh.Vertices.resize(4);
+    for (uint32 quad = 0; quad < quads; ++quad)
+        mesh.Indices.insert(mesh.Indices.end(), {0, 1, 2, 0, 2, 3});
+    return mesh;
+}
 
 size_t CountLines(const std::vector<std::string>& lines, std::string_view text)
 {
@@ -274,6 +288,122 @@ TEST_F(ForestStandSystemTest, ASnapshotRestoreBringsBackARemovedStand)
     system.Update(world, 0.0f);
     EXPECT_NE(system.FindStatus(world.GetWorldId(), entity)->Problem.find("tree model is not in the project"),
               std::string::npos);
+}
+
+TEST_F(ForestStandSystemTest, DetailSettingsApplyToTheAttachedSession)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto stand = *world.GetComponent<Components::ForestStand>(entity);
+    stand.TreeModel = Components::ModelRef(m_Archive);
+    stand.DetailDistance = 275.0f;
+    stand.NearMeshBudget = 96;
+    world.AddComponentImmediate(entity, stand);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    std::vector<std::string> lines;
+    {
+        TestLog::ScopedEngineLogCapture capture(&lines);
+        system.Update(world, 0.0f);
+        const auto* feature = m_Services.GetFeature<ForestPlacementFeature>();
+        ASSERT_NE(feature, nullptr);
+        const auto session = ForestPlacementFeatureTestAccess::Sessions(*feature).front();
+
+        auto* written = world.GetComponentForWrite<Components::ForestStand>(entity);
+        written->DetailDistance = 120.0f;
+        written->NearMeshBudget = 12;
+        system.Update(world, 0.0f);
+        const auto sessions = ForestPlacementFeatureTestAccess::Sessions(*feature);
+        ASSERT_EQ(sessions.size(), 1u);
+        EXPECT_EQ(sessions.front(), session);
+        EXPECT_EQ(session->DetailDistance, 120.0f);
+        EXPECT_EQ(session->NearBudget, 12u);
+        Logger::Log::Flush();
+    }
+    EXPECT_EQ(CountLines(lines, "attached with"), 1u);
+}
+
+TEST_F(ForestStandSystemTest, AChangedArchiveFileAttachesTheStandAgain)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    std::vector<std::string> lines;
+    {
+        TestLog::ScopedEngineLogCapture capture(&lines);
+        system.Update(world, 0.0f);
+        m_Assets.GetEventDispatcher().DispatchEvent(AssetEvent(AssetEventType::AssetModified, GUID::Generate(),
+                                                               AssetType::ForestPlacementArchive, "Other.geforest"));
+        system.Update(world, 0.0f);
+        m_Assets.GetEventDispatcher().DispatchEvent(AssetEvent(AssetEventType::AssetModified, m_Archive,
+                                                               AssetType::ForestPlacementArchive, "Stand.geforest"));
+        system.Update(world, 0.0f);
+        system.Update(world, 0.0f);
+        EXPECT_TRUE(IsAttached(system, world, entity));
+        Logger::Log::Flush();
+    }
+    EXPECT_EQ(CountLines(lines, "attached with"), 2u);
+}
+
+// A stand system whose render services own a headless device, so registered meshes become drawable.
+// Device-gated: each test skips without a Vulkan device.
+class ForestStandSystemDeviceTest : public ForestStandSystemTest
+{
+protected:
+    void SetUp() override
+    {
+        ForestStandSystemTest::SetUp();
+        Rendering::DeviceDesc desc{};
+        desc.preferredAPI = Rendering::GraphicsAPI::Vulkan;
+        desc.enableDynamicRendering = true;
+        m_Device = Rendering::DeviceFactory::CreateDevice(desc);
+        if (!m_Device || !m_Device->Initialize(desc))
+            GTEST_SKIP() << "No Vulkan device";
+        ASSERT_TRUE(m_Services.Initialize(m_Device.get()));
+    }
+
+    void TearDown() override
+    {
+        if (m_Device)
+        {
+            m_Device->WaitForIdle();
+            m_Services.Shutdown();
+            m_Device->Shutdown();
+        }
+        ForestStandSystemTest::TearDown();
+    }
+
+    Rendering::Tests::ScopedEnvVar m_Headless{"GE_HEADLESS_TEST", "1"};
+    std::unique_ptr<Rendering::IDevice> m_Device;
+};
+
+TEST_F(ForestStandSystemDeviceTest, AnOverviewThatDoesNotMatchItsArchiveWarnsUntilItMatches)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    auto& registry = m_Services.GetMeshGPURegistry();
+    std::vector<std::string> lines;
+    {
+        TestLog::ScopedEngineLogCapture capture(&lines);
+        // The overview is not resident yet: no verdict.
+        system.Update(world, 0.0f);
+        EXPECT_TRUE(IsAttached(system, world, entity));
+
+        registry.RegisterSubmesh({m_OverviewModel, 0}, MakeOverviewMesh(3));
+        system.Update(world, 0.0f);
+        system.Update(world, 0.0f);
+        EXPECT_FALSE(IsAttached(system, world, entity));
+        EXPECT_NE(system.FindStatus(world.GetWorldId(), entity)->Problem.find("Cook the overview mesh again"),
+                  std::string::npos);
+
+        registry.UnregisterSubmesh({m_OverviewModel, 0});
+        registry.RegisterSubmesh({m_OverviewModel, 0}, MakeOverviewMesh(2));
+        system.Update(world, 0.0f);
+        EXPECT_TRUE(IsAttached(system, world, entity));
+        EXPECT_TRUE(system.FindStatus(world.GetWorldId(), entity)->Problem.empty());
+        Logger::Log::Flush();
+    }
+    EXPECT_EQ(CountLines(lines, "Cook the overview mesh again"), 1u);
 }
 
 } // namespace

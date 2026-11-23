@@ -151,7 +151,7 @@ std::vector<std::string> CheckForestStandContent(const AssetManifest& manifest, 
     std::vector<std::string> errors;
     for (const AssetManifestEntry& entry : manifest.entries)
         if (entry.type == AssetType::Scene || entry.type == AssetType::Prefab)
-            if (const std::vector<DepEdge>* edges = collector.m_FreshEdges.Find(entry.guid))
+            if (const std::vector<DepEdge>* edges = collector.FindWalkedEdges(entry.guid))
                 CheckScene(entry, *edges, manifest, errors);
     return errors;
 }

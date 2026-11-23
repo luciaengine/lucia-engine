@@ -77,12 +77,24 @@ protected:
         m_Device->Shutdown();
     }
 
-    CullResult Run(std::vector<ForestPlacementGpuPage> pages, uint32 frameIndex)
+    // A view with a bound radius of 0.1 m whose first planes are `first` and `second`; the other
+    // planes accept everything.
+    static ForestPlacementGpuView MakeView(const Mathematics::Vector4& first, const Mathematics::Vector4& second)
     {
         ForestPlacementGpuView view{};
-        // Keep x <= 2.5 m; the other planes accept everything.
-        view.Planes = {{{-1, 0, 0, 2.5f}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}}};
+        view.Planes = {{first, second, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}, {0, 0, 0, 1}}};
         view.EyeRelativeAndRadius = {0, 0, 0, 0.1f};
+        return view;
+    }
+
+    // Keeps x <= 2.5 m.
+    CullResult Run(std::vector<ForestPlacementGpuPage> pages, uint32 frameIndex)
+    {
+        return Run(std::move(pages), frameIndex, MakeView({-1, 0, 0, 2.5f}, {0, 0, 0, 1}));
+    }
+
+    CullResult Run(std::vector<ForestPlacementGpuPage> pages, uint32 frameIndex, const ForestPlacementGpuView& view)
+    {
         Pools pools(m_Device.get());
         RGFrame graph(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
         EXPECT_TRUE(m_Device->BeginFrame());
@@ -174,6 +186,22 @@ TEST_F(ForestPlacementCullTest, TwoPagesCompactIntoDisjointTailRanges)
     EXPECT_EQ(slots.size(), result.Rows.size());
     EXPECT_FALSE(slots.contains(kPerPage + 143));
     EXPECT_TRUE(slots.contains(kPerPage + 142));
+}
+
+TEST_F(ForestPlacementCullTest, EachFieldOfAPlacementPlacesItsRoot)
+{
+    // X, Z and height in centimeters, yaw, scale. The planes keep z <= 3 m and y <= 2.5 m.
+    const std::vector<PackedPlacement> placements{
+        {0, 300, 0, 0, 0},     // z = 3 m: on the plane, kept
+        {0, 100, 0, 77, 0},    // z = 1 m, any yaw: kept
+        {0, 100, 500, 0, 0},   // 5 m high: culled by the height plane
+        {0, 310, 0, 0, 255},   // 0.1 m past the plane, radius 0.125 m at scale 1.25: kept
+        {0, 310, 0, 0, 0},     // 0.1 m past the plane, radius 0.075 m at scale 0.75: culled
+        {400, 310, 0, 0, 128}, // x does not matter to these planes, radius 0.1 m at scale 1.0: kept
+    };
+    m_Device->UpdateBuffer(m_Slots, 0, placements.size() * sizeof(PackedPlacement), placements.data());
+    const auto result = Run({Page(0, 6, false)}, 0, MakeView({0, 0, -1, 3.0f}, {0, -1, 0, 2.5f}));
+    EXPECT_EQ(result.Rows, (Rows{{0, 0}, {1, 0}, {3, 0}, {5, 0}}));
 }
 
 } // namespace

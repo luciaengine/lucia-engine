@@ -7,15 +7,18 @@
 #include "ECS/World.h"
 #include "ForestPlacementFeature.h"
 #include "ForestPlacementRuntime.h"
+#include "ForestPlacementSession.h"
 #include "ForestStandDraws.h"
+#include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
 #include "Types/PathUtils.h"
 
 #include <algorithm>
-#include <bit>
 #include <cmath>
+#include <format>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <string_view>
 #include <utility>
@@ -88,18 +91,19 @@ uint32 CountPlacements(const ForestPlacementRuntime& placements)
 
 } // namespace
 
-// Detail Distance compares by bits, so a NaN distance equals itself and does not attach again.
-bool ForestStandSystem::StandSource::operator==(const StandSource& other) const
-{
-    return Settings.Archive == other.Settings.Archive && Settings.TreeModel == other.Settings.TreeModel &&
-           std::bit_cast<uint32>(Settings.DetailDistance) == std::bit_cast<uint32>(other.Settings.DetailDistance) &&
-           Settings.NearMeshBudget == other.Settings.NearMeshBudget && OverviewModel == other.OverviewModel &&
-           OverviewMesh == other.OverviewMesh && RendererValid == other.RendererValid;
-}
-
 ForestStandSystem::ForestStandSystem(RenderServices* renderServices, AssetManager* assets)
     : m_RenderServices(renderServices), m_Assets(assets)
 {
+    if (!m_Assets)
+        return;
+    // A cook replaces the archive file; the event comes on the file watcher thread.
+    m_ArchiveWatch = AssetReloadInvalidator(m_Assets->GetEventDispatcher(), AssetType::ForestPlacementArchive,
+        [changed = m_ChangedArchives](const GUID& archive)
+        {
+            const std::scoped_lock lock(changed->Mutex);
+            changed->Guids.Insert(archive);
+        },
+        AssetReloadInvalidator::EventSet::ContentEvents);
 }
 
 ForestStandSystem::~ForestStandSystem() = default;
@@ -126,8 +130,66 @@ void ForestStandSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         m_EntityHandleEpoch = world.GetEntityHandleEpoch();
         m_StructuralVersion = static_cast<std::size_t>(-1);
     }
-    if (HasStandChanges(world))
+    const bool standsChanged = HasStandChanges(world);
+    if (ReleaseChangedArchives() || standsChanged)
         Reconcile(world);
+    CheckOverviews(world);
+}
+
+bool ForestStandSystem::ReleaseChangedArchives()
+{
+    FlatSet<GUID> changed;
+    {
+        const std::scoped_lock lock(m_ChangedArchives->Mutex);
+        std::swap(changed, m_ChangedArchives->Guids);
+    }
+    if (changed.Empty())
+        return false;
+    std::vector<ECS::EntityHandle> released;
+    for (const auto& [entity, stand] : m_Stands)
+        if (changed.Contains(stand.Source.Archive))
+            released.push_back(entity);
+    for (const ECS::EntityHandle entity : released)
+        m_Stands.Erase(entity);
+    return !released.empty();
+}
+
+void ForestStandSystem::CheckOverviews(ECS::World& world)
+{
+    if (m_Stands.Empty())
+        return;
+    const auto& registry = m_RenderServices->GetMeshGPURegistry();
+    const Rendering::MeshGPURegistry::TableScope scope(registry);
+    for (auto& [entity, stand] : m_Stands)
+    {
+        if (!stand.Registration)
+            continue;
+        const auto* mesh = registry.FindByKey({stand.Source.OverviewModel, stand.Source.OverviewMesh});
+        // Only a drawable entry has its final index count.
+        const bool mismatch = mesh && registry.IsEntryDrawable(*mesh) && mesh->indexCount != stand.OverviewIndexEnd;
+        if (mismatch == stand.OverviewMismatch)
+            continue;
+        stand.OverviewMismatch = mismatch;
+        stand.Status.Attached = !mismatch;
+        if (!mismatch)
+        {
+            stand.Status.Problem = stand.AttachProblem;
+            continue;
+        }
+        stand.Status.Problem = std::format("has an overview mesh with {} indices, but the pages of its archive "
+                                           "address {}. Cook the overview mesh again from this archive.",
+                                           mesh->indexCount, stand.OverviewIndexEnd);
+        Logger::Log::Warning("Forest stand {} {}", DescribeEntity(world, entity), stand.Status.Problem);
+    }
+}
+
+void ForestStandSystem::ApplyDetailSettings(Stand& stand, const Components::ForestStand& settings) const
+{
+    if (!stand.Details)
+        return;
+    stand.Details->DetailDistance = settings.DetailDistance;
+    stand.Details->NearBudget =
+        std::min(settings.NearMeshBudget, ResidencyFor(m_RenderServices->GetProfile()).NearMeshCap);
 }
 
 bool ForestStandSystem::HasStandChanges(ECS::World& world)
@@ -150,6 +212,16 @@ bool ForestStandSystem::HasStandChanges(ECS::World& world)
     return changed;
 }
 
+ForestStandSystem::DetailMode ForestStandSystem::DetailModeOf(const Components::ForestStand& settings)
+{
+    // A Detail Distance of 0 draws the overview only.
+    if (settings.TreeModel.IsNull() || settings.DetailDistance == 0.0f)
+        return DetailMode::Off;
+    if (!std::isfinite(settings.DetailDistance) || settings.DetailDistance < 0.0f)
+        return DetailMode::Invalid;
+    return settings.NearMeshBudget == 0 ? DetailMode::Cards : DetailMode::CardsAndNearMeshes;
+}
+
 void ForestStandSystem::Reconcile(ECS::World& world)
 {
     std::vector<std::pair<ECS::EntityHandle, Components::ForestStand>> found;
@@ -160,7 +232,9 @@ void ForestStandSystem::Reconcile(ECS::World& world)
     for (const auto& [entity, settings] : found)
     {
         const auto* renderer = world.GetComponent<Components::MeshRenderer>(entity);
-        StandSource source{.Settings = settings};
+        StandSource source{.Archive = settings.Archive.ToGuid(),
+                           .TreeModel = settings.TreeModel.ToGuid(),
+                           .Detail = DetailModeOf(settings)};
         if (renderer)
         {
             source.OverviewModel = renderer->modelAssetGuid.ToGuid();
@@ -170,45 +244,44 @@ void ForestStandSystem::Reconcile(ECS::World& world)
 
         if (auto* kept = m_Stands.Find(entity); kept && kept->Source == source)
         {
+            ApplyDetailSettings(*kept, settings);
             stands.InsertOrAssign(entity, std::move(*kept));
             continue;
         }
         Stand stand{.Source = source};
-        stand.Registration = Attach(world, entity, source, stand.Status.Problem);
+        Attach(world, entity, settings, stand);
         stand.Status.Attached = static_cast<bool>(stand.Registration);
-        if (!stand.Status.Problem.empty())
-            Logger::Log::Warning("Forest stand {} {}", DescribeEntity(world, entity), stand.Status.Problem);
+        stand.Status.Problem = stand.AttachProblem;
+        if (!stand.AttachProblem.empty())
+            Logger::Log::Warning("Forest stand {} {}", DescribeEntity(world, entity), stand.AttachProblem);
         stands.InsertOrAssign(entity, std::move(stand));
     }
     m_Stands = std::move(stands);
 }
 
-ScopedSubscription ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandle entity, const StandSource& source,
-                                             std::string& problem)
+void ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandle entity, const Components::ForestStand& settings,
+                               Stand& stand)
 {
+    const StandSource& source = stand.Source;
+    std::string& problem = stand.AttachProblem;
     if (!source.RendererValid)
     {
         problem = DescribeRendererProblem(world.GetComponent<Components::MeshRenderer>(entity));
-        return {};
+        return;
     }
-    const auto& settings = source.Settings;
     AssetMetadata archive;
-    if (settings.Archive.IsNull() || !m_Assets->GetRegistry().TryGetAssetMetadata(settings.Archive.ToGuid(), archive) ||
+    if (source.Archive.IsNull() || !m_Assets->GetRegistry().TryGetAssetMetadata(source.Archive, archive) ||
         archive.Path.empty())
     {
         problem = "has no archive in the project. Set Archive to the .geforest file that the overview mesh was cooked from.";
-        return {};
+        return;
     }
 
     const ForestStandResidency& residency = ResidencyFor(m_RenderServices->GetProfile());
-    // A Detail Distance of 0 draws the overview only.
-    bool wantsTrees = !settings.TreeModel.IsNull() && settings.DetailDistance != 0.0f;
-    if (wantsTrees && !(std::isfinite(settings.DetailDistance) && settings.DetailDistance > 0.0f))
-    {
+    bool wantsTrees = source.Detail == DetailMode::Cards || source.Detail == DetailMode::CardsAndNearMeshes;
+    if (source.Detail == DetailMode::Invalid)
         problem = "draws the overview only: Detail Distance must be a number of meters, 0 or more.";
-        wantsTrees = false;
-    }
-    if (wantsTrees && !m_Assets->GetRegistry().IsAssetRegistered(settings.TreeModel.ToGuid()))
+    if (wantsTrees && !m_Assets->GetRegistry().IsAssetRegistered(source.TreeModel))
     {
         problem = "draws the overview only: its tree model is not in the project. Set Tree Model to the tree model "
                   "with its impostor setting on, or clear it.";
@@ -222,7 +295,7 @@ ScopedSubscription ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandl
         desc.DetailSlots = residency.DetailSlots;
         desc.TransitionSlots = residency.TransitionSlots;
         desc.ReadsPerFrame = residency.ReadsPerFrame;
-        desc.KeepCpuCopy = nearBudget != 0;
+        desc.KeepCpuCopy = source.Detail == DetailMode::CardsAndNearMeshes;
     }
     std::string error;
     auto placements = ForestPlacementRuntime::Open(m_Assets->ResolveAssetPath(archive.Path), desc, error);
@@ -230,30 +303,30 @@ ScopedSubscription ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandl
     {
         problem = "cannot open its archive '" + PathToUtf8(archive.Path) + "': " + error +
                   ". Cook the archive again with ForestPlacementCook.";
-        return {};
+        return;
     }
 
     const uint64 worldId = world.GetWorldId();
     const uint64 epoch = world.GetEntityHandleEpoch();
-    std::shared_ptr<ForestPlacementSession> trees;
     if (wantsTrees)
-        trees = m_RenderServices->EnsureFeature<ForestPlacementFeature>().Attach(
-            placements, *m_Assets, worldId, settings.TreeModel.ToGuid(), settings.DetailDistance, nearBudget);
+        stand.Details = m_RenderServices->EnsureFeature<ForestPlacementFeature>().Attach(
+            placements, *m_Assets, worldId, source.TreeModel, settings.DetailDistance, nearBudget);
     const uint32 pageCount = static_cast<uint32>(placements->Store().Pages().size());
     const uint32 placementCount = CountPlacements(*placements);
-    auto registration = RegisterForestStandMesh(*m_RenderServices, worldId, Rendering::RenderLayerMask::Default(),
+    stand.OverviewIndexEnd = placements->StandIndexEnd();
+    stand.Registration = RegisterForestStandMesh(*m_RenderServices, worldId, Rendering::RenderLayerMask::Default(),
         std::move(placements), Rendering::MeshGPUKey{source.OverviewModel, source.OverviewMesh},
         [worldId, epoch, entity, model = source.OverviewModel, mesh = source.OverviewMesh]
         { return ResolveStandMaterial(worldId, epoch, entity, model, mesh); },
-        std::move(trees));
-    if (!registration)
+        stand.Details);
+    if (!stand.Registration)
     {
+        stand.Details.reset();
         problem = "could not register its draws.";
-        return {};
+        return;
     }
     Logger::Log::Info("Forest stand {} attached with {} pages and {} placements", DescribeEntity(world, entity),
                       pageCount, placementCount);
-    return registration;
 }
 
 } // namespace GameEngine::Engine::Renderer

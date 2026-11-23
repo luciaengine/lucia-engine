@@ -80,13 +80,6 @@ void AddStandProblemNotice(const InspectorContext& ctx)
         ctx.SimulationRefreshCallbacks->push_back([follower]() mutable { FollowStandProblem(follower); });
 }
 
-// A drag previews nothing: each changed Detail Distance or Near Mesh Budget attaches the stand again,
-// so the value applies on release.
-template<typename V>
-void KeepDuringDrag(Stand&, V)
-{
-}
-
 void BuildForestStandInspector(const InspectorContext& ctx)
 {
     if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -123,23 +116,22 @@ void BuildForestStandInspector(const InspectorContext& ctx)
                  "and draws the trees when the first view is hidden.");
 
     auto distance = InspectorDrag::MakeComponentInteractiveHandlers<Stand, float>(w, e, n, undo,
-        "Change Forest Stand Detail Distance", &KeepDuringDrag<float>,
-        [](Stand& u, float v) { u.DetailDistance = std::max(0.0f, v); }, {});
+        "Change Forest Stand Detail Distance", [](Stand& u, float v) { u.DetailDistance = std::max(0.0f, v); }, {});
     InspectorDrag::AddFloatRowWithDrag(ctx.Parent, "Detail Distance", stand->DetailDistance,
         std::move(distance.first), std::move(distance.second), Stand{}.DetailDistance,
         "Meters from the camera within which the stand draws trees instead of the overview. 0 draws the overview "
-        "only. The value applies when the drag ends.",
+        "only.",
         0.0f);
 
     auto budget = InspectorDrag::MakeComponentInteractiveHandlers<Stand, int>(w, e, n, undo,
-        "Change Forest Stand Near Mesh Budget", &KeepDuringDrag<int>,
+        "Change Forest Stand Near Mesh Budget",
         [](Stand& u, int v) { u.NearMeshBudget = static_cast<uint32>(std::clamp<int>(v, 0, Stand::kMaxNearMeshBudget)); },
         {});
     IntField* budgetField = InspectorDrag::AddIntRowWithDrag(ctx.Parent, "Near Mesh Budget",
         static_cast<int>(std::min(stand->NearMeshBudget, Stand::kMaxNearMeshBudget)),
         std::move(budget.first), std::move(budget.second), 0,
         "The most trees near the camera that draw their mesh instead of the impostor card, at most 256, or 128 on "
-        "the compatibility tier. 0 draws cards only. The value applies when the drag ends.");
+        "the compatibility tier. 0 draws cards only.");
     budgetField->SetRange(0, static_cast<int>(Stand::kMaxNearMeshBudget));
 }
 
