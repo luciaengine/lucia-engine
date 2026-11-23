@@ -136,6 +136,8 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
     if (terrainParamsCount == 0 || activeGrassCount == 0)
         return; // idleGuard reports the measured zero
 
+    terrainFeature->NoteTerrainDrawnRG(d.Frame.FrameIndex());
+
     auto& grass = rs.EnsureFeature<TerrainGrassRenderFeature>();
     if (!grass.IsInitialized() && !grass.Initialize(device))
         return;
