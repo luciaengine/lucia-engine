@@ -125,8 +125,9 @@ TEST_F(OceanCpuTextureCacheTest, ASecondReadOfATextureSharesTheCopyAndTakesNoPix
 
     ASSERT_NO_FATAL_FAILURE(TakeThePixelsAway(texture));
     EXPECT_EQ(m_Cache.Get(m_Guid, texture), first);
-    // With no cache, the same texture gives no copy now.
-    EXPECT_FALSE(OceanCpuTextureCache::Convert(texture.AcquirePixels()).IsValid());
+    // A cache with no copy gets none from the same texture now.
+    OceanCpuTextureCache empty;
+    EXPECT_EQ(empty.Get(m_Guid, texture), nullptr);
 }
 
 TEST_F(OceanCpuTextureCacheTest, AReloadOfTheTextureGivesANewCopy)
