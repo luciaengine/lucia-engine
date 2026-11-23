@@ -1224,7 +1224,6 @@ TEST(RGGpuDriven, LateShadowListsReportEachPagesCastersInTheShadowArcStats)
     {
         GPUMesh mesh{};
         mesh.indexCount = 3u;
-        mesh.vertexCount = 3u;
         mesh.lodCount = 1u;
         mesh.boundingRadius = 1.0f;
         mesh.lodIndexCount[0] = 3u;
@@ -1756,7 +1755,6 @@ TEST(RGGpuDriven, ColorSlicesOfOneViewScatterTheirOwnVisibilitySets)
     {
         GPUMesh m{};
         m.indexCount        = 3u * (1u << i);
-        m.vertexCount       = 3u;
         m.lodCount          = 1u;
         m.boundingRadius    = 1.0f;
         m.lodIndexCount[0]  = m.indexCount;
@@ -2338,7 +2336,6 @@ TEST(RGGpuDriven, RecycledSlotDwellHistoryResetsToTheStatelessPick)
     {
         GPUMesh m{};
         m.indexCount        = lod0Indices;
-        m.vertexCount       = 3u;
         m.lodCount          = 2u;
         m.boundingRadius    = 1.0f;
         m.lodIndexCount[0]  = lod0Indices;
@@ -2510,7 +2507,6 @@ TEST(RGGpuDriven, FirstTouchCrossfadeStateArrivesAsNoHistoryAndAdoptsItsPick)
     constexpr uint32_t kLod1Indices = 12u; //  4 tri
     GPUMesh mesh{};
     mesh.indexCount        = kLod0Indices;
-    mesh.vertexCount       = 3u;
     mesh.lodCount          = 2u;
     mesh.boundingRadius    = 1.0f;
     mesh.lodIndexCount[0]  = kLod0Indices;
@@ -2830,7 +2826,6 @@ TEST(RGGpuDriven, ATailCapableSliceWithNoStatsBindingInvalidatesTheCensus)
     // nothing about the census.
     GPUMesh mesh{};
     mesh.indexCount        = 3u;
-    mesh.vertexCount       = 3u;
     mesh.lodCount          = 1u;
     mesh.boundingRadius    = 1.0f;
     mesh.lodIndexCount[0]  = 3u;
@@ -2927,7 +2922,6 @@ GPUMesh MakeRenderedHistoryMesh()
 {
     GPUMesh m{};
     m.indexCount        = 30u;
-    m.vertexCount       = 3u;
     m.lodCount          = 1u;
     m.boundingRadius    = 1.0f;
     m.lodIndexCount[0]  = 30u;
@@ -3290,7 +3284,6 @@ void PopulateScatterProbeScene(GPUScene& scene)
         mesh.indexCount = meshIndex == 0u ? 30u : 60u;
         mesh.indexOffset = meshIndex == 0u ? 100u : 200u;
         mesh.vertexOffset = meshIndex == 0u ? 7u : 19u;
-        mesh.vertexCount = 3u;
         mesh.lodCount = 2u;
         mesh.boundingRadius = 1.0f;
         mesh.lodIndexCount[0] = mesh.indexCount;

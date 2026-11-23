@@ -938,7 +938,7 @@ PipelineHandle GPUDrawStreamBuilder::GetOrCreateScatterPipeline()
     {
         m_ScatterPipelineFailureLogged = false;
         Logger::Log::Info("[GPUDrawStream] scatter pipeline ready: {} fetch, stats {}",
-                          m_ScatterCompactActive ? "coalesced 32B (compact)" : "full-fat 240B",
+                          m_ScatterCompactActive ? "coalesced 44B (compact)" : "full-fat 240B",
                           m_ScatterStatsActive ? "ON" : "off");
     }
     return m_ScatterPipeline;
@@ -2317,7 +2317,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     if (!visibility.IsValid() || !instances.IsValid() || !meshes.IsValid())
         return {};
 
-    // Lever 1: bind GPUScene's 40 B coalesced mirror at binding 1 when the
+    // Lever 1: bind GPUScene's 44 B coalesced mirror at binding 1 when the
     // compact pipeline variant is active. If it is active but the caller passed
     // no mirror, the env-flag/wiring disagreed — binding the 240 B instance
     // buffer to the compact-struct shader would read garbage, so drop the

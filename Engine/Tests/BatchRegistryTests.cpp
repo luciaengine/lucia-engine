@@ -302,7 +302,6 @@ GPUMesh MakeMeshRow()
 {
     GPUMesh mesh{};
     mesh.boundingRadius = 1.0f;
-    mesh.vertexCount = 4u;
     mesh.indexCount = 6u;
     mesh.lodCount = 1u;
     mesh.lodIndexCount[0] = 6u;
