@@ -1,6 +1,7 @@
 // The forest pages that sun cascades want: the shadow cap inside the one slot pool, color demand
-// first at a camera cut, one slot for a page that the view and a cascade both want, the detail
-// distance limit on shadow pages, and the reader fence of a cascade draw.
+// first at a camera cut, the prefetch reserve, one slot for a page that the view and a cascade
+// both want, the detail distance limit on shadow pages, read retries, and the reader fence of a
+// cascade draw.
 
 #include "PackedPlacementTestArchive.h"
 
@@ -60,6 +61,13 @@ protected:
         ForestPlacementView view{{kRowOrigin.X + kRowSpacing * page, kRowOrigin.Y, kRowOrigin.Z}, {}, 31.0f};
         view.EyeRelativePlanes[0] = forward ? Mathematics::Vector4{1, 0, 0, 24} : Mathematics::Vector4{-1, 0, 0, 30};
         return view;
+    }
+
+    // A camera 36 m above page `page` that sees every page and has only that page in its prefetch
+    // band (31 m to 43.4 m).
+    static ForestPlacementView Above(uint32 page)
+    {
+        return {{kRowOrigin.X + kRowSpacing * page + 8.0, kRowOrigin.Y + 25.0 + 36.0, kRowOrigin.Z + 8.0}, {}, 31.0f};
     }
 
     // A camera at the row origin that sees no page.
@@ -282,6 +290,92 @@ TEST_F(ForestPlacementShadowTest, ACascadeDrawFencesItsSlot)
     ASSERT_EQ(plan.Reads.size(), 1u);
     EXPECT_EQ(plan.Reads.front().Page, 1u);
     EXPECT_EQ(plan.Reads.front().Slot, drawn.Slot);
+}
+
+TEST_F(ForestPlacementShadowTest, PrefetchKeepsOnlyTheUnusedShadowSlots)
+{
+    auto runtime = OpenRow(4, {.DetailSlots = 1, .ReadsPerFrame = 1, .ShadowSlots = 1});
+    ASSERT_TRUE(runtime);
+    ASSERT_EQ(runtime->SlotCount(), 2u);
+    ForestPlacementFrame plan;
+    ASSERT_TRUE(runtime->Prepare(Camera(0, false), 1, 0, {}, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    ASSERT_TRUE(Publish(*runtime, plan.Reads.front()));
+    ASSERT_TRUE(runtime->Prepare(Camera(0, false), 2, 1, {}, plan));
+    ASSERT_EQ(plan.DetailedDraws.size(), 1u);
+
+    // No shadow page holds a slot: the free slot stays for the cascades.
+    ASSERT_TRUE(runtime->Prepare(Above(2), 3, 1, {}, plan));
+    EXPECT_TRUE(plan.Reads.empty());
+    ASSERT_TRUE(runtime->Prepare(Above(2), 4, 2, {}, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    EXPECT_EQ(plan.Reads.front().Page, 2u);
+    ASSERT_TRUE(Publish(*runtime, plan.Reads.front()));
+
+    constexpr std::array<ForestShadowPage, 1> light{{{3, 1}}};
+    ASSERT_TRUE(runtime->Prepare(Above(2), 5, 3, light, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    EXPECT_EQ(plan.Reads.front().Page, 3u);
+    ASSERT_TRUE(Publish(*runtime, plan.Reads.front()));
+
+    // The shadow page holds its slot, so prefetch takes the free slot.
+    ASSERT_TRUE(runtime->Prepare(Above(1), 6, 4, light, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    EXPECT_EQ(plan.Reads.front().Page, 1u);
+}
+
+TEST_F(ForestPlacementShadowTest, AColorReadIntoARetiredShadowSlotLeavesRoomForAShadowRead)
+{
+    auto runtime = OpenRow(5, {.DetailSlots = 2, .ReadsPerFrame = 2, .ShadowSlots = 1});
+    ASSERT_TRUE(runtime);
+    ASSERT_EQ(runtime->SlotCount(), 3u);
+    constexpr std::array<ForestShadowPage, 1> oldLight{{{1, 1}}};
+    constexpr std::array<ForestShadowPage, 1> newLight{{{2, 1}}};
+    ForestPlacementFrame plan;
+    ASSERT_TRUE(runtime->Prepare(Blind(), 1, 0, oldLight, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    const auto oldShadow = plan.Reads.front();
+    ASSERT_TRUE(Publish(*runtime, oldShadow));
+    ASSERT_TRUE(runtime->Prepare(Camera(0, false), 2, 1, oldLight, plan));
+    ASSERT_EQ(plan.ShadowDraws.size(), 1u);
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    const auto oldColor = plan.Reads.front();
+    ASSERT_TRUE(Publish(*runtime, oldColor));
+    ASSERT_TRUE(runtime->Prepare(Camera(0, false), 3, 2, {}, plan));
+    ASSERT_EQ(plan.DetailedDraws.size(), 1u);
+    ASSERT_TRUE(runtime->Prepare(Camera(4, true), 4, 2, {}, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    ASSERT_TRUE(Publish(*runtime, plan.Reads.front()));
+    ASSERT_TRUE(runtime->Prepare(Camera(4, true), 5, 3, {}, plan));
+    ASSERT_EQ(plan.DetailedDraws.size(), 1u);
+
+    // No slot is free. The color read takes the oldest retired slot, the shadow page's, and the
+    // new shadow page then takes the retired color slot in the same frame.
+    ASSERT_TRUE(runtime->Prepare(Camera(3, true), 6, 4, newLight, plan));
+    ASSERT_EQ(plan.Reads.size(), 2u);
+    EXPECT_EQ(plan.Reads[0].Page, 3u);
+    EXPECT_EQ(plan.Reads[0].Slot, oldShadow.Slot);
+    EXPECT_EQ(plan.Reads[1].Page, 2u);
+    EXPECT_EQ(plan.Reads[1].Slot, oldColor.Slot);
+}
+
+TEST_F(ForestPlacementShadowTest, APageWaitingForARetryHoldsNoShadowPlace)
+{
+    auto runtime = OpenRow(3, {.DetailSlots = 1, .ReadsPerFrame = 1, .ShadowSlots = 1});
+    ASSERT_TRUE(runtime);
+    constexpr std::array<ForestShadowPage, 2> light{{{0, 1}, {1, 1}}};
+    ForestPlacementFrame plan;
+    // Page 0 fails twice, so it waits two frames for its next read.
+    for (uint64 frame = 1; frame <= 2; ++frame)
+    {
+        ASSERT_TRUE(runtime->Prepare(Blind(), frame, frame - 1, light, plan));
+        ASSERT_EQ(plan.Reads.size(), 1u);
+        ASSERT_EQ(plan.Reads.front().Page, 0u);
+        EXPECT_FALSE(runtime->CompleteRead(plan.Reads.front(), {}));
+    }
+    ASSERT_TRUE(runtime->Prepare(Blind(), 3, 2, light, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    EXPECT_EQ(plan.Reads.front().Page, 1u);
 }
 
 } // namespace

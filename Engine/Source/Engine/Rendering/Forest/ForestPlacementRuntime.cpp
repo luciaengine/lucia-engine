@@ -305,7 +305,7 @@ std::span<const ForestShadowPage> ForestPlacementRuntime::GatherShadowPages(
             {
                 const double distance = DistanceSquared(m_Leaves[page].Min, m_Leaves[page].Max, eye);
                 if (distance < detailSquared)
-                    m_ShadowCandidates.push_back({cascade, distance, page, mask});
+                    m_ShadowCandidates.push_back({distance, cascade, page, mask});
             }
         }
     }
@@ -373,7 +373,8 @@ void ForestPlacementRuntime::GatherShadowDemand(std::span<const ForestShadowPage
     for (const auto& [page, mask] : pages)
     {
         const auto cascades = static_cast<uint8>(mask & kAllCascades);
-        if (page >= m_ShadowMasks.size() || cascades == 0)
+        // A page that waits for a read retry does not hold a place under the cap.
+        if (page >= m_ShadowMasks.size() || cascades == 0 || m_Frame < m_RetryAt[page])
             continue;
         if (m_ShadowMasks[page] != 0)
         {
@@ -515,6 +516,8 @@ void ForestPlacementRuntime::AppendReads(std::vector<ForestPageTicket>& reads)
             const uint32 victim = FindReusableSlot();
             if (victim == m_Slots.size())
                 break;
+            if (m_Slots[victim].ShadowOnly)
+                --shadowSlots;
             ReleaseIfRetired(victim);
         }
         const auto ref = m_Residency.Acquire(page, 0.0f);

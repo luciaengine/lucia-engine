@@ -10,8 +10,8 @@
 #include "ForestPlacementRenderState.h"
 #include "ForestPlacementRuntime.h"
 #include "ForestPlacementUploadPlan.h"
-#include "Rendering/Core/Device.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Tests/ScopedEnvVar.h"
 #if defined(RENDERING_HAS_VULKAN)
