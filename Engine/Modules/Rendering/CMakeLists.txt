@@ -3212,6 +3212,7 @@ if(RENDERING_BUILD_TESTS)
         endif()
 
         add_executable(RenderingMetalBackendHeadlessTests Tests/MetalBackendHeadlessTests.cpp Tests/MetalHdrOutputTests.cpp
+            Tests/MetalPresentModeLogFieldTests.cpp
             Tests/MetalShippedLibraryTests.cpp)
         target_link_libraries(RenderingMetalBackendHeadlessTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
         # The tests read backend state through MetalDevice.h, which includes metal-cpp.
