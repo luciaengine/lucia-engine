@@ -46,8 +46,10 @@ private:
     std::vector<ForestPlacementUpload> m_Uploads;
     std::deque<DrawFence> m_ReadFences;
     Rendering::RenderGraph::RGFrameStamp m_Prepared;
+    Rendering::IDevice::GpuSyncToken m_PrepareGraphicsToken;
     uint64 m_LastFinished = 0;
     bool m_DeclaredDetail = false;
+    bool m_UnknownReader = false;
 };
 
 } // namespace GameEngine::Engine::Renderer

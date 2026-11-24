@@ -380,7 +380,8 @@ void ReportInlineReloadOutcome(ReloadOutcome outcome, const Asset& asset, const 
 bool AssetManager::Initialize(const std::filesystem::path& assetRoot,
                               JobSystem::WorkStealingThreadPool* jobSystem,
                               const std::filesystem::path& authoritativeDbFile,
-                              const std::filesystem::path& cacheRoot)
+                              const std::filesystem::path& cacheRoot,
+                              bool readOnlyAssetDatabase)
 {
     if (!Initialize(jobSystem))
         return false;
@@ -422,7 +423,8 @@ bool AssetManager::Initialize(const std::filesystem::path& assetRoot,
     projectDesc.AuthoritativeDbFile = authoritativeDbFile;
     projectDesc.CacheRoot = cacheRoot;
     projectDesc.Priority = 100;
-    if (IsPackagedPlayerEnvironment())
+    projectDesc.IsReadOnly = readOnlyAssetDatabase;
+    if (readOnlyAssetDatabase || IsPackagedPlayerEnvironment())
         projectDesc.RegisterFileWatcher = false;
 
     if (!RegisterSource(projectDesc))

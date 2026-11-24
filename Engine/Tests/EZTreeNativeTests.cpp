@@ -16,6 +16,7 @@
 #include "EZTreeECS/EZTreePlugin.h"
 #include "EZTreeECS/EZTreeRuntimeMaterials.h"
 #include "EZTreeECS/EZTreeService.h"
+#include "EZTreeECS/EZTreeVariantMaterials.h"
 #include "EZTreeECS/Systems/RegisterEZTreeSystems.h"
 #include "PluginAPI/EnginePlugin.h"
 
@@ -242,6 +243,40 @@ TEST(EZTreeNativeTests, EachLeafCarriesOneWindSeedOnEveryVertexOfItsCards)
     }
     std::sort(seeds.begin(), seeds.end());
     EXPECT_EQ(std::adjacent_find(seeds.begin(), seeds.end()), seeds.end()) << "two leaves share a wind seed";
+}
+
+TEST(EZTreeNativeTests, FoliageProbesBakeStableAmbientOcclusion)
+{
+    EZTree::TreeOptions options = MakeSmallTree();
+    options.leaves.count = 0u;
+    EZTree::Generator generator;
+
+    const auto isolated = generator.Generate(options);
+    ASSERT_EQ(isolated.leaves.Vertices.size(), 8u);
+    ASSERT_TRUE(isolated.leaves.HasTexCoords1());
+    EXPECT_EQ(isolated.leaves.TexCoords1[1], 0.0f);
+
+    options.leaves.count = 32u;
+    const auto canopy = generator.Generate(options);
+    const auto repeat = generator.Generate(options);
+    ASSERT_TRUE(canopy.leaves.HasTexCoords1());
+    EXPECT_EQ(canopy.leaves.TexCoords1, repeat.leaves.TexCoords1);
+
+    constexpr size_t kVerticesPerLeaf = 8;
+    float minimum = 1.0f;
+    float maximum = 0.0f;
+    for (size_t leaf = 0; leaf < canopy.leaves.Vertices.size(); leaf += kVerticesPerLeaf)
+    {
+        const float occlusion = canopy.leaves.TexCoords1[leaf * 2 + 1];
+        EXPECT_GE(occlusion, 0.0f);
+        EXPECT_LT(occlusion, 1.0f);
+        minimum = std::min(minimum, occlusion);
+        maximum = std::max(maximum, occlusion);
+        for (size_t vertex = leaf; vertex < leaf + kVerticesPerLeaf; ++vertex)
+            EXPECT_EQ(canopy.leaves.TexCoords1[vertex * 2 + 1], occlusion);
+    }
+    EXPECT_GT(maximum, 0.05f);
+    EXPECT_GT(maximum - minimum, 0.01f);
 }
 
 TEST(EZTreeNativeTests, LeafAtlasUvTileIsApplied)
@@ -548,6 +583,25 @@ TEST(EZTreeNativeTests, ComponentFactoryCreatorIsAddableAndReloadSafe)
     ASSERT_NE(tree, nullptr);
     EXPECT_EQ(tree->RuntimeMeshHandleId, 0u);
     EXPECT_EQ(tree->RuntimeVertexCount, 0u);
+}
+
+// The wind material's @deformationEnvelope covers the authored wind in the cull kernels, so the
+// culling sphere grows only by what the wind volumes can add: nothing without volumes, however
+// strong the authored wind, and the envelope times the strongest part's scale per m/s of volume wind.
+TEST(EZTreeNativeTests, TheCullingSphereGrowsOnlyByTheWindVolumesShare)
+{
+    EZTree::TreeOptions options{};
+    options.wind.enabled = true;
+    options.wind.strength = {6.0f, 0.0f, 2.0f};
+    EXPECT_FLOAT_EQ(EZTreeECS::WindVolumeCullMargin(options, 0.0f), 0.0f);
+
+    const float perMeterPerSecond = EZTreeECS::WindVolumeCullMargin(options, 1.0f);
+    EXPECT_GT(perMeterPerSecond, 0.0f);
+    EXPECT_FLOAT_EQ(EZTreeECS::WindVolumeCullMargin(options, 4.0f), 4.0f * perMeterPerSecond);
+    EXPECT_FLOAT_EQ(perMeterPerSecond, 1.21f * EZTreeECS::WindScaleBound(options));
+
+    options.wind.enabled = false;
+    EXPECT_FLOAT_EQ(EZTreeECS::WindVolumeCullMargin(options, 4.0f), 0.0f);
 }
 
 TEST(EZTreeNativeTests, RuntimeMaterialShapesCarryWindAndLeafSurface)

@@ -64,6 +64,8 @@ struct ApplicationConfig {
     // Optional override: authoritative asset database file location.
     // When not absolute, interpreted relative to the resolved workspace root.
     String AssetDatabaseFile = kDefaultAssetDatabaseFile;
+    // Read authored metadata without persisting changes to the project database.
+    bool AssetDatabaseReadOnly = false;
     // Optional override: derived asset database cache directory (SQLite, diagnostics, etc.).
     // When not absolute, interpreted relative to the resolved workspace root.
     String AssetDatabaseCacheDirectory = kDefaultAssetDatabaseCacheDirectory;

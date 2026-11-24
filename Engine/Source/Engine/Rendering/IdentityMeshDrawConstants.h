@@ -21,8 +21,8 @@ struct alignas(16) IdentityMeshDrawConstants
     Mathematics::Vector4 NormalColumn2{0, 0, 1, 0};
     uint32 MaterialIndex;
     uint32 SkinPaletteOffset = 0;
-    uint32 Reserved0 = 0;
-    uint32 Reserved1 = 0;
+    uint32 InstanceFlags = 0; // GPUInstance flag bits the draw adds (uExtra.z)
+    uint32 Reserved = 0;
 };
 static_assert(std::is_trivially_copyable_v<IdentityMeshDrawConstants>);
 static_assert(sizeof(IdentityMeshDrawConstants) == 128);
@@ -31,5 +31,6 @@ static_assert(offsetof(IdentityMeshDrawConstants, NormalColumn1) == 80);
 static_assert(offsetof(IdentityMeshDrawConstants, NormalColumn2) == 96);
 static_assert(offsetof(IdentityMeshDrawConstants, MaterialIndex) == 112);
 static_assert(offsetof(IdentityMeshDrawConstants, SkinPaletteOffset) == 116);
+static_assert(offsetof(IdentityMeshDrawConstants, InstanceFlags) == 120);
 
 } // namespace GameEngine::Engine::Renderer

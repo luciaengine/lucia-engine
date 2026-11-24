@@ -145,7 +145,15 @@ bool ImpostorStage::Link(RenderServices& services, std::span<const uint32> partM
                            cardMaterial);
         return false;
     }
-    return scene->SetMeshImpostorGroup(partMeshes, cardMaterial, cardMesh, switchCoverage);
+    // The scatter measures the switch on the sphere the atlas was baked on (impostorBounds.w).
+    float bounds[4]{};
+    if (!card.GetVector(HashStringId("impostorBounds"), bounds, 4) || !(bounds[3] > 0.0f))
+    {
+        Logger::Log::Error("ImpostorStage: card material {} has no impostorBounds radius; it is not linked",
+                           cardMaterial);
+        return false;
+    }
+    return scene->SetMeshImpostorGroup(partMeshes, cardMaterial, cardMesh, switchCoverage, bounds[3]);
 }
 
 void ImpostorStage::Unlink(RenderServices& services, std::span<const uint32> partMeshes)

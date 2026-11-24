@@ -11,6 +11,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/TextureService.h"
 #include "Engine/Rendering/ViewRegistry.h"
+#include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/PassPhase.h"
 #include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
@@ -36,9 +37,12 @@ constexpr uint32 kSettleFrames = 2;
 constexpr uint32 kMaxMipAttemptsWithoutProgress = 8;
 
 // The parts draw untransformed, with the non-instanced push constants of adapter_vertex.glsl.
-std::array<std::byte, sizeof(IdentityMeshDrawConstants)> MakePushConstants(uint32 materialIndex)
+// instanceFlags: kInstanceFlagDepthDoubleSided for a part drawn on both faces, which bakes its
+// normal by the two-sided rule (impostor_bake_normal.glsl).
+std::array<std::byte, sizeof(IdentityMeshDrawConstants)> MakePushConstants(uint32 materialIndex, uint32 instanceFlags)
 {
-    const IdentityMeshDrawConstants push(materialIndex);
+    IdentityMeshDrawConstants push(materialIndex);
+    push.InstanceFlags = instanceFlags;
     std::array<std::byte, sizeof(push)> bytes{};
     std::memcpy(bytes.data(), &push, sizeof(push));
     return bytes;
@@ -502,7 +506,8 @@ void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderService
         const Material* material = services.Materials().Registry().Find(part.Material);
         if (!material)
             continue;
-        slot.PushConstants.push_back(MakePushConstants(material->GetGpuSceneMaterialIndex()));
+        const uint32 flags = material->IsDoubleSided() ? Rendering::kInstanceFlagDepthDoubleSided : 0u;
+        slot.PushConstants.push_back(MakePushConstants(material->GetGpuSceneMaterialIndex(), flags));
         DrawCommand command{};
         command.Material = material;
         command.Geometry.Mesh = part.Mesh;

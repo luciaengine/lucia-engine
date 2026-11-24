@@ -229,6 +229,19 @@ ge_add_mcp_server_target()
 # the header only when the id changes. A consumer depends on BuildCommit, adds
 # GE_BUILD_COMMIT_INCLUDE_DIR to its include path, and includes the header in one source file.
 find_package(Git QUIET)
+if(Git_FOUND)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" config --get core.hooksPath
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE _ge_hooks_path OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_ge_hooks_path STREQUAL "Tools/Git")
+        execute_process(COMMAND "${GIT_EXECUTABLE}" config --get user.email
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            OUTPUT_VARIABLE _ge_git_email OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(NOT _ge_git_email STREQUAL "352078336+lucia-engine@users.noreply.github.com")
+            message(WARNING "The configured Git email does not match the Lucia Engine maintainer identity required for main. See CONTRIBUTING.md.")
+        endif()
+    endif()
+endif()
 set(GE_BUILD_COMMIT_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated/build-commit")
 add_custom_target(BuildCommit
 	COMMAND ${CMAKE_COMMAND}
@@ -1404,6 +1417,8 @@ elseif(TARGET Editor)
   add_subdirectory(Tools/MaterialVariantCook)
   # Packed forests are cooked by hand with ForestPlacementCook from the same Tools folder.
   add_subdirectory(Tools/ForestPlacementCook)
+elseif(TARGET MacBundleAssemblerTests)
+  add_subdirectory(Tools/MaterialVariantCook)
 endif()
 if(TARGET ForestPlacementCook AND TARGET Editor)
   add_dependencies(Editor ForestPlacementCook)
@@ -1413,7 +1428,8 @@ if(TARGET MaterialVariantCook)
     add_dependencies(Editor MaterialVariantCook)
   endif()
   # The export suites run a desktop export, which runs the cook from bin/<config>/Tools.
-  foreach(_ge_export_suite IN ITEMS PackagedAssetManifestTests PackagedTextureExportTests ShipRulesExportTests)
+  foreach(_ge_export_suite IN ITEMS MacBundleAssemblerTests PackagedAssetManifestTests PackagedTextureExportTests
+                                    ShipRulesExportTests)
     if(TARGET ${_ge_export_suite})
       add_dependencies(${_ge_export_suite} MaterialVariantCook)
     endif()

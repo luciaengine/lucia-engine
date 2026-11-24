@@ -152,9 +152,8 @@ MaterialDocument BuildBarkMaterialDocument(const EZTree::TreeOptions& options,
     else
         doc.materialName = doc.materialName.empty() ? "Tree Generator Bark" : (doc.materialName + " (Tree Generator)");
 
-    // The generated tree combines branch tubes and leaf billboards into one
-    // renderable today. Keep it double-sided so leaf quads and any imported
-    // EZ-Tree winding differences cannot disappear under backface culling.
+    // Branch generation joins the side rings without caps. The inner face of
+    // a tube remains visible through an exposed end.
     doc.doubleSided = true;
 
     const bool hasExplicitBarkTint = options.bark.tint != 0xFFFFFFu;
@@ -344,6 +343,13 @@ GUID SelectLeafMaterial(Engine::Renderer::RenderServices& renderServices, const 
 float WindScaleBound(const EZTree::TreeOptions& options)
 {
     return options.wind.enabled ? std::max(kBarkWindScale, kLeafWindScale) : 0.0f;
+}
+
+float WindVolumeCullMargin(const EZTree::TreeOptions& options, float volumeSpeedBound)
+{
+    // ez_tree_wind.glsl's @deformationEnvelope: the largest displacement per unit of wind, local meters.
+    constexpr float kWindDisplacementEnvelope = 1.21f;
+    return kWindDisplacementEnvelope * WindScaleBound(options) * std::max(volumeSpeedBound, 0.0f);
 }
 
 } // namespace GameEngine::EZTreeECS

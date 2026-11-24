@@ -95,7 +95,9 @@ std::string EngineAbiDigest(const fs::path& sdk, const std::vector<std::string>&
     std::string error;
     EXPECT_TRUE(ns::LoadSdkManifest(sdk, config, error)) << error;
     ns::AppendPackageDefines(config, defines);
-    return ns::ComputeRuntimeEngineAbiDigest(std::move(config));
+    auto digest = ns::ComputeRuntimeEngineAbiDigest(std::move(config));
+    EXPECT_FALSE(digest.empty()) << "the fixture engine must have a readable Mach-O link stamp";
+    return digest;
 }
 
 // Counts the Player's loads that reach a module image: ImageMapBegin fires right before the
@@ -130,9 +132,11 @@ class MacPackageCodeExportTest : public testing::Test
                   "<key>CFBundlePackageType</key><string>APPL</string></dict></plist>\n");
         fs::create_directories(templateApp / "MacOS");
         fs::copy_file("/usr/bin/true", templateApp / "MacOS/Player");
-        WriteFile(Sdk / "nativescripting/manifest.txt", "includedir=include\nimportlib=lib/libEngine.dylib\n");
+        WriteFile(Sdk / "nativescripting/manifest.txt",
+                  "includedir=include\nimportlib=lib/libEngine.dylib\nenginebinary=lib/libEngine.dylib\n");
         WriteFile(Sdk / "include/Engine.h", "#pragma once\n");
-        WriteFile(Sdk / "lib/libEngine.dylib", "engine");
+        fs::create_directories(Sdk / "lib");
+        fs::copy_file(GE_MAC_BUNDLE_FIXTURE_DYLIB, Sdk / "lib/libEngine.dylib");
 
         // Opaque mandatory dependencies of every export.
         WriteFile(Assets / "Fonts/Roboto-Regular.ttf", "TTFDATA");

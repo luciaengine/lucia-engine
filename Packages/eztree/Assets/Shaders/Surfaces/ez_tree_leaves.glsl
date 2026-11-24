@@ -63,8 +63,8 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     float colorTrust = max(smoothstep(0.45, 0.95, GE_EZTreeLeafAlpha(albedo)), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
-    o.opacity = GE_FoliageCoverageOpacity(GE_EZTreeLeafAlpha(shapeSample) * Mat.uBaseColor.a,
-                                          clamp(Props.alphaCutoff, 0.0, 1.0), tailWeight, sIn.uv1.x);
+    o.opacity = GE_FoliageLeafCoverageOpacity(GE_EZTreeLeafAlpha(shapeSample), Mat.uBaseColor.a,
+                                              clamp(Props.alphaCutoff, 0.0, 1.0), tailWeight, sIn.uv1.x);
 
     vec4 mr = texture(metallicRoughnessMap, uvMR);
     o.roughness = mr.g * Mat.uParams0.y;
@@ -72,6 +72,8 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 
     vec2 uvAO = GE_TransformUV(sIn.uv0, sIn.textureST[4], sIn.textureST2[4]);
     o.ao = texture(aoMap, uvAO).r;
+    // UV1.y stores the rest-pose canopy occlusion. UV1.x is the wind seed.
+    o.ao *= 1.0 - clamp(sIn.uv1.y, 0.0, 1.0);
 
 #ifdef HAS_TANGENT
     // Z reconstructed — see GE_DecodeTangentNormal (uniform for RGB8 and BC5 payloads).

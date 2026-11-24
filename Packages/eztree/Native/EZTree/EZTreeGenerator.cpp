@@ -6,6 +6,7 @@
 
 #include "Assets/ModelAsset.h"
 #include "EZTree/EZTreeRng.h"
+#include "EZTree/FoliageOcclusionProbes.h"
 
 #include <algorithm>
 #include <cmath>
@@ -309,6 +310,8 @@ GeneratedTree Generator::Generate(const TreeOptions& rawOptions)
     // golden-ratio sequence over the leaf index spreads consecutive leaves across [0, 1) without
     // drawing from the tree's random sequence, so the tree's shape does not change.
     uint32 leafIndex = 0;
+    const bool crossedCards = options.leaves.billboard == BillboardMode::Double;
+    constexpr uint32 kVerticesPerCard = 4;
     auto generateLeaf = [&](const glm::vec3& origin, const glm::quat& orientation)
     {
         constexpr float kGoldenRatioFraction = 0.6180339887f;
@@ -343,7 +346,7 @@ GeneratedTree Generator::Generate(const TreeOptions& rawOptions)
             };
             const float uv[4][2] = {{u0, v1}, {u0, v0}, {u1, v0}, {u1, v1}};
             const glm::vec3 faceNormal = NormalizeOr(q * glm::vec3(0.0f, 0.0f, 1.0f), {0.0f, 0.0f, 1.0f});
-            for (uint32 i = 0; i < 4; ++i)
+            for (uint32 i = 0; i < kVerticesPerCard; ++i)
             {
                 const glm::vec3 p = origin + q * local[i];
                 const glm::vec3 n = options.leaves.roundedNormals
@@ -358,7 +361,7 @@ GeneratedTree Generator::Generate(const TreeOptions& rawOptions)
         };
 
         createLeaf(0.0f);
-        if (options.leaves.billboard == BillboardMode::Double)
+        if (crossedCards)
             createLeaf(kPi * 0.5f);
     };
 
@@ -595,6 +598,8 @@ GeneratedTree Generator::Generate(const TreeOptions& rawOptions)
     ComputeBounds(generated.branches);
     ComputeBounds(generated.leaves);
     ComputeBounds(generated.trellis);
+    FoliageOcclusionProbes::Bake(generated.leaves, crossedCards ? 2 * kVerticesPerCard : kVerticesPerCard,
+                                options.leaves.size);
     AppendMesh(generated.combined, generated.branches);
     AppendMesh(generated.combined, generated.leaves);
     AppendMesh(generated.combined, generated.trellis);

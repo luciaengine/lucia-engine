@@ -672,7 +672,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
 
     // Initialize asset manager with job system
     if (!m_AssetManager->Initialize(resolvedAssetRoot, m_JobSystem.get(), projectPaths.AssetDatabaseFile,
-                                    projectPaths.AssetDatabaseCacheRoot))
+                                    projectPaths.AssetDatabaseCacheRoot, config.AssetDatabaseReadOnly))
     {
         Logger::Log::Error("Failed to initialize asset manager");
         return false;
