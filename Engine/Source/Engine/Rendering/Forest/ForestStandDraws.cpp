@@ -12,6 +12,7 @@
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
+#include <bit>
 #include <limits>
 
 namespace GameEngine::Engine::Renderer
@@ -59,6 +60,11 @@ const Rendering::CameraData* FindForestStandCamera(RenderServices& services, Ren
 
 namespace
 {
+struct StandSectorRange
+{
+    uint32 IndexEnd;
+    Mathematics::Vector3Int Sector;
+};
 
 // What one registered stand draws, shared by its forward-emit callback.
 struct StandEmitSource
@@ -68,6 +74,7 @@ struct StandEmitSource
     std::shared_ptr<ForestPlacementRuntime> Placements;
     PrepareForestStandDraw PrepareDraw;
     std::shared_ptr<ForestPlacementSession> Details;
+    std::vector<StandSectorRange> Sectors;
 };
 
 Rendering::DrawProducerId StandProducer()
@@ -109,7 +116,62 @@ void EmitStandCommands(ForwardEmitContext& ctx, ForestStandDrawHeads& heads, std
     ctx.Services->EmitForwardCommand(ctx.ViewId, heads.Color, ForwardDrawDepth::Prepass, &*heads.Depth);
 }
 
-void EmitStand(const StandEmitSource& stand, ForwardEmitContext& ctx)
+// Split asset-relative ranges at sector boundaries. Each head retains the holes between visible runs.
+void EmitSectorRanges(StandEmitSource& stand, ForwardEmitContext& ctx, ForestStandDrawHeads& heads,
+                      std::span<const DrawSubCommand> draws)
+{
+    constexpr uint32 kIndicesPerQuad = 6;
+    if (stand.Sectors.empty())
+    {
+        uint32 indexEnd = 0;
+        for (const auto& page : stand.Placements->Store().Pages())
+        {
+            const auto sector = page.OverviewSector();
+            indexEnd += kIndicesPerQuad;
+            if (stand.Sectors.empty() || stand.Sectors.back().Sector != sector)
+                stand.Sectors.push_back({indexEnd, sector});
+            else
+                stand.Sectors.back().IndexEnd = indexEnd;
+        }
+    }
+
+    const uint32 firstIndex = heads.Color.FirstIndex;
+    std::vector<DrawSubCommand>* group = nullptr;
+    const StandSectorRange* current = nullptr;
+    for (const auto& draw : draws)
+    {
+        uint32 begin = draw.FirstIndex - firstIndex;
+        const uint32 end = begin + draw.IndexCount;
+        while (begin < end)
+        {
+            if (!current || begin >= current->IndexEnd)
+            {
+                if (group)
+                    EmitStandCommands(ctx, heads, *group);
+                current = &*std::ranges::upper_bound(stand.Sectors, begin, {}, &StandSectorRange::IndexEnd);
+                group = ctx.Frame->AllocatePassData<std::vector<DrawSubCommand>>();
+                auto* constants = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(*heads.SectorLocalMaterialIndex);
+                constants->NormalColumn0.w = std::bit_cast<float>(current->Sector.X);
+                constants->NormalColumn1.w = std::bit_cast<float>(current->Sector.Y);
+                constants->NormalColumn2.w = std::bit_cast<float>(current->Sector.Z);
+                constants->HasSector = 1;
+                heads.Color.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
+                if (heads.Depth)
+                    heads.Depth->Bindings.PushConstants = heads.Color.Bindings.PushConstants;
+            }
+            const uint32 stop = std::min(end, current->IndexEnd);
+            auto part = draw;
+            part.FirstIndex = firstIndex + begin;
+            part.IndexCount = stop - begin;
+            group->push_back(part);
+            begin = stop;
+        }
+    }
+    if (group)
+        EmitStandCommands(ctx, heads, *group);
+}
+
+void EmitStand(StandEmitSource& stand, ForwardEmitContext& ctx)
 {
     const auto* camera = FindStandCamera(ctx, stand);
     if (!camera || (stand.Details && !stand.Details->DrawsColor))
@@ -136,7 +198,10 @@ void EmitStand(const StandEmitSource& stand, ForwardEmitContext& ctx)
     }
     if (draws->empty() || !ApplyStandIndexRange(heads->Color, *draws))
         return;
-    EmitStandCommands(ctx, *heads, *draws);
+    if (heads->SectorLocalMaterialIndex)
+        EmitSectorRanges(stand, ctx, *heads, *draws);
+    else
+        EmitStandCommands(ctx, *heads, *draws);
 }
 
 // The shaded head of the overview mesh, or none while the mesh or its material is not drawable.
@@ -159,7 +224,6 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
         !registry.TryGetDrawableBindings(*geometry, bindings))
         return std::nullopt;
 
-    const auto* transform = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(mat->GetGpuSceneMaterialIndex());
     ForestStandDrawHeads heads{};
     auto& color = heads.Color;
     color.Material = mat;
@@ -170,7 +234,13 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
     color.IndexCount = geometry->indexCount;
     color.FirstIndex = geometry->firstIndex;
     color.VertexOffset = static_cast<int32>(geometry->vertexOffset);
-    color.Bindings.PushConstants = std::as_bytes(std::span(transform, 1u));
+    if (geometry->ForestSectorLocal)
+        heads.SectorLocalMaterialIndex = mat->GetGpuSceneMaterialIndex();
+    else
+    {
+        const auto* constants = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(mat->GetGpuSceneMaterialIndex());
+        color.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
+    }
     return heads;
 }
 
@@ -183,8 +253,8 @@ ScopedSubscription RegisterForestStandDraws(
 {
     if (!placements || !prepareDraw || layers == Rendering::RenderLayerMask::None())
         return {};
-    auto stand = std::make_shared<const StandEmitSource>(
-        StandEmitSource{worldId, layers, std::move(placements), std::move(prepareDraw), std::move(details)});
+    auto stand = std::make_shared<StandEmitSource>(
+        StandEmitSource{worldId, layers, std::move(placements), std::move(prepareDraw), std::move(details), {}});
     return services.RegisterForwardEmit([stand](ForwardEmitContext& ctx) { EmitStand(*stand, ctx); },
                                         {.WritesDepth = true, .RequiresFrame = true});
 }

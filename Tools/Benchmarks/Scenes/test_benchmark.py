@@ -114,9 +114,27 @@ class CompareTests(unittest.TestCase):
         self.assertEqual([r["metric"] for r in rows if r["metric"].startswith("pass:")], ["pass:Depth.View2.Tile*"])
         self.assertEqual(regressions, [])
 
+    def test_comparison_with_no_valid_pose_returns_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder) / "base.json"
+            head = Path(folder) / "head.json"
+            base.write_text(json.dumps(result("a", 10.0, valid=False)))
+            head.write_text(json.dumps(result("b", 10.0, valid=False)))
+            args = SimpleNamespace(base=base, head=head, noise=None, all_passes=False)
+            self.assertEqual(benchmark.command_compare(args), 1)
+
+    def test_a_missing_pose_is_reported_when_its_scene_still_compares(self):
+        base, head = result("a", 10.0), result("b", 10.0)
+        poses = base["scenes"]["Forest"]["poses"]
+        poses.append(dict(poses[0], name="edge"))
+        rows, regressions, missing = benchmark.compare(base, head, None)
+        self.assertTrue(rows)
+        self.assertFalse(regressions)
+        self.assertEqual(missing, [("Forest", "edge")])
+
     def test_a_scene_that_became_invalid_is_reported(self):
         _, _, missing = benchmark.compare(result("a", 10.0), result("b", 10.0, valid=False), None)
-        self.assertEqual(missing, ["Forest"])
+        self.assertEqual(missing, [("Forest", "a")])
 
     def test_noise_raises_the_threshold_of_a_noisy_metric(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -135,6 +153,49 @@ class CompareTests(unittest.TestCase):
 
 
 class ContentTests(unittest.TestCase):
+    def test_benchmark_preserves_existing_work_and_releases_its_project(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source"
+            source.mkdir()
+            (source / "benchmark.json").write_text(json.dumps({
+                "scenes": {"Forest": {}}, "resolution": [1920, 1080], "run": {},
+            }))
+            font = root / "font.ttf"
+            font.write_bytes(b"font")
+            player = root / "Player"
+            player.touch()
+            work = root / "work"
+            existing = work / "project"
+            existing.mkdir(parents=True)
+            sentinel = existing / "personal-file.txt"
+            sentinel.write_text("keep this")
+            args = SimpleNamespace(
+                player=player, scenes="Forest", max_load=0, out=root / "result.json", work=work,
+                label="", build_sha="a", configuration="Release", timeout=1.0,
+            )
+
+            projects = []
+
+            def run_scene(name, scene_config, manifest, project, *unused):
+                self.assertNotEqual(project, existing)
+                self.assertEqual((project / "Assets/Fonts/font.ttf").read_bytes(), b"font")
+                projects.append(project)
+                if len(projects) == 2:
+                    raise RuntimeError("test scene failed")
+                return {"valid": True, "poses": [], "problems": []}
+
+            with patch.object(benchmark, "PROJECT", source), patch.object(benchmark, "FONT_SOURCE", font), \
+                    patch.object(benchmark, "gpu_info", return_value={}), patch.object(benchmark, "run_scene", run_scene):
+                self.assertEqual(benchmark.command_run(args), 0)
+                with self.assertRaisesRegex(RuntimeError, "test scene failed"):
+                    benchmark.command_run(args)
+
+            self.assertEqual(sentinel.read_text(), "keep this")
+            self.assertEqual(len(projects), 2)
+            self.assertNotEqual(projects[0], projects[1])
+            self.assertFalse(any(project.exists() for project in projects))
+
     def test_every_building_is_unique_and_valid_gltf(self):
         first, second = benchmark.building_gltf(0), benchmark.building_gltf(1)
         self.assertNotEqual(first["accessors"][0]["count"], second["accessors"][0]["count"])

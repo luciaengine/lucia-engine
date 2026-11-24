@@ -38,6 +38,7 @@ The argument is a branch name or a commit. The default is `main`. A run takes th
 3. It configures with the `linux-x64-local` preset. If the dependency set changed, it deletes the build tree and configures again.
 4. It builds with `ninja -k 0`, so one failed file does not stop the others.
 5. It runs each test program under `bin/DebugFast/Tests/` with a 40-minute limit and writes its gtest XML.
+6. It runs the remaining CTest registrations, including Python-driven CLI tests. CTest writes its console output to `ctest.log` and its JUnit report to `ctest.xml` when registrations remain.
 
 The result is in `LUCIA_CI_DIR/results/<time>-<sha>/`, and `results/latest` points to the last run. `summary.txt` lists the configure and build exit codes, the first 40 build errors, one line for each suite, and the suites that wrote no result file because of a crash or a timeout.
 

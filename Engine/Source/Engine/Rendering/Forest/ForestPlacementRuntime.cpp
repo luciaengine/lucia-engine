@@ -257,6 +257,8 @@ void ForestPlacementRuntime::Visit(uint32 index, const ForestPlacementView& view
             const double distance = DistanceSquared(box.Min, box.Max, view.Eye);
             if (distance >= detailSquared)
                 continue;
+            if (distance < static_cast<double>(view.DetailDistance) * view.DetailDistance)
+                ++m_DetailBudget.Eligible;
             const uint64 retry = m_RetryAt[page];
             if (m_Frame >= retry)
                 m_Candidates.emplace_back(distance, page);
@@ -340,6 +342,7 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
     m_Priority.clear();
     m_Visible.clear();
     m_Candidates.clear();
+    m_DetailBudget = {};
     const double detail = m_Slots.empty() || !std::isfinite(view.DetailDistance) ?
         0.0 : std::max(0.0f, view.DetailDistance);
     const double distanceSquared = detail * detail;
@@ -348,7 +351,11 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
           prefetchDistance * prefetchDistance, m_Visible);
 
     const size_t count = std::min(m_Candidates.size(), static_cast<size_t>(m_DetailCapacity));
-    std::partial_sort(m_Candidates.begin(), m_Candidates.begin() + count, m_Candidates.end());
+    // One extra ordered candidate identifies the closest budget omission without scanning the remaining pages.
+    const size_t sorted = count < m_Candidates.size() ? count + 1 : count;
+    std::partial_sort(m_Candidates.begin(), m_Candidates.begin() + sorted, m_Candidates.end());
+    if (count < sorted && m_Candidates[count].first < distanceSquared)
+        m_DetailBudget.NearestOmitted = std::sqrt(m_Candidates[count].first);
     // Distance order puts every draw request before speculative reads.
     uint32 prefetchCount = 0;
     for (const auto& [distance, page] : std::span(m_Candidates).first(count))
@@ -360,6 +367,8 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
         m_Priority.push_back(page);
         if (prefetch)
             ++prefetchCount;
+        else
+            ++m_DetailBudget.Selected;
     }
 }
 
@@ -436,6 +445,7 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
     out.ShadowDraws.clear();
     out.Reads.clear();
     out.CancelReads.clear();
+    out.DetailBudget = {};
     out.VisiblePages = 0;
     out.WantsDetails = false;
     if (frame <= m_Frame || completedReaders < m_ReadersDone || completedReaders >= frame)
@@ -479,6 +489,8 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
     }
     AppendReads(out.Reads);
     EmitDraws(frame, out);
+    out.DetailBudget = m_DetailBudget;
+    out.DetailBudget.Resident = static_cast<uint32>(out.DetailedDraws.size());
     return true;
 }
 

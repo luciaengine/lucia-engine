@@ -2,6 +2,7 @@
 
 #include "Engine/Rendering/DrawCommand.h"
 #include "Engine/Rendering/DrawCommandProducer.h"
+#include "Engine/Rendering/Forest/ForestDetailBudget.h"
 #include "Mathematics/WorldPosition.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "PageStreaming/ResidentSlotPool.h"
@@ -79,6 +80,7 @@ struct ForestPlacementFrame
     std::vector<ForestDetailDraw> DetailedDraws;
     /// Resident pages that sun cascades draw.
     std::vector<ForestShadowDraw> ShadowDraws;
+    ForestDetailBudget DetailBudget;
     /// New reads for the caller to submit.
     std::vector<ForestPageTicket> Reads;
     /// Reads that the runtime cancelled; the caller withdraws them from the asset reader.
@@ -245,6 +247,7 @@ private:
     std::vector<ShadowCandidate> m_ShadowCandidates;
     std::vector<ForestShadowPage> m_ShadowQuery;
     std::optional<uint64> m_DemandRetryFrame;
+    ForestDetailBudget m_DetailBudget;
     std::vector<uint32> m_Priority;
     std::vector<uint8> m_Wanted;
     std::vector<uint8> m_ShadowMasks;

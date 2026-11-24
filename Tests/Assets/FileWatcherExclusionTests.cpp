@@ -305,11 +305,16 @@ class FileWatcherLostEventsTest : public ::testing::Test
     {
         m_Root = TestUtils::MakeUniqueTempDirectory("ge_fw_lost");
         ASSERT_TRUE(std::filesystem::create_directories(m_Root / "sub"));
-        // What StartWatching sets, without starting the watch thread.
-        m_Watcher.m_WatchDirectory = m_Root;
-        m_Watcher.m_NormalizedWatchBase = m_Root.lexically_normal();
-        m_Watcher.m_Recursive = true;
+        WatchDirectory(m_Root);
         m_Watcher.SetCallback([this](const FileChangeEvent& event) { m_Events.push_back(event); });
+    }
+
+    // What StartWatching sets, without starting the watch thread.
+    void WatchDirectory(const std::filesystem::path& directory)
+    {
+        m_Watcher.m_WatchDirectory = directory;
+        m_Watcher.m_NormalizedWatchBase = directory.lexically_normal();
+        m_Watcher.m_Recursive = true;
     }
 
     void TearDown() override
@@ -424,6 +429,21 @@ class FileWatcherLostEventsTest : public ::testing::Test
     FileWatcher m_Watcher;
     std::vector<FileChangeEvent> m_Events;
 };
+
+TEST_F(FileWatcherLostEventsTest, AStoppedWatchCannotReportDeletionsToItsNextDirectory)
+{
+    Write("still-here.glsl", "first root");
+    Snapshot();
+    Report(FileChangeType::Deleted, "held.glsl");
+    m_Watcher.StopWatching();
+
+    WatchDirectory(m_Root / "sub");
+    Snapshot();
+    Write("sub/new.glsl", "second root");
+    Poll();
+    FireHeldEvents();
+    EXPECT_EQ(Heard(), (std::vector<std::string>{"Created sub/new.glsl"}));
+}
 
 TEST_F(FileWatcherLostEventsTest, ADeferredCallbackDoesNotExtendThePollDeadline)
 {

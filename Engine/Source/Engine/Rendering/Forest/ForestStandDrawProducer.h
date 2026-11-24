@@ -21,6 +21,7 @@ struct ForestStandDrawHeads
 {
     DrawCommand Color;
     std::optional<DrawCommand> Depth;
+    std::optional<uint32> SectorLocalMaterialIndex; // Set for a sector-local overview with standard mesh constants.
 };
 
 /// Resolves the stand geometry, shaded color head and optional matching depth head.

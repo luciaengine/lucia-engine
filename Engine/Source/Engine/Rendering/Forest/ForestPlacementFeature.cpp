@@ -442,7 +442,13 @@ bool PlanFrame(ForestPlacementSession& session, RenderServices& services, RGFram
     session.PlannedView = viewId;
     session.ColorDeclared = false;
     session.ShadowsDeclared = false;
+    session.DetailPlanEpoch.reset();
     session.PlanReady = PlanDetails(session, frame, device, viewId, view, shadowPages);
+    if (session.PlanReady && session.DrawsColor)
+    {
+        session.DetailPlanEpoch = services.Spine().WorldFrameEpoch();
+        session.DetailPlanView = desc->purpose;
+    }
     return session.PlanReady;
 }
 

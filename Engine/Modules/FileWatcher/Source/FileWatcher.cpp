@@ -883,6 +883,12 @@ bool FileWatcher::ForEachWatchedFile(FunctionRef<void(PathText, std::filesystem:
 
 void FileWatcher::SnapshotWatchedFiles()
 {
+    // A new watch starts from the files in its own directory. A held deletion
+    // or debounce timestamp from the previous watch belongs to that watch.
+    m_PolledFiles.clear();
+    m_PendingDeletedEvents.clear();
+    m_LastEventTimes.clear();
+    m_WatchDirectoryMissing = false;
     ForEachWatchedFile([this](PathText pathText, std::filesystem::file_time_type lastWrite) {
         const std::filesystem::path path(pathText);
         m_PolledFiles[path] = PolledFile{lastWrite, ReadFileIdentity(path), 0};
