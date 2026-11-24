@@ -167,6 +167,15 @@ void ForestStandSystem::CheckOverviews(ECS::World& world)
     {
         if (!stand.Registration)
             continue;
+        stand.Status.DetailBudget.reset();
+        const auto& session = stand.Details;
+        const auto epoch = m_RenderServices->Spine().WorldFrameEpoch();
+        if (session && session->DetailPlanEpoch && epoch - *session->DetailPlanEpoch <= 1 &&
+            session->Plan.DetailBudget.NearestOmitted)
+        {
+            stand.Status.DetailBudget = session->Plan.DetailBudget;
+            stand.Status.DetailView = session->DetailPlanView;
+        }
         const auto* mesh = registry.FindByKey({stand.Source.OverviewModel, stand.Source.OverviewMesh});
         // Only a drawable entry has its final index count.
         const bool mismatch = mesh && registry.IsEntryDrawable(*mesh) && mesh->indexCount != stand.OverviewIndexEnd;
@@ -190,6 +199,8 @@ void ForestStandSystem::ApplyDetailSettings(Stand& stand, const Components::Fore
 {
     if (!stand.Details)
         return;
+    if (stand.Details->DetailDistance != settings.DetailDistance)
+        stand.Details->DetailPlanEpoch.reset();
     stand.Details->DetailDistance = settings.DetailDistance;
     stand.Details->NearBudget =
         std::min(settings.NearMeshBudget, ResidencyFor(m_RenderServices->GetProfile()).NearMeshCap);
