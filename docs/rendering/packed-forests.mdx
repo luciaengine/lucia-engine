@@ -74,8 +74,8 @@ When you cook the archive again, every stand that uses it attaches again with th
 ### Limits
 
 - A stand casts no shadows.
-- Reflection probes and planar reflections do not show the stand.
-- A stand does not draw into the depth prepass, so ambient occlusion and contact shadows do not see it.
+- Reflection probes and planar reflections draw the stand as an overview mesh.
+- The camera depth prepass draws the overview. Detailed tree cards and meshes draw during the color pass.
 - At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. The pages nearest to the camera draw as trees, and the other pages within Detail Distance draw the overview.
 
 ### Export
