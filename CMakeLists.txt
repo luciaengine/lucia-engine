@@ -1404,6 +1404,8 @@ elseif(TARGET Editor)
   add_subdirectory(Tools/MaterialVariantCook)
   # Packed forests are cooked by hand with ForestPlacementCook from the same Tools folder.
   add_subdirectory(Tools/ForestPlacementCook)
+elseif(TARGET MacBundleAssemblerTests)
+  add_subdirectory(Tools/MaterialVariantCook)
 endif()
 if(TARGET ForestPlacementCook AND TARGET Editor)
   add_dependencies(Editor ForestPlacementCook)
@@ -1413,7 +1415,8 @@ if(TARGET MaterialVariantCook)
     add_dependencies(Editor MaterialVariantCook)
   endif()
   # The export suites run a desktop export, which runs the cook from bin/<config>/Tools.
-  foreach(_ge_export_suite IN ITEMS PackagedAssetManifestTests PackagedTextureExportTests ShipRulesExportTests)
+  foreach(_ge_export_suite IN ITEMS MacBundleAssemblerTests PackagedAssetManifestTests PackagedTextureExportTests
+                                    ShipRulesExportTests)
     if(TARGET ${_ge_export_suite})
       add_dependencies(${_ge_export_suite} MaterialVariantCook)
     endif()
