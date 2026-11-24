@@ -1238,11 +1238,12 @@ TEST_F(ForestPlacementSessionDeviceTest, TheShadowEmitPlansOnceAndTheColorEmitRe
     Engine::Renderer::ForwardEmitContext color{.Device = m_Device.get(), .Services = &m_Services,
                                                .Frame = &graph, .ViewId = m_View};
     std::vector<Engine::Renderer::DrawSubCommand> ranges;
-    EXPECT_TRUE(m_Feature->EmitDetails(*m_Session, color, {}, m_Near, ranges));
+    std::vector<Engine::Renderer::ForestStandFade> fades;
+    EXPECT_TRUE(m_Feature->EmitDetails(*m_Session, color, {}, m_Near, ranges, fades));
     EXPECT_EQ(m_Session->Plan.Reads, reads);
     // Each emit declares its draws once in a frame.
     EXPECT_FALSE(m_Feature->PlanShadowFrame(*m_Session, ShadowContext(graph, m_View), m_Near, m_ShadowPages));
-    EXPECT_FALSE(m_Feature->EmitDetails(*m_Session, color, {}, m_Near, ranges));
+    EXPECT_FALSE(m_Feature->EmitDetails(*m_Session, color, {}, m_Near, ranges, fades));
     graph.Execute();
     m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
     m_Device->WaitForIdle();

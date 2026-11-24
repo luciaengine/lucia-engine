@@ -348,14 +348,14 @@ TEST_F(ForestPlacementRuntimeTest, HandoffBandStartsAtTheDetailDistanceAndFadesI
     hardSwitch.HandoffWidth = 0.0f;
     EXPECT_FALSE(WithinDetailRange(*runtime, hardSwitch));
     ForestPlacementFrame frame;
-    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, {}, frame));
     ASSERT_EQ(frame.Reads.size(), 1u);
     const auto ticket = frame.Reads.front();
     ASSERT_EQ(ticket.Page, 0u);
     ASSERT_TRUE(runtime->CompleteRead(ticket, kFirstPage));
     ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
 
-    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
     ASSERT_EQ(frame.DetailedDraws.size(), 1u);
     EXPECT_NEAR(frame.DetailedDraws.front().DetailWeight, (41.0f - 32.0f) / 16.0f, 1e-4f);
     EXPECT_EQ(frame.DetailBudget.Eligible, 0u);
@@ -371,7 +371,7 @@ TEST_F(ForestPlacementRuntimeTest, HandoffBandStartsAtTheDetailDistanceAndFadesI
 
     // Within Detail Distance the trees draw in full, as far as a hard switch draws them.
     view.Eye.X = 512'000'000.0 - 22.0;
-    ASSERT_TRUE(runtime->Prepare(view, 3, 2, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 3, 2, {}, frame));
     ASSERT_EQ(frame.DetailedDraws.size(), 1u);
     EXPECT_EQ(frame.DetailedDraws.front().DetailWeight, 1.0f);
     EXPECT_TRUE(frame.StandFades.empty());
