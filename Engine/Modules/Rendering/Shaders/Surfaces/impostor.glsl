@@ -112,6 +112,16 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         float coverage = mix(cutout, cardColor.a, smoothstep(0.5, 2.0, mip));
         o.opacity = coverage > GE_MaskCoverageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
     }
+#if defined(GE_FRAGMENT_DEMOTE) && defined(GE_FORWARD_EARLY_ALPHA_TEST) && !defined(GE_USER_CUSTOM_LIGHTING)
+    // A base-mip card uses implicit anisotropic samples below. Demoted fragments continue as
+    // helpers for their neighbors; returning here would invalidate their texture derivatives.
+    if (!filtered && o.opacity < clamp(Props.alphaCutoff, 0.0, 1.0)
+    #ifdef HAS_SHADOWS
+        && GE_ShadowDebugMode() == 0
+    #endif
+        )
+        discard;
+#endif
 #if defined(ALPHA_TEST) && (defined(GE_DEPTH_ONLY_FRAGMENT) || defined(GE_MOTION_VECTORS))
     if (filtered && o.opacity < clamp(Props.alphaCutoff, 0.0, 1.0))
         discard;

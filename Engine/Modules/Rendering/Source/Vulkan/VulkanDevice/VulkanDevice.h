@@ -2211,6 +2211,7 @@ class VulkanDevice : public IDevice
     // supportsRayQuery. Stays false on both vkCreateDevice fallback paths —
     // they drop optional extensions, so RT silently stays unavailable.
     bool m_RayQueryEnabledAtInit = false;
+    bool m_FragmentDemoteEnabledAtInit = false;
     bool m_DisableRayQueryRequested = false;
     // AS backend for the RT shadow-mask lane. Non-null iff ray query was
     // enabled at init AND every KHR entry point resolved; reset early in

@@ -38,6 +38,7 @@ struct RendererProfile
     // gl_ClipDistance in vertex shaders (a tiled terrain clipped at its authored edge); off where the
     // device has no clip distances, and the terrain then ends at the last triangle across the edge
     bool UseClipDistance = true;
+    bool UseFragmentDemote = false;
 
     // Anisotropy ratio of the material trilinear sampler
     // (SamplerPreset::LinearRepeat): the engine's request, the same on every

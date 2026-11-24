@@ -22,6 +22,7 @@ namespace
 // source count and each source's length-prefixed identity and content hash, the entry count, then
 // each entry's input key and length-prefixed package path, sorted by key.
 constexpr std::string_view kMagic = "GEPRGIDX";
+constexpr std::string_view kFragmentDemoteInput = ";fragmentDemote=on";
 // A package path is a key directory and a file name, and the compile inputs are one short line;
 // anything longer than this is not an index this runtime wrote.
 constexpr uint32_t kMaxStringLength = 1024;
@@ -110,6 +111,8 @@ std::string ShaderProgramIndex::CurrentCompileInputs()
     inputs += IsCompatShaderProfile() ? ";profile=compat" : ";profile=full";
     inputs += AreInterpolationFunctionsAvailable() ? ";interpolation=on" : ";interpolation=off";
     inputs += AreClipDistancesAvailable() ? ";clipdistance=on" : ";clipdistance=off";
+    if (CurrentShaderCompileTarget().FragmentDemote)
+        inputs += kFragmentDemoteInput;
     return inputs;
 }
 
@@ -210,7 +213,10 @@ std::shared_ptr<const ShaderProgramIndex> ShaderProgramIndex::Load(const std::fi
     if (!reader.String(inputs) || !reader.U64(sourceCount))
         return refuse(path.string() + " is truncated");
     const std::string currentInputs = CurrentCompileInputs();
-    if (inputs != currentInputs)
+    // Desktop exports cook the portable variant. It is valid on a device that can also demote.
+    const bool portableDemoteFallback = currentInputs.ends_with(kFragmentDemoteInput) &&
+        std::string_view(currentInputs).substr(0, currentInputs.size() - kFragmentDemoteInput.size()) == inputs;
+    if (inputs != currentInputs && !portableDemoteFallback)
         return refuse(path.string() + " was cooked for '" + inputs + "' and this runtime compiles for '" +
                       currentInputs + "'; cook the materials for this device class");
     if (sourceCount > bytes.size() / (sizeof(uint64_t) + sizeof(uint32_t)))

@@ -43,6 +43,7 @@ RendererProfile RendererProfile::FromCapabilities(const RenderingDeviceCapabilit
         std::clamp(caps.maxSamplerAnisotropy, 1.0f, kMaterialSamplerAnisotropy);
     profile.UseInterpolationFunctions = caps.supportsShaderInterpolationFunctions;
     profile.UseClipDistance = caps.supportsShaderClipDistance;
+    profile.UseFragmentDemote = caps.supportsFragmentDemote;
     return profile;
 }
 

@@ -326,22 +326,8 @@ struct ScopedDesktopCompileInputs
 // the interpolation functions) on every exit, including a failed assertion.
 struct ScopedRestoredCompileInputs
 {
-    using Target = GameEngine::Rendering::SpirvTarget;
-    ScopedRestoredCompileInputs()
-        : PreviousTarget(GameEngine::Rendering::ShaderCompileService::MaxSupportedSpirv()),
-          PreviousCompat(GameEngine::Rendering::IsCompatShaderProfile()),
-          PreviousInterpolationFunctions(GameEngine::Rendering::AreInterpolationFunctionsAvailable())
-    {
-    }
-    ~ScopedRestoredCompileInputs()
-    {
-        GameEngine::Rendering::ShaderCompileService::SetMaxSupportedSpirv(PreviousTarget);
-        GameEngine::Rendering::SetCompatShaderProfile(PreviousCompat);
-        GameEngine::Rendering::SetInterpolationFunctionsAvailable(PreviousInterpolationFunctions);
-    }
-    Target PreviousTarget;
-    bool PreviousCompat;
-    bool PreviousInterpolationFunctions;
+    GameEngine::Rendering::ShaderCompileTarget Previous = GameEngine::Rendering::CurrentShaderCompileTarget();
+    ~ScopedRestoredCompileInputs() { GameEngine::Rendering::ApplyShaderCompileProfile(Previous); }
 };
 
 // Restores the compiler on every exit, including a failed assertion.
@@ -738,7 +724,7 @@ TEST(MaterialVariantCookIntegration, TheDesktopCookComposesTheReliefForADeviceWi
 
 // A desktop export ships the cook's program index. The Player creates the device DeviceFactory picks
 // on this platform and resolves its compile inputs as RenderServices does; it uses the index only
-// when the cook keyed it at those inputs. An index cooked for other inputs is still refused.
+// when its cook inputs are compatible with the runtime.
 TEST(MaterialVariantCookIntegration, ThePlayerDeviceUsesTheProgramIndexTheDesktopCookWrites)
 {
     using namespace GameEngine;
@@ -821,6 +807,21 @@ TEST(MaterialVariantCookIntegration, AnExportedProgramIndexNamesOnlyTheSourcesTh
     EXPECT_NE(Rendering::ShaderProgramIndex::Load(bundle / Rendering::kShaderProgramIndexFileName, context, &reason),
               nullptr)
         << reason;
+
+    // The same portable export must work on a Vulkan device with optional demotion.
+    desktop.supportsFragmentDemote = true;
+    Rendering::ApplyShaderCompileProfile(Rendering::RendererProfile::FromCapabilities(desktop));
+    EXPECT_NE(Rendering::ShaderProgramIndex::Load(bundle / Rendering::kShaderProgramIndexFileName, context, &reason),
+              nullptr)
+        << reason;
+
+    // A package compiled to use demotion needs the feature.
+    const fs::path demoteIndex = bundle / "demote-test-index.bin";
+    ASSERT_TRUE(Rendering::ShaderProgramIndex::Write(demoteIndex, {}, {}, context, &reason)) << reason;
+    desktop.supportsFragmentDemote = false;
+    Rendering::ApplyShaderCompileProfile(Rendering::RendererProfile::FromCapabilities(desktop));
+    EXPECT_EQ(Rendering::ShaderProgramIndex::Load(demoteIndex, context, &reason), nullptr);
+    EXPECT_NE(reason.find("cooked for"), std::string::npos) << reason;
 }
 
 // The Player takes a material's path from the asset registry, which case-folds it on a case-insensitive file
@@ -848,8 +849,10 @@ TEST(MaterialVariantCookIntegration, TheProgramIndexServesACookedMaterialUnderTh
     ASSERT_TRUE(record) << result.output;
     ASSERT_TRUE(StageCookedShaderPackages(record->Packages, inputs.Cache, bundle, stageError)) << stageError;
 
-    const ScopedRestoredCompileInputs restoredInputs;
     const ScopedDesktopCompileInputs desktopInputs;
+    auto target = Rendering::CurrentShaderCompileTarget();
+    target.FragmentDemote = true;
+    Rendering::ApplyShaderCompileProfile(target);
     Rendering::MaterialBuildContext context;
     context.AdapterShaderDir = stagedAssets / "Shaders";
     context.PackageShaderDirs = inputs.PackageShaderDirs;

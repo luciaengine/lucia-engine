@@ -15,8 +15,13 @@
 #include "TestUtils.h"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <string>
+#include <string_view>
+#include <vector>
+
+#include <spirv/unified1/spirv.hpp>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -37,14 +42,15 @@ MaterialDocument ImpostorDocument()
     return doc;
 }
 
-MaterialBuildResult Build(const MaterialDocument& document, MaterialKeyword keywords)
+MaterialBuildResult Build(const MaterialDocument& document, MaterialKeyword keywords,
+                          const ShaderCompileTarget& target = CurrentShaderCompileTarget())
 {
     MaterialBuildContext context{};
     context.AdapterShaderDir = Tests::GetAdapterShaderDir();
     context.CacheRoot = TestUtils::MakeUniqueTempDirectory("ge_impostor_surface");
     auto result = BuildMaterialToShaderPackage(
         document, TestPaths::StagedEngineAssetsDir() / "Materials" / "ImpostorCardProbe.material",
-        "ImpostorCardProbe", context, ShaderSourceKind::SpirV, keywords);
+        "ImpostorCardProbe", context, ShaderSourceKind::SpirV, keywords, VertexAttributeFlags::None, target);
     std::error_code error;
     fs::remove_all(context.CacheRoot, error);
     return result;
@@ -150,6 +156,107 @@ TEST(ImpostorSurfaceCompose, ThePackedForestSplatsComposeWithTheHandoffCrossfade
         ExpectCompiles(splats, MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::LodCrossfade,
                        "packed forest splats");
     }
+}
+
+// The adapter also discards in main. Inspect EvaluateSurface itself and require that demoted lanes
+// rejoin the block that proceeds to the crown's implicit texture samples.
+TEST(ImpostorSurfaceCompose, PackedCardRejoinsCrownSamplingAfterDemoteOnlyOnSupportedTargets)
+{
+    auto card = ImpostorDocument();
+    card.vertexModifier = "VertexModifiers/forest_impostor.glsl";
+    card.customVertexShader = true;
+    for (const ShaderCompileTarget target : {
+             ShaderCompileTarget{.Spirv = SpirvTarget::Spirv_1_6, .FragmentDemote = true},
+             ShaderCompileTarget{.Spirv = SpirvTarget::Spirv_1_6},
+             ShaderCompileTarget{.Spirv = SpirvTarget::Spirv_1_5, .FragmentDemote = true},
+             ShaderCompileTarget{.Spirv = SpirvTarget::Spirv_1_6, .Compatibility = true, .FragmentDemote = true}})
+    {
+        SCOPED_TRACE(target.Hash());
+        const auto result = Build(card, MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows, target);
+        if (ShadercMissing(result))
+            GTEST_SKIP() << "shaderc not built into this target";
+        ASSERT_TRUE(result.success);
+        const auto& module = result.package->stageBytes.at("fs");
+        std::vector<uint32_t> words(module.size() / sizeof(uint32_t));
+        ASSERT_EQ(words.size() * sizeof(uint32_t), module.size());
+        std::memcpy(words.data(), module.data(), module.size());
+        uint32_t surface = 0;
+        uint32_t crown = 0;
+        uint32_t function = 0;
+        bool demoted = false;
+        bool crownCalled = false;
+        constexpr size_t kHeaderWords = 5;
+        constexpr uint32_t kOpcodeMask = 0xffffu;
+        constexpr uint32_t kWordCountShift = 16u;
+        for (size_t offset = kHeaderWords; offset < words.size();)
+        {
+            const auto opcode = static_cast<spv::Op>(words[offset] & kOpcodeMask);
+            const size_t wordCount = words[offset] >> kWordCountShift;
+            ASSERT_GT(wordCount, 0u);
+            ASSERT_LE(wordCount, words.size() - offset);
+            if (opcode == spv::OpName)
+            {
+                ASSERT_GE(wordCount, 3u);
+                const std::string_view name(reinterpret_cast<const char*>(&words[offset + 2]),
+                                            (wordCount - 2) * sizeof(uint32_t));
+                if (name.starts_with("EvaluateSurface("))
+                    surface = words[offset + 1];
+                if (name.starts_with("GE_ImpostorCrownLight("))
+                    crown = words[offset + 1];
+            }
+            if (opcode == spv::OpFunction)
+            {
+                ASSERT_GE(wordCount, 3u);
+                function = words[offset + 2];
+            }
+            if (surface != 0 && function == surface)
+            {
+                if (opcode == spv::OpDemoteToHelperInvocation)
+                {
+                    demoted = true;
+                    const size_t branch = offset + wordCount;
+                    ASSERT_LT(branch + 3, words.size());
+                    EXPECT_EQ(words[branch] & kOpcodeMask, spv::OpBranch);
+                    EXPECT_EQ(words[branch + 2] & kOpcodeMask, spv::OpLabel);
+                    EXPECT_EQ(words[branch + 1], words[branch + 3]);
+                }
+                if (opcode == spv::OpFunctionCall)
+                {
+                    ASSERT_GE(wordCount, 4u);
+                    if (words[offset + 3] == crown)
+                    {
+                        EXPECT_EQ(demoted, target.FragmentDemote && !target.Compatibility &&
+                                               target.Spirv == SpirvTarget::Spirv_1_6);
+                        crownCalled = true;
+                    }
+                }
+            }
+            offset += wordCount;
+        }
+        EXPECT_NE(surface, 0u);
+        EXPECT_NE(crown, 0u);
+        EXPECT_TRUE(crownCalled);
+    }
+}
+
+TEST(ImpostorSurfaceCompose, PackedCardDemoteLeavesTheDepthProgramIdentical)
+{
+    auto card = ImpostorDocument();
+    card.vertexModifier = "VertexModifiers/forest_impostor.glsl";
+    card.customVertexShader = true;
+    const ShaderCompileTarget kBaseline{.Spirv = SpirvTarget::Spirv_1_6};
+    const ShaderCompileTarget kDemote{.Spirv = SpirvTarget::Spirv_1_6, .FragmentDemote = true};
+    const auto baseline = Build(card, MaterialKeyword::DepthOnlyFragment, kBaseline);
+    if (ShadercMissing(baseline))
+        GTEST_SKIP() << "shaderc not built into this target";
+    const auto candidate = Build(card, MaterialKeyword::DepthOnlyFragment, kDemote);
+    for (const auto& error : baseline.errors)
+        ADD_FAILURE() << error;
+    for (const auto& error : candidate.errors)
+        ADD_FAILURE() << error;
+    ASSERT_TRUE(baseline.success);
+    ASSERT_TRUE(candidate.success);
+    EXPECT_EQ(baseline.package->stageBytes.at("fs"), candidate.package->stageBytes.at("fs"));
 }
 
 TEST(ImpostorSurfaceCompose, TheForestCanopySurfaceComposesForColorAndDepth)
