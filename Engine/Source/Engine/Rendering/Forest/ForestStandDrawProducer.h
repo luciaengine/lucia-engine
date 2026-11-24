@@ -41,4 +41,8 @@ const Rendering::CameraData* FindForestStandCamera(RenderServices& services, Ren
     std::shared_ptr<ForestPlacementRuntime> placements, PrepareForestStandDraw prepareDraw,
     std::shared_ptr<ForestPlacementSession> details = {});
 
+/// Registers the resident trees' sun-shadow casters. The stand owns the subscription.
+[[nodiscard]] ScopedSubscription RegisterForestShadowCasters(RenderServices& services, uint64 worldId,
+    Rendering::RenderLayerMask layers, std::shared_ptr<ForestPlacementSession> session);
+
 } // namespace GameEngine::Engine::Renderer

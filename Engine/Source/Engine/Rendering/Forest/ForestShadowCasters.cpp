@@ -1,4 +1,3 @@
-#include "ForestShadowCasters.h"
 
 #include "ForestImpostorDraw.h"
 #include "ForestPlacementFeature.h"

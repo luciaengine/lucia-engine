@@ -11,7 +11,6 @@
 #include "ForestPlacementRuntime.h"
 #include "ForestStandDrawProducer.h"
 #include "ForestPlacementFeature.h"
-#include "ForestShadowCasters.h"
 #include "EngineLogCapture.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/MaterialSystem.h"

@@ -112,12 +112,8 @@ struct ForestPlacementRuntimeDesc
     uint32 ShadowSlots = 0;
 };
 
-/// Plans one forest's primary view and the pages that its sun cascades draw: page culling, overview
-/// cover, page residency in a fixed set of slots, and the reads that fill them. The caller submits
-/// Reads to the asset reader, reports every read with CompleteRead, and reports each upload with
-/// CompleteUpload after its GPU fence. A page draws its overview quad until its upload is
-/// published. A slot is reused only after the frame that last drew from it is complete. All members
-/// run on the render thread, one call at a time.
+/// Plans resident tree pages for one view and its sun cascades on the render thread.
+/// A page draws its overview until its GPU upload publishes. Reuse waits for the last reader.
 class ForestPlacementRuntime
 {
 public:

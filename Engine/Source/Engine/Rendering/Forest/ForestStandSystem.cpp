@@ -8,7 +8,7 @@
 #include "ForestPlacementFeature.h"
 #include "ForestPlacementRuntime.h"
 #include "ForestPlacementSession.h"
-#include "ForestShadowCasters.h"
+#include "ForestStandDrawProducer.h"
 #include "ForestStandDraws.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderServices.h"

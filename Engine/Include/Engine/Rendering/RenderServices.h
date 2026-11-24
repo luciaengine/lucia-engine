@@ -1503,12 +1503,8 @@ class RenderServices
     // synchronously around AddWorldPassForView and reset immediately after;
     // BuildPassResourcesRG reads it at declare time.
     void SetWorldPassExcludeEnvironment(bool exclude) { m_WorldPassExcludeEnvironment = exclude; }
-    /// Re-runs every registered depth-emit callback for the view's light-space passes (cascades,
-    /// area, spot, point), after it clears those streams and the view's cascade streams. The
-    /// camera prepass stream is left alone: its heads come from the forward producers.
-    /// @param frame The frame being declared, or null while batch keys are built.
-    /// @param cascades This frame's sun cascades of the view (ShadowMapNode, after the fit), or
-    ///        null when the view has no shadow-casting sun. Given only with DepthPassType::ShadowCascade.
+    /// Clears and rebuilds the view's light-space producer commands; leaves its camera prepass intact.
+    /// Supplies cascades only to the sun-shadow callbacks. Frame may be null while keys are built.
     void EmitProducerDepthCommandsForView(Rendering::ViewId viewId,
                                           Rendering::RenderGraph::RGFrame* frame,
                                           const DepthEmitCascades* cascades);
@@ -1934,15 +1930,8 @@ class RenderServices
                                                   DepthPassType passType) const;
     bool HasDepthCommands(::GameEngine::Rendering::ViewId viewId,
                           DepthPassType passType) const;
-    /// Adds a draw to one sun cascade of the view. A ShadowCascade draw from EmitDepthCommand
-    /// draws into every cascade. Call only from a depth producer that received
-    /// DepthEmitContext::Cascades, with `cascade` below DepthEmitCascades::Count: a draw into a
-    /// higher cascade is never drawn, but it still makes the view a shadow caster.
-    /// A draw with a pinned pipeline (InternedPipeline) draws through it. A draw with a Material
-    /// and no pinned pipeline draws through the material's depth variant for the pass, from
-    /// `PassKeywords` (ChooseContributorDepthHead). Its geometry is Geometry.Mesh (the whole mesh
-    /// when IndexCount is 0 and the draw is not indirect) or Geometry.AltGeom laid out as
-    /// `VertexFlags`. The pass skips a Blend or Transmission material and logs a warning.
+    /// Adds a draw to one fitted sun cascade from its depth producer. Pin a pipeline or supply a
+    /// material and keywords for its depth variant. Blend and Transmission materials are skipped.
     void EmitCascadeDepthCommand(::GameEngine::Rendering::ViewId viewId, uint32_t cascade,
                                  const DrawCommand& command);
     /// Makes the view's cascade pass `cascade` in `frame` read `buffer`: the indirect arguments
