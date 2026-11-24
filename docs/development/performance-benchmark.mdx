@@ -78,6 +78,15 @@ The Player needs a display whose size is the manifest's resolution. A session co
 gamescope --backend headless -w 1920 -h 1080 -W 1920 -H 1080 -- bash -c 'podman run --rm --device /dev/dri -v /tmp/.X11-unix:/tmp/.X11-unix -e DISPLAY=$DISPLAY <mounts> <image> <command>'
 ```
 
+On the Steam Machine host, wrap each timed command with the telemetry runner. Use the host path for `--result`, and use the path to the same file inside the container for the scene runner's `--out`.
+
+```bash title="Check Steam Machine thermals around one run"
+python3 Tools/Benchmarks/steam_telemetry.py --result results/main-1.json -- \
+  python3 Tools/Benchmarks/Scenes/benchmark.py run --player "$PLAYER" --out results/main-1.json
+```
+
+The wrapper writes a `.steam-telemetry.json` file beside the result. It samples GPU clock, edge and junction temperatures, power, CPU temperature, and the fan service before and after the benchmark and every two seconds while it runs. It invalidates the scenes if the GPU reaches its reported junction limit, the fan controller stops, or required GPU readings are unavailable. Use a new result filename for each run.
+
 ## Measure the noise
 
 A threshold that comes from the noise of the machine is better than a fixed percentage. Run one build 5 times, each a separate run of the runner, then:

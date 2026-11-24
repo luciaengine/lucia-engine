@@ -426,8 +426,16 @@ def metrics(result):
     return values
 
 
+def read_result(path):
+    result = json.loads(Path(path).read_text(encoding="utf-8"))
+    telemetry = result.get("steamTelemetry")
+    if telemetry and not telemetry["valid"]:
+        sys.exit(f"benchmark: {path} has invalid Steam telemetry: {', '.join(telemetry['problems'])}")
+    return result
+
+
 def command_noise(args):
-    results = [json.loads(Path(p).read_text(encoding="utf-8")) for p in args.results]
+    results = [read_result(p) for p in args.results]
     if len(results) < 2:
         sys.exit("benchmark: noise needs at least 2 results of one build; 5 separate runs are the norm.")
     shas = {r["buildSha"] for r in results}
@@ -477,8 +485,8 @@ def compare(base, head, noise):
 
 
 def command_compare(args):
-    base = json.loads(Path(args.base).read_text(encoding="utf-8"))
-    head = json.loads(Path(args.head).read_text(encoding="utf-8"))
+    base = read_result(args.base)
+    head = read_result(args.head)
     noise = json.loads(Path(args.noise).read_text(encoding="utf-8")) if args.noise else None
     if base["machine"]["gpu"] != head["machine"]["gpu"] or base["resolution"] != head["resolution"]:
         print("WARNING: the two results come from different GPUs, drivers or resolutions; they do not compare.")
