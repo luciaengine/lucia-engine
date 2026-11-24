@@ -346,7 +346,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedGraphicsQueueRetiresAnUnreadableU
     EXPECT_EQ(uploader.DrainCompleted(*m_Device), 0u);
     EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
     ForestPlacementFrame plan;
-    ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, plan));
+    ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, {}, plan));
     ASSERT_EQ(plan.DetailedDraws.size(), 1u);
     EXPECT_EQ(plan.DetailedDraws.front().Ticket, ticket);
 }

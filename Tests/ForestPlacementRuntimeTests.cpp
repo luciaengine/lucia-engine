@@ -46,7 +46,7 @@ TEST_F(ForestPlacementRuntimeTest, ReportsOnlyVisibleDrawDemandOmittedByTheSlotB
     ASSERT_TRUE(runtime) << error;
     ForestPlacementView view{m_Pages[0].Origin, {}, 100.0f};
     ForestPlacementFrame frame;
-    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, {}, frame));
     EXPECT_EQ(frame.DetailBudget.Eligible, 2u);
     EXPECT_EQ(frame.DetailBudget.Selected, 1u);
     EXPECT_EQ(frame.DetailBudget.Resident, 0u);
@@ -54,13 +54,13 @@ TEST_F(ForestPlacementRuntimeTest, ReportsOnlyVisibleDrawDemandOmittedByTheSlotB
     ASSERT_EQ(frame.Reads.size(), 1u);
     ASSERT_TRUE(runtime->CompleteRead(frame.Reads.front(), kFirstPage));
     ASSERT_TRUE(runtime->CompleteUpload(frame.Reads.front(), ForestUploadResult::Published));
-    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
     EXPECT_EQ(frame.DetailBudget.NearestOmitted, 53.0);
     EXPECT_EQ(frame.DetailBudget.Resident, 1u);
 
     // The second page is now inside prefetch range only.
     view.DetailDistance = 50.0f;
-    ASSERT_TRUE(runtime->Prepare(view, 3, 2, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 3, 2, {}, frame));
     EXPECT_EQ(frame.DetailBudget.Eligible, 1u);
     EXPECT_EQ(frame.DetailBudget.Selected, 1u);
     EXPECT_FALSE(frame.DetailBudget.NearestOmitted);
@@ -78,12 +78,12 @@ TEST_F(ForestPlacementRuntimeTest, APageWaitingToRetryIsEligibleButWasNotOmitted
     ForestPlacementFrame frame;
     for (uint64 index = 1; index <= 2; ++index)
     {
-        ASSERT_TRUE(runtime->Prepare(view, index, index - 1, frame));
+        ASSERT_TRUE(runtime->Prepare(view, index, index - 1, {}, frame));
         ASSERT_EQ(frame.Reads.size(), 1u);
         ASSERT_EQ(frame.Reads.front().Page, 0u);
         EXPECT_FALSE(runtime->CompleteRead(frame.Reads.front(), {}));
     }
-    ASSERT_TRUE(runtime->Prepare(view, 3, 2, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 3, 2, {}, frame));
     ASSERT_EQ(frame.Reads.size(), 1u);
     EXPECT_EQ(frame.Reads.front().Page, 1u);
     EXPECT_EQ(frame.DetailBudget.Eligible, 2u);
