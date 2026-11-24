@@ -80,11 +80,11 @@ When you cook the archive again, every stand that uses it attaches again with th
 
 ### Export
 
-An export ships the archive and the tree model of each stand in the exported scenes with the other assets of those scenes. The export stops, with an error that names the scene, the entity and the fix, when:
+An export ships the archive and the tree model of each stand in the exported scenes with the other assets of those scenes. The export stops and reports the archive and how to fix it. When a stand references the archive, the error also names the scene and entity. The export stops when:
 
 - the archive or the tree model does not ship, for example because it is not in the project or a ship rule excludes it;
 - the archive is not a `.geforest` file, or it is a link to a file outside its asset folder;
-- the archive is not valid.
+- the archive directory or any placement page fails validation. Cook the archive again with `ForestPlacementCook`.
 
 ## Archive format
 
