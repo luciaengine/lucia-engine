@@ -358,6 +358,8 @@ class FileWatcherLostEventsTest : public ::testing::Test
     // One tick of the polling backend, on the calling thread.
     void Poll() { m_Watcher.PollOnce(); }
 
+    void WaitForPoll() { m_Watcher.WaitForNextPoll(); }
+
     size_t SnapshotFileCount() const { return m_Watcher.m_PolledFiles.size(); }
 
     // A change the platform reported, handed on the way the Windows backend does.
@@ -422,6 +424,29 @@ class FileWatcherLostEventsTest : public ::testing::Test
     FileWatcher m_Watcher;
     std::vector<FileChangeEvent> m_Events;
 };
+
+TEST_F(FileWatcherLostEventsTest, ADeferredCallbackDoesNotExtendThePollDeadline)
+{
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+
+    constexpr auto kInterval = 1000ms;
+    m_Watcher.SetPollingInterval(kInterval.count());
+    Clock::time_point callbackFinished;
+    const auto deadline = Clock::now() + kInterval;
+    m_Watcher.SetCallback([&](const FileChangeEvent&) {
+        std::this_thread::sleep_until(deadline + 100ms);
+        callbackFinished = Clock::now();
+    });
+
+    // The held deletion dispatches during the wait and keeps the loop busy
+    // beyond the original poll deadline.
+    Report(FileChangeType::Deleted, "removed.glsl");
+    WaitForPoll();
+
+    ASSERT_NE(callbackFinished, Clock::time_point{});
+    EXPECT_LT(Clock::now() - callbackFinished, 400ms);
+}
 
 TEST_F(FileWatcherLostEventsTest, LostChangesAreReportedAsOrdinaryEventsByTheRescan)
 {
