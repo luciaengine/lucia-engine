@@ -45,11 +45,11 @@ float GrazingCard(vec2 position,bool production)
     float alpha=textureGrad(sourceImage,uv,uvDx,uvDy).a;
     if(!production)
         return step(probe.cutoff,alpha);
-    float footprint=GE_FoliageFootprint(uvDx,uvDy,0.0);
+    float footprint=GE_AnisotropicMaskFootprint(uvDx,uvDy,0.0);
     float tail=GE_FoliageTailWeight(footprint);
     if(tail<=0.0)
         return step(probe.cutoff,alpha);
-    float shape=GE_FoliageShapeGradient(0.0);
+    float shape=GE_MaskCoverageShapeGradient(0.0);
     alpha=textureGrad(sourceImage,uv,vec2(shape,0.0),vec2(0.0,shape)).a;
     return GE_MaskCoverageOpacity(alpha,1.0,probe.cutoff,tail,CardSeed(position,0u));
 }

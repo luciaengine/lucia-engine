@@ -15,9 +15,15 @@ float GE_FoliageScreenThreshold(vec2 fragCoord)
 const float kFoliageShapeFootprint = 1.0 / 32.0;
 
 // The isotropic UV gradient of a sample at the shape bound, under mip bias `mipBias`.
-float GE_FoliageShapeGradient(float mipBias)
+float GE_MaskCoverageShapeGradient(float mipBias)
 {
     return kFoliageShapeFootprint * exp2(-mipBias);
+}
+
+// Generated foliage bounds the shape along the longer derivative.
+float GE_FoliageFootprint(vec2 uvDx, vec2 uvDy, float mipBias)
+{
+    return max(max(length(uvDx), length(uvDy)), 1e-6) * exp2(mipBias);
 }
 
 // The anisotropy of the material samplers (RendererProfile's material anisotropy).
@@ -26,7 +32,7 @@ const float kFoliageMaxAnisotropy = 16.0;
 // UV per pixel of the level a material sampler reads for screen derivatives `uvDx` and `uvDy` and
 // mip bias `mipBias`: the shorter axis, or the longer axis over the anisotropy where that is coarser.
 // A card seen edge-on near the camera keeps its fine level and its cutoff test.
-float GE_FoliageFootprint(vec2 uvDx, vec2 uvDy, float mipBias)
+float GE_AnisotropicMaskFootprint(vec2 uvDx, vec2 uvDy, float mipBias)
 {
     float lengthX = length(uvDx);
     float lengthY = length(uvDy);

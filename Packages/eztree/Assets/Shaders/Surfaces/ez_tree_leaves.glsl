@@ -53,7 +53,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     float footprint = GE_FoliageFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
     float tailWeight = GE_FoliageTailWeight(footprint);
     bool boundShape = footprint > kFoliageShapeFootprint;
-    float shapeGradient = GE_FoliageShapeGradient(GE_MATERIAL_MIP_BIAS);
+    float shapeGradient = kFoliageShapeFootprint * exp2(-GE_MATERIAL_MIP_BIAS);
     vec2 shapeDx = boundShape ? vec2(shapeGradient, 0.0) : uvDx;
     vec2 shapeDy = boundShape ? vec2(0.0, shapeGradient) : uvDy;
     vec4 shapeSample = textureGrad(albedoMap, uvAlbedo, shapeDx, shapeDy);

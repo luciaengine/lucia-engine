@@ -146,14 +146,14 @@ float GE_StandardMaskFootprint(SurfaceInput sIn)
     vec2 uvDx = GE_DFDX(uv);
     vec2 uvDy = GE_DFDY(uv);
 #endif
-    return GE_FoliageFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
+    return GE_AnisotropicMaskFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
 }
 
 // The alpha of `map` at `uv` through its tiling, read at the 32-texel bound. The bound is the same
 // along both axes, so the hex rotation does not change it.
 float GE_StandardMaskShapeAlpha(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 st2)
 {
-    float shapeGradient = GE_FoliageShapeGradient(GE_MATERIAL_MIP_BIAS);
+    float shapeGradient = GE_MaskCoverageShapeGradient(GE_MATERIAL_MIP_BIAS);
     vec2 shapeDx = vec2(shapeGradient, 0.0);
     vec2 shapeDy = vec2(0.0, shapeGradient);
 #ifdef GE_PARALLAX_MARCH
