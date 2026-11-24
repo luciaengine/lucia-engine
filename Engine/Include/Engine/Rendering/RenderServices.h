@@ -1493,6 +1493,8 @@ class RenderServices
     float GetShaderAnimationTimeSeconds() const;
     float GetScrollAnimationTimeSeconds() const;
     void BuildWorldBatchKeys();
+    /// Emit during frame declaration on the render thread. A capture frame also runs producers
+    /// that opt into captures and owns the commands' frame allocations through recording.
     void EmitProducerForwardCommandsForView(
         Rendering::ViewId viewId,
         ForwardEmitPurpose purpose = ForwardEmitPurpose::World,

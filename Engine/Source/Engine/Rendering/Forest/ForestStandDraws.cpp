@@ -62,12 +62,12 @@ Rendering::DrawProducerId StandProducer()
 }
 
 // The camera of a view of the stand's world that shows one of its layers.
-const Rendering::CameraData* FindStandCamera(const ForwardEmitContext& ctx, const StandEmitSource& stand)
+const Rendering::CameraData* FindStandCamera(const ForwardEmitContext& context, const StandEmitSource& stand)
 {
-    if (!ctx.Frame)
+    if (!context.Frame)
         return nullptr;
-    auto& views = ctx.Services->Views();
-    const auto* view = views.FindViewDesc(ctx.ViewId);
+    auto& views = context.Services->Views();
+    const auto* view = views.FindViewDesc(context.ViewId);
     if (!view || view->worldId != stand.WorldId || !stand.Layers.Intersects(view->ActiveRenderLayerMask()))
         return nullptr;
     return views.FindCameraData(view->cameraId);
@@ -84,61 +84,61 @@ bool AreDrawableHeads(const ForestStandDrawHeads& heads)
            heads.Depth->VertexOffset == heads.Color.VertexOffset && heads.Depth->IndexCount == heads.Color.IndexCount;
 }
 
-void EmitStandCommands(ForwardEmitContext& ctx, ForestStandDrawHeads& heads, std::span<const DrawSubCommand> draws)
+void EmitStandCommands(ForwardEmitContext& context, ForestStandDrawHeads& heads, std::span<const DrawSubCommand> draws)
 {
     heads.Color.Producer = StandProducer();
     heads.Color.SubDraws = draws;
-    if (!heads.Depth || ctx.Purpose != ForwardEmitPurpose::World)
+    if (!heads.Depth || context.Purpose != ForwardEmitPurpose::World)
     {
-        ctx.Services->EmitForwardCommand(ctx.ViewId, heads.Color, ForwardDrawDepth::ColourPass);
+        context.Services->EmitForwardCommand(context.ViewId, heads.Color, ForwardDrawDepth::ColourPass);
         return;
     }
     heads.Depth->Producer = StandProducer();
     heads.Depth->SubDraws = draws;
-    ctx.Services->EmitForwardCommand(ctx.ViewId, heads.Color, ForwardDrawDepth::Prepass, &*heads.Depth);
+    context.Services->EmitForwardCommand(context.ViewId, heads.Color, ForwardDrawDepth::Prepass, &*heads.Depth);
 }
 
-void EmitStand(const StandEmitSource& stand, ForwardEmitContext& ctx)
+void EmitStand(const StandEmitSource& stand, ForwardEmitContext& context)
 {
-    const auto* camera = FindStandCamera(ctx, stand);
+    const auto* camera = FindStandCamera(context, stand);
     if (!camera)
         return;
 
-    auto* draws = ctx.Frame->AllocatePassData<std::vector<DrawSubCommand>>();
+    auto* draws = context.Frame->AllocatePassData<std::vector<DrawSubCommand>>();
     const auto placementView = MakeStandView(*camera);
-    const bool usesDetails = stand.Details && ctx.Purpose == ForwardEmitPurpose::World;
+    const bool usesDetails = stand.Details && context.Purpose == ForwardEmitPurpose::World;
     if (!usesDetails)
     {
         stand.Placements->GatherStand(placementView, *draws);
         if (draws->empty())
             return;
     }
-    auto heads = stand.PrepareDraw(ctx);
+    auto heads = stand.PrepareDraw(context);
     if (!heads || !AreDrawableHeads(*heads))
         return;
 
     if (usesDetails)
     {
-        auto* detailFeature = ctx.Services->GetFeature<ForestPlacementFeature>();
-        if (!detailFeature || !ctx.Frame->RequireExecutionLifetime(stand.Details) ||
-            !detailFeature->EmitDetails(*stand.Details, ctx, *camera, placementView, *draws))
+        auto* detailFeature = context.Services->GetFeature<ForestPlacementFeature>();
+        if (!detailFeature || !context.Frame->RequireExecutionLifetime(stand.Details) ||
+            !detailFeature->EmitDetails(*stand.Details, context, *camera, placementView, *draws))
             stand.Placements->GatherStand(placementView, *draws);
     }
     if (draws->empty() || !ApplyStandIndexRange(heads->Color, *draws))
         return;
-    EmitStandCommands(ctx, *heads, *draws);
+    EmitStandCommands(context, *heads, *draws);
 }
 
 // The shaded head of the overview mesh, or none while the mesh or its material is not drawable.
-std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& ctx, const Rendering::MeshGPUKey& mesh,
+std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& context, const Rendering::MeshGPUKey& mesh,
                                                      uint32 indexEnd, const GUID& material)
 {
     if (material.IsNull())
         return std::nullopt;
-    auto& registry = ctx.Services->GetMeshGPURegistry();
+    auto& registry = context.Services->GetMeshGPURegistry();
     const Rendering::MeshGPURegistry::TableScope scope(registry);
     const auto* geometry = registry.FindByKey(mesh);
-    const auto* mat = ctx.Services->Materials().Registry().Find(material);
+    const auto* mat = context.Services->Materials().Registry().Find(material);
     Rendering::MeshGPUEntryBindings bindings{};
     if (!mat || !geometry || geometry->vertexFlags != Rendering::VertexAttributeFlags::StandardMesh ||
         geometry->topology != Rendering::PrimitiveTopology::TriangleList ||
@@ -149,7 +149,7 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
         !registry.TryGetDrawableBindings(*geometry, bindings))
         return std::nullopt;
 
-    const auto* transform = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(mat->GetGpuSceneMaterialIndex());
+    const auto* transform = context.Frame->AllocatePassData<IdentityMeshDrawConstants>(mat->GetGpuSceneMaterialIndex());
     ForestStandDrawHeads heads{};
     auto& color = heads.Color;
     color.Material = mat;
@@ -161,10 +161,10 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
     color.FirstIndex = geometry->firstIndex;
     color.VertexOffset = static_cast<int32>(geometry->vertexOffset);
     color.Bindings.PushConstants = std::as_bytes(std::span(transform, 1u));
-    if (ctx.Purpose != ForwardEmitPurpose::World)
+    if (context.Purpose != ForwardEmitPurpose::World)
         return heads;
 
-    auto& services = *ctx.Services;
+    auto& services = *context.Services;
     const bool masked = mat->GetAlphaMode() == MaterialAlphaMode::Mask;
     const auto head = ChooseDepthHeadPipeline(Rendering::MaterialKeyword::None, DepthPassType::Prepass,
                                               masked, /*vertexModified=*/false, /*sharedDepthOffered=*/false,
@@ -172,7 +172,7 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
     auto& variants = services.Materials().Variants();
     const auto* variant = variants.FindOrRequestPrepassVariant(
         *mat, color.VertexFlags, geometry->topology, head.Keywords, services.GetFrontFace());
-    if (variant && variants.EnsureConcreteWarm(*mat, variant->PipelineId, services.Views().GetViewPrepassFormatKey(ctx.ViewId)))
+    if (variant && variants.EnsureConcreteWarm(*mat, variant->PipelineId, services.Views().GetViewPrepassFormatKey(context.ViewId)))
     {
         heads.Depth = color;
         heads.Depth->InternedPipeline = variant->PipelineId;
@@ -193,7 +193,7 @@ ScopedSubscription RegisterForestStandDraws(
         return {};
     auto stand = std::make_shared<const StandEmitSource>(
         StandEmitSource{worldId, layers, std::move(placements), std::move(prepareDraw), std::move(details)});
-    return services.RegisterForwardEmit([stand](ForwardEmitContext& ctx) { EmitStand(*stand, ctx); },
+    return services.RegisterForwardEmit([stand](ForwardEmitContext& context) { EmitStand(*stand, context); },
                                         {.WritesDepth = true, .RequiresFrame = true, .SupportsCapture = true});
 }
 
@@ -206,8 +206,8 @@ ScopedSubscription RegisterForestStandMesh(
         return {};
     const uint32 indexEnd = placements->StandIndexEnd();
     return RegisterForestStandDraws(services, worldId, layers, std::move(placements),
-        [mesh, indexEnd, resolveMaterial = std::move(resolveMaterial)](const ForwardEmitContext& ctx)
-        { return PrepareStandMesh(ctx, mesh, indexEnd, resolveMaterial()); },
+        [mesh, indexEnd, resolveMaterial = std::move(resolveMaterial)](const ForwardEmitContext& context)
+        { return PrepareStandMesh(context, mesh, indexEnd, resolveMaterial()); },
         std::move(details));
 }
 
