@@ -628,6 +628,79 @@ bool ge_SelectImpostor(uint instanceIndex, uint meshIndex, uint owner)
     return coverage < (wasCard ? enter * hysteresis : enter);
 }
 
+// The owner publishes the same immutable fade stamp for every part to read next frame.
+const uint kImpostorFadeActiveBit = 0x400u;
+const uint kImpostorFadeTimeShift = 11u;
+const uint kImpostorFadeTimeMask = 0x1FFFFFu;
+const float kImpostorFadeTicksPerSecond = 256.0;
+
+uint ge_ImpostorFadeWeight(uint owner, bool drawCard, out uint stamp)
+{
+    stamp = 0u;
+    if (pc.crossfadeTailActive < 2u || pc.renderedHistoryEnabled == 0u || pc.invFadeDuration <= 0.0 ||
+        owner > kLodFadeIndexMask)
+        return 0u;
+
+    uint previous = prevRendered[owner];
+    if (previous == kLodNoHistory)
+        return 0u;
+    bool wasTargetingCard = (previous & kRenderedHistoryLevelMask) == kImpostorRenderedLevel;
+    bool wasFading = (previous & kImpostorFadeActiveBit) != 0u;
+    if (!wasFading && wasTargetingCard == drawCard)
+        return 0u;
+
+    uint now = uint(mod(floor(pc.nowSeconds * kImpostorFadeTicksPerSecond),
+                       float(kImpostorFadeTimeMask + 1u)));
+    uint start = wasFading ? previous >> kImpostorFadeTimeShift : now;
+    uint duration = max(1u, uint(round(kImpostorFadeTicksPerSecond / pc.invFadeDuration)));
+    uint elapsed = min((now - start) & kImpostorFadeTimeMask, duration);
+    if (wasFading && wasTargetingCard != drawCard) {
+        elapsed = duration - elapsed;
+        start = (now - elapsed) & kImpostorFadeTimeMask;
+    }
+    if (elapsed == duration)
+        return 0u;
+    stamp = kImpostorFadeActiveBit | (start << kImpostorFadeTimeShift);
+    float progress = float(elapsed) / float(duration);
+    float cardWeight = drawCard ? progress : 1.0 - progress;
+    return clamp(uint(cardWeight * float(kLodFadeMaxWeight) + 0.5), 1u, kLodFadeMaxWeight - 1u);
+}
+
+uint ge_FindRepresentationBatch(uint meshIndex, uint materialIndex, uint flags)
+{
+    uint searchMaterial = materialIndex;
+    if (pc.classMode == kClassModeShadow)
+        searchMaterial = ge_ShadowSearchMaterial(flags, materialIndex);
+    else if (pc.classMode == kClassModeColor && materialIndex < materialColorClass.length())
+        searchMaterial = materialColorClass[materialIndex];
+
+    uint parity = pc.classMode == kClassModeShadow ? ge_ShadowParityBit(flags)
+                  : (((flags & kMirroredBit) != 0u) ? kMeshParityBit : 0u);
+    uint searchMesh = meshIndex;
+    if (pc.meshGroupMode != 0u)
+        searchMesh = meshIndex < meshPoolGroup.length() ? meshPoolGroup[meshIndex] : kAbsentPoolGroup;
+    return ge_FindBatch(searchMaterial, searchMesh | parity, pc.batchCount);
+}
+
+// The cursor counts complete reservations, so each consumer sees a contiguous prefix.
+bool ge_TryReserveFadeRecords(uint cursor, uint capacity, uint count, out uint first)
+{
+    first = 0u;
+    if (count > capacity)
+        return false;
+
+    uint next = atomicAdd(cursors[cursor], 0u);
+    while (next <= capacity - count) {
+        uint observed = atomicCompSwap(cursors[cursor], next, next + count);
+        if (observed == next) {
+            first = next;
+            return true;
+        }
+        next = observed;
+    }
+    return false;
+}
+
 // Emit one indirect draw record for `lod` of `meshIndex` at arena slot `slot`,
 // with `indirectionWord` as the vertex stage's per-record payload. Returns the
 // level's index count so the caller can accumulate drawn triangles.
@@ -699,13 +772,15 @@ void main() {
     // other parts draw nothing. Decided before every claim, so a dropped part leaves no record.
     uint impostorCard = meshes[meshIndex].impostorCard;
     uint owner = (impostorCard != 0u && ge_ImpostorStageActive()) ? impostorOwner[instanceIndex] : kNoImpostorOwner;
-    bool drawCard = owner != kNoImpostorOwner && ge_ImpostorOwnerValid(owner, instanceIndex, impostorCard)
-                    && ge_SelectImpostor(instanceIndex, meshIndex, owner);
-    if (drawCard && (impostorCard & kImpostorPrimaryBit) == 0u) {
-        // As for the card below: the part adopts its level on return instead of fading.
-        if (pc.crossfadeTailActive != 0u) {
+    bool linked = owner != kNoImpostorOwner && ge_ImpostorOwnerValid(owner, instanceIndex, impostorCard);
+    bool drawCard = linked && ge_SelectImpostor(owner, instances[owner].meshIndex, owner);
+    bool isPrimary = (impostorCard & kImpostorPrimaryBit) != 0u;
+    uint impostorStamp = 0u;
+    uint impostorWeight = linked && instanceIndex <= kLodFadeIndexMask
+        ? ge_ImpostorFadeWeight(owner, drawCard, impostorStamp) : 0u;
+    if (drawCard && !isPrimary && impostorWeight == 0u) {
+        if (pc.crossfadeTailActive != 0u)
             lodFade[instanceIndex] = uvec2(kLodNoHistory, 0u);
-        }
         return;
     }
 
@@ -722,72 +797,24 @@ void main() {
         }
     }
 
-    // Batch-search key routing:
-    //  - Shadow: material-dependent casters keep their real materialIndex;
-    //    shared-depth-eligible ones collapse into their mesh's single/double-
-    //    sided sentinel (the shadow table is grouped/sorted by that key).
-    //  - Color: opaque casters that share a PSO collapse into their
-    //    colorClassId; blend/transmissive/material-dependent keep identity.
-    //    materialColorClass[] already encodes that domain rule per materialIndex
-    //    (mirrors the CPU-side BuildColorBatchTable), so the read is direct.
-    //  - Off: raw materialIndex against the unmerged color table.
-    uint instFlags     = instances[instanceIndex].flags;
+    uint flags = instances[instanceIndex].flags;
     uint materialIndex = instances[instanceIndex].materialIndex;
-    if (drawCard) {
-        // A card material is material-dependent (alpha mask and a vertex modifier) in the
-        // depth class; it keeps the instance's winding parity.
-        meshIndex     = pc.impostorCardMesh;
-        materialIndex = (impostorCard & kImpostorMaterialMask) - 1u;
-        instFlags     = (instFlags & ~kDepthDoubleSidedBit) | kDepthMaterialDependentBit;
-    }
-    uint searchMat = materialIndex;
-    if (pc.classMode == kClassModeShadow) {
-        searchMat = ge_ShadowSearchMaterial(instFlags, materialIndex);
-    } else if (pc.classMode == kClassModeColor && materialIndex < materialColorClass.length()) {
-        searchMat = materialColorClass[materialIndex];
-    }
-
-    // Winding parity: mirrored (odd-determinant) instances search the parity-1
-    // sibling row so the consumer draws them with a flipped front face. In the
-    // depth-only shadow pass, double-sided casters (cull None) render both faces
-    // and route through the double-sided sentinel, which the CPU table build
-    // never splits — so gate their parity off, or they would search a
-    // nonexistent row and their shadow would be silently dropped (must-fix #1).
-    // Color/prepass split every parity (the gl_FrontFacing shading nuance
-    // applies to double-sided too), so no gate there. The mesh-table read above
-    // used the REAL meshIndex; only this batch search sees the parity bit.
-    uint parityBit = (pc.classMode == kClassModeShadow) ? ge_ShadowParityBit(instFlags)
-                     : (((instFlags & kMirroredBit) != 0u) ? kMeshParityBit : 0u);
-    // Draw consolidation: the tables key their mesh axis on the per-mesh
-    // ORDERED rank, so route the search through the per-call map. The record
-    // fields below still read the REAL meshIndex -- records stay
-    // self-contained, which is exactly what lets the compact pass merge a
-    // group's contiguous rows into one draw region.
-    uint searchMesh = meshIndex;
-    if (pc.meshGroupMode != 0u) {
-        searchMesh = (meshIndex < meshPoolGroup.length()) ? meshPoolGroup[meshIndex]
-                                                          : kAbsentPoolGroup;
-    }
-    searchMesh |= parityBit;
-
-    uint batchId = ge_FindBatch(searchMat, searchMesh, pc.batchCount);
-    if (batchId == kBatchNotFound) {
+    uint cardMaterial = (impostorCard & kImpostorMaterialMask) - 1u;
+    uint cardFlags = (flags & ~kDepthDoubleSidedBit) | kDepthMaterialDependentBit;
+    uint meshBatch = (!drawCard || impostorWeight != 0u)
+        ? ge_FindRepresentationBatch(meshIndex, materialIndex, flags) : kBatchNotFound;
+    uint cardBatch = (drawCard || impostorWeight != 0u) && isPrimary
+        ? ge_FindRepresentationBatch(pc.impostorCardMesh, cardMaterial, cardFlags) : kBatchNotFound;
+    uint meshLod = (!drawCard || impostorWeight != 0u)
+        ? ge_SelectLOD(instanceIndex, meshIndex, ge_InstanceCenterRelativeToOrigin(instanceIndex),
+                       instances[instanceIndex].boundingRadius, instances[instanceIndex].lodBias) : 0u;
+    uint batchId = drawCard ? cardBatch : meshBatch;
+    uint drawMesh = drawCard ? pc.impostorCardMesh : meshIndex;
+    uint lod = drawCard ? 0u : meshLod;
+    if (batchId == kBatchNotFound && (isPrimary || impostorWeight == 0u || !drawCard)) {
         atomicAdd(stats.sliceStats[pc.statsBase].tableMisses, 1u);
         return;
     }
-
-    BatchTableEntry entry = batchTable[batchId];
-
-    // LOD selection runs AHEAD of the cursor claim: the crossfade state decides
-    // how many record slots this instance needs, and the claim can only be made
-    // once. Selection reads only the mesh/instance rows plus this instance's own
-    // dwell-band history (written nowhere between here and the commit at the
-    // end), so moving it changes nothing it produces.
-    uint lod = drawCard ? 0u
-                        : ge_SelectLOD(instanceIndex, meshIndex,
-                                       ge_InstanceCenterRelativeToOrigin(instanceIndex),
-                                       instances[instanceIndex].boundingRadius,
-                                       instances[instanceIndex].lodBias);
 
     // Dithered crossfade: a transitioning instance emits TWO records — the
     // incoming and outgoing levels, carrying complementary dither phases — into
@@ -800,13 +827,10 @@ void main() {
     // instance) keep the early-Z it would forfeit.
     uint fadeFromLod;
     uint fadeWeight;
-    // A card frame starts no crossfade: the mesh and the card switch in one frame. It clears the
-    // fade state, so the mesh adopts its level on return instead of fading from a stale one. The
-    // write has the guard of ge_UpdateLodFade, which keeps it off the stand-in binding.
-    bool fading = !drawCard && ge_UpdateLodFade(instanceIndex, lod, fadeFromLod, fadeWeight);
-    if (drawCard && pc.crossfadeTailActive != 0u) {
+    bool fading = impostorWeight == 0u && !drawCard &&
+                  ge_UpdateLodFade(instanceIndex, lod, fadeFromLod, fadeWeight);
+    if ((drawCard || impostorWeight != 0u) && pc.crossfadeTailActive != 0u)
         lodFade[instanceIndex] = uvec2(kLodNoHistory, 0u);
-    }
     // The fade code lives above the indirection word's 24-bit instance domain,
     // so an index that reaches into those bits cannot carry one and pops
     // instead. Applied BEFORE the claim: dropping the pair afterwards would
@@ -817,16 +841,44 @@ void main() {
 
     uint drawnIndices = 0u;
     bool wroteTail = false;
-    if (fading) {
-        // ONE claim of the PAIR, so the two records land in adjacent slots and
-        // another thread can never split them. Claims start at 0 and always
-        // advance by 2, which is what lets consumers take the written prefix as
-        // min(cursor, capacity) rounded down to even.
-        uint t = atomicAdd(cursors[pc.tailCursorBase + batchId], 2u);
-        if (t + 1u < entry.capacity) {
+    if (impostorWeight != 0u && meshBatch != kBatchNotFound &&
+        (!isPrimary || cardBatch != kBatchNotFound)) {
+        // Each input contributes at most two tail records to any row. The publisher reserves
+        // that worst case before it enables cross-row fades, so all placement parts fit.
+        BatchTableEntry meshEntry = batchTable[meshBatch];
+        uint meshFirst;
+        uint recordScale = pc.crossfadeTailActive;
+        if (ge_TryReserveFadeRecords(pc.tailCursorBase + meshBatch, meshEntry.capacity * recordScale, 1u, meshFirst)) {
+            uint meshSlot = pc.tailRecordBase + meshEntry.recordOffset * recordScale + meshFirst;
+            uint word = (impostorWeight << kLodFadeWeightShift) | instanceIndex;
+            if (!isPrimary) {
+                wroteTail = true;
+            } else {
+                BatchTableEntry cardEntry = batchTable[cardBatch];
+                uint cardFirst;
+                if (ge_TryReserveFadeRecords(pc.tailCursorBase + cardBatch, cardEntry.capacity * recordScale, 1u, cardFirst)) {
+                    uint cardSlot = pc.tailRecordBase + cardEntry.recordOffset * recordScale + cardFirst;
+                    drawnIndices = ge_WriteDrawRecord(cardSlot, pc.impostorCardMesh, 0u, word);
+                    wroteTail = true;
+                } else {
+                    // A mismatched snapshot must still initialize the slot it claimed.
+                    drawCommands[meshSlot] = VkDrawIndexedIndirectCommand(0u, 0u, 0u, 0, meshSlot);
+                    indirection[meshSlot] = instanceIndex;
+                }
+            }
+            if (wroteTail)
+                drawnIndices += ge_WriteDrawRecord(meshSlot, meshIndex, meshLod, word | kLodFadePhaseBit);
+        }
+        if (!wroteTail)
+            atomicAdd(stats.sliceStats[pc.statsBase].overflows, 1u);
+    } else if (fading) {
+        BatchTableEntry entry = batchTable[batchId];
+        uint first;
+        uint recordScale = pc.crossfadeTailActive;
+        if (ge_TryReserveFadeRecords(pc.tailCursorBase + batchId, entry.capacity * recordScale, 2u, first)) {
             // Both records carry the same weight and opposite phases, so the two
             // dither tests partition the pixels exactly.
-            uint tailSlot = pc.tailRecordBase + entry.recordOffset + t;
+            uint tailSlot = pc.tailRecordBase + entry.recordOffset * recordScale + first;
             uint word = (fadeWeight << kLodFadeWeightShift) | instanceIndex;
             drawnIndices  = ge_WriteDrawRecord(tailSlot, meshIndex, lod, word);
             drawnIndices += ge_WriteDrawRecord(tailSlot + 1u, meshIndex, fadeFromLod,
@@ -840,13 +892,16 @@ void main() {
     }
 
     if (!wroteTail) {
+        if (drawCard && !isPrimary)
+            return;
+        BatchTableEntry entry = batchTable[batchId];
         uint localSlot = atomicAdd(cursors[pc.cursorBase + batchId], 1u);
         if (localSlot >= entry.capacity) {
             atomicAdd(stats.sliceStats[pc.statsBase].overflows, 1u);
             return;
         }
         drawnIndices = ge_WriteDrawRecord(pc.recordBase + entry.recordOffset + localSlot,
-                                          meshIndex, lod, instanceIndex);
+                                          drawMesh, lod, instanceIndex);
     }
 
     // Per-slice drawn-triangle accumulation (P0 shadow-arc instrumentation,
@@ -899,8 +954,10 @@ void main() {
         uint level = drawCard ? kImpostorRenderedLevel : (lod & kRenderedHistoryLevelMask);
         uint state = level | (wroteTail ? kRenderedHistoryFadingBit : 0u);
         uint previous = prevRendered[instanceIndex];
-        bool continuous = previous != kLodNoHistory
+        bool continuous = impostorStamp == 0u && (previous & kImpostorFadeActiveBit) == 0u &&
+                          previous != kLodNoHistory
                           && (previous & kRenderedHistoryStateMask) == state;
-        currentRendered[instanceIndex] = state | (continuous ? kRenderedHistoryContinuousBit : 0u);
+        uint ownerStamp = isPrimary && wroteTail ? impostorStamp : 0u;
+        currentRendered[instanceIndex] = state | ownerStamp | (continuous ? kRenderedHistoryContinuousBit : 0u);
     }
 }

@@ -1750,10 +1750,11 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     uint32_t CallCursorBase{};
     uint32_t CallStatsBase{};
     uint32_t SnapshotRecords{};
+    uint32_t TailRecordScale = 1u;
     uint32_t CursorHalfStride{};
     uint32_t HeadDrawBlockOffset{};
-    uint32_t TailStagingBlockOffset{};
-    uint32_t TailDrawBlockOffset{};
+    uint32_t TailStagingRecordOffset{};
+    uint32_t TailDrawRecordOffset{};
     std::vector<uint32_t> SliceTailIndex{};
     std::vector<uint32_t> SliceCursorOffset{};
     uint32_t InstanceCount{};
@@ -1949,11 +1950,11 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         if (fade.handle.IsValid() && SliceTailIndex[sliceIndex] != kNoTailBlock)
         {
             pushConstants.invFadeDuration      = 1.0f / slice.lod.crossfadeDuration;
-            pushConstants.crossfadeTailActive  = 1u;
+            pushConstants.crossfadeTailActive  = TailRecordScale;
             pushConstants.tailCursorBase       = pushConstants.cursorBase + CursorHalfStride;
             pushConstants.tailRecordBase =
                 CallRecordBase
-                + (TailStagingBlockOffset + SliceTailIndex[sliceIndex]) * SnapshotRecords;
+                + TailStagingRecordOffset + SliceTailIndex[sliceIndex] * SnapshotRecords * TailRecordScale;
         }
         pushConstants.lodHysteresisBand = SliceBand[sliceIndex];
         pushConstants.renderedHistoryEnabled = historyBound ? 1u : 0u;
@@ -2015,7 +2016,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
 
         const uint32_t sliceCursorBase = CallCursorBase + SliceCursorOffset[sliceIndex];
         GroupCompactPushConstants compactPushConstants{};
-        compactPushConstants.recordCount = SnapshotRecords;
+        compactPushConstants.recordCount = SnapshotRecords * (isTail ? TailRecordScale : 1u);
         compactPushConstants.rowCount    = sliceRowCount;
         compactPushConstants.cursorBase  = isTail ? sliceCursorBase + CursorHalfStride
                                  : sliceCursorBase;
@@ -2025,13 +2026,13 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             compactPushConstants.cursorBase += sliceRowCount;
         compactPushConstants.srcRecordBase =
             CallRecordBase
-            + ((isTail ? TailStagingBlockOffset : 0u) + blockIndex)
-                  * SnapshotRecords;
+            + (isTail ? TailStagingRecordOffset : 0u) + blockIndex * compactPushConstants.recordCount;
         compactPushConstants.dstRecordBase =
             CallRecordBase
-            + ((isTail ? TailDrawBlockOffset : HeadDrawBlockOffset) + blockIndex)
-                  * SnapshotRecords;
-        compactPushConstants.pairedRecords = isTail && !InstanceCompactionActive ? 1u : 0u;
+            + (isTail ? TailDrawRecordOffset : HeadDrawBlockOffset * SnapshotRecords)
+            + blockIndex * compactPushConstants.recordCount;
+        compactPushConstants.tailLayout = isTail ? (TailRecordScale == 2u ? 2u :
+            (!InstanceCompactionActive ? 1u : 0u)) : 0u;
         compactPushConstants.InstancedRecords = InstanceCompactionActive ? 1u : 0u;
         if (InstanceCompactionActive)
             std::swap(compactPushConstants.srcRecordBase, compactPushConstants.dstRecordBase);
@@ -2172,7 +2173,6 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
         context.Cmd->SetPipeline(InstanceCompactPipeline);
-        const uint32_t groupCount = (SnapshotRecords + 63u) / 64u;
         for (const PreparedSlice& slice : PreparedSlices)
         {
             if (!slice.CompactSet.IsValid())
@@ -2183,10 +2183,10 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 constants.cursorBase -= constants.rowCount;
                 constants.countBase = constants.cursorBase + constants.rowCount;
                 std::swap(constants.srcRecordBase, constants.dstRecordBase);
-                constants.pairedRecords = region != 0u ? 1u : 0u;
+                constants.tailLayout = region != 0u ? TailRecordScale : 0u;
                 context.Cmd->SetPushConstants(constants);
                 context.Cmd->BindDescriptorSet(0, slice.CompactSet, InstanceCompactPipeline);
-                context.Cmd->Dispatch(groupCount, 1, 1);
+                context.Cmd->Dispatch((constants.recordCount + 63u) / 64u, 1, 1);
             }
         }
         if (ClearRecordRange)
@@ -2202,7 +2202,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 for (uint32_t region = 0; region < slice.CompactRegionCount; ++region)
                     context.Cmd->FillBuffer(Records,
                         static_cast<size_t>(slice.CompactConstants[region].dstRecordBase) * kDrawCommandStride,
-                        static_cast<size_t>(SnapshotRecords) * kDrawCommandStride, 0u);
+                        static_cast<size_t>(slice.CompactConstants[region].recordCount) * kDrawCommandStride, 0u);
         }
     }
 
@@ -2219,7 +2219,6 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
         context.Cmd->SetPipeline(CompactPipeline);
-        const uint32_t groupCount = (SnapshotRecords + 63u) / 64u;
         for (const PreparedSlice& slice : PreparedSlices)
         {
             if (!slice.CompactSet.IsValid())
@@ -2228,7 +2227,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             {
                 context.Cmd->SetPushConstants(slice.CompactConstants[region]);
                 context.Cmd->BindDescriptorSet(0, slice.CompactSet, CompactPipeline);
-                context.Cmd->Dispatch(groupCount, 1, 1);
+                context.Cmd->Dispatch((slice.CompactConstants[region].recordCount + 63u) / 64u, 1, 1);
             }
         }
     }
@@ -2462,8 +2461,17 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     // Instancing stores indirection in scratch and publishes commands in scatter
     // storage. Group compaction alone publishes scratch storage.
     const uint32_t blocksPerSlice = groupActive ? 2u : 1u;
+    const bool impostorCrossfade = impostorOwners.IsValid() &&
+        std::any_of(slices.begin(), slices.end(), [&sliceCrossfades](const SliceRegistration& slice)
+        {
+            return sliceCrossfades(slice) && slice.lod.impostorCardMesh != 0xFFFFFFFFu;
+        });
+    // One row can receive a two-record LOD pair per registered instance, or one record
+    // per side of a mesh/card transition. Only the camera tail needs that extra space.
+    const uint32_t tailRecordScale = impostorCrossfade ? 2u : 1u;
+    const uint32_t tailSnapshotRecords = snapshotRecords * tailRecordScale;
     const uint32_t neededRecords =
-        (sliceCount + tailSliceCount) * blocksPerSlice * snapshotRecords;
+        (sliceCount * snapshotRecords + tailSliceCount * tailSnapshotRecords) * blocksPerSlice;
     const uint32_t neededCursors = cursorOffsetEnd;
 
     size_t align = m_Device->GetCapabilities().minStorageBufferOffsetAlignment;
@@ -2559,9 +2567,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     // consolidation the compact pass never runs, so staging IS the draw block
     // and the two offsets coincide.
     const uint32_t headDrawBlockOffset    = groupActive ? sliceCount : 0u;
-    const uint32_t tailStagingBlockOffset = blocksPerSlice * sliceCount;
-    const uint32_t tailDrawBlockOffset =
-        groupActive ? tailStagingBlockOffset + tailSliceCount : tailStagingBlockOffset;
+    const uint32_t tailStagingRecordOffset = blocksPerSlice * sliceCount * snapshotRecords;
+    const uint32_t tailDrawRecordOffset =
+        groupActive ? tailStagingRecordOffset + tailSliceCount * tailSnapshotRecords : tailStagingRecordOffset;
 
 
     // ── Idle recompute elision (lever #2): byte-record this call's complete
@@ -2859,8 +2867,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         const bool sliceHasTail = sliceTailIndex[s] != kNoTailBlock;
         const uint32_t tailRecordBase =
             sliceHasTail
-                ? callRecordBase + ((instanceCompactionActive ? tailStagingBlockOffset : tailDrawBlockOffset)
-                    + sliceTailIndex[s]) * snapshotRecords
+                ? callRecordBase + (instanceCompactionActive ? tailStagingRecordOffset : tailDrawRecordOffset)
+                    + sliceTailIndex[s] * tailSnapshotRecords
                 : 0u;
         // Only a tail-capable slice reserved the second half; for any other slice
         // base + half is the NEXT slice's block, so it must never be formed.
@@ -2935,11 +2943,11 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
                 BatchDrawSegment tail{};
                 if (sliceHasTail)
                 {
-                    tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + first.recordOffset)
+                    tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + first.recordOffset * tailRecordScale)
                                          * kDrawCommandStride;
                     tail.countByteOffset =
                         static_cast<size_t>(tailCursorBase + rowCursorCopies * rowCount + g) * sizeof(uint32_t);
-                    tail.maxDrawCount = run.capacity;
+                    tail.maxDrawCount = run.capacity * tailRecordScale;
                 }
                 if (mirroredRun)
                 {
@@ -2984,11 +2992,11 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
                 BatchDrawSegment tail{};
                 if (sliceHasTail)
                 {
-                    tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + e.recordOffset)
+                    tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + e.recordOffset * tailRecordScale)
                                          * kDrawCommandStride;
                     tail.countByteOffset =
                         static_cast<size_t>(tailCursorBase + b) * sizeof(uint32_t);
-                    tail.maxDrawCount = TailDrawBound(e.capacity);
+                    tail.maxDrawCount = impostorCrossfade ? e.capacity * tailRecordScale : TailDrawBound(e.capacity);
                 }
                 if (mirroredRow)
                 {
@@ -3133,10 +3141,11 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     pass->CallCursorBase = callCursorBase;
     pass->CallStatsBase = callStatsBase;
     pass->SnapshotRecords = snapshotRecords;
+    pass->TailRecordScale = tailRecordScale;
     pass->CursorHalfStride = cursorHalfStride;
     pass->HeadDrawBlockOffset = headDrawBlockOffset;
-    pass->TailStagingBlockOffset = tailStagingBlockOffset;
-    pass->TailDrawBlockOffset = tailDrawBlockOffset;
+    pass->TailStagingRecordOffset = tailStagingRecordOffset;
+    pass->TailDrawRecordOffset = tailDrawRecordOffset;
     pass->SliceTailIndex = std::move(sliceTailIndex);
     pass->SliceCursorOffset = sliceCursorOffset;
     pass->InstanceCount = instanceCount;

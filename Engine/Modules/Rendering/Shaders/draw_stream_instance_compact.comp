@@ -38,9 +38,15 @@ layout(push_constant) uniform PushConstants {
     uint countBase;
     uint srcRecordBase;
     uint dstRecordBase;
-    uint pairedRecords;
+    uint tailLayout;
     uint instancedRecords;
 } pc;
+
+uint RecordScale()
+{
+    return pc.tailLayout == 2u ? 2u : 1u;
+}
+
 
 shared uvec4 geometry[64];
 shared uint live[64];
@@ -55,16 +61,16 @@ void main() {
         uint upper = pc.rowCount;
         while (lower < upper) {
             uint middle = lower + (upper - lower) / 2u;
-            if (batchTable[middle].recordOffset <= slot)
+            if (batchTable[middle].recordOffset * RecordScale() <= slot)
                 lower = middle + 1u;
             else
                 upper = middle;
         }
         row = lower - 1u;
-        uint count = min(cursors[pc.cursorBase + row], batchTable[row].capacity);
-        if (pc.pairedRecords != 0u)
+        uint count = min(cursors[pc.cursorBase + row], batchTable[row].capacity * RecordScale());
+        if (pc.tailLayout == 1u)
             count &= ~1u;
-        isLive = slot - batchTable[row].recordOffset < count;
+        isLive = slot - batchTable[row].recordOffset * RecordScale() < count;
     }
 
     DrawCommand command;
@@ -99,5 +105,5 @@ void main() {
     uint destination = atomicAdd(cursors[pc.countBase + row], 1u);
     command.instanceCount = count;
     command.firstInstance = pc.dstRecordBase + slot;
-    commands[pc.dstRecordBase + batchTable[row].recordOffset + destination] = command;
+    commands[pc.dstRecordBase + batchTable[row].recordOffset * RecordScale() + destination] = command;
 }

@@ -557,9 +557,8 @@ class GPUDrawStreamBuilder
         uint32_t countBase;      // arena-absolute destination row or run counter base
         uint32_t srcRecordBase;  // arena-absolute source command block
         uint32_t dstRecordBase;  // arena-absolute destination command block
-        // Raw crossfade records are claimed in pairs. Clamp their live prefix
-        // to even before copying; instanced sources have applied this rule.
-        uint32_t pairedRecords;
+        // 0: dense rows. 1: paired LOD tails. 2: double capacity with mixed-arity tails.
+        uint32_t tailLayout;
         uint32_t InstancedRecords; // retain the prepacked per-instance indirection
     };
 
