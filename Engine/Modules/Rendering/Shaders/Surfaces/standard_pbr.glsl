@@ -13,6 +13,7 @@
 // @texture aoMap linear
 // @texture coatNormalMap linear
 // @texture heightMap linear
+// @maskCoverageSeed
 //
 // Parallax (GE_PARALLAX_MARCH): a bound height map displaces uv0 by the relief
 // march, and every map samples at the displaced UV through its own tiling with
@@ -205,6 +206,21 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 {
     SurfaceOutput o = DefaultSurfaceOutput();
 
+#if defined(GE_MASK_COVERAGE_SEED) && defined(GE_DEPTH_ONLY_FRAGMENT) && \
+    !defined(GE_PARALLAX_MARCH) && !defined(GE_STANDARD_UV1_CROSSFADE)
+    // Depth passes need only coverage. In the mip tail the bounded sample already provides it.
+    float maskTail = GE_FoliageTailWeight(GE_StandardMaskFootprint(sIn));
+    if (maskTail > 0.0)
+    {
+        float alpha = GE_StandardMaskShapeAlpha(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
+        float scale = Mat.uBaseColor.a * sIn.vertexColor.a;
+        o.opacity = GE_MaskCoverageOpacity(alpha, scale, clamp(Props.alphaCutoff, 0.0, 1.0), maskTail,
+                                           sIn.maskCoverageThreshold);
+        return o;
+    }
+#define GE_STANDARD_DEPTH_MASK_TESTED
+#endif
+
 #ifdef GE_PARALLAX_MARCH
     GE_StandardRelief relief = GE_StandardParallax(sIn);
     vec2 reliefUv0 = relief.uv0;
@@ -241,7 +257,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 #else
     o.opacity = albedo.a * Mat.uBaseColor.a * sIn.vertexColor.a;
 #endif
-#ifdef GE_MASK_COVERAGE_SEED
+#if defined(GE_MASK_COVERAGE_SEED) && !defined(GE_STANDARD_DEPTH_MASK_TESTED)
     // In the mip tail the far test keeps the coverage of the texture alpha on average (foliage_coverage.glsl).
     float maskTail = GE_FoliageTailWeight(GE_StandardMaskFootprint(sIn));
     if (maskTail > 0.0)

@@ -57,14 +57,7 @@ float GE_FoliageLeafCoverageOpacity(float shapeAlpha, float alphaScale, float cu
     return shapeMask * GE_FoliageCoverageOpacity(shapeAlpha * alphaScale, cutoff, coarseWeight, threshold);
 }
 
-// A masked surface without a leaf seed takes one threshold per triangle: the hash of its first vertex
-// index and its GPUScene slot, the same in every pass that draws it. The compat profile reads no screen
-// derivatives (GE_DFDX is zero), so it keeps the cutoff test and has no seed.
-#if defined(ALPHA_TEST) && !defined(GE_COMPAT_PROFILE)
-#define GE_MASK_COVERAGE_SEED
-#endif
-
-// The seed word of vertex `vertexIndex` of GPUScene instance `instanceIndex`.
+// The hash of the provoking vertex and its GPUScene slot supplies a stable triangle seed.
 uint GE_MaskCoverageSeed(uint vertexIndex, uint instanceIndex)
 {
     return GE_HashU32(vertexIndex ^ GE_HashU32(instanceIndex));

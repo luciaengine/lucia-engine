@@ -359,10 +359,11 @@ bool IsRigidStandardMask(std::span<const std::string> defines)
 {
     constexpr std::array<std::string_view, 5> required = {
         "HAS_POSITION", "HAS_UV0", "ALPHA_TEST", "GE_INSTANCED", "LIGHTING_MODEL_STANDARD_PBR"};
-    constexpr std::array<std::string_view, 12> optional = {
+    constexpr std::array<std::string_view, 13> optional = {
         "HAS_NORMAL", "HAS_TANGENT", "HAS_COLOR", "FORWARD_PLUS", "HAS_SHADOWS",
         "GE_DEPTH_ONLY_FRAGMENT", "GE_IBL_ENABLED", "GE_GTAO_ENABLED", "GE_DDGI_ENABLED",
-        "GE_SSSR_NORMAL_ROUGHNESS", "GE_SCREEN_SPACE_SHADOWS_ENABLED", "GE_LOD_CROSSFADE"};
+        "GE_SSSR_NORMAL_ROUGHNESS", "GE_SCREEN_SPACE_SHADOWS_ENABLED", "GE_LOD_CROSSFADE",
+        "GE_MASK_COVERAGE_SEED"};
     const auto contains = [defines](std::string_view define) {
         return std::find(defines.begin(), defines.end(), define) != defines.end();
     };
@@ -827,6 +828,12 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         };
         if (hasDefine("HAS_VERTEX_MODIFIER") || hasDefine("HAS_VERTEX_OUTPUT_MODIFIER"))
             result.defines.push_back("GE_VERTEX_DEFORMATION");
+        // Only a surface that consumes the seed needs the varying. Procedural and particle
+        // variants have no stable GPU scene slot, so those keep their existing cutoff.
+        if (surfaceSource.find("// @maskCoverageSeed") != std::string::npos &&
+            hasDefine("ALPHA_TEST") && hasDefine("GE_INSTANCED") && !hasDefine("GE_COMPAT_PROFILE") &&
+            !hasDefine("GE_PROCEDURAL_VERTEX_OUTPUT") && !hasDefine("GE_USER_PARTICLE_BUFFER"))
+            result.defines.push_back("GE_MASK_COVERAGE_SEED");
     }
 
     // Named texture slots: resolve the surface's `@texture` declarations to
