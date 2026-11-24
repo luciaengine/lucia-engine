@@ -2799,6 +2799,7 @@ if(GTest_FOUND)
             Tests/VertexDeformationClockTests.cpp
             Tests/DeformationMotionVariantTests.cpp
             Tests/ImpostorBakeVariantTests.cpp
+            Tests/ImpostorDepthReadbackTests.cpp
             Tests/ImpostorSurfaceComposeTests.cpp)
         target_link_libraries(ShaderVariantKeyTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
         if(Python3_Interpreter_FOUND AND NOT EMSCRIPTEN)

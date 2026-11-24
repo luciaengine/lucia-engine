@@ -622,6 +622,26 @@ std::vector<FoggedVariant> FoggedVariants()
 }
 } // namespace
 
+TEST(ForwardAdapterVariantCompile, BakedCardReplacesDepthOnBothSidesOfItsPlane)
+{
+    MaterialDocument card{};
+    card.lightingModel = "StandardPBR";
+    card.surfaceShader = "Surfaces/impostor.glsl";
+    card.vertexModifier = "VertexModifiers/impostor_card.glsl";
+    card.alphaMode = MaterialAlphaMode::Mask;
+    for (MaterialKeyword pass : {kDebugOverlayWorldPass, kWorldDrawBase | MaterialKeyword::DepthOnlyFragment})
+    {
+        SCOPED_TRACE(static_cast<uint64_t>(pass));
+        const auto result = BuildDocument(card, pass);
+        SKIP_WITHOUT_SHADERC(result);
+        ExpectBuildSucceeded(result);
+        const auto depth = FragmentDepth(result);
+        EXPECT_TRUE(depth.FragDepth);
+        EXPECT_TRUE(depth.DepthReplacing);
+        EXPECT_FALSE(depth.DepthLess);
+    }
+}
+
 // The zero-cost proof of the fog's pass keywords: a colour variant declares the height fog's parameters
 // (set 0, binding 52) and the sky backdrop its colour can come from (binding 53) exactly when it is
 // compiled with HeightFog, and the volumetric fog's block, volume and irradiance cube (54 to 56) exactly

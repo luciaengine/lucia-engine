@@ -14,6 +14,7 @@
 // @property vec4 impostorBounds "Impostor Bounds" default=0,0,0,1 group=Impostor
 
 #include "Includes/impostor_frame.glsl"
+#include "Includes/impostor_depth.glsl"
 
 #define GE_VERTEX_MODIFIER_INSTANCE 1
 
@@ -44,6 +45,7 @@ vec4 GE_ImpostorViewer()
 
 void ModifyInstance(inout InstanceData inst)
 {
+    GE_SetImpostorDepthFrame(mat3(inst.modelMatrix), Props.impostorBounds.w);
     vec3 axisX = normalize(inst.modelMatrix[0].xyz);
     vec3 axisY = normalize(inst.modelMatrix[1].xyz);
     vec3 axisZ = normalize(inst.modelMatrix[2].xyz);
