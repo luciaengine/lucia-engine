@@ -487,6 +487,38 @@ TEST_F(ForestPlacementDrawTest, EmitsStandRangesAndMatchingDepthOnlyIntoEligible
         EXPECT_TRUE(services.Views().PerView(view).ForwardCommands.empty());
 }
 
+TEST_F(ForestPlacementDrawTest, ReflectionCapturesDrawTheOverviewWithoutCameraDepthHeads)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "reflection.geforest";
+    WriteStore(file);
+    std::string error;
+    const auto runtime = ForestPlacementRuntime::Open(file, {}, error);
+    ASSERT_TRUE(runtime) << error;
+
+    RenderServices services;
+    constexpr uint64 kWorld = 45;
+    const auto layer = Rendering::RenderLayerMask::Default();
+    const auto capture = AddForestStandView(services, 512'000'055.0, kWorld, layer);
+    const auto otherWorld = AddForestStandView(services, 512'000'055.0, kWorld + 1, layer);
+    const auto subscription = RegisterForestStandDraws(services, kWorld, layer, runtime,
+        [](const ForwardEmitContext&) { return MakeForestStandDrawHeads(true); });
+
+    Rendering::RenderGraph::RGFrame graph(nullptr, nullptr, nullptr, nullptr);
+    for (const auto purpose : {ForwardEmitPurpose::ReflectionProbeCapture, ForwardEmitPurpose::PlanarReflectionCapture})
+    {
+        services.EmitProducerForwardCommandsForView(capture, purpose, &graph);
+        services.EmitProducerForwardCommandsForView(otherWorld, purpose, &graph);
+        const auto& commands = services.Views().PerView(capture);
+        ASSERT_EQ(commands.ForwardCommands.size(), 1u);
+        const auto draws = commands.ForwardCommands.front().SubDraws;
+        ASSERT_EQ(draws.size(), 1u);
+        EXPECT_EQ(draws.front().FirstIndex, 518u);
+        EXPECT_TRUE(commands.DepthCommands[static_cast<size_t>(DepthPassType::Prepass)].empty());
+        EXPECT_TRUE(services.Views().PerView(otherWorld).ForwardCommands.empty());
+    }
+}
+
 TEST_F(ForestPlacementDrawTest, AStandDrawsNothingWhenItsPagesReachPastTheOverviewMesh)
 {
     using namespace Engine::Renderer;

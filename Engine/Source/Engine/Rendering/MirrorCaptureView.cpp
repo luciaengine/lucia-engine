@@ -52,7 +52,7 @@ bool DeclareMirrorCaptureWorld(Pipeline::ViewDeclare& d, const MirrorCaptureView
     clear.clearDepth = true;
     clear.clearDepthValue = ReverseZ::kClearFar;
     rs.Views().SetViewClearConfig(capture.View, clear);
-    rs.EmitProducerForwardCommandsForView(capture.View, ForwardEmitPurpose::PlanarReflectionCapture);
+    rs.EmitProducerForwardCommandsForView(capture.View, ForwardEmitPurpose::PlanarReflectionCapture, &d.Frame);
     RenderServices::WorldPassTargetsRG targets{};
     targets.Color = color;
     targets.Depth = depth;

@@ -1495,7 +1495,8 @@ class RenderServices
     void BuildWorldBatchKeys();
     void EmitProducerForwardCommandsForView(
         Rendering::ViewId viewId,
-        ForwardEmitPurpose purpose = ForwardEmitPurpose::World);
+        ForwardEmitPurpose purpose = ForwardEmitPurpose::World,
+        Rendering::RenderGraph::RGFrame* captureFrame = nullptr);
     // While true, the next world pass(es) declared bind a zero-intensity
     // EnvData so the forward IBL contributes no environment radiance. The
     // reflection-probe capture sets this around its own face passes (with

@@ -284,7 +284,7 @@ void RenderServices::EmitProducerForwardCommands()
 }
 
 void RenderServices::EmitProducerForwardCommandsForView(Rendering::ViewId viewId,
-                                                        ForwardEmitPurpose purpose)
+                                                        ForwardEmitPurpose purpose, RenderGraph::RGFrame* captureFrame)
 {
     auto& pv = m_ViewRegistry.PerView(viewId);
     pv.ForwardCommands.clear();
@@ -309,13 +309,13 @@ void RenderServices::EmitProducerForwardCommandsForView(Rendering::ViewId viewId
     // Ordinary producers run while batch keys are built. The frame stamp can
     // still be empty here; callbacks that import resources opt into the
     // explicit frame-dependent declaration stage instead.
-    ctx.Frame = m_FrameRG.For.Frame;
+    ctx.Frame = captureFrame ? captureFrame : m_FrameRG.For.Frame;
     ctx.FrameIndex = m_Device ? m_Device->GetFrameIndex() : 0;
     ctx.ViewId = viewId;
     ctx.Purpose = purpose;
 
     for (const auto& entry : m_DrawProducers->Forward)
-        if (!entry.Options.RequiresFrame)
+        if (!entry.Options.RequiresFrame || (captureFrame && entry.Options.SupportsCapture))
         {
             const size_t emittedBefore = pv.ForwardCommands.size();
             entry.Fn(ctx);

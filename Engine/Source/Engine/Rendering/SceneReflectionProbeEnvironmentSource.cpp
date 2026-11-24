@@ -653,7 +653,7 @@ bool SceneReflectionProbeEnvironmentSource::DeclareFaceCapture(
     // Forward commands are per view and replaced on every emit, so the pass
     // must directly follow its own face's emit.
     m_Services->EmitProducerForwardCommandsForView(
-        m_ViewId, ForwardEmitPurpose::ReflectionProbeCapture);
+        m_ViewId, ForwardEmitPurpose::ReflectionProbeCapture, &frame);
     // Break the capture->cube->capture feedback: unless the probe opts in, the
     // capture face binds a zero-intensity EnvData so it never samples the cube
     // it is baking. Scoped to exactly this world pass declaration.
