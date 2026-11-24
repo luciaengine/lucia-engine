@@ -248,6 +248,7 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
         heads.Depth = color;
         heads.Depth->InternedPipeline = variant->PipelineId;
         heads.Depth->PipelineMeta = variant->VariantMeta.get();
+        heads.Depth->PipelineSetCount = static_cast<uint32_t>(variant->SetLayouts.size());
         heads.Depth->PassKeywords = head.Keywords;
     }
     return heads;

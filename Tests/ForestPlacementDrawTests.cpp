@@ -1,6 +1,7 @@
 #include "PackedPlacementTestArchive.h"
 
 #include "Assets/AssetManager.h"
+#include "Assets/ModelAsset.h"
 
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
@@ -9,6 +10,7 @@
 #include "ForestPlacementSession.h"
 #include "ForestPlacementRuntime.h"
 #include "ForestStandDrawProducer.h"
+#include "ForestStandDraws.h"
 #include "../Engine/Source/Engine/Rendering/IdentityMeshDrawConstants.h"
 #include "ForestPlacementFeature.h"
 #include "EngineLogCapture.h"
@@ -17,9 +19,11 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Mathematics/MatrixOps.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Tests/ScopedEnvVar.h"
+#include "StagedTestPaths.h"
 
 #include <gtest/gtest.h>
 
@@ -846,6 +850,66 @@ protected:
     std::unique_ptr<Window> m_Main;
     std::unique_ptr<Window> m_Other;
 };
+
+TEST_F(ForestPlacementSessionDeviceTest, OpaqueOverviewPrepassBindsOnlyTheSetsItsPipelineDeclares)
+{
+    using namespace Engine::Renderer;
+    const auto shaders = TestPaths::StagedRenderingShadersDir();
+    Rendering::MaterialBuildContext context{};
+    context.AdapterShaderDir = shaders;
+    context.IncludeDirs = {shaders};
+    context.CacheRoot = m_Scratch.Path() / "shader-cache";
+    m_Services.Materials().SetMaterialBuildContext(context);
+
+    MaterialDocument document{};
+    document.materialName = "OpaqueForestOverview";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    const GUID material = GUID::Generate();
+    ASSERT_NE(m_Services.Materials().RegisterMaterialFromDocument(material, document), nullptr);
+
+    Mesh mesh{};
+    mesh.Vertices.resize(4);
+    mesh.Vertices[1].Position[0] = 1.0f;
+    mesh.Vertices[2].Position[1] = 1.0f;
+    mesh.Vertices[3].Position[0] = mesh.Vertices[3].Position[1] = 1.0f;
+    mesh.Indices = {0, 1, 2, 1, 3, 2, 0, 1, 2, 1, 3, 2};
+    const Rendering::MeshGPUKey key{GUID::Generate(), 0};
+    ASSERT_TRUE(m_Services.GetMeshGPURegistry().RegisterSubmesh(key, mesh).IsValid());
+    const auto layers = Rendering::RenderLayerMask::Default();
+    const auto view = AddForestStandView(m_Services, 512'000'055.0, kWorld, layers);
+    const auto stand = RegisterForestStandMesh(m_Services, kWorld, layers, m_Runtime, key,
+                                               [material] { return material; });
+    auto& formats = m_Services.Views().PerView(view).PrepassFormatKey;
+    formats.DepthFormat = Rendering::TextureFormat::D32_FLOAT;
+    formats.RasterizationSamples = 1;
+    for (uint32 frame = 0; frame < 8; ++frame)
+    {
+        m_Services.Materials().BeginFrame();
+        ASSERT_TRUE(m_Device->BeginFrame());
+        m_Main->Graph.BeginFrame(frame);
+        m_Services.EmitProducerForwardCommandsForView(view);
+        m_Services.EmitFrameForwardCommandsForView(m_Main->Graph, view);
+        const auto heads = m_Services.GetDepthCommands(view, DepthPassType::Prepass);
+        m_Main->Graph.Execute();
+        m_Device->WaitForIdle();
+        if (heads.empty())
+            continue;
+        ASSERT_EQ(heads.size(), 1u);
+        const auto& head = heads.front();
+        const auto* pipeline = m_Device->LookupGraphicsPipeline(head.InternedPipeline);
+        ASSERT_NE(pipeline, nullptr);
+        ASSERT_EQ(pipeline->PixelShader, nullptr);
+        ASSERT_EQ(pipeline->DescriptorSetLayouts.size(), 1u);
+        ASSERT_NE(head.PipelineMeta, nullptr);
+        ASSERT_TRUE(std::ranges::any_of(head.PipelineMeta->Sets, [](const auto& set) {
+            return set.Set > 0u && !set.Bindings.empty();
+        }));
+        EXPECT_EQ(head.PipelineSetCount, pipeline->DescriptorSetLayouts.size());
+        return;
+    }
+    FAIL() << "The registered opaque overview never published its prepass head";
+}
 
 // The corner of this card reaches 10 + 4 * sqrt(2) m from the root, past the archive's 12 m.
 Engine::Renderer::ForestImpostorCard OversizedCard()
