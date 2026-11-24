@@ -172,12 +172,23 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     objectNormal = normalize(objectNormal + vec3(0.0, 1e-4, 0.0));
     o.normalWS = normalize(vec3(c * objectNormal.x + s * objectNormal.z, objectNormal.y,
                                 -s * objectNormal.x + c * objectNormal.z));
+    o.roughness = 0.9;
+    o.metallic = 0.0;
 #ifdef GE_PRIMARY_LIGHT_OCCLUSION
+  #if defined(GE_FORWARD_EARLY_ALPHA_TEST) && !defined(GE_USER_CUSTOM_LIGHTING)
+    // Keep the reprojected normal in every lane: specular AA takes its derivatives in the
+    // adapter. Only the mip-ready atlas uses explicit LOD for every crown-light tap.
+    // Shadow diagnostics can display fragments that ordinary shading would cut out.
+    if (filtered && o.opacity < clamp(Props.alphaCutoff, 0.0, 1.0)
+    #ifdef HAS_SHADOWS
+        && GE_ShadowDebugMode() == 0
+    #endif
+        )
+        return o;
+  #endif
     o.primaryLightOcclusion =
         GE_ImpostorCrownLight(surface, sIn.primaryLightDirectionWS, c, s, Props.impostorAtlas, halfTexel) *
         mix(1.0, normalCoherence, Props.impostorNormalCoherenceWeight);
 #endif
-    o.roughness = 0.9;
-    o.metallic = 0.0;
     return o;
 }
