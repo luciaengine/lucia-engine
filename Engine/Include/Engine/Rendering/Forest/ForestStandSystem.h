@@ -66,6 +66,8 @@ public:
     const StandStatus* FindStatus(uint64 worldId, ECS::EntityHandle entity) const;
 
 private:
+    bool HasScheduledWork(ECS::World& world) override;
+
     // How a stand draws its trees. A change between modes attaches the stand again.
     enum class DetailMode : uint8
     {
@@ -113,6 +115,7 @@ private:
     {
         std::mutex Mutex;
         FlatSet<GUID> Guids;
+        bool TracksStands = false;
     };
 
     // True when a ForestStand or the MeshRenderer of a stand changed, or an entity came or went.
