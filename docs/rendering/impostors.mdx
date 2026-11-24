@@ -17,7 +17,7 @@ All parts of the model switch together. A model with a bark part and a leaf part
 
 ## How objects switch to impostors
 
-The GPU measures the projected size of the sphere that the atlas was baked on, the smallest sphere around the object. It does not use the culling sphere, which can be larger, for example to make room for wind. When the sphere is smaller than one atlas view across the screen, about 128 pixels across, the object draws its card in place of all its parts, whatever mesh LOD they show. At that size the card shows about one atlas pixel per screen pixel, so it looks closer to the object than a coarse mesh LOD of its leaves. The object switches only when its card is ready. A small margin reduces switching when the camera moves near that size.
+The GPU measures the projected size of the sphere used to bake the atlas. It does not use the culling sphere, which can be larger, for example to make room for wind. When the sphere is smaller than one atlas view across the screen, about 128 pixels across, the object draws its card in place of all its parts, whatever mesh LOD they show. At that size the card shows about one atlas pixel per screen pixel, so it looks closer to the object than a coarse mesh LOD of its leaves. The object switches only when its card is ready. A small margin reduces switching when the camera moves near that size.
 
 Use **Impostor Screen Height (%)** to set the screen height under which an opted-in model switches. A value of 0 uses the default of one atlas pixel per rendered pixel, which is about 11.9% of the screen height at 1080 lines. If a model must show its last mesh LOD before its card, set a value below the screen height at which that LOD starts.
 

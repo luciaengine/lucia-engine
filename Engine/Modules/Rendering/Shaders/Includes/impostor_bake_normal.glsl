@@ -8,7 +8,7 @@
 // above its frame (the outer frames of the atlas look from the horizon). So the bake turns the normal
 // toward the frame camera lifted toward +Y, and a leaf seen edge-on from a horizon frame keeps its upper
 // side, which faces the sky and the sun. towardViewer: unit, surface to the frame camera, object space.
-const float kImpostorTwoSidedLift = 0.8;
+const float kImpostorTwoSidedLift = 0.45;
 // The instance flag that marks a part drawn on both faces. MUST match GPUInstanceDepthClass.h
 // kInstanceFlagDepthDoubleSided; the baker sets it from Material::IsDoubleSided.
 const uint kImpostorBakeTwoSidedFlag = 8u;
