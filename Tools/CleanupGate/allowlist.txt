@@ -49,16 +49,16 @@ Engine/Include/Platform/Thread.h:sleep_poll:1                                   
 Engine/Include/Scripting/ScriptingABI.h:float_ptr:1                                          # C ABI out-parameter: a scalar, the bar's max, as every GE_UIElement getter returns one
 Engine/Modules/CBTTerrain/Source/CBTInstance.cpp:manual_barrier:20                           # the CBT shadow chain's resources and passes move into the render graph (#4809)
 Engine/Modules/CBTTerrain/Source/CBTResources.cpp:create_buffer:6                            # the CBT shadow chain's resources and passes move into the render graph (#4809)
-Engine/Modules/CBTTerrain/Source/CBTResources.cpp:create_command_list:1                      # the CBT shadow chain's resources and passes move into the render graph (#4809)
+Engine/Modules/CBTTerrain/Source/CBTResources.cpp:create_command_list:2                      # the CBT shadow chain's resources and passes move into the render graph (#4809)
 Engine/Modules/CBTTerrain/Source/CBTResources.cpp:create_texture:6                           # the CBT shadow chain's resources and passes move into the render graph (#4809)
-Engine/Modules/CBTTerrain/Source/CBTResources.cpp:destroy_resource:20                        # the CBT shadow chain's resources and passes move into the render graph (#4809)
+Engine/Modules/CBTTerrain/Source/CBTResources.cpp:destroy_resource:25                        # the CBT shadow chain's resources and passes move into the render graph (#4809)
 Engine/Modules/CBTTerrain/Source/CBTResources.cpp:manual_barrier:1                           # the CBT shadow chain's resources and passes move into the render graph (#4809)
 Engine/Modules/CBTTerrainECS/Source/TerrainShadowFieldLit.cpp:create_texture:1               # the CBT shadow chain's resources and passes move into the render graph (#4809)
 Engine/Modules/CBTTerrainECS/Source/TerrainShadowFieldLit.cpp:destroy_resource:1             # the CBT shadow chain's resources and passes move into the render graph (#4809)
 Engine/Modules/CBTTerrainECS/Source/TerrainShadowFieldLit.cpp:manual_barrier:1               # the CBT shadow chain's resources and passes move into the render graph (#4809)
 Engine/Modules/FileWatcher/Include/FileWatcher/FileWatcher.h:condition_variable:1            # a file watcher (OS blocking wait)
 Engine/Modules/FileWatcher/Include/FileWatcher/FileWatcher.h:std_thread:1                    # a file watcher (OS blocking wait)
-Engine/Modules/FileWatcher/Source/FileWatcher.cpp:atomic_spin:4                              # a file watcher (OS blocking wait and its stop checks)
+Engine/Modules/FileWatcher/Source/FileWatcher.cpp:atomic_spin:3                              # a file watcher (OS blocking wait and its stop checks)
 Engine/Modules/FileWatcher/Source/FileWatcher.cpp:native_thread:1                            # a file watcher (OS blocking wait)
 Engine/Modules/FileWatcher/Source/FileWatcher.cpp:std_thread:1                               # a file watcher (OS blocking wait)
 Engine/Modules/Input/Include/Input/Gamepad/GamepadPoller.h:std_thread_id_info:1                # a thread-affinity check: gamepad discovery never runs on the frame thread
@@ -100,8 +100,8 @@ Engine/Modules/Rendering/Include/Rendering/Core/TextureManager.h:create_texture:
 Engine/Modules/Rendering/Include/Rendering/Core/TextureManager.h:destroy_resource:1          # the resource manager that owns the resource
 Engine/Modules/Rendering/Include/Rendering/Core/ViewParamsLayout.h:raw_array:2               # GPU upload struct: the shader's layout
 Engine/Modules/Rendering/Include/Rendering/Sky/SkyRenderer.h:raw_array:1                     # GPU upload struct: the std140 pad before AtmosphereUBO mieAbsorption, implicit in GLSL
-Engine/Modules/Rendering/Source/Core/GPUScene.cpp:create_buffer:6                            # GPUScene owns the scene's per-slot instance buffers and its mesh table
-Engine/Modules/Rendering/Source/Core/GPUScene.cpp:destroy_resource:8                         # GPUScene owns the scene's per-slot instance buffers and its mesh table
+Engine/Modules/Rendering/Source/Core/GPUScene.cpp:create_buffer:7                            # GPUScene owns the scene's per-slot instance buffers and its mesh table
+Engine/Modules/Rendering/Source/Core/GPUScene.cpp:destroy_resource:10                         # GPUScene owns the scene's per-slot instance buffers and its mesh table
 Engine/Modules/Rendering/Source/DirectX12/D3D12CommandList.cpp:raw_array:2                   # a GPU backend: the graphics API's own form, or the CommandList interface's signature it overrides
 Engine/Modules/Rendering/Source/DirectX12/D3D12CommandList.h:raw_array:1                     # a GPU backend: the graphics API's own form, or the CommandList interface's signature it overrides
 Engine/Modules/Rendering/Source/Metal/MetalClearTexel.h:raw_array:5                          # a GPU backend: the graphics API's own form, or the CommandList interface's signature it overrides
@@ -126,7 +126,7 @@ Engine/Modules/UI/Source/Controls/Foldout.cpp:control_creations:6               
 Engine/Modules/UI/Source/Controls/ProgressBar.cpp:files_assembling_ui:1                      # the track's one fill, built in code as Slider and Toggle build their parts; the move to .uxml is #6568
 Engine/Modules/UI/Source/Controls/ProgressBar.cpp:imperative_no_asset:1                      # the track's one fill, built in code as Slider and Toggle build their parts; the move to .uxml is #6568
 Engine/Source/Assets/ModelAssetLoadGltf.cpp:float_ptr:6                                      # importer: a pointer into the glTF file's own attribute arrays
-Engine/Source/Core/Application.cpp:sleep_poll:1                                              # the frame pacer's tail yield
+Engine/Source/Core/Application.cpp:sleep_poll:2                                              # the frame pacer's tail yield
 Engine/Source/Engine/Build/CancellableShellProcess.cpp:atomic_spin:1                         # a process host (pipes block)
 Engine/Source/Engine/Build/CancellableShellProcess.cpp:std_thread:2                          # a process host (pipes block)
 Engine/Source/Engine/Build/ExportRequirements.cpp:named_for_a_function:1                     # the struct ExportRequirement; the rule ignores the classes a file defines (#5208)
@@ -142,7 +142,7 @@ Engine/Source/Engine/Rendering/StagingViewPool.cpp:create_texture:1             
 Engine/Source/Engine/Rendering/StagingViewPool.cpp:destroy_resource:1                        # a staging view output outlives every frame: the UI samples it between on-demand renders
 Engine/Source/Engine/Rendering/TextureService.cpp:create_command_list:1                      # TextureService owns texture creation and upload
 Engine/Source/Engine/Rendering/TextureService.cpp:create_texture:4                           # TextureService owns texture creation and upload
-Engine/Source/Engine/Rendering/TextureService.cpp:destroy_resource:25                        # TextureService owns texture creation and upload
+Engine/Source/Engine/Rendering/TextureService.cpp:destroy_resource:28                        # TextureService owns texture creation and upload
 Engine/Source/Engine/Rendering/TextureService.cpp:manual_barrier:2                           # TextureService owns texture creation and upload
 Engine/Source/Engine/Video/AsyncVideoRecorder.cpp:condition_variable:1                       # a codec / capture thread (decoder blocks)
 Engine/Source/Engine/Video/AsyncVideoRecorder.cpp:std_thread:3                               # a codec / capture thread (decoder blocks)
