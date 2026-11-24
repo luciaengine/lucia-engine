@@ -152,9 +152,8 @@ MaterialDocument BuildBarkMaterialDocument(const EZTree::TreeOptions& options,
     else
         doc.materialName = doc.materialName.empty() ? "Tree Generator Bark" : (doc.materialName + " (Tree Generator)");
 
-    // The generated tree combines branch tubes and leaf billboards into one
-    // renderable today. Keep it double-sided so leaf quads and any imported
-    // EZ-Tree winding differences cannot disappear under backface culling.
+    // Branch generation joins the side rings without caps. The inner face of
+    // a tube remains visible through an exposed end.
     doc.doubleSided = true;
 
     const bool hasExplicitBarkTint = options.bark.tint != 0xFFFFFFu;
