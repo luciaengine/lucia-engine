@@ -332,7 +332,8 @@ public:
     bool Initialize(const std::filesystem::path& assetRoot,
                     JobSystem::WorkStealingThreadPool* jobSystem = nullptr,
                     const std::filesystem::path& authoritativeDbFile = {},
-                    const std::filesystem::path& cacheRoot = {});
+                    const std::filesystem::path& cacheRoot = {},
+                    bool readOnlyAssetDatabase = false);
 
     /**
      * @brief Shutdown asset manager
