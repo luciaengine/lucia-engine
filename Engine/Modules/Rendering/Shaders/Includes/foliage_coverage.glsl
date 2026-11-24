@@ -1,6 +1,8 @@
 #ifndef GE_FOLIAGE_COVERAGE_GLSL
 #define GE_FOLIAGE_COVERAGE_GLSL
 
+#include "integer_hash.glsl"
+
 // A coverage threshold in [0, 1) fixed to the screen pixel. It does not move with the surface, so
 // use it only for a surface that faces the camera, such as an impostor card.
 float GE_FoliageScreenThreshold(vec2 fragCoord)
@@ -12,11 +14,24 @@ float GE_FoliageScreenThreshold(vec2 fragCoord)
 // into the texture border and flatten the outline of the canopy.
 const float kFoliageShapeFootprint = 1.0 / 32.0;
 
-// UV per pixel of a sample with screen derivatives `uvDx` and `uvDy` and mip bias `mipBias`, along
-// the longer axis. The sampler reads the level with about 1 / footprint texels across.
+// The isotropic UV gradient of a sample at the shape bound, under mip bias `mipBias`.
+float GE_FoliageShapeGradient(float mipBias)
+{
+    return kFoliageShapeFootprint * exp2(-mipBias);
+}
+
+// The anisotropy of the material samplers (RendererProfile's material anisotropy).
+const float kFoliageMaxAnisotropy = 16.0;
+
+// UV per pixel of the level a material sampler reads for screen derivatives `uvDx` and `uvDy` and
+// mip bias `mipBias`: the shorter axis, or the longer axis over the anisotropy where that is coarser.
+// A card seen edge-on near the camera keeps its fine level and its cutoff test.
 float GE_FoliageFootprint(vec2 uvDx, vec2 uvDy, float mipBias)
 {
-    return max(max(length(uvDx), length(uvDy)), 1e-6) * exp2(mipBias);
+    float lengthX = length(uvDx);
+    float lengthY = length(uvDy);
+    float level = max(min(lengthX, lengthY), max(lengthX, lengthY) / kFoliageMaxAnisotropy);
+    return max(level, 1e-6) * exp2(mipBias);
 }
 
 // The coverage test blends in from 32 to 16 texels across the footprint.
@@ -40,6 +55,32 @@ float GE_FoliageLeafCoverageOpacity(float shapeAlpha, float alphaScale, float cu
     const float kMinimumAlphaFractionOfCutoff = 0.75;
     float shapeMask = step(kMinimumAlphaFractionOfCutoff * cutoff, shapeAlpha);
     return shapeMask * GE_FoliageCoverageOpacity(shapeAlpha * alphaScale, cutoff, coarseWeight, threshold);
+}
+
+// A masked surface without a leaf seed takes one threshold per triangle: the hash of its first vertex
+// index and its GPUScene slot, the same in every pass that draws it. The compat profile reads no screen
+// derivatives (GE_DFDX is zero), so it keeps the cutoff test and has no seed.
+#if defined(ALPHA_TEST) && !defined(GE_COMPAT_PROFILE)
+#define GE_MASK_COVERAGE_SEED
+#endif
+
+// The seed word of vertex `vertexIndex` of GPUScene instance `instanceIndex`.
+uint GE_MaskCoverageSeed(uint vertexIndex, uint instanceIndex)
+{
+    return GE_HashU32(vertexIndex ^ GE_HashU32(instanceIndex));
+}
+
+// The far opacity of a masked surface: texture alpha `alpha` times `alphaScale` (tint and vertex alpha)
+// against `cutoff`. The scale only moves the cutoff, as near, so a scale under the cutoff hides the surface.
+float GE_MaskCoverageOpacity(float alpha, float alphaScale, float cutoff, float coarseWeight, float threshold)
+{
+    return step(cutoff, alphaScale) * GE_FoliageCoverageOpacity(alpha, cutoff / max(alphaScale, 1e-6), coarseWeight, threshold);
+}
+
+// The coverage threshold in [0, 1) of a seed word: its top 24 bits, which a float holds exactly.
+float GE_MaskCoverageThreshold(uint seed)
+{
+    return float(seed >> 8u) / 16777216.0;
 }
 
 #endif

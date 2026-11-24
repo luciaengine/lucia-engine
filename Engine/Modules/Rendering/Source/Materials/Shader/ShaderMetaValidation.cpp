@@ -16,9 +16,11 @@ static void AddIssue(ValidationReport& r, IssueSeverity s, const char* code, con
 // the interface slot is (location, component), not location alone. Matrices,
 // structs and arrays straddle locations in ways this meta does not model, so
 // they claim the whole location, which is the pre-component behaviour for them.
-static uint32_t StageIOComponentMask(const StageIO& io) {
+// A mesh shader's outputs are arrays over its vertices or primitives (`meshArrayed`): that outer
+// dimension takes no location, so the element claims what a vertex shader's output would.
+static uint32_t StageIOComponentMask(const StageIO& io, bool meshArrayed) {
     constexpr uint32_t kAllComponents = 0xFu;
-    if (!io.Type.ArrayDims.empty())
+    if (io.Type.ArrayDims.size() > (meshArrayed ? 1u : 0u))
         return kAllComponents;
     if (io.Type.Kind != TypeKind::Scalar && io.Type.Kind != TypeKind::Vector)
         return kAllComponents;
@@ -32,8 +34,8 @@ static uint32_t StageIOComponentMask(const StageIO& io) {
 // the same location. Returns the issue text, or an empty string when the slot
 // is free; `claimed` accumulates across the direction being checked.
 static std::string ClaimStageIOSlot(std::unordered_map<uint32_t, uint32_t>& claimed,
-                                    const StageIO& io) {
-    const uint32_t mask = StageIOComponentMask(io);
+                                    const StageIO& io, bool meshArrayed) {
+    const uint32_t mask = StageIOComponentMask(io, meshArrayed);
     uint32_t& occupied = claimed[io.Location];
     if ((occupied & mask) == 0u) {
         occupied |= mask;
@@ -71,14 +73,14 @@ ValidationReport ValidateShaderMeta(const ShaderMeta& meta, uint32_t pushConstan
     for (const auto& [stageName, stage] : meta.Stages) {
         std::unordered_map<uint32_t, uint32_t> inSlots, outSlots;
         for (const auto& i : stage.Inputs) {
-            const std::string clash = ClaimStageIOSlot(inSlots, i);
+            const std::string clash = ClaimStageIOSlot(inSlots, i, false);
             if (!clash.empty()) {
                 std::ostringstream oss; oss << stageName << ": duplicate input " << clash;
                 AddIssue(report, IssueSeverity::Error, "DuplicateStageIOLocation", oss.str());
             }
         }
         for (const auto& o : stage.Outputs) {
-            const std::string clash = ClaimStageIOSlot(outSlots, o);
+            const std::string clash = ClaimStageIOSlot(outSlots, o, stageName == "ms");
             if (!clash.empty()) {
                 std::ostringstream oss; oss << stageName << ": duplicate output " << clash;
                 AddIssue(report, IssueSeverity::Error, "DuplicateStageIOLocation", oss.str());

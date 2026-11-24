@@ -84,6 +84,10 @@ struct SurfaceInput
     vec2 screenUV;      // screen-space UV (default: vec2(0))
     float linearDepth;  // linear depth (default: 0)
     vec4 custom0;       // user-defined data from vertex/instance adapter (default: vec4(1))
+#ifdef GE_MASK_COVERAGE_SEED
+    // The masked surface's far coverage threshold in [0, 1), one per triangle (foliage_coverage.glsl).
+    float maskCoverageThreshold;
+#endif
 #ifdef GE_USER_PARTICLE_BUFFER
     vec4 particleAnimation;
     mat3 particleBasis;
@@ -361,6 +365,9 @@ SurfaceInput DefaultSurfaceInput()
     si.screenUV = vec2(0.0);
     si.linearDepth = 0.0;
     si.custom0 = vec4(1.0);
+#ifdef GE_MASK_COVERAGE_SEED
+    si.maskCoverageThreshold = 0.5;
+#endif
 #ifdef GE_USER_PARTICLE_BUFFER
     si.particleAnimation = vec4(0.0);
     si.particleBasis = mat3(1.0);

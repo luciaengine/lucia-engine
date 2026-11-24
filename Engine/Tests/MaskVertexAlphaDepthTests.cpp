@@ -52,6 +52,7 @@
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include "StagedTestPaths.h"
@@ -917,10 +918,32 @@ TEST(IndexedDepthReuse, MeshReplayRejectsUnservedFragmentInputs)
     fragment.Inputs.front().Type.VecSize = 3u;
     fragment.Inputs.front().Component = 1u;
     EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+    mesh.Outputs.front().Component = 1u;
+    EXPECT_TRUE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+    mesh.Outputs.front().Component = 0u;
 
     fragment.Inputs.front().Component = 0u;
     fragment.Inputs.push_back({.Location = 3u});
     EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+}
+
+// A masked fragment reads the coverage seed at location 14, component 3 (foliage_coverage.glsl). Both
+// shipped replay mesh shaders write it there, so masked batches keep the owner replay.
+TEST(IndexedDepthReuse, ShippedMeshReplayServesTheMaskCoverageSeed)
+{
+    namespace R = GameEngine::Rendering;
+    using GameEngine::Engine::Renderer::MatchesIndexedOwnerMeshFragmentInputs;
+    R::StageMeta fragment;
+    fragment.Inputs = {{.Location = 14u, .Component = 3u, .Type = {.Kind = R::TypeKind::Scalar, .Base = R::BaseType::UInt}}};
+    for (const char* name : {"indexed_depth_replay_mesh_forward.shaderpkg", "indexed_depth_replay_mesh_forward_color.shaderpkg"})
+    {
+        R::ShaderPackage package;
+        ASSERT_TRUE(R::LoadShaderPkg((TestPaths::StagedRoot() / "Shaders" / name).string(), R::ShaderSourceKind::SpirV, package))
+            << name;
+        const auto mesh = package.meta.Stages.find("ms");
+        ASSERT_NE(mesh, package.meta.Stages.end()) << name;
+        EXPECT_TRUE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh->second)) << name;
+    }
 }
 
 TEST(IndexedDepthReuse, OwnerMaterialRowPreservesDonorConstantsAndRejectsInheritedRowOverrides)

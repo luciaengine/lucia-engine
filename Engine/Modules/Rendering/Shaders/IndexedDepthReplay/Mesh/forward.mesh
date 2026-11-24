@@ -11,6 +11,7 @@ layout(set=0,binding=5) uniform CameraUBO
 #include "Includes/camera_ubo_fields.glsl"
 } Cam;
 #include "Includes/camera_relative.glsl"
+#include "Includes/foliage_coverage.glsl"
 
 layout(local_size_x=32) in;
 layout(triangles,max_vertices=48,max_primitives=16) out;
@@ -23,7 +24,9 @@ layout(location=4) out vec4 vColor[];
 #endif
 layout(location=6) flat out uint vMaterialIndex[];
 layout(location=7) flat out vec4 vCustom0[];
-layout(location=14) flat out uint vInstanceFlags[];
+layout(location=14,component=0) flat out uint vInstanceFlags[];
+// The masked coverage seed of the vertex stage: the triangle's first vertex, so every vertex carries the provoking value.
+layout(location=14,component=3) flat out uint vMaskCoverageSeed[];
 layout(location=15) out vec3 vPosRel[];
 
 layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer UInts {uint data[];};
@@ -75,6 +78,8 @@ void main()
         vMaterialIndex[vertexSlot] = inst.materialIndex;
         vCustom0[vertexSlot] = inst.custom0;
         vInstanceFlags[vertexSlot] = inst.flags;
+        uint firstVertex = uint(int(indexAt(row.x + primitive*3u)) + int(row.y));
+        vMaskCoverageSeed[vertexSlot] = GE_MaskCoverageSeed(firstVertex, inst.instanceIndex);
 #ifdef HAS_COLOR
         vColor[vertexSlot] = Colors(pc_inst.ge_colorAddress).data[vertex];
 #endif
