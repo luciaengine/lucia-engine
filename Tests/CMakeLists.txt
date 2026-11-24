@@ -296,6 +296,16 @@ if(TARGET GePrebuiltStamp)
             -P ${CMAKE_SOURCE_DIR}/cmake/Tests/StageEnginePackagePrebuiltTest.cmake)
 endif()
 
+# The desktop Player needs its runtime packages when the Editor target is absent.
+if(TARGET Player AND NOT GE_MOBILE AND TARGET GePrebuiltStamp)
+  add_test(NAME StageEnginePackagePrebuilt.PlayerStagesEZTreeRuntime
+    COMMAND ${CMAKE_COMMAND}
+            -DSTAMP_TOOL=$<TARGET_FILE:GePrebuiltStamp>
+            -DPACKAGES_DIR=$<TARGET_FILE_DIR:Player>/Packages
+            -DWORK=${CMAKE_BINARY_DIR}/Tests/PlayerRuntimePackage/$<CONFIG>
+            -P ${CMAKE_SOURCE_DIR}/cmake/Tests/PlayerRuntimePackageTest.cmake)
+endif()
+
 # The engine_abi markers beside the Editor's prebuilt engine-package modules
 # match the digest of its SDK as the build left it, so the editor loads the
 # prebuilts instead of rebuilding them from source; on macOS the signed bundle

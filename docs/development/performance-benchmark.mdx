@@ -53,6 +53,12 @@ The result keeps the median, the 99th percentile, the mean, the minimum and the 
 
 The runner refuses a scene, and marks it not valid, when the Player exits with an error, the swapchain is not the manifest's resolution, the swapchain presents with FIFO, a pose has no resolved GPU timings, a pass that the scene must run is absent, or the log says that scene content or a feature did not load (an unknown component type, a missing asset, cluster LOD pages off). A scene whose feature did not run cannot give a fast number.
 
+### Custom camera paths
+
+To measure a moving camera in a custom `Player --benchmark` plan, supply one warm-up pose in `poses` and an ordered `timingPath` of exactly `timingFrames` poses. Each path entry uses the same position, yaw, and pitch fields as a held pose. The scene needs an active root camera with a Transform.
+
+The Player applies one path entry per timed frame. It stops the run if a frame cannot be submitted. It holds the final path pose during GPU profiling. The raw result lists the timed path in `timingPath` and the held profiling pose in `profiledPose`. Before comparing two flyovers, verify that these fields match the plan and that the scene feature you intend to measure ran on the path.
+
 ## Run the benchmark
 
 The reference machine is the Steam Machine (12 cores, RADV). Run nothing else on it during a run: the runner refuses to start above a 1-minute load average of 1.5, and marks a scene not valid when the load average is above 6 at its end.

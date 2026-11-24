@@ -94,3 +94,25 @@ TEST(PlayerBenchmarkPlan, YawTurnsFromPlusZTowardPlusXAndPositivePitchLooksUp)
     pose.PitchDeg = -45.0;
     ExpectLooksAlong(pose, 0.70710678f, -0.70710678f, 0.0f);
 }
+
+TEST(PlayerBenchmarkPlan, ARouteRequiresOnePoseForEveryTimingFrame)
+{
+    const auto plan = Parse(R"({
+        "timingFrames": 2, "poses": [{"position": [0, 9, 0]}],
+        "timingPath": [{"position": [0, 7, 1]}, {"position": [0, 3, 2], "yawDeg": 20}]})");
+    ASSERT_TRUE(plan);
+    ASSERT_EQ(plan->TimingPath.size(), 2u);
+    EXPECT_DOUBLE_EQ(plan->TimingPath[0].Position.Y, 7);
+    EXPECT_DOUBLE_EQ(plan->TimingPath[1].Position.Y, 3);
+    EXPECT_DOUBLE_EQ(plan->TimingPath[1].YawDeg, 20);
+
+    EXPECT_FALSE(Parse(R"({
+        "timingFrames": 2, "poses": [{"position": [0, 9, 0]}],
+        "timingPath": [{"position": [0, 7, 1]}]})"));
+    EXPECT_FALSE(Parse(R"({
+        "timingFrames": 2, "poses": [{"position": [0, 9, 0]}],
+        "timingPath": [{"position": [0, 7, 1]}, {"position": [0, 3]}]})"));
+    EXPECT_FALSE(Parse(R"({
+        "timingFrames": 2, "poses": [{"position": [0, 9, 0]}, {"position": [0, 7, 1]}],
+        "timingPath": [{"position": [0, 7, 1]}, {"position": [0, 3, 2]}]})"));
+}

@@ -549,7 +549,7 @@ vec3 GE_AccumulateClusteredLighting(
         // turns the sun off through its colour.
         if (dirI * max(dirCol.r, max(dirCol.g, dirCol.b)) > 0.0)
         {
-            vec3 brdf = GE_EvaluateSurfaceLight(so, V, dirL);
+            vec3 brdf = GE_EvaluateDirectionalSurfaceLight(so, V, dirL);
             // The front-lit BRDF is shadowed AND glass-tinted; subsurface transmission is NOT
             // shadowed (light through a thin object must survive the object's own back-shadow)
             // — added outside dirAtten/dirTint.
@@ -577,7 +577,7 @@ vec3 GE_AccumulateClusteredLighting(
         {
             vec3 secL = normalize(-Light.uSecondaryDirs[i].xyz);
             vec3 secCol = Light.uSecondaryColors[i].rgb;
-            totalLight += GE_EvaluateSurfaceLight(so, V, secL) * secCol
+            totalLight += GE_EvaluateDirectionalSurfaceLight(so, V, secL) * secCol
                         + GE_SubsurfaceTransmission(so, V, secL) * secCol;
         }
     }
