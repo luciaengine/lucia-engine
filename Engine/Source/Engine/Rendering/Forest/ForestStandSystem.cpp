@@ -110,7 +110,8 @@ ForestStandSystem::ForestStandSystem(RenderServices* renderServices, AssetManage
     const auto remember = [changed = m_ChangedArchives](const GUID& file)
     {
         const std::scoped_lock lock(changed->Mutex);
-        changed->Guids.Insert(file);
+        if (changed->TracksStands)
+            changed->Guids.Insert(file);
     };
     m_ArchiveWatch = AssetReloadInvalidator(m_Assets->GetEventDispatcher(), AssetType::ForestPlacementArchive,
                                             remember, AssetReloadInvalidator::EventSet::ContentEvents);
@@ -126,6 +127,12 @@ const ForestStandSystem::StandStatus* ForestStandSystem::FindStatus(uint64 world
         return nullptr;
     const Stand* stand = m_Stands.Find(entity);
     return stand ? &stand->Status : nullptr;
+}
+
+bool ForestStandSystem::HasScheduledWork(ECS::World& world)
+{
+    return m_RenderServices && m_Assets &&
+           (!m_Stands.Empty() || world.Query<ECS::Read<Components::ForestStand>>().Count() != 0);
 }
 
 void ForestStandSystem::Update(ECS::World& world, float32 /*deltaTime*/)
@@ -279,6 +286,13 @@ void ForestStandSystem::Reconcile(ECS::World& world)
     std::vector<std::pair<ECS::EntityHandle, Components::ForestStand>> found;
     world.Query<ECS::Read<Components::ForestStand>>().Each(
         [&found](ECS::EntityHandle entity, const Components::ForestStand& stand) { found.emplace_back(entity, stand); });
+
+    {
+        const std::scoped_lock lock(m_ChangedArchives->Mutex);
+        m_ChangedArchives->TracksStands = !found.empty();
+        if (found.empty())
+            m_ChangedArchives->Guids.Clear();
+    }
 
     FlatMap<ECS::EntityHandle, Stand> stands;
     for (const auto& [entity, settings] : found)
