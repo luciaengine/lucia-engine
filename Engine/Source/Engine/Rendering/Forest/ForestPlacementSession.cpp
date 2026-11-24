@@ -23,12 +23,9 @@ void ForestPlacementSession::Reset(bool deviceRebuilt)
     DetailPlanEpoch.reset();
     if (Device && !deviceRebuilt)
     {
-        if (Indices.IsValid())
-            Device->DestroyBuffer(Indices);
-        if (Slots.IsValid())
-            Device->DestroyBuffer(Slots);
-        if (SplatCells.IsValid())
-            Device->DestroyBuffer(SplatCells);
+        for (const auto buffer : {Indices, Slots, SplatCells})
+            if (buffer.IsValid())
+                Device->DestroyBuffer(buffer);
     }
     Indices = {};
     Slots = {};

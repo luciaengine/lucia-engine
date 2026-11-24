@@ -77,7 +77,7 @@ When you cook the archive again, every stand that uses it attaches again with th
 
 ### Draw far trees as splats
 
-A splat draws a tree as about a thousand small disks, one for each cell of a grid around the tree. Each disk has the color, the normal and the leaf coverage of the tree's surface in its cell, and moves with the wind. Splats cost less to draw than impostor cards, and they keep their shape from every direction, also from above. Close up, they look coarser than cards, so the near meshes still draw the trees nearest to the camera.
+A splat draws a tree as about a thousand small disks, one for each cell of a grid around the tree. Each disk has the color, the normal and the leaf coverage of the tree's surface in its cell, and moves with the wind. The disks form a three-dimensional crown that can be viewed from above. Close up, they look coarser than cards, so the near meshes still draw the trees nearest to the camera.
 
 With Splats, the trees draw in full to Detail Distance. Over the next 64 meters, the splats fade into the overview mesh with a dither, so the stand has no hard edge where the trees end. Pages in that band stay resident, so the stand streams the pages up to Detail Distance plus 64 meters.
 

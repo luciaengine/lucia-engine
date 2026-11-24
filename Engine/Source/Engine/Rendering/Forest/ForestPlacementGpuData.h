@@ -63,7 +63,7 @@ struct alignas(16) ForestSplatWindGpu
     std::array<int32, 4> Sector;
     float TimeSeconds = 0.0f;
     float MaxDisplacement = 0.0f;
-    std::array<float, 2> Padding{};
+    Mathematics::Vector2 Padding{};
     WeatherWindGPU Weather;
 };
 static_assert(offsetof(ForestSplatWindGpu, Weather) == 32);

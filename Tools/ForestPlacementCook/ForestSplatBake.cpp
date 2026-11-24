@@ -8,6 +8,7 @@
 #include "FileSystem/FileSystem.h"
 #include "Image/Decode.h"
 #include "Mathematics/Interpolation.h"
+#include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Octahedral.h"
 #include "Mathematics/Vector2.h"
 #include "Mathematics/Vector3F64.h"
@@ -196,9 +197,9 @@ std::vector<MeshSurface> ResolveSurfaces(const std::filesystem::path& assetRoot,
 
 bool IsRestPose(const Mesh& mesh)
 {
-    constexpr std::array<float, 16> kIdentity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    const Mathematics::Matrix4x4 identity;
     return !mesh.IsSkinned() && mesh.ExtraPlacements.empty() &&
-           std::equal(kIdentity.begin(), kIdentity.end(), mesh.SourceNodeTransform);
+           std::ranges::equal(mesh.SourceNodeTransform, std::span(identity.Data(), std::size(mesh.SourceNodeTransform)));
 }
 
 Vector3F64 Position(const Mesh& mesh, uint32 index)

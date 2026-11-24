@@ -158,9 +158,8 @@ void BuildForestStandInspector(const InspectorContext& ctx)
 
     auto* farField = InspectorUI::AddEnumRow(ctx.Parent, "Far Representation", kFarRepresentations,
         stand->FarRepresentation,
-        "What the trees beyond the near meshes draw as. Cards: the impostor card that the engine bakes from the "
-        "tree model. Splats: animated splats from a splat bake, which cost less to draw and fade into the overview "
-        "over 64 meters past Detail Distance.");
+        "Cards show the impostor baked from the tree model. Splats draw animated disks from the splat bake "
+        "and fade into the overview beyond Detail Distance.");
     farField->SetOnValueChanged([w, e, n, undo, refresh = ctx.RequestInspectorRefresh](Far picked)
         {
             InspectorDrag::CommitComponentWithUndo<Stand>(w, e, n, undo, "Change Forest Stand Far Representation",
