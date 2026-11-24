@@ -2603,6 +2603,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         // segments. Derivable from the per-slice durations below, but recorded
         // in its own right so the layout decision can never drift from the gate.
         b.Append(callCrossfadeActive);
+        b.Append(tailRecordScale);
         // How many slices own a tail block, which is what places every tail
         // base — a slice set that changes only in WHICH slices crossfade moves
         // the tail blocks without changing any other recorded input.

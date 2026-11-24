@@ -4710,30 +4710,35 @@ TEST_P(BatchScatterComputeTest, ImpostorCrossfadeDithersAllMeshPartsAgainstOneCa
     SeedRenderedHistory(near.renderedCurrent);
     const auto startFade = dispatch(kImpostorFarDist, kStartSeconds + kFadeDuration);
     SeedRenderedHistory(startFade.renderedCurrent);
-    const auto halfway = dispatch(kImpostorFarDist, kStartSeconds + 1.5f * kFadeDuration);
+    const auto quarter = dispatch(kImpostorFarDist, kStartSeconds + 1.25f * kFadeDuration);
 
-    SeedRenderedHistory(halfway.renderedCurrent);
-    const auto reversed = dispatch(kImpostorNearDist, kStartSeconds + 1.5f * kFadeDuration);
+    SeedRenderedHistory(quarter.renderedCurrent);
+    const auto reversed = dispatch(kImpostorNearDist, kStartSeconds + 1.25f * kFadeDuration);
+    SeedRenderedHistory(reversed.renderedCurrent);
+    const auto returning = dispatch(kImpostorNearDist, kStartSeconds + 1.375f * kFadeDuration);
     for (size_t row = 0; row < table.size(); ++row)
     {
         const bool isCard = table[row].meshIndex == cardMesh;
         const bool isLeaf = table[row].meshIndex == leafMesh;
         const uint32_t expectedIndices = isCard ? kImpostorCardIndices :
             (isLeaf ? kImpostorSecondaryIndices : kImpostorPrimaryIndices);
-        EXPECT_EQ(halfway.cursors[row], 0u);
-        ASSERT_EQ(halfway.cursors[rows + row], 1u);
+        EXPECT_EQ(quarter.cursors[row], 0u);
+        ASSERT_EQ(quarter.cursors[rows + row], 1u);
         const uint32_t slot = total + 2u * table[row].recordOffset;
-        const uint32_t word = halfway.indirection[slot];
-        EXPECT_EQ(halfway.records[slot * kDrawRecordUints], expectedIndices);
+        const uint32_t word = quarter.indirection[slot];
+        EXPECT_EQ(quarter.records[slot * kDrawRecordUints], expectedIndices);
         EXPECT_EQ(FadeInstanceOf(word), isLeaf ? leaves : bark);
         EXPECT_EQ(FadePhaseOf(word), !isCard);
-        EXPECT_EQ(FadeWeightOf(word), 64u);
+        EXPECT_EQ(FadeWeightOf(word), 32u);
         EXPECT_EQ(reversed.cursors[row], 0u);
         EXPECT_EQ(reversed.cursors[rows + row], 1u);
         EXPECT_EQ(reversed.indirection[slot], word);
+        EXPECT_EQ(returning.cursors[row], 0u);
+        ASSERT_EQ(returning.cursors[rows + row], 1u);
+        EXPECT_EQ(FadeWeightOf(returning.indirection[slot]), 16u);
     }
 
-    SeedRenderedHistory(halfway.renderedCurrent);
+    SeedRenderedHistory(quarter.renderedCurrent);
     const auto settled = dispatch(kImpostorFarDist, kStartSeconds + 3.0f * kFadeDuration);
     EXPECT_EQ(InstancesInRows(table, settled.cursors, settled.records, settled.indirection, cardMesh,
                               kImpostorCardIndices), std::multiset<uint32_t>{bark});
