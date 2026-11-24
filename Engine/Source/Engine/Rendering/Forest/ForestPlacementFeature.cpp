@@ -429,8 +429,11 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
         session.Declared.IsFor(frame) || !BindGraph(session, frame))
         return false;
     view.DetailDistance = session.DetailDistance;
+    session.DetailPlanEpoch.reset();
     if (!PlanDetails(session, context, view))
         return false;
+    session.DetailPlanEpoch = services.Spine().WorldFrameEpoch();
+    session.DetailPlanView = desc->purpose;
     if (session.Plan.DetailedDraws.empty())
     {
         standRanges.swap(session.Plan.StandDraws);

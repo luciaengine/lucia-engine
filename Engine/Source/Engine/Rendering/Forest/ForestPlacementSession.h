@@ -57,6 +57,9 @@ struct ForestPlacementSession
     ForestPlacementCull Cull;
     std::optional<ForestPlacementRenderState> Stream;
     ForestPlacementFrame Plan;
+    // Main-thread graph declaration produces the plan; the exclusive stand update reads it before the next frame.
+    std::optional<uint64> DetailPlanEpoch;
+    Rendering::ViewPurpose DetailPlanView = Rendering::ViewPurpose::EditorScene;
     std::vector<ForestPlacementGpuPage> Pages;
     // The frame that the session declared into, until that frame submits or aborts.
     Rendering::RenderGraph::RGFrameStamp Declared;
