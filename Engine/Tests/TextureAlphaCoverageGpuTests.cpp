@@ -1805,6 +1805,22 @@ TEST_F(TextureCoverageGPU, FoliageCoverageOfAFarLeafKeepsTheCardBorderClear)
     EXPECT_EQ(coveredBorderPixels, 0u);
 }
 
+TEST_F(TextureCoverageGPU, EZTreeTailRejectsWeakCoverageAndRetainsTheLeafBody)
+{
+    constexpr uint32 kEZTreeMode = 5, kSize = 256;
+    constexpr float kTailLod = 6;
+    // The probe cutoff is 0.538. These alpha values lie on each side of its fringe bound.
+    constexpr uint8 kFringeAlpha = 95, kLeafBodyAlpha = 106;
+    const auto weak = WaitForUpload(Register(Image(false, 64, 16, kFringeAlpha), false));
+    const auto leafBody = WaitForUpload(Register(Image(false, 64, 16, kLeafBodyAlpha), false));
+    ASSERT_TRUE(weak.IsValid());
+    ASSERT_TRUE(leafBody.IsValid());
+
+    EXPECT_EQ(Coverage(Render(weak, kSize, kSize, kTailLod, kEZTreeMode)), 0.0);
+    EXPECT_NEAR(Coverage(Render(leafBody, kSize, kSize, kTailLod, kEZTreeMode)), kLeafBodyAlpha / 255.0, 0.01);
+    EXPECT_EQ(Coverage(Render(leafBody, kSize, kSize, 0, kEZTreeMode)), 0.0);
+}
+
 // Uniform alpha isolates the threshold from the shape shared by two aligned leaf textures.
 TEST_F(TextureCoverageGPU, FoliageCoverageOfOverlappingLeavesAddsUpOnlyWithDifferentSeeds)
 {

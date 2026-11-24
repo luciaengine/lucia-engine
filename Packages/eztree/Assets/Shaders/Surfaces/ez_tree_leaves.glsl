@@ -63,8 +63,8 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     float colorTrust = max(smoothstep(0.45, 0.95, GE_EZTreeLeafAlpha(albedo)), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
-    o.opacity = GE_FoliageCoverageOpacity(GE_EZTreeLeafAlpha(shapeSample) * Mat.uBaseColor.a,
-                                          clamp(Props.alphaCutoff, 0.0, 1.0), tailWeight, sIn.uv1.x);
+    o.opacity = GE_FoliageLeafCoverageOpacity(GE_EZTreeLeafAlpha(shapeSample), Mat.uBaseColor.a,
+                                              clamp(Props.alphaCutoff, 0.0, 1.0), tailWeight, sIn.uv1.x);
 
     vec4 mr = texture(metallicRoughnessMap, uvMR);
     o.roughness = mr.g * Mat.uParams0.y;
