@@ -2,8 +2,11 @@
 #include "Assets/AuthoredLodImport.h"
 #include "Assets/ModelAssetSettings.h"
 #include "Assets/BoneLOD/BoneLODAssetSettings.h"
+#include "Assets/Packages/PackageMounts.h"
+#include "Assets/Packages/PackageResolver.h"
 #include "Assets/RuntimeHumanoidProfile.h"
 #include "Core/Engine.h"
+#include "Engine/Build/AssetCollector.h"
 #include "Engine/Build/BuildPipeline.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "TestTempDir.h"
@@ -184,6 +187,24 @@ protected:
         ASSERT_EQ(PageStreaming::WritePackedPlacementStore(path, kTreeBoundRadius, pages, records), "");
     }
 
+    static void CorruptLastPlacement(const fs::path& path)
+    {
+        const auto originalSize = fs::file_size(path);
+        {
+            std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+            ASSERT_TRUE(file.is_open());
+            file.seekg(-1, std::ios::end);
+            const int lastByte = file.get();
+            ASSERT_NE(lastByte, std::char_traits<char>::eof());
+            file.seekp(-1, std::ios::end);
+            file.put(static_cast<char>(lastByte ^ 1));
+            ASSERT_TRUE(file.good());
+        }
+        ASSERT_EQ(fs::file_size(path), originalSize);
+        PageStreaming::PackedPlacementStore store;
+        ASSERT_EQ(store.Open(path), "");
+    }
+
     // Registers an asset written after the startup scan and returns its GUID.
     GUID Register(const fs::path& path)
     {
@@ -192,8 +213,8 @@ protected:
         return registry.GetAssetGUID(path);
     }
 
-    // Exports Scenes/Forest.scene with one ForestStand of `archive` and `treeModel`.
-    bool Export(const GUID& archive, const GUID& treeModel, BuildProgress& progress)
+    // Exports one ForestStand through a selected scene or the all-assets fallback.
+    bool Export(const GUID& archive, const GUID& treeModel, BuildProgress& progress, bool selectScene = true)
     {
         const fs::path scene = Assets / "Scenes/Forest.scene";
         std::string body = "[scene name=\"Forest\" version=1]\n\n[entity id=\"e_stand\"]\n"
@@ -203,6 +224,11 @@ protected:
         WriteFile(scene, body);
         Register(scene);
 
+        return ExportScene(progress, selectScene);
+    }
+
+    bool ExportScene(BuildProgress& progress, bool selectScene = true)
+    {
         BuildSettings build;
         build.platformName = "Linux";
         build.projectRoot = Project;
@@ -211,7 +237,8 @@ protected:
         build.compileScripts = false;
         build.buildConfiguration = "Release";
         build.playerConfig.gameName = "ForestExportProbe";
-        build.scenes = {"Scenes/Forest.scene"};
+        if (selectScene)
+            build.scenes = {"Scenes/Forest.scene"};
         BuildPipeline pipeline(nullptr);
         return pipeline.Execute(build, [&progress](const BuildProgress& current) { progress = current; });
     }
@@ -267,6 +294,94 @@ TEST_F(ForestStandExportTest, RefusesACorruptArchive)
     EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive 'Forests/Broken.geforest' is not valid"))
         << testing::PrintToString(progress.errors);
     EXPECT_FALSE(fs::exists(Output / "Assets/Forests/Broken.geforest"));
+}
+
+TEST_F(ForestStandExportTest, RefusesACorruptPlacementPageInAnOtherwiseValidArchive)
+{
+    const fs::path path = Assets / "Forests/Stand.geforest";
+    WriteArchive(path);
+    CorruptLastPlacement(path);
+
+    const GUID archive = Register(path);
+    BuildProgress progress;
+    EXPECT_FALSE(Export(archive, {}, progress));
+    EXPECT_TRUE(HasError(progress, "placement page 0")) << testing::PrintToString(progress.errors);
+    EXPECT_FALSE(fs::exists(Output / "Assets/Forests/Stand.geforest"));
+}
+
+TEST_F(ForestStandExportTest, AllAssetsFallbackRefusesACorruptPlacementPage)
+{
+    const fs::path path = Assets / "Forests/Stand.geforest";
+    WriteArchive(path);
+    CorruptLastPlacement(path);
+
+    const GUID archive = Register(path);
+    BuildProgress progress;
+    EXPECT_FALSE(Export(archive, {}, progress, /*selectScene=*/false));
+    EXPECT_TRUE(HasError(progress, "archive 'Forests/Stand.geforest' is not valid"))
+        << testing::PrintToString(progress.errors);
+    EXPECT_FALSE(fs::exists(Output / "Assets/Forests/Stand.geforest"));
+}
+
+TEST_F(ForestStandExportTest, FilesystemFallbackRefusesACorruptPlacementPage)
+{
+    const fs::path unscanned = Temporary.Path() / "UnscannedAssets";
+    const fs::path defaults = Temporary.Path() / "DefaultAssets";
+    const fs::path archive = unscanned / "Forests/Stand.geforest";
+    WriteArchive(archive);
+    CorruptLastPlacement(archive);
+    WriteFile(defaults / "Fonts/Roboto-Regular.ttf", "TTFDATA");
+    WriteFile(defaults / kRuntimeHumanoidProfilePath, "{}");
+
+    AssetManager assets;
+    ASSERT_TRUE(assets.Initialize());
+    AssetSourceDesc project;
+    project.Alias = kAssetSourceAliasProject;
+    project.Root = unscanned;
+    project.RequiresScan = false;
+    ASSERT_TRUE(assets.RegisterSource(project));
+    AssetSourceDesc editor;
+    editor.Alias = kAssetSourceAliasEditor;
+    editor.Root = defaults;
+    ASSERT_TRUE(assets.RegisterSource(editor));
+    assets.WaitForStartupScan(kAssetSourceAliasEditor);
+    ASSERT_TRUE(assets.GetRegistry().GetAssetsForSource(project.Alias).empty());
+
+    AssetCollector collector(assets);
+    AssetManifest manifest;
+    std::vector<std::string> warnings;
+    std::string error;
+    EXPECT_FALSE(collector.CollectGameContent({}, {}, unscanned, manifest, warnings, error));
+    EXPECT_NE(error.find("archive 'Forests/Stand.geforest' is not valid: could not verify placement page 0"),
+              std::string::npos) << error;
+}
+
+TEST_F(ForestStandExportTest, PackageRuntimeAssetsRefuseACorruptPlacementPage)
+{
+    const fs::path packages = Project / "Packages";
+    WriteFile(packages / "manifest.json", R"({"dependencies":{"tree-pack":"embedded"}})");
+    WriteFile(packages / "tree-pack/package.json", R"({
+        "name": "tree-pack", "version": "1.0.0",
+        "runtimeAssets": { "Transform": ["Forests/Stand.geforest"] }
+    })");
+    const fs::path archive = packages / "tree-pack/Assets/Forests/Stand.geforest";
+    WriteArchive(archive);
+    CorruptLastPlacement(archive);
+    const fs::path scene = Assets / "Scenes/Forest.scene";
+    WriteFile(scene, "[scene name=\"Forest\" version=1]\n\n[entity id=\"e_tree\"]\nTransform.position = (0, 0, 0)\n");
+    ASSERT_FALSE(Register(scene).IsNull());
+
+    const PackageResolution packagesToMount = PackageResolver::Resolve(Project);
+    ASSERT_TRUE(packagesToMount.Errors.empty()) << testing::PrintToString(packagesToMount.Errors);
+    auto& assets = Engine.GetAssetManager();
+    ASSERT_EQ(MountResolvedPackages(assets, packagesToMount, Project / ".Cache/AssetDatabase").size(), 1u);
+    assets.WaitForStartupScan("tree-pack");
+
+    BuildProgress progress;
+    EXPECT_FALSE(ExportScene(progress));
+    EXPECT_TRUE(HasError(progress, "archive 'Packages/tree-pack/Assets/Forests/Stand.geforest' is not valid"))
+        << testing::PrintToString(progress.errors);
+    EXPECT_FALSE(fs::exists(Output / "Packages/tree-pack/Assets/Forests/Stand.geforest"));
 }
 
 TEST_F(ForestStandExportTest, AMobileExportRefusesACorruptArchive)
