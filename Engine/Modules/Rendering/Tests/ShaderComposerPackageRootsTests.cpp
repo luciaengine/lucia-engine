@@ -596,20 +596,20 @@ TEST(ShaderComposerPackageRoots, EZTreeRealShadersComposeAndCompileFromPackageRo
     doc.surfaceShader = "Surfaces/ez_tree_leaves.glsl";
     doc.vertexModifier = "VertexModifiers/ez_tree_wind.glsl";
 
-    MaterialBuildContext ctx{};
-    ctx.AdapterShaderDir = adapterDir;
-    ctx.PackageShaderDirs = {pkgShaders};
-    ctx.CacheRoot = tree.Root / "Cache";
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = adapterDir;
+    context.PackageShaderDirs = {pkgShaders};
+    context.CacheRoot = tree.Root / "Cache";
 
     // Both engine-convention references resolve INTO the package root (the
     // engine tree has no copy to fall back to anymore).
-    EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(doc.surfaceShader, materialDir, ctx)),
+    EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(doc.surfaceShader, materialDir, context)),
               Norm(pkgShaders / "Surfaces" / "ez_tree_leaves.glsl"));
-    EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(doc.vertexModifier, materialDir, ctx)),
+    EXPECT_EQ(Norm(ShaderComposer::ResolveShaderReference(doc.vertexModifier, materialDir, context)),
               Norm(pkgShaders / "VertexModifiers" / "ez_tree_wind.glsl"));
 
     const auto result = BuildMaterialToShaderPackage(
-        doc, materialDir / "eztree_leaves.material", "eztree_leaves", ctx, ShaderSourceKind::SpirV,
+        doc, materialDir / "eztree_leaves.material", "eztree_leaves", context, ShaderSourceKind::SpirV,
         MaterialKeyword::Instanced);
     for (const auto& e : result.errors)
     {
@@ -629,5 +629,31 @@ TEST(ShaderComposerPackageRoots, EZTreeRealShadersComposeAndCompileFromPackageRo
               std::string::npos);
     EXPECT_EQ(result.composedFragmentSource.find("/Packages/"), std::string::npos);
     EXPECT_EQ(result.composedVertexSource.find("/Packages/"), std::string::npos);
+
+    doc.alphaMode = MaterialAlphaMode::Mask;
+    constexpr auto kLeafUvFlags = VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasUV1;
+    const auto depth = BuildMaterialToShaderPackage(
+        doc, materialDir / "eztree_leaves.material", "eztree_leaves_depth", context, ShaderSourceKind::SpirV,
+        MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment, kLeafUvFlags, ShaderCompileTarget{});
+    ASSERT_TRUE(depth.success) << (depth.errors.empty() ? "" : depth.errors.front());
+    ASSERT_NE(depth.package, nullptr);
+    const auto& stages = depth.package->meta.Stages;
+    ASSERT_TRUE(stages.contains("vs"));
+    ASSERT_TRUE(stages.contains("fs"));
+    const auto& vertex = stages.at("vs");
+    const auto& fragment = stages.at("fs");
+    EXPECT_TRUE(std::any_of(vertex.Inputs.begin(), vertex.Inputs.end(),
+        [](const StageIO& input) { return input.Location == 5u && input.Type.VecSize == 2u; }));
+    for (const auto* stageIo : {&vertex.Outputs, &fragment.Inputs})
+    {
+        const auto packedUv = std::find_if(stageIo->begin(), stageIo->end(),
+            [](const StageIO& io) { return io.Location == 0u; });
+        ASSERT_NE(packedUv, stageIo->end());
+        EXPECT_EQ(packedUv->Type.Kind, TypeKind::Vector);
+        EXPECT_EQ(packedUv->Type.Base, BaseType::Float);
+        EXPECT_EQ(packedUv->Type.VecSize, 3u);
+        EXPECT_TRUE(std::none_of(stageIo->begin(), stageIo->end(),
+            [](const StageIO& io) { return io.Location == 5u; }));
+    }
 }
 #endif // EZTREE_PACKAGE_SHADERS_DIR

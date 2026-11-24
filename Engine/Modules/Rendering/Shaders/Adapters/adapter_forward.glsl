@@ -59,7 +59,12 @@
 #define GE_SURFACE_INPUT_AT_CENTRE(input) (input)
 #endif
 
+#ifdef GE_PACK_DEPTH_UV1_X
+layout(location = 0) GE_SURFACE_CENTROID in vec3 vDepthUv;
+#define vUV0 vDepthUv.xy
+#else
 layout(location = 0) GE_SURFACE_CENTROID in vec2 vUV0;
+#endif
 
 #if defined(HAS_NORMAL) || defined(HAS_VERTEX_OUTPUT_MODIFIER)
 layout(location = 1) GE_SURFACE_CENTROID in vec3 vNormalWS;
@@ -75,7 +80,7 @@ layout(location = 3) GE_SURFACE_CENTROID in vec4 vTangentWS;
 layout(location = 4) GE_SURFACE_CENTROID in vec4 vColor;
 #endif
 
-#ifdef HAS_UV1
+#if defined(HAS_UV1) && !defined(GE_PACK_DEPTH_UV1_X)
 layout(location = 5) GE_SURFACE_CENTROID in vec2 vUV1;
 #endif
 
@@ -698,7 +703,11 @@ void main()
     // uniform control flow, and the march itself runs in non-uniform flow. uv0 in repeats and the
     // render-origin-relative position in metres (the precise one far from the origin), per pixel.
     // Both at the pixel centre, so the footprint holds along a triangle's MSAA edge pixels.
+#ifdef GE_PACK_DEPTH_UV1_X
+    vec2 parallaxUv0AtCentre = GE_SURFACE_INPUT_AT_CENTRE(vDepthUv).xy;
+#else
     vec2 parallaxUv0AtCentre = GE_SURFACE_INPUT_AT_CENTRE(vUV0);
+#endif
     vec3 parallaxPositionAtCentre = GE_SURFACE_INPUT_AT_CENTRE(vPosRel);
     vec4 parallaxUvFootprint = vec4(dFdx(parallaxUv0AtCentre), dFdy(parallaxUv0AtCentre));
     vec3 parallaxPositionFootprintX = dFdx(parallaxPositionAtCentre);
@@ -821,7 +830,11 @@ void main()
 #endif
 
 #ifdef HAS_UV1
+#ifdef GE_PACK_DEPTH_UV1_X
+    si.uv1 = vec2(vDepthUv.z, 0.0);
+#else
     si.uv1 = vUV1;
+#endif
 #endif
 
 #ifdef GE_MASK_COVERAGE_SEED

@@ -131,7 +131,12 @@ layout(location = 9) in vec4 aWeights1;
 #define GE_SURFACE_CENTROID centroid
 #endif
 
+#ifdef GE_PACK_DEPTH_UV1_X
+layout(location = 0) GE_SURFACE_CENTROID out vec3 vDepthUv;
+#define vUV0 vDepthUv.xy
+#else
 layout(location = 0) GE_SURFACE_CENTROID out vec2 vUV0;
+#endif
 
 #if defined(HAS_NORMAL) || defined(HAS_VERTEX_OUTPUT_MODIFIER)
 layout(location = 1) GE_SURFACE_CENTROID out vec3 vNormalWS;
@@ -147,7 +152,7 @@ layout(location = 3) GE_SURFACE_CENTROID out vec4 vTangentWS;
 layout(location = 4) GE_SURFACE_CENTROID out vec4 vColor;
 #endif
 
-#ifdef HAS_UV1
+#if defined(HAS_UV1) && !defined(GE_PACK_DEPTH_UV1_X)
 layout(location = 5) GE_SURFACE_CENTROID out vec2 vUV1;
 #endif
 
@@ -704,7 +709,11 @@ void main()
 #endif
 
 #ifdef HAS_UV1
+#ifdef GE_PACK_DEPTH_UV1_X
+    vDepthUv.z = aUV1.x;
+#else
     vUV1 = aUV1;
+#endif
 #endif
 
 #if defined(HAS_UV2) && !defined(GE_USER_PARTICLE_BUFFER)

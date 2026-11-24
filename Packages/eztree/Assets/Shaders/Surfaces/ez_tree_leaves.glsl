@@ -5,6 +5,8 @@
 // Texture names (albedoMap, normalMap, metallicRoughnessMap, aoMap) are
 // provided by the adapter's bindless slot macros.
 
+// @depthUv1X
+// Depth coverage reads the seed in UV1.x. UV1.y is needed only for color-pass occlusion.
 #include "Includes/mask_coverage.glsl"
 
 float GE_EZTreeLeafAlpha(vec4 albedo)

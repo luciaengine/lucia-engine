@@ -245,6 +245,63 @@ TEST(ShippedSurfaceCompose, WhiteSurfaceMapSpecializationIsLimitedToMaskedNative
     check(kForward, compatibility, false);
 }
 
+TEST(ShippedSurfaceCompose, PacksOnlyOptedInMaskedDepthUv1X)
+{
+    const TestUtils::ScopedTempDir cacheRoot = MakeTempCacheRoot();
+    const fs::path surfacePath = cacheRoot.Path() / "DepthUv1X.glsl";
+    const fs::path materialPath = cacheRoot.Path() / "DepthUv1X.material";
+    MaterialDocument material{};
+    material.materialName = "DepthUv1X";
+    material.lightingModel = "StandardPBR";
+    material.alphaMode = MaterialAlphaMode::Mask;
+    material.surfaceShader = surfacePath.string();
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    context.CacheRoot = cacheRoot.Path();
+
+    constexpr auto kUvFlags = VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasUV1;
+    constexpr auto kDepth = MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment;
+    constexpr auto kForward = MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus;
+    const std::string body = R"GLSL(
+SurfaceOutput EvaluateSurface(SurfaceInput sIn)
+{
+    SurfaceOutput surface = DefaultSurfaceOutput();
+    surface.opacity = sIn.uv1.x * sIn.uv0.x;
+    return surface;
+}
+)GLSL";
+    const ShaderCompileTarget native{};
+    std::ofstream(surfacePath) << "// @depthUv1X\n" << body;
+    const fs::path unmarkedPath = cacheRoot.Path() / "UnmarkedDepth.glsl";
+    std::ofstream(unmarkedPath) << body;
+
+    ShaderCompileTarget compatibility{};
+    compatibility.Compatibility = true;
+    struct Probe
+    {
+        fs::path Surface;
+        MaterialKeyword Keywords;
+        ShaderCompileTarget Target;
+        bool Packed;
+    };
+    const Probe probes[] = {
+        {surfacePath, kDepth, native, true},
+        {surfacePath, kForward, native, false},
+        {surfacePath, kDepth, compatibility, false},
+        {unmarkedPath, kDepth, native, false},
+    };
+    for (const Probe& probe : probes)
+    {
+        SCOPED_TRACE(probe.Surface.string());
+        material.surfaceShader = probe.Surface.string();
+        const auto built = BuildMaterialToShaderPackage(material, materialPath, "DepthUv1X",
+            context, ShaderSourceKind::SpirV, probe.Keywords, kUvFlags, probe.Target);
+        ASSERT_TRUE(built.success) << (built.errors.empty() ? "" : built.errors.front());
+        const auto& defines = built.composedDefines;
+        EXPECT_EQ(std::find(defines.begin(), defines.end(), "GE_PACK_DEPTH_UV1_X") != defines.end(), probe.Packed);
+    }
+}
+
 // The CBT terrain surface, composed and compiled through the real pipeline.
 //
 // It reaches no shipped-asset scan: CBTRenderFeature::EnsureMaterial builds its MaterialDocument in
