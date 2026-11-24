@@ -13,17 +13,23 @@
 
 #include <gtest/gtest.h>
 
-#include "Rendering/Core/Device.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/CommandList.h"
+#include "Rendering/Core/Device.h"
+#include "Rendering/Core/GPUScene.h"
+#include "Rendering/Materials/LegacyMaterialLanes.h"
+#include "Rendering/Materials/MaterialBuildService.h"
+#include "Rendering/Materials/MaterialBuilder.h"
+#include "Rendering/Materials/MaterialDocument.h"
+#include "Rendering/Materials/MaterialParamsLayout.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
 #include "Rendering/Materials/Shader/ShaderComposer.h"
-#include "Rendering/Materials/MaterialBuildService.h"
-#include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "Rendering/Utils/TextureUploadHelpers.h"
 #include "StagedTestPaths.h"
-#include "TestUtils.h"
 #include "TestTempDir.h"
+#include "TestUtils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -719,32 +725,22 @@ namespace
 constexpr uint32_t kProbeWidth = 64;
 constexpr uint32_t kProbeHeight = 8;
 
-std::vector<uint8_t> DrawAdapterProbe(IDevice& device,
-                                     const ShaderProgramCompileResult& program,
-                                     bool alphaToCoverage)
+template <class Draw>
+std::vector<uint8_t> ReadAdapterDraw(IDevice& device, const PipelineDesc& pipeline, uint32_t width,
+                                     uint32_t height, Draw draw)
 {
+    const bool alphaToCoverage = pipeline.colorBlendState.alphaToCoverageEnable;
     TextureDesc texture{};
-    texture.width = kProbeWidth;
-    texture.height = kProbeHeight;
+    texture.width = width;
+    texture.height = height;
     texture.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
     texture.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::TransferSrc);
     texture.sampleCount = alphaToCoverage ? 4u : 1u;
     const TextureHandle target = device.CreateTexture(texture);
     texture.sampleCount = 1;
     const TextureHandle resolved = alphaToCoverage ? device.CreateTexture(texture) : target;
-    const size_t bytes = size_t(kProbeWidth) * kProbeHeight * 4;
+    const size_t bytes = size_t(width) * height * 4;
     const BufferHandle readback = device.CreateReadbackBuffer(bytes);
-    PipelineDesc pipeline{};
-    pipeline.type = PipelineType::Graphics;
-    pipeline.vertexShader = program.stageBytes.at("vs");
-    pipeline.pixelShader = program.stageBytes.at("fs");
-    pipeline.colorAttachmentFormats = {texture.format};
-    pipeline.rasterizationSamples = alphaToCoverage ? 4u : 1u;
-    pipeline.rasterizationState.cullMode = CullModeFlagBits::None;
-    pipeline.depthStencilState.depthTestEnable = false;
-    pipeline.depthStencilState.depthWriteEnable = false;
-    pipeline.colorBlendState.alphaToCoverageEnable = alphaToCoverage;
-    pipeline.debugName = "ForwardAdapterAlphaProbe";
     const PipelineHandle handle = device.CreatePipeline(pipeline);
     EXPECT_TRUE(target.IsValid() && resolved.IsValid() && readback.IsValid() && handle.IsValid());
     std::vector<uint8_t> pixels;
@@ -766,14 +762,14 @@ std::vector<uint8_t> DrawAdapterProbe(IDevice& device,
         std::fill_n(pass.clearColorValue[0], 4, 0.0f);
         pass.colorStoreOp[0] = RenderPassDesc::StoreOp::Store;
         commands->BeginRenderPass(pass);
-        commands->SetViewport(0, 0, float(kProbeWidth), float(kProbeHeight));
-        commands->SetScissor(0, 0, kProbeWidth, kProbeHeight);
+        commands->SetViewport(0, 0, float(width), float(height));
+        commands->SetScissor(0, 0, width, height);
         commands->SetPipeline(handle);
-        commands->Draw(3);
+        draw(*commands, handle);
         commands->EndRenderPass();
         commands->Barrier(ResourceBarrier::CreateTextureBarrier(resolved, ResourceState::RenderTarget,
                                                                  ResourceState::CopySource));
-        commands->CopyTextureToBuffer(resolved, readback, kProbeWidth, kProbeHeight);
+        commands->CopyTextureToBuffer(resolved, readback, width, height);
         commands->End();
         device.ExecuteCommandLists({commands.get()});
         device.WaitForIdle();
@@ -790,6 +786,22 @@ std::vector<uint8_t> DrawAdapterProbe(IDevice& device,
     if (alphaToCoverage && resolved.IsValid()) device.DestroyTexture(resolved);
     if (target.IsValid()) device.DestroyTexture(target);
     return pixels;
+}
+std::vector<uint8_t> DrawAdapterProbe(IDevice& device, const ShaderProgramCompileResult& program, bool alphaToCoverage)
+{
+    PipelineDesc pipeline{};
+    pipeline.type = PipelineType::Graphics;
+    pipeline.vertexShader = program.stageBytes.at("vs");
+    pipeline.pixelShader = program.stageBytes.at("fs");
+    pipeline.colorAttachmentFormats = {static_cast<uint32_t>(TextureFormat::RGBA8_UNORM)};
+    pipeline.rasterizationSamples = alphaToCoverage ? 4u : 1u;
+    pipeline.rasterizationState.cullMode = CullModeFlagBits::None;
+    pipeline.depthStencilState.depthTestEnable = false;
+    pipeline.depthStencilState.depthWriteEnable = false;
+    pipeline.colorBlendState.alphaToCoverageEnable = alphaToCoverage;
+    pipeline.debugName = "ForwardAdapterAlphaProbe";
+    return ReadAdapterDraw(device, pipeline, kProbeWidth, kProbeHeight,
+                           [](CommandList& commands, PipelineHandle) { commands.Draw(3); });
 }
 } // namespace
 
@@ -1295,4 +1307,200 @@ TEST(ForwardAdapterVariant, MaskCoverageNeedsAnInstancedMeshWithAStableSeed)
     EXPECT_FALSE(carriesSeed(particle, key));
     key.materialKeywords = MaterialKeyword::AlphaTest;
     EXPECT_FALSE(carriesSeed(doc, key));
+}
+
+TEST(ForwardAdapterMaskReadback, ComposedStandardPbrKeepsNearCoverageInTheMipTail)
+{
+    TestUtils::ScopedTempDir cache{MakeTempCacheRoot()};
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = Tests::GetAdapterShaderDir();
+    context.CacheRoot = cache.Path();
+    MaterialDocument doc{};
+    doc.materialName = "MaskedCard";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = (context.AdapterShaderDir / "Surfaces/standard_pbr.glsl").string();
+    doc.alphaMode = MaterialAlphaMode::Mask;
+    doc.textures["albedoMap"] = {};
+    doc.properties["alphaCutoff"] = 0.5f;
+    auto result = BuildMaterialToShaderPackage(doc, cache.Path() / "MaskedCard.material", doc.materialName,
+        context, ShaderSourceKind::SpirV, MaterialKeyword::Instanced, VertexAttributeFlags::StandardMesh);
+    SKIP_WITHOUT_SHADERC(result);
+    ASSERT_NO_FATAL_FAILURE(ExpectBuildSucceeded(result));
+    ASSERT_NE(std::ranges::find(result.composedDefines, "GE_MASK_COVERAGE_SEED"), result.composedDefines.end());
+
+    DeviceDesc description{};
+    description.preferredAPI = GraphicsAPI::Vulkan;
+    description.enableSwapchain = false;
+    description.enableDynamicRendering = true;
+    description.enableDebugLayer = true;
+    auto device = DeviceFactory::CreateDevice(description);
+    if (!device || !device->Initialize(description))
+        GTEST_SKIP() << "No Vulkan device available";
+    if (device->GetAPI() != GraphicsAPI::Vulkan || !device->GetValidationStats().Enabled)
+    {
+        device->Shutdown();
+        GTEST_SKIP() << "Vulkan validation layer unavailable";
+    }
+    ASSERT_TRUE(device->GetCapabilities().supportsBufferDeviceAddress);
+    ASSERT_TRUE(device->GetCapabilities().supportsBindlessResources);
+    PipelineDesc pipeline{};
+    MaterialBuilder::BuildPipelineDescFromMeta(result.package->meta, pipeline);
+    pipeline.vertexShader = result.package->stageBytes.at("vs");
+    pipeline.pixelShader = result.package->stageBytes.at("fs");
+    pipeline.colorAttachmentFormats = {static_cast<uint32_t>(TextureFormat::RGBA8_UNORM)};
+    pipeline.rasterizationState.cullMode = CullModeFlagBits::None;
+    pipeline.depthStencilState.depthTestEnable = pipeline.depthStencilState.depthWriteEnable = false;
+    struct Vertex
+    {
+        float position[3], normal[3], uv[2];
+    };
+    pipeline.vertexBindings = {{0, sizeof(Vertex), 0}};
+    pipeline.vertexAttributes = {{0, 0, Format::R32G32B32_FLOAT, offsetof(Vertex, position)},
+                                 {1, 0, Format::R32G32B32_FLOAT, offsetof(Vertex, normal)},
+                                 {2, 0, Format::R32G32_FLOAT, offsetof(Vertex, uv)}};
+    ASSERT_EQ(pipeline.descriptorSetLayouts.size(), 2u);
+    // Every slot referenced by the probe row uses texture and sampler index zero.
+    for (auto& binding : pipeline.descriptorSetLayouts[1].bindings)
+        binding.count = 1;
+    std::vector<BufferHandle> buffers;
+    auto upload = [&](const void* data, size_t bytes, BufferUsage usage) {
+        BufferDesc desc{};
+        desc.size = bytes;
+        desc.usage = static_cast<uint32_t>(usage);
+        desc.memoryUsage = BufferMemoryUsage::Upload;
+        auto buffer = device->CreateBuffer(desc);
+        EXPECT_TRUE(buffer.IsValid());
+        if (buffer.IsValid())
+        {
+            buffers.push_back(buffer);
+            device->UpdateBuffer(buffer, 0, bytes, data);
+        }
+        return buffer;
+    };
+
+    TextureDesc maskDesc{};
+    maskDesc.width = maskDesc.height = 32;
+    maskDesc.mipLevels = 6;
+    maskDesc.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
+    maskDesc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::TransferDst);
+    const auto mask = device->CreateTexture(maskDesc);
+    ASSERT_TRUE(mask.IsValid());
+    std::array<std::vector<uint8_t>, 6> texels;
+    std::array<TextureMipUploadEntry, 6> levels;
+    for (uint32_t level = 0; level < levels.size(); ++level)
+    {
+        const uint32_t side = maskDesc.width >> level;
+        texels[level].resize(4 * side * side, 255);
+        for (uint32_t y = 0; y < side; ++y)
+            for (uint32_t x = 0; x < side; ++x)
+                texels[level][4 * (y * side + x) + 3] = level == 0 ? (x % 8 < 4 && y % 8 < 4 ? 255 : 0) : 64;
+        levels[level] = {texels[level].data(), texels[level].size(), side, side};
+    }
+    ASSERT_TRUE(UploadTextureMips(device.get(), mask, levels.data(), levels.size(), TextureFormat::RGBA8_UNORM));
+    const auto sampler = device->CreateSampler(SamplerDesc::MaterialLinearRepeat());
+    ASSERT_TRUE(sampler.IsValid());
+    CameraData camera{};
+    camera.view = camera.proj = camera.viewProj = camera.viewRel = camera.viewProjRel = Mathematics::Matrix4x4::Identity();
+    const auto cam = upload(&camera, sizeof(camera), BufferUsage::Uniform);
+    std::array<uint8_t, 2048> zero{};
+    const auto defaults = upload(zero.data(), zero.size(), BufferUsage::Uniform | BufferUsage::Storage);
+    struct alignas(16) MaterialRow
+    {
+        MaterialGpuParams params{};
+        uint32_t textures[8]{};
+        GpuVec4 uvX[8]{}, uvY[8]{};
+        uint32_t samplers = 0, variance = 0;
+    } row;
+    row.params.uParams[0] = {1, 1, 1, 1};
+    const auto* cutoff = FindLegacyMaterialLane("alphaCutoff");
+    ASSERT_NE(cutoff, nullptr);
+    const float authoredCutoff = std::get<float>(doc.properties.at("alphaCutoff"));
+    std::memcpy(reinterpret_cast<uint8_t*>(&row.params) + LegacyLaneByteOffset(*cutoff),
+                &authoredCutoff, sizeof(authoredCutoff));
+    for (size_t i = 0; i < 8; ++i)
+    {
+        row.uvX[i].x = 1;
+        row.uvY[i].y = 1;
+    }
+    const auto material = upload(&row, sizeof(row), BufferUsage::Storage);
+    const auto frameSet = device->CreateDescriptorSet({pipeline.descriptorSetLayouts[0], "MaskedCard.Frame", true});
+    const auto images = device->CreateDescriptorSet({pipeline.descriptorSetLayouts[1], "MaskedCard.Images", true});
+    ASSERT_TRUE(frameSet.IsValid() && images.IsValid());
+    for (const auto& binding : pipeline.descriptorSetLayouts[0].bindings)
+    {
+        if (binding.type == DescriptorType::UniformBuffer)
+            device->UpdateBufferBinding(frameSet, binding.binding, binding.binding == 5 ? cam : defaults,
+                                        0, binding.binding == 5 ? sizeof(camera) : zero.size());
+        else if (binding.type == DescriptorType::StorageBuffer)
+            device->UpdateStorageBufferBinding(frameSet, binding.binding, binding.binding == 13 ? material : defaults,
+                                               0, binding.binding == 13 ? sizeof(row) : zero.size());
+        else
+            FAIL() << "Unexpected frame descriptor " << binding.binding;
+    }
+    device->UpdateImageBinding(images, 0, mask);
+    device->UpdateSamplerBinding(images, 1, sampler);
+    GPUInstance instance{};
+    instance.transform = instance.prevTransform = Mathematics::Matrix4x4::Identity();
+    instance.normalMatrixCol0 = {1, 0, 0};
+    instance.normalMatrixCol1 = {0, 1, 0, 0};
+    instance.normalMatrixCol2 = {0, 0, 1, 0};
+    const auto instances = upload(&instance, sizeof(instance), BufferUsage::Storage | BufferUsage::ShaderDeviceAddress);
+    const uint32_t first = 0;
+    const auto indirection = upload(&first, sizeof(first), BufferUsage::Storage | BufferUsage::ShaderDeviceAddress);
+    struct InstancePushConstants
+    {
+        uint64_t indirection, instances;
+        uint32_t materialOverride, pad;
+    };
+    const InstancePushConstants push{
+        device->GetBufferDeviceAddress(indirection), device->GetBufferDeviceAddress(instances), UINT32_MAX, 0};
+    ASSERT_NE(push.indirection, 0u);
+    ASSERT_NE(push.instances, 0u);
+
+    std::vector<float> coverage;
+    for (uint32_t columns : {1u, 8u})
+    {
+        std::vector<Vertex> vertices;
+        std::vector<uint16_t> indices;
+        for (uint32_t y = 0; y < columns; ++y)
+            for (uint32_t x = 0; x < columns; ++x)
+            {
+                const auto base = static_cast<uint16_t>(vertices.size());
+                for (const auto& uv : std::array<std::array<float, 2>, 4>{{{0, 0}, {1, 0}, {1, 1}, {0, 1}}})
+                    vertices.push_back({{-0.9f + 1.8f * (x + uv[0]) / columns,
+                                         -0.9f + 1.8f * (y + uv[1]) / columns, 0.5f},
+                                        {0, 0, 1}, {uv[0], uv[1]}});
+                for (uint16_t corner : {0, 1, 2, 0, 2, 3})
+                    indices.push_back(base + corner);
+            }
+        const auto vb = upload(vertices.data(), vertices.size() * sizeof(Vertex), BufferUsage::Vertex);
+        const auto ib = upload(indices.data(), indices.size() * sizeof(uint16_t), BufferUsage::Index);
+        const auto pixels = ReadAdapterDraw(*device, pipeline, 64, 64, [&](CommandList& commands, PipelineHandle handle) {
+            commands.BindDescriptorSet(0, frameSet, handle);
+            commands.BindDescriptorSet(1, images, handle);
+            commands.SetPushConstants(push);
+            commands.SetVertexBuffer(vb);
+            commands.SetIndexBuffer(ib, IndexType::Uint16);
+            commands.DrawIndexed(static_cast<uint32_t>(indices.size()), 1);
+        });
+        ASSERT_EQ(pixels.size(), 64u * 64u * 4u);
+        uint32_t covered = 0;
+        // Exclude the uncovered border. The near card spans 57.6 pixels and each far card spans 7.2.
+        for (uint32_t y = 4; y < 60; ++y)
+            for (uint32_t x = 4; x < 60; ++x)
+                covered += pixels[4 * (64 * y + x) + 3] == 255;
+        coverage.push_back(float(covered) / (56 * 56));
+    }
+    RecordProperty("NearCoverage", std::to_string(coverage[0]));
+    RecordProperty("FarCoverage", std::to_string(coverage[1]));
+    EXPECT_NEAR(coverage[0], 0.25f, 0.03f);
+    EXPECT_NEAR(coverage[1], coverage[0], 0.03f);
+    EXPECT_EQ(device->GetValidationStats().ErrorCount, 0u);
+    device->DestroyDescriptorSet(images);
+    device->DestroyDescriptorSet(frameSet);
+    device->DestroySampler(sampler);
+    device->DestroyTexture(mask);
+    for (auto buffer : buffers)
+        device->DestroyBuffer(buffer);
+    device->Shutdown();
 }
