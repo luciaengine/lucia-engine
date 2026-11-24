@@ -201,6 +201,14 @@ class ShaderComposer
                                                            const std::string& surfaceName);
 
   private:
+    struct SourceInputs;
+    static ComposedShaderSource ComposeSources(const SourceInputs& source,
+                                               const ShaderVariantKey& key,
+                                               const std::filesystem::path& materialDir,
+                                               const MaterialBuildContext& context,
+                                               std::vector<std::string>* outErrors,
+                                               const ShaderCompileTarget& target);
+
     // The GLSL block substituted for the adapters' `// GE_DECLARED_PROPERTIES`
     // marker: `struct GE_Props`, the `Props` accessor macro and
     // GE_LoadDeclaredProperties(), which fills every member from its packed
