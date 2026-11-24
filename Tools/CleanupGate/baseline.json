@@ -5365,7 +5365,6 @@
    "Apps/Editor/Source/VersionControl/Ui/InspectorVcsController.cpp": 1,
    "Apps/Editor/Source/WebMain.cpp": 7,
    "Apps/Editor/Source/main.cpp": 3,
-   "Apps/Player/Source/Benchmark/PlayerBenchmark.h": 1,
    "Apps/Player/Source/PlayerApplication.cpp": 5,
    "Apps/Player/Source/PlayerHdrOptions.cpp": 1,
    "Apps/Player/Source/PlayerHdrOptions.h": 4,
