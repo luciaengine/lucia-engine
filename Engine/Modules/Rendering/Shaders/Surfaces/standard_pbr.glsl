@@ -159,6 +159,8 @@ float GE_StandardMaskShapeAlpha(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 s
 #ifdef GE_PARALLAX_MARCH
     return textureGrad(map, GE_TransformUV(uv, st, st2), shapeDx, shapeDy).a;
 #else
+    if (!GE_FORWARD_HEX_TILING || Mat.uParams0.z < 0.5)
+        return textureGrad(map, GE_TransformUV(uv, st, st2), shapeDx, shapeDy).a;
     vec2 uvA, uvB;
     float blend = 0.0;
     GE_ComputeHexBlendUV(uv, st, st2, Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x, uvA, uvB, blend);
