@@ -1758,6 +1758,7 @@ MeshGPUEntry MeshGPURegistry::UploadMesh(const Mesh& mesh, MeshGPUStorageDomain 
     flags |= VertexAttributeFlags::HasUV0;
 
     entry.vertexFlags = flags;
+    entry.ForestSectorLocal = mesh.ForestSectorLocal;
     entry.topology = ToRenderingTopology(mesh.PrimitiveTopology);
 
     const uint32_t baseVertCount = static_cast<uint32_t>(mesh.Vertices.size());

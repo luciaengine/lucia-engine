@@ -22,7 +22,7 @@ struct alignas(16) IdentityMeshDrawConstants
     uint32 MaterialIndex;
     uint32 SkinPaletteOffset = 0;
     uint32 InstanceFlags = 0; // GPUInstance flag bits the draw adds (uExtra.z)
-    uint32 Reserved = 0;
+    uint32 HasSector = 0; // The normal columns carry the integer sector in w when set.
 };
 static_assert(std::is_trivially_copyable_v<IdentityMeshDrawConstants>);
 static_assert(sizeof(IdentityMeshDrawConstants) == 128);

@@ -18,7 +18,7 @@ struct ForestPlacementSession;
 
 /// Binds a cooked stand's asset-relative index ranges to a registered static mesh
 /// and its resolved material. A null material means the entity or its material
-/// is unavailable. The stand's vertices are in the archive's world space.
+/// is unavailable. The cooked mesh identifies sector-local overview vertices. Other vertices use world space.
 /// The caller owns the subscription for the scene's lifetime. Main thread.
 [[nodiscard]] ScopedSubscription RegisterForestStandMesh(
     RenderServices& services, uint64 worldId, Rendering::RenderLayerMask layers,
