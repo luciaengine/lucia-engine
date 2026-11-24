@@ -58,7 +58,7 @@ Each view draws the overview. The trees near the camera draw in one view at a ti
 | --- | --- | --- |
 | Archive | none | The `.geforest` file that the overview mesh was cooked from. Required. |
 | Tree Model | none | A tree model with its impostor setting on. Empty draws the overview only. |
-| Detail Distance | 400 | The distance in meters from the camera within which visible pages draw their trees instead of the overview. 0 draws the overview only. |
+| Detail Distance | 400 | The distance in meters from the camera within which visible pages can draw their trees. The slot budget favors closer pages. 0 draws the overview only. |
 | Near Mesh Budget | 0 | The most trees near the camera that draw the tree mesh instead of the impostor card. 0 draws cards only. The Inspector accepts 0 to 256, and the compatibility tier caps it at 128. |
 
 A change to Detail Distance or Near Mesh Budget applies to the attached stand, also while you drag the value in the Inspector. A change from 0 to another value, or back to 0, attaches the stand again.
@@ -78,7 +78,7 @@ When you cook the archive again, every stand that uses it attaches again with th
 - A stand casts no shadows.
 - Reflection probes and planar reflections do not show the stand.
 - A stand does not draw into the depth prepass, so ambient occlusion and contact shadows do not see it.
-- At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. The pages nearest to the camera draw as trees, and the other pages within Detail Distance draw the overview.
+- At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. When the slot budget leaves visible pages within Detail Distance on the overview, the Inspector shows how many pages were selected and the distance to the closest omitted page in the detail view. Selected pages can still be loading.
 
 ### Export
 
