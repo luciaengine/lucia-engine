@@ -1117,6 +1117,38 @@ TEST(IndexedDepthReuse, WhiteSurfaceSlotsRejectTextureAndSamplerEdits)
     EXPECT_TRUE(HasDefaultWhiteSurfaceSlots(material, kWhite));
 }
 
+TEST(OrdinaryMaskedDraw, WhiteMetalRoughRequiresAnUnassignedSlotAndServedConstant)
+{
+    constexpr uint32_t kWhite = 17u;
+    auto material = Material::TestFactory::Create(GUID::Generate(), "Masked metallic roughness", 16u);
+    ShaderMeta shader;
+    GraphicsPipelineDesc pipeline;
+
+    material.SetBindlessTextureIndex(TextureSlot::kMetalRough, kWhite);
+    EXPECT_FALSE(CanSpecializeWhiteMetalRough(material, kWhite, shader, pipeline));
+    shader.SpecConstants.push_back({.Id = kStandardWhiteMetalRoughConstant});
+    EXPECT_TRUE(CanSpecializeWhiteMetalRough(material, kWhite, shader, pipeline));
+
+    material.MarkTextureAwaited("metallicRoughnessMap"_sid);
+    EXPECT_FALSE(CanSpecializeWhiteMetalRough(material, kWhite, shader, pipeline));
+    material.SetTexture("metallicRoughnessMap"_sid, TextureHandle(101u, 1u));
+    EXPECT_FALSE(CanSpecializeWhiteMetalRough(material, kWhite, shader, pipeline));
+    material.SetTexture("metallicRoughnessMap"_sid, TextureHandle{});
+    EXPECT_TRUE(CanSpecializeWhiteMetalRough(material, kWhite, shader, pipeline));
+
+    material.SetBindlessTextureIndex(TextureSlot::kMetalRough, 21u);
+    EXPECT_FALSE(CanSpecializeWhiteMetalRough(material, kWhite, shader, pipeline));
+    material.SetBindlessTextureIndex(TextureSlot::kMetalRough, kWhite);
+    material.SetSlotSamplerOverride("metallicRoughnessMap"_sid, SamplerPreset::LinearClamp);
+    EXPECT_FALSE(CanSpecializeWhiteMetalRough(material, kWhite, shader, pipeline));
+    material.SetSlotSamplerOverride("metallicRoughnessMap"_sid, std::nullopt);
+    EXPECT_TRUE(CanSpecializeWhiteMetalRough(material, kWhite, shader, pipeline));
+
+    pipeline.Specialization.emplace();
+    pipeline.Specialization->AddConstant(kStandardWhiteMetalRoughConstant, 0u);
+    EXPECT_FALSE(CanSpecializeWhiteMetalRough(material, kWhite, shader, pipeline));
+}
+
 TEST(IndexedDepthReuse, DestinationColorLogicKeepsOriginalTriangleContributions)
 {
     namespace R = GameEngine::Rendering;

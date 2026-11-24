@@ -235,6 +235,9 @@ TEST(ShippedSurfaceCompose, WhiteSurfaceMapSpecializationIsLimitedToMaskedNative
         EXPECT_EQ(std::any_of(constants.begin(), constants.end(), [](const auto& constant) {
             return constant.Id == 308u;
         }), expected);
+        EXPECT_EQ(std::any_of(constants.begin(), constants.end(), [](const auto& constant) {
+            return constant.Id == 309u;
+        }), expected);
     };
     ShaderCompileTarget native{};
     check(kForward, native, true);

@@ -419,13 +419,16 @@ PipelineVariantCache::PrepareColorVariant(
 }
 
 Rendering::PipelineHandle PipelineVariantCache::PrepareWhiteMapVariant(
-    const Material& material, Rendering::GraphicsPipelineId base, const Rendering::PipelineFormatKey& formatKey)
+    const Material& material, Rendering::GraphicsPipelineId base, const Rendering::PipelineFormatKey& formatKey,
+    bool useWhiteMetalRough)
 {
     auto* device = m_Materials->GetDevice();
     if (!device)
         return {};
     Rendering::SpecializationConstants overrides;
     overrides.AddConstant(kStandardWhiteMapsConstant, uint32_t{1});
+    if (useWhiteMetalRough)
+        overrides.AddConstant(kStandardWhiteMetalRoughConstant, uint32_t{1});
     const auto id = device->GetMutablePipelineCache().SpecializeGraphicsPipeline(base, overrides);
     if (!id.IsValid())
         return {};

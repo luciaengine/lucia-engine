@@ -3247,9 +3247,13 @@ TEST_F(MaterialPipelineCompilationTest, OrdinaryWhiteMapsWarmOnlyTheServedColorV
     const auto served = cache.SpecializeGraphicsPipeline(published.CurrentPipelineId, *MakeForwardPreparationOverrides());
     SpecializationConstants white;
     white.AddConstant(308, 1u);
-    const auto expected = cache.SpecializeGraphicsPipeline(served, white);
-    ASSERT_TRUE(expected.IsValid());
-    ASSERT_NE(expected, served);
+    const auto aoEmissive = cache.SpecializeGraphicsPipeline(served, white);
+    ASSERT_TRUE(aoEmissive.IsValid());
+    ASSERT_NE(aoEmissive, served);
+    white.AddConstant(309, 1u);
+    const auto allWhite = cache.SpecializeGraphicsPipeline(served, white);
+    ASSERT_TRUE(allWhite.IsValid());
+    ASSERT_NE(allWhite, aoEmissive);
     PipelineFormatKey format{};
     format.ColorCount = 1;
     format.ColorFormats[0] = TextureFormat::R16_FLOAT;
@@ -3257,14 +3261,18 @@ TEST_F(MaterialPipelineCompilationTest, OrdinaryWhiteMapsWarmOnlyTheServedColorV
     ASSERT_TRUE(original.IsValid());
     HeldPipelineBuilds held(*m_device);
     EXPECT_FALSE(variants.PrepareWhiteMapVariant(*material, served, format).IsValid());
+    EXPECT_FALSE(variants.PrepareWhiteMapVariant(*material, served, format, true).IsValid());
     EXPECT_TRUE(held.Jobs.empty());
     variants.PruneSettledConcreteWarmWaits();
-    ASSERT_EQ(held.Jobs.size(), 1u);
+    ASSERT_EQ(held.Jobs.size(), 2u);
     held.RunAll();
     variants.PruneSettledConcreteWarmWaits();
-    const auto warm = m_device->TryGetWarmGraphicsPipeline(expected, format);
-    ASSERT_TRUE(warm.IsValid());
-    EXPECT_EQ(variants.PrepareWhiteMapVariant(*material, served, format), warm);
+    const auto aoEmissiveWarm = m_device->TryGetWarmGraphicsPipeline(aoEmissive, format);
+    const auto allWhiteWarm = m_device->TryGetWarmGraphicsPipeline(allWhite, format);
+    ASSERT_TRUE(aoEmissiveWarm.IsValid());
+    ASSERT_TRUE(allWhiteWarm.IsValid());
+    EXPECT_EQ(variants.PrepareWhiteMapVariant(*material, served, format), aoEmissiveWarm);
+    EXPECT_EQ(variants.PrepareWhiteMapVariant(*material, served, format, true), allWhiteWarm);
     EXPECT_EQ(m_device->TryGetWarmGraphicsPipeline(served, format), original);
 }
 

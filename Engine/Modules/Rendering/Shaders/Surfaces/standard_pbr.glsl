@@ -179,6 +179,7 @@ float GE_StandardMaskShapeAlpha(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 s
     && !defined(GE_PARALLAX_MARCH) && !defined(GE_STANDARD_UV1_CROSSFADE)
 #define GE_STANDARD_WHITE_MAP_SPECIALIZATION
 layout(constant_id = 308) const uint GE_STANDARD_WHITE_MAPS = 0u;
+layout(constant_id = 309) const uint GE_STANDARD_WHITE_METAL_ROUGH = 0u;
 #endif
 
 #if defined(GE_STANDARD_UV1_CROSSFADE) && defined(HAS_TANGENT)
@@ -282,7 +283,11 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec4 mr = GE_StandardSampleAt(metallicRoughnessMap, sIn.textureST[2], sIn.textureST2[2], reliefUv0,
                                   sIn.uvFootprint);
 #else
-    vec4 mr = GE_StandardSampleHex(metallicRoughnessMap, sIn.uv0, sIn.textureST[2], sIn.textureST2[2]);
+    vec4 mr =
+  #ifdef GE_STANDARD_WHITE_MAP_SPECIALIZATION
+        GE_STANDARD_WHITE_METAL_ROUGH != 0u ? vec4(1.0) :
+  #endif
+        GE_StandardSampleHex(metallicRoughnessMap, sIn.uv0, sIn.textureST[2], sIn.textureST2[2]);
   #ifdef GE_STANDARD_UV1_CROSSFADE
     mr = mix(mr, GE_StandardSampleHex(metallicRoughnessMap, sIn.uv1, sIn.textureST[2], sIn.textureST2[2]), uv1Weight);
   #endif

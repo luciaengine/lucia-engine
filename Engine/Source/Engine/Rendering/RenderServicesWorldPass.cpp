@@ -1843,8 +1843,13 @@ class RenderServices::WorldPassPreparation
                 AcceptsOrdinaryWhiteMapOverride(*meta, color, batch.Key.materialIndex) &&
                 CanSpecializeWhiteMaps(*batch.Material, m_Services.Textures(), color))
             {
-                const auto white = m_Services.Materials().Variants().PrepareWhiteMapVariant(
-                    *batch.Material, concreteId, m_Context.BuildCurrentFormatKey());
+                const bool whiteMetalRough = CanSpecializeWhiteMetalRough(
+                    *batch.Material, m_Services.Textures().DefaultWhiteBindlessIndex(), *meta, color);
+                auto& variants = m_Services.Materials().Variants();
+                const auto format = m_Context.BuildCurrentFormatKey();
+                auto white = variants.PrepareWhiteMapVariant(*batch.Material, concreteId, format, whiteMetalRough);
+                if (whiteMetalRough && !white.IsValid())
+                    white = variants.PrepareWhiteMapVariant(*batch.Material, concreteId, format);
                 if (white.IsValid())
                     prepared.Bindings.Pipeline = white;
             }
