@@ -1,5 +1,5 @@
 #version 450
-#include "Includes/foliage_coverage.glsl"
+#include "Includes/mask_coverage.glsl"
 #include "Includes/integer_hash.glsl"
 layout(set=0,binding=0) uniform sampler2D sourceImage;
 layout(location=0) in vec2 uv;
@@ -23,10 +23,10 @@ float Foliage(vec2 position,float layerSeed)
     float footprint=exp2(probe.lod)/float(textureSize(sourceImage,0).x);
     float shapeFootprint=min(footprint,kFoliageShapeFootprint);
     float alpha=textureGrad(sourceImage,fract(position*kLeaves),vec2(shapeFootprint,0.0),vec2(0.0,shapeFootprint)).a;
-    float tailWeight=GE_FoliageTailWeight(footprint);
+    float tailWeight=GE_MaskCoverageTailWeight(footprint);
     if(probe.mode==5u)
-        return GE_FoliageLeafCoverageOpacity(alpha,1.0,probe.cutoff,tailWeight,layerSeed);
-    return GE_FoliageCoverageOpacity(alpha,probe.cutoff,tailWeight,layerSeed);
+        return GE_MaskCoverageLeafOpacity(alpha,1.0,probe.cutoff,tailWeight,layerSeed);
+    return GE_MaskCoverageTestOpacity(alpha,probe.cutoff,tailWeight,layerSeed);
 }
 void main()
 {

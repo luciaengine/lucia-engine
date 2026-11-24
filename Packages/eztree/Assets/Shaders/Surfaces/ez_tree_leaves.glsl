@@ -5,7 +5,7 @@
 // Texture names (albedoMap, normalMap, metallicRoughnessMap, aoMap) are
 // provided by the adapter's bindless slot macros.
 
-#include "Includes/foliage_coverage.glsl"
+#include "Includes/mask_coverage.glsl"
 
 float GE_EZTreeLeafAlpha(vec4 albedo)
 {
@@ -50,8 +50,8 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // color, so they make one sample.
     vec2 uvDx = dFdx(uvAlbedo);
     vec2 uvDy = dFdy(uvAlbedo);
-    float footprint = GE_FoliageFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
-    float tailWeight = GE_FoliageTailWeight(footprint);
+    float footprint = GE_MaskCoverageMajorFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
+    float tailWeight = GE_MaskCoverageTailWeight(footprint);
     bool boundShape = footprint > kFoliageShapeFootprint;
     float shapeGradient = kFoliageShapeFootprint * exp2(-GE_MATERIAL_MIP_BIAS);
     vec2 shapeDx = boundShape ? vec2(shapeGradient, 0.0) : uvDx;
@@ -63,7 +63,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     float colorTrust = max(smoothstep(0.45, 0.95, GE_EZTreeLeafAlpha(albedo)), tailWeight);
     vec3 leafColor = mix(Mat.uBaseColor.rgb, albedo.rgb, colorTrust);
     o.baseColor = leafColor * Mat.uBaseColor.rgb;
-    o.opacity = GE_FoliageLeafCoverageOpacity(GE_EZTreeLeafAlpha(shapeSample), Mat.uBaseColor.a,
+    o.opacity = GE_MaskCoverageLeafOpacity(GE_EZTreeLeafAlpha(shapeSample), Mat.uBaseColor.a,
                                               clamp(Props.alphaCutoff, 0.0, 1.0), tailWeight, sIn.uv1.x);
 
     vec4 mr = texture(metallicRoughnessMap, uvMR);
