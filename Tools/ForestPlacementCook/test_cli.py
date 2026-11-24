@@ -69,6 +69,16 @@ def check_overview(tool, root, cook, header, output):
     result = subprocess.run(command, capture_output=True, text=True)
     assert result.returncode != 0 and "Could not verify placement page 1" in result.stderr
     assert mesh.read_bytes() == glb
+    for sector, supported in ((-1048576, True), (1048575, True), (-1048577, False), (1048576, False)):
+        result = cook(header + f"0,0,0,{sector * 1024},0,1\n")
+        assert result.returncode == 0, result.stderr
+        result = subprocess.run(command, capture_output=True, text=True)
+        if supported:
+            assert result.returncode == 0, result.stderr
+            glb = mesh.read_bytes()
+        else:
+            assert result.returncode != 0 and "render-origin sector range" in result.stderr
+            assert mesh.read_bytes() == glb
 
 
 def main():

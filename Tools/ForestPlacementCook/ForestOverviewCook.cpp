@@ -7,6 +7,7 @@
 #include "Mathematics/Vector2.h"
 #include "Mathematics/Vector3.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
+#include "Rendering/Core/GPUScene.h"
 #include "Types/PathUtils.h"
 
 #include <algorithm>
@@ -176,7 +177,7 @@ struct OverviewMesh
 void AppendQuad(OverviewMesh& mesh, const PlacementPage& page, const Tile& tile, double height,
                 Mathematics::Vector2 lowUv, Mathematics::Vector2 highUv)
 {
-    // The default glTF import reflects X and reverses each triangle.
+    // Marked overview meshes import with the fixed glTF-to-archive X reflection.
     const auto sectorOrigin = Mathematics::WorldPosition::FromSector(page.OverviewSector(), {});
     const auto local = page.Origin - sectorOrigin;
     const float lowX = -static_cast<float>(local.x + tile.MinX);
@@ -303,6 +304,11 @@ void CookForestOverview(const std::filesystem::path& archive, const std::filesys
     for (uint32 index = 0; index < store.Pages().size(); ++index)
     {
         const auto& page = store.Pages()[index];
+        const auto sector = page.OverviewSector();
+        for (const auto axis : {sector.X, sector.Y, sector.Z})
+            if (axis < Rendering::kSectorAxisMin || axis > Rendering::kSectorAxisMax)
+                throw std::runtime_error("Placement page " + std::to_string(index) +
+                                         " exceeds the render-origin sector range. Move the forest closer to the origin.");
         const auto range = *store.ReadRange(index);
         const auto trees = std::span(packed).first(page.Count);
         if (!file.SeekTo(range.Offset) ||

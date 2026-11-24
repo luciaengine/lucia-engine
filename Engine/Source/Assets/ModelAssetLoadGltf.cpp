@@ -1010,13 +1010,18 @@ std::string_view ExtrasText(const cgltf_data& document, const cgltf_extras& obje
                             objectExtras.end_offset - objectExtras.start_offset);
 }
 
-// Forest cooker markers are boolean fields in small glTF extras blocks.
+// Read only the top-level marker, so unrelated extras need no retained JSON tree.
 bool HasForestMarker(std::string_view extras, std::string_view marker)
 {
-    constexpr size_t kMarkerBlockBytes = 256;
-    if (extras.empty() || extras.size() > kMarkerBlockBytes)
+    if (extras.empty())
         return false;
-    const auto data = nlohmann::json::parse(extras, nullptr, false);
+    using Json = nlohmann::json;
+    const auto keepMarker = [marker](int depth, Json::parse_event_t event, Json& value) {
+        if (event == Json::parse_event_t::key)
+            return depth == 1 && value.get_ref<const std::string&>() == marker;
+        return depth == 0 || (depth == 1 && event == Json::parse_event_t::value && value.is_boolean());
+    };
+    const auto data = Json::parse(extras, keepMarker, false);
     if (!data.is_object())
         return false;
     const auto found = data.find(marker);
@@ -1349,8 +1354,8 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
     m_ParseOptionsHash = Hashing::Fnv1a64Value(HashFbxLoaderOptions(loaderOptions), kGltfImportGeometryVersion);
     const ModelImport::AxisConversion axisConversion =
         ModelImport::MakeEngineConversion(GltfImport::SourceConversion(), loaderOptions.Axis);
-    auto convertVec = [&](float x, float y, float z, float out[3]) {
-        const ModelImport::Vec3 v = ModelImport::ConvertVec3({x, y, z}, axisConversion, 1.0f);
+    auto convertVec = [](const ModelImport::AxisConversion& axes, float x, float y, float z, float out[3]) {
+        const ModelImport::Vec3 v = ModelImport::ConvertVec3({x, y, z}, axes, 1.0f);
         out[0] = v.x;
         out[1] = v.y;
         out[2] = v.z;
@@ -1421,7 +1426,7 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
         for (size_t nodeIndex = 0; nodeIndex < nodeCount; ++nodeIndex)
         {
             const cgltf_node& node = gltf->nodes[nodeIndex];
-            convertVec(static_cast<float>(node.translation[0]),
+            convertVec(axisConversion, static_cast<float>(node.translation[0]),
                        static_cast<float>(node.translation[1]),
                        static_cast<float>(node.translation[2]),
                        &restT[nodeIndex * 3]);
@@ -1494,9 +1499,13 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
         }
     }
 
+    const auto archiveAxes = ModelImport::MakeEngineConversion(GltfImport::SourceConversion(), {});
     // Iterate meshes/primitives and convert into engine Mesh records.
     for (size_t mi = 0; mi < gltf->meshes_count; ++mi) {
         const cgltf_mesh& m = gltf->meshes[mi];
+        const bool sectorLocal = HasForestMarker(ExtrasText(*gltf, m.extras), "luciaForestSectorLocal");
+        // A generated quad shares the placement archive's fixed coordinate frame.
+        const auto& meshAxes = sectorLocal ? archiveAxes : axisConversion;
         for (size_t pi = 0; pi < m.primitives_count; ++pi) {
             const cgltf_primitive& p = m.primitives[pi];
 
@@ -1515,7 +1524,7 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
 
             Mesh mesh;
             mesh.Name = m.name ? m.name : GetName();
-            mesh.ForestSectorLocal = HasForestMarker(ExtrasText(*gltf, m.extras), "luciaForestSectorLocal");
+            mesh.ForestSectorLocal = sectorLocal;
             mesh.MaterialIndex = 0;
             if (mi < meshSourceNodes.size() && !meshSourceNodes[mi].empty())
                 mesh.SourceNodeIndex = meshSourceNodes[mi].front();
@@ -1598,13 +1607,13 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
                     positionVertexCount = count;
                     for (size_t i = 0; i < count; ++i) {
                         const float* position = attributeFloats.data() + i * 3;
-                        convertVec(position[0], position[1], position[2], mesh.Vertices[i].Position);
+                        convertVec(meshAxes, position[0], position[1], position[2], mesh.Vertices[i].Position);
                     }
                 } else if (a.type == cgltf_attribute_type_normal) {
                     haveNormals = true;
                     for (size_t i = 0; i < count; ++i) {
                         const float* normal = attributeFloats.data() + i * 3;
-                        convertVec(normal[0], normal[1], normal[2], mesh.Vertices[i].Normal);
+                        convertVec(meshAxes, normal[0], normal[1], normal[2], mesh.Vertices[i].Normal);
                     }
                 } else if (a.type == cgltf_attribute_type_texcoord && a.index == 0) {
                     haveTexcoords = true;
@@ -1625,12 +1634,12 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
                     haveTangents = true;
                     for (size_t i = 0; i < count; ++i) {
                         const float* tangent = attributeFloats.data() + i * 4;
-                        convertVec(tangent[0], tangent[1], tangent[2], mesh.Vertices[i].Tangent);
+                        convertVec(meshAxes, tangent[0], tangent[1], tangent[2], mesh.Vertices[i].Tangent);
                         // reverseWinding (default Mirror X) flips the bitangent
                         // handedness, so Tangent.w is negated to keep
                         // cross(N, T) * w pointing along the surface.
                         mesh.Vertices[i].Tangent[3] =
-                            axisConversion.reverseWinding ? -tangent[3] : tangent[3];
+                            meshAxes.reverseWinding ? -tangent[3] : tangent[3];
                     }
                 } else if (a.type == cgltf_attribute_type_joints) {
                     if (mesh.Joints0.size() < count * 4)
@@ -1720,7 +1729,7 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
                         return false;
                     }
                     const std::string problem =
-                        UnpackMorphDeltas(*attribute.data, axisConversion, *deltas, sparseScratch);
+                        UnpackMorphDeltas(*attribute.data, meshAxes, *deltas, sparseScratch);
                     if (!problem.empty()) {
                         RefuseGltfFile(GetPath(),
                                        MorphAttributeRefusal(targetIndex, targetName, mi, m.name, attribute.name) +
@@ -1753,7 +1762,7 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
             if (mesh.Indices.empty())
                 continue;
 
-            if (axisConversion.reverseWinding)
+            if (meshAxes.reverseWinding)
             {
                 for (size_t i = 0; i + 2 < mesh.Indices.size(); i += 3)
                     std::swap(mesh.Indices[i + 1], mesh.Indices[i + 2]);
@@ -2073,7 +2082,11 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
             }
             mat.AlphaCutoff = (float)m.alpha_cutoff;
             if (mat.AlphaMode == AlphaMode::Mask)
-                mat.ForestCanopyCoverage = HasForestMarker(ExtrasText(*gltf, m.extras), "luciaForestCanopyCoverage");
+            {
+                const auto extras = ExtrasText(*gltf, m.extras);
+                if (extras.size() <= 256)
+                    mat.ForestCanopyCoverage = HasForestMarker(extras, "luciaForestCanopyCoverage");
+            }
 
             // Populate basic PBR parameters from glTF metallic-roughness block
             const cgltf_pbr_metallic_roughness& pbr = m.pbr_metallic_roughness;
