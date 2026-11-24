@@ -1718,6 +1718,12 @@ bool VulkanDevice::CreateInstance(const DeviceDesc& desc)
         if (trySetIcd(exeDir / ".." / "Resources" / "vulkan" / "icd.d" / "MoltenVK_icd.json", true))
             return;
 
+        if (envListHasExistingPath(existingDriverFiles))
+        {
+            Logger::Log::Info(std::string("macOS: VK_DRIVER_FILES already set: ") + existingDriverFiles);
+            return;
+        }
+
         if (envListHasExistingPath(existing))
         {
             Logger::Log::Info(std::string("macOS: VK_ICD_FILENAMES already set: ") + existing);
@@ -1739,7 +1745,11 @@ bool VulkanDevice::CreateInstance(const DeviceDesc& desc)
         // 3) Common Homebrew/system install locations.
         if (trySetIcd("/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json", true))
             return;
+        if (trySetIcd("/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json", true))
+            return;
         if (trySetIcd("/usr/local/share/vulkan/icd.d/MoltenVK_icd.json", true))
+            return;
+        if (trySetIcd("/usr/local/etc/vulkan/icd.d/MoltenVK_icd.json", true))
             return;
         if (trySetIcd("/etc/vulkan/icd.d/MoltenVK_icd.json", true))
             return;
