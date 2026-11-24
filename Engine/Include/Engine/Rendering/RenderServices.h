@@ -970,6 +970,8 @@ class RenderServices
     // pass so no contributor material's depthWriteEnable can write (without the
     // extension the guarantee rests on the pipelines' own static state), and the
     // graph records a depth READ rather than a write (no WAW edge, no store).
+    // Optional frame-lifetime output becomes true when all input commands were prepared, recorded
+    // by this pass and its submission was accepted.
     Rendering::RenderGraph::RGPass AddForwardCommandPassForView(
         Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
         const WorldPassTargetsRG& targets,
@@ -979,7 +981,8 @@ class RenderServices
         const char* passName = "ForwardCommands",
         std::span<const ForwardBufferReadRG> sampledBuffers = {},
         Rendering::RenderGraph::RGDepthAccess depthAccess =
-            Rendering::RenderGraph::RGDepthAccess::ReadWrite);
+            Rendering::RenderGraph::RGDepthAccess::ReadWrite,
+        bool* allCommandsSubmitted = nullptr);
 
     // True when any of the view's entity batches uses a Transmission-keyword material.
     // Drives whether the scene-colour grab + the dedicated transmissive pass declare.

@@ -108,11 +108,6 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
         return;
     m_Device = device;
 
-    // The frame that declared a finished bake has executed by now.
-    for (const ImpostorAtlasKey& key : m_Finished)
-        m_Cache.MarkReady(key, 1u);
-    m_Finished.clear();
-
     // Extraction has marked the atlases in use before any new reservation can evict one.
     AdmitRequests(services.Spine().WorldFrameEpoch());
     if (!m_Evicted.empty())
@@ -126,7 +121,7 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
         m_Evicted.clear();
     }
 
-    if (m_PendingMip || m_Jobs.empty() || !EnsureBakeView(services))
+    if (m_PendingBake || m_Jobs.empty() || !EnsureBakeView(services))
         return;
     BakeJob& job = m_Jobs.front();
     if (job.MipAttemptsWithoutProgress >= kMaxMipAttemptsWithoutProgress)
@@ -189,56 +184,96 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
     if (!depth.IsValid())
         return;
 
+    PendingBake pending{};
+    pending.Frame.Stamp(frame);
+    pending.Key = job.Request.Key;
+    pending.NextFrame = job.NextFrame;
+    pending.SettledFrames = SettledFrames(services, job);
     if (!job.Cleared)
     {
+        auto* cleared = frame.AllocatePassData<bool>(false);
+        pending.ClearSubmitted = cleared;
         frame.AddPass("Impostor.ClearAtlas", Rendering::PassPhase::kEarlySetup,
-                      [color, normalDepth](RenderGraph::RGPassBuilder& p)
+                      [color, normalDepth, cleared](RenderGraph::RGPassBuilder& p)
                       {
                           RenderGraph::RGAttachmentOps clear{};
+                          p.OnSubmitted([cleared] { *cleared = true; });
                           clear.Load = RenderGraph::RGLoadOp::Clear;
                           constexpr RenderGraph::RGRange baseMip{0, 1, 0, 1};
                           p.AttachColor(0, color, clear, baseMip);
                           p.AttachColor(1, normalDepth, clear, baseMip);
                       },
                       [](RenderGraph::RGContext&) {});
-        job.Cleared = true;
     }
 
     // Warm-up: draw frame 0 until no pipeline the bake needs is still building, then bake from 0.
-    if (!PartsSettled(services, job))
+    if (pending.SettledFrames < kSettleFrames)
     {
         DeclareAtlasFrame(frame, services, job, color, normalDepth, depth, 0u, slot);
     }
     else
     {
-        for (uint32 drawn = 0; drawn < kFramesPerRenderedFrame && job.NextFrame < frameCount; ++drawn)
-            DeclareAtlasFrame(frame, services, job, color, normalDepth, depth, job.NextFrame++, slot);
+        for (uint32 drawn = 0; drawn < kFramesPerRenderedFrame && pending.NextFrame < frameCount; ++drawn)
+        {
+            bool* submitted = nullptr;
+            if (!job.Request.Parts.empty())
+            {
+                submitted = frame.AllocatePassData<bool>(false);
+                pending.TileSubmitted[drawn] = submitted;
+            }
+            DeclareAtlasFrame(frame, services, job, color, normalDepth, depth, pending.NextFrame++, slot, submitted);
+        }
     }
     frame.MarkOutput(color, RenderGraph::RGImageLayout::ShaderReadOnly);
     frame.MarkOutput(normalDepth, RenderGraph::RGImageLayout::ShaderReadOnly);
 
-    if (job.NextFrame == frameCount && textures.MipCount == 1)
-    {
-        m_Finished.push_back(job.Request.Key);
-        m_Jobs.pop_front();
-    }
+    m_PendingBake = pending;
 }
 
 void ImpostorBaker::OnFrameSubmittedRG(RenderGraph::RGFrame& frame, const Rendering::IDevice::GpuSyncToken& token)
 {
     std::lock_guard lock(m_Mutex);
-    if (!m_PendingMip || m_PendingMip->Frame.Frame != &frame)
+    if (!m_PendingBake || m_PendingBake->Frame.Frame != &frame)
         return;
-    const auto pending = *m_PendingMip;
-    m_PendingMip.reset();
+    const auto pending = *m_PendingBake;
+    m_PendingBake.reset();
     if (!pending.Frame.IsFor(frame) || !token.IsValid() || frame.Graph().Submissions().empty() ||
         frame.Stats().SubmissionsMade != frame.Graph().Submissions().size() ||
         m_Jobs.empty() || m_Jobs.front().Request.Key != pending.Key)
         return;
     auto* textures = m_Textures.Find(pending.Key);
-    if (!textures || textures->Atlas.HighestReadyMip + 1 != pending.Level)
+    if (!textures)
         return;
     BakeJob& job = m_Jobs.front();
+    if (pending.Level == 0)
+    {
+        if (!job.Cleared && (!pending.ClearSubmitted || !*pending.ClearSubmitted))
+            return;
+        job.Cleared = true;
+        job.SettledFrames = pending.SettledFrames;
+        if (std::ranges::any_of(pending.TileSubmitted, [](const bool* tile) { return tile && !*tile; }))
+        {
+            // Retrying a partially drawn tile must start from clear content. Other jobs can bake meanwhile.
+            job.NextFrame = 0;
+            job.Cleared = false;
+            if (m_Jobs.size() > 1)
+            {
+                m_Jobs.push_back(std::move(job));
+                m_Jobs.pop_front();
+            }
+            return;
+        }
+        job.NextFrame = pending.NextFrame;
+        const uint32 frameCount = pending.Key.FramesPerSide * pending.Key.FramesPerSide;
+        if (job.NextFrame == frameCount && textures->MipCount == 1)
+        {
+            m_Cache.MarkReady(pending.Key, 1u);
+            m_Jobs.pop_front();
+        }
+        return;
+    }
+    if (textures->Atlas.HighestReadyMip + 1 != pending.Level)
+        return;
     if (!std::ranges::all_of(pending.Recorded, [](const bool* recorded) { return recorded && *recorded; }))
     {
         ++job.MipAttemptsWithoutProgress;
@@ -257,8 +292,8 @@ void ImpostorBaker::OnFrameSubmittedRG(RenderGraph::RGFrame& frame, const Render
 void ImpostorBaker::OnFrameAbortedRG(RenderGraph::RGFrame& frame)
 {
     std::lock_guard lock(m_Mutex);
-    if (m_PendingMip && m_PendingMip->Frame.Frame == &frame)
-        m_PendingMip.reset();
+    if (m_PendingBake && m_PendingBake->Frame.Frame == &frame)
+        m_PendingBake.reset();
 }
 
 void ImpostorBaker::OnFrameStreamRetiredRG(RenderGraph::RGFrame& frame)
@@ -274,9 +309,8 @@ void ImpostorBaker::OnDeviceRebuilt(Rendering::IDevice* device)
     m_Cache.Clear();
     m_Requests.Clear();
     m_Jobs.clear();
-    m_Finished.clear();
     m_Evicted.clear();
-    m_PendingMip.reset();
+    m_PendingBake.reset();
     m_MipPipeline = {};
     m_MipPipelineRequested = false;
     m_Device = device;
@@ -412,7 +446,9 @@ bool ImpostorBaker::DeclareMip(RenderGraph::RGFrame& frame, RenderServices& serv
             return false;
     }
 
-    PendingMip pending{{}, key, mip, {}};
+    PendingBake pending{};
+    pending.Key = key;
+    pending.Level = mip;
     pending.Frame.Stamp(frame);
     for (uint32 layer = 0; layer < images.size(); ++layer)
     {
@@ -456,14 +492,14 @@ bool ImpostorBaker::DeclareMip(RenderGraph::RGFrame& frame, RenderServices& serv
         pending.Recorded[layer] = recorded;
         frame.MarkOutput(image, RenderGraph::RGImageLayout::ShaderReadOnly);
     }
-    m_PendingMip = pending;
+    m_PendingBake = pending;
     return true;
 }
 
-bool ImpostorBaker::PartsSettled(RenderServices& services, BakeJob& job)
+uint32 ImpostorBaker::SettledFrames(RenderServices& services, const BakeJob& job)
 {
     if (job.SettledFrames >= kSettleFrames)
-        return true;
+        return kSettleFrames;
     bool building = false;
     for (const ImpostorBakePart& part : job.Request.Parts)
     {
@@ -471,13 +507,12 @@ bool ImpostorBaker::PartsSettled(RenderServices& services, BakeJob& job)
         if (!material || services.Materials().Variants().HasPipelineBuildsInFlight(*material))
             building = true;
     }
-    job.SettledFrames = building ? 0u : job.SettledFrames + 1u;
-    return job.SettledFrames >= kSettleFrames;
+    return building ? 0u : job.SettledFrames + 1u;
 }
 
 void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderServices& services, const BakeJob& job,
                                       RenderGraph::RGTexture color, RenderGraph::RGTexture normalDepth,
-                                      RenderGraph::RGTexture depth, uint32 atlasFrame, FrameSlot& slot)
+                                      RenderGraph::RGTexture depth, uint32 atlasFrame, FrameSlot& slot, bool* submitted)
 {
     const ImpostorAtlasKey& key = job.Request.Key;
     const uint32 column = atlasFrame % key.FramesPerSide;
@@ -504,7 +539,7 @@ void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderService
     for (const ImpostorBakePart& part : job.Request.Parts)
     {
         const Material* material = services.Materials().Registry().Find(part.Material);
-        if (!material)
+        if (!material || !part.Mesh.IsValid())
             continue;
         const uint32 flags = material->IsDoubleSided() ? Rendering::kInstanceFlagDepthDoubleSided : 0u;
         slot.PushConstants.push_back(MakePushConstants(material->GetGpuSceneMaterialIndex(), flags));
@@ -514,7 +549,7 @@ void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderService
         command.Bindings.PushConstants = std::span<const std::byte>(slot.PushConstants.back());
         slot.Commands.push_back(command);
     }
-    if (slot.Commands.size() == first)
+    if (slot.Commands.size() == first || (submitted && slot.Commands.size() - first != job.Request.Parts.size()))
         return;
 
     RenderServices::WorldPassTargetsRG targets{};
@@ -526,7 +561,7 @@ void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderService
     targets.AddExtraColor(1u, normalDepth, keep, {}, baseMip);
     services.AddForwardCommandPassForView(frame, m_View, targets, kBakeKeywords,
                                           std::span<const DrawCommand>(slot.Commands).subspan(first), {},
-                                          "Impostor.BakeFrame");
+                                          "Impostor.BakeFrame", {}, RenderGraph::RGDepthAccess::ReadWrite, submitted);
 }
 
 } // namespace GameEngine::Engine::Renderer
