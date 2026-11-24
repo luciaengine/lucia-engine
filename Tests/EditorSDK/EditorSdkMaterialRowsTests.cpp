@@ -335,3 +335,16 @@ TEST(MaterialRowsLightingModel, MatchIsCaseInsensitive)
     EXPECT_FALSE(Rows::IsLightingModelShadowOnly("StandardPBR"));
     EXPECT_FALSE(Rows::IsLightingModelUnlit(""));
 }
+
+TEST(MaterialRowsVisibility, MicroshadowStrengthIsAUnitSliderForStandardPbr)
+{
+    MaterialDocument standard = MaterialDocument::CreateDefaultPBR("Microshadow test");
+    EXPECT_TRUE(Rows::IsPropertyVisible("microshadowStrength", standard));
+    EXPECT_TRUE(Rows::IsSlider01Property("microshadowStrength"));
+    EXPECT_EQ(std::get<float>(standard.properties.at("microshadowStrength")), 0.0f);
+    standard.lightingModel = "Unlit";
+    EXPECT_FALSE(Rows::IsPropertyVisible("microshadowStrength", standard));
+    standard.lightingModel = "StandardPBR";
+    standard.surfaceShader = "Surfaces/impostor.glsl";
+    EXPECT_FALSE(Rows::IsPropertyVisible("microshadowStrength", standard));
+}

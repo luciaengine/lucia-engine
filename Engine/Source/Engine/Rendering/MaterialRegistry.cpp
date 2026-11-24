@@ -344,6 +344,7 @@ void MaterialRegistry::ApplyLegacySurfaceProperties(Material& mat, const Materia
         mat.SetFloat(HashStringId("thinFilmThickness"), 300.0f); // nm
         mat.SetFloat(HashStringId("thinFilmIor"), 1.3f);
         mat.SetFloat(HashStringId("thinFilmWeight"), 1.0f);
+        mat.SetFloat(HashStringId("microshadowStrength"), 0.0f);
 
         // Emission (uParams18): texture x colour x luminance, so a white colour and luminance 0
         // (OpenPBR's defaults) keep a material that authors neither dark.
