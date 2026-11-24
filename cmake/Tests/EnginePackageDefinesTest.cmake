@@ -18,6 +18,8 @@
 # effective defines first, in dependency-NAME order rather than the order the
 # manifest lists them, appended once, with the package's own define last. A
 # dependency that ships with no manifest is refused loudly.
+cmake_minimum_required(VERSION 3.25)
+
 if(NOT DEFINED SCRIPT OR NOT DEFINED WORK)
     message(FATAL_ERROR "EnginePackageDefinesTest.cmake: SCRIPT and WORK are required")
 endif()
@@ -98,6 +100,7 @@ expect_module_defines("a package with transitive dependencies" "pkg-a"
 declare_package(pkg-orphan "orphan" "absent-package")
 set(_driver "${WORK}/drive.cmake")
 file(WRITE "${_driver}"
+    "cmake_minimum_required(VERSION 3.25)\n"
     "include(\"${SCRIPT}\")\n"
     "ge_engine_package_module_defines(\"${_root}\" \"pkg-orphan\" _defines)\n")
 execute_process(COMMAND ${CMAKE_COMMAND} -P ${_driver}
