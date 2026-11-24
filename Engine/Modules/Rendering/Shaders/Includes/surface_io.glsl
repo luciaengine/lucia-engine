@@ -134,6 +134,7 @@ struct SurfaceOutput
 
     // Extended (used by specific lighting models)
     float ao;
+    float microshadowStrength; // directional material occlusion strength, 0 disables it
     vec3 bentNormalWS; // GTAO world-space bent normal (diffuse irradiance direction); == normalWS without GTAO
     float clearCoat;
     float clearCoatRoughness;
@@ -261,6 +262,7 @@ SurfaceOutput DefaultSurfaceOutput()
     o.opacity = 1.0;
     o.planarReflectionMask = 1.0;
     o.ao = 1.0;
+    o.microshadowStrength = 0.0;
     o.bentNormalWS = vec3(0.0, 1.0, 0.0);
     o.clearCoat = 0.0;
     o.clearCoatRoughness = 0.0;

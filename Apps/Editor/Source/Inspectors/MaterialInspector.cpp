@@ -1532,6 +1532,11 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                 defaultedVal = kDefaultAlphaCutoff;
                 valPtr = &defaultedVal;
             }
+            else if (key == "microshadowStrength")
+            {
+                defaultedVal = 0.0f;
+                valPtr = &defaultedVal;
+            }
             if (!valPtr)
                 continue;
 
@@ -1659,7 +1664,10 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                 float cur = 0.0f;
                 if (!TryGetScalarFromMaterialValue(val, cur))
                     continue;
-                AddMaterialSliderRow(content, Rendering::MaterialPropertyBinding::PropertyKeyLabel(key), cur, 0.0f, 1.0f, root, mat, key, openPicker, undo, inlineEmbed, openAsset);
+                const char* tooltip = key == "microshadowStrength" ?
+                    "Uses the AO map and light angle to shade small surface details under directional lights." : nullptr;
+                AddMaterialSliderRow(content, Rendering::MaterialPropertyBinding::PropertyKeyLabel(key),
+                                     cur, 0.0f, 1.0f, root, mat, key, openPicker, undo, inlineEmbed, openAsset, tooltip);
             }
             else if (key == "emissionLuminance" && std::holds_alternative<float>(val))
             {

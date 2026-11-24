@@ -5,6 +5,12 @@ description: How gameplay code reads and writes a runtime material's properties,
 
 How gameplay code reads and writes a runtime material's properties, and how a standard surface emits light: its units, and how each importer maps its files onto it. Writing the surface shader a `.material` names is covered in [Your first surface shader](surface-shader-authoring.mdx).
 
+## Microshadows
+
+On a Standard PBR material with an AO map, raise **Microshadow Strength** to add directional shadows from small surface details. The value runs from 0 (off) to 1 (full effect) and defaults to 0. The material key is `microshadowStrength`. A white AO map leaves the direct light unchanged.
+
+The effect uses the material AO and shading normal before screen-space AO is applied. It affects directional reflection and leaves ambient lighting, local lights, and thin-surface transmission unchanged. It uses the analytical cone approximation described by Pablo Zurita. [Improving Direct Lighting Material Occlusion, Part 1](https://irradiance.ca/posts/microshadowing-part1/)
+
 ## Setting material properties from code
 
 A runtime `Material` (`Engine/Include/Engine/Rendering/Material.h`) is owned by the `MaterialRegistry`. Hold a `Material*` or a handle and never delete it yourself. It offers three ways to write its properties, all into the same aligned CPU property cache.

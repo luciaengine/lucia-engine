@@ -214,6 +214,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // neutral defaults white/1/1.5 reproduce the legacy fixed 0.04 dielectric).
     o.specularColor    = Mat.uParams13.rgb;
     o.specularWeight   = Mat.uParams13.w;
+    o.microshadowStrength = Mat.uParams17.w;
     o.specularIor      = Mat.uParams14.x;
     o.diffuseRoughness = Mat.uParams14.z; // OpenPBR diffuse roughness (Oren-Nayar; 0 = Lambert)
 

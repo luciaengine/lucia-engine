@@ -744,7 +744,8 @@ void PlayerApplication::Update(float64 deltaTime)
         RequestExit();
 
     PollRuntimeDisplayControls();
-    AdvanceBenchmark();
+    if (m_Benchmark && !m_Benchmark->UsesTimingPath())
+        AdvanceBenchmark(true);
 
     // --quit-after: this is the last frame when it is frame number m_QuitAfterFrames.
     // A movie capture ends on its written frames instead (PollMovieFrames).
@@ -770,14 +771,17 @@ bool PlayerApplication::BenchmarkSucceeded() const
     return !m_Benchmark || m_Benchmark->Succeeded();
 }
 
-void PlayerApplication::AdvanceBenchmark()
+bool PlayerApplication::AdvanceBenchmark(bool previousFrameSubmitted)
 {
     auto* world = EngineCore::GetInstance().GetPrimaryWorld();
-    if (!m_Benchmark || !world || m_StartupScene.IsPending() || !m_StartupSceneRevealed)
-        return;
-    auto* renderContext = m_Host->GetRenderDeviceContext();
-    if (m_Benchmark->Advance(*world, m_Host->GetRenderGraphFrame(), renderContext ? renderContext->GetDevice() : nullptr))
-        RequestExit();
+    if (!world || m_StartupScene.IsPending() || !m_StartupSceneRevealed)
+        return false;
+    const auto* renderContext = m_Host->GetRenderDeviceContext();
+    if (!m_Benchmark->Advance(*world, m_Host->GetRenderGraphFrame(),
+                              renderContext ? renderContext->GetDevice() : nullptr, previousFrameSubmitted))
+        return false;
+    RequestExit();
+    return true;
 }
 
 void PlayerApplication::HandleFatalDeviceLoss()
@@ -806,7 +810,19 @@ void PlayerApplication::Render()
         PollMovieFrames();
 #endif
 
+    const bool replayingTimingPath = m_Benchmark && m_Benchmark->UsesTimingPath();
+    if (replayingTimingPath && AdvanceBenchmark(m_BenchmarkFrameSubmitted))
+        return;
+
+    // Apply a path pose after the ECS update, before the host snapshots the camera.
+    const auto* previousFrame = replayingTimingPath ? m_Host->GetRenderGraphFrame() : nullptr;
+    const uint64_t submittedBefore = previousFrame ? previousFrame->SubmittedFrameCount() : 0;
     m_Host->Render(m_LastRenderDeltaTime);
+    if (replayingTimingPath)
+    {
+        const auto* frame = m_Host->GetRenderGraphFrame();
+        m_BenchmarkFrameSubmitted = frame && frame->SubmittedFrameCount() > submittedBefore;
+    }
 
     if (!m_FatalDeviceLossHandled)
         PollScreenshot();

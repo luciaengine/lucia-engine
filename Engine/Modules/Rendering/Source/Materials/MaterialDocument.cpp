@@ -116,6 +116,7 @@ MaterialDocument MaterialDocument::CreateDefaultPBR(const std::string& name)
     doc.properties["emissionLuminance"] = 0.0f;                         // emission in nits; 0 emits nothing, 203 (reference white) == scene-linear 1.0
     doc.properties["emissiveExposureWeight"] = kDefaultEmissiveExposureWeight; // 1 physical, 0 shown whatever the exposure
     doc.properties["ao"] = 1.0f;
+    doc.properties["microshadowStrength"] = 0.0f;
     doc.properties["opacity"] = doc.DefaultOpacity(); // == baseColor.a, seeded above
     doc.properties["enableClearCoat"] = false;    // compiles the coat lobe in when true
     doc.properties["clearCoat"] = 1.0f;           // coat strength [0..1] — full when enabled (URP default)
