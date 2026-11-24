@@ -373,6 +373,8 @@ class DepthPassPreparation
         const bool nonOccludingPrepass = m_Data.Params.PassType == DepthPassType::Prepass &&
                                          m_Data.Params.Phase == Rendering::GPUDrawStreamBuilder::SlicePhase::A &&
                                          m_Data.Params.Heads == PrepassHeads::NonOccluding;
+        if (m_Services.Streams && m_Data.Params.PassType == DepthPassType::Prepass && !nonOccludingPrepass)
+            m_Services.Streams->RequireImpostorPrepass(static_cast<uint32_t>(m_Data.Params.ViewId), m_Data.Params.Phase);
         std::span<const WorldDrawBuilder::BatchKey> entityKeys =
             nonOccludingPrepass ? std::span<const WorldDrawBuilder::BatchKey>{}
             : motionPass        ? m_Services.DrawBuilder.GetDeformingBatchKeys(m_Data.Params.ViewId)
@@ -971,6 +973,8 @@ class DepthPassPreparation
         const size_t commandOffset = segment.cmdByteOffset;
         const size_t countOffset = segment.countByteOffset;
         const uint32_t maxDrawCount = segment.maxDrawCount;
+        if (crossfading && m_Data.Params.PassType == DepthPassType::Prepass)
+            m_Services.Streams->ReportImpostorTail(countOffset, Rendering::GPUDrawStreamBuilder::FadePass::Depth, false);
         const ResolvedDepthPipeline resolved = ResolvePipeline(batch, winding, crossfading, withoutHexTiling);
         if (!resolved.Pipeline.IsValid())
         {
@@ -1005,6 +1009,9 @@ class DepthPassPreparation
         command.IndirectStride = 5u * sizeof(uint32_t);
         command.IndirectCommandOffset = commandOffset;
         command.IndirectCountOffset = countOffset;
+        if (crossfading && m_Data.Params.PassType == DepthPassType::Prepass &&
+            resolved.ServedVersion == batch.Material->GetVersion())
+            m_Services.Streams->ReportImpostorTail(countOffset, Rendering::GPUDrawStreamBuilder::FadePass::Depth, true);
         Append(command, preparedBindings, batch.Geometry, batch.DrawVertexFlags, resolved.ServedVersion,
                batch.Material->GetGpuSceneMaterialIndex(), batch.Key.materialIndex, true, batch.Key.meshIndex, maxDrawCount,
                m_Services.Streams->GetRangeCount());

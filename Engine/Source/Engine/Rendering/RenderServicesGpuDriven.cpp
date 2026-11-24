@@ -320,7 +320,7 @@ void RenderServices::ScheduleWorldBucketerDispatches(Rendering::RenderGraph::RGF
         m_MaterialSystem.MaterialDepthClassSpan(),
         m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered,
         groupMaps.OrderedToGroup, instanceCount,
-        static_cast<uint32_t>(m_GpuScene->GetMeshes().size()));
+        m_GpuScene->GetMeshes());
 }
 
 uint32_t RenderServices::ResolveViewForceLOD(Rendering::ViewId viewId) const
@@ -910,7 +910,7 @@ bool RenderServices::ScheduleBucketerDispatchesForViewSlices(
         m_GpuScene->GetBatchRegistry(), m_MaterialSystem.MaterialDepthClassSpan(),
         m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered,
         groupMaps.OrderedToGroup,
-        instanceCount, static_cast<uint32_t>(m_GpuScene->GetMeshes().size()));
+        instanceCount, m_GpuScene->GetMeshes());
     if (!ordering.IsValid())
         return false;
     // Thread the ordering proxy: dedup-by-physical lands on the spine's id
@@ -1021,7 +1021,7 @@ bool RenderServices::ScheduleWorldOcclusionRecoverScatterForView(
         m_GpuScene->GetBatchRegistry(), m_MaterialSystem.MaterialDepthClassSpan(),
         m_MaterialSystem.MaterialColorClassSpan(), groupMaps.MeshOrdered,
         groupMaps.OrderedToGroup,
-        instanceCount, static_cast<uint32_t>(m_GpuScene->GetMeshes().size()));
+        instanceCount, m_GpuScene->GetMeshes());
     return ordering.IsValid();
 }
 

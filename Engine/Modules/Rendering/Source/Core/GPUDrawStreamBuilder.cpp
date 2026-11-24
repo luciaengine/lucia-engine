@@ -1432,6 +1432,8 @@ bool GPUDrawStreamBuilder::EnsureArenaBuffers()
 void GPUDrawStreamBuilder::BeginArenaFrame()
 {
     ++m_ArenaFrameStamp;
+    m_ImpostorTailPasses.Clear();
+    m_ImpostorPrepassSlices.Clear();
 
     for (auto it = m_RetiredBuffers.begin(); it != m_RetiredBuffers.end();)
     {
@@ -1523,6 +1525,26 @@ void GPUDrawStreamBuilder::BeginArenaFrame()
     m_RangeInsertsBeforeEnd = 0;
     m_SliceStatsBindings.clear();
     m_UnobservableTailSlices = 0;
+}
+
+void GPUDrawStreamBuilder::ReportImpostorTail(size_t countOffset, FadePass pass, bool prepared)
+{
+    if (auto* status = m_ImpostorTailPasses.Find(countOffset))
+    {
+        if (prepared)
+        {
+            ++status->Prepared;
+            status->Passes |= static_cast<uint8_t>(pass);
+        }
+        else
+            ++status->Requested;
+    }
+}
+
+void GPUDrawStreamBuilder::RequireImpostorPrepass(uint32_t view, SlicePhase phase)
+{
+    if (!m_ImpostorTailPasses.Empty())
+        m_ImpostorPrepassSlices.Insert(MakeStreamKey(view, kCascadeIndexNone, 0, 0, phase));
 }
 
 void GPUDrawStreamBuilder::RegisterSlice(const SliceRegistration& slice)
@@ -1725,6 +1747,21 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         uint32_t CompactRegionCount = 0;
     };
 
+    struct FadeGroup
+    {
+        uint32_t OwnerMesh;
+        std::vector<size_t> TailOffsets;
+    };
+    struct FadeReadiness
+    {
+        RenderGraph::RGUploadRing::Alloc Upload{};
+        size_t Bytes = 0;
+        std::vector<FadeGroup> Groups;
+    };
+    std::vector<FadeReadiness> FadeViews;
+    const GPUDrawStreamBuilder* Builder = nullptr;
+    bool* ImpostorPipelinePending = nullptr;
+
     std::vector<SliceRegistration> Slices{};
     PipelineHandle Pipeline{};
     PipelineHandle CompactPipeline{};
@@ -1750,10 +1787,11 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     uint32_t CallCursorBase{};
     uint32_t CallStatsBase{};
     uint32_t SnapshotRecords{};
+    uint32_t TailRecordScale = 1u;
     uint32_t CursorHalfStride{};
     uint32_t HeadDrawBlockOffset{};
-    uint32_t TailStagingBlockOffset{};
-    uint32_t TailDrawBlockOffset{};
+    uint32_t TailStagingRecordOffset{};
+    uint32_t TailDrawRecordOffset{};
     std::vector<uint32_t> SliceTailIndex{};
     std::vector<uint32_t> SliceCursorOffset{};
     uint32_t InstanceCount{};
@@ -1864,7 +1902,10 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         // meshPoolGroup (draw consolidation). Bound on every dispatch so
         // the 10th layout binding is always valid; read only when
         // meshGroupMode != 0.
-        writes[9] = StorageBufferWrite(9, TableRing, GroupBindOffset, GroupBindBytes);
+        const auto& readiness = FadeViews[sliceIndex];
+        writes[9] = readiness.Upload.Valid()
+            ? StorageBufferWrite(9, readiness.Upload.Buffer, readiness.Upload.Offset, readiness.Bytes)
+            : StorageBufferWrite(9, TableRing, GroupBindOffset, GroupBindBytes);
         WriteHistory(writes, sliceIndex);
         // Placement owners; the stand-in is never read because the stage is off without them.
         writes[14] = OwnersBound ? StorageBufferWrite(14, ownerBuffer, 0, static_cast<size_t>(InstanceCount) * sizeof(uint32_t))
@@ -1949,16 +1990,18 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         if (fade.handle.IsValid() && SliceTailIndex[sliceIndex] != kNoTailBlock)
         {
             pushConstants.invFadeDuration      = 1.0f / slice.lod.crossfadeDuration;
-            pushConstants.crossfadeTailActive  = 1u;
+            pushConstants.crossfadeTailActive  = TailRecordScale;
             pushConstants.tailCursorBase       = pushConstants.cursorBase + CursorHalfStride;
             pushConstants.tailRecordBase =
                 CallRecordBase
-                + (TailStagingBlockOffset + SliceTailIndex[sliceIndex]) * SnapshotRecords;
+                + TailStagingRecordOffset + SliceTailIndex[sliceIndex] * SnapshotRecords * TailRecordScale;
         }
         pushConstants.lodHysteresisBand = SliceBand[sliceIndex];
         pushConstants.renderedHistoryEnabled = historyBound ? 1u : 0u;
         // The stage reads the placement owners; without them every linked part keeps its mesh.
         pushConstants.impostorCardMesh = OwnersBound ? slice.lod.impostorCardMesh : 0xFFFFFFFFu;
+        if (FadeViews[sliceIndex].Upload.Valid())
+            pushConstants.meshGroupMode |= kCheckImpostorFadeReady;
         pushConstants.impostorEnterCoverage = slice.lod.impostorSwitchCoverage;
         // The hysteresis band reads the owner's rendered history: without it the switch is stateless.
         pushConstants.impostorExitCoverage =
@@ -2015,7 +2058,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
 
         const uint32_t sliceCursorBase = CallCursorBase + SliceCursorOffset[sliceIndex];
         GroupCompactPushConstants compactPushConstants{};
-        compactPushConstants.recordCount = SnapshotRecords;
+        compactPushConstants.recordCount = SnapshotRecords * (isTail ? TailRecordScale : 1u);
         compactPushConstants.rowCount    = sliceRowCount;
         compactPushConstants.cursorBase  = isTail ? sliceCursorBase + CursorHalfStride
                                  : sliceCursorBase;
@@ -2025,13 +2068,13 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             compactPushConstants.cursorBase += sliceRowCount;
         compactPushConstants.srcRecordBase =
             CallRecordBase
-            + ((isTail ? TailStagingBlockOffset : 0u) + blockIndex)
-                  * SnapshotRecords;
+            + (isTail ? TailStagingRecordOffset : 0u) + blockIndex * compactPushConstants.recordCount;
         compactPushConstants.dstRecordBase =
             CallRecordBase
-            + ((isTail ? TailDrawBlockOffset : HeadDrawBlockOffset) + blockIndex)
-                  * SnapshotRecords;
-        compactPushConstants.pairedRecords = isTail && !InstanceCompactionActive ? 1u : 0u;
+            + (isTail ? TailDrawRecordOffset : HeadDrawBlockOffset * SnapshotRecords)
+            + blockIndex * compactPushConstants.recordCount;
+        compactPushConstants.tailLayout = isTail ? (TailRecordScale == 2u ? 2u :
+            (!InstanceCompactionActive ? 1u : 0u)) : 0u;
         compactPushConstants.InstancedRecords = InstanceCompactionActive ? 1u : 0u;
         if (InstanceCompactionActive)
             std::swap(compactPushConstants.srcRecordBase, compactPushConstants.dstRecordBase);
@@ -2138,6 +2181,150 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         }
     }
 
+    void InitFadeViews(RenderGraph::RGFrame& frame, GPUDrawStreamBuilder& builder,
+                       std::span<const GPUMesh> meshes, const BatchRegistry& registry,
+                       std::span<const uint32_t> colorClasses, std::span<const uint32_t> orderedMeshes,
+                       std::span<const uint32_t> groups, size_t alignment, bool crossfades)
+    {
+        FadeViews.resize(Slices.size());
+        if (!crossfades || registry.CardRows().Empty())
+            return;
+        struct SourceRow
+        {
+            uint32_t Class;
+            uint32_t Mesh;
+            BatchRegistry::ParityCounts Counts;
+        };
+        struct Model
+        {
+            uint32_t Owner;
+            uint32_t CardMaterial;
+            std::vector<SourceRow> Parts;
+        };
+        std::vector<Model> models;
+        FlatMap<uint32_t, size_t> modelOfMesh;
+        models.reserve(registry.CardRows().Size());
+        for (const auto& [mesh, cardKey] : registry.CardRows())
+        {
+            // GPUScene::SetMeshImpostorGroup validates distinct live indices before linking
+            // the closed ring. UpdateMesh preserves it and RemoveMesh clears the entire group.
+            if (mesh >= meshes.size() || !(meshes[mesh].impostorCard & kGPUMeshImpostorPrimaryBit))
+                continue;
+            uint32_t part = mesh;
+            while (part < meshes.size() && !modelOfMesh.Contains(part))
+            {
+                modelOfMesh.InsertOrAssign(part, models.size());
+                part = meshes[part].nextImpostorPart;
+            }
+            assert(part == mesh && "the registered model must form a closed ring");
+            models.push_back({mesh, BatchRegistry::MaterialIndexFromKey(cardKey), {}});
+        }
+        // Resolve the same class and pool-group keys as the submitted raster range. A
+        // representative of a merged range can have a different material or mesh index.
+        auto sourceRow = [&](uint32_t material, uint32_t mesh, BatchRegistry::ParityCounts counts) {
+            const uint32_t klass = material < colorClasses.size() ? colorClasses[material] : material;
+            if (!orderedMeshes.empty())
+            {
+                const uint32_t rank = mesh < orderedMeshes.size() ? orderedMeshes[mesh] : kAbsentPoolGroup;
+                mesh = rank < groups.size() ? groups[rank] : kAbsentPoolGroup;
+            }
+            return SourceRow{klass, mesh, counts};
+        };
+        for (const auto& [key, counts] : registry.Counts())
+        {
+            const uint32_t mesh = BatchRegistry::MeshIndexFromKey(key);
+            if (const auto* model = modelOfMesh.Find(mesh))
+                models[*model].Parts.push_back(sourceRow(BatchRegistry::MaterialIndexFromKey(key), mesh, counts));
+        }
+        for (size_t i = 0; i < Slices.size(); ++i)
+        {
+            const auto& slice = Slices[i];
+            if (SliceTailIndex[i] == kNoTailBlock || slice.lod.impostorCardMesh == 0xFFFFFFFFu)
+                continue;
+            auto& view = FadeViews[i];
+            view.Bytes = meshes.size() * sizeof(uint32_t);
+            view.Upload = frame.AllocUpload(view.Bytes, alignment);
+            if (!view.Upload.Valid())
+            {
+                Slices[i].lod.impostorCardMesh = 0xFFFFFFFFu;
+                continue;
+            }
+            auto* ranks = static_cast<uint32_t*>(view.Upload.Ptr);
+            std::fill_n(ranks, meshes.size(), kAbsentPoolGroup);
+            std::copy_n(orderedMeshes.begin(), std::min(meshes.size(), orderedMeshes.size()), ranks);
+            std::vector<size_t> requestedOffsets;
+            for (const Model& model : models)
+            {
+                if (model.Parts.empty())
+                    continue;
+                auto& group = view.Groups.emplace_back(FadeGroup{model.Owner, {}});
+                auto requireRow = [&](const SourceRow& row) {
+                    const auto range = builder.FindBatchDrawRange(slice.viewId, slice.cascadeIndex, row.Class, row.Mesh, slice.phase);
+                    auto require = [&](const BatchDrawSegment& segment) {
+                        group.TailOffsets.push_back(segment.IsPresent() ? segment.countByteOffset : SIZE_MAX);
+                        if (segment.IsPresent())
+                            requestedOffsets.push_back(segment.countByteOffset);
+                    };
+                    if (row.Counts.Even)
+                        require(range.evenTail);
+                    if (row.Counts.Odd)
+                        require(range.mirroredTail);
+                };
+                for (const auto& row : model.Parts)
+                    requireRow(row);
+                const auto card = registry.Counts().find(BatchRegistry::MakeKey(model.CardMaterial, slice.lod.impostorCardMesh));
+                if (card != registry.Counts().end())
+                    requireRow(sourceRow(model.CardMaterial, slice.lod.impostorCardMesh, card->second));
+                else
+                    group.TailOffsets.push_back(SIZE_MAX);
+            }
+            // Each slice appends a fresh arena range. Insert its keys in order so the flat
+            // pass table never shifts earlier groups' entries as a forest grows.
+            std::ranges::sort(requestedOffsets);
+            for (const size_t offset : requestedOffsets)
+                builder.m_ImpostorTailPasses.GetOrInsert(offset);
+        }
+    }
+
+    // All scheduled passes finish preparation before the graph records its first dispatch.
+    // A missing range, an unprepared binding or a head fallback leaves its tail unacknowledged.
+    void PublishFadeReadiness() const
+    {
+        bool pending = false;
+        for (size_t i = 0; i < FadeViews.size(); ++i)
+        {
+            const auto& view = FadeViews[i];
+            if (!view.Upload.Valid())
+                continue;
+            auto* ready = static_cast<uint32_t*>(view.Upload.Ptr);
+            uint8_t required = static_cast<uint8_t>(FadePass::Color);
+            if (Builder->m_ImpostorPrepassSlices.Contains(SliceStreamKey(Slices[i])))
+                required |= static_cast<uint8_t>(FadePass::Depth);
+            for (const FadeGroup& group : view.Groups)
+            {
+                bool complete = !group.TailOffsets.empty();
+                bool participates = false;
+                for (const size_t offset : group.TailOffsets)
+                {
+                    const auto* status = Builder->m_ImpostorTailPasses.Find(offset);
+                    if (!status)
+                        complete = false;
+                    else
+                    {
+                        participates |= status->Requested != 0u;
+                        complete &= status->Prepared == status->Requested && (status->Passes & required) == required;
+                    }
+                }
+                if (complete)
+                    ready[group.OwnerMesh] |= kImpostorFadeReadyBit;
+                pending |= participates && !complete;
+            }
+        }
+        if (pending != *ImpostorPipelinePending && IdleElisionLoggingEnabled())
+            Logger::Log::Info("[IdleElision] Impostor fade pipelines {}", pending ? "pending" : "ready");
+        *ImpostorPipelinePending = pending;
+    }
+
     void RecordScatter(RenderGraph::RGContext& context) const
     {
         context.Cmd->SetPipeline(Pipeline);
@@ -2172,7 +2359,6 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
         context.Cmd->SetPipeline(InstanceCompactPipeline);
-        const uint32_t groupCount = (SnapshotRecords + 63u) / 64u;
         for (const PreparedSlice& slice : PreparedSlices)
         {
             if (!slice.CompactSet.IsValid())
@@ -2183,10 +2369,10 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 constants.cursorBase -= constants.rowCount;
                 constants.countBase = constants.cursorBase + constants.rowCount;
                 std::swap(constants.srcRecordBase, constants.dstRecordBase);
-                constants.pairedRecords = region != 0u ? 1u : 0u;
+                constants.tailLayout = region != 0u ? TailRecordScale : 0u;
                 context.Cmd->SetPushConstants(constants);
                 context.Cmd->BindDescriptorSet(0, slice.CompactSet, InstanceCompactPipeline);
-                context.Cmd->Dispatch(groupCount, 1, 1);
+                context.Cmd->Dispatch((constants.recordCount + 63u) / 64u, 1, 1);
             }
         }
         if (ClearRecordRange)
@@ -2202,7 +2388,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 for (uint32_t region = 0; region < slice.CompactRegionCount; ++region)
                     context.Cmd->FillBuffer(Records,
                         static_cast<size_t>(slice.CompactConstants[region].dstRecordBase) * kDrawCommandStride,
-                        static_cast<size_t>(SnapshotRecords) * kDrawCommandStride, 0u);
+                        static_cast<size_t>(slice.CompactConstants[region].recordCount) * kDrawCommandStride, 0u);
         }
     }
 
@@ -2219,7 +2405,6 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
         context.Cmd->SetPipeline(CompactPipeline);
-        const uint32_t groupCount = (SnapshotRecords + 63u) / 64u;
         for (const PreparedSlice& slice : PreparedSlices)
         {
             if (!slice.CompactSet.IsValid())
@@ -2228,7 +2413,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             {
                 context.Cmd->SetPushConstants(slice.CompactConstants[region]);
                 context.Cmd->BindDescriptorSet(0, slice.CompactSet, CompactPipeline);
-                context.Cmd->Dispatch(groupCount, 1, 1);
+                context.Cmd->Dispatch((slice.CompactConstants[region].recordCount + 63u) / 64u, 1, 1);
             }
         }
     }
@@ -2271,6 +2456,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
+        PublishFadeReadiness();
         RecordScatter(context);
         CommitRenderedHistory();
         RecordInstanceCompaction(context);
@@ -2287,8 +2473,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     const BatchRegistry& registry,
     std::span<const uint8_t> materialDepthClass, std::span<const uint32_t> materialColorClass,
     std::span<const uint32_t> meshPoolOrdered, std::span<const uint32_t> orderedToGroup,
-    uint32_t instanceCount, uint32_t meshTableCount)
+    uint32_t instanceCount, std::span<const GPUMesh> sceneMeshes)
 {
+    const auto meshTableCount = static_cast<uint32_t>(sceneMeshes.size());
     std::vector<SliceRegistration> slices = std::move(m_FrameSlices);
     m_FrameSlices.clear();
 
@@ -2462,8 +2649,17 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     // Instancing stores indirection in scratch and publishes commands in scatter
     // storage. Group compaction alone publishes scratch storage.
     const uint32_t blocksPerSlice = groupActive ? 2u : 1u;
+    const bool impostorCrossfade = impostorOwners.IsValid() &&
+        std::any_of(slices.begin(), slices.end(), [&sliceCrossfades](const SliceRegistration& slice)
+        {
+            return sliceCrossfades(slice) && slice.lod.impostorCardMesh != 0xFFFFFFFFu;
+        });
+    // One row can receive a two-record LOD pair per registered instance, or one record
+    // per side of a mesh/card transition. Only the camera tail needs that extra space.
+    const uint32_t tailRecordScale = impostorCrossfade ? 2u : 1u;
+    const uint32_t tailSnapshotRecords = snapshotRecords * tailRecordScale;
     const uint32_t neededRecords =
-        (sliceCount + tailSliceCount) * blocksPerSlice * snapshotRecords;
+        (sliceCount * snapshotRecords + tailSliceCount * tailSnapshotRecords) * blocksPerSlice;
     const uint32_t neededCursors = cursorOffsetEnd;
 
     size_t align = m_Device->GetCapabilities().minStorageBufferOffsetAlignment;
@@ -2559,9 +2755,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     // consolidation the compact pass never runs, so staging IS the draw block
     // and the two offsets coincide.
     const uint32_t headDrawBlockOffset    = groupActive ? sliceCount : 0u;
-    const uint32_t tailStagingBlockOffset = blocksPerSlice * sliceCount;
-    const uint32_t tailDrawBlockOffset =
-        groupActive ? tailStagingBlockOffset + tailSliceCount : tailStagingBlockOffset;
+    const uint32_t tailStagingRecordOffset = blocksPerSlice * sliceCount * snapshotRecords;
+    const uint32_t tailDrawRecordOffset =
+        groupActive ? tailStagingRecordOffset + tailSliceCount * tailSnapshotRecords : tailStagingRecordOffset;
 
 
     // ── Idle recompute elision (lever #2): byte-record this call's complete
@@ -2595,6 +2791,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         // segments. Derivable from the per-slice durations below, but recorded
         // in its own right so the layout decision can never drift from the gate.
         b.Append(callCrossfadeActive);
+        b.Append(tailRecordScale);
         // How many slices own a tail block, which is what places every tail
         // base — a slice set that changes only in WHICH slices crossfade moves
         // the tail blocks without changing any other recorded input.
@@ -2673,9 +2870,12 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         b.Append(static_cast<uint32_t>(orderedToGroup.size()));
         b.AppendBytes(orderedToGroup.data(), orderedToGroup.size() * sizeof(uint32_t));
     }
+    // The caller permits crossfade elision only after observing an empty tail. An elided
+    // frame reuses opaque heads, even if a new format is still building. Recheck a held
+    // crossing every frame until its actual raster passes release it.
     const RecomputeElisionGate::Decision elide =
         elisionGate.Gate.Evaluate(m_ArenaFrameStamp, std::move(elisionInputs),
-                                  m_ElisionCtx.AllowElision, kElisionSettleFrames);
+                                  m_ElisionCtx.AllowElision && !elisionGate.ImpostorPipelinePending, kElisionSettleFrames);
     // Settle/unsettle edges are the same opt-in instrument as the window below.
     if (IdleElisionLoggingEnabled() && elide.Skip != elisionGate.LogState)
     {
@@ -2859,8 +3059,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         const bool sliceHasTail = sliceTailIndex[s] != kNoTailBlock;
         const uint32_t tailRecordBase =
             sliceHasTail
-                ? callRecordBase + ((instanceCompactionActive ? tailStagingBlockOffset : tailDrawBlockOffset)
-                    + sliceTailIndex[s]) * snapshotRecords
+                ? callRecordBase + (instanceCompactionActive ? tailStagingRecordOffset : tailDrawRecordOffset)
+                    + sliceTailIndex[s] * tailSnapshotRecords
                 : 0u;
         // Only a tail-capable slice reserved the second half; for any other slice
         // base + half is the NEXT slice's block, so it must never be formed.
@@ -2935,11 +3135,11 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
                 BatchDrawSegment tail{};
                 if (sliceHasTail)
                 {
-                    tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + first.recordOffset)
+                    tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + first.recordOffset * tailRecordScale)
                                          * kDrawCommandStride;
                     tail.countByteOffset =
                         static_cast<size_t>(tailCursorBase + rowCursorCopies * rowCount + g) * sizeof(uint32_t);
-                    tail.maxDrawCount = run.capacity;
+                    tail.maxDrawCount = run.capacity * tailRecordScale;
                 }
                 if (mirroredRun)
                 {
@@ -2984,11 +3184,11 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
                 BatchDrawSegment tail{};
                 if (sliceHasTail)
                 {
-                    tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + e.recordOffset)
+                    tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + e.recordOffset * tailRecordScale)
                                          * kDrawCommandStride;
                     tail.countByteOffset =
                         static_cast<size_t>(tailCursorBase + b) * sizeof(uint32_t);
-                    tail.maxDrawCount = TailDrawBound(e.capacity);
+                    tail.maxDrawCount = impostorCrossfade ? e.capacity * tailRecordScale : TailDrawBound(e.capacity);
                 }
                 if (mirroredRow)
                 {
@@ -3133,10 +3333,11 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     pass->CallCursorBase = callCursorBase;
     pass->CallStatsBase = callStatsBase;
     pass->SnapshotRecords = snapshotRecords;
+    pass->TailRecordScale = tailRecordScale;
     pass->CursorHalfStride = cursorHalfStride;
     pass->HeadDrawBlockOffset = headDrawBlockOffset;
-    pass->TailStagingBlockOffset = tailStagingBlockOffset;
-    pass->TailDrawBlockOffset = tailDrawBlockOffset;
+    pass->TailStagingRecordOffset = tailStagingRecordOffset;
+    pass->TailDrawRecordOffset = tailDrawRecordOffset;
     pass->SliceTailIndex = std::move(sliceTailIndex);
     pass->SliceCursorOffset = sliceCursorOffset;
     pass->InstanceCount = instanceCount;
@@ -3165,6 +3366,11 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     pass->OwnersBound = impostorOwners.IsValid();
     pass->ClearRecordRange = !m_Device->GetCapabilities().supportsDrawIndirectCountNative;
     pass->PreparedSlices.resize(pass->Slices.size());
+
+    pass->Builder = this;
+    pass->ImpostorPipelinePending = &elisionGate.ImpostorPipelinePending;
+    pass->InitFadeViews(frame, *this, sceneMeshes, registry, materialColorClass, meshPoolOrdered,
+                        orderedToGroup, align, impostorCrossfade);
 
     frame.AddPass(
         passName, rgPassPhase,

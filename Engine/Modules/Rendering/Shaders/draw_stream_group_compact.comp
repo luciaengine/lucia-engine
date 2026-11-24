@@ -54,15 +54,20 @@ layout(push_constant) uniform PushConstants {
     uint countBase;      // arena-absolute base of the slice's run count slots
     uint srcRecordBase;  // arena-absolute source command block
     uint dstRecordBase;  // arena-absolute published command block
-    // Raw crossfade records are claimed in pairs. Clamp their live prefix to
-    // even before copying; an instanced source has already applied this rule.
-    uint pairedRecords;
+    // 0: dense rows. 1: paired LOD tails. 2: double capacity with mixed-arity tails.
+    uint tailLayout;
     uint instancedRecords; // instance indirection already resides in the source block
 } pc;
 
+uint RecordScale()
+{
+    return pc.tailLayout == 2u ? 2u : 1u;
+}
+
+
 uint RowLive(uint row) {
-    uint live = min(cursors[pc.cursorBase + row], batchTable[row].capacity);
-    return (pc.pairedRecords != 0u) ? (live & ~1u) : live;
+    uint live = min(cursors[pc.cursorBase + row], batchTable[row].capacity * RecordScale());
+    return (pc.tailLayout == 1u) ? (live & ~1u) : live;
 }
 
 void main() {
@@ -77,14 +82,14 @@ void main() {
     uint hi = pc.rowCount;
     while (lo < hi) {
         uint mid = (lo + hi) / 2u;
-        if (batchTable[mid].recordOffset <= s) {
+        if (batchTable[mid].recordOffset * RecordScale() <= s) {
             lo = mid + 1u;
         } else {
             hi = mid;
         }
     }
     uint row = lo - 1u;
-    uint t = s - batchTable[row].recordOffset;
+    uint t = s - batchTable[row].recordOffset * RecordScale();
     uint runStart = rowRun[row].x;
 
     // Run count writer: the run's first capacity slot exists for every run
@@ -104,7 +109,7 @@ void main() {
     // Dense mesh-major destination: run base (the run's first row's capacity
     // prefix — CPU-known, what the publisher's cmdByteOffset points at) plus
     // the live counts of the run's preceding rows.
-    uint dstLocal = batchTable[runStart].recordOffset;
+    uint dstLocal = batchTable[runStart].recordOffset * RecordScale();
     for (uint i = runStart; i < row; ++i) {
         dstLocal += RowLive(i);
     }

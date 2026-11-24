@@ -42,6 +42,7 @@ namespace Rendering
 
 class IDevice;
 class GPUScene;
+struct GPUMesh;
 
 class GPUDrawStreamBuilder
 {
@@ -369,6 +370,10 @@ class GPUDrawStreamBuilder
     /// so the two constants are pinned equal by MeshPoolGroupPlanTests — and
     /// the shader's kAbsentPoolGroup.
     static constexpr uint32_t kAbsentPoolGroup = 0xFFFFFFu;
+    // Binding 9's low 24 bits hold the ordered mesh rank. A crossfading view also publishes
+    // its prepared-raster verdict on the owner's row. Both bits mirror draw_command_scatter.comp.
+    static constexpr uint32_t kCheckImpostorFadeReady = 2u;
+    static constexpr uint32_t kImpostorFadeReadyBit = 1u << 31;
 
     /// draw_command_scatter.comp classMode push-constant values. MUST match the
     /// shader's kClassMode* constants. Off = key on the instance's own
@@ -540,10 +545,10 @@ class GPUDrawStreamBuilder
         float    impostorExitCoverage;
     };
 
-    /// Descriptor set layout for the scatter pipeline (14 storage buffers:
+    /// Descriptor set layout for the scatter pipeline (15 storage buffers:
     /// visibility, instances, meshes, batch table, records, cursors,
     /// indirection, stats, materialColorClass, meshPoolGroup, prevLod,
-    /// lodFade, prevRendered, currentRendered). Exposed so tests and the P3
+    /// lodFade, prevRendered, currentRendered, placement owners). Exposed so tests and the P3
     /// schedule path share one definition.
     static DescriptorSetLayoutDesc MakeScatterDescriptorSetLayout();
 
@@ -557,9 +562,8 @@ class GPUDrawStreamBuilder
         uint32_t countBase;      // arena-absolute destination row or run counter base
         uint32_t srcRecordBase;  // arena-absolute source command block
         uint32_t dstRecordBase;  // arena-absolute destination command block
-        // Raw crossfade records are claimed in pairs. Clamp their live prefix
-        // to even before copying; instanced sources have applied this rule.
-        uint32_t pairedRecords;
+        // 0: dense rows. 1: paired LOD tails. 2: double capacity with mixed-arity tails.
+        uint32_t tailLayout;
         uint32_t InstancedRecords; // retain the prepacked per-instance indirection
     };
 
@@ -659,7 +663,14 @@ class GPUDrawStreamBuilder
                                                  std::span<const uint32_t> meshPoolOrdered,
                                                  std::span<const uint32_t> orderedToGroup,
                                                  uint32_t instanceCount,
-                                                 uint32_t meshTableCount);
+                                                 std::span<const GPUMesh> sceneMeshes);
+
+    // Camera raster recorders report the exact tail they prepared. Count offsets identify the
+    // published range even when material or geometry grouping picks a representative batch.
+    // Report each attempt before resolution, then report success only after binding that exact variant.
+    enum class FadePass : uint8_t { Color = 1, Depth = 2 };
+    void ReportImpostorTail(size_t countOffset, FadePass pass, bool prepared);
+    void RequireImpostorPrepass(uint32_t view, SlicePhase phase);
 
     /// One DrawIndexedIndirectCount's worth of a batch: where its records start,
     /// where its GPU-written count lives, and the CPU-known upper bound on that
@@ -1407,8 +1418,17 @@ class GPUDrawStreamBuilder
     struct SuffixElisionGate
     {
         RecomputeElisionGate Gate;
+        bool ImpostorPipelinePending = false;
         bool LogState = false; // transition-edge logging latch
     };
+    struct ImpostorTailPasses
+    {
+        uint32_t Requested = 0;
+        uint32_t Prepared = 0;
+        uint8_t Passes = 0;
+    };
+    FlatMap<size_t, ImpostorTailPasses> m_ImpostorTailPasses;
+    FlatSet<uint64_t> m_ImpostorPrepassSlices;
     std::unordered_map<std::string, SuffixElisionGate> m_ElisionGates;
     ElisionFrameContext m_ElisionCtx{};
     uint64_t m_ArenaFrameStamp = 0; // ticks per BeginArenaFrame (the gates' stamp)

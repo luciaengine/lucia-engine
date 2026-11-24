@@ -128,6 +128,8 @@ struct LodDispatchParams
     // leaves the shader's gate at 0, so it touches neither binding and every
     // pre-existing expectation in this file is unaffected by it.
     bool renderedHistory = false;
+    bool impostorCrossfade = false;
+    std::vector<uint32_t> impostorFadeReady;
     // Impostor stage. 0xFFFFFFFF (the default) selects no card in this dispatch.
     uint32_t impostorCardMesh = 0xFFFFFFFFu;
     float impostorEnterCoverage = 0.0f;
@@ -437,11 +439,14 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         // 10-binding layout is valid; contents matter only when
         // meshGroupMode != 0.
         const uint32_t groupCount = std::max<uint32_t>(
-            static_cast<uint32_t>(meshPoolGroup.size()), 1u);
+            static_cast<uint32_t>(std::max(meshPoolGroup.size(), lod.impostorFadeReady.size())), 1u);
         BufferHandle poolGroup = MakeStorageBuffer(groupCount * sizeof(uint32_t),
                                                    "Test.MeshPoolGroup");
         std::vector<uint32_t> groupData = meshPoolGroup;
-        groupData.resize(groupCount, 0u);
+        groupData.resize(groupCount, GPUDrawStreamBuilder::kAbsentPoolGroup);
+        for (size_t mesh = 0; mesh < lod.impostorFadeReady.size(); ++mesh)
+            if (lod.impostorFadeReady[mesh])
+                groupData[mesh] |= GPUDrawStreamBuilder::kImpostorFadeReadyBit;
         WriteBuffer(poolGroup, groupData.data(), groupCount * sizeof(uint32_t));
 
         if (cull)
@@ -532,6 +537,8 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         pc.classMode       = classMode;
         pc.statsBase       = 0u; // single-slice dispatch → row 0
         pc.meshGroupMode   = meshGroupMode;
+        if (!lod.impostorFadeReady.empty())
+            pc.meshGroupMode |= GPUDrawStreamBuilder::kCheckImpostorFadeReady;
         pc.projScaleY      = lod.projScaleY;
         pc.cameraPosX      = lod.cameraPos[0];
         pc.cameraPosY      = lod.cameraPos[1];
@@ -540,7 +547,7 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         pc.sseThresholdToCoverageTight = lod.sseThresholdToCoverageTight;
         pc.nowSeconds       = lod.nowSeconds;
         pc.invFadeDuration  = lod.crossfadeDuration > 0.0f ? 1.0f / lod.crossfadeDuration : 0.0f;
-        pc.crossfadeTailActive = lod.crossfadeDuration > 0.0f ? 1u : 0u;
+        pc.crossfadeTailActive = lod.impostorCrossfade ? 2u : (lod.crossfadeDuration > 0.0f ? 1u : 0u);
         pc.tailCursorBase      = lod.tailCursorBase;
         pc.tailRecordBase      = lod.tailRecordBase;
         pc.lodHysteresisBand = lod.hysteresisBand;
@@ -3010,7 +3017,7 @@ class GroupCompactComputeTest : public BatchScatterComputeTest
         const RunLayout& runs, uint32_t totalRecords,
         const std::vector<uint32_t>& cursorSeed, const std::vector<uint32_t>& stagingUints,
         const std::vector<uint32_t>& stagingIndirection,
-        uint32_t pairedRecords = 0u)
+        uint32_t tailLayout = 0u)
     {
         GroupedCompactResult result;
         PipelineHandle compactPipeline = m_Builder->GetOrCreateGroupCompactPipeline();
@@ -3071,7 +3078,7 @@ class GroupCompactComputeTest : public BatchScatterComputeTest
         cpc.countBase     = rowCount;
         cpc.srcRecordBase = 0u;
         cpc.dstRecordBase = recordSlots;
-        cpc.pairedRecords = pairedRecords;
+        cpc.tailLayout = tailLayout;
 
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Compute);
         cl->Begin();
@@ -3351,6 +3358,30 @@ TEST_P(GroupCompactComputeTest, PairedRecordsRoundEachRowsLiveCountDownToWholePa
         EXPECT_NE(r.indirection[drawBase + s], 0xBBBBBBBBu)
             << "an unwritten tail slot leaked into the drawn window at " << s;
     }
+}
+
+TEST_P(GroupCompactComputeTest, MixedFadeRowsKeepSingleRecordsAtTheirExpandedOffsets)
+{
+    const std::vector<GPUDrawStreamBuilder::BatchTableEntry> table{
+        {1u, 0u, 0u, 1u},
+        {1u, 1u, 1u, 1u},
+    };
+    const std::vector<uint32_t> orderedToGroup{0u, 0u};
+    const auto runs = ComputeRuns(table, orderedToGroup);
+    ASSERT_EQ(runs.runCount, 1u);
+    constexpr uint32_t kExpandedCapacity = 4u;
+    std::vector<uint32_t> staging(kExpandedCapacity * kDrawRecordUints, 0xBBBBBBBBu);
+    staging[0] = 6u;
+    staging[2u * kDrawRecordUints] = 12u;
+
+    const auto result = DispatchCompactOnly(table, runs, kExpandedCapacity, {1u, 1u, 0u}, staging,
+                                            {10u, 0xBBBBBBBBu, 11u, 0xBBBBBBBBu}, /*tailLayout=*/2u);
+    ASSERT_EQ(result.cursors.size(), 3u);
+    EXPECT_EQ(result.cursors[2], 2u);
+    EXPECT_EQ(result.records[kExpandedCapacity * kDrawRecordUints], 6u);
+    EXPECT_EQ(result.records[(kExpandedCapacity + 1u) * kDrawRecordUints], 12u);
+    EXPECT_EQ(result.indirection[kExpandedCapacity], 10u);
+    EXPECT_EQ(result.indirection[kExpandedCapacity + 1u], 11u);
 }
 
 TEST_P(GroupCompactComputeTest, CompactClampsOverflowedCursorsToSnapshotCapacity)
@@ -3805,10 +3836,7 @@ TEST_P(BatchScatterComputeTest, CrossfadeTailExhaustionFallsBackToOneOpaqueHeadR
     EXPECT_EQ(r.records[0 * kDrawRecordUints + 0], kFadeLod1Indices);
     EXPECT_EQ(r.indirection[0], 0u) << "fallback must write the BARE instance index";
     EXPECT_EQ(FadeWeightOf(r.indirection[0]), 0u);
-    // The rejected tail claim still advanced the tail cursor past capacity. That
-    // is safe only because the consumer clamps with TailDrawBound, so nothing in
-    // the tail region may have been written.
-    EXPECT_EQ(r.cursors[kFadeTailCursor], 2u);
+    EXPECT_EQ(r.cursors[kFadeTailCursor], 0u) << "a rejected claim leaves the tail prefix unchanged";
     for (uint32_t slot = kFadeTailRecordBase; slot < kFadeRecordSlots; ++slot)
         EXPECT_EQ(r.indirection[slot], 0xDEADBEEFu)
             << "tail slot " << slot << " must stay unwritten when the pair was refused";
@@ -3942,7 +3970,7 @@ TEST_P(BatchScatterComputeTest, CrossfadeTailOverflowPopsTheSurplusWithoutLosing
                             /*meshGroupMode=*/0u, lod);
 
     EXPECT_EQ(r.stats.overflows, 0u) << "a full tail is a quality trade, not a tripwire";
-    EXPECT_EQ(r.cursors[kTailCursor], kInstances * 2u) << "all four attempted a pair";
+    EXPECT_EQ(r.cursors[kTailCursor], kInstances) << "the cursor counts records in accepted pairs";
     EXPECT_EQ(r.cursors[0], 2u) << "the two that lost the race fall back to head records";
 
     // Two complete pairs fill the tail, and every one of them is dithered.
@@ -3966,11 +3994,8 @@ TEST_P(BatchScatterComputeTest, CrossfadeTailOverflowPopsTheSurplusWithoutLosing
     EXPECT_EQ(seen.size(), kInstances) << "every instance drew, none was dropped";
 }
 
-// An ODD-capacity row can never fill its last tail slot: claims are pairs from
-// slot 0, so the last accepted pair ends at capacity-2 for an even capacity and
-// capacity-3 for an odd one. The raw cursor still runs past that, which is why
-// the consumer bound is TailDrawBound and not the capacity -- without the
-// rounding this unwritten slot reaches the rasteriser as a garbage record.
+// A pair cannot use the last slot of a three-record tail. A rejected claim
+// leaves the cursor at two and never exposes an unwritten record.
 TEST_P(BatchScatterComputeTest, CrossfadeOddTailCapacityLeavesItsLastSlotUnwritten)
 {
     constexpr uint32_t kInstances  = 3u;
@@ -4005,7 +4030,7 @@ TEST_P(BatchScatterComputeTest, CrossfadeOddTailCapacityLeavesItsLastSlotUnwritt
     // One pair fits (slots 0,1); the next claim lands at 2, whose partner would
     // be slot 3 == capacity, so it is refused and that instance pops instead.
     EXPECT_EQ(r.cursors[0], 2u);
-    EXPECT_EQ(r.cursors[kTailCursor], kInstances * 2u) << "the raw cursor runs past capacity";
+    EXPECT_EQ(r.cursors[kTailCursor], 2u) << "only one complete pair fits";
     EXPECT_NE(r.indirection[kTailBase + 0u], 0xDEADBEEFu);
     EXPECT_NE(r.indirection[kTailBase + 1u], 0xDEADBEEFu);
     EXPECT_EQ(r.indirection[kTailBase + 2u], 0xDEADBEEFu)
@@ -4649,6 +4674,100 @@ TEST_P(BatchScatterComputeTest, ImpostorHysteresisKeepsTheCardUntilTheExitCovera
     SeedRenderedHistory({kNone, kNone});
     EXPECT_EQ(cards(dispatch(kImpostorFarDist, card, true)), std::multiset<uint32_t>{bark});
     EXPECT_TRUE(cards(dispatch(kImpostorFarDist, 0xFFFFFFFFu, true)).empty()) << "no card mesh: no stage";
+}
+
+TEST_P(BatchScatterComputeTest, ImpostorCrossfadeDithersAllMeshPartsAgainstOneCard)
+{
+    const uint32_t barkMesh = AddMeshRow(kImpostorPrimaryIndices);
+    const uint32_t leafMesh = AddMeshRow(kImpostorSecondaryIndices);
+    const uint32_t cardMesh = AddMeshRow(kImpostorCardIndices);
+    const uint32_t bark = m_Scene->AddInstance(MakeInstance(1u, barkMesh));
+    const uint32_t leaves = m_Scene->AddInstance(MakeInstance(2u, leafMesh));
+    const uint32_t parts[] = {barkMesh, leafMesh};
+    ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, 3u, cardMesh));
+    m_Scene->SetInstanceImpostorOwner(bark, bark);
+    m_Scene->SetInstanceImpostorOwner(leaves, bark);
+
+    uint32_t total = 0u;
+    const auto table = PairableFadeTable(m_Scene->GetBatchRegistry(), &total);
+    const uint32_t rows = static_cast<uint32_t>(table.size());
+    ASSERT_EQ(rows, 3u);
+    SeedLodFade({NoHistoryFadeState(), NoHistoryFadeState()});
+    SeedRenderedHistory({GPUDrawStreamBuilder::kLodNoHistory, GPUDrawStreamBuilder::kLodNoHistory});
+
+    const auto dispatch = [&](float distance, float seconds, bool ready = true)
+    {
+        auto lod = ImpostorLod(distance, cardMesh, true);
+        lod.crossfadeDuration = kFadeDuration;
+        lod.nowSeconds = seconds;
+        lod.tailCursorBase = rows;
+        lod.tailRecordBase = total;
+        lod.renderedHistory = true;
+        lod.impostorCrossfade = true;
+        lod.impostorFadeReady.resize(cardMesh + 1u);
+        lod.impostorFadeReady[barkMesh] = ready;
+        return Dispatch(table, total, 0u, 0u, 2u * rows, 3u * total, 0u, {}, 0xFFFFFFFFu, {}, 0u, lod);
+    };
+
+    constexpr float kStartSeconds = 10.0f;
+    const auto near = dispatch(kImpostorNearDist, kStartSeconds);
+    EXPECT_EQ(InstancesInRows(table, near.cursors, near.records, near.indirection, barkMesh,
+                              kImpostorPrimaryIndices), std::multiset<uint32_t>{bark});
+    EXPECT_EQ(InstancesInRows(table, near.cursors, near.records, near.indirection, leafMesh,
+                              kImpostorSecondaryIndices), std::multiset<uint32_t>{leaves});
+    SeedRenderedHistory(near.renderedCurrent);
+    const auto cold = dispatch(kImpostorFarDist, kStartSeconds + 0.5f * kFadeDuration, false);
+    EXPECT_EQ(InstancesInRows(table, cold.cursors, cold.records, cold.indirection, barkMesh, kImpostorPrimaryIndices),
+              std::multiset<uint32_t>{bark});
+    EXPECT_EQ(InstancesInRows(table, cold.cursors, cold.records, cold.indirection, leafMesh, kImpostorSecondaryIndices),
+              std::multiset<uint32_t>{leaves});
+    EXPECT_EQ(cold.renderedCurrent[bark], MakeRenderedEntry(0u, false, true));
+    EXPECT_EQ(cold.renderedCurrent[leaves], MakeRenderedEntry(0u, false, true));
+    SeedRenderedHistory(cold.renderedCurrent);
+    const auto startFade = dispatch(kImpostorFarDist, kStartSeconds + kFadeDuration);
+    SeedRenderedHistory(startFade.renderedCurrent);
+    const auto quarter = dispatch(kImpostorFarDist, kStartSeconds + 1.25f * kFadeDuration);
+
+    SeedRenderedHistory(quarter.renderedCurrent);
+    const auto reversed = dispatch(kImpostorNearDist, kStartSeconds + 1.25f * kFadeDuration);
+    SeedRenderedHistory(reversed.renderedCurrent);
+    const auto returning = dispatch(kImpostorNearDist, kStartSeconds + 1.375f * kFadeDuration);
+    for (size_t row = 0; row < table.size(); ++row)
+    {
+        const bool isCard = table[row].meshIndex == cardMesh;
+        const bool isLeaf = table[row].meshIndex == leafMesh;
+        const uint32_t expectedIndices = isCard ? kImpostorCardIndices :
+            (isLeaf ? kImpostorSecondaryIndices : kImpostorPrimaryIndices);
+        EXPECT_EQ(quarter.cursors[row], 0u);
+        ASSERT_EQ(quarter.cursors[rows + row], 1u);
+        const uint32_t slot = total + 2u * table[row].recordOffset;
+        const uint32_t word = quarter.indirection[slot];
+        EXPECT_EQ(quarter.records[slot * kDrawRecordUints], expectedIndices);
+        EXPECT_EQ(FadeInstanceOf(word), isLeaf ? leaves : bark);
+        EXPECT_EQ(FadePhaseOf(word), !isCard);
+        EXPECT_EQ(FadeWeightOf(word), 32u);
+        EXPECT_EQ(reversed.cursors[row], 0u);
+        EXPECT_EQ(reversed.cursors[rows + row], 1u);
+        EXPECT_EQ(reversed.indirection[slot], word);
+        EXPECT_EQ(returning.cursors[row], 0u);
+        ASSERT_EQ(returning.cursors[rows + row], 1u);
+        EXPECT_EQ(FadeWeightOf(returning.indirection[slot]), 16u);
+    }
+
+    SeedRenderedHistory(quarter.renderedCurrent);
+    const auto settled = dispatch(kImpostorFarDist, kStartSeconds + 3.0f * kFadeDuration);
+    EXPECT_EQ(InstancesInRows(table, settled.cursors, settled.records, settled.indirection, cardMesh,
+                              kImpostorCardIndices), std::multiset<uint32_t>{bark});
+    EXPECT_TRUE(InstancesInRows(table, settled.cursors, settled.records, settled.indirection, barkMesh,
+                                kImpostorPrimaryIndices).empty());
+    EXPECT_TRUE(InstancesInRows(table, settled.cursors, settled.records, settled.indirection, leafMesh,
+                                kImpostorSecondaryIndices).empty());
+    SeedRenderedHistory(settled.renderedCurrent);
+    const auto coldReturn = dispatch(kImpostorNearDist, kStartSeconds + 4.0f * kFadeDuration, false);
+    EXPECT_EQ(InstancesInRows(table, coldReturn.cursors, coldReturn.records, coldReturn.indirection, cardMesh,
+                              kImpostorCardIndices), std::multiset<uint32_t>{bark});
+    for (uint32_t row = 0; row < rows; ++row)
+        EXPECT_EQ(coldReturn.cursors[rows + row], 0u);
 }
 
 // A placement switches as one: every part follows the owner that the impostor system names. A part

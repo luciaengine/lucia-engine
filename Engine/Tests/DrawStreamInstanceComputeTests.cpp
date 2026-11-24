@@ -211,7 +211,7 @@ class DrawStreamInstanceComputeTest : public ::testing::Test
         constants.countBase = commandCursorBase;
         constants.srcRecordBase = kSourceBase;
         constants.dstRecordBase = destinationBase;
-        constants.pairedRecords = paired ? 1u : 0u;
+        constants.tailLayout = paired ? 1u : 0u;
         auto commands = m_Device->CreateCommandList(IDevice::QueueType::Compute);
         commands->Begin();
         if (aggregate)
@@ -241,7 +241,7 @@ class DrawStreamInstanceComputeTest : public ::testing::Test
                     | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
             constants.cursorBase = commandCursorBase;
             std::swap(constants.srcRecordBase, constants.dstRecordBase);
-            constants.pairedRecords = 0;
+            constants.tailLayout = 0;
             constants.InstancedRecords = 1;
         }
         constants.countBase = runCursorBase;
@@ -611,7 +611,7 @@ void DrawStreamInstanceComputeTest::CheckProductionSchedule(bool repeatedMeshes,
         }
         const auto sentinel = builder.ScheduleUnifiedScatter(frame, "InstanceTest", 0, visibility,
             instances, hot, meshes, {}, scene.GetBatchRegistry(), depthClasses, {}, ordered, groups,
-            kCount, static_cast<uint32_t>(scene.GetMeshes().size()));
+            kCount, scene.GetMeshes());
         ASSERT_TRUE(sentinel.IsValid());
         sentinels.push_back(sentinel);
         for (uint32_t material = 0; material < (repeatedMeshes ? 2u : 1u); ++material)
