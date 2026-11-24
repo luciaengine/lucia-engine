@@ -59,7 +59,6 @@ if(TARGET GameEngine.Native)
 endif()
 target_include_directories(MaterialLitCubeTests
     PRIVATE
-    ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/Tests
     # StagedTestPaths.h — exe-anchored resolution of the staged adapter shaders.
     ${CMAKE_SOURCE_DIR}/Engine/Tests
