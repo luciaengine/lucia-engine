@@ -47,14 +47,9 @@ void ModifyInstance(inout InstanceData inst)
     vec3 axisX = normalize(inst.modelMatrix[0].xyz);
     vec3 axisY = normalize(inst.modelMatrix[1].xyz);
     vec3 axisZ = normalize(inst.modelMatrix[2].xyz);
-    vec4 viewer = GE_ImpostorViewer();
-    vec3 toViewer = viewer.xyz;
-    if (viewer.w > 0.5)
-    {
-        vec3 centerRel = vec3(inst.sector - Cam.uRenderOriginSector.xyz) * GE_SECTOR_SIZE
-                         + (inst.modelMatrix * vec4(Props.impostorBounds.xyz, 1.0)).xyz;
-        toViewer = viewer.xyz - centerRel;
-    }
+    vec3 centerRel = vec3(inst.sector - Cam.uRenderOriginSector.xyz) * GE_SECTOR_SIZE
+                     + (inst.modelMatrix * vec4(Props.impostorBounds.xyz, 1.0)).xyz;
+    vec3 toViewer = GE_ImpostorTowardViewer(GE_ImpostorViewer(), centerRel);
     vec3 local = vec3(dot(toViewer, axisX), dot(toViewer, axisY), dot(toViewer, axisZ));
     float localLength = length(local);
     local = localLength > 1e-6 ? local / localLength : vec3(0.0, 1.0, 0.0);

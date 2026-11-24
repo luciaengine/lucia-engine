@@ -371,6 +371,68 @@ TEST_F(ForestStandSystemTest, DetailSettingsApplyToTheAttachedSession)
     EXPECT_EQ(CountLines(lines, "attached with"), 1u);
 }
 
+TEST_F(ForestStandSystemTest, ShadowCastingOffTurnsTheSessionCastingOff)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto stand = *world.GetComponent<Components::ForestStand>(entity);
+    stand.TreeModel = Components::ModelRef(m_Archive);
+    stand.DetailDistance = 275.0f;
+    world.AddComponentImmediate(entity, stand);
+    world.GetComponentForWrite<Components::MeshRenderer>(entity)->shadowCasting = Components::ShadowCasting::Off;
+    ForestStandSystem system(&m_Services, &m_Assets);
+    system.Update(world, 0.0f);
+    const auto* feature = m_Services.GetFeature<ForestPlacementFeature>();
+    ASSERT_NE(feature, nullptr);
+    const auto session = ForestPlacementFeatureTestAccess::Sessions(*feature).front();
+    EXPECT_FALSE(session->CastsShadows);
+    EXPECT_TRUE(session->DrawsColor);
+}
+
+TEST_F(ForestStandSystemTest, ToggleKeepsTheAttachedStand)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto stand = *world.GetComponent<Components::ForestStand>(entity);
+    stand.TreeModel = Components::ModelRef(m_Archive);
+    stand.DetailDistance = 275.0f;
+    world.AddComponentImmediate(entity, stand);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    system.Update(world, 0.0f);
+    const auto* feature = m_Services.GetFeature<ForestPlacementFeature>();
+    ASSERT_NE(feature, nullptr);
+    const auto session = ForestPlacementFeatureTestAccess::Sessions(*feature).front();
+    EXPECT_TRUE(session->CastsShadows);
+
+    world.GetComponentForWrite<Components::MeshRenderer>(entity)->shadowCasting = Components::ShadowCasting::Off;
+    system.Update(world, 0.0f);
+    EXPECT_FALSE(session->CastsShadows);
+    world.GetComponentForWrite<Components::MeshRenderer>(entity)->shadowCasting = Components::ShadowCasting::On;
+    system.Update(world, 0.0f);
+    EXPECT_TRUE(session->CastsShadows);
+    const auto sessions = ForestPlacementFeatureTestAccess::Sessions(*feature);
+    ASSERT_EQ(sessions.size(), 1u);
+    EXPECT_EQ(sessions.front(), session);
+}
+
+TEST_F(ForestStandSystemTest, ShadowsOnlyCastsAndDrawsNoColor)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto stand = *world.GetComponent<Components::ForestStand>(entity);
+    stand.TreeModel = Components::ModelRef(m_Archive);
+    stand.DetailDistance = 275.0f;
+    world.AddComponentImmediate(entity, stand);
+    world.GetComponentForWrite<Components::MeshRenderer>(entity)->shadowCasting = Components::ShadowCasting::ShadowsOnly;
+    ForestStandSystem system(&m_Services, &m_Assets);
+    system.Update(world, 0.0f);
+    const auto* feature = m_Services.GetFeature<ForestPlacementFeature>();
+    ASSERT_NE(feature, nullptr);
+    const auto session = ForestPlacementFeatureTestAccess::Sessions(*feature).front();
+    EXPECT_TRUE(session->CastsShadows);
+    EXPECT_FALSE(session->DrawsColor);
+}
+
 TEST_F(ForestStandSystemTest, ANearMeshBudgetFromOrToZeroAttachesTheStandAgain)
 {
     ECS::World world;

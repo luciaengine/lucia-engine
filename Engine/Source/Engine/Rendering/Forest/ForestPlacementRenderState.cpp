@@ -18,7 +18,8 @@ ForestPlacementRenderState::~ForestPlacementRenderState()
 }
 
 bool ForestPlacementRenderState::Prepare(AssetManager& assets, Rendering::IDevice& device,
-    Rendering::RenderGraph::RGFrame& graph, const ForestPlacementView& view, ForestPlacementFrame& plan)
+    Rendering::RenderGraph::RGFrame& graph, const ForestPlacementView& view, ForestPlacementFrame& plan,
+    std::span<const ForestShadowPage> shadowPages)
 {
     if (m_Prepared.Frame)
         return false;
@@ -28,21 +29,24 @@ bool ForestPlacementRenderState::Prepare(AssetManager& assets, Rendering::IDevic
            device.QueryGpuSyncToken(m_ReadFences.front().Token) == Rendering::IDevice::GpuSyncStatus::Complete)
         m_ReadFences.pop_front();
     const uint64 completedReaders = m_ReadFences.empty() ? m_LastFinished : m_ReadFences.front().Frame - 1;
+    // An unknown fence does not prove that earlier draws finished reading their slots. Then
+    // the view and the cascades want no pages.
     ForestPlacementView demand = view;
     m_UnknownReader = !m_ReadFences.empty() &&
         device.QueryGpuSyncToken(m_ReadFences.front().Token) == Rendering::IDevice::GpuSyncStatus::Unknown;
     if (m_UnknownReader)
     {
         demand.DetailDistance = 0;
+        shadowPages = {};
         m_PrepareGraphicsToken = graph.SubmissionToken();
     }
-    if (!m_Stream.Prepare(assets, demand, m_LastFinished + 1, completedReaders, plan, m_Uploads))
+    if (!m_Stream.Prepare(assets, demand, m_LastFinished + 1, completedReaders, shadowPages, plan, m_Uploads))
         return false;
 
     m_Uploader.Record(graph, m_Uploads);
     m_Uploads.clear();
     m_Prepared.Stamp(graph);
-    m_DeclaredDetail = !plan.DetailedDraws.empty();
+    m_DeclaredDetail = !plan.DetailedDraws.empty() || !plan.ShadowDraws.empty();
     return true;
 }
 

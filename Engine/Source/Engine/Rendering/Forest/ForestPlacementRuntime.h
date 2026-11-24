@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/DrawCommand.h"
+#include "Engine/Rendering/DrawCommandProducer.h"
 #include "Engine/Rendering/Forest/ForestDetailBudget.h"
 #include "Mathematics/WorldPosition.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
@@ -10,6 +11,7 @@
 #include <compare>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 
 namespace GameEngine::Engine::Renderer
@@ -45,6 +47,20 @@ struct ForestDetailDraw
     uint32 PlacementCount;
 };
 
+/// A page that sun cascades want, with bit c set for cascade c.
+struct ForestShadowPage
+{
+    uint32 Page;
+    uint8 CascadeMask;
+};
+
+/// The resident placements of one page that sun cascades draw, with bit c set for cascade c.
+struct ForestShadowDraw
+{
+    ForestDetailDraw Draw;
+    uint8 CascadeMask;
+};
+
 /// The view that a forest is planned for.
 struct ForestPlacementView
 {
@@ -62,6 +78,8 @@ struct ForestPlacementFrame
     std::vector<DrawSubCommand> StandDraws;
     /// Visible pages whose placements are resident.
     std::vector<ForestDetailDraw> DetailedDraws;
+    /// Resident pages that sun cascades draw.
+    std::vector<ForestShadowDraw> ShadowDraws;
     ForestDetailBudget DetailBudget;
     /// New reads for the caller to submit.
     std::vector<ForestPageTicket> Reads;
@@ -92,13 +110,12 @@ struct ForestPlacementRuntimeDesc
     uint32 ReadsPerFrame = 0;
     /// Keep a CPU copy of each resident page for ReadyPlacements.
     bool KeepCpuCopy = false;
+    /// The most pages resident for sun cascades alone. Adds slots. 0: no shadow pages.
+    uint32 ShadowSlots = 0;
 };
 
-/// Plans one forest's primary view: page culling, overview cover, page residency in a fixed set of
-/// slots, and the reads that fill them. The caller submits Reads to the asset reader, reports every
-/// read with CompleteRead, and reports each upload with CompleteUpload after its GPU fence. A page
-/// draws its overview quad until its upload is published. A slot is reused only after the frame
-/// that last drew from it is complete. All members run on the render thread, one call at a time.
+/// Plans resident tree pages for one view and its sun cascades on the render thread.
+/// A page draws its overview until its GPU upload publishes. Reuse waits for the last reader.
 class ForestPlacementRuntime
 {
 public:
@@ -111,7 +128,7 @@ public:
     const PageStreaming::PackedPlacementStore& Store() const { return m_Store; }
     /// The index count of the whole overview mesh.
     uint32 StandIndexEnd() const { return static_cast<uint32>(m_Store.Pages().size()) * kIndicesPerPage; }
-    /// The number of slots, detail and transition together.
+    /// The number of slots, detail, transition and shadow together.
     uint32 SlotCount() const { return static_cast<uint32>(m_Slots.size()); }
 
     /// True when a visible page is within the prefetch distance (1.4 times the detail distance).
@@ -121,13 +138,22 @@ public:
     void ResetResidency();
 
     /// Plans `frame`. completedReaders is the highest frame whose draws are complete on the GPU.
-    /// Frames must increase and completedReaders must be below frame; otherwise it returns false,
-    /// clears the output and leaves residency unchanged.
-    bool Prepare(const ForestPlacementView& view, uint64 frame, uint64 completedReaders, ForestPlacementFrame& out);
+    /// shadowPages are the pages that sun cascades want, in priority order (GatherShadowPages).
+    /// Color draw demand comes first, then shadow demand, then color prefetch. A page that the view
+    /// and a cascade both want takes one slot. Frames must increase and completedReaders must be
+    /// below frame; otherwise it returns false, clears the output and leaves residency unchanged.
+    bool Prepare(const ForestPlacementView& view, uint64 frame, uint64 completedReaders,
+                 std::span<const ForestShadowPage> shadowPages, ForestPlacementFrame& out);
 
     /// The overview ranges of every visible page of another view, such as a shadow or a second camera.
     /// It does not change residency.
     void GatherStand(const ForestPlacementView& view, std::vector<DrawSubCommand>& draws);
+
+    /// The pages inside the planes of each cascade view and within detailDistance of eye, unique,
+    /// in cascade order and then by distance from eye. A cascade view has the cascade's caster
+    /// planes as EyeRelativePlanes. Valid until the next call. It does not change residency.
+    std::span<const ForestShadowPage> GatherShadowPages(std::span<const ForestPlacementView> cascades,
+                                                        const Mathematics::WorldPosition& eye, float detailDistance);
 
     /// Reports a read. Empty or corrupt bytes fail it. True means the caller uploads the bytes into ticket.Slot.
     bool CompleteRead(ForestPageTicket ticket, std::span<const uint8> bytes);
@@ -155,6 +181,8 @@ private:
         Stage Current = Stage::Empty;
         uint64 LastReader = 0;
         bool Retiring = false;
+        // The page was last wanted by sun cascades alone. The slot counts against the shadow cap.
+        bool ShadowOnly = false;
         ForestPlacementRootBounds RootBounds{};
     };
     struct Bounds
@@ -174,6 +202,13 @@ private:
         uint32 First;
         uint32 Count;
     };
+    struct ShadowCandidate
+    {
+        double DistanceSquared;
+        uint32 Cascade;
+        uint32 Page;
+        uint8 CascadeMask;
+    };
 
     static void MergeBounds(Bounds& bounds, const Bounds& other);
     uint32 BuildNodes(uint32 first, uint32 count);
@@ -184,10 +219,16 @@ private:
     bool CanRequestWithin(const ForestPlacementView& view, double distance) const;
     bool HasVisibleDetailPage(uint32 index, const ForestPlacementView& view, uint32 mask, double detailSquared) const;
     void GatherDemand(const ForestPlacementView& view);
+    void GatherShadowDemand(std::span<const ForestShadowPage> pages);
+    bool IsShadowOnly(uint32 page) const;
+    uint32 CountShadowSlots() const;
+    // The oldest reusable slot that counts against the shadow cap, or SlotCount().
+    uint32 FindReusableShadowSlot() const;
     void ReleaseIfRetired(uint32 slot);
     // The oldest slot whose page is not wanted and whose last draw is complete, or SlotCount().
     uint32 FindReusableSlot() const;
     uint32 CountReusableSlots() const;
+    void BuildReadOrder();
     void AppendReads(std::vector<ForestPageTicket>& reads);
     void EmitDraws(uint64 frame, ForestPlacementFrame& out);
     void EmitStand(uint32 first, uint32 end, std::vector<DrawSubCommand>& draws) const;
@@ -201,16 +242,25 @@ private:
     std::vector<CellRun> m_StandVisible;
     std::optional<ForestPlacementView> m_DemandView;
     std::optional<ForestPlacementView> m_StandView;
+    std::array<std::optional<ForestPlacementView>, kMaxDepthEmitCascades> m_ShadowViews;
+    std::array<std::vector<CellRun>, kMaxDepthEmitCascades> m_ShadowVisible;
+    std::vector<ShadowCandidate> m_ShadowCandidates;
+    std::vector<ForestShadowPage> m_ShadowQuery;
     std::optional<uint64> m_DemandRetryFrame;
     ForestDetailBudget m_DetailBudget;
     std::vector<uint32> m_Priority;
     std::vector<uint8> m_Wanted;
+    std::vector<uint8> m_ShadowMasks;
+    std::vector<uint32> m_ShadowPages;
+    std::vector<uint32> m_ReadOrder;
     std::vector<uint64> m_RetryAt;
     std::vector<uint32> m_FailedReads;
     std::vector<std::pair<double, uint32>> m_Candidates;
     std::vector<std::pair<uint32, uint32>> m_Ready;
     uint32 m_ReadsPerFrame;
     uint32 m_DetailCapacity;
+    uint32 m_TransitionCapacity;
+    uint32 m_ShadowCapacity;
     bool m_KeepCpuCopy = false;
     std::vector<PageStreaming::PackedPlacement> m_PlacementMirror;
     uint64 m_Frame = 0;

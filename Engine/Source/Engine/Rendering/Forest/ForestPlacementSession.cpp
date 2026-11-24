@@ -29,12 +29,16 @@ void ForestPlacementSession::Reset(bool deviceRebuilt)
     Indices = {};
     Slots = {};
     Cull = {};
+    ShadowCulls = {};
     Graph = nullptr;
     Declared = {};
+    Planned = {};
+    PlanReady = false;
     ShaderRequested = false;
     ShaderAvailable = false;
     EmittedDetails = false;
     EmittedNearMeshes = false;
+    EmittedShadows = false;
     WantsCard = false;
     Card.reset();
     NearDemand.clear();
@@ -50,6 +54,8 @@ bool ForestPlacementSession::EnsureGpu(IDevice& device)
     {
         ShaderRequested = true;
         ShaderAvailable = Cull.Initialize(device);
+        for (auto& cull : ShadowCulls)
+            ShaderAvailable = ShaderAvailable && cull.Initialize(device);
     }
     if (!ShaderAvailable)
         return false;

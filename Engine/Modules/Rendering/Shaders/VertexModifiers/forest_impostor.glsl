@@ -13,6 +13,9 @@ layout(std140, set = 2, binding = 4) uniform ForestCardParameters
     vec4 atlas;
     vec4 wind;
     uvec4 material;
+    // What the card faces, relative to the render origin: the eye point (w = 1) in a color pass,
+    // the unit direction toward the light (w = 0) in a sun cascade.
+    vec4 viewer;
 } forestCard;
 
 const vec2 kForestCardUv[6] = vec2[6](vec2(0, 0), vec2(1, 0), vec2(0, 1),
@@ -30,10 +33,10 @@ void ModifyVertex(inout VertexOutput outputVertex, inout InstanceData instance)
     const mat3 rotation = mat3(vec3(c, 0, -s), vec3(0, 1, 0), vec3(s, 0, c));
 
     const vec4 bounds = forestView.atlasBounds;
-    const vec3 toEye = forestView.eyeRelAndRadius.xyz - (root + rotation * bounds.xyz * scale);
-    const float distanceToEye = length(toEye);
-    const vec3 localEye = distanceToEye > 1e-6 ? transpose(rotation) * (toEye / distanceToEye) : vec3(0, 1, 0);
-    const vec2 code = forestCard.atlas.y < 0.5 ? GE_HemiOctEncode(localEye) : GE_OctEncode(localEye);
+    const vec3 toViewer = GE_ImpostorTowardViewer(forestCard.viewer, root + rotation * bounds.xyz * scale);
+    const float viewerDistance = length(toViewer);
+    const vec3 localViewer = viewerDistance > 1e-6 ? transpose(rotation) * (toViewer / viewerDistance) : vec3(0, 1, 0);
+    const vec2 code = forestCard.atlas.y < 0.5 ? GE_HemiOctEncode(localViewer) : GE_OctEncode(localViewer);
     const vec3 normal = GE_ImpostorDecode(code, forestCard.atlas);
     vec3 right;
     vec3 up;

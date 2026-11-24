@@ -23,6 +23,7 @@ class AssetManager;
 namespace Components
 {
 struct MeshRenderer;
+enum class ShadowCasting : uint8;
 }
 } // namespace GameEngine
 
@@ -34,7 +35,8 @@ struct ForestPlacementSession;
 
 /// Attaches the packed forest stand of each ForestStand entity, and releases it when the entity, the
 /// component or the scene goes. A changed archive file attaches the stand again. Detail Distance and
-/// Near Mesh Budget apply to the attached stand. A stand that cannot attach logs one warning. Main thread.
+/// Near Mesh Budget apply to the attached stand, and so does the Shadow Casting of the overview
+/// MeshRenderer. A stand that cannot attach logs one warning. Main thread.
 class ForestStandSystem : public ECS::ISystem
 {
 public:
@@ -92,6 +94,8 @@ private:
         ScopedSubscription Registration;
         // The detail session of an attached stand with trees, else null.
         std::shared_ptr<ForestPlacementSession> Details;
+        // The sun-shadow casters of the detail session.
+        ScopedSubscription ShadowRegistration;
         // The overview index count that the archive's pages address.
         uint32 OverviewIndexEnd = 0;
         // True while the resident overview mesh has another index count than the archive's pages address.
@@ -118,8 +122,10 @@ private:
     bool ReleaseChangedArchives();
     // Reports a stand whose resident overview mesh does not match the pages of its archive.
     void CheckOverviews(ECS::World& world);
-    // Sets the session's distance and budget from the component.
-    void ApplyDetailSettings(Stand& stand, const Components::ForestStand& settings) const;
+    // Sets the session's distance and budget from the component, and its shadow casting and color draw
+    // from the overview MeshRenderer.
+    void ApplyDetailSettings(Stand& stand, const Components::ForestStand& settings,
+                             Components::ShadowCasting shadowCasting) const;
     // Registers the stand's draws and fills its registration, details and attach problem.
     void Attach(ECS::World& world, ECS::EntityHandle entity, const Components::ForestStand& settings, Stand& stand);
     static DetailMode DetailModeOf(const Components::ForestStand& settings);

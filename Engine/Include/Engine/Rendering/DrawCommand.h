@@ -68,6 +68,9 @@ struct DrawCommand
 {
     // Identity + variant resolution
     ::GameEngine::Rendering::GraphicsPipelineId  InternedPipeline{};
+    // A depth draw with a Material and no InternedPipeline (a registered depth producer's draw) draws
+    // through the material's depth variant for the pass, from PassKeywords: see
+    // RenderServices::EmitCascadeDepthCommand.
     const Material*                              Material = nullptr;
     // Reflection meta for the actual interned pipeline. Two roles:
     //   1. Material == nullptr: routes through PreparePipelineForDraw, this is

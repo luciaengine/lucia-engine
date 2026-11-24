@@ -24,11 +24,13 @@ public:
     ForestPlacementRenderState& operator=(const ForestPlacementRenderState&) = delete;
 
     /// Calculates a view plan and records pending uploads. The buffer and graph
-    /// stream must outlive pending reads and uploads, including their fences.
+    /// stream must outlive pending reads and uploads, including their fences. shadowPages are
+    /// the pages that sun cascades want (ForestPlacementRuntime::Prepare).
     bool Prepare(AssetManager& assets, Rendering::IDevice& device, Rendering::RenderGraph::RGFrame& graph,
-                 const ForestPlacementView& view, ForestPlacementFrame& plan);
-    /// Ends the frame of `graph`: a submitted frame fences its detail draws, an aborted one abandons
-    /// its uploads.
+                 const ForestPlacementView& view, ForestPlacementFrame& plan,
+                 std::span<const ForestShadowPage> shadowPages);
+    /// Ends the frame of `graph`: a submitted frame fences its detail and shadow draws, an aborted
+    /// one abandons its uploads.
     void Finish(Rendering::RenderGraph::RGFrame& graph, bool submitted);
 
 private:

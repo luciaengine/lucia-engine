@@ -3,6 +3,7 @@
 #include "Engine/Rendering/CascadeMotionScheduler.h"
 #include "Engine/Rendering/CascadeShadowCache.h"
 #include "Engine/Rendering/DepthProducerState.h"
+#include "Engine/Rendering/DrawCommandProducer.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/ShadowMinMaxPyramid.h"
 #include "Engine/Rendering/ShadowReceiverMeasurement.h"
@@ -53,6 +54,8 @@ struct FeatureDeclareContext;
 static constexpr uint32_t kMaxShadowCascades = 4;
 static_assert(kMaxShadowCascades == CascadeShadowCache::kMaxCascadesPerView,
               "CascadeShadowCache slot layout assumes the cascade ceiling");
+static_assert(kMaxDepthEmitCascades == kMaxShadowCascades,
+              "a depth producer receives every cascade that the feature fits");
 
 // How the cascade projection trades stability against resolution. Mirrors the
 // same choice Unity exposes as Shadow Projection, and for the same reason: the
@@ -708,6 +711,10 @@ class ShadowMapRenderFeature : public IRenderFeature
     void CacheFrameData(Rendering::ViewId viewId, const CascadeFrameData& data);
     const CascadeFrameData* GetCachedFrameData(Rendering::ViewId viewId) const;
 
+    /// The fitted cascades in the form that a depth producer reads (DepthEmitContext::Cascades).
+    /// The caster planes are the planes that OnScheduleCulling culls the instances to.
+    DepthEmitCascades DescribeCascadesForDepthProducers(const CascadeFrameData& fit) const;
+
     // Camera-motion round-robin cap (GE_SHADOW_MOTION_CAP, default 1; 0 = off):
     // at most this many motion-class cascade renders PER (VIEW, FRAME) — each
     // shadow-casting view plans independently, so a frame's total motion
@@ -1322,6 +1329,12 @@ class ShadowMapRenderFeature : public IRenderFeature
                                 const FeatureDeclareContext& ctx);
     bool IsCascadeDeferredThisFrame(Rendering::ViewId viewId, const RenderGraph::RGFrame& frame,
                                     uint32_t cascadeIndex) const;
+
+    // The planes that the casters of `cascade` are culled to, relative to the fit's sector:
+    // the frustum of LightVPRel with the near plane retired, the side planes tightened to the
+    // caster footprint when the caster reduction applies.
+    void CascadeCasterPlanes(const CascadeFrameData& fit, uint32_t cascade,
+                             Mathematics::Vector4 outPlanes[6]) const;
 
     // Per-view declare counter setting the window cadence. Cadence only: the
     // window's snapshot and storm edge state live in the cache, with the

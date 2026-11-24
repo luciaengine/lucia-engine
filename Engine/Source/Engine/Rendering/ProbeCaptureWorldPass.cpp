@@ -97,7 +97,7 @@ void DeclareFaceShadows(RenderServices& services, RenderGraph::RGFrame& frame, V
     auto* shadows = services.GetFeature<ShadowMapRenderFeature>();
     if (!shadows || !shadows->IsInitialized())
         return;
-    services.EmitProducerDepthCommandsForView(viewId);
+    services.EmitProducerDepthCommandsForView(viewId, &frame, nullptr);
     const std::string prefix = "ProbeCapture.View" + std::to_string(viewId) + ".";
     const FeatureDeclareContext context = services.MakeFeatureDeclareContext(
         frame, viewId, /*cascadeCount=*/0, shadows->GetConfig().Resolution, /*directionalLightDirWS=*/nullptr,

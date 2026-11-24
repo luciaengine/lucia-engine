@@ -2321,6 +2321,45 @@ void ShadowMapRenderFeature::ComputeClampedLightSpaceBounds(
     }
 }
 
+void ShadowMapRenderFeature::CascadeCasterPlanes(const CascadeFrameData& fit, uint32_t cascade,
+                                                 Mathematics::Vector4 outPlanes[6]) const
+{
+    BuildCascadeCasterCullPlanes(fit.LightVPRel[cascade], outPlanes);
+    // Tighten the side planes to the caster footprint (light NDC; the slack covers the freeze drift).
+    // Near (4) is retired, far (5) is the fit's. GE_SHADOW_CASTER_REDUCTION=0 keeps the planes.
+    if (!IsCasterReductionEnabled() || !fit.CasterFootprintApplies[cascade])
+        return;
+    const float freezeDrift =
+        m_FitFreezeEnabled ? kFreezeFootprintDriftFraction * fit.OrthoHalfExtent[cascade] : 0.0f;
+    TightenCascadeSidePlanes(fit.LightVPRel[cascade], fit.CasterFootprint[cascade],
+                             fit.OrthoHalfExtent[cascade], freezeDrift, outPlanes);
+}
+
+DepthEmitCascades ShadowMapRenderFeature::DescribeCascadesForDepthProducers(const CascadeFrameData& fit) const
+{
+    DepthEmitCascades cascades{};
+    cascades.RenderOriginSector = Mathematics::Vector3Int{fit.RenderOriginSector[0], fit.RenderOriginSector[1],
+                                                          fit.RenderOriginSector[2]};
+    cascades.Resolution = GetConfig().Resolution;
+    cascades.Count = std::min(fit.NumCascades, kMaxDepthEmitCascades);
+    for (uint32_t c = 0; c < cascades.Count; ++c)
+    {
+        DepthEmitCascade& cascade = cascades.Cascades[c];
+        cascade.LightViewProjectionRel = fit.LightVPRel[c];
+        cascade.OrthoHalfExtent = fit.OrthoHalfExtent[c];
+        CascadeCasterPlanes(fit, c, cascade.CasterPlanes.data());
+    }
+    if (cascades.Count != 0)
+    {
+        // Row 2 of the orthographic light matrix is the depth axis. Reverse-Z depth grows toward
+        // the light, so the row points toward the light (GE_ImpostorViewer reads it the same way).
+        const Matrix4x4& light = fit.LightVPRel[0];
+        const Vector3 depthRow{light[0][2], light[1][2], light[2][2]};
+        cascades.TowardLight = depthRow.Normalize();
+    }
+    return cascades;
+}
+
 void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
 {
     if (ctx.CullingPipeline == nullptr || ctx.Views == nullptr || ctx.Cameras == nullptr)
@@ -2334,11 +2373,6 @@ void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
     Mathematics::Vector3 sceneMin{}, sceneMax{};
     const bool hasSceneBounds =
         ctx.Scene != nullptr && ctx.Scene->GetInstancesWorldBounds(sceneMin, sceneMax);
-
-    // Caster-set reduction (default ON; GE_SHADOW_CASTER_REDUCTION=0 is the
-    // kill switch). Read once so the branch is stable for the process lifetime;
-    // the =0 lane leaves the planes verbatim.
-    const bool casterReduction = IsCasterReductionEnabled();
 
     auto findCamera = [ctx](Rendering::CameraId id) -> const Rendering::CameraInfo*
     {
@@ -2420,22 +2454,7 @@ void ShadowMapRenderFeature::OnScheduleCulling(const FeatureCullingContext& ctx)
             if (cascadeLive)
             {
                 Mathematics::Vector4 planes[6]{};
-                BuildCascadeCasterCullPlanes(frameData->LightVPRel[c], planes);
-
-                // Tighten the four side planes to the cascade's caster footprint
-                // (CascadeFrameData::CasterFootprint): the receivers it was fitted
-                // to hold, in light NDC, so it applies to LightVPRel as it is. Far
-                // (plane 5) is the fit's own; near (plane 4) was retired above. The
-                // slack covers the footprint drift the fit freeze allows.
-                if (casterReduction && frameData->CasterFootprintApplies[c])
-                {
-                    const float freezeDrift =
-                        m_FitFreezeEnabled ? kFreezeFootprintDriftFraction * frameData->OrthoHalfExtent[c]
-                                           : 0.0f;
-                    TightenCascadeSidePlanes(frameData->LightVPRel[c], frameData->CasterFootprint[c],
-                                             frameData->OrthoHalfExtent[c], freezeDrift, planes);
-                }
-
+                CascadeCasterPlanes(*frameData, c, planes);
                 for (int p = 0; p < 6; ++p)
                     group.frustumPlanes[c][p] = planes[p];
                 anyLiveCascade = true;

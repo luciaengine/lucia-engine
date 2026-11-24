@@ -256,6 +256,10 @@ class PipelineVariantCache
                           PrimitiveTopology topology, MaterialKeyword passKeywords,
                           FrontFace frontFace, const Rendering::PipelineFormatKey& format);
 
+    /// Requests a source-mesh caster's cascade pipeline. While cold, keep drawing its card.
+    bool WarmCascadeVariant(const Material& material, VertexAttributeFlags vertexFlags,
+                            PrimitiveTopology topology, MaterialKeyword passKeywords, FrontFace frontFace);
+
     bool EnsureConcreteWarm(const Material& material, GraphicsPipelineId id,
                             const Rendering::PipelineFormatKey& fk);
 

@@ -4,6 +4,7 @@
 
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
+#include "ForestImpostorDraw.h"
 #include "ForestNearMeshCandidates.h"
 #include "ForestPlacementGpuData.h"
 #include "ForestPlacementSession.h"
@@ -13,12 +14,14 @@
 #include "ForestPlacementFeature.h"
 #include "EngineLogCapture.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
+#include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Mathematics/MatrixOps.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Materials/MaterialDocument.h"
 #include "Tests/ScopedEnvVar.h"
 
 #include <gtest/gtest.h>
@@ -29,6 +32,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -102,7 +106,7 @@ TEST_F(ForestPlacementDrawTest, DeformationWidensTheNearMeshFrustumWithoutMoving
     ASSERT_TRUE(runtime) << error;
     const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
     ForestPlacementFrame frame;
-    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, {}, frame));
     ASSERT_EQ(frame.Reads.size(), 1u);
     const auto ticket = frame.Reads.front();
     ASSERT_EQ(ticket.Page, 0u);
@@ -112,19 +116,19 @@ TEST_F(ForestPlacementDrawTest, DeformationWidensTheNearMeshFrustumWithoutMoving
     ForestNearMeshView near{view, 2.0f, 0.0f, 0.0f};
     const Mathematics::Vector4 bounds{0, 1, 0, 2};
     std::vector<ForestNearMeshCandidate> candidates;
-    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     const float restCoverage = candidates.front().Coverage;
 
     // Outside the rest sphere even with the shared 1.5x draw guard band.
     near.PlacementView.EyeRelativePlanes[0] = {1, 0, 0, -3.7f};
-    ASSERT_TRUE(runtime->Prepare(near.PlacementView, 3, 2, frame));
+    ASSERT_TRUE(runtime->Prepare(near.PlacementView, 3, 2, {}, frame));
     ASSERT_EQ(frame.DetailedDraws.size(), 1u);
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     EXPECT_TRUE(candidates.empty());
     near.DeformationMargin = 0.8f;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     EXPECT_FLOAT_EQ(candidates.front().Coverage, restCoverage);
     EXPECT_EQ(candidates.front().Ticket, ticket);
@@ -140,38 +144,38 @@ TEST_F(ForestPlacementDrawTest, NearMeshHysteresisKeepsOnlyTheSamePlacementGener
     ASSERT_TRUE(runtime) << error;
     const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
     ForestPlacementFrame frame;
-    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, {}, frame));
     ASSERT_EQ(frame.Reads.size(), 1u);
     const auto ticket = frame.Reads.front();
     ASSERT_EQ(ticket.Page, 0u);
     ASSERT_TRUE(runtime->CompleteRead(ticket, kFirstPage));
     ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
-    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
 
     const Mathematics::Vector4 bounds{0, 1, 0, 2};
     ForestNearMeshView near{view, 2.0f, 0.0f, 0.0f};
     std::vector<ForestNearMeshCandidate> candidates;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     const float coverage = candidates.front().Coverage;
     const ForestMeshOwnedPlacement current{ticket, candidates.front().LocalPlacement};
 
     near.ImpostorCoverage = coverage * 0.95f;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     EXPECT_TRUE(candidates.empty());
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates, std::span(&current, 1));
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates, std::span(&current, 1));
     ASSERT_EQ(candidates.size(), 1u);
 
     auto retired = current;
     ++retired.Ticket.Generation;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates, std::span(&retired, 1));
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates, std::span(&retired, 1));
     EXPECT_TRUE(candidates.empty());
 
     near.ImpostorCoverage = coverage * 1.01f;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates, std::span(&current, 1));
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates, std::span(&current, 1));
     EXPECT_TRUE(candidates.empty());
     near.ImpostorCoverage = coverage * 0.75f;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     EXPECT_EQ(candidates.size(), 1u);
 }
 
@@ -185,7 +189,7 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     ASSERT_TRUE(runtime) << error;
     const ForestPlacementView view{{512'000'000.0, 8.0, 512'000'001.0}, {}, 100.0f};
     ForestPlacementFrame frame;
-    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, {}, frame));
     ASSERT_EQ(frame.Reads.size(), 2u);
     const auto first = frame.Reads[0];
     const auto second = frame.Reads[1];
@@ -201,10 +205,10 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     ASSERT_TRUE(runtime->CompleteUpload(first, ForestUploadResult::Published));
     ASSERT_TRUE(runtime->CompleteUpload(second, ForestUploadResult::Published));
 
-    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
     std::vector<ForestNearMeshCandidate> candidates;
     const ForestNearMeshView near{view, 2.0f, 0.0f, 0.01f};
-    CollectForestNearMeshCandidates(*runtime, frame, near, {0, 1, 0, 2}, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, {0, 1, 0, 2}, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     const auto& placement = candidates.front();
     EXPECT_EQ(placement.Ticket, first);
@@ -217,7 +221,7 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     ASSERT_EQ(secondRecords.size(), 2u);
     EXPECT_EQ(secondRecords[0].Height, 23u);
     std::vector<ForestNearMeshCandidate> all;
-    CollectForestNearMeshCandidates(*runtime, frame, near, {0, 1, 0, 2}, 3, all);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, {0, 1, 0, 2}, 3, all);
     const auto raised = std::ranges::find_if(all, [&second](const ForestNearMeshCandidate& tree)
                                              { return tree.Ticket == second && tree.LocalPlacement == 0; });
     ASSERT_NE(raised, all.end());
@@ -226,15 +230,15 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
 
     auto turned = near;
     turned.PlacementView.EyeRelativePlanes[0] = {1, 0, 0, -40};
-    ASSERT_TRUE(runtime->Prepare(turned.PlacementView, 3, 2, frame));
+    ASSERT_TRUE(runtime->Prepare(turned.PlacementView, 3, 2, {}, frame));
     EXPECT_TRUE(runtime->ReadyPlacements(first).empty());
-    CollectForestNearMeshCandidates(*runtime, frame, turned, {0, 1, 0, 2}, 4, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, turned, {0, 1, 0, 2}, 4, candidates);
     ASSERT_EQ(candidates.size(), 2u);
     EXPECT_EQ(candidates.front().Ticket, second);
 
     runtime->ResetResidency();
     EXPECT_TRUE(runtime->ReadyPlacements(second).empty());
-    CollectForestNearMeshCandidates(*runtime, frame, turned, {0, 1, 0, 2}, 4, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, turned, {0, 1, 0, 2}, 4, candidates);
     EXPECT_TRUE(candidates.empty());
 }
 
@@ -248,13 +252,13 @@ std::shared_ptr<Engine::Renderer::ForestPlacementRuntime> OpenResidentTree(const
     std::string error;
     auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1, .KeepCpuCopy = true}, error);
     EXPECT_TRUE(runtime) << error;
-    if (!runtime || !runtime->Prepare(view, 1, 0, frame) || frame.Reads.size() != 1u)
+    if (!runtime || !runtime->Prepare(view, 1, 0, {}, frame) || frame.Reads.size() != 1u)
         return nullptr;
     const auto ticket = frame.Reads.front();
     std::array<uint8, sizeof(PackedPlacement)> bytes{};
     std::memcpy(bytes.data(), &tree, sizeof(tree));
     if (!runtime->CompleteRead(ticket, bytes) || !runtime->CompleteUpload(ticket, ForestUploadResult::Published) ||
-        !runtime->Prepare(view, 2, 1, frame))
+        !runtime->Prepare(view, 2, 1, {}, frame))
         return nullptr;
     return runtime;
 }
@@ -272,7 +276,7 @@ TEST_F(ForestPlacementDrawTest, NearMeshDistanceTurnsTheModelCenterWithThePlacem
     ASSERT_TRUE(runtime);
 
     std::vector<ForestNearMeshCandidate> candidates;
-    CollectForestNearMeshCandidates(*runtime, frame, {view, 2.0f, 0.0f, 0.0f}, {2, 1, 0, 2}, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, {view, 2.0f, 0.0f, 0.0f}, {2, 1, 0, 2}, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     // Root (10, 0, 0), center offset (0, 1, -2) at scale 0.75, eye (0, 0, 5).
     EXPECT_NEAR(candidates.front().DistanceSquared, 10.0 * 10.0 + 0.75 * 0.75 + 6.5 * 6.5, 1e-4);
@@ -297,9 +301,34 @@ TEST_F(ForestPlacementDrawTest, NearMeshBroadphaseKeepsAPageWhoseLargestTreeStil
     ASSERT_EQ(frame.DetailedDraws.size(), 1u);
     const ForestMeshOwnedPlacement owner{frame.DetailedDraws.front().Ticket, 0};
     std::vector<ForestNearMeshCandidate> candidates;
-    CollectForestNearMeshCandidates(*runtime, frame, {view, 2.0f, 0.0f, kTreeCoverage * 0.99f}, {0, 0, 0, 1}, 1,
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, {view, 2.0f, 0.0f, kTreeCoverage * 0.99f}, {0, 0, 0, 1}, 1,
                                     candidates, std::span(&owner, 1u));
     EXPECT_EQ(candidates.size(), 1u);
+}
+
+TEST_F(ForestPlacementDrawTest, OrthographicCastersTakeMeshesOnlyAboveTheAtlasFootprint)
+{
+    using namespace Engine::Renderer;
+    const PackedPlacement tree{2000, 0, 0, 0, 255};
+    const PlacementPage page{.Origin = {0.0, 0.0, 0.0}, .LocalMin = {19, -1, -1}, .LocalMax = {21, 1, 1},
+                             .First = 0, .Count = 1};
+    const ForestPlacementView view{{-19.0, 0.0, 0.0}, {}, 100.0f};
+    ForestPlacementFrame frame;
+    const auto runtime = OpenResidentTree(m_Scratch.Path() / "ortho-caster.geforest", page, tree, 1.25f, view, frame);
+    ASSERT_TRUE(runtime);
+
+    const Mathematics::Vector4 sphere{0, 0, 0, 1};
+    ForestNearMeshView cascade{view, 1.0f / 20.0f, 0.0f, 128.0f / 2048.0f, 0.0f, true};
+    std::vector<ForestNearMeshCandidate> candidates;
+    // At 20 m half extent the tree is exactly 128 texels across. Keep the card.
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, cascade, sphere, 1, candidates);
+    EXPECT_TRUE(candidates.empty());
+
+    // The same tree in a tighter cascade takes a mesh even far from the camera.
+    cascade.ProjectionScaleY = 1.0f / 16.0f;
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, cascade, sphere, 1, candidates);
+    ASSERT_EQ(candidates.size(), 1u);
+    EXPECT_FLOAT_EQ(candidates.front().Coverage, 1.25f / 16.0f);
 }
 
 TEST_F(ForestPlacementDrawTest, ACardPastTheBoundRadiusRefusesItsSessionOnce)
@@ -593,6 +622,33 @@ TEST_F(ForestPlacementDrawTest, AStandDrawsItsOverviewWhenItsSessionDrawsNoDetai
     EXPECT_FALSE(session->Stream);
 }
 
+TEST_F(ForestPlacementDrawTest, AStandWhoseSessionDrawsNoColorEmitsNoColor)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "shadows-only.geforest";
+    WriteStore(file);
+    std::string error;
+    std::shared_ptr<ForestPlacementRuntime> runtime =
+        ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    RenderServices services;
+    AssetManager assets;
+    constexpr uint64 kForestWorld = 45;
+    const auto defaultLayer = Rendering::RenderLayerMask::Default();
+    const auto view = AddForestStandView(services, 512'000'000.0, kForestWorld, defaultLayer);
+    const auto session = services.EnsureFeature<ForestPlacementFeature>().Attach(
+        runtime, assets, kForestWorld, GUID::Generate(), 100.0f);
+    ASSERT_TRUE(session);
+    session->DrawsColor = false;
+    const auto subscription = RegisterForestStandDraws(services, kForestWorld, defaultLayer, runtime,
+        [](const ForwardEmitContext&) -> std::optional<ForestStandDrawHeads> { return MakeForestStandDrawHeads(false); },
+        session);
+
+    Rendering::RenderGraph::RGFrame graph(nullptr, nullptr, nullptr, nullptr);
+    services.EmitFrameForwardCommandsForView(graph, view);
+    EXPECT_TRUE(services.Views().PerView(view).ForwardCommands.empty());
+}
+
 TEST_F(ForestPlacementDrawTest, SuppressesOnlyCardsOwnedByTheMatchingMeshSubmission)
 {
     using namespace Engine::Renderer;
@@ -622,14 +678,31 @@ TEST_F(ForestPlacementDrawTest, SuppressesOnlyCardsOwnedByTheMatchingMeshSubmiss
     SetCameraEye(camera, {512'000'000.0, 8.0, 511'999'990.0});
     ForestPlacementGpuView gpu{};
     std::vector<ForestPlacementGpuPage> pages;
-    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages, claims));
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan.DetailedDraws,
+        *MakeForestPlacementGpuViewSource(camera), 1, 15.0f, {0, 7, 0, 8}, gpu, pages, claims));
     ASSERT_EQ(pages.size(), 1u);
     constexpr std::array<uint32, 8> mask{0x80000001u, 1u, 0u, 0x80000000u, 0x8001u, 0u, 0u, 0u};
     EXPECT_EQ(pages.front().MeshOwned, mask);
 
-    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan.DetailedDraws,
+        *MakeForestPlacementGpuViewSource(camera), 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
     ASSERT_EQ(pages.size(), 1u);
     EXPECT_EQ(pages.front().MeshOwned, (std::array<uint32, 8>{}));
+}
+
+TEST_F(ForestPlacementDrawTest, TheColorCardViewerIsTheEyePoint)
+{
+    using namespace Engine::Renderer;
+    // The color card faces the eye that the placement view of the same camera holds.
+    Rendering::CameraData camera{};
+    SetCameraEye(camera, {512'000'054.25, 8.5, 511'999'990.75});
+    const auto source = MakeForestPlacementGpuViewSource(camera);
+    ASSERT_TRUE(source);
+    const auto viewer = ForestCardEyeViewer(camera);
+    EXPECT_EQ(viewer.x, source->EyeRelative.x);
+    EXPECT_EQ(viewer.y, source->EyeRelative.y);
+    EXPECT_EQ(viewer.z, source->EyeRelative.z);
+    EXPECT_EQ(viewer.w, 1.0f);
 }
 
 TEST_F(ForestPlacementDrawTest, BuildsPackedGpuPagesInTheCamerasRenderOrigin)
@@ -644,13 +717,13 @@ TEST_F(ForestPlacementDrawTest, BuildsPackedGpuPagesInTheCamerasRenderOrigin)
     const WorldPosition position{512'000'054.0, 8.0, 511'999'990.0};
     const ForestPlacementView visible{position, {}, 100.0f};
     ForestPlacementFrame plan;
-    ASSERT_TRUE(runtime->Prepare(visible, 1, 0, plan));
+    ASSERT_TRUE(runtime->Prepare(visible, 1, 0, {}, plan));
     ASSERT_EQ(plan.Reads.size(), 1u);
     const auto ticket = plan.Reads.front();
     ASSERT_EQ(ticket.Page, 1u);
     ASSERT_TRUE(runtime->CompleteRead(ticket, kSecondPage));
     ASSERT_TRUE(runtime->CompleteUpload(ticket, ForestUploadResult::Published));
-    ASSERT_TRUE(runtime->Prepare(visible, 2, 1, plan));
+    ASSERT_TRUE(runtime->Prepare(visible, 2, 1, {}, plan));
 
     Rendering::CameraData camera{};
     camera.view = MakeLookAtLH({}, {0, 0, 1}, {0, 1, 0});
@@ -659,7 +732,8 @@ TEST_F(ForestPlacementDrawTest, BuildsPackedGpuPagesInTheCamerasRenderOrigin)
     SetCameraEye(camera, position);
     ForestPlacementGpuView gpu{};
     std::vector<ForestPlacementGpuPage> pages;
-    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan.DetailedDraws,
+        *MakeForestPlacementGpuViewSource(camera), 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
     ASSERT_EQ(pages.size(), 1u);
     EXPECT_EQ(pages[0].Range, (std::array<uint32, 4>{0, 2, 1, 0}));
     EXPECT_FLOAT_EQ(pages[0].OriginRelative.x - gpu.EyeRelativeAndRadius.x, 1.0f);
@@ -671,13 +745,15 @@ TEST_F(ForestPlacementDrawTest, BuildsPackedGpuPagesInTheCamerasRenderOrigin)
     EXPECT_FLOAT_EQ(gpu.AtlasBounds.w, 8.0f);
     auto missing = plan;
     ++missing.DetailedDraws.front().Ticket.Generation;
-    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, missing, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, missing.DetailedDraws,
+        *MakeForestPlacementGpuViewSource(camera), 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
     EXPECT_EQ(pages[0].Range[2], 0u);
 
     camera.proj = MakeOrthographicLH_ZO_ReverseZ(-1, 1.5f, -25, 30, 0.1f, 80.0f);
     camera.viewProj = camera.proj * camera.view;
     SetCameraEye(camera, position);
-    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan.DetailedDraws,
+        *MakeForestPlacementGpuViewSource(camera), 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
     ASSERT_EQ(pages.size(), 1u);
     EXPECT_EQ(pages[0].Range[2], 0u); // A verified root lies outside the right edge.
 
@@ -685,16 +761,19 @@ TEST_F(ForestPlacementDrawTest, BuildsPackedGpuPagesInTheCamerasRenderOrigin)
     camera.proj = MakeOrthographicLH_ZO_ReverseZ(-30, 30, -25, 0.3f, 0.1f, 80.0f);
     camera.viewProj = camera.proj * camera.view;
     SetCameraEye(camera, position);
-    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan.DetailedDraws,
+        *MakeForestPlacementGpuViewSource(camera), 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
     EXPECT_EQ(pages[0].Range[2], 1u);
     camera.proj = MakeOrthographicLH_ZO_ReverseZ(-30, 30, -25, 0.1f, 0.1f, 80.0f);
     camera.viewProj = camera.proj * camera.view;
     SetCameraEye(camera, position);
-    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    ASSERT_TRUE(BuildForestPlacementGpuInputs(*runtime, plan.DetailedDraws,
+        *MakeForestPlacementGpuViewSource(camera), 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
     EXPECT_EQ(pages[0].Range[2], 0u); // The higher root lies above the top edge.
 
     ++plan.DetailedDraws.front().FirstPlacement;
-    EXPECT_FALSE(BuildForestPlacementGpuInputs(*runtime, plan, camera, 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
+    EXPECT_FALSE(BuildForestPlacementGpuInputs(*runtime, plan.DetailedDraws,
+        *MakeForestPlacementGpuViewSource(camera), 1, 15.0f, {0, 7, 0, 8}, gpu, pages));
     EXPECT_TRUE(pages.empty());
 }
 
@@ -783,16 +862,118 @@ protected:
 
     bool Emit(uint64 frameIndex) { return Emit(frameIndex, {m_View}).front(); }
 
+    // Starts an app frame and plans frame `frameIndex` of the main window for the sun cascades of each
+    // view in turn, from `view` and the near page. True where the session planned.
+    std::vector<bool> PlanShadows(uint64 frameIndex, std::initializer_list<Rendering::ViewId> views,
+                                  const Engine::Renderer::ForestPlacementView& view)
+    {
+        m_Services.BeginWorldDrawFrame();
+        auto& graph = m_Main->Graph;
+        EXPECT_TRUE(m_Device->BeginFrame());
+        graph.BeginFrame(frameIndex);
+        std::vector<bool> planned;
+        for (const auto viewId : views)
+            planned.push_back(m_Feature->PlanShadowFrame(*m_Session, ShadowContext(graph, viewId), view, m_ShadowPages));
+        graph.Execute();
+        m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
+        m_Device->WaitForIdle();
+        return planned;
+    }
+
+    Engine::Renderer::DepthEmitContext ShadowContext(Rendering::RenderGraph::RGFrame& graph, Rendering::ViewId view)
+    {
+        return {.Device = m_Device.get(), .Services = &m_Services, .ViewId = view, .Frame = &graph};
+    }
+
+    // The cascade draws that one frame of the casters gave a view, and the viewer of the first card in
+    // cascade 1.
+    struct CasterFrame
+    {
+        size_t Cascade0 = 0;
+        size_t Cascade1 = 0;
+        bool Indirect = false;
+        std::optional<Mathematics::Vector4> Viewer;
+    };
+
+    // Starts an app frame, runs the depth producers of `view` for `cascades` and submits the frame.
+    CasterFrame EmitCasters(uint64 frameIndex, Rendering::ViewId view, const Engine::Renderer::DepthEmitCascades& cascades)
+    {
+        m_Services.BeginWorldDrawFrame();
+        auto& graph = m_Main->Graph;
+        EXPECT_TRUE(m_Device->BeginFrame());
+        graph.BeginFrame(frameIndex);
+        m_Services.EmitProducerDepthCommandsForView(view, &graph, &cascades);
+        const auto& streams = m_Services.Views().PerView(view).CascadeDepthCommands;
+        CasterFrame result{streams[0].size(), streams[1].size()};
+        if (!streams[1].empty())
+        {
+            const auto& card = streams[1].front();
+            result.Indirect = card.UseIndirect;
+            for (const auto& buffer : card.Bindings.Buffers)
+                if (buffer.Name == HashStringId("forestCard"))
+                {
+                    // forestCard: atlas, wind, material, then the viewer at byte 48.
+                    const auto* bytes = static_cast<const std::byte*>(m_Device->MapBuffer(buffer.Buffer));
+                    Mathematics::Vector4 viewer{};
+                    if (bytes)
+                        std::memcpy(viewer.v, bytes + buffer.Offset + 48, sizeof(viewer.v));
+                    result.Viewer = viewer;
+                }
+        }
+        graph.Execute();
+        m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
+        m_Device->WaitForIdle();
+        return result;
+    }
+
+    // A packed card material, registered as the MeshImpostor system registers one.
+    GUID RegisterCardMaterial()
+    {
+        MaterialDocument doc{};
+        doc.schemaVersion = 3;
+        doc.materialName = "ForestShadowCard";
+        doc.lightingModel = "StandardPBR";
+        doc.surfaceShader = "Surfaces/impostor.glsl";
+        doc.vertexModifier = "VertexModifiers/forest_impostor.glsl";
+        doc.customVertexShader = true;
+        doc.alphaMode = MaterialAlphaMode::Mask;
+        doc.doubleSided = true;
+        doc.properties["alphaCutoff"] = 0.5f;
+        doc.properties["impostorBounds"] = std::vector<float>{0.0f, 5.0f, 0.0f, 2.0f};
+        doc.textures["albedoMap"] = std::string{};
+        doc.textures["normalMap"] = std::string{};
+        const GUID guid = GUID::Generate();
+        Engine::Renderer::Material* material = m_Services.Materials().RegisterMaterialFromDocument(guid, doc);
+        if (!material)
+            return {};
+        // The surface's property table comes with the compile, which no frame here drains.
+        constexpr std::array<float, 4> kAtlas{8.0f, 0.0f, 0.0f, 0.0f};
+        Engine::Renderer::Material::TestFactory::AddPropertyLayout(*material, HashStringId("impostorAtlas"), 0u, sizeof(kAtlas));
+        material->SetVector(HashStringId("impostorAtlas"), kAtlas.data(), 4u);
+        return guid;
+    }
+
+    void PublishCard()
+    {
+        Engine::Renderer::ForestImpostorCard card{};
+        card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+        m_Feature->PublishCard(kWorld, m_Model, card);
+    }
+
     // True when the runtime still asks for the near page: no stream has read it.
     bool NoPageWasRead()
     {
         Engine::Renderer::ForestPlacementFrame plan;
-        return m_Runtime->Prepare(m_Near, 100, 0, plan) && plan.Reads.size() == 1;
+        return m_Runtime->Prepare(m_Near, 100, 0, {}, plan) && plan.Reads.size() == 1;
     }
 
     static constexpr uint64 kWorld = 7;
     Rendering::Tests::ScopedEnvVar m_Headless{"GE_HEADLESS_TEST", "1"};
     const Engine::Renderer::ForestPlacementView m_Near{{512'000'054.0, 8.0, 511'999'990.0}, {}, 100.0f};
+    // An eye far from every page: the camera wants no trees.
+    const Engine::Renderer::ForestPlacementView m_Far{{512'010'000.0, 8.0, 511'999'990.0}, {}, 100.0f};
+    // A sun cascade wants the near page.
+    const std::array<Engine::Renderer::ForestShadowPage, 1> m_ShadowPages{{{1, 1}}};
     const GUID m_Model = GUID::Generate();
     std::unique_ptr<Rendering::IDevice> m_Device;
     Engine::Renderer::RenderServices m_Services;
@@ -932,6 +1113,104 @@ TEST_F(ForestPlacementSessionDeviceTest, ASessionStaysOnItsGraphWhileItsFrameIsO
     m_Other->Graph.Execute();
     m_Feature->OnFrameSubmittedRG(m_Other->Graph, m_Other->Graph.SubmissionToken());
     m_Device->WaitForIdle();
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, TheShadowEmitPlansOnceAndTheColorEmitReusesThePlan)
+{
+    Emit(1);
+    PublishCard();
+    m_Services.BeginWorldDrawFrame();
+    auto& graph = m_Main->Graph;
+    EXPECT_TRUE(m_Device->BeginFrame());
+    graph.BeginFrame(2);
+    EXPECT_TRUE(m_Feature->PlanShadowFrame(*m_Session, ShadowContext(graph, m_View), m_Near, m_ShadowPages));
+    const auto reads = m_Session->Plan.Reads;
+    EXPECT_FALSE(reads.empty());
+
+    // The color emit of the same view draws the plan: a second Prepare in the frame would fail.
+    Engine::Renderer::ForwardEmitContext color{.Device = m_Device.get(), .Services = &m_Services,
+                                               .Frame = &graph, .ViewId = m_View};
+    std::vector<Engine::Renderer::DrawSubCommand> ranges;
+    EXPECT_TRUE(m_Feature->EmitDetails(*m_Session, color, {}, m_Near, ranges));
+    EXPECT_EQ(m_Session->Plan.Reads, reads);
+    // Each emit declares its draws once in a frame.
+    EXPECT_FALSE(m_Feature->PlanShadowFrame(*m_Session, ShadowContext(graph, m_View), m_Near, m_ShadowPages));
+    EXPECT_FALSE(m_Feature->EmitDetails(*m_Session, color, {}, m_Near, ranges));
+    graph.Execute();
+    m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
+    m_Device->WaitForIdle();
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, ShadowDemandAloneKeepsTheCard)
+{
+    EXPECT_EQ(PlanShadows(1, {m_View}, m_Far), (std::vector{false}));
+    EXPECT_TRUE(m_Feature->WantsCard(kWorld, m_Model));
+    PublishCard();
+    EXPECT_EQ(PlanShadows(2, {m_View}, m_Far), (std::vector{true}));
+    EXPECT_TRUE(m_Feature->WantsCard(kWorld, m_Model));
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, OnlyTheDetailViewCastsForestShadows)
+{
+    // While editing, the Scene View draws the trees, so only the Scene View casts their shadows.
+    Emit(1, {m_SceneView});
+    PublishCard();
+    EXPECT_EQ(PlanShadows(2, {m_View, m_SceneView}, m_Near), (std::vector{false, true}));
+    m_Services.Views().SetWorldSimulating(kWorld, true);
+    EXPECT_EQ(PlanShadows(3, {m_SceneView, m_View}, m_Near), (std::vector{false, true}));
+}
+
+TEST_F(ForestPlacementSessionDeviceTest, TheCastersDrawLightFacingCardsIntoTheCascadesThatHoldThePage)
+{
+    using namespace Engine::Renderer;
+    const auto layers = Rendering::RenderLayerMask::Default();
+    const auto view = AddForestStandView(m_Services, 512'000'054.0, kWorld, layers);
+    const auto casters = RegisterForestShadowCasters(m_Services, kWorld, layers, m_Session);
+    ASSERT_TRUE(casters);
+    ForestImpostorCard card{};
+    card.Material = RegisterCardMaterial();
+    ASSERT_FALSE(card.Material.IsNull());
+    card.Bounds = {0.0f, 5.0f, 0.0f, 2.0f};
+
+    // Two cascades: cascade 0 holds nothing, cascade 1 holds every page.
+    const auto* camera = m_Services.Views().FindCameraData(m_Services.Views().FindViewDesc(view)->cameraId);
+    ASSERT_NE(camera, nullptr);
+    DepthEmitCascades cascades{};
+    cascades.RenderOriginSector = CameraRenderOriginSector(*camera);
+    cascades.TowardLight = {0.0f, 1.0f, 0.0f};
+    cascades.Count = 2;
+    for (auto& cascade : cascades.Cascades)
+        cascade.CasterPlanes.fill({0.0f, 0.0f, 0.0f, 1.0f});
+    cascades.Cascades[0].CasterPlanes[0] = {0.0f, 0.0f, 0.0f, -1.0f};
+
+    // The first frame asks for the card and the second reads the near page, which the test makes resident.
+    EmitCasters(1, view, cascades);
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EmitCasters(2, view, cascades);
+    ASSERT_EQ(m_Session->Plan.Reads.size(), 1u);
+    const auto ticket = m_Session->Plan.Reads.front();
+    ASSERT_TRUE(m_Runtime->CompleteRead(ticket, kSecondPage));
+    ASSERT_TRUE(m_Runtime->CompleteUpload(ticket, Engine::Renderer::ForestUploadResult::Published));
+
+    // The cull pipeline builds in the background: the cards draw once it is warm.
+    CasterFrame drawn{};
+    uint64 frame = 3;
+    for (constexpr uint64 kLastFrame = 200; frame < kLastFrame && drawn.Cascade1 == 0; ++frame)
+        drawn = EmitCasters(frame, view, cascades);
+    EXPECT_EQ(drawn.Cascade0, 0u);
+    ASSERT_EQ(drawn.Cascade1, 1u);
+    EXPECT_TRUE(drawn.Indirect);
+    ASSERT_TRUE(drawn.Viewer);
+    EXPECT_EQ(drawn.Viewer->x, 0.0f);
+    EXPECT_EQ(drawn.Viewer->y, 1.0f);
+    EXPECT_EQ(drawn.Viewer->z, 0.0f);
+    EXPECT_EQ(drawn.Viewer->w, 0.0f) << "a cascade card faces a direction";
+
+    // Shadow Casting Off: the stand casts nothing.
+    m_Session->CastsShadows = false;
+    const auto off = EmitCasters(frame, view, cascades);
+    EXPECT_EQ(off.Cascade0, 0u);
+    EXPECT_EQ(off.Cascade1, 0u);
 }
 
 } // namespace

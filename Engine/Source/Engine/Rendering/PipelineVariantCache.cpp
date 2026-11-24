@@ -1,4 +1,5 @@
 // PipelineVariantCache implementation — see PipelineVariantCache.h for the
+#include "Engine/Rendering/DepthPassTypes.h"
 // service contract.
 #include "Engine/Rendering/PipelineVariantCache.h"
 
@@ -618,6 +619,27 @@ const PipelineVariantCache::VariantServeUnit* PipelineVariantCache::FindOrReques
     if (m_Materials->IsMaterialBuildContextReady())
         EnqueueVariantCompile(key, /*isDepth=*/true);
     return nullptr;
+}
+
+bool PipelineVariantCache::WarmCascadeVariant(const Material& material, Rendering::VertexAttributeFlags vertexFlags,
+                                               Rendering::PrimitiveTopology topology, Rendering::MaterialKeyword passKeywords,
+                                               Rendering::FrontFace frontFace)
+{
+    const auto cull = material.IsDoubleSided() ? Rendering::CullModeFlags{Rendering::CullModeFlagBits::None}
+                                              : m_Materials->DebugCullMode();
+    const InstancedVariantKey key{&material, vertexFlags, 1u, passKeywords, topology, cull, frontFace, true, true};
+    Rendering::GraphicsPipelineId published;
+    {
+        std::shared_lock lock(m_CacheMutex);
+        if (auto it = m_DepthInstancedVariantCache.find(key); it != m_DepthInstancedVariantCache.end() &&
+            it->second.Current.MaterialVersion == material.GetVersion())
+            published = it->second.Current.PipelineId;
+    }
+    if (published.IsValid())
+        return EnsureConcreteWarm(material, published, Rendering::PipelineFormatKey{.DepthFormat = kCascadeShadowDepthFormat});
+    if (m_Materials->IsMaterialBuildContextReady())
+        EnqueueVariantCompile(key, /*isDepth=*/true);
+    return false;
 }
 
 bool PipelineVariantCache::EnsureConcreteWarm(const Material& material,

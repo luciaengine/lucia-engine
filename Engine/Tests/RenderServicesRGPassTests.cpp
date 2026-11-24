@@ -2147,7 +2147,7 @@ TEST(RenderServicesRGPassTests, AForwardDrawsPrepassHeadIsReplacedWithItWhenTheV
         EXPECT_EQ(f.Rs.GetDepthCommands(f.View, DepthPassType::Prepass).size(), 1u)
             << "emitting the view again replaces its prepass heads with its draws";
 
-        f.Rs.EmitProducerDepthCommandsForView(f.View);
+        f.Rs.EmitProducerDepthCommandsForView(f.View, nullptr, nullptr);
         EXPECT_EQ(f.Rs.GetDepthCommands(f.View, DepthPassType::Prepass).size(), 1u)
             << "re-running the light-space depth producers leaves the camera prepass's heads alone";
     }
@@ -2746,15 +2746,44 @@ class CascadeFitFrame
 
     RenderGraph::RGPass Declare(uint64_t frameIndex, const CascadeFrameData& fit)
     {
-        m_Frame.BeginFrame(frameIndex);
-        m_Fixture.Rs.BeginWorldDrawFrame();
-        m_Fixture.Rs.BuildWorldBatchKeys();
-        m_Feature.CacheFrameData(m_Fixture.View, fit);
+        Begin(frameIndex, fit);
         auto context = m_Fixture.Rs.MakeFeatureDeclareContext(
             m_Frame, m_Fixture.View, 1, m_Resolution, nullptr, {});
         // A cleared cascade without contributors can become cacheable.
         context.ViewNeedsCascades = true;
         return m_Feature.DeclareCascadePass(m_Frame, m_Fixture.Rs, context, 0, "AbortFit.Cascade");
+    }
+
+    // Begins frame `frameIndex` with `fit` cached, as the ShadowMap node does before the depth producers emit.
+    void Begin(uint64_t frameIndex, const CascadeFrameData& fit)
+    {
+        m_Frame.BeginFrame(frameIndex);
+        m_Fixture.Rs.BeginWorldDrawFrame();
+        m_Fixture.Rs.BuildWorldBatchKeys();
+        m_Feature.CacheFrameData(m_Fixture.View, fit);
+    }
+
+    // Declares every cascade of the cached fit through the feature's sun branch (motion plan, then the
+    // cascade passes "Cascade<c>").
+    void DeclareSunCascades(uint32_t cascadeCount)
+    {
+        static constexpr float kTowardGround[3] = {0.0f, -1.0f, 0.0f};
+        const auto context = m_Fixture.Rs.MakeFeatureDeclareContext(
+            m_Frame, m_Fixture.View, cascadeCount, m_Resolution, kTowardGround, {});
+        m_Feature.Declare(m_Frame, m_Fixture.Rs, context);
+    }
+
+    // The cascade pass `cascade` of this frame, or kInvalidId when the feature did not declare it.
+    RenderGraph::RGPassId CascadePass(uint32_t cascade) const
+    {
+        const std::string name = "Cascade" + std::to_string(cascade);
+        const auto& graph = m_Frame.Graph();
+        for (RenderGraph::RGPassId pass = 0; pass < graph.PassCount(); ++pass)
+        {
+            if (name == graph.PassName(pass))
+                return pass;
+        }
+        return RenderGraph::kInvalidId;
     }
 
     ShadowDataGPU BuildSamplingData(const CascadeFrameData& fit)
@@ -2845,6 +2874,178 @@ TEST(RenderServicesRGPassTests, AbortedPreparationKeepsTheRenderedCascadeFit)
         // Aborted B must not replace retained A.
         cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitA), fitA);
         cascadeFrame.Execute();
+    }
+    fixture.Down();
+}
+
+namespace
+{
+// Three cascades with the same orthographic fit, for the per-cascade producer tests.
+CascadeFrameData ThreeCascadeFit(float offsetX)
+{
+    CascadeFrameData fit{};
+    fit.NumCascades = 3;
+    for (uint32_t c = 0; c < fit.NumCascades; ++c)
+    {
+        fit.LightVP[c] = Mathematics::Matrix4x4::Identity();
+        fit.LightVP[c].Data()[12] = offsetX;
+        fit.LightVPRel[c] = fit.LightVP[c];
+        fit.OrthoHalfExtent[c] = 16.0f;
+        fit.DepthSpan[c] = 32.0f;
+    }
+    return fit;
+}
+
+bool InitializeThreeCascadeFeature(RsFixture& fixture, ShadowMapRenderFeature& feature, uint32_t motionCap)
+{
+    CascadedShadowConfig config{};
+    config.NumCascades = 3;
+    config.Resolution = 128;
+    if (!feature.Initialize(fixture.Device.get(), config))
+        return false;
+    feature.SetMotionCap(motionCap);
+    return true;
+}
+} // namespace
+
+// A depth producer's cascade draws read a buffer that a compute pass of the same frame writes. The read goes
+// to the cascade pass that draws them, so the graph orders the compute pass first; the other cascades of the
+// view do not read the buffer and take no edge from it.
+TEST(RenderServicesRGPassTests, ACascadeBufferReadOrdersTheProducingPassBeforeTheCascade)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        ASSERT_TRUE(InitializeThreeCascadeFeature(fixture, feature, 0));
+        const CascadeFrameData fit = ThreeCascadeFit(0.0f);
+        CascadeFitFrame cascades(fixture, frame, feature, 128);
+
+        cascades.Begin(0, fit);
+        BufferDesc desc{};
+        desc.size = 64;
+        desc.usage = static_cast<uint32_t>(BufferUsage::Storage);
+        const RenderGraph::RGBuffer casters = frame.CreateBuffer("CascadeProducer.Casters", desc);
+        ASSERT_TRUE(casters.IsValid());
+        const auto cull = frame.AddComputePass("CascadeProducer.Cull", 0,
+            [casters](RenderGraph::RGPassBuilder& pass) { pass.Write(casters, RenderGraph::RGBufferWrite::Storage); },
+            [](RenderGraph::RGContext&) {});
+        fixture.Rs.EmitCascadeDepthCommand(fixture.View, 1, DrawCommand{});
+        fixture.Rs.EmitCascadeDepthBufferRead(frame, fixture.View, 1, casters, RenderGraph::RGBufferRead::Storage);
+        cascades.DeclareSunCascades(fit.NumCascades);
+
+        const auto& graph = frame.Graph();
+        for (uint32_t c = 0; c < fit.NumCascades; ++c)
+            ASSERT_NE(cascades.CascadePass(c), RenderGraph::kInvalidId) << "cascade " << c;
+        EXPECT_TRUE(graph.HasReadAccess(cascades.CascadePass(1), casters.Id))
+            << "the cascade that draws the producer's casters reads their buffer";
+        EXPECT_FALSE(graph.HasReadAccess(cascades.CascadePass(0), casters.Id));
+        EXPECT_FALSE(graph.HasReadAccess(cascades.CascadePass(2), casters.Id));
+        cascades.Execute();
+        EXPECT_LT(ScheduledIndexOf(graph, cull.Id), ScheduledIndexOf(graph, cascades.CascadePass(1)))
+            << "the compute pass that writes the buffer runs before the cascade that reads it";
+    }
+    fixture.Down();
+}
+
+// A depth producer that draws into one cascade pins only that cascade to render every frame. The other
+// cascades of the view keep their cache: after two equal renders they skip as Cached.
+TEST(RenderServicesRGPassTests, ACascadeWithoutProducerDrawsStaysCached)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        ASSERT_TRUE(InitializeThreeCascadeFeature(fixture, feature, 0));
+        const CascadeFrameData fit = ThreeCascadeFit(0.0f);
+        CascadeFitFrame cascades(fixture, frame, feature, 128);
+
+        for (uint64_t frameIndex = 0; frameIndex < 3; ++frameIndex)
+        {
+            cascades.Begin(frameIndex, fit);
+            fixture.Rs.EmitCascadeDepthCommand(fixture.View, 0, DrawCommand{});
+            cascades.DeclareSunCascades(fit.NumCascades);
+            EXPECT_NE(cascades.CascadePass(0), RenderGraph::kInvalidId)
+                << "a cascade with producer draws renders every frame (frame " << frameIndex << ")";
+            if (frameIndex < 2)
+                EXPECT_NE(cascades.CascadePass(2), RenderGraph::kInvalidId) << "frame " << frameIndex;
+            else
+                EXPECT_EQ(cascades.CascadePass(2), RenderGraph::kInvalidId)
+                    << "a cascade without producer draws is cached once two renders settle it";
+            cascades.Execute();
+        }
+    }
+    fixture.Down();
+}
+
+// A depth producer that draws into the view-wide ShadowCascade stream draws into every cascade, so every
+// cascade renders every frame and none of them settles into the cache.
+TEST(RenderServicesRGPassTests, AViewWideProducerKeepsEveryCascadeRendering)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        ASSERT_TRUE(InitializeThreeCascadeFeature(fixture, feature, 0));
+        const CascadeFrameData fit = ThreeCascadeFit(0.0f);
+        CascadeFitFrame cascades(fixture, frame, feature, 128);
+
+        for (uint64_t frameIndex = 0; frameIndex < 3; ++frameIndex)
+        {
+            cascades.Begin(frameIndex, fit);
+            fixture.Rs.EmitDepthCommand(fixture.View, DepthPassType::ShadowCascade, DrawCommand{});
+            cascades.DeclareSunCascades(fit.NumCascades);
+            for (uint32_t c = 0; c < fit.NumCascades; ++c)
+                EXPECT_NE(cascades.CascadePass(c), RenderGraph::kInvalidId)
+                    << "cascade " << c << " renders on frame " << frameIndex;
+            cascades.Execute();
+        }
+    }
+    fixture.Down();
+}
+
+// The camera-motion budget defers cascades whose retained layer is only stale. A cascade with producer draws
+// renders every frame and is never deferred; a cascade of the same view without them stays deferrable.
+TEST(RenderServicesRGPassTests, TheMotionPlanReadsTheCascadeProducer)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        ASSERT_TRUE(InitializeThreeCascadeFeature(fixture, feature, 1));
+        const CascadeFrameData settledFit = ThreeCascadeFit(0.0f);
+        CascadeFitFrame cascades(fixture, frame, feature, 128);
+
+        for (uint64_t frameIndex = 0; frameIndex < 2; ++frameIndex)
+        {
+            cascades.Begin(frameIndex, settledFit);
+            fixture.Rs.EmitCascadeDepthCommand(fixture.View, 0, DrawCommand{});
+            cascades.DeclareSunCascades(settledFit.NumCascades);
+            cascades.Execute();
+        }
+
+        // Every fit moves: cascades 1 and 2 are stale, and the budget of one renders one of them.
+        const CascadeFrameData movedFit = ThreeCascadeFit(0.25f);
+        cascades.Begin(2, movedFit);
+        fixture.Rs.EmitCascadeDepthCommand(fixture.View, 0, DrawCommand{});
+        cascades.DeclareSunCascades(movedFit.NumCascades);
+        EXPECT_NE(cascades.CascadePass(0), RenderGraph::kInvalidId) << "the producer's cascade is never deferred";
+        const bool deferredOne = cascades.CascadePass(1) == RenderGraph::kInvalidId ||
+                                 cascades.CascadePass(2) == RenderGraph::kInvalidId;
+        EXPECT_TRUE(deferredOne) << "a cascade without producer draws stays deferrable under the motion budget";
+        cascades.Execute();
     }
     fixture.Down();
 }

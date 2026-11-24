@@ -3727,6 +3727,378 @@ TEST(RenderPipelineDeclareTests, CsmNodeCachesFrameDataBeforeTheCascadeArms)
 
 namespace
 {
+// A one-view ShadowMap pipeline under a four-cascade sun, with no mesh instances: the only shadow casters are
+// the draws of the depth producer that a test registers. Every frame declares and executes on one RGFrame.
+class CascadeProducerRig
+{
+  public:
+    explicit CascadeProducerRig(Rendering::IDevice& device) : m_Device(device), m_Pools(&device)
+    {
+        m_Ready = m_Services.Initialize(&device);
+        if (!m_Ready)
+            return;
+        const CameraId cameraId = m_Services.Views().AllocateCamera("CascadeProducerCam");
+        CameraData camera{};
+        camera.proj[0][0] = 1.0f;
+        camera.proj[1][1] = 1.0f;
+        camera.proj[2][2] = 0.001f;
+        camera.proj[2][3] = 1.0f;
+        camera.proj[3][2] = 0.1f;
+        camera.view = Mathematics::Matrix4x4::Identity();
+        camera.viewProj = Mathematics::Matrix4x4::Identity();
+        m_Services.Views().SetCameraData(cameraId, ::GameEngine::Tests::TestCameraWithEye(camera), kTestCameraRanges);
+        m_ViewId = m_Services.Views().AllocateView("CascadeProducerView", cameraId);
+        m_Services.Views().SetViewRenderLayerMask(m_ViewId, GameEngine::Rendering::RenderLayerMask::Default());
+        Rendering::ViewClearConfig clear{};
+        clear.clearColor = true;
+        clear.clearDepth = true;
+        m_Services.Views().SetViewTargets(m_ViewId, 0, 0, 0, clear);
+
+        m_Registry.Register("ShadowMap", [] { return std::make_unique<Nodes::ShadowMapNode>(); }, true);
+        RenderPipelineBlueprint blueprint;
+        blueprint.pipelineName = "CascadeProducer";
+        RenderPipelineBlueprint::Pass pass;
+        pass.id = "CSM";
+        pass.type = "ShadowMap";
+        pass.enabled = true;
+        pass.perView = true;
+        pass.passJson = R"({"id":"CSM","type":"ShadowMap","buffer":"ShadowData"})";
+        blueprint.passes.push_back(pass);
+        m_Instance = std::make_unique<RenderPipelineInstance>(m_Services, m_Registry);
+        m_Instance->SetBlueprint(blueprint);
+        m_Frame = std::make_unique<RenderGraph::RGFrame>(&device, &m_Pools.Persistent, &m_Pools.Transient,
+                                                         &m_Pools.Ring);
+    }
+
+    ~CascadeProducerRig()
+    {
+        m_Producer.Reset();
+        m_Frame.reset();
+        m_Instance.reset();
+        if (m_Ready)
+            m_Services.Shutdown();
+    }
+    CascadeProducerRig(const CascadeProducerRig&) = delete;
+    CascadeProducerRig& operator=(const CascadeProducerRig&) = delete;
+
+    bool Ready() const { return m_Ready; }
+    RenderServices& Services() { return m_Services; }
+    ViewId View() const { return m_ViewId; }
+    RenderGraph::RGFrame& Frame() { return *m_Frame; }
+
+    void SetProducer(RenderServices::DepthEmitFn producer) { m_Producer = m_Services.RegisterDepthEmit(std::move(producer)); }
+
+    // Declares one frame: the batch keys (the first producer emit), the sun, then the pipeline.
+    void Declare()
+    {
+        m_Frame->BeginFrame(m_FrameIndex++);
+        m_Color = m_Frame->ImportPersistentTexture("CascadeProducer.Color", ColorTargetDesc());
+        const RenderGraph::RGTexture depth =
+            m_Frame->ImportPersistentTexture("CascadeProducer.Depth", DepthTargetDesc());
+        m_Services.BeginWorldDrawFrame();
+        m_Services.BuildWorldBatchKeys();
+        ExtractedLight sun{};
+        sun.type = GameEngine::Components::LightType::Directional;
+        sun.castsShadows = 1;
+        sun.castsLight = 1;
+        sun.directionWS[1] = -1.0f;
+        sun.cascadeCount = 4;
+        m_Services.SubmitLight(0u, sun);
+        const std::vector<ViewTargetsRG> targets = {ViewTargetsRG{m_ViewId, m_Color, depth, {}}};
+        const std::vector<Rendering::ViewDesc> views(m_Services.Views().GetViews().begin(),
+                                                     m_Services.Views().GetViews().end());
+        m_Instance->Declare(*m_Frame, targets, views);
+    }
+
+    void Execute()
+    {
+        m_Frame->MarkOutput(m_Color);
+        m_Frame->Execute();
+        m_Device.WaitForIdle();
+    }
+
+    bool DeclaredCascade(uint32_t cascade) const
+    {
+        const std::string name = "Pipeline.CascadeProducer.CSM.View" + std::to_string(static_cast<uint32_t>(m_ViewId)) +
+                                 ".Cascade" + std::to_string(cascade);
+        const auto& graph = m_Frame->Graph();
+        for (RenderGraph::RGPassId pass = 0; pass < graph.PassCount(); ++pass)
+        {
+            if (name == graph.PassName(pass))
+                return true;
+        }
+        return false;
+    }
+
+    // The cascades whose depth pass marked an under-draw in the frame that executed last.
+    uint32_t UnderDrawnCascades()
+    {
+        uint32_t mask = 0;
+        for (uint32_t cascade = 0; cascade < kMaxShadowCascades; ++cascade)
+        {
+            if (m_Services.DepthUnderDraw().Peek(static_cast<uint32_t>(m_ViewId),
+                                                 static_cast<uint8_t>(DepthPassType::ShadowCascade), cascade))
+                mask |= 1u << cascade;
+        }
+        return mask;
+    }
+
+  private:
+    Rendering::IDevice& m_Device;
+    RenderServices m_Services;
+    RenderPipelineNodeRegistry m_Registry;
+    std::unique_ptr<RenderPipelineInstance> m_Instance;
+    FramePools m_Pools;
+    std::unique_ptr<RenderGraph::RGFrame> m_Frame;
+    ScopedSubscription m_Producer;
+    RenderGraph::RGTexture m_Color{};
+    ViewId m_ViewId{};
+    uint64_t m_FrameIndex = 0;
+    bool m_Ready = false;
+};
+
+// What a depth producer saw of one view across a frame's emits.
+struct ProducerSightings
+{
+    uint32_t BatchKeyEmits = 0;
+    uint32_t NodeEmits = 0;
+    uint32_t CascadesOnOtherPassTypes = 0;
+    uint32_t CascadePassesDeclaredBefore = 0;
+    RenderGraph::RGFrame* Frame = nullptr;
+    DepthEmitCascades Cascades{};
+
+    void Record(ViewId view, const DepthEmitContext& context, DepthPassType passType)
+    {
+        if (context.ViewId != view)
+            return;
+        if (passType != DepthPassType::ShadowCascade || !context.Frame)
+        {
+            BatchKeyEmits += passType == DepthPassType::ShadowCascade;
+            CascadesOnOtherPassTypes += context.Cascades != nullptr;
+            return;
+        }
+        ++NodeEmits;
+        Frame = context.Frame;
+        if (context.Cascades)
+            Cascades = *context.Cascades;
+        const auto& graph = context.Frame->Graph();
+        for (RenderGraph::RGPassId pass = 0; pass < graph.PassCount(); ++pass)
+            CascadePassesDeclaredBefore += RGQuery::Matches(graph.PassName(pass), RGQuery::Family{"Cascade"});
+    }
+};
+
+// A test material that no depth variant was compiled for: the recorder finds its depth variant pending.
+Material MakeUncompiledMaterial(const char* name, MaterialAlphaMode alphaMode)
+{
+    Material material = Material::TestFactory::Create(GUID::Generate(), name, 32u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(material, 1u);
+    Material::TestFactory::SetAlphaMode(material, alphaMode);
+    return material;
+}
+
+// A producer that emits `draw` into sun cascade `cascade` of `view`, and nothing else.
+RenderServices::DepthEmitFn EmitIntoCascade(ViewId view, uint32_t cascade, DrawCommand draw)
+{
+    return [view, cascade, draw](DepthEmitContext& context, DepthPassType passType)
+    {
+        if (context.ViewId == view && passType == DepthPassType::ShadowCascade && context.Cascades &&
+            cascade < context.Cascades->Count)
+            context.Services->EmitCascadeDepthCommand(context.ViewId, cascade, draw);
+    };
+}
+} // namespace
+
+// A view whose only shadow caster is a depth producer that draws into one cascade still needs its cascades:
+// the cascade passes declare, though the view has no shadow-casting mesh.
+TEST(RenderPipelineDeclareTests, ACascadeProducerAloneDeclaresTheCascadePasses)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    CascadeProducerRig rig(*device);
+    ASSERT_TRUE(rig.Ready());
+    rig.SetProducer(EmitIntoCascade(rig.View(), 1, DrawCommand{}));
+    rig.Declare();
+    EXPECT_TRUE(rig.Services().ViewNeedsShadowCascadePasses(rig.View()));
+    for (uint32_t cascade = 0; cascade < 4; ++cascade)
+        EXPECT_TRUE(rig.DeclaredCascade(cascade)) << "cascade " << cascade;
+    rig.Execute();
+}
+
+// The ShadowMap node runs the depth producers after it fits the cascades and before it declares them: the
+// producer gets the frame and this frame's fit, and no cascade pass exists yet. The emit that runs while the
+// batch keys are built gets neither, and the local-light pass types get no cascades.
+TEST(RenderPipelineDeclareTests, TheCascadeProducerSeesTheFrameAndTheFitBeforeTheCascadesDeclare)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    CascadeProducerRig rig(*device);
+    ASSERT_TRUE(rig.Ready());
+    const ViewId view = rig.View();
+    ProducerSightings seen;
+    rig.SetProducer([&seen, view](DepthEmitContext& context, DepthPassType passType)
+                    { seen.Record(view, context, passType); });
+    rig.Declare();
+
+    EXPECT_EQ(seen.BatchKeyEmits, 1u);
+    ASSERT_EQ(seen.NodeEmits, 1u);
+    EXPECT_EQ(seen.CascadesOnOtherPassTypes, 0u);
+    EXPECT_EQ(seen.Frame, &rig.Frame());
+    EXPECT_EQ(seen.CascadePassesDeclaredBefore, 0u) << "the producer runs before the first cascade declares";
+    const auto* feature = rig.Services().GetFeature<ShadowMapRenderFeature>();
+    ASSERT_NE(feature, nullptr);
+    const CascadeFrameData* fit = feature->GetCachedFrameData(view);
+    ASSERT_NE(fit, nullptr);
+    ASSERT_EQ(seen.Cascades.Count, fit->NumCascades);
+    EXPECT_EQ(seen.Cascades.Resolution, feature->GetConfig().Resolution);
+    EXPECT_EQ(seen.Cascades.RenderOriginSector,
+              (Mathematics::Vector3Int{fit->RenderOriginSector[0], fit->RenderOriginSector[1], fit->RenderOriginSector[2]}));
+    for (uint32_t cascade = 0; cascade < seen.Cascades.Count; ++cascade)
+    {
+        const DepthEmitCascade& described = seen.Cascades.Cascades[cascade];
+        EXPECT_EQ(std::memcmp(described.LightViewProjectionRel.Data(), fit->LightVPRel[cascade].Data(),
+                              16 * sizeof(float)), 0) << "cascade " << cascade;
+        EXPECT_EQ(described.OrthoHalfExtent, fit->OrthoHalfExtent[cascade]);
+        EXPECT_GT(described.CasterPlanes[4].w, 1.0e37f) << "the near plane passes every caster";
+    }
+    // The sun shines down (directionWS -Y), so the light is up.
+    EXPECT_NEAR(seen.Cascades.TowardLight.y, 1.0f, 1e-4f);
+    rig.Execute();
+}
+
+// A draw that a producer emits into one cascade draws in that cascade's pass only. The draw's material has no
+// depth variant yet, so the pass that prepares it marks an under-draw: the mark shows which pass took it.
+TEST(RenderPipelineDeclareTests, ACascadeDrawLandsOnlyInItsCascade)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    const Material material = MakeUncompiledMaterial("CascadeTwoCaster", MaterialAlphaMode::Opaque);
+    CascadeProducerRig rig(*device);
+    ASSERT_TRUE(rig.Ready());
+    DrawCommand draw{};
+    draw.Material = &material;
+    draw.IndexCount = 3;
+    rig.SetProducer(EmitIntoCascade(rig.View(), 2, draw));
+    rig.Declare();
+    rig.Execute();
+    EXPECT_EQ(rig.UnderDrawnCascades(), 1u << 2) << "only cascade 2 prepares the draw";
+}
+
+// A producer draw that names a material and no pipeline draws through the material's depth variant. While
+// that variant is not compiled the cascade marks an under-draw, so the layer renders again when it is.
+TEST(RenderPipelineDeclareTests, AMaterialContributorWithAPendingDepthVariantMarksUnderDraw)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    const Material material = MakeUncompiledMaterial("PendingCaster", MaterialAlphaMode::Mask);
+    CascadeProducerRig rig(*device);
+    ASSERT_TRUE(rig.Ready());
+    DrawCommand draw{};
+    draw.Material = &material;
+    draw.IndexCount = 3;
+    rig.SetProducer(EmitIntoCascade(rig.View(), 0, draw));
+    rig.Declare();
+    rig.Execute();
+    const DepthUnderDrawReasonCounts reasons =
+        rig.Services().DepthUnderDraw().ConsumeCascadeReasons(static_cast<uint32_t>(rig.View()));
+    EXPECT_EQ(FormatDepthUnderDrawReasons(reasons), "depth-variant 1");
+}
+
+// An opaque depth pass cannot draw a blended material. A producer draw with one is skipped: it asks for no
+// depth variant and marks no under-draw, which would make the cascade wait for a variant that never comes.
+TEST(RenderPipelineDeclareTests, ABlendMaterialContributorIsRefusedInADepthPass)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    const Material material = MakeUncompiledMaterial("BlendedCaster", MaterialAlphaMode::Blend);
+    CascadeProducerRig rig(*device);
+    ASSERT_TRUE(rig.Ready());
+    DrawCommand draw{};
+    draw.Material = &material;
+    draw.IndexCount = 3;
+    rig.SetProducer(EmitIntoCascade(rig.View(), 0, draw));
+    rig.Declare();
+    EXPECT_TRUE(rig.DeclaredCascade(0));
+    rig.Execute();
+    EXPECT_EQ(rig.UnderDrawnCascades(), 0u);
+}
+
+// A producer's material draw takes the depth head that the entity batches of its material take in the same
+// pass, so it uses the variants that the material prewarm builds: the stripped depth layout unless the head
+// reads more, the coverage fragment for Mask, the transmission colour in the glass tint pass, and the relief
+// depth in the camera prepass.
+TEST(RenderPipelineDeclareTests, AMaterialContributorTakesTheEntityDepthHead)
+{
+    using Rendering::MaterialKeyword;
+    using Rendering::VertexAttributeFlags;
+    constexpr VertexAttributeFlags kDepthLayout =
+        VertexAttributeFlags::HasPosition | VertexAttributeFlags::HasUV0;
+    constexpr VertexAttributeFlags kColourLayout = kDepthLayout | VertexAttributeFlags::HasNormal |
+                                                   VertexAttributeFlags::HasTangent | VertexAttributeFlags::HasUV1 |
+                                                   VertexAttributeFlags::HasColor;
+
+    const Material opaque = MakeUncompiledMaterial("OpaqueCaster", MaterialAlphaMode::Opaque);
+    const ContributorDepthHead opaqueHead = ChooseContributorDepthHead(
+        opaque, DepthPassType::ShadowCascade, MaterialKeyword::Instanced, kDepthLayout, kColourLayout);
+    EXPECT_EQ(opaqueHead.Head.Keywords, MaterialKeyword::Instanced);
+    EXPECT_FALSE(opaqueHead.Head.ComposesFragment);
+    EXPECT_FALSE(opaqueHead.Head.UseSharedDepth) << "the shared depth pipeline draws GPU-scene instances only";
+    EXPECT_EQ(opaqueHead.VertexFlags, kDepthLayout) << "an opaque head binds the stripped depth layout";
+    EXPECT_FALSE(opaqueHead.ReadsTextures);
+
+    const Material masked = MakeUncompiledMaterial("MaskedCaster", MaterialAlphaMode::Mask);
+    const ContributorDepthHead maskedHead = ChooseContributorDepthHead(
+        masked, DepthPassType::ShadowCascade, MaterialKeyword::Instanced, kDepthLayout, kColourLayout);
+    EXPECT_EQ(maskedHead.Head.Keywords, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment);
+    EXPECT_TRUE(maskedHead.Head.ComposesFragment);
+    EXPECT_EQ(maskedHead.VertexFlags, kDepthLayout | VertexAttributeFlags::HasColor)
+        << "Mask coverage reads vertex alpha as the colour pass does";
+    EXPECT_TRUE(maskedHead.ReadsTextures);
+
+    Material glass = MakeUncompiledMaterial("GlassCaster", MaterialAlphaMode::Opaque);
+    {
+        Rendering::ShaderVariantKey key{};
+        key.materialKeywords = MaterialKeyword::Transmission;
+        Material::TestFactory::SetVariantKey(glass, key);
+    }
+    const ContributorDepthHead tintHead = ChooseContributorDepthHead(
+        glass, DepthPassType::TransmittanceCascade, MaterialKeyword::Instanced, kDepthLayout, kColourLayout);
+    EXPECT_EQ(tintHead.Head.Keywords, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyTransmissionColor);
+    EXPECT_TRUE(tintHead.Head.ComposesFragment);
+
+    Material relief = MakeUncompiledMaterial("ReliefCaster", MaterialAlphaMode::Opaque);
+    {
+        Rendering::ShaderVariantKey key{};
+        key.materialKeywords = MaterialKeyword::Parallax;
+        Material::TestFactory::SetVariantKey(relief, key);
+    }
+    const ContributorDepthHead prepassHead = ChooseContributorDepthHead(
+        relief, DepthPassType::Prepass, MaterialKeyword::Instanced, kDepthLayout, kColourLayout);
+    if (WritesReliefDepth(MaterialKeyword::Parallax) && !Rendering::IsCompatShaderProfile())
+        EXPECT_EQ(prepassHead.Head.Keywords, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment |
+                                                 MaterialKeyword::ParallaxDepthOffset);
+}
+
+// A virtual sun page cannot draw a depth producer's cascade draws, so a view with such draws keeps its sun
+// pages on the conventional cascades. The page gate reads the cascade streams too, not only the view-wide one.
+TEST(RenderPipelineDeclareTests, AVirtualSunPageGateSeesTheCascadeProducerDraws)
+{
+    ViewRegistry views;
+    const ViewId view = 7;
+    EXPECT_FALSE(HasProducerDepthCommands(views, view, DepthPassType::ShadowCascade));
+    views.PerView(view).CascadeDepthCommands[3].push_back(DrawCommand{});
+    EXPECT_TRUE(HasProducerDepthCommands(views, view, DepthPassType::ShadowCascade))
+        << "a draw in one cascade stream sends the sun pages to the conventional cascades";
+    EXPECT_FALSE(HasProducerDepthCommands(views, view, DepthPassType::SpotShadow))
+        << "a sun cascade draw does not reach the spot pages";
+}
+
+namespace
+{
 // What one frame of a one-view ShadowMap pipeline fitted and published.
 struct SceneFitFrame
 {

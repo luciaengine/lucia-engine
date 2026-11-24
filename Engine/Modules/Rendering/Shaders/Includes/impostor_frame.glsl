@@ -20,6 +20,13 @@ vec3 GE_ImpostorFrameDirection(vec2 frame, vec4 impostorAtlas)
     return GE_ImpostorDecode(frame / max(impostorAtlas.x - 1.0, 1.0), impostorAtlas);
 }
 
+// The direction from a card center toward its viewer, not normalized. Both are relative to the
+// render origin. viewer is a point (w = 1) or the direction toward the viewer (w = 0).
+vec3 GE_ImpostorTowardViewer(vec4 viewer, vec3 centerRel)
+{
+    return viewer.w > 0.5 ? viewer.xyz - centerRel : viewer.xyz;
+}
+
 // Right and up of a camera that looks along -direction.
 void GE_ImpostorFrameAxes(vec3 direction, out vec3 right, out vec3 up)
 {

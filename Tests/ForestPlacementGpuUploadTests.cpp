@@ -1,11 +1,11 @@
 // The forest slot uploads on a headless device: a copy that never submits is abandoned and its page
-// reads again, a submitted copy publishes its slot only after its queue fence, and an outstanding
-// copy blocks only its own ticket. Device-gated: each test skips without a Vulkan device.
+// reads again, a submitted copy publishes its slot only after its queue fence, an outstanding
+// copy blocks only its own ticket, and an unknown read fence drops the shadow demand.
+// Device-gated: each test skips without a Vulkan device.
 
 #include "PackedPlacementTestArchive.h"
 
 #include "Assets/AssetManager.h"
-
 #include "ForestPlacementGpuUploads.h"
 #include "ForestPlacementRenderState.h"
 #include "ForestPlacementRuntime.h"
@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -124,7 +125,7 @@ protected:
     ForestPageTicket ReadFirstPage()
     {
         ForestPlacementFrame plan;
-        EXPECT_TRUE(m_Runtime->Prepare(m_View, 1, 0, plan));
+        EXPECT_TRUE(m_Runtime->Prepare(m_View, 1, 0, {}, plan));
         EXPECT_EQ(plan.Reads.size(), 1u);
         const ForestPageTicket ticket = plan.Reads.front();
         EXPECT_EQ(ticket.Page, 0u);
@@ -154,7 +155,7 @@ TEST_F(ForestPlacementGpuUploadTest, AnUnsubmittedCopyIsAbandonedAndItsPageReads
     graph.DiscardRecordedPasses();
     EXPECT_FALSE(m_Runtime->CanRecordUpload(ticket));
     ForestPlacementFrame plan;
-    ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, plan));
+    ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, {}, plan));
     EXPECT_TRUE(plan.DetailedDraws.empty());
     ASSERT_EQ(plan.Reads.size(), 1u);
     EXPECT_EQ(plan.Reads.front().Page, 0u);
@@ -188,9 +189,64 @@ TEST_F(ForestPlacementGpuUploadTest, ASubmittedCopyPublishesItsSlotAfterItsFence
     EXPECT_EQ(uploader.DrainCompleted(*m_Device), 1u);
     EXPECT_EQ(uploader.DrainCompleted(*m_Device), 0u);
     ForestPlacementFrame plan;
-    ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, plan));
+    ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, {}, plan));
     ASSERT_EQ(plan.DetailedDraws.size(), 1u);
     EXPECT_EQ(plan.DetailedDraws.front().Ticket, ticket);
+}
+
+TEST_F(ForestPlacementGpuUploadTest, AnUnknownReadFenceDropsShadowDemand)
+{
+    std::string error;
+    const auto runtime = ForestPlacementRuntime::Open(m_Scratch.Path() / "gpu.geforest",
+                                                      {.DetailSlots = 1, .ReadsPerFrame = 1, .ShadowSlots = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    const BufferDesc desc{.size = runtime->SlotCount() * kPlacementSlotBytes,
+                          .usage = static_cast<uint32>(BufferUsage::Storage | BufferUsage::TransferDst),
+                          .memoryUsage = BufferMemoryUsage::DeviceLocal,
+                          .debugName = "ForestPlacementGpuUploadTest.ShadowSlots"};
+    const BufferHandle slots = m_Device->CreateBuffer(desc);
+    ASSERT_TRUE(slots.IsValid());
+    JobSystem::WorkStealingThreadPool jobs(0);
+    AssetManager assets;
+    ASSERT_TRUE(assets.Initialize(&jobs));
+    FramePools pools(m_Device.get());
+    RGFrame graph(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    // This graph never submits, so its submission token is unknown.
+    RGFrame unsubmitted(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    // The camera sees no page; cascade 0 wants page 0.
+    ForestPlacementView blind = m_View;
+    blind.EyeRelativePlanes[0] = {0, 0, -1, -400};
+    constexpr std::array<ForestShadowPage, 1> light{{{0, 1}}};
+    ForestPlacementFrame plan;
+    {
+        ForestPlacementRenderState state(runtime, slots, runtime->SlotCount());
+        // Frame 1 reads page 0, frame 2 copies it into its slot.
+        for (uint64 frame = 0; frame < 2; ++frame)
+        {
+            ASSERT_TRUE(m_Device->BeginFrame());
+            graph.BeginFrame(frame);
+            ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, blind, plan, light));
+            graph.Execute();
+            state.Finish(graph, true);
+            m_Device->WaitForIdle();
+        }
+        ASSERT_TRUE(m_Device->BeginFrame());
+        unsubmitted.BeginFrame(2);
+        ASSERT_TRUE(state.Prepare(assets, *m_Device, unsubmitted, blind, plan, light));
+        ASSERT_EQ(plan.ShadowDraws.size(), 1u);
+        state.Finish(unsubmitted, true);
+        unsubmitted.DiscardRecordedPasses();
+
+        ASSERT_TRUE(m_Device->BeginFrame());
+        unsubmitted.BeginFrame(3);
+        ASSERT_TRUE(state.Prepare(assets, *m_Device, unsubmitted, blind, plan, light));
+        EXPECT_TRUE(plan.ShadowDraws.empty());
+        EXPECT_TRUE(plan.Reads.empty());
+        state.Finish(unsubmitted, false);
+        unsubmitted.DiscardRecordedPasses();
+    }
+    m_Device->WaitForIdle();
+    m_Device->DestroyBuffer(slots);
 }
 
 TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknownReadFence)
@@ -206,7 +262,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
 
     ASSERT_TRUE(m_Device->BeginFrame());
     graph.BeginFrame(0);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan, {}));
     ASSERT_EQ(plan.Reads.size(), 1u);
     const ForestPageTicket page = plan.Reads.front();
     state.Finish(graph, false);
@@ -215,7 +271,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
     ASSERT_TRUE(m_Runtime->CompleteUpload(page, ForestUploadResult::Published));
 
     graph.BeginFrame(1);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan, {}));
     ASSERT_EQ(plan.DetailedDraws.size(), 1u);
     ASSERT_FALSE(graph.SubmissionToken().IsValid());
     state.Finish(graph, true);
@@ -223,7 +279,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
 
     ASSERT_TRUE(m_Device->BeginFrame());
     graph.BeginFrame(2);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan, {}));
     EXPECT_TRUE(plan.DetailedDraws.empty());
     graph.AddPass("Forest.Overview", 0,
                   [](RGPassBuilder& pass) { pass.PreventCulling(); }, [](RGContext&) {});
@@ -238,7 +294,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
     ForestPlacementView secondOnly = m_View;
     secondOnly.EyeRelativePlanes[0] = {1, 0, 0, -40};
     graph.BeginFrame(3);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, secondOnly, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, secondOnly, plan, {}));
     EXPECT_TRUE(plan.WantsDetails);
     EXPECT_TRUE(plan.DetailedDraws.empty());
     EXPECT_TRUE(plan.Reads.empty()) << "a pending fence must still protect the occupied slot";
@@ -249,7 +305,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
 
     ASSERT_TRUE(m_Device->WaitGpuSyncToken(completion));
     graph.BeginFrame(4);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan, {}));
     ASSERT_EQ(plan.DetailedDraws.size(), 1u);
     EXPECT_EQ(plan.DetailedDraws.front().Ticket, page);
     EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
@@ -290,7 +346,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedGraphicsQueueRetiresAnUnreadableU
     EXPECT_EQ(uploader.DrainCompleted(*m_Device), 0u);
     EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
     ForestPlacementFrame plan;
-    ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, plan));
+    ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, {}, plan));
     ASSERT_EQ(plan.DetailedDraws.size(), 1u);
     EXPECT_EQ(plan.DetailedDraws.front().Ticket, ticket);
 }

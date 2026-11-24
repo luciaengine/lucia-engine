@@ -38,22 +38,37 @@ bool RootsInsideFrustum(const ForestPlacementRootBounds& roots, const Mathematic
 
 } // namespace
 
-bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, const ForestPlacementFrame& plan,
-    const Rendering::CameraData& camera, uint32 slotCount, float rootRadius,
+std::optional<ForestPlacementGpuViewSource> MakeForestPlacementGpuViewSource(const Rendering::CameraData& camera)
+{
+    if (camera.renderOriginSector[3] == 0)
+        return std::nullopt;
+    ForestPlacementGpuViewSource source{camera.viewProjRel, {}, CameraEyeRelativeToOrigin(camera),
+                                        CameraRenderOriginSector(camera)};
+    Rendering::ExtractFrustumPlanes(camera.viewProjRel, source.Planes.data());
+    return source;
+}
+
+ForestPlacementGpuViewSource MakeForestShadowGpuViewSource(const DepthEmitCascades& cascades, uint32 cascade)
+{
+    const DepthEmitCascade& fit = cascades.Cascades[cascade];
+    return {fit.LightViewProjectionRel, fit.CasterPlanes, {}, cascades.RenderOriginSector};
+}
+
+bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, std::span<const ForestDetailDraw> draws,
+    const ForestPlacementGpuViewSource& source, uint32 slotCount, float rootRadius,
     const Mathematics::Vector4& atlasBounds, ForestPlacementGpuView& view,
     std::vector<ForestPlacementGpuPage>& pages, std::span<const ForestMeshOwnedPlacement> meshOwned)
 {
     constexpr uint32 kSlotSize = PageStreaming::PackedPlacementStore::kPlacementsPerPage;
     pages.clear();
-    if (camera.renderOriginSector[3] == 0 || plan.DetailedDraws.size() > slotCount ||
-        !std::isfinite(rootRadius) || rootRadius <= 0)
+    if (draws.size() > slotCount || !std::isfinite(rootRadius) || rootRadius <= 0)
         return false;
 
     const auto archive = runtime.Store().Pages();
-    const auto origin = Mathematics::WorldPosition::FromSector(CameraRenderOriginSector(camera), {});
-    Rendering::ExtractFrustumPlanes(camera.viewProjRel, view.Planes.data());
-    pages.reserve(plan.DetailedDraws.size());
-    for (const auto& detail : plan.DetailedDraws)
+    const auto origin = Mathematics::WorldPosition::FromSector(source.Sector, {});
+    view.Planes = source.Planes;
+    pages.reserve(draws.size());
+    for (const auto& detail : draws)
     {
         const uint32 page = detail.Ticket.Page;
         if (page >= archive.size() || detail.Ticket.Slot >= slotCount ||
@@ -74,21 +89,20 @@ bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, const 
         const uint32 inside = roots && RootsInsideFrustum(*roots, local, view.Planes) ? 1u : 0u;
         pages.push_back({{detail.FirstPlacement, detail.PlacementCount, inside, 0}, {local, 0.0f}, {}});
     }
-    // EmitDraws keeps detail pages in page order. Resolve a mesh claim against
+    // Draws with mesh claims are in page order. Resolve a mesh claim against
     // its complete ticket so an old mesh cannot suppress a replacement slot.
     for (const auto& owner : meshOwned)
     {
-        const auto found = std::ranges::lower_bound(plan.DetailedDraws, owner.Ticket.Page, {},
+        const auto found = std::ranges::lower_bound(draws, owner.Ticket.Page, {},
             [](const ForestDetailDraw& draw) { return draw.Ticket.Page; });
-        if (found == plan.DetailedDraws.end() || found->Ticket != owner.Ticket ||
+        if (found == draws.end() || found->Ticket != owner.Ticket ||
             owner.LocalPlacement >= found->PlacementCount)
             continue;
-        auto& page = pages[static_cast<size_t>(found - plan.DetailedDraws.begin())];
+        auto& page = pages[static_cast<size_t>(found - draws.begin())];
         page.MeshOwned[owner.LocalPlacement / 32] |= 1u << (owner.LocalPlacement % 32);
     }
-    const Mathematics::Vector3 eye = CameraEyeRelativeToOrigin(camera);
-    view.ViewProjectionRelative = camera.viewProjRel;
-    view.EyeRelativeAndRadius = {eye, rootRadius};
+    view.ViewProjectionRelative = source.ViewProjectionRelative;
+    view.EyeRelativeAndRadius = {source.EyeRelative, rootRadius};
     view.AtlasBounds = atlasBounds;
     return true;
 }

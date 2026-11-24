@@ -3,7 +3,9 @@
 // rows. Device-gated: each test skips without a Vulkan device.
 #include "ForestPlacementCull.h"
 #include "ForestPlacementGpuData.h"
+#include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
+#include "Mathematics/MatrixOps.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
@@ -202,6 +204,32 @@ TEST_F(ForestPlacementCullTest, EachFieldOfAPlacementPlacesItsRoot)
     m_Device->UpdateBuffer(m_Slots, 0, placements.size() * sizeof(PackedPlacement), placements.data());
     const auto result = Run({Page(0, 6, false)}, 0, MakeView({0, 0, -1, 3.0f}, {0, -1, 0, 2.5f}));
     EXPECT_EQ(result.Rows, (Rows{{0, 0}, {1, 0}, {3, 0}, {5, 0}}));
+}
+
+TEST_F(ForestPlacementCullTest, ShadowCullUsesTheCascadeCasterPlanes)
+{
+    using namespace Mathematics;
+    // The light at x = 2.5 m looks along +X and covers 1 m on each side.
+    const std::vector<PackedPlacement> placements{
+        {0, 0, 0, 0, 0},     // x = 0: nearer the light than its near plane, kept
+        {300, 0, 0, 0, 0},   // x = 3 m: kept
+        {300, 0, 500, 0, 0}, // 5 m high: outside the caster footprint, culled
+    };
+    m_Device->UpdateBuffer(m_Slots, 0, placements.size() * sizeof(PackedPlacement), placements.data());
+    const Matrix4x4 lightView = MakeLookAtLH({2.5f, 0, 0}, {3.5f, 0, 0}, {0, 1, 0});
+    DepthEmitCascades cascades{};
+    cascades.Count = 1;
+    cascades.Cascades[0].LightViewProjectionRel = MakeOrthographicLH_ZO_ReverseZ(-1, 1, -1, 1, 0.1f, 20.0f) * lightView;
+    ShadowMapRenderFeature::BuildCascadeCasterCullPlanes(cascades.Cascades[0].LightViewProjectionRel,
+                                                         cascades.Cascades[0].CasterPlanes.data());
+
+    const auto source = MakeForestShadowGpuViewSource(cascades, 0);
+    ForestPlacementGpuView view{};
+    view.ViewProjectionRelative = source.ViewProjectionRelative;
+    view.Planes = source.Planes;
+    view.EyeRelativeAndRadius = {0, 0, 0, 0.1f};
+    const auto result = Run({Page(0, 3, false)}, 0, view);
+    EXPECT_EQ(result.Rows, (Rows{{0, 0}, {1, 0}}));
 }
 
 } // namespace

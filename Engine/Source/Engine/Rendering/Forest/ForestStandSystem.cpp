@@ -8,6 +8,7 @@
 #include "ForestPlacementFeature.h"
 #include "ForestPlacementRuntime.h"
 #include "ForestPlacementSession.h"
+#include "ForestStandDrawProducer.h"
 #include "ForestStandDraws.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -37,12 +38,16 @@ struct ForestStandResidency
     uint32 ReadsPerFrame;
     // The cap on ForestStand::NearMeshBudget.
     uint32 NearMeshCap;
+    // Pages resident for sun cascades alone.
+    uint32 ShadowSlots;
+    uint32 ShadowMeshCap;
 };
 
 constexpr ForestStandResidency kCompatibilityResidency{
-    .DetailSlots = 128, .TransitionSlots = 4, .ReadsPerFrame = 4, .NearMeshCap = 128};
+    .DetailSlots = 128, .TransitionSlots = 4, .ReadsPerFrame = 4, .NearMeshCap = 128, .ShadowSlots = 32, .ShadowMeshCap = 32};
 constexpr ForestStandResidency kDefaultResidency{.DetailSlots = 512, .TransitionSlots = 0, .ReadsPerFrame = 12,
-                                                  .NearMeshCap = Components::ForestStand::kMaxNearMeshBudget};
+                                                  .NearMeshCap = Components::ForestStand::kMaxNearMeshBudget,
+                                                  .ShadowSlots = 128, .ShadowMeshCap = 64};
 
 const ForestStandResidency& ResidencyFor(const Rendering::RendererProfile& profile)
 {
@@ -170,7 +175,7 @@ void ForestStandSystem::CheckOverviews(ECS::World& world)
         stand.Status.DetailBudget.reset();
         const auto& session = stand.Details;
         const auto epoch = m_RenderServices->Spine().WorldFrameEpoch();
-        if (session && session->DetailPlanEpoch && epoch - *session->DetailPlanEpoch <= 1 &&
+        if (session && session->DrawsColor && session->DetailPlanEpoch && epoch - *session->DetailPlanEpoch <= 1 &&
             session->Plan.DetailBudget.NearestOmitted)
         {
             stand.Status.DetailBudget = session->Plan.DetailBudget;
@@ -195,15 +200,19 @@ void ForestStandSystem::CheckOverviews(ECS::World& world)
     }
 }
 
-void ForestStandSystem::ApplyDetailSettings(Stand& stand, const Components::ForestStand& settings) const
+void ForestStandSystem::ApplyDetailSettings(Stand& stand, const Components::ForestStand& settings,
+                                            Components::ShadowCasting shadowCasting) const
 {
     if (!stand.Details)
         return;
     if (stand.Details->DetailDistance != settings.DetailDistance)
         stand.Details->DetailPlanEpoch.reset();
     stand.Details->DetailDistance = settings.DetailDistance;
-    stand.Details->NearBudget =
-        std::min(settings.NearMeshBudget, ResidencyFor(m_RenderServices->GetProfile()).NearMeshCap);
+    const auto& residency = ResidencyFor(m_RenderServices->GetProfile());
+    stand.Details->NearBudget = std::min(settings.NearMeshBudget, residency.NearMeshCap);
+    stand.Details->ShadowMeshBudget = std::min(settings.NearMeshBudget, residency.ShadowMeshCap);
+    stand.Details->CastsShadows = shadowCasting != Components::ShadowCasting::Off;
+    stand.Details->DrawsColor = shadowCasting != Components::ShadowCasting::ShadowsOnly;
 }
 
 bool ForestStandSystem::HasStandChanges(ECS::World& world)
@@ -246,6 +255,7 @@ void ForestStandSystem::Reconcile(ECS::World& world)
     for (const auto& [entity, settings] : found)
     {
         const auto* renderer = world.GetComponent<Components::MeshRenderer>(entity);
+        const auto shadowCasting = renderer ? renderer->shadowCasting : Components::ShadowCasting::On;
         StandSource source{.Archive = settings.Archive.ToGuid(),
                            .TreeModel = settings.TreeModel.ToGuid(),
                            .Detail = DetailModeOf(settings)};
@@ -258,12 +268,13 @@ void ForestStandSystem::Reconcile(ECS::World& world)
 
         if (auto* kept = m_Stands.Find(entity); kept && kept->Source == source)
         {
-            ApplyDetailSettings(*kept, settings);
+            ApplyDetailSettings(*kept, settings, shadowCasting);
             stands.InsertOrAssign(entity, std::move(*kept));
             continue;
         }
         Stand stand{.Source = source};
         Attach(world, entity, settings, stand);
+        ApplyDetailSettings(stand, settings, shadowCasting);
         stand.Status.Attached = static_cast<bool>(stand.Registration);
         stand.Status.Problem = stand.AttachProblem;
         if (!stand.AttachProblem.empty())
@@ -310,6 +321,7 @@ void ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandle entity, cons
         desc.TransitionSlots = residency.TransitionSlots;
         desc.ReadsPerFrame = residency.ReadsPerFrame;
         desc.KeepCpuCopy = source.Detail == DetailMode::CardsAndNearMeshes;
+        desc.ShadowSlots = residency.ShadowSlots;
     }
     std::string error;
     auto placements = ForestPlacementRuntime::Open(m_Assets->ResolveAssetPath(archive.Path), desc, error);
@@ -339,6 +351,9 @@ void ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandle entity, cons
         problem = "could not register its draws.";
         return;
     }
+    if (stand.Details)
+        stand.ShadowRegistration = RegisterForestShadowCasters(*m_RenderServices, worldId,
+                                                               Rendering::RenderLayerMask::Default(), stand.Details);
     Logger::Log::Info("Forest stand {} attached with {} pages and {} placements", DescribeEntity(world, entity),
                       pageCount, placementCount);
 }

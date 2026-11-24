@@ -187,7 +187,7 @@ Rendering::RenderGraph::RGPass DeclareCascadeDepth(
     return frame.AddPass(
         name, Rendering::PassPhase::kEarlySetup,
         [preparedDepth, ownsPreparation = sharedDepth == nullptr, publishAfterSubmission, publishContents, restored, &context,
-         viewId, cascadeIndex, load, target, layer, servicesPointer]
+         &frame, viewId, cascadeIndex, load, target, layer, servicesPointer]
         (RenderGraph::RGPassBuilder& builder)
         {
             if (ownsPreparation)
@@ -218,6 +218,15 @@ Rendering::RenderGraph::RGPass DeclareCascadeDepth(
                     "registered but no DrawStreamOrdering value is published — declare "
                     "ScheduleWorldBucketerDispatches(frame) BEFORE the cascade passes",
                     viewId, cascadeIndex);
+            // The buffers that this cascade's producer draws read: the edge from the pass that writes them.
+            if (const auto* views = servicesPointer->Views().FindPerView(viewId))
+            {
+                for (const auto& bufferRead : views->CascadeDepthBufferReads)
+                {
+                    if (bufferRead.Cascade == cascadeIndex && bufferRead.For.IsFor(frame))
+                        builder.Read(bufferRead.Buffer, bufferRead.Access);
+                }
+            }
 
             RenderGraph::RGAttachmentOps ops{};
             ops.Load = load;
@@ -387,9 +396,7 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
     const uint32_t numCascades =
         std::min({frameData->NumCascades, ctx.CascadeCount, kMaxShadowCascades});
     const uint32_t res = GetConfig().Resolution;
-    const bool cascadeContrib = rs.HasDepthCommands(viewId, DepthPassType::ShadowCascade);
-    const bool tintContrib =
-        cascadeContrib || rs.HasDepthCommands(viewId, DepthPassType::TransmittanceCascade);
+    const bool tintStreamContrib = rs.HasDepthCommands(viewId, DepthPassType::TransmittanceCascade);
     const uint64_t depthPhys = static_cast<uint64_t>(frame.PhysicalTexture(shadowArr));
     const uint64_t tintPhys =
         tintDeclares ? static_cast<uint64_t>(frame.PhysicalTexture(tintArr)) : 0;
@@ -420,6 +427,8 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
     uint32_t cameraMotionMask = 0u;
     for (uint32_t c = 0; c < numCascades; ++c)
     {
+        const bool cascadeContrib = rs.HasCascadeDepthCommands(viewId, c);
+        const bool tintContrib = cascadeContrib || tintStreamContrib;
         const CascadeRenderInputs depthIn = BuildCascadeCacheInputs(
             rs, viewId, *frameData, c, depthPhys, res, cascadeContrib, m_FitFreezeEnabled,
             m_CascadeShadowCache, CascadeShadowCache::kDepthSlotBase + c,
@@ -630,7 +639,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     const CascadeRenderInputs cacheIn = BuildCascadeCacheInputs(
         rs, viewId, *frameData, cascadeIndex,
         static_cast<uint64_t>(frame.PhysicalTexture(shadowArr)), res,
-        rs.HasDepthCommands(viewId, DepthPassType::ShadowCascade), m_FitFreezeEnabled,
+        rs.HasCascadeDepthCommands(viewId, cascadeIndex), m_FitFreezeEnabled,
         m_CascadeShadowCache, cacheSlot, ctx.CascadeMaterialContentKey);
     const bool prepareRigid = IsRigidCascadeCacheEnabled() && ctx.HasPendingSkinnedInstances &&
                               !cacheIn.HasContributorDrawCommands && !rs.GetProfile().IsCompat();
@@ -877,13 +886,13 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
     // read-only against the OPAQUE cascade layer, and contributor emitters
     // (terrain/ocean) only queue ShadowCascade commands — a tint-only
     // HasDepthCommands probe would be constant-false. Pin the tint whenever
-    // EITHER family carries contributor commands, so cached tint can never
-    // pair with fresher contributor-written opaque depth.
+    // its opaque cascade or the tint family carries contributor commands, so
+    // cached tint can never pair with fresher contributor-written opaque depth.
     const uint32_t cacheSlot = CascadeShadowCache::kTintSlotBase + cascadeIndex;
     const CascadeRenderInputs cacheIn = BuildCascadeCacheInputs(
         rs, viewId, *frameData, cascadeIndex,
         static_cast<uint64_t>(frame.PhysicalTexture(tintArr)), res,
-        rs.HasDepthCommands(viewId, DepthPassType::ShadowCascade) ||
+        rs.HasCascadeDepthCommands(viewId, cascadeIndex) ||
             rs.HasDepthCommands(viewId, DepthPassType::TransmittanceCascade),
         m_FitFreezeEnabled, m_CascadeShadowCache, cacheSlot, ctx.CascadeMaterialContentKey);
     if (rs.DepthUnderDraw().Consume(static_cast<uint32_t>(viewId),

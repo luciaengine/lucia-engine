@@ -132,7 +132,8 @@ bool ForestPlacementStream::ConsumeRead(Read& read, std::vector<ForestPlacementU
 }
 
 bool ForestPlacementStream::Prepare(AssetManager& assets, const ForestPlacementView& view,
-                                    uint64 frame, uint64 completedReaders, ForestPlacementFrame& plan,
+                                    uint64 frame, uint64 completedReaders,
+                                    std::span<const ForestShadowPage> shadowPages, ForestPlacementFrame& plan,
                                     std::vector<ForestPlacementUpload>& uploads)
 {
     uploads.clear();
@@ -142,7 +143,7 @@ bool ForestPlacementStream::Prepare(AssetManager& assets, const ForestPlacementV
         plan = {};
         return false;
     }
-    if (!m_Placements->Prepare(view, frame, completedReaders, plan))
+    if (!m_Placements->Prepare(view, frame, completedReaders, shadowPages, plan))
         return false;
 
     if (!plan.CancelReads.empty())

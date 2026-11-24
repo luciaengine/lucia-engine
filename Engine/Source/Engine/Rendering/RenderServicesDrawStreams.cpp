@@ -259,6 +259,38 @@ bool RenderServices::HasDepthCommands(Rendering::ViewId viewId,
     return pv && !pv->DepthCommands[static_cast<size_t>(passType)].empty();
 }
 
+void RenderServices::EmitCascadeDepthCommand(Rendering::ViewId viewId, uint32_t cascade,
+                                             const DrawCommand& command)
+{
+    assert(cascade < kMaxDepthEmitCascades && "a sun cascade index is below kMaxDepthEmitCascades");
+    if (cascade >= kMaxDepthEmitCascades)
+        return;
+    m_ViewRegistry.PerView(viewId).CascadeDepthCommands[cascade].push_back(command);
+}
+
+void RenderServices::EmitCascadeDepthBufferRead(Rendering::RenderGraph::RGFrame& frame,
+                                                Rendering::ViewId viewId, uint32_t cascade,
+                                                Rendering::RenderGraph::RGBuffer buffer,
+                                                Rendering::RenderGraph::RGBufferRead access)
+{
+    assert(cascade < kMaxDepthEmitCascades && "a sun cascade index is below kMaxDepthEmitCascades");
+    if (!buffer.IsValid() || cascade >= kMaxDepthEmitCascades)
+        return;
+    Rendering::RenderGraph::RGFrameStamp importFrame;
+    importFrame.Stamp(frame);
+    m_ViewRegistry.PerView(viewId).CascadeDepthBufferReads.push_back(
+        {buffer, access, importFrame, static_cast<uint8_t>(cascade)});
+}
+
+bool RenderServices::HasCascadeDepthCommands(Rendering::ViewId viewId, uint32_t cascade) const
+{
+    const auto* pv = m_ViewRegistry.FindPerView(viewId);
+    if (!pv)
+        return false;
+    return !pv->DepthCommands[static_cast<size_t>(DepthPassType::ShadowCascade)].empty() ||
+           (cascade < kMaxDepthEmitCascades && !pv->CascadeDepthCommands[cascade].empty());
+}
+
 void RenderServices::ClearDepthCommands()
 {
     m_ViewRegistry.ForEachPerView(
@@ -266,6 +298,9 @@ void RenderServices::ClearDepthCommands()
         {
             for (auto& cmds : pv.DepthCommands)
                 cmds.clear();
+            for (auto& cmds : pv.CascadeDepthCommands)
+                cmds.clear();
+            pv.CascadeDepthBufferReads.clear();
             pv.NonOccludingPrepassHeads.clear();
         });
 }
@@ -327,10 +362,12 @@ void RenderServices::EmitProducerForwardCommandsForView(Rendering::ViewId viewId
 void RenderServices::EmitProducerDepthCommands()
 {
     for (const auto& view : m_ViewRegistry.GetViews())
-        EmitProducerDepthCommandsForView(view.id);
+        EmitProducerDepthCommandsForView(view.id, nullptr, nullptr);
 }
 
-void RenderServices::EmitProducerDepthCommandsForView(Rendering::ViewId viewId)
+void RenderServices::EmitProducerDepthCommandsForView(Rendering::ViewId viewId,
+                                                      Rendering::RenderGraph::RGFrame* frame,
+                                                      const DepthEmitCascades* cascades)
 {
     // The light-space passes only: the camera prepass draws the heads the forward producers emit
     // beside their colour draws, and this runs again after the prepass declared (ShadowMapNode).
@@ -341,10 +378,13 @@ void RenderServices::EmitProducerDepthCommandsForView(Rendering::ViewId viewId)
         DepthPassType::PointShadow,
     };
 
-    for (DepthPassType passType : kPassTypes)
+    if (auto* pv = m_ViewRegistry.FindPerView(viewId))
     {
-        if (auto* pv = m_ViewRegistry.FindPerView(viewId))
+        for (DepthPassType passType : kPassTypes)
             pv->DepthCommands[static_cast<size_t>(passType)].clear();
+        for (auto& cmds : pv->CascadeDepthCommands)
+            cmds.clear();
+        pv->CascadeDepthBufferReads.clear();
     }
 
     if (m_DrawProducers->Depth.empty())
@@ -355,11 +395,15 @@ void RenderServices::EmitProducerDepthCommandsForView(Rendering::ViewId viewId)
     ctx.Services = this;
     ctx.FrameIndex = m_Device ? m_Device->GetFrameIndex() : 0;
     ctx.ViewId = viewId;
+    ctx.Frame = frame;
 
     for (const auto& entry : m_DrawProducers->Depth)
     {
         for (DepthPassType passType : kPassTypes)
+        {
+            ctx.Cascades = passType == DepthPassType::ShadowCascade ? cascades : nullptr;
             entry.Fn(ctx, passType);
+        }
     }
 }
 

@@ -44,6 +44,7 @@ struct ForestNearMeshView
     float GlobalLodBias;
     float ImpostorCoverage;
     float DeformationMargin = 0.0f; // Source mesh offset in model meters, used only for visibility.
+    bool Orthographic = false;
 };
 
 // Exclusive card-entry boundary for this part in model-sphere coverage space.
@@ -55,7 +56,7 @@ uint32 SelectForestMeshLod(const Rendering::GPUMesh& mesh, float modelCoverage,
 /// previousOwners, sorted by ticket and local placement, keep their mesh inside the switch band.
 /// A candidate replaces its card only after its complete mesh submission is ready.
 void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
-    const ForestPlacementFrame& frame, const ForestNearMeshView& view, const Mathematics::Vector4& modelSphere,
+    std::span<const ForestDetailDraw> draws, const ForestNearMeshView& view, const Mathematics::Vector4& modelSphere,
     size_t maxCandidates, std::vector<ForestNearMeshCandidate>& output,
     std::span<const ForestMeshOwnedPlacement> previousOwners = {});
 
