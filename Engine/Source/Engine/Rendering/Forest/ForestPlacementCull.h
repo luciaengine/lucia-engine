@@ -33,6 +33,8 @@ public:
         uint64 PagesOffset;
         uint64 PagesBytes;
         uint64 ViewOffset;
+        Rendering::RenderGraph::RGBuffer CoarseVisible;
+        Rendering::RenderGraph::RGBuffer CoarseArgs;
     };
 
     /// The owner and slot buffer must outlive graph execution. The draw pass
@@ -41,7 +43,8 @@ public:
     [[nodiscard]] std::optional<DrawBuffers> Declare(Rendering::RenderGraph::RGFrame& frame,
         std::string_view scope, Rendering::BufferHandle slots, uint32 slotCount, const ForestPlacementGpuView& view,
         std::span<const ForestPlacementGpuPage> pages, uint32 indexCount, const ForestSplatWindGpu* wind,
-        Rendering::RenderGraph::RGTexture occlusionHZB = {}, Rendering::SamplerHandle occlusionSampler = {});
+        Rendering::RenderGraph::RGTexture occlusionHZB = {}, Rendering::SamplerHandle occlusionSampler = {},
+        uint32 coarseIndexCount = 0);
 
 private:
     bool m_Splats = false;

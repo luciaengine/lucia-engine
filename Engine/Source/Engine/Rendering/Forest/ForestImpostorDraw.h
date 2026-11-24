@@ -46,5 +46,5 @@ namespace GameEngine::Engine::Renderer
 /// Emits the animated splats of the culled placements (forest_splat_cull.comp rows) with the forest splat
 /// material in color.Material, in the color pass. The geometry's owner keeps its buffers alive.
 bool EmitForestSplatDraw(const ForwardEmitContext& context, const ForestPlacementCull::DrawBuffers& buffers,
-    const ForestSplatGeometry& splats, DrawCommand color);
+    const ForestSplatGeometry& splats, DrawCommand color, const ForestSplatGeometry& coarse = {});
 } // namespace GameEngine::Engine::Renderer

@@ -29,6 +29,9 @@ struct ForestPlacementCountSample
     uint32 DetailPlacements = 0;
     uint32 Meshes = 0;
     uint32 MeshBatches = 0;
+    std::shared_ptr<Rendering::RGBufferReadbackTicket> CoarseTicket;
+    std::optional<uint32> FineCount;
+    std::optional<uint32> CoarseCount;
 };
 
 /// One stand's detail state: its card, its slot buffer, its page stream and its near-mesh owners.
@@ -52,10 +55,14 @@ struct ForestPlacementSession
     std::optional<ForestImpostorCard> Card;
     // The stand's splat bake when its trees draw as splats, else null; with its GPU copy and draw reach.
     std::shared_ptr<const ForestSplatCells> Splats;
+    std::shared_ptr<const ForestSplatCells> CoarseSplats;
     Rendering::BufferHandle SplatCells;
     Rendering::BufferHandle SplatIndices;
+    Rendering::BufferHandle CoarseSplatCells;
+    Rendering::BufferHandle CoarseSplatIndices;
     // The farthest point of a splat disk from the tree root at unit scale, without wind.
     float SplatReach = 0;
+    float CoarseSplatReach = 0;
     bool WantsCard = false;
     std::string Scope;
     // The scope of each cascade's cull: Scope.Shadow<c>.

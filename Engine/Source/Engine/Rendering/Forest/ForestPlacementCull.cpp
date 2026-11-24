@@ -23,6 +23,8 @@ constexpr uint32 kSlotsBinding = 0;
 constexpr uint32 kPagesBinding = 1;
 constexpr uint32 kVisibleBinding = 2;
 constexpr uint32 kArgsBinding = 3;
+constexpr uint32 kCoarseVisibleBinding = 4;
+constexpr uint32 kCoarseArgsBinding = 5;
 constexpr uint32 kViewBinding = 0;
 constexpr uint32 kWindBinding = 1;
 constexpr uint32 kOcclusionBinding = 0;
@@ -54,6 +56,11 @@ bool ForestPlacementCull::Initialize(IDevice& device, bool splats)
     m_PlacementsLayout.debugName = "Forest.Cull.Placements";
     m_PlacementsLayout.bindings = {StorageBinding(kSlotsBinding, true), StorageBinding(kPagesBinding, true),
                                    StorageBinding(kVisibleBinding, false), StorageBinding(kArgsBinding, false)};
+    if (splats)
+    {
+        m_PlacementsLayout.bindings.push_back(StorageBinding(kCoarseVisibleBinding, false));
+        m_PlacementsLayout.bindings.push_back(StorageBinding(kCoarseArgsBinding, false));
+    }
     m_ViewLayout.debugName = "Forest.Cull.View";
     m_ViewLayout.bindings = {{.binding = kViewBinding, .type = DescriptorType::UniformBuffer,
                              .shaderStages = kShaderStageCompute}};
@@ -98,7 +105,7 @@ bool ForestPlacementCull::Initialize(IDevice& device, bool splats)
 std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGFrame& frame,
     std::string_view scope, BufferHandle slots, uint32 slotCount, const ForestPlacementGpuView& view,
     std::span<const ForestPlacementGpuPage> pages, uint32 indexCount, const ForestSplatWindGpu* wind,
-    RGTexture occlusionHZB, SamplerHandle occlusionSampler)
+    RGTexture occlusionHZB, SamplerHandle occlusionSampler, uint32 coarseIndexCount)
 {
     if (!m_Pipeline.IsValid() || !slots.IsValid() || pages.empty() || pages.size() > slotCount ||
         pages.size() > kMaxCullGroups || (wind != nullptr) != m_Splats || indexCount == 0)
@@ -119,7 +126,8 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
     const uint64 visibleBytes = uint64{visiblePages} * kSlotSize * visibleStride;
     const auto pageUpload = frame.AllocUpload(pages.size_bytes());
     const auto viewUpload = frame.AllocUpload(sizeof(view));
-    const auto argsUpload = frame.AllocUpload(sizeof(ForestPlacementIndirectDraw));
+    const bool useCoarse = wind && coarseIndexCount != 0 && wind->Lod.x > 0.0f;
+    const auto argsUpload = frame.AllocUpload(sizeof(ForestPlacementIndirectDraw) * (useCoarse ? 2u : 1u));
     if (!pageUpload.Valid() || !viewUpload.Valid() || !argsUpload.Valid())
         return std::nullopt;
 
@@ -127,6 +135,11 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
     std::memcpy(pageUpload.Ptr, pages.data(), pages.size_bytes());
     std::memcpy(viewUpload.Ptr, &view, sizeof(view));
     std::memcpy(argsUpload.Ptr, &initialDraw, sizeof(initialDraw));
+    if (useCoarse)
+    {
+        const ForestPlacementIndirectDraw coarseDraw{.IndexCount = coarseIndexCount};
+        std::memcpy(static_cast<std::byte*>(argsUpload.Ptr) + sizeof(initialDraw), &coarseDraw, sizeof(coarseDraw));
+    }
 
     const auto slotBuffer = frame.ImportExternalBuffer("Forest.PlacementSlots", slots, slotBytes);
     const auto pageBuffer = frame.ImportExternalBuffer("Forest.CullPages", pageUpload.Buffer);
@@ -139,7 +152,10 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
         const auto windUpload = frame.AllocUpload(sizeof(*wind));
         if (!windUpload.Valid())
             return std::nullopt;
-        std::memcpy(windUpload.Ptr, wind, sizeof(*wind));
+        auto preparedWind = *wind;
+        if (!useCoarse)
+            preparedWind.Lod = {};
+        std::memcpy(windUpload.Ptr, &preparedWind, sizeof(preparedWind));
         windBuffer = frame.ImportExternalBuffer("Forest.SplatWind", windUpload.Buffer);
         windOffset = windUpload.Offset;
         if (!windBuffer.IsValid())
@@ -159,6 +175,16 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
     if (!visible.IsValid() || !args.IsValid() || !frame.PhysicalBuffer(visible).IsValid() ||
         !frame.PhysicalBuffer(args).IsValid())
         return std::nullopt;
+    RGBuffer coarseVisible{};
+    RGBuffer coarseArgs{};
+    if (useCoarse)
+    {
+        coarseVisible = frame.ImportPersistentBuffer((std::string(scope) + ".CoarseVisiblePlacements").c_str(), visibleDesc);
+        coarseArgs = frame.ImportPersistentBuffer((std::string(scope) + ".CoarseIndirectDraw").c_str(), argsDesc);
+        if (!coarseVisible.IsValid() || !coarseArgs.IsValid() || !frame.PhysicalBuffer(coarseVisible).IsValid() ||
+            !frame.PhysicalBuffer(coarseArgs).IsValid())
+            return std::nullopt;
+    }
     if (m_VisiblePageCapacity != visiblePages)
     {
         m_VisiblePageCapacity = visiblePages;
@@ -173,11 +199,17 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
         {
             pass.Read(argsStaging, RGBufferRead::CopySrc);
             pass.Write(args, RGBufferWrite::CopyDst);
+            if (useCoarse)
+                pass.Write(coarseArgs, RGBufferWrite::CopyDst);
         },
         [=, offset = argsUpload.Offset](RGContext& ctx)
         {
-            if (ctx.Cmd)
-                ctx.Cmd->CopyBuffer(ctx.GetBuffer(argsStaging), ctx.GetBuffer(args), sizeof(initialDraw), offset, 0);
+            if (!ctx.Cmd)
+                return;
+            ctx.Cmd->CopyBuffer(ctx.GetBuffer(argsStaging), ctx.GetBuffer(args), sizeof(initialDraw), offset, 0);
+            if (useCoarse)
+                ctx.Cmd->CopyBuffer(ctx.GetBuffer(argsStaging), ctx.GetBuffer(coarseArgs), sizeof(initialDraw),
+                                    offset + sizeof(initialDraw), 0);
         });
     if (!reset.IsValid())
         return std::nullopt;
@@ -197,6 +229,12 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
             builder.Read(args, RGBufferRead::Storage);
             builder.Write(visible, RGBufferWrite::Storage);
             builder.Write(args, RGBufferWrite::Storage);
+            if (useCoarse)
+            {
+                builder.Read(coarseArgs, RGBufferRead::Storage);
+                builder.Write(coarseVisible, RGBufferWrite::Storage);
+                builder.Write(coarseArgs, RGBufferWrite::Storage);
+            }
         },
         [=, this, groups = static_cast<uint32>(pages.size()), pageBytes = pages.size_bytes(),
          pageOffset = pageUpload.Offset, viewOffset = viewUpload.Offset](RGContext& ctx)
@@ -206,7 +244,7 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
             if (!pipeline.IsValid() || !passDevice || !ctx.Cmd)
                 return;
 
-            const DescriptorWrite placements[] = {
+            std::array<DescriptorWrite, 6> placements{{
                 {.Binding = kSlotsBinding, .Type = DescriptorType::StorageBuffer,
                  .Buffer = ctx.GetBuffer(slotBuffer), .Range = slotBytes},
                 {.Binding = kPagesBinding, .Type = DescriptorType::StorageBuffer,
@@ -214,14 +252,22 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
                 {.Binding = kVisibleBinding, .Type = DescriptorType::StorageBuffer,
                  .Buffer = ctx.GetBuffer(visible), .Range = visibleBytes},
                 {.Binding = kArgsBinding, .Type = DescriptorType::StorageBuffer,
-                 .Buffer = ctx.GetBuffer(args), .Range = sizeof(initialDraw)}};
+                 .Buffer = ctx.GetBuffer(args), .Range = sizeof(initialDraw)}}};
+            if (m_Splats)
+            {
+                placements[4] = {.Binding = kCoarseVisibleBinding, .Type = DescriptorType::StorageBuffer,
+                    .Buffer = ctx.GetBuffer(useCoarse ? coarseVisible : visible), .Range = visibleBytes};
+                placements[5] = {.Binding = kCoarseArgsBinding, .Type = DescriptorType::StorageBuffer,
+                    .Buffer = ctx.GetBuffer(useCoarse ? coarseArgs : args), .Range = sizeof(initialDraw)};
+            }
             std::array<DescriptorWrite, 2> camera{{
                 {.Binding = kViewBinding, .Type = DescriptorType::UniformBuffer,
                  .Buffer = ctx.GetBuffer(viewBuffer), .Offset = viewOffset, .Range = sizeof(ForestPlacementGpuView)}}};
             if (windBuffer.IsValid())
                 camera[1] = {.Binding = kWindBinding, .Type = DescriptorType::UniformBuffer,
                              .Buffer = ctx.GetBuffer(windBuffer), .Offset = windOffset, .Range = sizeof(ForestSplatWindGpu)};
-            const auto set0 = passDevice->GetOrCreateDescriptorSet(m_PlacementsLayout, placements, "Forest.Cull.Placements");
+            const auto set0 = passDevice->GetOrCreateDescriptorSet(
+                m_PlacementsLayout, std::span(placements).first(m_Splats ? 6u : 4u), "Forest.Cull.Placements");
             const auto set1 = passDevice->GetOrCreateDescriptorSet(
                 m_ViewLayout, std::span(camera).first(windBuffer.IsValid() ? 2u : 1u), "Forest.Cull.View");
             if (!set0.IsValid() || !set1.IsValid())
@@ -247,7 +293,7 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
         return std::nullopt;
 
     return DrawBuffers{slotBuffer, visible, args, pageBuffer, viewBuffer, slotBytes, visibleBytes,
-                       pageUpload.Offset, pages.size_bytes(), viewUpload.Offset};
+                       pageUpload.Offset, pages.size_bytes(), viewUpload.Offset, coarseVisible, coarseArgs};
 }
 
 } // namespace GameEngine::Engine::Renderer

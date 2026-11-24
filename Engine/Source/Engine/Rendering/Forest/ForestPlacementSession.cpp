@@ -23,7 +23,7 @@ void ForestPlacementSession::Reset(bool deviceRebuilt)
     DetailPlanEpoch.reset();
     if (Device && !deviceRebuilt)
     {
-        for (const auto buffer : {Indices, Slots, SplatCells, SplatIndices})
+        for (const auto buffer : {Indices, Slots, SplatCells, SplatIndices, CoarseSplatCells, CoarseSplatIndices})
             if (buffer.IsValid())
                 Device->DestroyBuffer(buffer);
     }
@@ -31,6 +31,8 @@ void ForestPlacementSession::Reset(bool deviceRebuilt)
     Slots = {};
     SplatCells = {};
     SplatIndices = {};
+    CoarseSplatCells = {};
+    CoarseSplatIndices = {};
     Cull = {};
     ShadowCulls = {};
     Graph = nullptr;
@@ -115,6 +117,11 @@ bool ForestPlacementSession::EnsureGpu(IDevice& device)
     if (Splats && !SplatCells.IsValid())
         SplatCells = CreateFilledBuffer(device, static_cast<uint32>(BufferUsage::Storage),
                                         std::as_bytes(std::span(Splats->Cells)), "Forest.SplatCells");
+    if (CoarseSplats && !CoarseSplatIndices.IsValid())
+        CoarseSplatIndices = CreateIndexBuffer(device, CoarseSplats.get());
+    if (CoarseSplats && !CoarseSplatCells.IsValid())
+        CoarseSplatCells = CreateFilledBuffer(device, static_cast<uint32>(BufferUsage::Storage),
+            std::as_bytes(std::span(CoarseSplats->Cells)), "Forest.CoarseSplatCells");
     if (!Slots.IsValid() || !Indices.IsValid() || (Splats && (!SplatCells.IsValid() || !SplatIndices.IsValid())))
         return false;
     if (!Stream)
