@@ -1376,6 +1376,17 @@ add_subdirectory(Engine/Modules/VCSIntegration) # Common VCS abstraction layer
 add_subdirectory(Engine/Modules/Graph) # Graph model and asset module
 
 option(BUILD_EDITOR "Build the Editor application" ON)
+option(BUILD_PLAYER "Build the standalone Player runtime" ON)
+
+# The desktop Editor and Player both stage the EZTree runtime package.
+if(BUILD_EDITOR OR (BUILD_PLAYER AND NOT GE_MOBILE))
+    ge_add_engine_package_module(GePkgModule_Eztree
+        PACKAGE eztree
+        MODULE_NAME Eztree
+        SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/eztree/Native
+        KIND runtime
+        PREBUILT_SUBDIR Binaries/Runtime)
+endif()
 
 # Managed (.NET) assembly targets. Included here, ahead of every subdirectory
 # that declares a dependency on them (Apps/Editor, Apps/Player, Tests), because
@@ -1387,7 +1398,6 @@ if(BUILD_EDITOR)
     add_subdirectory(Apps/Editor) # Editor application
 endif()
 
-option(BUILD_PLAYER "Build the standalone Player runtime" ON)
 # The editor's standalone-record path (Movie Recorder panel launching Player.exe
 # with --write-movie) requires this ON; shipped games leave it OFF.
 option(PLAYER_MOVIE_RECORDER "Compile the movie recorder (--write-movie capture/encode) into the Player" OFF)

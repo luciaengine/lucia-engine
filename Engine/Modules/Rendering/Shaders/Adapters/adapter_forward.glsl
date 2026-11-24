@@ -1106,7 +1106,7 @@ void main()
     #endif
         shadowFactor = GE_SurfaceDirectionalVisibility(shadowFactor, (Cam.uVRel * vec4(vPosRel, 1.0)).z, L);
         // Subsurface transmission added outside shadowFactor/shadowTint so back-lit thin objects glow through.
-        finalColor = GE_EvaluateSurfaceLight(so, V, L)
+        finalColor = GE_EvaluateDirectionalSurfaceLight(so, V, L)
                      * Light.uLightColorWorld.rgb * Light.uLightDirWorld.w * shadowFactor * shadowTint
                      + GE_SubsurfaceTransmission(so, V, L)
                      * Light.uLightColorWorld.rgb * Light.uLightDirWorld.w;
@@ -1127,7 +1127,7 @@ void main()
         {
             vec3 secL = normalize(-Light.uSecondaryDirs[i].xyz);
             vec3 secCol = Light.uSecondaryColors[i].rgb;
-            finalColor += GE_EvaluateSurfaceLight(so, V, secL) * secCol
+            finalColor += GE_EvaluateDirectionalSurfaceLight(so, V, secL) * secCol
                         + GE_SubsurfaceTransmission(so, V, secL) * secCol;
         }
     }

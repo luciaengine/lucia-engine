@@ -27,6 +27,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -770,6 +771,83 @@ std::vector<uint8_t> DrawAdapterProbe(IDevice& device,
     return pixels;
 }
 } // namespace
+
+TEST(ForwardAdapterMicroshadowReadback, DirectionalOcclusionPreservesNeutralAndBacklitResponses)
+{
+    const fs::path shaders = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    std::ifstream mathFile(shaders / "Includes/microshadowing.glsl", std::ios::binary);
+    std::ifstream responseFile(shaders / "Includes/surface_light_response.glsl", std::ios::binary);
+    ASSERT_TRUE(mathFile.good());
+    ASSERT_TRUE(responseFile.good());
+    const std::string math{std::istreambuf_iterator<char>(mathFile), std::istreambuf_iterator<char>()};
+    const std::string response{std::istreambuf_iterator<char>(responseFile), std::istreambuf_iterator<char>()};
+    const size_t start = response.find("vec3 GE_EvaluateDirectionalSurfaceLight(");
+    ASSERT_NE(start, std::string::npos);
+    const size_t end = response.find("\n}\n", start);
+    ASSERT_NE(end, std::string::npos);
+
+    const TestUtils::ScopedTempDir cache(MakeTempCacheRoot());
+    ShaderProgramCompileRequest request{};
+    request.debugName = "DirectionalMicroshadowProbe";
+    request.cacheRoot = cache.Path();
+    request.baseDirectory = shaders;
+    ShaderStageCompileSpec vertex{};
+    vertex.stage = "vs";
+    vertex.sourcePath = "microshadow-probe.vert";
+    vertex.inlineSource = R"(#version 450
+void main()
+{
+    const vec2 positions[3] = vec2[3](vec2(-1,-1), vec2(3,-1), vec2(-1,3));
+    gl_Position = vec4(positions[gl_VertexIndex], 0.5, 1);
+}
+)";
+    ShaderStageCompileSpec fragment{};
+    fragment.stage = "fs";
+    fragment.sourcePath = "microshadow-probe.frag";
+    fragment.inlineSource = R"(#version 450
+layout(location=0) out vec4 color;
+struct SurfaceOutput { float ao; float microshadowStrength; vec3 normalWS; };
+vec3 GE_EvaluateSurfaceLight(SurfaceOutput so, vec3 V, vec3 L) { return vec3(1.0); }
+)" + math + response.substr(start, end + 3 - start) + R"(
+void main()
+{
+    const vec3 cases[8] = vec3[8](vec3(0, 0, 0.8), vec3(1, 1, 0.1), vec3(0, 1, 0.8), vec3(0.5, 1, 0.2),
+                                 vec3(0.5, 1, 0.7), vec3(0.5, 0.5, 0.7), vec3(0, 1, -0.4), vec3(0.99, 1, 0.6));
+    vec3 settings = cases[uint(gl_FragCoord.x) / 8u];
+    vec3 light = vec3(sqrt(1.0 - settings.z * settings.z), 0, settings.z);
+    vec3 normal = vec3(0, 0, 1);
+    SurfaceOutput surface = SurfaceOutput(settings.x, settings.y, normal);
+    color = vec4(GE_EvaluateDirectionalSurfaceLight(surface, normal, light), 1);
+}
+)";
+    request.stages = {vertex, fragment};
+    ShaderProgramCompileResult program{};
+    std::string error;
+    ASSERT_TRUE(ShaderCompileService::CompileProgramToCache(request, ShaderSourceKind::SpirV, program, &error))
+        << error;
+
+    DeviceDesc desc{};
+#if defined(__APPLE__)
+    desc.preferredAPI = GraphicsAPI::Metal;
+#else
+    desc.preferredAPI = GraphicsAPI::Vulkan;
+#endif
+    desc.enableSwapchain = false;
+    desc.enableDynamicRendering = true;
+    auto device = DeviceFactory::CreateDevice(desc);
+    if (!device || !device->Initialize(desc))
+        GTEST_SKIP() << "No graphics device for microshadow readback";
+    const auto pixels = DrawAdapterProbe(*device, program, false);
+    device->Shutdown();
+    ASSERT_EQ(pixels.size(), size_t(kProbeWidth) * kProbeHeight * 4);
+    const std::array expected{255, 255, 0, 23, 153, 204, 255, 255};
+    for (uint32_t stripe = 0; stripe < expected.size(); ++stripe)
+    {
+        SCOPED_TRACE(stripe);
+        const size_t sample = (size_t(kProbeHeight / 2) * kProbeWidth + stripe * 8 + 4) * 4;
+        EXPECT_NEAR(int(pixels[sample]), expected[stripe], 1);
+    }
+}
 
 // Execute the adapter's actual alpha block on the GPU. The four stripes supply opacity
 // 0, 1/3, 2/3 and 1: ordinary opaque output must cover all of them, Blend must retain

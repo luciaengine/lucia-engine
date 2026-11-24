@@ -7,6 +7,7 @@
 #define GE_SURFACE_LIGHT_RESPONSE_GLSL
 
 #include "standard_pbr.glsl" // GE_EvaluateStandardPBR + GE_PI
+#include "microshadowing.glsl"
 #ifdef GE_USER_PARTICLE_LIT
 #include "particle_six_way.glsl" // GE_SixWayResponse
 #endif
@@ -28,6 +29,21 @@ vec3 GE_EvaluateSurfaceLight(SurfaceOutput so, vec3 V, vec3 L)
 #else
     return GE_EvaluateStandardPBR(so, V, L);
 #endif
+}
+
+vec3 GE_EvaluateDirectionalSurfaceLight(SurfaceOutput so, vec3 V, vec3 L)
+{
+    vec3 response = GE_EvaluateSurfaceLight(so, V, L);
+    if (so.microshadowStrength <= 0.0 || so.ao >= 1.0)
+        return response;
+
+    // Back lighting through thin surfaces uses the transmission model.
+    float NdotL = dot(so.normalWS, L);
+    if (NdotL <= 0.0)
+        return response;
+
+    float visibility = GE_MicroshadowVisibility(so.ao, NdotL);
+    return response * mix(1.0, visibility, clamp(so.microshadowStrength, 0.0, 1.0));
 }
 
 #endif

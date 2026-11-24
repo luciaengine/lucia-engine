@@ -46,7 +46,7 @@ constexpr uint32_t LegacyLaneByteSize(const LegacyMaterialLane& lane)
 // Lane placements of every legacy name, grouped by the surface family that owns
 // them. Families that no shipped surface uses together deliberately overlap:
 // each addresses the block privately, and a material only ever runs one of them.
-inline constexpr std::array<LegacyMaterialLane, 108> kLegacyMaterialLanes = {{
+inline constexpr std::array<LegacyMaterialLane, 109> kLegacyMaterialLanes = {{
     {"baseColor", 0, 0, 4},
     {"metallic", 1, 0, 1},
     {"roughness", 1, 1, 1},
@@ -138,6 +138,7 @@ inline constexpr std::array<LegacyMaterialLane, 108> kLegacyMaterialLanes = {{
     {"thinFilmThickness", 18, 0, 1}, // uParams17.x
     {"thinFilmIor", 18, 1, 1}, // uParams17.y
     {"thinFilmWeight", 18, 2, 1}, // uParams17.z
+    {"microshadowStrength", 18, 3, 1}, // uParams17.w
     // Emission (uParams18): rgb=emissive colour tint (size 12 so a colour write never clobbers
     // .w), w=emissionLuminance in nits.
     {"emissive", 19, 0, 3}, // uParams18.rgb

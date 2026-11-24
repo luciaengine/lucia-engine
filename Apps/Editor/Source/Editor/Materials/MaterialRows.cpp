@@ -55,6 +55,7 @@ const std::vector<std::string>& BuiltInPropertyOrder()
         "emissionLuminance",
         "emissiveExposureWeight",
         "ao",
+        "microshadowStrength",
         "specularColor",
         "specularWeight",
         "specularIor",
@@ -101,6 +102,7 @@ const std::unordered_set<std::string>& BuiltInPropertyNames()
         "emissionLuminance",
         "emissiveExposureWeight",
         "ao",
+        "microshadowStrength",
         "opacity",
         "alphaCutoff",
         "sixAxisScatter",
@@ -190,6 +192,9 @@ bool IsPropertyVisible(const std::string& key, const MaterialDocument& doc)
 
     if (sixAxis && (key == "metallic" || key == "roughness" || key == "ao"))
         return false;
+
+    if (key == "microshadowStrength")
+        return !unlit && !shadowOnly && ToLowerAscii(doc.surfaceShader) == "surfaces/standard_pbr.glsl";
 
     if (key == "roughness" || key == "metallic" || key == "ao")
         return !unlit && !shadowOnly;
@@ -345,7 +350,7 @@ bool IsSlider01Property(const std::string& name)
            name == "clearCoat" || name == "clearCoatRoughness" || name == "coatDarkening" ||
            name == "sheenRoughness" || name == "fuzzRoughness" ||
            name == "thickness" || name == "specularWeight" || name == "diffuseRoughness" ||
-           name == "transmissionWeight" || name == "thinFilmWeight";
+           name == "transmissionWeight" || name == "thinFilmWeight" || name == "microshadowStrength";
 }
 
 std::string TextureSlotLabel(const std::string& slot)
