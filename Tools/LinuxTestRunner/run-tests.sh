@@ -75,28 +75,7 @@ ninja -k 0 -j "$LUCIA_JOBS" > $O/build.log 2>&1
 rc=$?
 echo "build $rc" >> $O/status
 [ "$rc" -eq 0 ] || exit "$rc"
-gate_status=0
-ran_suite=0
-for t in bin/DebugFast/Tests/*; do
-  [ -x "$t" ] && [ -f "$t" ] || continue
-  n=$(basename "$t")
-  case "$n" in *.so|*.so.*|FakeAgentCli|ProcessStreamProbe) continue;; *Test*) ;; *) continue;; esac
-  ran_suite=1
-  GE_VK_VALIDATION=1 timeout 2400 "./$t" --gtest_output=xml:$O/xml/$n.xml > $O/$n.log 2>&1
-  rc=$?
-  if [ "$rc" -eq 0 ]; then
-    python3 /lucia/src/Tools/LinuxTestRunner/check-gtest.py "$O/xml/$n.xml" >> "$O/$n.log" 2>&1
-    rc=$?
-  fi
-  [ "$rc" -eq 0 ] || gate_status=1
-  echo "run $n $rc" >> $O/status
-done
-if [ "$ran_suite" -eq 0 ]; then
-  echo "No test suites ran" >> "$O/status"
-  gate_status=1
-fi
-echo done >> $O/status
-exit "$gate_status"
+exec bash /lucia/src/Tools/LinuxTestRunner/run-suites.sh "$O"
 INNER
 chmod +x "$OUT/inner.sh"
 podman run --rm --device /dev/dri -e LUCIA_JOBS="$JOBS" \
