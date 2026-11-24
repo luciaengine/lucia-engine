@@ -72,6 +72,13 @@ public:
 
 protected:
     bool Enabled = true;
+
+    /// Reports work for a sequential slot on the scheduler thread. The wave checks this before any
+    /// of its systems run. A system that owns live state keeps reporting work until it releases it.
+    virtual bool HasScheduledWork(World&) { return true; }
+
+private:
+    friend class SystemManager;
 };
 
 // The systems of one wave can run in parallel; wave N completes before wave N+1 starts.
@@ -385,6 +392,8 @@ private:
                 if ((runCount % everyN) != 0u) continue;
             }
 
+            if (!system->HasScheduledWork(world)) continue;
+
             auto start = std::chrono::high_resolution_clock::now();
             system->Update(world, SystemDelta(i, world, deltaTime));
             auto end = std::chrono::high_resolution_clock::now();
@@ -543,6 +552,7 @@ private:
                     uint32 c = (idx < seqFrameCounters.size()) ? seqFrameCounters[idx]++ : 0u;
                     if ((c % n) != 0u) continue;
                 }
+                if (!sys->HasScheduledWork(world)) continue;
                 enabledSlots[enabledCount++] = idx;
             }
 
