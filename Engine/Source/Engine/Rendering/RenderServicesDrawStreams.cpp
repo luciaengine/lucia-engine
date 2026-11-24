@@ -319,7 +319,8 @@ void RenderServices::EmitProducerForwardCommands()
 }
 
 void RenderServices::EmitProducerForwardCommandsForView(Rendering::ViewId viewId,
-                                                        ForwardEmitPurpose purpose)
+                                                        ForwardEmitPurpose purpose,
+                                                        RenderGraph::RGFrame* captureFrame)
 {
     auto& pv = m_ViewRegistry.PerView(viewId);
     pv.ForwardCommands.clear();
@@ -338,22 +339,22 @@ void RenderServices::EmitProducerForwardCommandsForView(Rendering::ViewId viewId
     if (m_DrawProducers->Forward.empty())
         return;
 
-    ForwardEmitContext ctx{};
-    ctx.Device = m_Device;
-    ctx.Services = this;
+    ForwardEmitContext context{};
+    context.Device = m_Device;
+    context.Services = this;
     // Ordinary producers run while batch keys are built. The frame stamp can
     // still be empty here; callbacks that import resources opt into the
     // explicit frame-dependent declaration stage instead.
-    ctx.Frame = m_FrameRG.For.Frame;
-    ctx.FrameIndex = m_Device ? m_Device->GetFrameIndex() : 0;
-    ctx.ViewId = viewId;
-    ctx.Purpose = purpose;
+    context.Frame = captureFrame ? captureFrame : m_FrameRG.For.Frame;
+    context.FrameIndex = m_Device ? m_Device->GetFrameIndex() : 0;
+    context.ViewId = viewId;
+    context.Purpose = purpose;
 
     for (const auto& entry : m_DrawProducers->Forward)
-        if (!entry.Options.RequiresFrame)
+        if (!entry.Options.RequiresFrame || (captureFrame && entry.Options.SupportsCapture))
         {
             const size_t emittedBefore = pv.ForwardCommands.size();
-            entry.Fn(ctx);
+            entry.Fn(context);
             if (entry.Options.WritesDepth && pv.ForwardCommands.size() > emittedBefore)
                 NotifyUnversionedMotion(viewId);
         }

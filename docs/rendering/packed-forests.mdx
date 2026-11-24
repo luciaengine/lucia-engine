@@ -91,8 +91,8 @@ The Shadow Casting field of the overview MeshRenderer (`MeshRenderer.shadowCasti
 - Only the sun casts the shadows of a stand. Spot, point, and area lights do not.
 - A sun shadow cascade that holds the shadows of a stand renders again in each frame.
 - At most 128 pages are resident for shadows only, in addition to the pages that draw as trees. On the compatibility tier the limit is 32 pages. A page past the limit casts no shadow until a slot is free.
-- Reflection probes and planar reflections do not show the stand.
-- A stand does not draw into the depth prepass, so ambient occlusion and contact shadows do not see it.
+- Reflection probes and planar reflections draw the stand as an overview mesh.
+- The camera depth prepass draws the overview. Detailed tree cards and meshes draw during the color pass.
 - At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. When the slot budget leaves visible pages within Detail Distance on the overview, the Inspector shows how many pages were selected and the distance to the closest omitted page in the detail view. Selected pages can still be loading.
 
 ### Export

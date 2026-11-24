@@ -6,6 +6,7 @@
 #include "ForestPlacementRuntime.h"
 #include "ForestPlacementFeature.h"
 #include "ForestPlacementSession.h"
+#include "Engine/Rendering/DepthDrawRecorder.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -83,10 +84,10 @@ Rendering::DrawProducerId StandProducer()
     return producer;
 }
 
-// The camera of a world view of the stand's world that shows one of its layers, else null.
+// The camera of a view of the stand's world that shows one of its layers.
 const Rendering::CameraData* FindStandCamera(const ForwardEmitContext& ctx, const StandEmitSource& stand)
 {
-    if (!ctx.Frame || ctx.Purpose != ForwardEmitPurpose::World)
+    if (!ctx.Frame)
         return nullptr;
     return FindForestStandCamera(*ctx.Services, ctx.ViewId, stand.WorldId, stand.Layers);
 }
@@ -106,7 +107,7 @@ void EmitStandCommands(ForwardEmitContext& ctx, ForestStandDrawHeads& heads, std
 {
     heads.Color.Producer = StandProducer();
     heads.Color.SubDraws = draws;
-    if (!heads.Depth)
+    if (!heads.Depth || ctx.Purpose != ForwardEmitPurpose::World)
     {
         ctx.Services->EmitForwardCommand(ctx.ViewId, heads.Color, ForwardDrawDepth::ColourPass);
         return;
@@ -179,7 +180,8 @@ void EmitStand(StandEmitSource& stand, ForwardEmitContext& ctx)
 
     auto* draws = ctx.Frame->AllocatePassData<std::vector<DrawSubCommand>>();
     const auto placementView = MakeForestStandView(*camera);
-    if (!stand.Details)
+    const bool usesDetails = stand.Details && ctx.Purpose == ForwardEmitPurpose::World;
+    if (!usesDetails)
     {
         stand.Placements->GatherStand(placementView, *draws);
         if (draws->empty())
@@ -189,7 +191,7 @@ void EmitStand(StandEmitSource& stand, ForwardEmitContext& ctx)
     if (!heads || !AreDrawableHeads(*heads))
         return;
 
-    if (stand.Details)
+    if (usesDetails)
     {
         auto* detailFeature = ctx.Services->GetFeature<ForestPlacementFeature>();
         if (!detailFeature || !ctx.Frame->RequireExecutionLifetime(stand.Details) ||
@@ -241,6 +243,25 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
         const auto* constants = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(mat->GetGpuSceneMaterialIndex());
         color.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
     }
+    if (ctx.Purpose != ForwardEmitPurpose::World)
+        return heads;
+
+    auto& services = *ctx.Services;
+    const bool masked = mat->GetAlphaMode() == MaterialAlphaMode::Mask;
+    const auto head = ChooseDepthHeadPipeline(Rendering::MaterialKeyword::None, DepthPassType::Prepass,
+                                              masked, /*vertexModified=*/false, /*sharedDepthOffered=*/false,
+                                              WritesReliefDepth(mat->GetVariantKey().materialKeywords));
+    auto& variants = services.Materials().Variants();
+    const auto* variant = variants.FindOrRequestPrepassVariant(
+        *mat, color.VertexFlags, geometry->topology, head.Keywords, services.GetFrontFace());
+    if (variant && variants.EnsureConcreteWarm(*mat, variant->PipelineId, services.Views().GetViewPrepassFormatKey(ctx.ViewId)))
+    {
+        heads.Depth = color;
+        heads.Depth->InternedPipeline = variant->PipelineId;
+        heads.Depth->PipelineMeta = variant->VariantMeta.get();
+        heads.Depth->PipelineSetCount = static_cast<uint32_t>(variant->SetLayouts.size());
+        heads.Depth->PassKeywords = head.Keywords;
+    }
     return heads;
 }
 
@@ -256,7 +277,7 @@ ScopedSubscription RegisterForestStandDraws(
     auto stand = std::make_shared<StandEmitSource>(
         StandEmitSource{worldId, layers, std::move(placements), std::move(prepareDraw), std::move(details), {}});
     return services.RegisterForwardEmit([stand](ForwardEmitContext& ctx) { EmitStand(*stand, ctx); },
-                                        {.WritesDepth = true, .RequiresFrame = true});
+                                        {.WritesDepth = true, .RequiresFrame = true, .SupportsCapture = true});
 }
 
 ScopedSubscription RegisterForestStandMesh(

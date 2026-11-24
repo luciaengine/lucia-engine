@@ -118,6 +118,8 @@ struct ForwardProducerOptions
     /// current RGFrame, including views without mesh submissions. False runs it while batch keys
     /// are built, when ForwardEmitContext::Frame can still be null.
     bool RequiresFrame = false;
+    /// Also run this frame-dependent producer during probe and mirror capture declaration.
+    bool SupportsCapture = false;
 };
 
 /// The most sun cascades that a depth producer receives. Equal to kMaxShadowCascades.

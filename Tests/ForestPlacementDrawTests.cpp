@@ -1,6 +1,7 @@
 #include "PackedPlacementTestArchive.h"
 
 #include "Assets/AssetManager.h"
+#include "Assets/ModelAsset.h"
 
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
@@ -10,6 +11,7 @@
 #include "ForestPlacementSession.h"
 #include "ForestPlacementRuntime.h"
 #include "ForestStandDrawProducer.h"
+#include "ForestStandDraws.h"
 #include "../Engine/Source/Engine/Rendering/IdentityMeshDrawConstants.h"
 #include "ForestPlacementFeature.h"
 #include "EngineLogCapture.h"
@@ -19,10 +21,12 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Mathematics/MatrixOps.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/Pipeline/PipelineTypes.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Tests/ScopedEnvVar.h"
+#include "StagedTestPaths.h"
 
 #include <gtest/gtest.h>
 
@@ -541,25 +545,66 @@ TEST_F(ForestPlacementDrawTest, SplitsAVisibleOverviewRangeAtThePageSectorBounda
             return heads;
         });
     Rendering::RenderGraph::RGFrame graph(nullptr, nullptr, nullptr, nullptr);
-    services.EmitFrameForwardCommandsForView(graph, view);
-    const auto& state = services.Views().PerView(view);
-    const auto& depth = state.DepthCommands[static_cast<size_t>(DepthPassType::Prepass)];
-    ASSERT_EQ(state.ForwardCommands.size(), 2u);
-    ASSERT_EQ(depth.size(), 2u);
-    for (uint32 page = 0; page < 2; ++page)
+    for (const auto purpose : {ForwardEmitPurpose::World, ForwardEmitPurpose::ReflectionProbeCapture,
+                               ForwardEmitPurpose::PlanarReflectionCapture})
     {
-        const auto& command = state.ForwardCommands[page];
-        ASSERT_EQ(command.SubDraws.size(), 1u);
-        EXPECT_EQ(command.SubDraws.front().FirstIndex, 512u + 6u * page);
-        EXPECT_EQ(command.SubDraws.front().IndexCount, 6u);
-        EXPECT_EQ(command.Bindings.PushConstants.data(), depth[page].Bindings.PushConstants.data());
-        ASSERT_EQ(command.Bindings.PushConstants.size(), sizeof(IdentityMeshDrawConstants));
-        IdentityMeshDrawConstants constants(0);
-        std::memcpy(&constants, command.Bindings.PushConstants.data(), sizeof(constants));
-        EXPECT_EQ(constants.HasSector, 1u);
-        EXPECT_EQ(constants.MaterialIndex, 17u);
-        EXPECT_EQ(std::bit_cast<int32>(constants.NormalColumn0.w), 500000 + static_cast<int32>(page));
-        EXPECT_EQ(std::bit_cast<int32>(constants.NormalColumn2.w), 500000);
+        if (purpose == ForwardEmitPurpose::World)
+            services.EmitFrameForwardCommandsForView(graph, view);
+        else
+            services.EmitProducerForwardCommandsForView(view, purpose, &graph);
+        const auto& state = services.Views().PerView(view);
+        const auto& depth = state.DepthCommands[static_cast<size_t>(DepthPassType::Prepass)];
+        ASSERT_EQ(state.ForwardCommands.size(), 2u);
+        const bool expectsCameraDepth = purpose == ForwardEmitPurpose::World;
+        ASSERT_EQ(depth.size(), expectsCameraDepth ? 2u : 0u);
+        for (uint32 page = 0; page < 2; ++page)
+        {
+            const auto& command = state.ForwardCommands[page];
+            ASSERT_EQ(command.SubDraws.size(), 1u);
+            EXPECT_EQ(command.SubDraws.front().FirstIndex, 512u + 6u * page);
+            EXPECT_EQ(command.SubDraws.front().IndexCount, 6u);
+            if (expectsCameraDepth)
+                EXPECT_EQ(command.Bindings.PushConstants.data(), depth[page].Bindings.PushConstants.data());
+            ASSERT_EQ(command.Bindings.PushConstants.size(), sizeof(IdentityMeshDrawConstants));
+            IdentityMeshDrawConstants constants(0);
+            std::memcpy(&constants, command.Bindings.PushConstants.data(), sizeof(constants));
+            EXPECT_EQ(constants.HasSector, 1u);
+            EXPECT_EQ(constants.MaterialIndex, 17u);
+            EXPECT_EQ(std::bit_cast<int32>(constants.NormalColumn0.w), 500000 + static_cast<int32>(page));
+            EXPECT_EQ(std::bit_cast<int32>(constants.NormalColumn2.w), 500000);
+        }
+    }
+}
+
+TEST_F(ForestPlacementDrawTest, ReflectionCapturesDrawTheOverviewWithoutCameraDepthHeads)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "reflection.geforest";
+    WriteStore(file);
+    std::string error;
+    const auto runtime = ForestPlacementRuntime::Open(file, {}, error);
+    ASSERT_TRUE(runtime) << error;
+
+    RenderServices services;
+    constexpr uint64 kWorld = 45;
+    const auto layer = Rendering::RenderLayerMask::Default();
+    const auto capture = AddForestStandView(services, 512'000'055.0, kWorld, layer);
+    const auto otherWorld = AddForestStandView(services, 512'000'055.0, kWorld + 1, layer);
+    const auto subscription = RegisterForestStandDraws(services, kWorld, layer, runtime,
+        [](const ForwardEmitContext&) { return MakeForestStandDrawHeads(true); });
+
+    Rendering::RenderGraph::RGFrame graph(nullptr, nullptr, nullptr, nullptr);
+    for (const auto purpose : {ForwardEmitPurpose::ReflectionProbeCapture, ForwardEmitPurpose::PlanarReflectionCapture})
+    {
+        services.EmitProducerForwardCommandsForView(capture, purpose, &graph);
+        services.EmitProducerForwardCommandsForView(otherWorld, purpose, &graph);
+        const auto& commands = services.Views().PerView(capture);
+        ASSERT_EQ(commands.ForwardCommands.size(), 1u);
+        const auto draws = commands.ForwardCommands.front().SubDraws;
+        ASSERT_EQ(draws.size(), 1u);
+        EXPECT_EQ(draws.front().FirstIndex, 518u);
+        EXPECT_TRUE(commands.DepthCommands[static_cast<size_t>(DepthPassType::Prepass)].empty());
+        EXPECT_TRUE(services.Views().PerView(otherWorld).ForwardCommands.empty());
     }
 }
 
@@ -986,6 +1031,66 @@ protected:
     std::unique_ptr<Window> m_Main;
     std::unique_ptr<Window> m_Other;
 };
+
+TEST_F(ForestPlacementSessionDeviceTest, OpaqueOverviewPrepassBindsOnlyTheSetsItsPipelineDeclares)
+{
+    using namespace Engine::Renderer;
+    const auto shaders = TestPaths::StagedRenderingShadersDir();
+    Rendering::MaterialBuildContext context{};
+    context.AdapterShaderDir = shaders;
+    context.IncludeDirs = {shaders};
+    context.CacheRoot = m_Scratch.Path() / "shader-cache";
+    m_Services.Materials().SetMaterialBuildContext(context);
+
+    MaterialDocument document{};
+    document.materialName = "OpaqueForestOverview";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    const GUID material = GUID::Generate();
+    ASSERT_NE(m_Services.Materials().RegisterMaterialFromDocument(material, document), nullptr);
+
+    Mesh mesh{};
+    mesh.Vertices.resize(4);
+    mesh.Vertices[1].Position[0] = 1.0f;
+    mesh.Vertices[2].Position[1] = 1.0f;
+    mesh.Vertices[3].Position[0] = mesh.Vertices[3].Position[1] = 1.0f;
+    mesh.Indices = {0, 1, 2, 1, 3, 2, 0, 1, 2, 1, 3, 2};
+    const Rendering::MeshGPUKey key{GUID::Generate(), 0};
+    ASSERT_TRUE(m_Services.GetMeshGPURegistry().RegisterSubmesh(key, mesh).IsValid());
+    const auto layers = Rendering::RenderLayerMask::Default();
+    const auto view = AddForestStandView(m_Services, 512'000'055.0, kWorld, layers);
+    const auto stand = RegisterForestStandMesh(m_Services, kWorld, layers, m_Runtime, key,
+                                               [material] { return material; });
+    auto& formats = m_Services.Views().PerView(view).PrepassFormatKey;
+    formats.DepthFormat = Rendering::TextureFormat::D32_FLOAT;
+    formats.RasterizationSamples = 1;
+    for (uint32 frame = 0; frame < 8; ++frame)
+    {
+        m_Services.Materials().BeginFrame();
+        ASSERT_TRUE(m_Device->BeginFrame());
+        m_Main->Graph.BeginFrame(frame);
+        m_Services.EmitProducerForwardCommandsForView(view);
+        m_Services.EmitFrameForwardCommandsForView(m_Main->Graph, view);
+        const auto heads = m_Services.GetDepthCommands(view, DepthPassType::Prepass);
+        m_Main->Graph.Execute();
+        m_Device->WaitForIdle();
+        if (heads.empty())
+            continue;
+        ASSERT_EQ(heads.size(), 1u);
+        const auto& head = heads.front();
+        const auto* pipeline = m_Device->LookupGraphicsPipeline(head.InternedPipeline);
+        ASSERT_NE(pipeline, nullptr);
+        ASSERT_EQ(pipeline->PixelShader, nullptr);
+        ASSERT_EQ(pipeline->DescriptorSetLayouts.size(), 1u);
+        ASSERT_NE(head.PipelineMeta, nullptr);
+        ASSERT_TRUE(std::ranges::any_of(head.PipelineMeta->Sets, [](const auto& set) {
+            return set.Set > 0u && !set.Bindings.empty();
+        }));
+        EXPECT_EQ(head.PipelineSetCount, pipeline->DescriptorSetLayouts.size());
+        return;
+    }
+    FAIL() << "The registered opaque overview never published its prepass head";
+}
 
 // The corner of this card reaches 10 + 4 * sqrt(2) m from the root, past the archive's 12 m.
 Engine::Renderer::ForestImpostorCard OversizedCard()
