@@ -8,11 +8,13 @@
 #include "Components/Rendering/ForestStand.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "ECS/ECSTemplates.h"
+#include "ECS/Systems.h"
 #include "ECS/World.h"
 #include "Engine/Rendering/Forest/ForestSplatCells.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "EngineLogCapture.h"
+#include "JobSystem/WorkStealingThreadPool.h"
 #include "PackedPlacementTestArchive.h"
 #include "Rendering/Core/Device.h"
 #include "Scene/SceneIO.h"
@@ -166,6 +168,48 @@ TEST_F(ForestStandSystemTest, EachSceneLoadAttachesOneStandAndReleasesTheLast)
         Logger::Log::Flush();
     }
     EXPECT_EQ(CountLines(lines, "attached with 2 pages and 3 placements"), 2u);
+}
+
+class ForestScheduleNeighbor : public ECS::ISystem
+{
+public:
+    const char* GetName() const override { return "ForestScheduleNeighbor"; }
+    void Update(ECS::World&, float32) override {}
+};
+
+TEST_F(ForestStandSystemTest, TheLastStandReleasesBeforeAnEmptyWorldStopsSplittingItsWave)
+{
+    ECS::World world;
+    JobSystem::WorkStealingThreadPool pool{2};
+    ECS::SystemManager manager{&pool};
+    manager.AddSystem<ForestScheduleNeighbor>();
+    const auto* forest = manager.AddSystem<ForestStandSystem>(&m_Services, &m_Assets);
+    manager.AddSystem<ForestScheduleNeighbor>();
+    ECS::SystemExecutionPlan plan;
+    plan.Waves.push_back({{0, 1, 2}});
+    manager.SetExecutionPlan(std::move(plan));
+    manager.GetWaveTrace().SetEnabled(true);
+
+    manager.Update(world, 0.0f);
+    const ECS::EntityHandle entity = CreateStand(world);
+    manager.Update(world, 0.0f);
+    ASSERT_TRUE(IsAttached(*forest, world, entity));
+
+    world.RemoveComponentImmediate<Components::ForestStand>(entity);
+    manager.Update(world, 0.0f);
+    EXPECT_EQ(forest->FindStatus(world.GetWorldId(), entity), nullptr);
+    manager.Update(world, 0.0f);
+
+    std::vector<ECS::SystemWaveTrace::Frame> frames;
+    manager.GetWaveTrace().CopyFrames(frames, 4);
+    ASSERT_EQ(frames.size(), 4u);
+    EXPECT_EQ(frames[0].SystemCount, 2u);
+    EXPECT_EQ(frames[0].Waves[0].Joins, 1u);
+    EXPECT_EQ(frames[1].SystemCount, 3u);
+    EXPECT_EQ(frames[1].Systems[1].Worker, ECS::SystemWaveTrace::kCallerThread);
+    EXPECT_EQ(frames[2].SystemCount, 3u);
+    EXPECT_EQ(frames[3].SystemCount, 2u);
+    EXPECT_EQ(frames[3].Waves[0].Joins, 1u);
 }
 
 TEST_F(ForestStandSystemTest, RemovingTheComponentReleasesTheStand)
