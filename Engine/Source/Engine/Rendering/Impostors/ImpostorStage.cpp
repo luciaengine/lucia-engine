@@ -70,8 +70,10 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
     const StringId albedo = HashStringId("albedoMap");
     const StringId normal = HashStringId("normalMap");
     // impostorAtlas: frames per side, layout, debug tint, highest ready mip.
+    // Negative is the hemisphere with a packed overhead frame.
     const Mathematics::Vector4 atlasParams(
-        static_cast<float>(framesPerSide), layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f,
+        static_cast<float>(framesPerSide), atlas.HasPoleFrame ? -1.0f :
+            (layout == Mathematics::OctahedralLayout::Hemisphere ? 0.0f : 1.0f),
         Platform::EnvironmentSwitchEnabled("GE_IMPOSTOR_DEBUG_TINT", false) ? 1.0f : 0.0f,
         static_cast<float>(atlas.HighestReadyMip));
     const StringId atlasProperty = HashStringId("impostorAtlas");

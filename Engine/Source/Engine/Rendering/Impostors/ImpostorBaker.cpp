@@ -48,6 +48,16 @@ std::array<std::byte, sizeof(IdentityMeshDrawConstants)> MakePushConstants(uint3
     return bytes;
 }
 
+bool HasPoleFrame(const ImpostorAtlasKey& key)
+{
+    return key.Layout == Mathematics::OctahedralLayout::Hemisphere && key.FramesPerSide == 8u && key.FrameSize == 128u;
+}
+
+uint32 AtlasFrameCount(const ImpostorAtlasKey& key)
+{
+    return key.FramesPerSide * key.FramesPerSide + (HasPoleFrame(key) ? 1u : 0u);
+}
+
 uint32 AtlasSide(const ImpostorAtlasKey& key)
 {
     return key.FramesPerSide * key.FrameSize;
@@ -155,7 +165,7 @@ void ImpostorBaker::DeclareFrameStage(RenderGraph::RGFrame& frame, RenderService
     FrameSlot& slot = m_FrameSlots[frame.FrameIndex() % kFrameSlots];
     slot.Commands.clear();
     slot.PushConstants.clear();
-    const uint32 frameCount = job.Request.Key.FramesPerSide * job.Request.Key.FramesPerSide;
+    const uint32 frameCount = AtlasFrameCount(job.Request.Key);
     slot.Commands.reserve(static_cast<size_t>(kFramesPerRenderedFrame) * job.Request.Parts.size());
     slot.PushConstants.reserve(slot.Commands.capacity());
 
@@ -264,7 +274,7 @@ void ImpostorBaker::OnFrameSubmittedRG(RenderGraph::RGFrame& frame, const Render
             return;
         }
         job.NextFrame = pending.NextFrame;
-        const uint32 frameCount = pending.Key.FramesPerSide * pending.Key.FramesPerSide;
+        const uint32 frameCount = AtlasFrameCount(pending.Key);
         if (job.NextFrame == frameCount && textures->MipCount == 1)
         {
             m_Cache.MarkReady(pending.Key, 1u);
@@ -345,6 +355,7 @@ ImpostorBaker::AtlasTextures& ImpostorBaker::EnsureTextures(Rendering::IDevice& 
                  static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
     desc.initialState = Rendering::ResourceState::ShaderResource;
     AtlasTextures textures{};
+    textures.Atlas.HasPoleFrame = HasPoleFrame(key);
     // After a failed allocation, request only base levels. The backend retires
     // released resources between attempts.
     const uint32 requestedMipCount = existing ? 1u : ImpostorAtlasMipCount(key);
@@ -515,15 +526,26 @@ void ImpostorBaker::DeclareAtlasFrame(RenderGraph::RGFrame& frame, RenderService
                                       RenderGraph::RGTexture depth, uint32 atlasFrame, FrameSlot& slot, bool* submitted)
 {
     const ImpostorAtlasKey& key = job.Request.Key;
-    const uint32 column = atlasFrame % key.FramesPerSide;
-    const uint32 row = atlasFrame / key.FramesPerSide;
+    const bool pole = atlasFrame == key.FramesPerSide * key.FramesPerSide;
+    const uint32 column = pole ? 4u : atlasFrame % key.FramesPerSide;
+    const uint32 row = pole ? 3u : atlasFrame / key.FramesPerSide;
 
     ViewRegistry& views = services.Views();
-    const Rendering::CameraData camera =
-        MakeImpostorFrameCamera(key.Layout, column, row, key.FramesPerSide, job.Request.Center, job.Request.Radius);
+    const Rendering::CameraData camera = pole
+        ? MakeImpostorFrameCamera(key.Layout, 1u, 1u, 3u, job.Request.Center, job.Request.Radius)
+        : MakeImpostorFrameCamera(key.Layout, column, row, key.FramesPerSide, job.Request.Center, job.Request.Radius);
     const float radius = job.Request.Radius;
     views.SetCameraData(m_Camera, camera, Rendering::CameraRanges{radius, 3.0f * radius});
-    views.SetViewLetterbox(m_View, ViewLetterbox{true, column * key.FrameSize, row * key.FrameSize, key.FrameSize, key.FrameSize});
+    uint32 left = column * key.FrameSize;
+    uint32 width = key.FrameSize;
+    // Pack the three tiles in row 3, columns 3–5, and the pole into the same atlas rectangle.
+    if (HasPoleFrame(key) && row == 3u && column >= 3u && column <= 5u)
+    {
+        width = key.FrameSize * 3u / 4u;
+        const uint32 packedColumn = column - 3u + ((pole || column == 5u) ? 1u : 0u);
+        left = 3u * key.FrameSize + packedColumn * width;
+    }
+    views.SetViewLetterbox(m_View, ViewLetterbox{true, left, row * key.FrameSize, width, key.FrameSize});
 
     // Cleared to far for each atlas frame: the frames share no depth.
     frame.AddPass("Impostor.ClearDepth", Rendering::PassPhase::kEarlySetup,
