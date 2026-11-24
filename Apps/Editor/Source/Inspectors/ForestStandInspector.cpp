@@ -11,9 +11,11 @@
 #include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
+#include "Types/FormatNumber.h"
 #include "UI/Controls/InspectorNotice.h"
 
 #include <algorithm>
+#include <format>
 #include <functional>
 #include <string>
 #include <utility>
@@ -39,7 +41,21 @@ std::string FindStandProblem(const ECS::World& world, ECS::EntityHandle entity)
     auto* systems = loop ? loop->GetSystemManager() : nullptr;
     const auto* stands = systems ? systems->GetSystem<Engine::Renderer::ForestStandSystem>() : nullptr;
     const StandStatus* status = stands ? stands->FindStatus(world.GetWorldId(), entity) : nullptr;
-    return status ? status->Problem : std::string();
+    if (!status)
+        return {};
+    if (!status->Problem.empty() || !status->DetailBudget)
+        return status->Problem;
+    const auto& budget = *status->DetailBudget;
+    const char* view = status->DetailView == Rendering::ViewPurpose::Game ? "Game view" : "Scene View";
+    std::string message = std::format("selects {} of {} visible pages within Detail Distance in the {}. The closest "
+        "page omitted by the slot budget is {} from the camera.", budget.Selected, budget.Eligible, view,
+        FormatMeters(*budget.NearestOmitted, 1));
+    if (budget.Selected > budget.Resident)
+    {
+        const auto pending = budget.Selected - budget.Resident;
+        message += std::format(" {} selected {} still loading.", pending, pending == 1 ? "page is" : "pages are");
+    }
+    return message;
 }
 
 // The notice of one stand and the problem it shows. The notice is null while there is no problem.
@@ -125,8 +141,8 @@ void BuildForestStandInspector(const InspectorContext& ctx)
         "Change Forest Stand Detail Distance", [](Stand& u, float v) { u.DetailDistance = std::max(0.0f, v); }, {});
     InspectorDrag::AddFloatRowWithDrag(ctx.Parent, "Detail Distance", stand->DetailDistance,
         std::move(distance.first), std::move(distance.second), Stand{}.DetailDistance,
-        "Meters from the camera within which the stand draws trees instead of the overview. 0 draws the overview "
-        "only.",
+        "Meters from the camera within which pages can draw trees. The slot budget favors closer pages. "
+        "0 draws the overview only.",
         0.0f);
 
     auto budget = InspectorDrag::MakeComponentInteractiveHandlers<Stand, int>(w, e, n, undo,

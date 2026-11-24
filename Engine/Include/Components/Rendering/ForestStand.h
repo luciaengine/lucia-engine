@@ -30,8 +30,8 @@ struct ForestStand
     ForestPlacementArchiveRef Archive;
     /// The tree model with its impostor setting on. Empty draws the overview only.
     ModelRef TreeModel;
-    /// Meters from the camera within which the stand draws trees instead of the overview. 0 draws
-    /// the overview only.
+    /// Meters from the camera within which visible pages can draw trees, up to the detail slot budget.
+    /// 0 draws the overview only.
     float32 DetailDistance = 400.0f;
     /// The most placements near the camera that draw the tree mesh instead of its impostor card.
     /// 0 draws cards only. The device tier caps it at kMaxNearMeshBudget, or 128 on the compatibility tier.

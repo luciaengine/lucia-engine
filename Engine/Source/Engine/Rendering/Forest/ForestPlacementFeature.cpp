@@ -498,8 +498,11 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
         return false;
     view.DetailDistance = session.DetailDistance;
     view.HandoffWidth = session.Splats ? std::min(kSplatHandoffWidth, session.DetailDistance) : 0.0f;
+    session.DetailPlanEpoch.reset();
     if (!PlanDetails(session, context, view))
         return false;
+    session.DetailPlanEpoch = services.Spine().WorldFrameEpoch();
+    session.DetailPlanView = desc->purpose;
     if (session.Plan.DetailedDraws.empty())
     {
         standRanges.swap(session.Plan.StandDraws);

@@ -6,12 +6,13 @@
 //
 // @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
 // impostorAtlas.z enables the debug tint. impostorAtlas.w is the highest ready mip.
+// @property float impostorNormalCoherenceWeight "Normal Coherence Weight" default=1 group=Impostor
 //
 // The card shades its crown's own shadow toward the primary light:
 // @primaryLightOcclusion
 
 #include "Includes/impostor_frame.glsl"
-#include "Includes/foliage_coverage.glsl"
+#include "Includes/mask_coverage.glsl"
 
 vec2 GE_ImpostorClampTile(vec2 atlasUv, vec2 frame, float gridSize, vec2 inset)
 {
@@ -108,7 +109,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     {
         float cutout = step(clamp(Props.alphaCutoff, 0.0, 1.0), cardColor.a);
         float coverage = mix(cutout, cardColor.a, smoothstep(0.5, 2.0, mip));
-        o.opacity = coverage > GE_FoliageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
+        o.opacity = coverage > GE_MaskCoverageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
     }
 #ifdef GE_DEPTH_ONLY_FRAGMENT
     return o;
@@ -174,7 +175,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 #ifdef GE_PRIMARY_LIGHT_OCCLUSION
     o.primaryLightOcclusion =
         GE_ImpostorCrownLight(surface, sIn.primaryLightDirectionWS, c, s, Props.impostorAtlas, halfTexel) *
-        normalCoherence;
+        mix(1.0, normalCoherence, Props.impostorNormalCoherenceWeight);
 #endif
     o.roughness = 0.9;
     o.metallic = 0.0;

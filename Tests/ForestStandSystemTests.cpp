@@ -351,6 +351,55 @@ TEST_F(ForestStandSystemTest, AValidSplatBakeGivesTheSessionItsCells)
     EXPECT_EQ(cards.front()->Splats, nullptr);
 }
 
+TEST_F(ForestStandSystemTest, InspectorStatusFollowsTheLastDetailViewPlan)
+{
+    m_Services.Spine().Initialize(m_Services);
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto* stand = world.GetComponentForWrite<Components::ForestStand>(entity);
+    stand->TreeModel = Components::ModelRef(m_Archive);
+    stand->DetailDistance = 100.0f;
+    ForestStandSystem system(&m_Services, &m_Assets);
+    system.Update(world, 0.0f);
+    const auto* feature = m_Services.GetFeature<ForestPlacementFeature>();
+    ASSERT_NE(feature, nullptr);
+    const auto sessions = ForestPlacementFeatureTestAccess::Sessions(*feature);
+    ASSERT_EQ(sessions.size(), 1u);
+    auto& session = *sessions.front();
+    session.DetailPlanEpoch = m_Services.Spine().WorldFrameEpoch();
+    session.Plan.DetailBudget = {.Eligible = 7, .Selected = 4, .Resident = 3, .NearestOmitted = 53.0};
+    m_Services.Spine().BeginAppFrame();
+    system.Update(world, 0.0f);
+    const auto* status = system.FindStatus(world.GetWorldId(), entity);
+    ASSERT_NE(status, nullptr);
+    ASSERT_TRUE(status->DetailBudget);
+    EXPECT_EQ(status->DetailBudget->Eligible, 7u);
+    EXPECT_EQ(status->DetailBudget->Selected, 4u);
+    EXPECT_EQ(status->DetailBudget->Resident, 3u);
+    EXPECT_EQ(status->DetailBudget->NearestOmitted, 53.0);
+
+    EXPECT_EQ(status->DetailView, Rendering::ViewPurpose::EditorScene);
+
+    // The Game view takes detail ownership with enough slots for its visible pages.
+    session.DetailPlanEpoch = m_Services.Spine().WorldFrameEpoch();
+    session.DetailPlanView = Rendering::ViewPurpose::Game;
+    session.Plan.DetailBudget = {.Eligible = 1, .Selected = 1, .Resident = 1};
+    system.Update(world, 0.0f);
+    EXPECT_FALSE(status->DetailBudget);
+
+    session.Plan.DetailBudget = {.Eligible = 8, .Selected = 4, .Resident = 4, .NearestOmitted = 72.0};
+    system.Update(world, 0.0f);
+    ASSERT_TRUE(status->DetailBudget);
+    EXPECT_EQ(status->DetailView, Rendering::ViewPurpose::Game);
+    EXPECT_EQ(status->DetailBudget->NearestOmitted, 72.0);
+
+    // No detail view planned in the intervening frame.
+    m_Services.Spine().BeginAppFrame();
+    m_Services.Spine().BeginAppFrame();
+    system.Update(world, 0.0f);
+    EXPECT_FALSE(system.FindStatus(world.GetWorldId(), entity)->DetailBudget);
+}
+
 TEST_F(ForestStandSystemTest, ASnapshotRestoreBringsBackARemovedStand)
 {
     ECS::World world;

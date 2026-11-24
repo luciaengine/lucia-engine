@@ -2,6 +2,7 @@
 
 #include "ContentCheckRegistry.h"
 
+#include "AssetCore/AssetTypes.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Engine/Build/AssetCollector.h"
 #include "Engine/Rendering/Forest/ForestSplatCells.h"
@@ -10,6 +11,7 @@
 #include "Types/PathUtils.h"
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <span>
 #include <string_view>
@@ -52,11 +54,25 @@ fs::path AssetRelativePath(const AssetManifestEntry& entry)
     return relative;
 }
 
-// Empty when the archive resolves inside its asset folder and opens.
+std::string ArchiveDisplayPath(const AssetManifestEntry& archive)
+{
+    const auto first = archive.outputPath.begin();
+    return PathToUtf8(first != archive.outputPath.end() && *first == "Packages" ?
+                      archive.outputPath : AssetRelativePath(archive));
+}
+
+bool IsForestArchive(const AssetManifestEntry& entry)
+{
+    return entry.type == AssetType::ForestPlacementArchive ||
+           (entry.type == AssetType::Unknown &&
+            GetAssetTypeFromExtension(PathToUtf8(entry.sourcePath.extension())) == AssetType::ForestPlacementArchive);
+}
+
+// Empty when the archive resolves inside its asset folder and every page passes its hash check.
 std::string DescribeArchiveProblem(const AssetManifestEntry& archive)
 {
     const fs::path relative = AssetRelativePath(archive);
-    if (archive.type != AssetType::ForestPlacementArchive)
+    if (!IsForestArchive(archive))
         return "is not a .geforest file. Set Archive to the .geforest file that the overview mesh was cooked from.";
 
     fs::path root = archive.sourcePath;
@@ -75,6 +91,23 @@ std::string DescribeArchiveProblem(const AssetManifestEntry& archive)
     PageStreaming::PackedPlacementStore store;
     if (std::string reason = store.Open(source); !reason.empty())
         return "is not valid: " + reason + ". Cook the archive again with ForestPlacementCook.";
+
+    SharedFileReader file;
+    if (!file.Open(source))
+        return "cannot be read. Check that the archive is accessible and export again.";
+
+    using PageStreaming::PackedPlacement;
+    using PageStreaming::PackedPlacementStore;
+    std::array<uint8, PackedPlacementStore::kPlacementsPerPage * sizeof(PackedPlacement)> pageBytes;
+    for (uint32 pageIndex = 0; pageIndex < store.Pages().size(); ++pageIndex)
+    {
+        const auto range = store.ReadRange(pageIndex);
+        if (!range || range->Bytes > pageBytes.size() || !file.SeekTo(range->Offset) ||
+            file.Read(pageBytes.data(), range->Bytes) != static_cast<int64>(range->Bytes) ||
+            !store.VerifyPage(pageIndex, std::span(pageBytes).first(static_cast<size_t>(range->Bytes))))
+            return "is not valid: could not verify placement page " + std::to_string(pageIndex) +
+                   ". Cook the archive again with ForestPlacementCook.";
+    }
     return {};
 }
 
@@ -105,6 +138,7 @@ std::string_view LocatorEntity(std::string_view locator, std::string_view field)
 }
 
 using ShippedFile = std::pair<const AssetManifestEntry*, std::string>;
+using ArchiveProblems = FlatMap<const AssetManifestEntry*, std::string>;
 
 // What the stands of one scene reference, by edge locator: true when one edge of the locator ships.
 struct StandReferences
@@ -146,7 +180,7 @@ std::string DescribeStand(const std::string& fileName, std::string_view locator,
 }
 
 void CheckScene(const AssetManifestEntry& scene, std::span<const DepEdge> edges, const AssetManifest& manifest,
-                std::vector<std::string>& errors)
+                ArchiveProblems& archives, std::vector<std::string>& errors)
 {
     const StandReferences references = CollectStandReferences(edges, manifest);
     const std::string fileName = (scene.type == AssetType::Prefab ? "Prefab '" : "Scene '") +
@@ -171,21 +205,38 @@ void CheckScene(const AssetManifestEntry& scene, std::span<const DepEdge> edges,
             errors.push_back(DescribeStand(fileName, locator, kSplatsField) + "splat bake '" +
                              PathToUtf8(AssetRelativePath(*splats)) + "' " + problem);
     for (const auto& [archive, locator] : references.ShippedArchives)
-        if (std::string problem = DescribeArchiveProblem(*archive); !problem.empty())
+    {
+        const std::string* problem = archives.Find(archive);
+        if (!problem)
+            problem = &archives.InsertOrAssign(archive, DescribeArchiveProblem(*archive));
+        if (!problem->empty())
             errors.push_back(DescribeStand(fileName, locator, kArchiveField) + "archive '" +
-                             PathToUtf8(AssetRelativePath(*archive)) + "' " + problem);
+                             ArchiveDisplayPath(*archive) + "' " + *problem);
+    }
 }
-// Only a file that a dependency walk read has edges. The fallbacks of CollectGameContent walk no
-// file and ship every project asset, so the check cannot see a broken archive there.
+
 void CheckForestStandContent(const AssetManifest& manifest, const AssetCollector& collector,
                              std::vector<std::string>& errors)
 {
+    ArchiveProblems archives;
     for (const AssetManifestEntry& entry : manifest.entries)
         if (entry.type == AssetType::Scene || entry.type == AssetType::Prefab)
             if (const std::vector<DepEdge>* edges = collector.FindWalkedEdges(entry.guid))
-                CheckScene(entry, *edges, manifest, errors);
+                CheckScene(entry, *edges, manifest, archives, errors);
+
+    // Ship rules and the asset collection fallbacks can include an archive without a walked stand.
+    for (const AssetManifestEntry& entry : manifest.entries)
+        if (!archives.Contains(&entry))
+            CheckShippedForestArchive(entry, errors);
 }
 } // namespace
+
+void CheckShippedForestArchive(const AssetManifestEntry& entry, std::vector<std::string>& errors)
+{
+    if (IsForestArchive(entry))
+        if (std::string problem = DescribeArchiveProblem(entry); !problem.empty())
+            errors.push_back("Forest Stand archive '" + ArchiveDisplayPath(entry) + "' " + problem);
+}
 
 void RegisterForestStandContentCheck()
 {

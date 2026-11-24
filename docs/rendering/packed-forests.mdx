@@ -40,7 +40,9 @@ ForestPlacementCook --overview Assets/Forests/Forest.geforest canopy.png Assets/
 - The canopy height is a typical height of the canopy above the root at unit scale, in meters. Each quad is at the mean canopy height of its page's trees.
 - The tile size is 16 to 64 pixels per page. A larger tile keeps more canopy detail and uses more graphics memory. The atlas is at most 8192 pixels on each side.
 
-The cooker draws every tree of a page into that page's tile, at the tree's position, yaw and scale. It embeds the atlas in the model with an alpha-masked material that the importer gives the forest canopy surface. At a distance, the canopy surface uses the filtered alpha as coverage, so the canopy stays visible when its leaf detail becomes smaller than a pixel. Import the model with the default glTF axis settings, and generate it again when the placements change. The importer finds the canopy material by the cooker's marker in the material's glTF extras. If you add more extras to that material and its extras block becomes larger than 256 bytes, the material loses the canopy surface.
+Each cooked quad stores its vertices relative to its archive page’s world sector. The mesh extras field `luciaForestSectorLocal` identifies these meshes. Keep the mesh and its archive together. A mesh without the marker uses absolute world coordinates, including a hand-authored overview.
+
+The cooker draws every tree of a page into that page's tile, at the tree's position, yaw and scale. It embeds the atlas in the model with an alpha-masked material that the importer gives the forest canopy surface. At a distance, the canopy surface uses the filtered alpha as coverage, so the canopy stays visible when its leaf detail becomes smaller than a pixel. Generated overview meshes use the archive axes regardless of model import rotation or mirror settings. Generate the overview again when the placements change. The overview cooker accepts page origins in render-origin sectors −1,048,576 through 1,048,575 on each axis (1,024 meters per sector). Archive-only cooking supports the broader placement coordinate range. The importer finds the canopy material by the cooker's marker in the material's glTF extras. If you add more extras to that material and its extras block becomes larger than 256 bytes, the material loses the canopy surface.
 
 ## Place a forest stand in a scene
 
@@ -56,7 +58,7 @@ Each view draws the overview. The trees near the camera draw in one view at a ti
 | --- | --- | --- |
 | Archive | none | The `.geforest` file that the overview mesh was cooked from. Required. |
 | Tree Model | none | A tree model with its impostor setting on. Empty draws the overview only. |
-| Detail Distance | 400 | The distance in meters from the camera within which visible pages draw their trees instead of the overview. 0 draws the overview only. |
+| Detail Distance | 400 | The distance in meters from the camera within which visible pages can draw their trees. The slot budget favors closer pages. 0 draws the overview only. |
 | Near Mesh Budget | 0 | The most trees near the camera that draw the tree mesh instead of the impostor card. 0 draws cards only. The Inspector accepts 0 to 256, and the compatibility tier caps it at 128. |
 | Far Representation | Cards | What the trees beyond the near meshes draw as: impostor cards, or animated splats. See [Draw far trees as splats](#draw-far-trees-as-splats). |
 | Splats | none | The `.geforestsplats` file that Splats draws. The Inspector shows it when Far Representation is Splats. |
@@ -104,15 +106,15 @@ Bake the splats again when the tree model or its materials change. A stand attac
 - A stand casts no shadows.
 - Reflection probes and planar reflections do not show the stand.
 - A stand does not draw into the depth prepass, so ambient occlusion and contact shadows do not see it.
-- At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. The pages nearest to the camera draw as trees, and the other pages within Detail Distance draw the overview.
+- At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. When the slot budget leaves visible pages within Detail Distance on the overview, the Inspector shows how many pages were selected and the distance to the closest omitted page in the detail view. Selected pages can still be loading.
 
 ### Export
 
-An export ships the archive and the tree model of each stand in the exported scenes with the other assets of those scenes. The export stops, with an error that names the scene, the entity and the fix, when:
+An export ships the archive and the tree model of each stand in the exported scenes with the other assets of those scenes. The export stops and reports the archive and how to fix it. When a stand references the archive, the error also names the scene and entity. The export stops when:
 
 - the archive or the tree model does not ship, for example because it is not in the project or a ship rule excludes it;
 - the archive is not a `.geforest` file, or it is a link to a file outside its asset folder;
-- the archive is not valid.
+- the archive directory or any placement page fails validation. Cook the archive again with `ForestPlacementCook`.
 
 ## Splat file format
 

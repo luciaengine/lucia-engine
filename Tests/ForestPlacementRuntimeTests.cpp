@@ -36,6 +36,61 @@ bool WithinDetailRange(const Engine::Renderer::ForestPlacementRuntime& runtime,
     return runtime.CanPrefetchDetails(view);
 }
 
+TEST_F(ForestPlacementRuntimeTest, ReportsOnlyVisibleDrawDemandOmittedByTheSlotBudget)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "budget.geforest";
+    WriteStore(file);
+    std::string error;
+    const auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    ForestPlacementView view{m_Pages[0].Origin, {}, 100.0f};
+    ForestPlacementFrame frame;
+    ASSERT_TRUE(runtime->Prepare(view, 1, 0, frame));
+    EXPECT_EQ(frame.DetailBudget.Eligible, 2u);
+    EXPECT_EQ(frame.DetailBudget.Selected, 1u);
+    EXPECT_EQ(frame.DetailBudget.Resident, 0u);
+    ASSERT_EQ(frame.DetailBudget.NearestOmitted, 53.0);
+    ASSERT_EQ(frame.Reads.size(), 1u);
+    ASSERT_TRUE(runtime->CompleteRead(frame.Reads.front(), kFirstPage));
+    ASSERT_TRUE(runtime->CompleteUpload(frame.Reads.front(), ForestUploadResult::Published));
+    ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
+    EXPECT_EQ(frame.DetailBudget.NearestOmitted, 53.0);
+    EXPECT_EQ(frame.DetailBudget.Resident, 1u);
+
+    // The second page is now inside prefetch range only.
+    view.DetailDistance = 50.0f;
+    ASSERT_TRUE(runtime->Prepare(view, 3, 2, frame));
+    EXPECT_EQ(frame.DetailBudget.Eligible, 1u);
+    EXPECT_EQ(frame.DetailBudget.Selected, 1u);
+    EXPECT_FALSE(frame.DetailBudget.NearestOmitted);
+}
+
+TEST_F(ForestPlacementRuntimeTest, APageWaitingToRetryIsEligibleButWasNotOmittedByTheBudget)
+{
+    using namespace Engine::Renderer;
+    const auto file = m_Scratch.Path() / "retry-budget.geforest";
+    WriteStore(file);
+    std::string error;
+    const auto runtime = ForestPlacementRuntime::Open(file, {.DetailSlots = 1, .ReadsPerFrame = 1}, error);
+    ASSERT_TRUE(runtime) << error;
+    ForestPlacementView view{m_Pages[0].Origin, {}, 100.0f};
+    ForestPlacementFrame frame;
+    for (uint64 index = 1; index <= 2; ++index)
+    {
+        ASSERT_TRUE(runtime->Prepare(view, index, index - 1, frame));
+        ASSERT_EQ(frame.Reads.size(), 1u);
+        ASSERT_EQ(frame.Reads.front().Page, 0u);
+        EXPECT_FALSE(runtime->CompleteRead(frame.Reads.front(), {}));
+    }
+    ASSERT_TRUE(runtime->Prepare(view, 3, 2, frame));
+    ASSERT_EQ(frame.Reads.size(), 1u);
+    EXPECT_EQ(frame.Reads.front().Page, 1u);
+    EXPECT_EQ(frame.DetailBudget.Eligible, 2u);
+    EXPECT_EQ(frame.DetailBudget.Selected, 1u);
+    EXPECT_FALSE(frame.DetailBudget.NearestOmitted);
+}
+
 TEST_F(ForestPlacementRuntimeTest, KeepsFallbackThroughUploadAndProtectsRetiringSlotUntilLastDraw)
 {
     using Engine::Renderer::ForestPlacementRuntime;
@@ -303,6 +358,9 @@ TEST_F(ForestPlacementRuntimeTest, HandoffBandStartsAtTheDetailDistanceAndFadesI
     ASSERT_TRUE(runtime->Prepare(view, 2, 1, frame));
     ASSERT_EQ(frame.DetailedDraws.size(), 1u);
     EXPECT_NEAR(frame.DetailedDraws.front().DetailWeight, (41.0f - 32.0f) / 16.0f, 1e-4f);
+    EXPECT_EQ(frame.DetailBudget.Eligible, 0u);
+    EXPECT_EQ(frame.DetailBudget.Selected, 0u);
+    EXPECT_EQ(frame.DetailBudget.Resident, 0u);
     ASSERT_EQ(frame.StandFades.size(), 1u);
     EXPECT_EQ(frame.StandFades.front().Range.FirstIndex, 0u);
     EXPECT_EQ(frame.StandFades.front().Range.IndexCount, 6u);
@@ -317,6 +375,9 @@ TEST_F(ForestPlacementRuntimeTest, HandoffBandStartsAtTheDetailDistanceAndFadesI
     ASSERT_EQ(frame.DetailedDraws.size(), 1u);
     EXPECT_EQ(frame.DetailedDraws.front().DetailWeight, 1.0f);
     EXPECT_TRUE(frame.StandFades.empty());
+    EXPECT_EQ(frame.DetailBudget.Eligible, 1u);
+    EXPECT_EQ(frame.DetailBudget.Selected, 1u);
+    EXPECT_EQ(frame.DetailBudget.Resident, 1u);
 }
 
 TEST_F(ForestPlacementRuntimeTest, TransitionSlotStartsDemandWhilePreviousDetailDrawIsInFlight)

@@ -69,7 +69,7 @@ public:
     static const Material* RegisterCardMaterial(RenderServices& services, const GUID& material, std::string_view name,
                                                 const ImpostorAtlas& atlas, const Mathematics::Vector3& center,
                                                 float radius, uint32 framesPerSide, Mathematics::OctahedralLayout layout,
-                                                ImpostorCardSource source);
+                                                ImpostorCardSource source, float normalCoherenceWeight = 1.0f);
 
     /// The GPU-scene mesh indices of `parts`, in order; empty when a part is not resident yet.
     static std::vector<uint32> PartMeshIndices(const RenderServices& services,

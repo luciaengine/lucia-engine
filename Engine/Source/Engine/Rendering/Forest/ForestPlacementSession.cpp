@@ -20,6 +20,7 @@ void ForestPlacementSession::Reset(bool deviceRebuilt)
 {
     Stream.reset();
     CountSample = {};
+    DetailPlanEpoch.reset();
     if (Device && !deviceRebuilt)
     {
         if (Indices.IsValid())

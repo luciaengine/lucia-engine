@@ -6,6 +6,8 @@
 #include "ECS/ChangeFilter.h"
 #include "ECS/ECS.h"
 #include "ECS/Systems.h"
+#include "Engine/Rendering/Forest/ForestDetailBudget.h"
+#include "Rendering/Camera/CameraTypes.h"
 #include "Types/FlatMap.h"
 #include "Types/FlatSet.h"
 #include "Types/ScopedSubscription.h"
@@ -44,6 +46,9 @@ public:
         bool Attached = false;
         /// The warning the stand logged, after the entity name, or empty. For example "has no MeshRenderer. ..."
         std::string Problem;
+        /// Last active detail view, when its slot budget omitted a visible detail page.
+        std::optional<ForestDetailBudget> DetailBudget;
+        Rendering::ViewPurpose DetailView = Rendering::ViewPurpose::EditorScene;
     };
 
     ForestStandSystem(RenderServices* renderServices, AssetManager* assets);

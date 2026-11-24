@@ -18,8 +18,9 @@ constexpr uint32 kPlacementsPerSlot = PageStreaming::PackedPlacementStore::kPlac
 // All six frustum planes still to test.
 constexpr uint32 kAllPlanes = 0x3fu;
 constexpr float kDetailPrefetchDistanceScale = 1.4f;
-constexpr uint8 kDrawDetail = 1;
-constexpr uint8 kPrefetchDetail = 2;
+constexpr uint8 kPrefetchDetail = 1;
+constexpr uint8 kDrawHandoff = 2;
+constexpr uint8 kDrawDetail = 3;
 // The float rounding margin of a plane test, in epsilons of the summed magnitudes.
 constexpr float kPlaneMarginEpsilons = 8.0f;
 
@@ -248,6 +249,8 @@ void ForestPlacementRuntime::Visit(uint32 index, const ForestPlacementView& view
             const double distance = DistanceSquared(box.Min, box.Max, view.Eye);
             if (distance >= detailSquared)
                 continue;
+            if (distance < static_cast<double>(view.DetailDistance) * view.DetailDistance)
+                ++m_DetailBudget.Eligible;
             const uint64 retry = m_RetryAt[page];
             if (m_Frame >= retry)
                 m_Candidates.emplace_back(distance, page);
@@ -282,14 +285,20 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
     m_Priority.clear();
     m_Visible.clear();
     m_Candidates.clear();
+    m_DetailBudget = {};
     const double detail = m_Slots.empty() ? 0.0 : DetailReach(view);
     const double distanceSquared = detail * detail;
+    const double authoredSquared = static_cast<double>(view.DetailDistance) * view.DetailDistance;
     const double prefetchDistance = detail * kDetailPrefetchDistanceScale;
     Visit(0, view, kAllPlanes,
           prefetchDistance * prefetchDistance, m_Visible);
 
     const size_t count = std::min(m_Candidates.size(), static_cast<size_t>(m_DetailCapacity));
-    std::partial_sort(m_Candidates.begin(), m_Candidates.begin() + count, m_Candidates.end());
+    // One extra ordered candidate identifies the closest budget omission without scanning the remaining pages.
+    const size_t sorted = count < m_Candidates.size() ? count + 1 : count;
+    std::partial_sort(m_Candidates.begin(), m_Candidates.begin() + sorted, m_Candidates.end());
+    if (count < sorted && m_Candidates[count].first < authoredSquared)
+        m_DetailBudget.NearestOmitted = std::sqrt(m_Candidates[count].first);
     // Distance order puts every draw request before speculative reads.
     uint32 prefetchCount = 0;
     for (const auto& [distance, page] : std::span(m_Candidates).first(count))
@@ -297,10 +306,13 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
         const bool prefetch = distance >= distanceSquared;
         if (prefetch && prefetchCount == m_ReadsPerFrame)
             break;
-        m_Wanted[page] = prefetch ? kPrefetchDetail : kDrawDetail;
+        const bool withinDetailDistance = distance < authoredSquared;
+        m_Wanted[page] = prefetch ? kPrefetchDetail : (withinDetailDistance ? kDrawDetail : kDrawHandoff);
         m_Priority.push_back(page);
         if (prefetch)
             ++prefetchCount;
+        else if (withinDetailDistance)
+            ++m_DetailBudget.Selected;
     }
 }
 
@@ -325,6 +337,7 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
     out.StandFades.clear();
     out.Reads.clear();
     out.CancelReads.clear();
+    out.DetailBudget = {};
     out.VisiblePages = 0;
     out.WantsDetails = false;
     if (frame <= m_Frame || completedReaders < m_ReadersDone || completedReaders >= frame)
@@ -362,6 +375,7 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
             ReleaseIfRetired(slotIndex);
     }
     AppendReads(out.Reads);
+    out.DetailBudget = m_DetailBudget;
     EmitDraws(frame, out);
     return true;
 }
@@ -540,7 +554,7 @@ void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
     for (uint32 slotIndex = 0; slotIndex < m_Slots.size(); ++slotIndex)
     {
         Slot& slot = m_Slots[slotIndex];
-        if (slot.Current == Stage::Ready && !slot.Retiring && m_Wanted[slot.Ticket.Page] == kDrawDetail)
+        if (slot.Current == Stage::Ready && !slot.Retiring && m_Wanted[slot.Ticket.Page] >= kDrawHandoff)
         {
             slot.LastReader = frame;
             m_Ready.emplace_back(slot.Ticket.Page, slotIndex);
@@ -559,6 +573,8 @@ void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
             assert(cursor <= page);
             EmitStand(cursor, page, out.StandDraws);
             const float weight = HandoffWeight(page);
+            if (m_Wanted[page] == kDrawDetail)
+                ++out.DetailBudget.Resident;
             out.DetailedDraws.push_back({m_Slots[slot].Ticket, slot * kPlacementsPerSlot, m_Store.Pages()[page].Count,
                                          weight});
             if (weight < 1.0f)

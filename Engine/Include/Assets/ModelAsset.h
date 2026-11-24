@@ -99,6 +99,7 @@ struct MeshPlacement {
  */
 struct Mesh {
     String Name;
+    bool ForestSectorLocal = false; // Overview page vertices use the archive page sector.
     Vector<Vertex> Vertices;
     Vector<uint32> Indices;
     // Optional simplified LOD index buffers over THIS mesh's vertex buffer.

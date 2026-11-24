@@ -115,7 +115,7 @@ private:
                                 ImpostorStage& stage, uint64 worldId);
     // Registers the packed forest card of a model's atlas and publishes it to the forest sessions that draw the model.
     void PublishForestCard(const GUID& model, const ModelImpostor& impostor, const ImpostorAtlas& atlas,
-                           const ImpostorBakeRequest& request, uint64 worldId);
+                           const ImpostorBakeRequest& request, uint64 worldId, float normalCoherenceWeight);
     void UnlinkModel(ModelImpostor& impostor);
     // Warns once that an opted-in model keeps its meshes, and why.
     void LogRefusal(const GUID& model, std::string_view reason);

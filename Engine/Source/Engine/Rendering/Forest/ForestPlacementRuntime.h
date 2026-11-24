@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/DrawCommand.h"
+#include "Engine/Rendering/Forest/ForestDetailBudget.h"
 #include "Mathematics/WorldPosition.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "PageStreaming/ResidentSlotPool.h"
@@ -75,6 +76,7 @@ struct ForestPlacementFrame
     std::vector<ForestDetailDraw> DetailedDraws;
     /// Overview quads of the detailed pages in the handoff band. StandDraws does not hold them.
     std::vector<ForestStandFade> StandFades;
+    ForestDetailBudget DetailBudget;
     /// New reads for the caller to submit.
     std::vector<ForestPageTicket> Reads;
     /// Reads that the runtime cancelled; the caller withdraws them from the asset reader.
@@ -216,6 +218,7 @@ private:
     std::optional<ForestPlacementView> m_DemandView;
     std::optional<ForestPlacementView> m_StandView;
     std::optional<uint64> m_DemandRetryFrame;
+    ForestDetailBudget m_DetailBudget;
     std::vector<uint32> m_Priority;
     std::vector<uint8> m_Wanted;
     std::vector<uint64> m_RetryAt;
