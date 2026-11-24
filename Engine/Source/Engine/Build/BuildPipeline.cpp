@@ -1,4 +1,5 @@
 #include "Engine/Build/BuildPipeline.h"
+#include "ForestStandExport.h"
 #include "Core/ApplicationPaths.h"
 #include "Engine/Build/AppIconGenerator.h"
 #include "Engine/Build/BuildHost.h"
@@ -1714,6 +1715,7 @@ bool BuildPipeline::RunPackageAssetStep(BuildContext& ctx)
     auto& am = EngineCore::GetInstance().GetAssetManager();
     AssetCollector collector(am);
     const std::unordered_set<std::string> usedComponents = AssetCollector::CollectComponentNames(ctx.manifest);
+    const size_t collectedCount = ctx.manifest.entries.size();
     for (const ResolvedPackage& package : m_PackageResolution.MountOrder)
     {
         for (const std::string& unmatched : collector.CollectPackageRuntimeAssets(package, usedComponents, ctx.manifest))
@@ -1721,6 +1723,11 @@ bool BuildPipeline::RunPackageAssetStep(BuildContext& ctx)
                                           unmatched + "', which matches no asset in the package; fix the path "
                                           "in its package.json");
     }
+    const size_t errorCount = m_Progress.errors.size();
+    for (size_t index = collectedCount; index < ctx.manifest.entries.size(); ++index)
+        CheckShippedForestArchive(ctx.manifest.entries[index], m_Progress.errors);
+    if (m_Progress.errors.size() != errorCount)
+        return false;
 
     // Loud validation over the final asset set (theme: never silently). Errors
     // land in m_Progress.errors and fail the build before any copy happens —

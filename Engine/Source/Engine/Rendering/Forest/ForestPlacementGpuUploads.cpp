@@ -159,9 +159,20 @@ bool ForestPlacementGpuUploads::AbandonIfUnsubmitted(const Batch& batch, const R
 bool ForestPlacementGpuUploads::PublishIfComplete(const Batch& batch, const Rendering::IDevice& device,
                                                   uint32& published)
 {
-    if (!batch.Submitted ||
-        device.QueryGpuSyncToken(batch.Completion) != Rendering::IDevice::GpuSyncStatus::Complete)
+    using Device = Rendering::IDevice;
+    if (!batch.Submitted)
         return false;
+    const auto status = device.QueryGpuSyncToken(batch.Completion);
+    if (status == Device::GpuSyncStatus::Pending)
+        return false;
+    if (status == Device::GpuSyncStatus::Unknown)
+    {
+        // Copies run on graphics. A completed graphics queue covers the copy even if its
+        // graph timeline is unreadable. Require a signal to exclude an untracked queue.
+        if (!device.LastSubmissionToken(Device::QueueType::Graphics).IsValid() ||
+            !device.IsPreviousFrameGraphicsComplete())
+            return false;
+    }
     const ForestUploadResult result =
         batch.Recorded.load(std::memory_order_acquire) ? ForestUploadResult::Published : ForestUploadResult::Failed;
     for (const auto& ticket : batch.Tickets)
