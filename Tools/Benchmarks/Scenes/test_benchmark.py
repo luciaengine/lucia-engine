@@ -153,6 +153,49 @@ class CompareTests(unittest.TestCase):
 
 
 class ContentTests(unittest.TestCase):
+    def test_benchmark_preserves_existing_work_and_releases_its_project(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source"
+            source.mkdir()
+            (source / "benchmark.json").write_text(json.dumps({
+                "scenes": {"Forest": {}}, "resolution": [1920, 1080], "run": {},
+            }))
+            font = root / "font.ttf"
+            font.write_bytes(b"font")
+            player = root / "Player"
+            player.touch()
+            work = root / "work"
+            existing = work / "project"
+            existing.mkdir(parents=True)
+            sentinel = existing / "personal-file.txt"
+            sentinel.write_text("keep this")
+            args = SimpleNamespace(
+                player=player, scenes="Forest", max_load=0, out=root / "result.json", work=work,
+                label="", build_sha="a", configuration="Release", timeout=1.0,
+            )
+
+            projects = []
+
+            def run_scene(name, scene_config, manifest, project, *unused):
+                self.assertNotEqual(project, existing)
+                self.assertEqual((project / "Assets/Fonts/font.ttf").read_bytes(), b"font")
+                projects.append(project)
+                if len(projects) == 2:
+                    raise RuntimeError("test scene failed")
+                return {"valid": True, "poses": [], "problems": []}
+
+            with patch.object(benchmark, "PROJECT", source), patch.object(benchmark, "FONT_SOURCE", font), \
+                    patch.object(benchmark, "gpu_info", return_value={}), patch.object(benchmark, "run_scene", run_scene):
+                self.assertEqual(benchmark.command_run(args), 0)
+                with self.assertRaisesRegex(RuntimeError, "test scene failed"):
+                    benchmark.command_run(args)
+
+            self.assertEqual(sentinel.read_text(), "keep this")
+            self.assertEqual(len(projects), 2)
+            self.assertNotEqual(projects[0], projects[1])
+            self.assertFalse(any(project.exists() for project in projects))
+
     def test_every_building_is_unique_and_valid_gltf(self):
         first, second = benchmark.building_gltf(0), benchmark.building_gltf(1)
         self.assertNotEqual(first["accessors"][0]["count"], second["accessors"][0]["count"])

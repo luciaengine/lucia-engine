@@ -28,6 +28,7 @@ import statistics
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -167,12 +168,9 @@ def find_default_pipeline(player):
     return None
 
 
-def prepare(work, manifest, scenes, player):
-    """A work copy of the project with everything the selected scenes need."""
-    project = work / "project"
-    if project.exists():
-        shutil.rmtree(project)
-    shutil.copytree(PROJECT, project)
+def prepare(project, work, manifest, scenes, player):
+    """Stage everything the selected scenes need into the run-owned project."""
+    shutil.copytree(PROJECT, project, dirs_exist_ok=True)
     (project / "Assets" / "Fonts").mkdir(parents=True, exist_ok=True)
     shutil.copy2(FONT_SOURCE, project / "Assets" / "Fonts" / FONT_SOURCE.name)
     needs = {item for name in scenes for item in manifest["scenes"][name].get("content", [])}
@@ -220,7 +218,6 @@ def prepare(work, manifest, scenes, player):
         out = project / "Assets" / "RenderPipelines" / f"Benchmark{name}.rendergraph"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(graph, indent=2), encoding="utf-8")
-    return project
 
 
 # ---------------------------------------------------------------- machine
@@ -381,24 +378,25 @@ def command_run(args):
     out_path = Path(args.out).resolve()
     work = Path(args.work).resolve() if args.work else out_path.parent / (out_path.stem + "-work")
     work.mkdir(parents=True, exist_ok=True)
-    project = prepare(work, manifest, scenes, player)
-
     result = {"format": RESULT_FORMAT, "label": args.label, "buildSha": build_sha(args.build_sha),
               "configuration": args.configuration,
               "date": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
               "machine": {"gpu": gpu_info(), "cpu": cpu_name(), "cores": os.cpu_count(), "os": platform.platform()},
               "resolution": manifest["resolution"], "run": manifest["run"], "scenes": {}}
-    for name in scenes:
-        result["scenes"][name] = run_scene(name, manifest["scenes"][name], manifest, project, player, work,
-                                           args.timeout, bool(args.max_load))
-        scene = result["scenes"][name]
-        for pose in scene["poses"]:
-            frame, gpu = pose["frameMs"], pose["gpuMs"]
-            print(f"[{name}] {pose['name']:<10} frame median {frame['median']:7.3f} ms p99 {frame['p99']:7.3f} ms "
-                  f"cpu {pose['cpuMs']['median']:7.3f} ms gpu {gpu['median'] if gpu else float('nan'):7.3f} ms",
-                  flush=True)
-        for problem in scene["problems"]:
-            print(f"[{name}] NOT VALID: {problem}", flush=True)
+    with tempfile.TemporaryDirectory(prefix="project-", dir=work) as project_directory:
+        project = Path(project_directory)
+        prepare(project, work, manifest, scenes, player)
+        for name in scenes:
+            result["scenes"][name] = run_scene(name, manifest["scenes"][name], manifest, project, player, work,
+                                               args.timeout, bool(args.max_load))
+            scene = result["scenes"][name]
+            for pose in scene["poses"]:
+                frame, gpu = pose["frameMs"], pose["gpuMs"]
+                print(f"[{name}] {pose['name']:<10} frame median {frame['median']:7.3f} ms p99 {frame['p99']:7.3f} ms "
+                      f"cpu {pose['cpuMs']['median']:7.3f} ms gpu {gpu['median'] if gpu else float('nan'):7.3f} ms",
+                      flush=True)
+            for problem in scene["problems"]:
+                print(f"[{name}] NOT VALID: {problem}", flush=True)
     out_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {out_path}")
     return 0 if all(s["valid"] for s in result["scenes"].values()) else 1
