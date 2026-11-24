@@ -65,6 +65,14 @@ Code lives where its concept lives, as a named, reusable piece with one job: dra
 - Editor UI is declared, not assembled: static layout in `.uxml`, style in the control's own `.css`, one selector per rule, no styling from C++, icons by class; inspectors compose `InspectorSection` and the shared field controls. No text below 12 px.
 - Named functions over lambdas: a lambda is a short adapter handed to an API; anything longer, reused, or defined-then-called-once becomes a named function in the owning file.
 
+### Landing a reviewed pull request
+
+The `lucia-engine` GitHub account can use GitHub's squash merge. GitHub uses the signed-in account's identity for a squash, and the main branch requires the Lucia Engine author email. A maintainer who is authorized to push to main and use the project's commit identity can land from another GitHub account using a local squash.
+
+1. Fetch `origin/main`. Confirm the pull request head and the tree verified during review. If main has advanced, follow the merge and verification rules in [AGENTS.md](AGENTS.md#test).
+2. In an isolated worktree at current `origin/main`, squash the reviewed head and commit as Lucia Engine using the repository's approved author and committer identity. Use the pull request title followed by its number in parentheses, for example `Fix the export manifest (#123)`. Confirm the resulting tree matches the verified integration tree and the commit's parent is current `origin/main`.
+3. Push the squash commit to `main` as a fast-forward. If main advances before the push, fetch and repeat from the new base. Once the commit is on main, close the pull request with a link to the landed commit. Close any linked issue the commit resolves if GitHub leaves it open.
+
 ## Platform and build
 
 - Never resolve a runtime path back into the repository; stage the file and load it from the executable directory.
