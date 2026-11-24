@@ -1869,20 +1869,9 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
-# Prebuilt engine-package native modules (Packages.cmake): the engine
-# build compiles every Packages/*/ module and stages the DLLs beside the
-# package in the P3 prebuilt layout, so the first project open loads them
-# fingerprint-checked instead of paying a cmake+MSVC source compile per
-# package. Names follow PackageAssemblyName (+".Editor" for Editor-kind).
-# eztree's two modules get separate prebuilt subdirs — the engine_abi marker
-# is per platform dir, and the runtime/editor digests differ by construction.
+# Prebuilt native modules that link the Editor SDK. EZTree keeps separate
+# prebuilt directories for its runtime and editor ABI markers.
 # ---------------------------------------------------------------------------
-ge_add_engine_package_module(GePkgModule_Eztree
-	PACKAGE eztree
-	MODULE_NAME Eztree
-	SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/eztree/Native
-	KIND runtime
-	PREBUILT_SUBDIR Binaries/Runtime)
 ge_add_engine_package_module(GePkgModule_EztreeEditor
 	PACKAGE eztree
 	MODULE_NAME Eztree.Editor
