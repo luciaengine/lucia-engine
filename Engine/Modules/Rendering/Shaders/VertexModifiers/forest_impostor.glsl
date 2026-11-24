@@ -1,6 +1,7 @@
 #define GE_FOREST_CARD_DRAW
 #include "Includes/forest_placement.glsl"
 #include "Includes/impostor_frame.glsl"
+#include "Includes/impostor_depth.glsl"
 #include "Includes/foliage_sway.glsl"
 
 layout(std430, set = 2, binding = 2) readonly buffer ForestVisiblePlacements
@@ -49,6 +50,7 @@ void ModifyVertex(inout VertexOutput outputVertex, inout InstanceData instance)
     instance.sector = Cam.uRenderOriginSector.xyz;
     instance.modelMatrix = mat4(vec4(rotation[0] * scale, 0), vec4(rotation[1] * scale, 0),
                                 vec4(rotation[2] * scale, 0), vec4(root, 1));
+    GE_SetImpostorDepthFrame(mat3(instance.modelMatrix), bounds.w);
     localVertex = GE_ApplyFoliageSway(localVertex, instance, forestCard.wind.xy, forestCard.wind.z);
     outputVertex.position = root + rotation * localVertex * scale;
     outputVertex.sector = instance.sector;

@@ -12,6 +12,7 @@
 // @primaryLightOcclusion
 
 #include "Includes/impostor_frame.glsl"
+#include "Includes/impostor_depth.glsl"
 #include "Includes/mask_coverage.glsl"
 
 vec2 GE_ImpostorClampTile(vec2 atlasUv, vec2 frame, float gridSize, vec2 inset)
@@ -92,7 +93,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // Atlas texels outside the tree hold 0 in every channel, so a filtered sample at a leaf edge is
     // already premultiplied by its coverage. Divide by the summed coverage; never multiply by it.
     // Coverage comes from the frames at the card point. Every pass reads the same coverage, so the
-    // depth prepass and the colour pass keep the same pixels, and a depth-only pass stops here.
+    // depth prepass and the colour pass keep the same pixels, including the filtered leaf edges.
     vec2 cardUv[3];
     vec4 frameColor[3];
     vec4 cardColor = vec4(0.0);
@@ -111,8 +112,9 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         float coverage = mix(cutout, cardColor.a, smoothstep(0.5, 2.0, mip));
         o.opacity = coverage > GE_MaskCoverageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
     }
-#ifdef GE_DEPTH_ONLY_FRAGMENT
-    return o;
+#if defined(ALPHA_TEST) && (defined(GE_DEPTH_ONLY_FRAGMENT) || defined(GE_MOTION_VECTORS))
+    if (filtered && o.opacity < clamp(Props.alphaCutoff, 0.0, 1.0))
+        discard;
 #endif
 
     // The surface point (in sphere radii from the center, object space): each frame's depth under
@@ -131,6 +133,11 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         vec3 framePoint = offset - direction * dot(offset, direction) + direction * (2.0 * depth - 1.0);
         surface += mix(offset, framePoint, smoothstep(0.25, 0.75, coverage)) * weights[i];
     }
+
+    gl_FragDepth = GE_ImpostorAttachmentDepth(sIn.positionRelWS, surface - offset);
+#if defined(GE_DEPTH_ONLY_FRAGMENT) || defined(GE_MOTION_VECTORS)
+    return o;
+#endif
 
     // A frame that has a surface in front of the surface point sees an occluder there (the leaves
     // above a trunk, seen from a higher frame). Its weight fades out over kOccluderFade, down to
