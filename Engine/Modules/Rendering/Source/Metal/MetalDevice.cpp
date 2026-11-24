@@ -712,8 +712,10 @@ bool MetalDevice::IsPreviousFrameGraphicsComplete() const
     // carried, has completed. A buffer the submit worker still holds behind a
     // semaphore wait was counted at enqueue and reads as in flight. Nothing
     // submitted yet reads as complete. A failed device reports incomplete.
-    return GetDeviceHealth() == DeviceHealth::Healthy &&
-           m_GraphicsCbsInFlight.load(std::memory_order_acquire) == 0;
+    // A failed completion records the fault before dropping the count. Acquire the
+    // zero first so the health check observes a fault from the last retiring buffer.
+    return m_GraphicsCbsInFlight.load(std::memory_order_acquire) == 0 &&
+           GetDeviceHealth() == DeviceHealth::Healthy;
 }
 
 void MetalDevice::WaitForSlotCommandBuffers(uint32_t slot)
