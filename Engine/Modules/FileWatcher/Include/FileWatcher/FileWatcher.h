@@ -64,7 +64,7 @@ class FileWatcher
     ~FileWatcher();
 
     /**
-     * @brief Start watching a directory
+     * @brief Start watching a directory with its current files as the baseline.
      */
     bool StartWatching(const std::filesystem::path& directory, bool recursive = true);
 

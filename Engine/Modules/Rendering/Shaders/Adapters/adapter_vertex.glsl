@@ -318,7 +318,7 @@ InstanceData ge_FetchInstanceData()
     inst.particleAlignment = 1u;
     inst.particleGeometry = 0u;
 #endif
-    inst.sector = ivec3(0); // push-constant path is editor/near-origin: no sector
+    inst.sector = floatBitsToUint(pc.uExtra.w) == 1u ? floatBitsToInt(vec3(pc.uN0.w, pc.uN1.w, pc.uN2.w)) : ivec3(0);
 #ifdef GE_LOD_CROSSFADE
     inst.lodFadeCode = 0u; // non-instanced draws carry no per-record fade channel
 #endif

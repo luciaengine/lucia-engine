@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <span>
 #include <string>
@@ -739,6 +740,50 @@ TEST(MetalResources, FailedSubmissionRejectsTimelineSuccessAndNewWork)
     }
     device->DestroySemaphore(semaphore);
     device->Shutdown();
+}
+
+TEST(MetalResources, FailedLastGraphicsSubmissionCannotReportCompletion)
+{
+    class PollingDevice final : public MetalDevice
+    {
+      public:
+        DeviceHealth GetDeviceHealth() const override
+        {
+            const auto health = MetalDevice::GetDeviceHealth();
+            if (std::this_thread::get_id() == PollThread && AfterHealthRead)
+                std::exchange(AfterHealthRead, {})();
+            return health;
+        }
+
+        const std::thread::id PollThread = std::this_thread::get_id();
+        mutable std::function<void()> AfterHealthRead;
+    };
+
+    PollingDevice device;
+    DeviceDesc desc{};
+    desc.enableSwapchain = false;
+    if (!device.Initialize(desc))
+        GTEST_SKIP() << "Metal backend unavailable";
+    const auto gate = device.CreateTimelineSemaphore(0);
+    ASSERT_TRUE(gate.IsValid());
+    auto copy = device.CreateCommandList(IDevice::QueueType::Graphics);
+    copy->Begin();
+    copy->End();
+    ASSERT_TRUE(device.QueueSubmit(IDevice::QueueType::Graphics, {copy.get()}, {{gate, 1}}, {}));
+
+    // After a healthy sample, fail and retire the last held buffer before the poll resumes.
+    auto failAndRetire = [&device] {
+        MetalDeviceTestAccess::FailSubmission(device);
+        device.WaitForIdle();
+    };
+    device.AfterHealthRead = failAndRetire;
+    EXPECT_FALSE(device.IsPreviousFrameGraphicsComplete());
+    // A poll that samples outstanding work first returns without reading health.
+    device.AfterHealthRead = {};
+    failAndRetire();
+    EXPECT_FALSE(device.IsPreviousFrameGraphicsComplete());
+    device.DestroySemaphore(gate);
+    device.Shutdown();
 }
 
 TEST(MetalResources, FailedSubmissionInterruptsAnActiveTimelineWait)
