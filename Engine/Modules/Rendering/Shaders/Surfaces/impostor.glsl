@@ -6,6 +6,7 @@
 //
 // @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
 // impostorAtlas.z enables the debug tint. impostorAtlas.w is the highest ready mip.
+// @property float impostorNormalCoherenceWeight "Normal Coherence Weight" default=1 group=Impostor
 //
 // The card shades its crown's own shadow toward the primary light:
 // @primaryLightOcclusion
@@ -174,7 +175,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 #ifdef GE_PRIMARY_LIGHT_OCCLUSION
     o.primaryLightOcclusion =
         GE_ImpostorCrownLight(surface, sIn.primaryLightDirectionWS, c, s, Props.impostorAtlas, halfTexel) *
-        normalCoherence;
+        mix(1.0, normalCoherence, Props.impostorNormalCoherenceWeight);
 #endif
     o.roughness = 0.9;
     o.metallic = 0.0;

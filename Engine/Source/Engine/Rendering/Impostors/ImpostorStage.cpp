@@ -62,7 +62,7 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
                                                     std::string_view name, const ImpostorAtlas& atlas,
                                                     const Mathematics::Vector3& center, float radius,
                                                     uint32 framesPerSide, Mathematics::OctahedralLayout layout,
-                                                    ImpostorCardSource source)
+                                                    ImpostorCardSource source, float normalCoherenceWeight)
 {
     if (!atlas.Color.IsValid() || !atlas.NormalDepth.IsValid())
         return nullptr;
@@ -89,6 +89,7 @@ const Material* ImpostorStage::RegisterCardMaterial(RenderServices& services, co
         doc.doubleSided = true;
         doc.properties["alphaCutoff"] = 0.5f;
         doc.properties["impostorBounds"] = std::vector<float>{center.x, center.y, center.z, radius};
+        doc.properties["impostorNormalCoherenceWeight"] = normalCoherenceWeight;
         doc.properties["impostorAtlas"] = std::vector<float>(std::begin(atlasParams.v), std::end(atlasParams.v));
         doc.textures["albedoMap"] = std::string{};
         doc.textures["normalMap"] = std::string{};

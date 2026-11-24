@@ -349,6 +349,7 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
     request.Center = impostor.Center;
     request.Radius = impostor.Radius;
     const auto& materials = m_RenderServices->Materials().Registry();
+    bool hasTwoSidedCutout = false;
     for (const Part& part : impostor.Parts)
     {
         const Material* material = part.Mesh.IsValid() && !part.Material.IsNull() ? materials.Find(part.Material) : nullptr;
@@ -363,15 +364,19 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
         request.Key.MaterialHash = Hashing::HashCombine(request.Key.MaterialHash, material->GetContentRevision());
         request.Key.MaterialHash = Hashing::HashCombine(request.Key.MaterialHash, material->GetVersion());
         request.Parts.push_back({part.Mesh, part.Material});
+        hasTwoSidedCutout |= material->IsDoubleSided() && material->GetAlphaMode() == MaterialAlphaMode::Mask;
     }
     // A request each frame keeps the atlas in the baker's least-recently-used budget.
     const ImpostorAtlas atlas = baker.Request(request, *m_RenderServices);
-    PublishForestCard(model, impostor, atlas, request, worldId);
+    // Imported two-sided cutouts light both leaf faces. Averaging those normals
+    // in the atlas loses some of that direct light before the crown shadow is applied.
+    const float normalCoherenceWeight = hasTwoSidedCutout ? 0.65f : 1.0f;
+    PublishForestCard(model, impostor, atlas, request, worldId, normalCoherenceWeight);
     const GUID cardGuid = GUID::Derive(model, "impostor-card-" + std::to_string(materialIdentity));
     const Material* card = ImpostorStage::RegisterCardMaterial(*m_RenderServices, cardGuid, "Impostor", atlas,
                                                                impostor.Center, impostor.Radius,
                                                                request.Key.FramesPerSide, kLayout,
-                                                               ImpostorCardSource::SceneInstance);
+                                                               ImpostorCardSource::SceneInstance, normalCoherenceWeight);
     // Every part must be resident: a part that is not would draw its mesh beside the card.
     const std::vector<uint32> meshes = card ? ImpostorStage::PartMeshIndices(*m_RenderServices, PartMeshes(impostor.Parts))
                                             : std::vector<uint32>{};
@@ -401,7 +406,7 @@ const Material* MeshImpostorSystem::UpdateModel(const GUID& model, ModelImpostor
 
 void MeshImpostorSystem::PublishForestCard(const GUID& model, const ModelImpostor& impostor,
                                            const ImpostorAtlas& atlas, const ImpostorBakeRequest& request,
-                                           uint64 worldId)
+                                           uint64 worldId, float normalCoherenceWeight)
 {
     auto* forest = m_RenderServices->GetFeature<ForestPlacementFeature>();
     if (!forest || !forest->WantsCard(worldId, model))
@@ -415,7 +420,7 @@ void MeshImpostorSystem::PublishForestCard(const GUID& model, const ModelImposto
     const GUID cardGuid = GUID::Derive(model, "forest-impostor-" + std::to_string(request.Key.MaterialHash));
     if (!ImpostorStage::RegisterCardMaterial(*m_RenderServices, cardGuid, "Forest Impostor", atlas, impostor.Center,
                                              impostor.Radius, request.Key.FramesPerSide, kLayout,
-                                             ImpostorCardSource::PackedForest))
+                                             ImpostorCardSource::PackedForest, normalCoherenceWeight))
         return;
     const ForestImpostorCard card{cardGuid,
                                   {impostor.Center.x, impostor.Center.y, impostor.Center.z, impostor.Radius},
