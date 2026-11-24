@@ -16,6 +16,7 @@ class ForestPlacementRuntime;
 class RenderServices;
 struct ForestPlacementSession;
 struct ForestPlacementView;
+struct ForestDetailDraw;
 
 struct ForestStandDrawHeads
 {
@@ -42,8 +43,13 @@ const Rendering::CameraData* FindForestStandCamera(RenderServices& services, Ren
     std::shared_ptr<ForestPlacementRuntime> placements, PrepareForestStandDraw prepareDraw,
     std::shared_ptr<ForestPlacementSession> details = {});
 
-/// Registers the resident trees' sun-shadow casters. The stand owns the subscription.
+// Emits the cascade-visible overview quads not covered by the accepted detail draws.
+using EmitForestShadowOverview = std::function<void(const DepthEmitContext&, uint32, const ForestPlacementView&,
+                                                    std::span<const ForestDetailDraw>)>;
+
+/// Registers the stand's sun-shadow casters. The stand owns the subscription.
 [[nodiscard]] ScopedSubscription RegisterForestShadowCasters(RenderServices& services, uint64 worldId,
-    Rendering::RenderLayerMask layers, std::shared_ptr<ForestPlacementSession> session);
+    Rendering::RenderLayerMask layers, std::shared_ptr<ForestPlacementSession> session,
+    EmitForestShadowOverview overview = {});
 
 } // namespace GameEngine::Engine::Renderer

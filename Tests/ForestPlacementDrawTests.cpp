@@ -939,6 +939,7 @@ protected:
         size_t Cascade1 = 0;
         bool Indirect = false;
         std::optional<Mathematics::Vector4> Viewer;
+        std::vector<Engine::Renderer::DrawSubCommand> Overview;
     };
 
     // Starts an app frame, runs the depth producers of `view` for `cascades` and submits the frame.
@@ -951,6 +952,8 @@ protected:
         m_Services.EmitProducerDepthCommandsForView(view, &graph, &cascades);
         const auto& streams = m_Services.Views().PerView(view).CascadeDepthCommands;
         CasterFrame result{streams[0].size(), streams[1].size()};
+        for (const auto& draw : streams[1])
+            result.Overview.insert(result.Overview.end(), draw.SubDraws.begin(), draw.SubDraws.end());
         if (!streams[1].empty())
         {
             const auto& card = streams[1].front();
@@ -969,7 +972,19 @@ protected:
         graph.Execute();
         m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
         m_Device->WaitForIdle();
+        m_Services.Materials().Variants().SubmitPendingVariantCompiles();
+        m_Services.Materials().FlushAsyncMaterialCompiles();
         return result;
+    }
+
+    void ConfigureMaterialBuildContext()
+    {
+        const auto shaders = TestPaths::StagedRenderingShadersDir();
+        Rendering::MaterialBuildContext context{};
+        context.AdapterShaderDir = shaders;
+        context.IncludeDirs = {shaders};
+        context.CacheRoot = m_Scratch.Path() / "shader-cache";
+        m_Services.Materials().SetMaterialBuildContext(context);
     }
 
     // A packed card material, registered as the MeshImpostor system registers one.
@@ -985,18 +1000,12 @@ protected:
         doc.alphaMode = MaterialAlphaMode::Mask;
         doc.doubleSided = true;
         doc.properties["alphaCutoff"] = 0.5f;
+        doc.properties["impostorAtlas"] = std::vector<float>{8.0f, 0.0f, 0.0f, 0.0f};
         doc.properties["impostorBounds"] = std::vector<float>{0.0f, 5.0f, 0.0f, 2.0f};
         doc.textures["albedoMap"] = std::string{};
         doc.textures["normalMap"] = std::string{};
         const GUID guid = GUID::Generate();
-        Engine::Renderer::Material* material = m_Services.Materials().RegisterMaterialFromDocument(guid, doc);
-        if (!material)
-            return {};
-        // The surface's property table comes with the compile, which no frame here drains.
-        constexpr std::array<float, 4> kAtlas{8.0f, 0.0f, 0.0f, 0.0f};
-        Engine::Renderer::Material::TestFactory::AddPropertyLayout(*material, HashStringId("impostorAtlas"), 0u, sizeof(kAtlas));
-        material->SetVector(HashStringId("impostorAtlas"), kAtlas.data(), 4u);
-        return guid;
+        return m_Services.Materials().RegisterMaterialFromDocument(guid, doc) ? guid : GUID{};
     }
 
     void PublishCard()
@@ -1036,12 +1045,7 @@ protected:
 TEST_F(ForestPlacementSessionDeviceTest, OpaqueOverviewPrepassBindsOnlyTheSetsItsPipelineDeclares)
 {
     using namespace Engine::Renderer;
-    const auto shaders = TestPaths::StagedRenderingShadersDir();
-    Rendering::MaterialBuildContext context{};
-    context.AdapterShaderDir = shaders;
-    context.IncludeDirs = {shaders};
-    context.CacheRoot = m_Scratch.Path() / "shader-cache";
-    m_Services.Materials().SetMaterialBuildContext(context);
+    ConfigureMaterialBuildContext();
 
     MaterialDocument document{};
     document.materialName = "OpaqueForestOverview";
@@ -1060,8 +1064,9 @@ TEST_F(ForestPlacementSessionDeviceTest, OpaqueOverviewPrepassBindsOnlyTheSetsIt
     ASSERT_TRUE(m_Services.GetMeshGPURegistry().RegisterSubmesh(key, mesh).IsValid());
     const auto layers = Rendering::RenderLayerMask::Default();
     const auto view = AddForestStandView(m_Services, 512'000'055.0, kWorld, layers);
+    ScopedSubscription shadows;
     const auto stand = RegisterForestStandMesh(m_Services, kWorld, layers, m_Runtime, key,
-                                               [material] { return material; });
+                                               [material](bool) { return material; }, shadows);
     auto& formats = m_Services.Views().PerView(view).PrepassFormatKey;
     formats.DepthFormat = Rendering::TextureFormat::D32_FLOAT;
     formats.RasterizationSamples = 1;
@@ -1268,9 +1273,86 @@ TEST_F(ForestPlacementSessionDeviceTest, OnlyTheDetailViewCastsForestShadows)
     EXPECT_EQ(PlanShadows(3, {m_SceneView, m_View}, m_Near), (std::vector{false, true}));
 }
 
+TEST_F(ForestPlacementSessionDeviceTest, NonResidentShadowPagesCastTheirOverviewQuad)
+{
+    using namespace Engine::Renderer;
+    ConfigureMaterialBuildContext();
+    MaterialDocument doc{};
+    doc.materialName = "Canopy";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    doc.alphaMode = MaterialAlphaMode::Mask;
+    const auto material = GUID::Generate();
+    ASSERT_NE(m_Services.Materials().RegisterMaterialFromDocument(material, doc), nullptr);
+    Mesh mesh{};
+    mesh.Vertices.resize(4);
+    mesh.Vertices[1].Position[0] = 1.0f;
+    mesh.Vertices[2].Position[1] = 1.0f;
+    mesh.Vertices[3].Position[0] = mesh.Vertices[3].Position[1] = 1.0f;
+    mesh.Indices = {0, 1, 2, 1, 3, 2, 0, 1, 2, 1, 3, 2};
+    mesh.ForestSectorLocal = true;
+    const Rendering::MeshGPUKey key{GUID::Generate(), 0};
+    ASSERT_TRUE(m_Services.GetMeshGPURegistry().RegisterSubmesh(key, mesh).IsValid());
+    const auto layers = Rendering::RenderLayerMask::Default();
+    const auto view = AddForestStandView(m_Services, 512'000'054.0, kWorld, layers);
+    ScopedSubscription shadows;
+    const auto stand = RegisterForestStandMesh(m_Services, kWorld, layers, m_Runtime, key,
+        [material](bool) { return material; }, shadows, m_Session);
+    ASSERT_TRUE(stand);
+    ASSERT_TRUE(shadows);
+    const auto* camera = m_Services.Views().FindCameraData(m_Services.Views().FindViewDesc(view)->cameraId);
+    ASSERT_NE(camera, nullptr);
+    DepthEmitCascades cascades{};
+    cascades.RenderOriginSector = CameraRenderOriginSector(*camera);
+    cascades.TowardLight = {0.0f, 1.0f, 0.0f};
+    cascades.Count = 2;
+    cascades.Cascades[0].CasterPlanes[0] = {0, 0, 0, -1};
+    const auto cold = EmitCasters(1, view, cascades);
+    EXPECT_EQ(cold.Cascade0, 0u);
+    ASSERT_EQ(cold.Overview.size(), 1u);
+    EXPECT_EQ(cold.Overview.front().IndexCount, 12u);
+
+    ForestImpostorCard card{};
+    card.Material = RegisterCardMaterial();
+    card.Bounds = {0, 5, 0, 2};
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    EmitCasters(2, view, cascades);
+    ASSERT_EQ(m_Session->Plan.Reads.size(), 1u);
+    const auto ticket = m_Session->Plan.Reads.front();
+    ASSERT_EQ(ticket.Page, 1u);
+    ASSERT_TRUE(m_Runtime->CompleteRead(ticket, kSecondPage));
+    ASSERT_TRUE(m_Runtime->CompleteUpload(ticket, ForestUploadResult::Published));
+    CasterFrame warm{};
+    uint64 frame = 3;
+    for (; frame < 200 && !warm.Indirect; ++frame)
+        warm = EmitCasters(frame, view, cascades);
+    ASSERT_TRUE(warm.Indirect);
+    ASSERT_EQ(warm.Overview.size(), 1u);
+    EXPECT_EQ(warm.Overview.front().FirstIndex, cold.Overview.front().FirstIndex);
+    EXPECT_EQ(warm.Overview.front().IndexCount, 6u);
+
+    // The page stays resident while a newly assigned card warms its cascade variant.
+    card.Material = RegisterCardMaterial();
+    ASSERT_FALSE(card.Material.IsNull());
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    const auto pending = EmitCasters(frame++, view, cascades);
+    EXPECT_FALSE(pending.Indirect);
+    ASSERT_EQ(pending.Overview.size(), 1u);
+    EXPECT_EQ(pending.Overview.front().IndexCount, 12u);
+
+    // An incompatible card material also keeps the overview.
+    card.Material = material;
+    m_Feature->PublishCard(kWorld, m_Model, card);
+    const auto refused = EmitCasters(frame, view, cascades);
+    ASSERT_EQ(refused.Overview.size(), 1u);
+    EXPECT_EQ(refused.Overview.front().IndexCount, 12u);
+    EXPECT_FALSE(refused.Indirect);
+}
+
 TEST_F(ForestPlacementSessionDeviceTest, TheCastersDrawLightFacingCardsIntoTheCascadesThatHoldThePage)
 {
     using namespace Engine::Renderer;
+    ConfigureMaterialBuildContext();
     const auto layers = Rendering::RenderLayerMask::Default();
     const auto view = AddForestStandView(m_Services, 512'000'054.0, kWorld, layers);
     const auto casters = RegisterForestShadowCasters(m_Services, kWorld, layers, m_Session);

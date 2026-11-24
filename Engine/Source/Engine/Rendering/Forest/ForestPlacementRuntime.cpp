@@ -291,6 +291,46 @@ void ForestPlacementRuntime::GatherStand(const ForestPlacementView& view, std::v
         EmitStand(run.First, run.First + run.Count, draws);
 }
 
+const std::vector<ForestPlacementRuntime::CellRun>& ForestPlacementRuntime::ShadowVisibleRuns(
+    uint32 cascade, const ForestPlacementView& view)
+{
+    auto& visible = m_ShadowVisible[cascade];
+    if (!m_ShadowViews[cascade] || !SameStandView(*m_ShadowViews[cascade], view))
+    {
+        m_ShadowViews[cascade] = view;
+        visible.clear();
+        Visit(0, view, kAllPlanes, 0, visible);
+    }
+    return visible;
+}
+
+void ForestPlacementRuntime::GatherShadowOverview(uint32 cascade, const ForestPlacementView& view,
+    std::span<const ForestDetailDraw> detailed, std::vector<DrawSubCommand>& draws)
+{
+    draws.clear();
+    const auto& visible = ShadowVisibleRuns(cascade, view);
+    m_ShadowDrawnPages.clear();
+    for (const auto& draw : detailed)
+        m_ShadowDrawnPages.push_back(draw.Ticket.Page);
+    std::ranges::sort(m_ShadowDrawnPages);
+    auto next = m_ShadowDrawnPages.begin();
+    for (const auto& run : visible)
+    {
+        uint32 cursor = run.First;
+        const uint32 end = cursor + run.Count;
+        while (next != m_ShadowDrawnPages.end() && *next < end)
+        {
+            if (*next >= cursor)
+            {
+                EmitStand(cursor, *next, draws);
+                cursor = *next + 1;
+            }
+            ++next;
+        }
+        EmitStand(cursor, end, draws);
+    }
+}
+
 std::span<const ForestShadowPage> ForestPlacementRuntime::GatherShadowPages(
     std::span<const ForestPlacementView> cascades, const Mathematics::WorldPosition& eye, float detailDistance)
 {
@@ -303,13 +343,7 @@ std::span<const ForestShadowPage> ForestPlacementRuntime::GatherShadowPages(
     for (uint32 cascade = 0; cascade < count; ++cascade)
     {
         const ForestPlacementView& view = cascades[cascade];
-        std::vector<CellRun>& visible = m_ShadowVisible[cascade];
-        if (!m_ShadowViews[cascade] || !SameStandView(*m_ShadowViews[cascade], view))
-        {
-            m_ShadowViews[cascade] = view;
-            visible.clear();
-            Visit(0, view, kAllPlanes, 0, visible);
-        }
+        const auto& visible = ShadowVisibleRuns(cascade, view);
         const auto mask = static_cast<uint8>(1u << cascade);
         for (const CellRun& run : visible)
         {

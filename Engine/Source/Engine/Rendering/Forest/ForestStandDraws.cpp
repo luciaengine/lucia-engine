@@ -135,8 +135,9 @@ bool WarmStandFadeVariant(const ForwardEmitContext& ctx, const DrawCommand& colo
 }
 
 // Split asset-relative ranges at sector boundaries. Each head retains the holes between visible runs.
-void EmitSectorRanges(StandEmitSource& stand, ForwardEmitContext& ctx, ForestStandDrawHeads& heads,
-                      std::span<const DrawSubCommand> draws, uint32 fadeCode = 0)
+template<typename Emit>
+void EmitSectorRanges(StandEmitSource& stand, Rendering::RenderGraph::RGFrame& frame, ForestStandDrawHeads& heads,
+                      std::span<const DrawSubCommand> draws, Emit emit, uint32 fadeCode = 0)
 {
     constexpr uint32 kIndicesPerQuad = 6;
     if (stand.Sectors.empty())
@@ -165,10 +166,10 @@ void EmitSectorRanges(StandEmitSource& stand, ForwardEmitContext& ctx, ForestSta
             if (!current || begin >= current->IndexEnd)
             {
                 if (group)
-                    EmitStandCommands(ctx, heads, *group);
+                    emit(heads, *group);
                 current = &*std::ranges::upper_bound(stand.Sectors, begin, {}, &StandSectorRange::IndexEnd);
-                group = ctx.Frame->AllocatePassData<std::vector<DrawSubCommand>>();
-                auto* constants = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(*heads.SectorLocalMaterialIndex);
+                group = frame.AllocatePassData<std::vector<DrawSubCommand>>();
+                auto* constants = frame.AllocatePassData<IdentityMeshDrawConstants>(*heads.SectorLocalMaterialIndex);
                 constants->NormalColumn0.w = std::bit_cast<float>(current->Sector.X);
                 constants->NormalColumn1.w = std::bit_cast<float>(current->Sector.Y);
                 constants->NormalColumn2.w = std::bit_cast<float>(current->Sector.Z);
@@ -186,7 +187,7 @@ void EmitSectorRanges(StandEmitSource& stand, ForwardEmitContext& ctx, ForestSta
         }
     }
     if (group)
-        EmitStandCommands(ctx, heads, *group);
+        emit(heads, *group);
 }
 
 // Draws the overview quads of the handoff band on the pixels that their trees leave. While the crossfade
@@ -236,7 +237,9 @@ void EmitStandFades(StandEmitSource& stand, ForwardEmitContext& ctx, const Fores
         fading.SectorLocalMaterialIndex = heads.SectorLocalMaterialIndex;
         if (fading.SectorLocalMaterialIndex)
         {
-            EmitSectorRanges(stand, ctx, fading, *ranges, batch.Code);
+            EmitSectorRanges(stand, *ctx.Frame, fading, *ranges,
+                [&ctx](ForestStandDrawHeads& group, std::span<const DrawSubCommand> subDraws)
+                { EmitStandCommands(ctx, group, subDraws); }, batch.Code);
             continue;
         }
         auto* constants = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(0u);
@@ -279,21 +282,25 @@ void EmitStand(StandEmitSource& stand, ForwardEmitContext& ctx)
     if (draws->empty() || !ApplyStandIndexRange(heads->Color, *draws))
         return;
     if (heads->SectorLocalMaterialIndex)
-        EmitSectorRanges(stand, ctx, *heads, *draws);
+        EmitSectorRanges(stand, *ctx.Frame, *heads, *draws,
+            [&ctx](ForestStandDrawHeads& group, std::span<const DrawSubCommand> ranges)
+            { EmitStandCommands(ctx, group, ranges); });
     else
         EmitStandCommands(ctx, *heads, *draws);
 }
 
 // The shaded head of the overview mesh, or none while the mesh or its material is not drawable.
-std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& ctx, const Rendering::MeshGPUKey& mesh,
-                                                     uint32 indexEnd, const GUID& material)
+std::optional<ForestStandDrawHeads> PrepareStandMesh(RenderServices& services, Rendering::RenderGraph::RGFrame& frame,
+                                                     const Rendering::MeshGPUKey& mesh,
+                                                     uint32 indexEnd, const GUID& material,
+                                                     const ForwardEmitContext* forward = nullptr)
 {
     if (material.IsNull())
         return std::nullopt;
-    auto& registry = ctx.Services->GetMeshGPURegistry();
+    auto& registry = services.GetMeshGPURegistry();
     const Rendering::MeshGPURegistry::TableScope scope(registry);
     const auto* geometry = registry.FindByKey(mesh);
-    const auto* mat = ctx.Services->Materials().Registry().Find(material);
+    const auto* mat = services.Materials().Registry().Find(material);
     Rendering::MeshGPUEntryBindings bindings{};
     if (!mat || !geometry || geometry->vertexFlags != Rendering::VertexAttributeFlags::StandardMesh ||
         geometry->topology != Rendering::PrimitiveTopology::TriangleList ||
@@ -318,13 +325,12 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
         heads.SectorLocalMaterialIndex = mat->GetGpuSceneMaterialIndex();
     else
     {
-        const auto* constants = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(mat->GetGpuSceneMaterialIndex());
+        const auto* constants = frame.AllocatePassData<IdentityMeshDrawConstants>(mat->GetGpuSceneMaterialIndex());
         color.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
     }
-    if (ctx.Purpose != ForwardEmitPurpose::World)
+    if (!forward || forward->Purpose != ForwardEmitPurpose::World)
         return heads;
 
-    auto& services = *ctx.Services;
     const bool masked = mat->GetAlphaMode() == MaterialAlphaMode::Mask;
     const auto head = ChooseDepthHeadPipeline(Rendering::MaterialKeyword::None, DepthPassType::Prepass,
                                               masked, /*vertexModified=*/false, /*sharedDepthOffered=*/false,
@@ -332,7 +338,7 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
     auto& variants = services.Materials().Variants();
     const auto* variant = variants.FindOrRequestPrepassVariant(
         *mat, color.VertexFlags, geometry->topology, head.Keywords, services.GetFrontFace());
-    if (variant && variants.EnsureConcreteWarm(*mat, variant->PipelineId, services.Views().GetViewPrepassFormatKey(ctx.ViewId)))
+    if (variant && variants.EnsureConcreteWarm(*mat, variant->PipelineId, services.Views().GetViewPrepassFormatKey(forward->ViewId)))
     {
         heads.Depth = color;
         heads.Depth->InternedPipeline = variant->PipelineId;
@@ -341,6 +347,12 @@ std::optional<ForestStandDrawHeads> PrepareStandMesh(const ForwardEmitContext& c
         heads.Depth->PassKeywords = head.Keywords;
     }
     return heads;
+}
+
+ScopedSubscription RegisterForwardStand(RenderServices& services, const std::shared_ptr<StandEmitSource>& stand)
+{
+    return services.RegisterForwardEmit([stand](ForwardEmitContext& ctx) { EmitStand(*stand, ctx); },
+                                        {.WritesDepth = true, .RequiresFrame = true, .SupportsCapture = true});
 }
 
 } // namespace
@@ -354,22 +366,44 @@ ScopedSubscription RegisterForestStandDraws(
         return {};
     auto stand = std::make_shared<StandEmitSource>(
         StandEmitSource{worldId, layers, std::move(placements), std::move(prepareDraw), std::move(details), {}});
-    return services.RegisterForwardEmit([stand](ForwardEmitContext& ctx) { EmitStand(*stand, ctx); },
-                                        {.WritesDepth = true, .RequiresFrame = true, .SupportsCapture = true});
+    return RegisterForwardStand(services, stand);
 }
 
 ScopedSubscription RegisterForestStandMesh(
     RenderServices& services, uint64 worldId, Rendering::RenderLayerMask layers,
     std::shared_ptr<ForestPlacementRuntime> placements, const Rendering::MeshGPUKey& mesh,
-    std::function<GUID()> resolveMaterial, std::shared_ptr<ForestPlacementSession> details)
+    std::function<GUID(bool)> resolveMaterial, ScopedSubscription& shadowRegistration,
+    std::shared_ptr<ForestPlacementSession> details)
 {
-    if (!placements || !resolveMaterial)
+    if (!placements || !resolveMaterial || layers == Rendering::RenderLayerMask::None())
         return {};
     const uint32 indexEnd = placements->StandIndexEnd();
-    return RegisterForestStandDraws(services, worldId, layers, std::move(placements),
-        [mesh, indexEnd, resolveMaterial = std::move(resolveMaterial)](const ForwardEmitContext& ctx)
-        { return PrepareStandMesh(ctx, mesh, indexEnd, resolveMaterial()); },
-        std::move(details));
+    auto stand = std::make_shared<StandEmitSource>(StandEmitSource{worldId, layers, std::move(placements),
+        [mesh, indexEnd, resolveMaterial](const ForwardEmitContext& ctx)
+        { return PrepareStandMesh(*ctx.Services, *ctx.Frame, mesh, indexEnd, resolveMaterial(false), &ctx); }, details, {}});
+    shadowRegistration = RegisterForestShadowCasters(services, worldId, layers, std::move(details),
+        [stand, mesh, indexEnd, resolveMaterial = std::move(resolveMaterial)](const DepthEmitContext& ctx, uint32 cascade,
+            const ForestPlacementView& view, std::span<const ForestDetailDraw> detailed)
+        {
+            auto heads = PrepareStandMesh(*ctx.Services, *ctx.Frame, mesh, indexEnd, resolveMaterial(true));
+            if (!heads)
+                return;
+            auto* draws = ctx.Frame->AllocatePassData<std::vector<DrawSubCommand>>();
+            stand->Placements->GatherShadowOverview(cascade, view, detailed, *draws);
+            if (draws->empty() || !ApplyStandIndexRange(heads->Color, *draws))
+                return;
+            const auto emit = [&ctx, cascade](ForestStandDrawHeads& group, std::span<const DrawSubCommand> ranges)
+            {
+                group.Color.Producer = StandProducer();
+                group.Color.SubDraws = ranges;
+                ctx.Services->EmitCascadeDepthCommand(ctx.ViewId, cascade, group.Color);
+            };
+            if (heads->SectorLocalMaterialIndex)
+                EmitSectorRanges(*stand, *ctx.Frame, *heads, *draws, emit);
+            else
+                emit(*heads, *draws);
+        });
+    return RegisterForwardStand(services, stand);
 }
 
 } // namespace GameEngine::Engine::Renderer

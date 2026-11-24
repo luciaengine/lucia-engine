@@ -1,11 +1,13 @@
 #include "ForestImpostorDraw.h"
 
 #include "ForestPlacementGpuData.h"
+#include "Engine/Rendering/DepthDrawRecorder.h"
 #include "Engine/Rendering/Forest/ForestSplatCells.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/TextureService.h"
 
 #include <array>
 #include <cstring>
@@ -155,13 +157,27 @@ bool EmitForestImpostorShadowDraw(const DepthEmitContext& context, uint32 cascad
         !cardIndices.IsValid() || !IsForestDrawMaterial(card.Material, "VertexModifiers/forest_impostor.glsl"))
         return false;
 
+    auto& services = *context.Services;
+    const auto& material = *card.Material;
+    constexpr auto pass = DepthPassType::ShadowCascade;
+    const auto materialKeywords = material.GetVariantKey().materialKeywords;
+    if (FilterDepthPassMaterial(pass, material.GetAlphaMode(),
+                                HasKeyword(materialKeywords, MaterialKeyword::Transmission)) != DepthPassMaterialFilter::Draws)
+        return false;
+    constexpr auto vertexFlags = Rendering::VertexAttributeFlags::None;
+    const auto head = ChooseContributorDepthHead(material, pass, card.PassKeywords, vertexFlags, vertexFlags);
+    // Keep the overview until the card has a concrete pipeline and alpha texture bindings.
+    if (!services.Materials().Variants().WarmCascadeVariant(material, head.VertexFlags,
+            Rendering::PrimitiveTopology::TriangleList, head.Head.Keywords, services.GetFrontFace()) ||
+        (head.ReadsTextures && !services.Textures().IsMaterialTextureBindingComplete(material.GetGuid())))
+        return false;
+
     // A cascade is orthographic: every card faces the light along one direction (w = 0).
     auto& frame = *context.Frame;
     const auto prepared = PrepareForestCard(frame, buffers, *card.Material, sway,
                                             {context.Cascades->TowardLight, 0.0f});
     if (!prepared)
         return false;
-    auto& services = *context.Services;
     services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, buffers.Slots, RGBufferRead::Storage);
     services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, buffers.Pages, RGBufferRead::Storage);
     services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, buffers.Visible, RGBufferRead::Storage);

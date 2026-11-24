@@ -77,7 +77,9 @@ When you cook the archive again, every stand that uses it attaches again with th
 
 ### Shadows
 
-The trees of a stand cast sun shadows. Each tree within Detail Distance of the camera casts the shadow of its impostor card, turned to face the sun. Only the view that draws the trees casts their shadows: the Game view while the world simulates, else the Scene View.
+The trees of a stand cast sun shadows. Each tree within Detail Distance of the camera casts the shadow of its impostor card, turned to face the sun. The view that draws detailed trees also casts their detailed shadows. The Game view has priority while the world simulates, otherwise the Scene View does. Each remaining page in a sun cascade casts through its overview quad using the overview material. This includes pages beyond Detail Distance and pages whose trees are still loading. An overview quad approximates the canopy silhouette from above.
+
+To soften the far edge of a forest shadow, increase Distance Fade Fraction under Shadow Settings in a global Post Process Volume. With a Max Shadow Distance of 200 meters and a fraction of 0.25, directional shadows fade from 150 to 200 meters. The setting applies to all directional shadows in the view.
 
 The Shadow Casting field of the overview MeshRenderer (`MeshRenderer.shadowCasting` in a scene file) sets what the stand does. A change applies to the attached stand at once.
 
@@ -85,7 +87,7 @@ The Shadow Casting field of the overview MeshRenderer (`MeshRenderer.shadowCasti
 | --- | --- |
 | On | The stand draws and casts shadows. This is the default. |
 | Off | The stand draws and casts no shadows. |
-| ShadowsOnly | The trees cast shadows and the stand does not draw. A stand that draws no trees draws its overview, for example a stand with no tree model, or with a Detail Distance that is 0 or not valid. |
+| ShadowsOnly | The stand casts shadows and is hidden from the camera. An overview-only stand casts through its overview quads. |
 
 ### Draw far trees as splats
 
@@ -115,10 +117,9 @@ Bake the splats again when the tree model or its materials change. A stand attac
 
 ### Limits
 
-- Only trees within Detail Distance cast shadows. The overview casts no shadows, so past Detail Distance the stand casts none.
 - Only the sun casts the shadows of a stand. Spot, point, and area lights do not.
 - A sun shadow cascade that holds the shadows of a stand renders again in each frame.
-- At most 128 pages are resident for shadows only, in addition to the pages that draw as trees. On the compatibility tier the limit is 32 pages. A page past the limit casts no shadow until a slot is free.
+- At most 128 pages are resident for shadows only, in addition to the pages that draw as trees. On the compatibility tier the limit is 32 pages. A page past the limit uses its overview shadow until its detailed shadow is ready.
 - Reflection probes and planar reflections draw the stand as an overview mesh.
 - The camera depth prepass draws the overview. Detailed tree cards and meshes draw during the color pass.
 - At most 512 pages, or 73,728 trees, draw as trees at the same time. On the compatibility tier the limit is 128 pages. When the slot budget leaves visible pages within Detail Distance on the overview, the Inspector shows how many pages were selected and the distance to the closest omitted page in the detail view. Selected pages can still be loading.

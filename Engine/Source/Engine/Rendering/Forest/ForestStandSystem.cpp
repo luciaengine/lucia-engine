@@ -78,13 +78,16 @@ std::string_view DescribeRendererProblem(const Components::MeshRenderer* rendere
 }
 
 // The material of the overview entity while it is the same entity with the same mesh.
-GUID ResolveStandMaterial(uint64 worldId, uint64 epoch, ECS::EntityHandle entity, const GUID& model, uint32 mesh)
+GUID ResolveStandMaterial(uint64 worldId, uint64 epoch, ECS::EntityHandle entity, const GUID& model, uint32 mesh, bool shadow)
 {
     const auto* world = ECS::World::FindLiveWorld(worldId);
     if (!world || world->GetEntityHandleEpoch() != epoch || !world->IsValid(entity))
         return {};
     const auto* renderer = world->GetComponent<Components::MeshRenderer>(entity);
     if (!renderer || renderer->modelAssetGuid.ToGuid() != model || renderer->meshId != mesh)
+        return {};
+    if (shadow ? renderer->shadowCasting == Components::ShadowCasting::Off :
+                 renderer->shadowCasting == Components::ShadowCasting::ShadowsOnly)
         return {};
     return renderer->materialAssetGuid.ToGuid();
 }
@@ -391,18 +394,15 @@ void ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandle entity, cons
     stand.OverviewIndexEnd = placements->StandIndexEnd();
     stand.Registration = RegisterForestStandMesh(*m_RenderServices, worldId, Rendering::RenderLayerMask::Default(),
         std::move(placements), Rendering::MeshGPUKey{source.OverviewModel, source.OverviewMesh},
-        [worldId, epoch, entity, model = source.OverviewModel, mesh = source.OverviewMesh]
-        { return ResolveStandMaterial(worldId, epoch, entity, model, mesh); },
-        stand.Details);
+        [worldId, epoch, entity, model = source.OverviewModel, mesh = source.OverviewMesh](bool shadow)
+        { return ResolveStandMaterial(worldId, epoch, entity, model, mesh, shadow); },
+        stand.ShadowRegistration, stand.Details);
     if (!stand.Registration)
     {
         stand.Details.reset();
         problem = "could not register its draws.";
         return;
     }
-    if (stand.Details)
-        stand.ShadowRegistration = RegisterForestShadowCasters(*m_RenderServices, worldId,
-                                                               Rendering::RenderLayerMask::Default(), stand.Details);
     Logger::Log::Info("Forest stand {} attached with {} pages and {} placements", DescribeEntity(world, entity),
                       pageCount, placementCount);
 }

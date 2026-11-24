@@ -23,6 +23,7 @@ struct ForestPlacementSession;
 [[nodiscard]] ScopedSubscription RegisterForestStandMesh(
     RenderServices& services, uint64 worldId, Rendering::RenderLayerMask layers,
     std::shared_ptr<ForestPlacementRuntime> placements, const Rendering::MeshGPUKey& mesh,
-    std::function<GUID()> resolveMaterial, std::shared_ptr<ForestPlacementSession> details = {});
+    std::function<GUID(bool)> resolveMaterial, ScopedSubscription& shadowRegistration,
+    std::shared_ptr<ForestPlacementSession> details = {});
 
 } // namespace GameEngine::Engine::Renderer

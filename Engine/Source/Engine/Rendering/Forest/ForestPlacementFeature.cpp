@@ -12,6 +12,7 @@
 #include "Engine/Rendering/Impostors/ImpostorBaker.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/MeshLODThresholds.h"
+#include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/TextureService.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
@@ -521,9 +522,7 @@ void ResolveSplatWind(RenderServices& services, ViewId viewId, uint64 worldId, c
     wind.Weather = light.WeatherWind;
 }
 
-} // namespace
-
-std::span<const ForestMeshOwnedPlacement> ForestPlacementFeature::EmitNearShadowMeshes(
+const ForestNearDraw* PrepareNearShadowMeshes(
     ForestPlacementSession& session, const DepthEmitContext& context, uint32 cascade, ForestPlacementView view)
 {
     auto& services = *context.Services;
@@ -569,19 +568,56 @@ std::span<const ForestMeshOwnedPlacement> ForestPlacementFeature::EmitNearShadow
     auto& frame = *context.Frame;
     const uint32 force = services.ResolveViewForceLOD(context.ViewId);
     static const auto producer = DrawProducerRegistry::Register("ForestNearShadowMeshes");
-    const auto* nearDraw = BuildNearDraw(frame, near->Parts, session.NearDemand, scales, force, producer);
-    if (!nearDraw)
-        return {};
-    services.EmitCascadeDepthBufferRead(frame, context.ViewId, cascade, nearDraw->Upload, RGBufferRead::Storage);
-    for (const auto& draw : nearDraw->Commands)
-        services.EmitCascadeDepthCommand(context.ViewId, cascade, draw);
-    if (!session.EmittedNearShadows)
+    return BuildNearDraw(frame, near->Parts, session.NearDemand, scales, force, producer);
+}
+} // namespace
+
+// Culls the cascade's resident placements to its caster planes and emits their light-facing cards.
+bool ForestPlacementFeature::EmitCascadeCasters(ForestPlacementSession& session,
+    const DepthEmitContext& context, uint32 cascade, const Material& material, ForestPlacementView view)
+{
+    const auto bit = static_cast<uint8>(1u << cascade);
+    session.CascadeDraws.clear();
+    for (const auto& draw : session.Plan.ShadowDraws)
+        if ((draw.CascadeMask & bit) != 0)
+            session.CascadeDraws.push_back(draw.Draw);
+    if (session.CascadeDraws.empty())
+        return false;
+
+    const auto& cascades = *context.Cascades;
+    const auto origin = Mathematics::WorldPosition::FromSector(cascades.RenderOriginSector, {});
+    const auto eyeOffset = view.Eye - origin;
+    view.EyeRelativePlanes = cascades.Cascades[cascade].CasterPlanes;
+    for (auto& plane : view.EyeRelativePlanes)
+        plane.w += plane.x * eyeOffset.x + plane.y * eyeOffset.y + plane.z * eyeOffset.z;
+    const auto* nearDraw = PrepareNearShadowMeshes(session, context, cascade, view);
+    const std::span<const ForestMeshOwnedPlacement> owners = nearDraw ? nearDraw->Owners : std::span<const ForestMeshOwnedPlacement>{};
+
+    const auto& card = *session.Card;
+    const uint32 slotCount = session.Placements->SlotCount();
+    ForestPlacementGpuView gpuView{};
+    if (!BuildForestPlacementGpuInputs(*session.Placements, session.CascadeDraws,
+            MakeForestShadowGpuViewSource(*context.Cascades, cascade), slotCount, ForestCardReach(card),
+            card.Bounds, gpuView, session.Pages, owners))
+        return false;
+    const auto buffers = session.ShadowCulls[cascade].Declare(*context.Frame, session.ShadowScopes[cascade],
+                                                              session.Slots, slotCount, gpuView, session.Pages, 6u, nullptr);
+    if (!buffers || !EmitForestImpostorShadowDraw(context, cascade, *buffers, session.Indices, card.Sway,
+                                                   DrawCommand{.Material = &material}))
+        return false;
+    // Commit mesh replacements only once their complementary card draw has accepted the page.
+    if (nearDraw)
     {
-        session.EmittedNearShadows = true;
-        LOG_INFO("Forest: registered {} near mesh shadow casters in cascade {}",
-                 nearDraw->Owners.size(), cascade);
+        context.Services->EmitCascadeDepthBufferRead(*context.Frame, context.ViewId, cascade, nearDraw->Upload, RGBufferRead::Storage);
+        for (const auto& draw : nearDraw->Commands)
+            context.Services->EmitCascadeDepthCommand(context.ViewId, cascade, draw);
+        if (!session.EmittedNearShadows)
+        {
+            session.EmittedNearShadows = true;
+            LOG_INFO("Forest: registered {} near mesh shadow casters in cascade {}", nearDraw->Owners.size(), cascade);
+        }
     }
-    return nearDraw->Owners;
+    return true;
 }
 
 bool ForestPlacementFeature::PlanShadowFrame(ForestPlacementSession& session, const DepthEmitContext& context,

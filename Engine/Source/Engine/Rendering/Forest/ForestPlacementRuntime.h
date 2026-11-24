@@ -159,6 +159,10 @@ public:
     bool Prepare(const ForestPlacementView& view, uint64 frame, uint64 completedReaders,
                  std::span<const ForestShadowPage> shadowPages, ForestPlacementFrame& out);
 
+    /// The cascade's visible overview quads, excluding the pages covered by detailed shadow draws.
+    void GatherShadowOverview(uint32 cascade, const ForestPlacementView& view, std::span<const ForestDetailDraw> detailed,
+                              std::vector<DrawSubCommand>& draws);
+
     /// The overview ranges of every visible page of another view, such as a shadow or a second camera.
     /// It does not change residency.
     void GatherStand(const ForestPlacementView& view, std::vector<DrawSubCommand>& draws);
@@ -247,6 +251,7 @@ private:
     // The DetailWeight of a page that draws its trees for the demand view.
     float HandoffWeight(uint32 page) const;
     void EmitDraws(uint64 frame, ForestPlacementFrame& out);
+    const std::vector<CellRun>& ShadowVisibleRuns(uint32 cascade, const ForestPlacementView& view);
     void EmitStand(uint32 first, uint32 end, std::vector<DrawSubCommand>& draws) const;
 
     PageStreaming::PackedPlacementStore m_Store;
@@ -260,6 +265,7 @@ private:
     std::optional<ForestPlacementView> m_StandView;
     std::array<std::optional<ForestPlacementView>, kMaxDepthEmitCascades> m_ShadowViews;
     std::array<std::vector<CellRun>, kMaxDepthEmitCascades> m_ShadowVisible;
+    std::vector<uint32> m_ShadowDrawnPages;
     std::vector<ShadowCandidate> m_ShadowCandidates;
     std::vector<ForestShadowPage> m_ShadowQuery;
     std::optional<uint64> m_DemandRetryFrame;
