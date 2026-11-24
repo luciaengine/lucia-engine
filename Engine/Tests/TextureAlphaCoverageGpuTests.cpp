@@ -1872,7 +1872,7 @@ TEST_F(TextureCoverageGPU, FoliageCoverageMovesWithTheSurface)
 }
 
 // A masked surface has no leaf seed: its threshold is the seed of the triangle's first vertex and its
-// instance (foliage_coverage.glsl). A grid of masked cards keeps the base coverage through the mip
+// instance (mask_coverage.glsl). A grid of masked cards keeps the base coverage through the mip
 // tail, where the cutoff test keeps no pixel.
 TEST_F(TextureCoverageGPU, MaskedCardCoverageKeepsTheBaseCoverageThroughTheMipTail)
 {

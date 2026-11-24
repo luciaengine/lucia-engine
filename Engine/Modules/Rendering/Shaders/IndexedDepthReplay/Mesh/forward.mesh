@@ -11,7 +11,7 @@ layout(set=0,binding=5) uniform CameraUBO
 #include "Includes/camera_ubo_fields.glsl"
 } Cam;
 #include "Includes/camera_relative.glsl"
-#include "Includes/foliage_coverage.glsl"
+#include "Includes/mask_coverage.glsl"
 
 layout(local_size_x=32) in;
 layout(triangles,max_vertices=48,max_primitives=16) out;

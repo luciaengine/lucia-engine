@@ -85,7 +85,7 @@ struct SurfaceInput
     float linearDepth;  // linear depth (default: 0)
     vec4 custom0;       // user-defined data from vertex/instance adapter (default: vec4(1))
 #ifdef GE_MASK_COVERAGE_SEED
-    // The masked surface's far coverage threshold in [0, 1), one per triangle (foliage_coverage.glsl).
+    // The masked surface's far coverage threshold in [0, 1), one per triangle (mask_coverage.glsl).
     float maskCoverageThreshold;
 #endif
 #ifdef GE_USER_PARTICLE_BUFFER

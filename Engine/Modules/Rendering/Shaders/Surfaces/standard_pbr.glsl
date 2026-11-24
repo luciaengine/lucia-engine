@@ -130,7 +130,7 @@ vec3 GE_StandardSampleHexNormal(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 s
 #endif
 
 #ifdef GE_MASK_COVERAGE_SEED
-// The far mask (foliage_coverage.glsl): the albedo footprint selects the coverage test, and past the
+// The far mask (mask_coverage.glsl): the albedo footprint selects the coverage test, and past the
 // 32-texel bound the alpha is read at the bound, so a triangle that passes keeps the mask's shape.
 
 // UV per pixel of the albedo map at uv0, through its tiling, along the longer axis.
@@ -209,7 +209,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 #if defined(GE_MASK_COVERAGE_SEED) && defined(GE_DEPTH_ONLY_FRAGMENT) && \
     !defined(GE_PARALLAX_MARCH) && !defined(GE_STANDARD_UV1_CROSSFADE)
     // Depth passes need only coverage. In the mip tail the bounded sample already provides it.
-    float maskTail = GE_FoliageTailWeight(GE_StandardMaskFootprint(sIn));
+    float maskTail = GE_MaskCoverageTailWeight(GE_StandardMaskFootprint(sIn));
     if (maskTail > 0.0)
     {
         float alpha = GE_StandardMaskShapeAlpha(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
@@ -258,8 +258,8 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     o.opacity = albedo.a * Mat.uBaseColor.a * sIn.vertexColor.a;
 #endif
 #if defined(GE_MASK_COVERAGE_SEED) && !defined(GE_STANDARD_DEPTH_MASK_TESTED)
-    // In the mip tail the far test keeps the coverage of the texture alpha on average (foliage_coverage.glsl).
-    float maskTail = GE_FoliageTailWeight(GE_StandardMaskFootprint(sIn));
+    // In the mip tail the far test keeps the coverage of the texture alpha on average (mask_coverage.glsl).
+    float maskTail = GE_MaskCoverageTailWeight(GE_StandardMaskFootprint(sIn));
     if (maskTail > 0.0)
     {
         float maskAlpha = GE_StandardMaskShapeAlpha(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);

@@ -11,7 +11,7 @@
 // @primaryLightOcclusion
 
 #include "Includes/impostor_frame.glsl"
-#include "Includes/foliage_coverage.glsl"
+#include "Includes/mask_coverage.glsl"
 
 vec2 GE_ImpostorClampTile(vec2 atlasUv, vec2 frame, float gridSize, vec2 inset)
 {
@@ -108,7 +108,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     {
         float cutout = step(clamp(Props.alphaCutoff, 0.0, 1.0), cardColor.a);
         float coverage = mix(cutout, cardColor.a, smoothstep(0.5, 2.0, mip));
-        o.opacity = coverage > GE_FoliageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
+        o.opacity = coverage > GE_MaskCoverageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
     }
 #ifdef GE_DEPTH_ONLY_FRAGMENT
     return o;

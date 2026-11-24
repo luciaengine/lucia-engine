@@ -111,7 +111,7 @@ flat layout(location = 14) in uint vInstanceFlags;
 #endif
 
 #ifdef GE_MASK_COVERAGE_SEED
-#include "../Includes/foliage_coverage.glsl"
+#include "../Includes/mask_coverage.glsl"
 flat layout(location = 14, component = 3) in uint vMaskCoverageSeed;
 #endif
 

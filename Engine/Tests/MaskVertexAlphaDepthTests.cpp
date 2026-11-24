@@ -1026,7 +1026,7 @@ TEST(IndexedDepthReuse, MeshReplayRejectsUnservedFragmentInputs)
     EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
 }
 
-// A masked fragment reads the coverage seed at location 14, component 3 (foliage_coverage.glsl). Both
+// A masked fragment reads the coverage seed at location 14, component 3 (mask_coverage.glsl). Both
 // shipped replay mesh shaders write it there, so masked batches keep the owner replay.
 TEST(IndexedDepthReuse, ShippedMeshReplayServesTheMaskCoverageSeed)
 {

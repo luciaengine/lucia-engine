@@ -1,5 +1,5 @@
 #version 450
-#include "Includes/foliage_coverage.glsl"
+#include "Includes/mask_coverage.glsl"
 #include "Includes/integer_hash.glsl"
 layout(set=0,binding=0) uniform sampler2D sourceImage;
 layout(location=0) in vec2 uv;
@@ -31,7 +31,7 @@ float MaskedCard(vec2 position,float alphaScale)
     float footprint=exp2(probe.lod)/float(textureSize(sourceImage,0).x);
     float shapeFootprint=min(footprint,kFoliageShapeFootprint);
     float alpha=textureGrad(sourceImage,fract(position*kLeaves),vec2(shapeFootprint,0.0),vec2(0.0,shapeFootprint)).a;
-    return GE_MaskCoverageOpacity(alpha,alphaScale,probe.cutoff,GE_FoliageTailWeight(footprint),CardSeed(position,0u));
+    return GE_MaskCoverageOpacity(alpha,alphaScale,probe.cutoff,GE_MaskCoverageTailWeight(footprint),CardSeed(position,0u));
 }
 // A grazing card: the sample's footprint is 2^probe.lod texels along x and one texel along y, as a
 // card seen edge-on. Mode 9 selects its test from the production footprint, as standard_pbr does;
@@ -46,7 +46,7 @@ float GrazingCard(vec2 position,bool production)
     if(!production)
         return step(probe.cutoff,alpha);
     float footprint=GE_AnisotropicMaskFootprint(uvDx,uvDy,0.0);
-    float tail=GE_FoliageTailWeight(footprint);
+    float tail=GE_MaskCoverageTailWeight(footprint);
     if(tail<=0.0)
         return step(probe.cutoff,alpha);
     float shape=GE_MaskCoverageShapeGradient(0.0);
@@ -59,10 +59,10 @@ float Foliage(vec2 position,float layerSeed)
     float footprint=exp2(probe.lod)/float(textureSize(sourceImage,0).x);
     float shapeFootprint=min(footprint,kFoliageShapeFootprint);
     float alpha=textureGrad(sourceImage,fract(position*kLeaves),vec2(shapeFootprint,0.0),vec2(0.0,shapeFootprint)).a;
-    float tailWeight=GE_FoliageTailWeight(footprint);
+    float tailWeight=GE_MaskCoverageTailWeight(footprint);
     if(probe.mode==5u)
-        return GE_FoliageLeafCoverageOpacity(alpha,1.0,probe.cutoff,tailWeight,layerSeed);
-    return GE_FoliageCoverageOpacity(alpha,probe.cutoff,tailWeight,layerSeed);
+        return GE_MaskCoverageLeafOpacity(alpha,1.0,probe.cutoff,tailWeight,layerSeed);
+    return GE_MaskCoverageTestOpacity(alpha,probe.cutoff,tailWeight,layerSeed);
 }
 void main()
 {

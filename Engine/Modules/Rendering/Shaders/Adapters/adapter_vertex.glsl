@@ -185,7 +185,7 @@ flat layout(location = 14, component = 2) out uint vDepthOwnerSlot;
 #endif
 
 #ifdef GE_MASK_COVERAGE_SEED
-#include "../Includes/foliage_coverage.glsl"
+#include "../Includes/mask_coverage.glsl"
 flat layout(location = 14, component = 3) out uint vMaskCoverageSeed;
 #endif
 
