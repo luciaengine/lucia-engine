@@ -114,9 +114,27 @@ class CompareTests(unittest.TestCase):
         self.assertEqual([r["metric"] for r in rows if r["metric"].startswith("pass:")], ["pass:Depth.View2.Tile*"])
         self.assertEqual(regressions, [])
 
+    def test_comparison_with_no_valid_pose_returns_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder) / "base.json"
+            head = Path(folder) / "head.json"
+            base.write_text(json.dumps(result("a", 10.0, valid=False)))
+            head.write_text(json.dumps(result("b", 10.0, valid=False)))
+            args = SimpleNamespace(base=base, head=head, noise=None, all_passes=False)
+            self.assertEqual(benchmark.command_compare(args), 1)
+
+    def test_a_missing_pose_is_reported_when_its_scene_still_compares(self):
+        base, head = result("a", 10.0), result("b", 10.0)
+        poses = base["scenes"]["Forest"]["poses"]
+        poses.append(dict(poses[0], name="edge"))
+        rows, regressions, missing = benchmark.compare(base, head, None)
+        self.assertTrue(rows)
+        self.assertFalse(regressions)
+        self.assertEqual(missing, [("Forest", "edge")])
+
     def test_a_scene_that_became_invalid_is_reported(self):
         _, _, missing = benchmark.compare(result("a", 10.0), result("b", 10.0, valid=False), None)
-        self.assertEqual(missing, ["Forest"])
+        self.assertEqual(missing, [("Forest", "a")])
 
     def test_noise_raises_the_threshold_of_a_noisy_metric(self):
         with tempfile.TemporaryDirectory() as folder:

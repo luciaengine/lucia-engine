@@ -463,13 +463,15 @@ def command_noise(args):
 
 
 def compare(base, head, noise):
-    """The rows of a comparison and the regressions among them."""
+    """Return compared rows, regressions, and baseline poses without a valid comparison."""
     base_values, head_values = metrics(base), metrics(head)
     thresholds = (noise or {}).get("metrics", {})
     rows, regressions = [], []
     for key in sorted(set(base_values) & set(head_values)):
         before, after = base_values[key], head_values[key]
-        if before <= 0:
+        if not math.isfinite(before) or not math.isfinite(after) or before <= 0:
+            continue
+        if key[2] == "frameMs.median" and after <= 0:
             continue
         delta_pct = (after - before) / before * 100.0
         threshold = thresholds.get("|".join(key), {}).get("thresholdPct", DEFAULT_THRESHOLD_PCT)
@@ -480,7 +482,9 @@ def compare(base, head, noise):
         rows.append(row)
         if regressed:
             regressions.append(row)
-    missing = sorted({k[0] for k in base_values} - {k[0] for k in head_values})
+    baseline_poses = {key[:2] for key in base_values if key[2] == "frameMs.median"}
+    compared_poses = {(row["scene"], row["pose"]) for row in rows if row["metric"] == "frameMs.median"}
+    missing = sorted(baseline_poses - compared_poses)
     return rows, regressions, missing
 
 
@@ -499,10 +503,13 @@ def command_compare(args):
         flag = "REGRESSION" if row["regressed"] else ""
         print(f"{row['scene']:<10} {row['pose']:<10} {row['metric']:<44} {row['base']:9.3f} -> {row['head']:9.3f} ms "
               f"{row['deltaPct']:+7.2f}% (limit {row['thresholdPct']:.1f}%) {flag}")
-    for scene in missing:
-        print(f"{scene}: valid in base, not valid or absent in head")
+    for scene, pose in missing:
+        print(f"{scene} / {pose}: no valid frame time comparison for this baseline pose")
+    has_frame_comparison = any(row["metric"] == "frameMs.median" for row in rows)
+    if not has_frame_comparison:
+        print("benchmark: no valid frame time comparisons")
     print(f"{len(regressions)} regression(s)")
-    return 1 if regressions or missing else 0
+    return 1 if regressions or missing or not has_frame_comparison else 0
 
 
 def main():
