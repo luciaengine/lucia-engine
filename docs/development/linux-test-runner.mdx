@@ -5,7 +5,7 @@ description: How to run the Linux final check, a full DebugFast build and every 
 
 # Linux test runner
 
-`Tools/LinuxTestRunner/run-tests.sh` is the Linux final check. It fetches a ref from GitHub and builds the whole tree in DebugFast with the tests on. Then it runs every test suite with Vulkan validation on and writes a summary. The build and the suites run in a podman container. The machine needs no other checkout and no other machine.
+`Tools/LinuxTestRunner/run-tests.sh` is the Linux final check. It fetches a ref from GitHub and builds the whole tree in DebugFast with the tests on. Then it runs every test suite with Vulkan validation on and writes a summary. The build and the suites run in a podman container. The machine needs no other checkout and no other machine. A suite that reports zero passing tests fails the gate, even if GoogleTest exits successfully. The per-suite log records the reason. Use `python3 Tools/LinuxTestRunner/check-gtest.py <report.xml>` to check an individual run on any host.
 
 ## Set up a machine
 

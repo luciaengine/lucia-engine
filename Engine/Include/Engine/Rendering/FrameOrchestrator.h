@@ -88,7 +88,7 @@ struct GpuDrivenFrameRG
     // (pointer, FrameIndex) PAIR carried by the shared RGFrameStamp.
     Rendering::RenderGraph::RGFrameStamp For;
     Rendering::RenderGraph::RGBuffer SceneInstances{};
-    // Coalesced 40 B/instance scatter-hot mirror (Scatter.World fetch lever).
+    // Coalesced 44 B/instance scatter-hot mirror (Scatter.World fetch lever).
     // Invalid when GE_SCATTER_COMPACT=0; the scatter then binds SceneInstances.
     Rendering::RenderGraph::RGBuffer SceneScatterHot{};
     Rendering::RenderGraph::RGBuffer SceneMeshes{};

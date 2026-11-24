@@ -85,6 +85,7 @@ struct BuildContext
     const BuildSettings& settings;
     const std::filesystem::path& stagingDir;
     AssetManifest& manifest; // mutable — PreAssetCopy hooks can add/rewrite entries
+    std::vector<std::string> errors{}; // actionable diagnostics for a step that returns false
 };
 
 /// Custom build step hook for extensibility.

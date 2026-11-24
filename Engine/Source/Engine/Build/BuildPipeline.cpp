@@ -427,9 +427,11 @@ bool BuildPipeline::RunCustomSteps(BuildStep::Phase phase, BuildContext& ctx)
             return false;
 
         Logger::Log::Info("Build: Running custom step '{}'", step.name);
+        ctx.errors.clear();
         if (!step.execute(ctx))
         {
             m_Progress.errors.push_back("Custom step '" + step.name + "' failed");
+            m_Progress.errors.insert(m_Progress.errors.end(), ctx.errors.begin(), ctx.errors.end());
             return false;
         }
     }

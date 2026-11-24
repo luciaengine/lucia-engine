@@ -38,7 +38,7 @@ for c in $(podman ps -q); do podman inspect "$c" --format "{{range .Mounts}}{{.S
 [ -d "$CI/repo.git" ] || git clone -q --bare --filter=blob:none "$REPO" "$CI/repo.git" || exit 1
 git -C "$CI/repo.git" fetch -q origin "+refs/heads/*:refs/heads/*" || exit 1
 SHA=$(git -C "$CI/repo.git" rev-parse --short=9 "$REF") || { echo "Unknown ref $REF"; exit 1; }
-RUN="$(date +%Y%m%d-%H%M)-$SHA"
+RUN="$(date +%Y%m%d-%H%M%S)-$SHA"
 OUT="$CI/results/$RUN"; mkdir -p "$OUT/xml"
 ln -sfn "$OUT" "$CI/results/latest"
 echo "ref $REF sha $SHA start $(date)" | tee "$OUT/summary.txt"
@@ -72,15 +72,31 @@ fi
 [ $rc -eq 0 ] || exit 1
 cd build/linux-x64-local
 ninja -k 0 -j "$LUCIA_JOBS" > $O/build.log 2>&1
-echo "build $?" >> $O/status
+rc=$?
+echo "build $rc" >> $O/status
+[ "$rc" -eq 0 ] || exit "$rc"
+gate_status=0
+ran_suite=0
 for t in bin/DebugFast/Tests/*; do
   [ -x "$t" ] && [ -f "$t" ] || continue
   n=$(basename "$t")
   case "$n" in *.so|*.so.*|FakeAgentCli|ProcessStreamProbe) continue;; *Test*) ;; *) continue;; esac
+  ran_suite=1
   GE_VK_VALIDATION=1 timeout 2400 "./$t" --gtest_output=xml:$O/xml/$n.xml > $O/$n.log 2>&1
-  echo "run $n $?" >> $O/status
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    python3 /lucia/src/Tools/LinuxTestRunner/check-gtest.py "$O/xml/$n.xml" >> "$O/$n.log" 2>&1
+    rc=$?
+  fi
+  [ "$rc" -eq 0 ] || gate_status=1
+  echo "run $n $rc" >> $O/status
 done
+if [ "$ran_suite" -eq 0 ]; then
+  echo "No test suites ran" >> "$O/status"
+  gate_status=1
+fi
 echo done >> $O/status
+exit "$gate_status"
 INNER
 chmod +x "$OUT/inner.sh"
 podman run --rm --device /dev/dri -e LUCIA_JOBS="$JOBS" \
@@ -88,6 +104,7 @@ podman run --rm --device /dev/dri -e LUCIA_JOBS="$JOBS" \
   -v "$SRC":/lucia/src -v "$VCPKG":/lucia/vcpkg \
   -v "$VCPKG_ARCHIVES":/root/.cache/vcpkg/archives \
   -v "$OUT":/lucia/out "$IMAGE" bash /lucia/out/inner.sh
+gate_status=$?
 
 # 4. Summary: build errors and one line per suite.
 {
@@ -103,3 +120,4 @@ podman run --rm --device /dev/dri -e LUCIA_JOBS="$JOBS" \
   echo "end $(date)"
 } >> "$OUT/summary.txt"
 cat "$OUT/summary.txt"
+exit "$gate_status"

@@ -346,4 +346,11 @@ float WindScaleBound(const EZTree::TreeOptions& options)
     return options.wind.enabled ? std::max(kBarkWindScale, kLeafWindScale) : 0.0f;
 }
 
+float WindVolumeCullMargin(const EZTree::TreeOptions& options, float volumeSpeedBound)
+{
+    // ez_tree_wind.glsl's @deformationEnvelope: the largest displacement per unit of wind, local meters.
+    constexpr float kWindDisplacementEnvelope = 1.21f;
+    return kWindDisplacementEnvelope * WindScaleBound(options) * std::max(volumeSpeedBound, 0.0f);
+}
+
 } // namespace GameEngine::EZTreeECS

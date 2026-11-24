@@ -83,6 +83,17 @@ class LogTests(unittest.TestCase):
 
 
 class CompareTests(unittest.TestCase):
+    def test_an_invalid_steam_run_cannot_be_compared_or_used_for_noise(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "result.json"
+            hot = result("a", 10.0)
+            hot["steamTelemetry"] = {"valid": False, "problems": ["GPU was throttled"]}
+            path.write_text(json.dumps(hot))
+            with self.assertRaisesRegex(SystemExit, "GPU was throttled"):
+                benchmark.command_compare(SimpleNamespace(base=path, head=path))
+            with self.assertRaisesRegex(SystemExit, "GPU was throttled"):
+                benchmark.command_noise(SimpleNamespace(results=[path, path]))
+
     def test_a_slowdown_beyond_the_threshold_is_a_regression_and_within_it_is_not(self):
         _, regressions, _ = benchmark.compare(result("a", 10.0), result("b", 10.2), None)
         self.assertEqual(regressions, [])

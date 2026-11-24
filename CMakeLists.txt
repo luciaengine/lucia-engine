@@ -229,6 +229,19 @@ ge_add_mcp_server_target()
 # the header only when the id changes. A consumer depends on BuildCommit, adds
 # GE_BUILD_COMMIT_INCLUDE_DIR to its include path, and includes the header in one source file.
 find_package(Git QUIET)
+if(Git_FOUND)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" config --get core.hooksPath
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE _ge_hooks_path OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(_ge_hooks_path STREQUAL "Tools/Git")
+        execute_process(COMMAND "${GIT_EXECUTABLE}" config --get user.email
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            OUTPUT_VARIABLE _ge_git_email OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(NOT _ge_git_email STREQUAL "352078336+lucia-engine@users.noreply.github.com")
+            message(WARNING "The configured Git email does not match the Lucia Engine maintainer identity required for main. See CONTRIBUTING.md.")
+        endif()
+    endif()
+endif()
 set(GE_BUILD_COMMIT_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated/build-commit")
 add_custom_target(BuildCommit
 	COMMAND ${CMAKE_COMMAND}

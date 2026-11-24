@@ -505,6 +505,10 @@ const uint kPerInstanceMaterialRow = 0xffffffffu;
 layout(constant_id = 306) const uint GE_FORWARD_MATERIAL_ROW = kPerInstanceMaterialRow;
 #endif
 
+#ifdef GE_IMPOSTOR_BAKE
+#include "../Includes/impostor_bake_normal.glsl"
+#endif
+
 // The mip bias of every material sample. An impostor bake draws a whole object into one atlas
 // frame, so the coarse mip that the frame size selects merges each leaf with its gaps and the
 // alpha test drops it. The bake samples 2 mips finer: the weakest bias that keeps the leaf
@@ -984,7 +988,16 @@ void main()
   #endif
     vec3 bakeNormal = normalize(so.normalWS);
   #ifndef GE_TWO_SIDED_KEEP_NORMAL
-    if (!gl_FrontFacing)
+    // A cutout surface drawn on both faces is foliage: it takes the two-sided rule. A closed
+    // surface keeps the normal of the face that the frame camera sees.
+    #ifdef ALPHA_TEST
+    const bool twoSidedCutout = (vInstanceFlags & kImpostorBakeTwoSidedFlag) != 0u;
+    #else
+    const bool twoSidedCutout = false;
+    #endif
+    if (twoSidedCutout)
+        bakeNormal = GE_ImpostorTwoSidedBakeNormal(bakeNormal, normalize(si.viewDirWS));
+    else if (!gl_FrontFacing)
         bakeNormal = -bakeNormal;
   #endif
     // The bake camera is orthographic, so the window depth is linear along the frame axis.

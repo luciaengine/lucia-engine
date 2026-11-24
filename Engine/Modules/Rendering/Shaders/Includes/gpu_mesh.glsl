@@ -14,7 +14,8 @@ struct GPUMesh {
     // primary part. MUST match GPUScene.h kGPUMeshImpostor*.
     uint  impostorCard;
     uint  vertexOffset;
-    uint  vertexCount;
+    // Local radius of the card's sphere (0 = the instance sphere). MUST match GPUScene.h.
+    float impostorRadius;
     uint  indexOffset;
     uint  indexCount;
     uint  lodCount;
