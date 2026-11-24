@@ -866,6 +866,13 @@ ComposedShaderSource ShaderComposer::ComposeSources(const SourceInputs& source,
             hasDefine("ALPHA_TEST") && hasDefine("GE_INSTANCED") && !hasDefine("GE_COMPAT_PROFILE") &&
             !hasDefine("GE_PROCEDURAL_VERTEX_OUTPUT") && !hasDefine("GE_USER_PARTICLE_BUFFER"))
             result.defines.push_back("GE_MASK_COVERAGE_SEED");
+        // A marked surface uses only UV1.x in depth passes. It can share UV0's interpolation slot.
+        if (surfaceSource.find("// @depthUv1X") != std::string::npos &&
+            hasDefine("GE_DEPTH_ONLY_FRAGMENT") && hasDefine("ALPHA_TEST") &&
+            hasDefine("HAS_UV0") && hasDefine("HAS_UV1") &&
+            !hasDefine("GE_COMPAT_PROFILE") && !hasDefine("GE_MOTION_VECTORS") &&
+            !hasDefine("GE_PROCEDURAL_VERTEX_OUTPUT") && !hasDefine("HAS_VERTEX_OUTPUT_MODIFIER"))
+            result.defines.push_back("GE_PACK_DEPTH_UV1_X");
     }
 
     // Named texture slots: resolve the surface's `@texture` declarations to
