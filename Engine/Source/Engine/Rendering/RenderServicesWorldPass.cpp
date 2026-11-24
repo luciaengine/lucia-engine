@@ -1814,7 +1814,9 @@ class RenderServices::WorldPassPreparation
                     const auto replay = MatchIndexedOwnerCompaction(*m_Data->IndexedReplayProducer, *source);
                     const auto equal = m_Services.Materials().Variants().PrepareIndexedDepthEqual(
                         *batch.Material, *meta, concreteId, color, m_Context.BuildCurrentFormatKey(),
-                        CanSpecializeWhiteMaps(*batch.Material, m_Services.Textures(), color));
+                        CanSpecializeWhiteMaps(*batch.Material, m_Services.Textures(), color),
+                        CanSpecializeWhiteMetalRough(*batch.Material,
+                            m_Services.Textures().DefaultWhiteBindlessIndex(), *meta, color));
                     if (equal.Pipeline.IsValid())
                     {
                         prepared.Bindings.Pipeline = equal.Pipeline;
@@ -1831,7 +1833,7 @@ class RenderServices::WorldPassPreparation
                 }
             }
         }
-        else if (!m_Data->IndexedReplayProducer && !crossfading &&
+        if (!prepared.IndexedDepthEqual && !crossfading &&
                  m_Phase == Rendering::GPUDrawStreamBuilder::SlicePhase::A &&
                  m_SliceCascadeIndex == Rendering::GPUDrawStreamBuilder::kCascadeIndexNone &&
                  m_Services.m_Device->GetCapabilities().prefersForwardShaderSpecialization &&
@@ -2645,9 +2647,12 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                         extensions[extensionCount++] = &*extension;
                     }
                     const auto& graph = frame.Graph();
+                    // Vulkan compares individual samples in the same unresolved attachment.
+                    const bool allowMultisampledDepth = m_Device->GetAPI() == Rendering::GraphicsAPI::Vulkan;
                     const auto lineage = before != attachments.end() && after != attachments.end() && !missingExtension
                         ? RenderGraph::CheckDepthPrepassLineage(graph, *before, *after, frame.IsPoolBackedTexture(depth),
-                                                               std::span(extensions.data(), extensionCount))
+                                                               std::span(extensions.data(), extensionCount),
+                                                               allowMultisampledDepth)
                         : RenderGraph::DepthPrepassLineage{"missing attachment"};
                     if (lineage)
                         data->IndexedReplayProducer = replayProducer;

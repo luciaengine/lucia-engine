@@ -1197,6 +1197,36 @@ TEST(IndexedDepthReuse, OwnerReplayRunsByDefaultOnVulkanAndStaysOptInOnMetal)
     SetTestSwitch(kSwitch, nullptr);
 }
 
+TEST(IndexedDepthReuse, CanUseTheSameUnresolvedMultisampledDepthAttachment)
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    RG::RGGraph graph;
+    graph.BeginFrame();
+    RG::RGResourceDesc desc;
+    desc.Kind = RG::RGResourceKind::Texture;
+    desc.Name = "MultisampledCameraDepth";
+    desc.Format = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
+    desc.SampleCount = 4;
+    const auto depth = graph.CreateResource(desc);
+    const auto prepass = graph.AddPass({"CameraPrepass"});
+    const auto forward = graph.AddPass({"Forward"});
+    graph.Write(prepass, depth, RG::RGAccess::DepthWrite);
+    graph.Read(forward, depth, RG::RGAccess::DepthRead);
+    graph.PreventCulling(forward);
+    graph.Compile();
+    graph.Schedule();
+
+    RG::RGAttachmentRec producer{
+        .Pass = prepass, .Tex = depth, .Ops = {.Load = RG::RGLoadOp::Clear}, .IsDepth = true};
+    const RG::RGAttachmentRec consumer{
+        .Pass = forward, .Tex = depth, .Ops = {.Store = RG::RGStoreOp::None},
+        .IsDepth = true, .ReadOnly = true};
+    EXPECT_FALSE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false));
+    EXPECT_TRUE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, {}, true));
+    producer.Resolve = depth + 1;
+    EXPECT_FALSE(RG::CheckDepthPrepassLineage(graph, producer, consumer, false, {}, true));
+}
+
 TEST(IndexedDepthReuse, AnInterveningDepthWriterInvalidatesThePrepass)
 {
     namespace RG = GameEngine::Rendering::RenderGraph;

@@ -441,7 +441,7 @@ Rendering::PipelineHandle PipelineVariantCache::PrepareWhiteMapVariant(
 PipelineVariantCache::PreparedVariant PipelineVariantCache::PrepareIndexedDepthEqual(
     const Material& material, const Rendering::ShaderMeta& shader, Rendering::GraphicsPipelineId base,
     const Rendering::GraphicsPipelineDesc& desc, const Rendering::PipelineFormatKey& formatKey,
-    bool useWhiteMaps)
+    bool useWhiteMaps, bool useWhiteMetalRough)
 {
     auto* device = m_Materials->GetDevice();
     if (!device)
@@ -477,6 +477,16 @@ PipelineVariantCache::PreparedVariant PipelineVariantCache::PrepareIndexedDepthE
         {
             auto whiteOverrides = overrides;
             whiteOverrides.AddConstant(kStandardWhiteMapsConstant, uint32_t{1});
+            if (useWhiteMetalRough)
+            {
+                auto whiteMetalRoughOverrides = whiteOverrides;
+                whiteMetalRoughOverrides.AddConstant(kStandardWhiteMetalRoughConstant, uint32_t{1});
+                const auto whiteMetalRoughId = pipelineCache.SpecializeGraphicsPipeline(id, whiteMetalRoughOverrides);
+                const auto whiteMetalRoughPipeline = device->TryGetWarmGraphicsPipeline(whiteMetalRoughId, formatKey);
+                if (whiteMetalRoughPipeline.IsValid())
+                    return {whiteMetalRoughPipeline, nullptr, whiteMetalRoughId};
+                QueueConcreteWarm(material, whiteMetalRoughId, formatKey);
+            }
             const auto whiteId = pipelineCache.SpecializeGraphicsPipeline(id, whiteOverrides);
             const auto whitePipeline = device->TryGetWarmGraphicsPipeline(whiteId, formatKey);
             if (whitePipeline.IsValid())
