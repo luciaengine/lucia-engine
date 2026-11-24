@@ -5,12 +5,14 @@
 // buries the author's own errors under engine rows in the Shader Errors panel.
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include "Rendering/Core/Device.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Source/Materials/Shader/ShaderSourceCache.h"
 #include "StagedTestPaths.h"
@@ -78,6 +80,19 @@ bool StageShaderRoot(const fs::path& moduleShaders, const std::string& mountName
 }
 
 } // namespace
+
+TEST(ShippedSurfaceCompose, GroundGridUsesTheCanonicalStandardPbrSurface)
+{
+    const fs::path materials = TestPaths::StagedEngineAssetsDir() / "Materials";
+    const auto json = nlohmann::json::parse(ReadWholeFile(materials / "GroundGrid.material"));
+    MaterialBuildContext ctx{};
+    ctx.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    const auto resolved = ShaderComposer::ResolveSurfaceShaderPath(
+        json.at("surfaceShader").get<std::string>(), materials, ctx);
+    const auto expected = ctx.AdapterShaderDir / "Surfaces" / "standard_pbr.glsl";
+    ASSERT_TRUE(fs::is_regular_file(resolved)) << resolved;
+    EXPECT_TRUE(fs::equivalent(resolved, expected)) << resolved << " expected " << expected;
+}
 
 // Mirrors Engine/Assets/Materials/UnlitWhite.material (World Debug and Shadow Only
 // author the same surface).
