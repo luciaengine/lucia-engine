@@ -923,6 +923,7 @@ struct RenderingDeviceCapabilities
     // Effective enabled interpolation capability of the backend.
     bool supportsShaderInterpolationFunctions = false;
     bool supportsShaderClipDistance = false;
+    bool supportsFragmentDemote = false; // enabled on the logical device
 
     uint32_t maxBindlessTextures = 0;
     uint32_t maxBindlessBuffers = 0;

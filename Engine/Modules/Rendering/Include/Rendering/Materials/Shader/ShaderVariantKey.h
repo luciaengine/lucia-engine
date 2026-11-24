@@ -327,7 +327,12 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
     if (HasKeyword(key.materialKeywords, MaterialKeyword::Parallax))
         defs.push_back("GE_PARALLAX_ENABLED");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::SurfaceLightOcclusion) && !shadesNothing)
+    {
         defs.push_back("GE_SURFACE_LIGHT_OCCLUSION");
+        if (target.FragmentDemote && target.Spirv == SpirvTarget::Spirv_1_6 && !target.Compatibility &&
+            HasKeyword(key.materialKeywords, MaterialKeyword::CustomVertexShader))
+            defs.push_back("GE_FRAGMENT_DEMOTE");
+    }
     if (HasKeyword(key.materialKeywords, MaterialKeyword::ParallaxStepsView))
         defs.push_back("GE_PARALLAX_STEPS_VIEW_ENABLED");
     if (HasKeyword(key.materialKeywords, MaterialKeyword::ParallaxDepthOffset))

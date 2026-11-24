@@ -3032,6 +3032,9 @@ bool VulkanDevice::CreateLogicalDevice()
     createInfo.ppEnabledLayerNames = nullptr;
 
     VkResult result = vkCreateDevice(m_PhysicalDevice, &createInfo, nullptr, &m_Device);
+    // Both fallback chains below omit Vulkan 1.3 features, even on a physical 1.3 device.
+    m_FragmentDemoteEnabledAtInit = result == VK_SUCCESS && m_DeviceProperties.apiVersion >= VK_API_VERSION_1_3 &&
+                                    enabled13.shaderDemoteToHelperInvocation == VK_TRUE;
     m_FragmentPrimitiveIdEnabledAtInit = result == VK_SUCCESS && deviceFeatures.geometryShader == VK_TRUE;
     if (result != VK_SUCCESS)
     {
@@ -3646,6 +3649,7 @@ void VulkanDevice::QueryDeviceCapabilities()
     // structures + ray query were actually enabled on the logical device
     // (see CreateLogicalDevice; false on the fallback creation paths).
     m_Capabilities.supportsRayQuery = m_RayQueryEnabledAtInit;
+    m_Capabilities.supportsFragmentDemote = m_FragmentDemoteEnabledAtInit;
 
     // Publish the max SPIR-V version this device can consume to the (backend-
     // agnostic) shader compile service: Vulkan 1.3 devices accept SPIR-V 1.6,

@@ -24,12 +24,12 @@ struct MaterialBuildContext;
 /// without composing the variant's source and hashing its include closure to find the key.
 /// An input the index does not hold falls through to that path.
 ///
-/// An index is valid only for the compile inputs it was written under (CurrentCompileInputs:
-/// the cache key's format and SPIR-V target and the shader profile) and for the shader sources its
-/// programs were composed from: it records each source file (ShaderSourceIdentity) with a hash of
-/// its content, and Load refuses it when one is missing or changed under the runtime's roots, when
-/// it was written for other inputs, or under another kShaderProgramIndexVersion. A stale index is
-/// never trusted: a variant it would have served composes from the shipped sources instead.
+/// An index is valid for matching compile inputs or when the runtime additionally supports optional
+/// fragment demotion. The compile inputs (CurrentCompileInputs) include
+/// the cache key's format and SPIR-V target and the shader profile. It records each shader source
+/// file (ShaderSourceIdentity) with a content hash. Load refuses an index when one of those sources
+/// is missing or has changed, when its compile inputs are incompatible, or when its format version
+/// differs. The runtime composes variants from the shipped sources when it cannot use the index.
 class ShaderProgramIndex
 {
 public:
@@ -47,8 +47,7 @@ public:
         uint64_t Misses = 0;
     };
 
-    /// The compile inputs this process keys programs under: what an index must have been
-    /// written for to be used here.
+    /// The compile inputs this process keys programs under.
     static std::string CurrentCompileInputs();
 
     /// Writes `entries` as the index at `path`, for the current compile inputs and for `sources`,

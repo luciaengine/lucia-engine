@@ -13,6 +13,7 @@ constexpr uint32_t kSpirvMask = 3u;
 constexpr uint32_t kCompatibilityBit = 1u << 2u;
 constexpr uint32_t kInterpolationBit = 1u << 3u;
 constexpr uint32_t kClipDistanceBit = 1u << 4u;
+constexpr uint32_t kFragmentDemoteBit = 1u << 5u;
 std::atomic<uint32_t> s_CompileTarget{ShaderCompileTarget{}.Hash()};
 
 void ReplaceTargetBits(uint32_t mask, uint32_t value)
@@ -30,7 +31,7 @@ ShaderCompileTarget CurrentShaderCompileTarget()
     const uint32_t packed = s_CompileTarget.load(std::memory_order_relaxed);
     return {static_cast<SpirvTarget>(packed & kSpirvMask),
             (packed & kCompatibilityBit) != 0u, (packed & kInterpolationBit) != 0u,
-            (packed & kClipDistanceBit) != 0u};
+            (packed & kClipDistanceBit) != 0u, (packed & kFragmentDemoteBit) != 0u};
 }
 
 bool IsCompatShaderProfile()
@@ -77,8 +78,9 @@ void ApplyShaderCompileProfile(const RendererProfile& profile)
 {
     const uint32_t value = (profile.IsCompat() ? kCompatibilityBit : 0u) |
                            (profile.UseInterpolationFunctions ? kInterpolationBit : 0u) |
-                           (profile.UseClipDistance ? kClipDistanceBit : 0u);
-    ReplaceTargetBits(kCompatibilityBit | kInterpolationBit | kClipDistanceBit, value);
+                           (profile.UseClipDistance ? kClipDistanceBit : 0u) |
+                           (profile.UseFragmentDemote && !profile.IsCompat() ? kFragmentDemoteBit : 0u);
+    ReplaceTargetBits(kCompatibilityBit | kInterpolationBit | kClipDistanceBit | kFragmentDemoteBit, value);
 }
 
 void ApplyShaderCompileProfile(const ShaderCompileTarget& target)
