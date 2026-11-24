@@ -1074,6 +1074,25 @@ TEST(IndexedDepthReuse, OwnerMaterialRowPreservesDonorConstantsAndRejectsInherit
     EXPECT_EQ(owner.Specialization->GetHash(), expected.Specialization->GetHash());
 }
 
+TEST(OrdinaryMaskedDraw, WhiteMapOverrideRequiresDeclaredConstantAndPreservesServedRow)
+{
+    ShaderMeta shader;
+    GraphicsPipelineDesc pipeline;
+    EXPECT_FALSE(AcceptsOrdinaryWhiteMapOverride(shader, pipeline, 18u));
+    shader.SpecConstants.push_back({.Id = kStandardWhiteMapsConstant});
+    EXPECT_TRUE(AcceptsOrdinaryWhiteMapOverride(shader, pipeline, 18u));
+
+    pipeline.Specialization.emplace();
+    pipeline.Specialization->AddConstant(kForwardHexTilingConstant, 0u);
+    EXPECT_TRUE(AcceptsOrdinaryWhiteMapOverride(shader, pipeline, 18u));
+    pipeline.Specialization->AddConstant(kForwardMaterialRowConstant, 18u);
+    EXPECT_TRUE(AcceptsOrdinaryWhiteMapOverride(shader, pipeline, 18u));
+    EXPECT_FALSE(AcceptsOrdinaryWhiteMapOverride(shader, pipeline, 41u));
+
+    pipeline.Specialization->AddConstant(kStandardWhiteMapsConstant, 0u);
+    EXPECT_FALSE(AcceptsOrdinaryWhiteMapOverride(shader, pipeline, 18u));
+}
+
 TEST(IndexedDepthReuse, WhiteSurfaceSlotsRejectTextureAndSamplerEdits)
 {
     constexpr uint32_t kWhite = 17u;

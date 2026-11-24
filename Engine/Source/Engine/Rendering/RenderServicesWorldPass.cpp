@@ -1712,6 +1712,17 @@ class RenderServices::WorldPassPreparation
                            drawSegment.crossfading, drawSegment.segment);
     }
 
+    bool HasCurrentMaskBindings(const WorldBatchPreparation& batch, const PreparedForwardDraw& prepared,
+                                const Rendering::ShaderMeta& meta) const
+    {
+        return prepared.ServedVersion == batch.Material->GetVersion() &&
+            batch.Key.colorClassId == batch.Key.materialIndex &&
+            batch.Key.materialIndex == batch.Material->GetGpuSceneMaterialIndex() &&
+            HasBoundIndexedMaskSets(meta, prepared.Bindings) &&
+            HasPublishedReplayAlbedo(*batch.Material, m_Services.Textures(), prepared.Bindings, m_Context) &&
+            m_Services.Materials().IsCurrentPackedMaterialRow(*batch.Material, BoundMaterialParams(m_Data->Inputs));
+    }
+
     void PrepareSegment(const WorldBatchPreparation& batch, Rendering::FrontFace winding,
                         bool crossfading, const Rendering::GPUDrawStreamBuilder::BatchDrawSegment& segment)
     {
@@ -1775,19 +1786,14 @@ class RenderServices::WorldPassPreparation
         prepared.Geometry.indexType = batch.Mesh->indexType;
         if (variantEntry)
             prepared.ServedVersion = variantEntry->MaterialVersion;
+        const auto* meta = variantEntry ? variantEntry->VariantMeta.get() : nullptr;
         if (m_Data->IndexedReplayProducer &&
             batch.Material->GetAlphaMode() == MaterialAlphaMode::Mask)
         {
             ++m_Data->IndexedReplayCandidates;
             const auto source = GetIndexedDepthDraw(command, prepared.Geometry);
-            const auto* meta = variantEntry ? variantEntry->VariantMeta.get() : nullptr;
             const auto vertexAlpha = StockMaskVertexAlpha(meta, false, crossfading);
-            if (source && vertexAlpha && prepared.ServedVersion == batch.Material->GetVersion() &&
-                batch.Key.colorClassId == batch.Key.materialIndex &&
-                batch.Key.materialIndex == batch.Material->GetGpuSceneMaterialIndex() &&
-                HasBoundIndexedMaskSets(*meta, preparedBindings) &&
-                HasPublishedReplayAlbedo(*batch.Material, m_Services.Textures(), preparedBindings, m_Context) &&
-                m_Services.Materials().IsCurrentPackedMaterialRow(*batch.Material, BoundMaterialParams(m_Data->Inputs)))
+            if (source && vertexAlpha && HasCurrentMaskBindings(batch, prepared, *meta))
             {
                 const auto depthId = FindPreparedIndexedDepthPipeline(
                     *m_Data->IndexedReplayProducer, *source, *batch.Material, winding, *vertexAlpha, m_Context);
@@ -1823,6 +1829,24 @@ class RenderServices::WorldPassPreparation
                             prepared.OwnerReplay = replay;
                     }
                 }
+            }
+        }
+        else if (!m_Data->IndexedReplayProducer && !crossfading &&
+                 m_Phase == Rendering::GPUDrawStreamBuilder::SlicePhase::A &&
+                 m_SliceCascadeIndex == Rendering::GPUDrawStreamBuilder::kCascadeIndexNone &&
+                 m_Services.m_Device->GetCapabilities().prefersForwardShaderSpecialization &&
+                 batch.Material->GetAlphaMode() == MaterialAlphaMode::Mask &&
+                 StockMaskVertexAlpha(meta, false, false) && HasCurrentMaskBindings(batch, prepared, *meta))
+        {
+            Rendering::GraphicsPipelineDesc color;
+            if (m_Services.m_Device->CopyGraphicsPipeline(concreteId, color) &&
+                AcceptsOrdinaryWhiteMapOverride(*meta, color, batch.Key.materialIndex) &&
+                CanSpecializeWhiteMaps(*batch.Material, m_Services.Textures(), color))
+            {
+                const auto white = m_Services.Materials().Variants().PrepareWhiteMapVariant(
+                    *batch.Material, concreteId, m_Context.BuildCurrentFormatKey());
+                if (white.IsValid())
+                    prepared.Bindings.Pipeline = white;
             }
         }
         Append(command, prepared, true, batch.Key.materialIndex, batch.Key.meshIndex,

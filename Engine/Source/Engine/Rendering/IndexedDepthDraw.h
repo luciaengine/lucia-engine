@@ -296,6 +296,28 @@ inline bool HasDefaultWhiteSurfaceSlots(const Material& material, uint32_t white
     return usesRepeat(TextureSlot::kAO) && usesRepeat(TextureSlot::kEmissive);
 }
 
+inline constexpr uint32_t kStandardWhiteMapsConstant = 308;
+
+inline bool AcceptsOrdinaryWhiteMapOverride(const Rendering::ShaderMeta& shader,
+                                            const Rendering::GraphicsPipelineDesc& pipeline, uint32_t materialRow)
+{
+    if (std::none_of(shader.SpecConstants.begin(), shader.SpecConstants.end(), [](const auto& constant) {
+            return constant.Id == kStandardWhiteMapsConstant;
+        }))
+        return false;
+    if (!pipeline.Specialization)
+        return true;
+    const auto& constants = *pipeline.Specialization;
+    const auto& entries = constants.GetEntries();
+    if (entries.contains(kStandardWhiteMapsConstant))
+        return false;
+    const auto row = entries.find(kForwardMaterialRowConstant);
+    return row == entries.end() ||
+        (row->second.Size == sizeof(materialRow) && row->second.Offset <= constants.GetDataSize() &&
+         row->second.Size <= constants.GetDataSize() - row->second.Offset &&
+         std::memcmp(constants.GetDataPtr() + row->second.Offset, &materialRow, sizeof(materialRow)) == 0);
+}
+
 inline bool CanSpecializeWhiteMaps(const Material& material, const TextureService& textures,
                                    const Rendering::GraphicsPipelineDesc& color)
 {
