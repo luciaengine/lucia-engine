@@ -85,7 +85,7 @@ uint32_t MakeRenderedEntry(uint32_t level, bool fading, bool continuous)
            | (continuous ? GPUDrawStreamBuilder::kRenderedHistoryContinuousBit : 0u);
 }
 
-// A scatter pipeline variant: the binding-1 fetch axis (compact 40 B mirror vs
+// A scatter pipeline variant: the binding-1 fetch axis (compact 44 B mirror vs
 // full-fat 240 B instance buffer) crossed with the instrumentation axis (the
 // per-slice drawnTriangles subgroup atomic, GE_SCATTER_STATS). Field names
 // match the GE_SCATTER_COMPACT / GE_SCATTER_STATS env knobs.
@@ -149,7 +149,7 @@ struct LodDispatchParams
 class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
 {
   protected:
-    // true = compact 40 B mirror at binding 1; false = full-fat 240 B buffer.
+    // true = compact 44 B mirror at binding 1; false = full-fat 240 B buffer.
     bool UseCompact() const { return GetParam().compact; }
     // true = the drawnTriangles subgroup atomic is compiled in (GE_SCATTER_STATS).
     bool UseStats() const { return GetParam().stats; }
@@ -167,7 +167,7 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         m_Builder = std::make_unique<GPUDrawStreamBuilder>(m_Device.get());
         ASSERT_TRUE(m_Builder->Initialize());
 
-        // The compact variant binds GPUScene's 40 B mirror, which only exists
+        // The compact variant binds GPUScene's 44 B mirror, which only exists
         // when GE_SCATTER_COMPACT is on (the default). If the process forced it
         // off, skip the compact param; the full-fat param still runs.
         if (UseCompact() && !m_Scene->IsScatterHotEnabled())
@@ -221,7 +221,6 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         mesh.indexCount     = indexCount;
         mesh.indexOffset    = 0u;
         mesh.vertexOffset   = 0u;
-        mesh.vertexCount    = 3u;
         mesh.lodCount       = 1u;
         mesh.lodIndexCount[0]  = indexCount;
         mesh.lodIndexOffset[0] = 0u;
@@ -883,6 +882,7 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
     void ExpectShadowClassModeRoutesByFlagsIntoSentinelRegions();
     void ExpectMirroredInstancesRouteIntoParityOneRegion();
     void ExpectConservativeBoundsPreserveReferenceSwitchesAndBias();
+    void ExpectImpostorSwitchesOnTheCardSphereNotTheCullingSphere();
     void ExpectLodBandHistoryIsIndexedPerInstanceNotPerSlot();
     void ExpectCrossfadeLevelChangeEmitsItsPairIntoTheTailNotTheHead();
     void ExpectDeformationMarginWidensTheCullSphereAndLeavesTheLevelAlone();
@@ -1771,7 +1771,6 @@ TEST_P(BatchScatterComputeTest, LodVertexOffsetComposesIntoDrawRecord)
     m.indexCount     = 6u;
     m.indexOffset    = 0u;
     m.vertexOffset   = 50u;  // base (absolute, in vertices)
-    m.vertexCount    = 8u;
     m.lodCount       = 2u;
     m.boundingRadius = 1.0f;
     m.lodIndexCount[0]  = 6u; m.lodIndexOffset[0]  = 0u; m.lodVertexOffset[0] = 0u;
@@ -1815,7 +1814,6 @@ TEST_P(BatchScatterComputeTest, LodAutoSelectMatchesTheCpuRuleAcrossSpaces)
     GPUMesh m{};
     m.indexCount     = 30u;
     m.indexOffset    = 0u;
-    m.vertexCount    = 8u;
     m.lodCount       = 3u;
     m.boundingRadius = 1.0f;
     // Distinct index counts so the emitted record identifies the chosen level.
@@ -1899,7 +1897,6 @@ TEST_P(BatchScatterComputeTest, OffModeZeroThresholdsDrawLod0WhereABudgetOfZeroD
     GPUMesh m{};
     m.indexCount     = 30u;
     m.indexOffset    = 0u;
-    m.vertexCount    = 8u;
     m.lodCount       = 3u;
     m.boundingRadius = 1.0f;
     // Distinct index counts so the emitted record identifies the chosen level.
@@ -2010,7 +2007,6 @@ GPUMesh MakeHysteresisMesh()
     m.indexCount     = kHystLod0Indices;
     m.indexOffset    = 0u;
     m.vertexOffset   = 0u;
-    m.vertexCount    = 32u;
     m.lodCount       = 2u;
     m.boundingRadius = 1.0f;
     m.lodIndexCount[0]  = kHystLod0Indices; m.lodIndexOffset[0] = 0u;  m.lodVertexOffset[0] = 0u;
@@ -2035,7 +2031,6 @@ GPUMesh MakeMultiLevelHysteresisMesh()
     m.indexCount     = kMultiIndices[0];
     m.indexOffset    = 0u;
     m.vertexOffset   = 0u;
-    m.vertexCount    = 64u;
     m.lodCount       = 4u;
     m.boundingRadius = 1.0f;
     uint32_t offset = 0u;
@@ -3435,7 +3430,6 @@ GPUMesh MakeCrossfadeMesh()
     m.indexCount     = kFadeLod0Indices;
     m.indexOffset    = 0u;
     m.vertexOffset   = 0u;
-    m.vertexCount    = 32u;
     m.lodCount       = 2u;
     m.boundingRadius = 1.0f;
     m.lodIndexCount[0]  = kFadeLod0Indices; m.lodIndexOffset[0] = 0u;  m.lodVertexOffset[0] = 0u;
@@ -4434,7 +4428,7 @@ INSTANTIATE_TEST_SUITE_P(
     GroupCompactVariants, GroupCompactComputeTest,
     ::testing::Values(ScatterVariant{false, false}, ScatterVariant{true, false}),
     [](const ::testing::TestParamInfo<ScatterVariant>& info)
-    { return std::string(info.param.compact ? "Compact40B" : "FullFat240B"); });
+    { return std::string(info.param.compact ? "Compact44B" : "FullFat240B"); });
 
 // ---- Impostor stage ----------------------------------------------------------
 
@@ -4549,6 +4543,63 @@ TEST_P(BatchScatterComputeTest, ImpostorPastTheSwitchDrawsTheCardForThePrimaryPa
         EXPECT_EQ(InstancesInRows(table, near.cursors, near.records, near.indirection, secondary,
                                   kImpostorSecondaryIndices).size(), 2u);
     }
+}
+
+// The switch is measured on the card's own sphere, the one the atlas was baked on, times the
+// instance's largest axis scale. A culling sphere wider than the baked object (a box radius, a
+// wind margin) does not move the switch; a link without a card radius measures the instance sphere.
+void BatchScatterComputeTest::ExpectImpostorSwitchesOnTheCardSphereNotTheCullingSphere()
+{
+    const uint32_t part = AddMeshRow(kImpostorPrimaryIndices);
+    const uint32_t card = AddMeshRow(kImpostorCardIndices);
+    constexpr uint32_t kPartMaterial = 1u;
+    constexpr uint32_t kCardMaterial = 2u;
+    // Culling sphere 2, card sphere 1 at unit scale; and 1 x 0.5 local at scale 2.
+    constexpr float kCullingRadius = 2.0f;
+    constexpr float kDist = 12.0f; // Card sphere 1/12 = 0.083 < enter; culling sphere 2/12 = 0.167 > exit.
+    GPUInstance wide = MakeInstance(kPartMaterial, part);
+    wide.boundingRadius = kCullingRadius;
+    GPUInstance scaled = wide;
+    scaled.transform = Mathematics::Matrix4x4::Identity();
+    for (int axis = 0; axis < 3; ++axis)
+        scaled.transform[axis][axis] = 2.0f;
+    const uint32_t parts[] = {part};
+
+    struct Row
+    {
+        const char* name;
+        GPUInstance instance;
+        float cardRadius;
+        bool card;
+    };
+    const Row rows[] = {{"card sphere 1, unit scale", wide, 1.0f, true},
+                        {"card sphere 0.5, scale 2", scaled, 0.5f, true},
+                        {"no card radius: the culling sphere", wide, 0.0f, false}};
+    for (const Row& row : rows)
+    {
+        SCOPED_TRACE(row.name);
+        const uint32_t instance = m_Scene->AddInstance(row.instance);
+        ASSERT_TRUE(m_Scene->SetMeshImpostorGroup(parts, kCardMaterial, card, 0.0f, row.cardRadius));
+        m_Scene->SetInstanceImpostorOwner(instance, instance);
+        uint32_t total = 0u;
+        const auto table = BatchTableTesting::Build(m_Scene->GetBatchRegistry(), {}, &total);
+        const uint32_t tableRows = static_cast<uint32_t>(table.size());
+        const auto result = Dispatch(table, total, 0u, 0u, tableRows, total, GPUDrawStreamBuilder::kClassModeOff, {},
+                                     0xFFFFFFFFu, {}, 0u, ImpostorLod(kDist, card, false));
+        EXPECT_EQ(InstancesInRows(table, result.cursors, result.records, result.indirection, card, kImpostorCardIndices)
+                      .size(),
+                  row.card ? 1u : 0u);
+        EXPECT_EQ(InstancesInRows(table, result.cursors, result.records, result.indirection, part,
+                                  kImpostorPrimaryIndices).size(),
+                  row.card ? 0u : 1u);
+        m_Scene->ClearMeshImpostorGroup(part);
+        m_Scene->RemoveInstance(instance);
+    }
+}
+
+TEST_P(BatchScatterComputeTest, ImpostorSwitchesOnTheCardSphereNotTheCullingSphere)
+{
+    ExpectImpostorSwitchesOnTheCardSphereNotTheCullingSphere();
 }
 
 // With the owner's rendered history the card stays until the exit coverage. Without one
@@ -4731,12 +4782,12 @@ TEST_P(BatchScatterComputeTest, ImpostorReplacesEveryMeshLodBelowTheSwitch)
 
 std::string ScatterVariantName(const ::testing::TestParamInfo<ScatterVariant>& info)
 {
-    return std::string(info.param.compact ? "Compact40B" : "FullFat240B")
+    return std::string(info.param.compact ? "Compact44B" : "FullFat240B")
            + (info.param.stats ? "_StatsOn" : "_StatsOff");
 }
 
 // Every BatchScatterComputeTest body runs on the shipping package: the compact
-// 40 B mirror at binding 1, stats off.
+// 44 B mirror at binding 1, stats off.
 INSTANTIATE_TEST_SUITE_P(ScatterVariants, BatchScatterComputeTest,
                          ::testing::Values(ScatterVariant{true, false}), ScatterVariantName);
 
@@ -4745,7 +4796,7 @@ INSTANTIATE_TEST_SUITE_P(ScatterVariants, BatchScatterComputeTest,
 // Each runs the bodies that can tell it apart:
 // - full-fat, stats off: the bodies that between them read every binding-1 field
 //   the shader uses (meshIndex, materialIndex, the depth and mirror flag bits,
-//   boundingCenter, boundingRadius, lodBias) with values that change the result;
+//   boundingCenter, boundingRadius, lodBias, the transform's axis scale) with values that change the result;
 // - compact, stats on: the drawnTriangles block, the lodChanges block (the band on
 //   across two workgroups) and an invocation that writes two records;
 // - full-fat, stats on: the core routing body, so every package is loaded and
@@ -4772,6 +4823,11 @@ TEST_P(BatchScatterFullFatTest, MirroredInstancesRouteIntoParityOneRegion)
 TEST_P(BatchScatterFullFatTest, ConservativeBoundsPreserveReferenceSwitchesAndBias)
 {
     ExpectConservativeBoundsPreserveReferenceSwitchesAndBias();
+}
+
+TEST_P(BatchScatterFullFatTest, ImpostorSwitchesOnTheCardSphereNotTheCullingSphere)
+{
+    ExpectImpostorSwitchesOnTheCardSphereNotTheCullingSphere();
 }
 
 INSTANTIATE_TEST_SUITE_P(ScatterPackageParity, BatchScatterFullFatTest,

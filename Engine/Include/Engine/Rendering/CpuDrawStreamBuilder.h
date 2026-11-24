@@ -83,10 +83,12 @@ class CpuDrawStreamBuilder
     // may be null (tests, single-threaded configs) — the per-instance work
     // then runs inline on the calling thread. Legal on any thread, a pool
     // worker included: the culling fan-out is a ParallelFor.
+    // deformationMargins: the culling margin per materialIndex (MaterialDeformationMargins.h).
     void Build(const WorldDrawBuilder& drawBuilder,
                const Rendering::MeshGPURegistry& meshRegistry,
                const Rendering::GPUScene& scene,
                const ViewRegistry& views,
+               std::span<const float> deformationMargins,
                JobSystem::WorkStealingThreadPool* pool);
 
     // Rebuild ONE view's lists, leaving every other view's untouched. The
@@ -97,6 +99,7 @@ class CpuDrawStreamBuilder
     void BuildForView(Rendering::ViewId viewId, const WorldDrawBuilder& drawBuilder,
                       const Rendering::MeshGPURegistry& meshRegistry,
                       const Rendering::GPUScene& scene, const ViewRegistry& views,
+                      std::span<const float> deformationMargins,
                       JobSystem::WorkStealingThreadPool* pool);
 
     // The instances of one batch of one view. Count 0 when the batch has no
@@ -149,6 +152,7 @@ class CpuDrawStreamBuilder
     void BuildView(Rendering::ViewId viewId, const WorldDrawBuilder& drawBuilder,
                    const Rendering::MeshGPURegistry& meshRegistry,
                    const Rendering::GPUScene& scene, const ViewRegistry& views,
+                   std::span<const float> deformationMargins,
                    JobSystem::WorkStealingThreadPool* pool);
 
     // Resolves and frustum-tests submissions [begin, end) into `candidates`.

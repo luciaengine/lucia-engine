@@ -3,9 +3,11 @@
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialVertexAnimation.h"
 #include "Logger/Logger.h"
+#include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
 #include "Types/StringId.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace GameEngine::Engine::Renderer
@@ -50,6 +52,18 @@ bool ReadScaleMagnitude(const Material& mat, const std::string& name, float& mag
 }
 
 } // namespace
+
+float DeformedCullRadius(const Rendering::GPUInstance& instance, std::span<const float> margins)
+{
+    const uint32_t materialIndex = instance.materialIndex;
+    if (materialIndex >= margins.size() || !(margins[materialIndex] > 0.0f))
+        return instance.boundingRadius;
+    const Mathematics::Matrix4x4& transform = instance.transform;
+    const float axisScale = std::max({Mathematics::Vector3(transform[0][0], transform[0][1], transform[0][2]).Length(),
+                                      Mathematics::Vector3(transform[1][0], transform[1][1], transform[1][2]).Length(),
+                                      Mathematics::Vector3(transform[2][0], transform[2][1], transform[2][2]).Length()});
+    return instance.boundingRadius + margins[materialIndex] * axisScale;
+}
 
 DeformationMargin ResolveDeformationMargin(const Material& mat)
 {

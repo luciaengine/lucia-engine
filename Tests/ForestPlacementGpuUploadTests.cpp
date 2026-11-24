@@ -4,9 +4,13 @@
 
 #include "PackedPlacementTestArchive.h"
 
+#include "Assets/AssetManager.h"
+
 #include "ForestPlacementGpuUploads.h"
+#include "ForestPlacementRenderState.h"
 #include "ForestPlacementRuntime.h"
 #include "ForestPlacementUploadPlan.h"
+#include "JobSystem/WorkStealingThreadPool.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Tests/ScopedEnvVar.h"
@@ -176,6 +180,70 @@ TEST_F(ForestPlacementGpuUploadTest, ASubmittedCopyPublishesItsSlotAfterItsFence
     ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, plan));
     ASSERT_EQ(plan.DetailedDraws.size(), 1u);
     EXPECT_EQ(plan.DetailedDraws.front().Ticket, ticket);
+}
+
+TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknownReadFence)
+{
+    JobSystem::WorkStealingThreadPool jobs(0);
+    AssetManager assets;
+    ASSERT_TRUE(assets.Initialize(&jobs));
+    FramePools pools(m_Device.get());
+    RGFrame graph(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    ForestPlacementRenderState state(m_Runtime, m_Slots, 1);
+    ForestPlacementFrame plan;
+    const auto drains = m_Device->GetIdleDrainCount();
+
+    ASSERT_TRUE(m_Device->BeginFrame());
+    graph.BeginFrame(0);
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_EQ(plan.Reads.size(), 1u);
+    const ForestPageTicket page = plan.Reads.front();
+    state.Finish(graph, false);
+    graph.DiscardRecordedPasses();
+    ASSERT_TRUE(m_Runtime->CompleteRead(page, kFirstPage));
+    ASSERT_TRUE(m_Runtime->CompleteUpload(page, ForestUploadResult::Published));
+
+    graph.BeginFrame(1);
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_EQ(plan.DetailedDraws.size(), 1u);
+    ASSERT_FALSE(graph.SubmissionToken().IsValid());
+    state.Finish(graph, true);
+    graph.DiscardRecordedPasses();
+
+    ASSERT_TRUE(m_Device->BeginFrame());
+    graph.BeginFrame(2);
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    EXPECT_TRUE(plan.DetailedDraws.empty());
+    graph.AddPass("Forest.Overview", 0,
+                  [](RGPassBuilder& pass) { pass.PreventCulling(); }, [](RGContext&) {});
+    graph.Execute();
+    const auto completion = graph.SubmissionToken();
+    ASSERT_TRUE(completion.IsValid());
+    state.Finish(graph, true);
+
+#if defined(RENDERING_HAS_VULKAN)
+    auto& held = static_cast<HeldTimelineDevice&>(*m_Device);
+    held.HeldValue = 0;
+    ForestPlacementView secondOnly = m_View;
+    secondOnly.EyeRelativePlanes[0] = {1, 0, 0, -40};
+    graph.BeginFrame(3);
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, secondOnly, plan));
+    EXPECT_TRUE(plan.WantsDetails);
+    EXPECT_TRUE(plan.DetailedDraws.empty());
+    EXPECT_TRUE(plan.Reads.empty()) << "a pending fence must still protect the occupied slot";
+    state.Finish(graph, false);
+    graph.DiscardRecordedPasses();
+    held.HeldValue.reset();
+#endif
+
+    ASSERT_TRUE(m_Device->WaitGpuSyncToken(completion));
+    graph.BeginFrame(4);
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_EQ(plan.DetailedDraws.size(), 1u);
+    EXPECT_EQ(plan.DetailedDraws.front().Ticket, page);
+    EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
+    state.Finish(graph, false);
+    graph.DiscardRecordedPasses();
 }
 
 #if defined(RENDERING_HAS_VULKAN)

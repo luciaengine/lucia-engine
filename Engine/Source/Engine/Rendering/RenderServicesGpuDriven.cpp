@@ -238,6 +238,7 @@ void RenderServices::BuildWorldBatchKeys()
     if (m_Profile.IsCompat() && m_GpuScene)
     {
         m_CpuDrawStream.Build(m_WorldDrawBuilder, GetMeshGPURegistry(), *m_GpuScene, m_ViewRegistry,
+                              m_MaterialSystem.MaterialDeformationMarginSpan(),
                               &GameEngine::EngineCore::GetInstance().GetJobSystem());
     }
 
@@ -1438,7 +1439,7 @@ void RenderServices::BuildWorldBatchKeysForView(Rendering::ViewId viewId)
     if (m_Profile.IsCompat() && m_GpuScene)
     {
         m_CpuDrawStream.BuildForView(viewId, m_WorldDrawBuilder, GetMeshGPURegistry(), *m_GpuScene,
-                                     m_ViewRegistry,
+                                     m_ViewRegistry, m_MaterialSystem.MaterialDeformationMarginSpan(),
                                      &GameEngine::EngineCore::GetInstance().GetJobSystem());
     }
 

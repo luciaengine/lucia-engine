@@ -21,7 +21,5 @@ float DeformedCullRadius(GPUInstance instance)
     float margin = deformationMargins[materialIndex];
     if (!(margin > 0.0))
         return instance.boundingRadius;
-    float axisScale = max(length(instance.transform[0].xyz),
-                          max(length(instance.transform[1].xyz), length(instance.transform[2].xyz)));
-    return instance.boundingRadius + margin * axisScale;
+    return instance.boundingRadius + margin * ge_TransformAxisScale(instance.transform);
 }
