@@ -2314,6 +2314,7 @@ endif()
 
             # Impostor frame cameras and atlas bookkeeping (Engine/Rendering/Impostors).
             ge_add_render_services_test(ImpostorTests
+                Tests/ImpostorBakerTests.cpp
                 Tests/ImpostorAtlasCacheTests.cpp
                 Tests/ImpostorFrameCameraTests.cpp)
 

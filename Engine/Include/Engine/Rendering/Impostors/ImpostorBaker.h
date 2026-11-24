@@ -95,11 +95,15 @@ private:
         std::array<std::vector<Rendering::TextureViewHandle>, 2> SampleViews;
         uint32 MipCount = 1;
     };
-    struct PendingMip
+    struct PendingBake
     {
         Rendering::RenderGraph::RGFrameStamp Frame;
         ImpostorAtlasKey Key;
         uint32 Level = 0;
+        uint32 NextFrame = 0;
+        uint32 SettledFrames = 0;
+        const bool* ClearSubmitted = nullptr;
+        std::array<const bool*, kFramesPerRenderedFrame> TileSubmitted{};
         std::array<const bool*, 2> Recorded{};
     };
     // Draw commands and push constants live until the frame that declared them executes.
@@ -119,10 +123,10 @@ private:
                     const std::array<Rendering::RenderGraph::RGTexture, 2>& resources);
     static void DestroyAtlas(Rendering::IDevice& device, AtlasTextures& textures);
     void FreeTextures(Rendering::IDevice* device, const ImpostorAtlasKey& key);
-    bool PartsSettled(RenderServices& services, BakeJob& job);
+    uint32 SettledFrames(RenderServices& services, const BakeJob& job);
     void DeclareAtlasFrame(Rendering::RenderGraph::RGFrame& frame, RenderServices& services, const BakeJob& job,
                            Rendering::RenderGraph::RGTexture color, Rendering::RenderGraph::RGTexture normalDepth,
-                           Rendering::RenderGraph::RGTexture depth, uint32 atlasFrame, FrameSlot& slot);
+                           Rendering::RenderGraph::RGTexture depth, uint32 atlasFrame, FrameSlot& slot, bool* submitted = nullptr);
 
     std::mutex m_Mutex;
     ImpostorAtlasCache m_Cache{kDefaultBudgetBytes};
@@ -131,10 +135,9 @@ private:
     uint64 m_RequestFrame = 0;
     std::deque<BakeJob> m_Jobs;
     std::vector<ImpostorAtlasKey> m_Evicted;
-    std::vector<ImpostorAtlasKey> m_Finished; // Baked in a declared frame; ready once it ran.
     std::array<FrameSlot, kFrameSlots> m_FrameSlots;
     Rendering::IDevice* m_Device = nullptr;
-    std::optional<PendingMip> m_PendingMip;
+    std::optional<PendingBake> m_PendingBake;
     Rendering::GraphicsPipelineId m_MipPipeline;
     Rendering::DescriptorSetLayoutDesc m_MipLayout;
     bool m_MipPipelineRequested = false;

@@ -2709,8 +2709,10 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
     std::span<const Rendering::RenderGraph::RGTexture> sampledTextures,
     const char* passName,
     std::span<const ForwardBufferReadRG> sampledBuffers,
-    Rendering::RenderGraph::RGDepthAccess depthAccess)
+    Rendering::RenderGraph::RGDepthAccess depthAccess, bool* allCommandsSubmitted)
 {
+    if (allCommandsSubmitted)
+        *allCommandsSubmitted = false;
     if (!Spine().BindWorldGeometry(frame))
         return {};
 
@@ -2791,6 +2793,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
         SamplerHandle FogSampler{};
     };
     auto* data = frame.AllocatePassData<ForwardPassData>();
+    bool* recorded = allCommandsSubmitted ? frame.AllocatePassData<bool>(false) : nullptr;
     data->Inputs.View = viewId;
     data->Inputs.PassKeywords = passKeywords;
     data->Inputs.PassResources = std::move(resources);
@@ -2810,6 +2813,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
         debugName.c_str(), Rendering::PassPhase::kWorldRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            if (allCommandsSubmitted)
+                p.OnSubmitted([recorded, allCommandsSubmitted] { *allCommandsSubmitted = *recorded; });
             if (shadowArr.IsValid())
                 p.Read(shadowArr, RenderGraph::RGTextureRead::Sampled);
             // PCSS min/max pyramid: same bindless-consumer edge as the entity
@@ -2956,7 +2961,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 return true;
             });
         },
-        [this, data, viewportW, viewportH, letterbox, flipViewportY](RenderGraph::RGContext& ctx)
+        [this, data, viewportW, viewportH, letterbox, flipViewportY, recorded](RenderGraph::RGContext& ctx)
         {
             auto* cl = ctx.Cmd;
             if (!cl)
@@ -2996,6 +3001,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
             for (const auto& prepared : data->Prepared)
                 RecordForwardDrawCommand(prepared, *this, pass, geometryBindings);
 
+            if (recorded)
+                *recorded = data->Prepared.size() == data->Commands.size();
             binder.EndPass(pass);
         });
     if (canResolveColor && drawPass.IsValid())

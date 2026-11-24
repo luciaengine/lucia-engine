@@ -204,6 +204,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/Engine/Assets)
       MeshLODGeneratorTests
       EngineSceneIOTests
       EngineMaterialTests
+      ImpostorTests
       EngineTextureTests
       EngineRenderServicesTests
       EngineVirtualShadowTests
