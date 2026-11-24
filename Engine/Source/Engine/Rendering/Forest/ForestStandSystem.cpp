@@ -40,13 +40,14 @@ struct ForestStandResidency
     uint32 NearMeshCap;
     // Pages resident for sun cascades alone.
     uint32 ShadowSlots;
+    uint32 ShadowMeshCap;
 };
 
 constexpr ForestStandResidency kCompatibilityResidency{
-    .DetailSlots = 128, .TransitionSlots = 4, .ReadsPerFrame = 4, .NearMeshCap = 128, .ShadowSlots = 32};
+    .DetailSlots = 128, .TransitionSlots = 4, .ReadsPerFrame = 4, .NearMeshCap = 128, .ShadowSlots = 32, .ShadowMeshCap = 32};
 constexpr ForestStandResidency kDefaultResidency{.DetailSlots = 512, .TransitionSlots = 0, .ReadsPerFrame = 12,
                                                   .NearMeshCap = Components::ForestStand::kMaxNearMeshBudget,
-                                                  .ShadowSlots = 128};
+                                                  .ShadowSlots = 128, .ShadowMeshCap = 64};
 
 const ForestStandResidency& ResidencyFor(const Rendering::RendererProfile& profile)
 {
@@ -196,8 +197,9 @@ void ForestStandSystem::ApplyDetailSettings(Stand& stand, const Components::Fore
     if (!stand.Details)
         return;
     stand.Details->DetailDistance = settings.DetailDistance;
-    stand.Details->NearBudget =
-        std::min(settings.NearMeshBudget, ResidencyFor(m_RenderServices->GetProfile()).NearMeshCap);
+    const auto& residency = ResidencyFor(m_RenderServices->GetProfile());
+    stand.Details->NearBudget = std::min(settings.NearMeshBudget, residency.NearMeshCap);
+    stand.Details->ShadowMeshBudget = std::min(settings.NearMeshBudget, residency.ShadowMeshCap);
     stand.Details->CastsShadows = shadowCasting != Components::ShadowCasting::Off;
     stand.Details->DrawsColor = shadowCasting != Components::ShadowCasting::ShadowsOnly;
 }

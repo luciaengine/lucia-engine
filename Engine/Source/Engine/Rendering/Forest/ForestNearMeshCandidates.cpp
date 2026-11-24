@@ -102,7 +102,7 @@ uint32 SelectForestMeshLod(const Rendering::GPUMesh& mesh, float modelCoverage,
 }
 
 void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
-    const ForestPlacementFrame& frame, const ForestNearMeshView& view, const Mathematics::Vector4& modelSphere,
+    std::span<const ForestDetailDraw> draws, const ForestNearMeshView& view, const Mathematics::Vector4& modelSphere,
     size_t maxCandidates, std::vector<ForestNearMeshCandidate>& output,
     std::span<const ForestMeshOwnedPlacement> previousOwners)
 {
@@ -118,13 +118,13 @@ void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
     // Authored page bounds contain the model sphere center at every scale and yaw.
     // Round the broadphase outward so a page at the threshold takes the exact test.
     constexpr double kCoverageMargin = 1.00001;
-    const double maxDistance = view.ImpostorCoverage == 0.0f ? std::numeric_limits<double>::infinity() :
+    const double maxDistance = (view.Orthographic || view.ImpostorCoverage == 0.0f) ? std::numeric_limits<double>::infinity() :
         std::max(1.0e-4, modelSphere.w * PageStreaming::PackedPlacement::kMaxScale *
             view.ProjectionScaleY * std::exp2(static_cast<double>(view.GlobalLodBias)) /
             view.ImpostorCoverage) * kCoverageMargin;
     const float coverageBias = std::exp2(view.GlobalLodBias);
     const float meshEnterCoverage = view.ImpostorCoverage * (1.0f + ImpostorStage::kSwitchHysteresis);
-    for (const auto& detail : frame.DetailedDraws)
+    for (const auto& detail : draws)
     {
         const auto records = runtime.ReadyPlacements(detail.Ticket);
         if (records.empty() || PageDistanceSquared(archive[detail.Ticket.Page], eye) > maxDistance * maxDistance)
@@ -149,13 +149,16 @@ void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
             if (output.size() == maxCandidates && !Nearer(candidate, output.front()))
                 continue;
             const float radius = scale * modelSphere.w;
-            const float coverage = Hlod::SphereCoverageAtDistance(
-                std::sqrt(distanceSquared), radius, view.ProjectionScaleY, coverageBias);
+            const float coverage = view.Orthographic
+                ? radius * view.ProjectionScaleY
+                : Hlod::SphereCoverageAtDistance(std::sqrt(distanceSquared), radius, view.ProjectionScaleY, coverageBias);
+            const bool takesMesh = view.Orthographic
+                ? coverage > view.ImpostorCoverage
+                : coverage >= view.ImpostorCoverage &&
+                  (coverage >= meshEnterCoverage ||
+                   std::ranges::binary_search(previousOwners, ForestMeshOwnedPlacement{detail.Ticket, row}));
             const float frustumRadius = scale * (modelSphere.w + view.DeformationMargin);
-            if (coverage < view.ImpostorCoverage ||
-                (coverage < meshEnterCoverage &&
-                 !std::ranges::binary_search(previousOwners, ForestMeshOwnedPlacement{detail.Ticket, row})) ||
-                !Rendering::TestSphereFrustum(center, frustumRadius, view.PlacementView.EyeRelativePlanes.data()))
+            if (!takesMesh || !Rendering::TestSphereFrustum(center, frustumRadius, view.PlacementView.EyeRelativePlanes.data()))
                 continue;
             candidate.Coverage = coverage;
             if (output.size() < maxCandidates)

@@ -30,8 +30,8 @@ struct ShadowCasterSource
 };
 
 // Culls the cascade's resident placements to its caster planes and emits their light-facing cards.
-void EmitCascadeCards(ForestPlacementSession& session, const DepthEmitContext& context, uint32 cascade,
-                      const Material& material)
+void EmitCascadeCasters(ForestPlacementFeature& feature, ForestPlacementSession& session,
+    const DepthEmitContext& context, uint32 cascade, const Material& material, ForestPlacementView view)
 {
     const auto bit = static_cast<uint8>(1u << cascade);
     session.CascadeDraws.clear();
@@ -41,12 +41,20 @@ void EmitCascadeCards(ForestPlacementSession& session, const DepthEmitContext& c
     if (session.CascadeDraws.empty())
         return;
 
+    const auto& cascades = *context.Cascades;
+    const auto origin = Mathematics::WorldPosition::FromSector(cascades.RenderOriginSector, {});
+    const auto eyeOffset = view.Eye - origin;
+    view.EyeRelativePlanes = cascades.Cascades[cascade].CasterPlanes;
+    for (auto& plane : view.EyeRelativePlanes)
+        plane.w += plane.x * eyeOffset.x + plane.y * eyeOffset.y + plane.z * eyeOffset.z;
+    const auto owners = feature.EmitNearShadowMeshes(session, context, cascade, view);
+
     const auto& card = *session.Card;
     const uint32 slotCount = session.Placements->SlotCount();
     ForestPlacementGpuView gpuView{};
     if (!BuildForestPlacementGpuInputs(*session.Placements, session.CascadeDraws,
             MakeForestShadowGpuViewSource(*context.Cascades, cascade), slotCount, ForestCardReach(card),
-            card.Bounds, gpuView, session.Pages))
+            card.Bounds, gpuView, session.Pages, owners))
         return;
     const auto buffers = session.ShadowCulls[cascade].Declare(*context.Frame, session.ShadowScopes[cascade],
                                                               session.Slots, slotCount, gpuView, session.Pages);
@@ -93,7 +101,7 @@ void EmitShadowCasters(const ShadowCasterSource& source, DepthEmitContext& conte
     if (!material)
         return;
     for (uint32 c = 0; c < cascades.Count; ++c)
-        EmitCascadeCards(session, context, c, *material);
+        EmitCascadeCasters(*feature, session, context, c, *material, view);
     if (!session.EmittedShadows)
     {
         session.EmittedShadows = true;

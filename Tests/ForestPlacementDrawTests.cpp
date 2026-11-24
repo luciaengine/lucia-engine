@@ -116,7 +116,7 @@ TEST_F(ForestPlacementDrawTest, DeformationWidensTheNearMeshFrustumWithoutMoving
     const Mathematics::Vector4 bounds{0, 1, 0, 2};
     std::vector<ForestNearMeshCandidate> candidates;
     ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     const float restCoverage = candidates.front().Coverage;
 
@@ -124,10 +124,10 @@ TEST_F(ForestPlacementDrawTest, DeformationWidensTheNearMeshFrustumWithoutMoving
     near.PlacementView.EyeRelativePlanes[0] = {1, 0, 0, -3.7f};
     ASSERT_TRUE(runtime->Prepare(near.PlacementView, 3, 2, {}, frame));
     ASSERT_EQ(frame.DetailedDraws.size(), 1u);
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     EXPECT_TRUE(candidates.empty());
     near.DeformationMargin = 0.8f;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     EXPECT_FLOAT_EQ(candidates.front().Coverage, restCoverage);
     EXPECT_EQ(candidates.front().Ticket, ticket);
@@ -154,27 +154,27 @@ TEST_F(ForestPlacementDrawTest, NearMeshHysteresisKeepsOnlyTheSamePlacementGener
     const Mathematics::Vector4 bounds{0, 1, 0, 2};
     ForestNearMeshView near{view, 2.0f, 0.0f, 0.0f};
     std::vector<ForestNearMeshCandidate> candidates;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     const float coverage = candidates.front().Coverage;
     const ForestMeshOwnedPlacement current{ticket, candidates.front().LocalPlacement};
 
     near.ImpostorCoverage = coverage * 0.95f;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     EXPECT_TRUE(candidates.empty());
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates, std::span(&current, 1));
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates, std::span(&current, 1));
     ASSERT_EQ(candidates.size(), 1u);
 
     auto retired = current;
     ++retired.Ticket.Generation;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates, std::span(&retired, 1));
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates, std::span(&retired, 1));
     EXPECT_TRUE(candidates.empty());
 
     near.ImpostorCoverage = coverage * 1.01f;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates, std::span(&current, 1));
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates, std::span(&current, 1));
     EXPECT_TRUE(candidates.empty());
     near.ImpostorCoverage = coverage * 0.75f;
-    CollectForestNearMeshCandidates(*runtime, frame, near, bounds, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, bounds, 1, candidates);
     EXPECT_EQ(candidates.size(), 1u);
 }
 
@@ -207,7 +207,7 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     ASSERT_TRUE(runtime->Prepare(view, 2, 1, {}, frame));
     std::vector<ForestNearMeshCandidate> candidates;
     const ForestNearMeshView near{view, 2.0f, 0.0f, 0.01f};
-    CollectForestNearMeshCandidates(*runtime, frame, near, {0, 1, 0, 2}, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, {0, 1, 0, 2}, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     const auto& placement = candidates.front();
     EXPECT_EQ(placement.Ticket, first);
@@ -220,7 +220,7 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     ASSERT_EQ(secondRecords.size(), 2u);
     EXPECT_EQ(secondRecords[0].Height, 23u);
     std::vector<ForestNearMeshCandidate> all;
-    CollectForestNearMeshCandidates(*runtime, frame, near, {0, 1, 0, 2}, 3, all);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, near, {0, 1, 0, 2}, 3, all);
     const auto raised = std::ranges::find_if(all, [&second](const ForestNearMeshCandidate& tree)
                                              { return tree.Ticket == second && tree.LocalPlacement == 0; });
     ASSERT_NE(raised, all.end());
@@ -231,13 +231,13 @@ TEST_F(ForestPlacementDrawTest, NearMeshesUseOnlyVerifiedAndPublishedPlacementTr
     turned.PlacementView.EyeRelativePlanes[0] = {1, 0, 0, -40};
     ASSERT_TRUE(runtime->Prepare(turned.PlacementView, 3, 2, {}, frame));
     EXPECT_TRUE(runtime->ReadyPlacements(first).empty());
-    CollectForestNearMeshCandidates(*runtime, frame, turned, {0, 1, 0, 2}, 4, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, turned, {0, 1, 0, 2}, 4, candidates);
     ASSERT_EQ(candidates.size(), 2u);
     EXPECT_EQ(candidates.front().Ticket, second);
 
     runtime->ResetResidency();
     EXPECT_TRUE(runtime->ReadyPlacements(second).empty());
-    CollectForestNearMeshCandidates(*runtime, frame, turned, {0, 1, 0, 2}, 4, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, turned, {0, 1, 0, 2}, 4, candidates);
     EXPECT_TRUE(candidates.empty());
 }
 
@@ -275,7 +275,7 @@ TEST_F(ForestPlacementDrawTest, NearMeshDistanceTurnsTheModelCenterWithThePlacem
     ASSERT_TRUE(runtime);
 
     std::vector<ForestNearMeshCandidate> candidates;
-    CollectForestNearMeshCandidates(*runtime, frame, {view, 2.0f, 0.0f, 0.0f}, {2, 1, 0, 2}, 1, candidates);
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, {view, 2.0f, 0.0f, 0.0f}, {2, 1, 0, 2}, 1, candidates);
     ASSERT_EQ(candidates.size(), 1u);
     // Root (10, 0, 0), center offset (0, 1, -2) at scale 0.75, eye (0, 0, 5).
     EXPECT_NEAR(candidates.front().DistanceSquared, 10.0 * 10.0 + 0.75 * 0.75 + 6.5 * 6.5, 1e-4);
@@ -300,9 +300,34 @@ TEST_F(ForestPlacementDrawTest, NearMeshBroadphaseKeepsAPageWhoseLargestTreeStil
     ASSERT_EQ(frame.DetailedDraws.size(), 1u);
     const ForestMeshOwnedPlacement owner{frame.DetailedDraws.front().Ticket, 0};
     std::vector<ForestNearMeshCandidate> candidates;
-    CollectForestNearMeshCandidates(*runtime, frame, {view, 2.0f, 0.0f, kTreeCoverage * 0.99f}, {0, 0, 0, 1}, 1,
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, {view, 2.0f, 0.0f, kTreeCoverage * 0.99f}, {0, 0, 0, 1}, 1,
                                     candidates, std::span(&owner, 1u));
     EXPECT_EQ(candidates.size(), 1u);
+}
+
+TEST_F(ForestPlacementDrawTest, OrthographicCastersTakeMeshesOnlyAboveTheAtlasFootprint)
+{
+    using namespace Engine::Renderer;
+    const PackedPlacement tree{2000, 0, 0, 0, 255};
+    const PlacementPage page{.Origin = {0.0, 0.0, 0.0}, .LocalMin = {19, -1, -1}, .LocalMax = {21, 1, 1},
+                             .First = 0, .Count = 1};
+    const ForestPlacementView view{{-19.0, 0.0, 0.0}, {}, 100.0f};
+    ForestPlacementFrame frame;
+    const auto runtime = OpenResidentTree(m_Scratch.Path() / "ortho-caster.geforest", page, tree, 1.25f, view, frame);
+    ASSERT_TRUE(runtime);
+
+    const Mathematics::Vector4 sphere{0, 0, 0, 1};
+    ForestNearMeshView cascade{view, 1.0f / 20.0f, 0.0f, 128.0f / 2048.0f, 0.0f, true};
+    std::vector<ForestNearMeshCandidate> candidates;
+    // At 20 m half extent the tree is exactly 128 texels across. Keep the card.
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, cascade, sphere, 1, candidates);
+    EXPECT_TRUE(candidates.empty());
+
+    // The same tree in a tighter cascade takes a mesh even far from the camera.
+    cascade.ProjectionScaleY = 1.0f / 16.0f;
+    CollectForestNearMeshCandidates(*runtime, frame.DetailedDraws, cascade, sphere, 1, candidates);
+    ASSERT_EQ(candidates.size(), 1u);
+    EXPECT_FLOAT_EQ(candidates.front().Coverage, 1.25f / 16.0f);
 }
 
 TEST_F(ForestPlacementDrawTest, ACardPastTheBoundRadiusRefusesItsSessionOnce)

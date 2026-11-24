@@ -367,7 +367,7 @@ Rendering::RenderGraph::RGTexture RenderServices::ImportShadowMapArrayRG(
     td.depth = 1;
     td.mipLevels = 1;
     td.arrayLayers = cfg.NumCascades;
-    td.format = static_cast<uint32_t>(Rendering::TextureFormat::D32_FLOAT);
+    td.format = static_cast<uint32_t>(kCascadeShadowDepthFormat);
     td.usage = static_cast<uint32_t>(Rendering::TextureUsage::DepthStencil)
              | static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
     if (feature->IsRigidCascadeCacheEnabled())

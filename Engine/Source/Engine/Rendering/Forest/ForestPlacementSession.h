@@ -39,6 +39,7 @@ struct ForestPlacementSession
     AssetManager* Assets = nullptr;
     float DetailDistance = 0;
     uint32 NearBudget = 0;
+    uint32 ShadowMeshBudget = 0;
     std::vector<ForestNearMeshCandidate> NearDemand;
     std::vector<ForestMeshOwnedPlacement> NearOwners;
     std::vector<ForestMeshOwnedPlacement> PendingNearOwners;
@@ -82,6 +83,7 @@ struct ForestPlacementSession
     bool EmittedDetails = false;
     bool EmittedNearMeshes = false;
     bool EmittedShadows = false;
+    bool EmittedNearShadows = false;
     // The card reaches past the archive's bound radius: the session draws the overview only and streams nothing.
     // A reset keeps it, because the card and the archive stay the same.
     bool Refused = false;

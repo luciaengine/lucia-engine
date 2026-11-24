@@ -30,6 +30,8 @@ enum class PrepassHeads : uint8_t
     NonOccluding,
 };
 
+inline constexpr Rendering::TextureFormat kCascadeShadowDepthFormat = Rendering::TextureFormat::D32_FLOAT;
+
 enum class CascadeCasters : uint8_t
 {
     All,

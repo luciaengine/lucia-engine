@@ -251,7 +251,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
 
     ASSERT_TRUE(m_Device->BeginFrame());
     graph.BeginFrame(0);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan, {}));
     ASSERT_EQ(plan.Reads.size(), 1u);
     const ForestPageTicket page = plan.Reads.front();
     state.Finish(graph, false);
@@ -260,7 +260,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
     ASSERT_TRUE(m_Runtime->CompleteUpload(page, ForestUploadResult::Published));
 
     graph.BeginFrame(1);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan, {}));
     ASSERT_EQ(plan.DetailedDraws.size(), 1u);
     ASSERT_FALSE(graph.SubmissionToken().IsValid());
     state.Finish(graph, true);
@@ -268,7 +268,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
 
     ASSERT_TRUE(m_Device->BeginFrame());
     graph.BeginFrame(2);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan, {}));
     EXPECT_TRUE(plan.DetailedDraws.empty());
     graph.AddPass("Forest.Overview", 0,
                   [](RGPassBuilder& pass) { pass.PreventCulling(); }, [](RGContext&) {});
@@ -283,7 +283,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
     ForestPlacementView secondOnly = m_View;
     secondOnly.EyeRelativePlanes[0] = {1, 0, 0, -40};
     graph.BeginFrame(3);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, secondOnly, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, secondOnly, plan, {}));
     EXPECT_TRUE(plan.WantsDetails);
     EXPECT_TRUE(plan.DetailedDraws.empty());
     EXPECT_TRUE(plan.Reads.empty()) << "a pending fence must still protect the occupied slot";
@@ -294,7 +294,7 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
 
     ASSERT_TRUE(m_Device->WaitGpuSyncToken(completion));
     graph.BeginFrame(4);
-    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan));
+    ASSERT_TRUE(state.Prepare(assets, *m_Device, graph, m_View, plan, {}));
     ASSERT_EQ(plan.DetailedDraws.size(), 1u);
     EXPECT_EQ(plan.DetailedDraws.front().Ticket, page);
     EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);

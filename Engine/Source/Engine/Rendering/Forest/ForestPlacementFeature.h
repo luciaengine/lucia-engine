@@ -14,6 +14,7 @@ namespace GameEngine::Engine::Renderer
 
 struct DepthEmitContext;
 struct ForwardEmitContext;
+struct ForestMeshOwnedPlacement;
 struct ForestPlacementFeatureTestAccess;
 struct ForestPlacementSession;
 struct ImpostorBakePart;
@@ -65,6 +66,10 @@ public:
     /// arbitration of EmitDetails applies. True when Plan holds this frame's draws for the view.
     bool PlanShadowFrame(ForestPlacementSession& session, const DepthEmitContext& context,
                          ForestPlacementView view, std::span<const ForestShadowPage> shadowPages);
+
+    /// Emits ready mesh casters and returns the placements that the cascade's card cull must skip.
+    std::span<const ForestMeshOwnedPlacement> EmitNearShadowMeshes(ForestPlacementSession& session,
+        const DepthEmitContext& context, uint32 cascade, ForestPlacementView view);
 
     /// Fences the frame's detail draws and keeps the near-mesh owners it drew.
     void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
