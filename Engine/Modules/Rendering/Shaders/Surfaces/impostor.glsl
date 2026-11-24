@@ -112,7 +112,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         float coverage = mix(cutout, cardColor.a, smoothstep(0.5, 2.0, mip));
         o.opacity = coverage > GE_MaskCoverageScreenThreshold(gl_FragCoord.xy) ? 1.0 : 0.0;
     }
-#ifdef ALPHA_TEST
+#if defined(ALPHA_TEST) && (defined(GE_DEPTH_ONLY_FRAGMENT) || defined(GE_MOTION_VECTORS))
     if (filtered && o.opacity < clamp(Props.alphaCutoff, 0.0, 1.0))
         discard;
 #endif

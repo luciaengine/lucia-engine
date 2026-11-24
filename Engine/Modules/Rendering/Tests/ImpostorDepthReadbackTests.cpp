@@ -43,7 +43,11 @@ struct Camera {
 Camera Cam;
 #include "Includes/camera_relative.glsl"
 struct Properties {vec4 impostorAtlas; float alphaCutoff; float impostorNormalCoherenceWeight;};
+#ifdef PROBE_DEFERRED_COLOR
+const Properties Props = Properties(vec4(2,0,0,1), 0.25, 1);
+#else
 const Properties Props = Properties(vec4(2,0,0,0), 0.25, 1);
+#endif
 struct SurfaceInput {vec2 uv0; vec4 custom0; vec3 positionRelWS;};
 struct SurfaceOutput {vec3 baseColor; vec3 normalWS; float opacity; float roughness; float metallic;};
 SurfaceOutput DefaultSurfaceOutput() {return SurfaceOutput(vec3(0),vec3(0),0,0,0);}
@@ -75,7 +79,9 @@ void main()
 #endif
     SurfaceInput inputPoint = SurfaceInput(vec2(gl_FragCoord.x / 64.0, 0.5),vec4(0,0,1,0),vec3(0));
     SurfaceOutput outputPoint = EvaluateSurface(inputPoint);
+#ifndef PROBE_DEFERRED_COLOR
     if (outputPoint.opacity < Props.alphaCutoff) discard;
+#endif
 }
 )glsl";
 
@@ -83,6 +89,7 @@ struct DepthCase
 {
     const char* Define;
     std::array<float, 4> Expected;
+    bool DeferColorCoverage = false;
 };
 }
 
@@ -98,6 +105,7 @@ TEST(ImpostorDepthReadback, ColorAndPrepassWriteTheSignedBakedDepth)
     const auto cache = GameEngine::TestUtils::MakeUniqueTempDirectory("ge_impostor_depth_readback");
     const DepthCase cases[] = {
         {nullptr, {0.75f, 0.25f, 0.0f, 0.625f}},
+        {"PROBE_DEFERRED_COLOR", {0.75f, 0.25f, 0.0f, 0.625f}, true},
         {"PROBE_PERSPECTIVE", {2.0f / 3.2f, 2.0f / 4.8f, 0.0f, 2.0f / 3.6f}},
         {"PROBE_RADIAL", {1.0f - std::hypot(0.6f, 3.2f) / 8.0f, 1.0f - std::hypot(0.6f, 4.8f) / 8.0f,
                           0.0f, 1.0f - std::hypot(0.3f, 3.6f) / 8.0f}}
@@ -105,9 +113,10 @@ TEST(ImpostorDepthReadback, ColorAndPrepassWriteTheSignedBakedDepth)
     for (const DepthCase& depthCase : cases)
     {
         SCOPED_TRACE(depthCase.Define ? depthCase.Define : "orthographic");
-        for (bool prepass : {false, true})
+        const std::array<const char*, 3> passes{nullptr, "GE_DEPTH_ONLY_FRAGMENT", "GE_MOTION_VECTORS"};
+        for (const char* passDefine : passes)
         {
-            SCOPED_TRACE(prepass);
+            SCOPED_TRACE(passDefine ? passDefine : "color");
             ShaderProgramCompileRequest request{};
             request.debugName = "ImpostorDepthProbe";
             request.cacheRoot = cache;
@@ -121,8 +130,8 @@ TEST(ImpostorDepthReadback, ColorAndPrepassWriteTheSignedBakedDepth)
             fragment.stage = "fs";
             fragment.sourcePath = "impostor-depth-probe.frag";
             fragment.inlineSource = kFragment;
-            if (prepass)
-                fragment.defines = {"GE_DEPTH_ONLY_FRAGMENT"};
+            if (passDefine)
+                fragment.defines = {passDefine};
             if (depthCase.Define)
             {
                 vertex.defines.push_back(depthCase.Define);
@@ -176,7 +185,12 @@ TEST(ImpostorDepthReadback, ColorAndPrepassWriteTheSignedBakedDepth)
                 const auto* values = static_cast<const float*>(device->MapBuffer(readback));
                 ASSERT_NE(values, nullptr);
                 for (size_t band = 0; band < depthCase.Expected.size(); ++band)
-                    EXPECT_NEAR(values[band * 16 + 8], std::max(underlyingDepth, depthCase.Expected[band]), 1e-6f);
+                {
+                    // A diagnostic can retain the empty sample in color. The coverage passes reject it.
+                    const bool deferredHole = depthCase.DeferColorCoverage && !passDefine && band == 2;
+                    const float expected = deferredHole ? 0.5f : depthCase.Expected[band];
+                    EXPECT_NEAR(values[band * 16 + 8], std::max(underlyingDepth, expected), 1e-6f);
+                }
                 device->UnmapBuffer(readback);
             }
             device->DestroyBuffer(readback);
