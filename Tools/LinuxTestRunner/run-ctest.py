@@ -1,10 +1,25 @@
 """Run CTest registrations that the directly executed Google Test suites did not cover."""
 
+from functools import cache
 import json
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+@cache
+def discovery_targets(directory):
+    # GoogleTest.cmake places its target-specific CTest include in the binary
+    # directory that called gtest_discover_tests. CMake 4 uses a hash suffix
+    # where earlier versions used a numbered invocation in square brackets.
+    targets = set()
+    for path in directory.glob("*_include.cmake"):
+        match = re.fullmatch(r"(.+?)(?:\[\d+\]|_[0-9a-f]+)_include\.cmake", path.name)
+        if match:
+            targets.add(match.group(1))
+    return targets
 
 
 def covered(test, suites, cmake, wrapper, backtrace):
@@ -33,15 +48,20 @@ def covered(test, suites, cmake, wrapper, backtrace):
         directory = Path(working_dir.strip('"'))
         # Standard registrations run at the build root, in the suite binary directory,
         # or in the default build subdirectory of the CMake file registering them.
-        node = backtrace["nodes"][test["backtrace"]] if "backtrace" in test else {}
-        source = Path(backtrace["files"][node["file"]]) if "file" in node else None
         project = wrapper.parents[1]
         standard = {Path.cwd(), executable.parent}
-        if source and source.is_relative_to(Path.cwd()):
-            standard.add(source.parent)
-        elif source and source.is_relative_to(project):
-            standard.add(Path.cwd() / source.parent.relative_to(project))
-        if directory not in standard:
+        index = test.get("backtrace")
+        while index is not None:
+            node = backtrace["nodes"][index]
+            source = Path(backtrace["files"][node["file"]])
+            if source.name == "CMakeLists.txt" and source.is_relative_to(project):
+                standard.add(Path.cwd() / source.parent.relative_to(project))
+                break
+            index = node.get("parent")
+        if "backtrace" not in test and "--gtest_also_run_disabled_tests" in arguments:
+            if executable.name not in discovery_targets(directory):
+                return False
+        elif directory not in standard:
             return False
     if "--gtest_also_run_disabled_tests" in arguments:
         # GoogleTestAddTests emits this flag even for each ordinary, enabled case.
