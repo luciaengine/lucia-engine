@@ -81,14 +81,16 @@ def main():
     wrapper = Path(__file__).resolve().parents[2] / "cmake/RunTestExecutable.cmake"
     ctest = ["ctest", "-C", "DebugFast"]
     registrations = json.loads(subprocess.check_output([*ctest, "--show-only=json-v1"]))
-    names = [test["name"] for test in registrations["tests"]
-             if not covered(test, suites, cmake, wrapper, registrations["backtraceGraph"])]
-    if not names:
+    selected = [(index, test["name"]) for index, test in enumerate(registrations["tests"], start=1)
+                if not covered(test, suites, cmake, wrapper, registrations["backtraceGraph"])]
+    if not selected:
         print("All registrations were covered by the directly executed suites.")
         return 0
-    selected = output / "ctest-tests.txt"
-    selected.write_text("".join(name + "\n" for name in names))
-    return subprocess.call([*ctest, "--tests-from-file", str(selected), "--output-on-failure",
+    (output / "ctest-tests.txt").write_text("".join(name + "\n" for _, name in selected))
+    # Test names can repeat across directories. An empty range followed by the exact
+    # one-based registration indices selects only these commands.
+    indices = "0,0,1," + ",".join(str(index) for index, _ in selected)
+    return subprocess.call([*ctest, "-I", indices, "--no-tests=error", "--output-on-failure",
                             "--timeout", "2400", "--output-junit", str(output / "ctest.xml")])
 
 

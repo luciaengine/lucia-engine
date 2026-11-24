@@ -56,6 +56,7 @@ set_tests_properties(Disabled PROPERTIES DISABLED TRUE)
             (module / "unused.c").write_text("// TEST(One, Static)\nint main(void) { return 0; }")
             (module / "CMakeLists.txt").write_text(f"""
 include(GoogleTest)
+add_test(NAME DirectAlias COMMAND "${{CMAKE_COMMAND}}" -E true)
 add_executable(ExampleTests unused.c)
 set_target_properties(ExampleTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "{suite.parent}")
 gtest_add_tests(TARGET ExampleTests SOURCES unused.c)
