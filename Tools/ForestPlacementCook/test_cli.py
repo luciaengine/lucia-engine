@@ -45,6 +45,24 @@ def check_overview(tool, root, cook, header, output):
     assert max(u for u, v in uvs[:4]) < min(u for u, v in uvs[4:])
     png = view(asset["images"][0]["bufferView"])
     assert png.startswith(b"\x89PNG\r\n\x1a\n") and struct.unpack_from(">II", png, 16) == (48, 24)
+    result = cook(header + "0,1000000000.25,0,-1000000000.75,0,1\n1,-1000000000.25,0,1000000000.75,0,1\n")
+    assert result.returncode == 0, result.stderr
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    glb = mesh.read_bytes()
+    json_size, = struct.unpack_from("<I", glb, 12)
+    asset = json.loads(glb[20:20 + json_size])
+    payload = glb[28 + json_size:]
+    positions = list(struct.iter_unpack("<3f", view(primitive["attributes"]["POSITION"])))
+    assert asset["meshes"][0]["extras"]["luciaForestSectorLocal"] is True
+    for page, (x, z) in enumerate(((1000000000.25, -1000000000.75), (-1000000000.25, 1000000000.75))):
+        origin_x = ((x + 512) // 1024) * 1024
+        origin_z = ((z + 512) // 1024) * 1024
+        quad = positions[4 * page:4 * page + 4]
+        xs = [origin_x - vx for vx, _, _ in quad]
+        zs = [origin_z + vz for _, _, vz in quad]
+        assert abs((min(xs) + max(xs)) / 2 - x) < 0.001 and 2.82 < max(xs) - min(xs) < 2.84
+        assert abs((min(zs) + max(zs)) / 2 - z) < 0.001 and 2.82 < max(zs) - min(zs) < 2.84
     corrupted = bytearray(output.read_bytes())
     corrupted[-1] ^= 1
     output.write_bytes(corrupted)

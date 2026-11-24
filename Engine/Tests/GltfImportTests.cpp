@@ -3468,6 +3468,17 @@ TEST(GltfImport, ClipSchemaRejectsCoincidentSyncMarkers)
     EXPECT_TRUE(read.Settings.SyncMarkers.empty());
 }
 
+TEST(GltfImport, OnlyMarkedOverviewMeshesUseArchiveSectors)
+{
+    std::string source(kTwoNodesShareOneMesh);
+    const auto meshes = source.find("\"meshes\"");
+    const auto mesh = source.find('{', meshes);
+    ASSERT_NE(mesh, std::string::npos);
+    EXPECT_FALSE(LoadOnlyMesh(source, "absolute.gltf").ForestSectorLocal);
+    source.insert(mesh + 1, R"("extras":{"luciaForestSectorLocal":true},)");
+    EXPECT_TRUE(LoadOnlyMesh(source, "sector.gltf").ForestSectorLocal);
+}
+
 TEST(GltfImport, CookedForestCanopyCoverageSurvivesMaterialEncoding)
 {
     using Engine::Renderer::ModelMaterialBridge;

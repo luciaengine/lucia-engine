@@ -110,7 +110,7 @@ void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view mode
     {
         // Merging keeps only LOD0 and bakes a single node placement.
         // Extra UV channels can store attributes in the source node's coordinate space.
-        if (mesh.IsSkinned() || mesh.HasMorphTargets() || !mesh.ExtraPlacements.empty()
+        if (mesh.ForestSectorLocal || mesh.IsSkinned() || mesh.HasMorphTargets() || !mesh.ExtraPlacements.empty()
             || !mesh.ExtraTexCoords.empty() || mesh.PrimitiveTopology != MeshPrimitiveTopology::Triangles
             || mesh.HasAuthoredLODs() || mesh.HasOwnVertexLODs())
             unmergedMeshes.push_back(std::move(mesh));
@@ -1010,9 +1010,8 @@ std::string_view ExtrasText(const cgltf_data& document, const cgltf_extras& obje
                             objectExtras.end_offset - objectExtras.start_offset);
 }
 
-// True when a material's extras carry the forest cooker's canopy marker. The marker block is small, so
-// a larger block is an authored one and is left to the model extras API.
-bool HasForestCanopyMarker(std::string_view extras)
+// Forest cooker markers are boolean fields in small glTF extras blocks.
+bool HasForestMarker(std::string_view extras, std::string_view marker)
 {
     constexpr size_t kMarkerBlockBytes = 256;
     if (extras.empty() || extras.size() > kMarkerBlockBytes)
@@ -1020,7 +1019,7 @@ bool HasForestCanopyMarker(std::string_view extras)
     const auto data = nlohmann::json::parse(extras, nullptr, false);
     if (!data.is_object())
         return false;
-    const auto found = data.find("luciaForestCanopyCoverage");
+    const auto found = data.find(marker);
     return found != data.end() && found->is_boolean() && found->get<bool>();
 }
 
@@ -1516,6 +1515,7 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
 
             Mesh mesh;
             mesh.Name = m.name ? m.name : GetName();
+            mesh.ForestSectorLocal = HasForestMarker(ExtrasText(*gltf, m.extras), "luciaForestSectorLocal");
             mesh.MaterialIndex = 0;
             if (mi < meshSourceNodes.size() && !meshSourceNodes[mi].empty())
                 mesh.SourceNodeIndex = meshSourceNodes[mi].front();
@@ -2073,7 +2073,7 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
             }
             mat.AlphaCutoff = (float)m.alpha_cutoff;
             if (mat.AlphaMode == AlphaMode::Mask)
-                mat.ForestCanopyCoverage = HasForestCanopyMarker(ExtrasText(*gltf, m.extras));
+                mat.ForestCanopyCoverage = HasForestMarker(ExtrasText(*gltf, m.extras), "luciaForestCanopyCoverage");
 
             // Populate basic PBR parameters from glTF metallic-roughness block
             const cgltf_pbr_metallic_roughness& pbr = m.pbr_metallic_roughness;

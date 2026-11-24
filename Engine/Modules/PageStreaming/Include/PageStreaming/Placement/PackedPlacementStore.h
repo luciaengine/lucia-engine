@@ -50,6 +50,12 @@ struct PlacementPage
     uint64 ContentHash;
     uint32 First;
     uint32 Count;
+
+    /// Sector of the cooked overview vertices for this page, in engine axes.
+    Mathematics::Vector3Int OverviewSector() const
+    {
+        return Origin.ToSectorClamped(INT32_MIN, INT32_MAX);
+    }
 };
 static_assert(sizeof(PlacementPage) == 64 && std::is_trivially_copyable_v<PlacementPage>);
 
