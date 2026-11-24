@@ -196,6 +196,7 @@
 #include "UndoRedo/GenericEditUndo.h"
 #include "UndoRedo/Spline/SplineUndoHelpers.h"
 #include "UndoRedo/UndoRedoService.h"
+#include "Types/FlatMap.h"
 #include "Types/FormatNumber.h"
 #include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
@@ -9017,9 +9018,17 @@ void RegisterDebugHandlers(EditorDebugServer& server,
         // GPUMesh row — rather than re-deriving them here. A second derivation
         // silently stops matching the moment the upload path gains a step.
         const Rendering::GPUScene* scene = reg.GetGPUScene();
+        FlatMap<uint32, float> cardRadii;
+        const auto boundsProperty = HashStringId("impostorBounds");
+        rs->Materials().Registry().ForEach([&](const GUID&, const auto& material)
+        {
+            Mathematics::Vector4 bounds;
+            if (material.GetVector(boundsProperty, bounds.v, 4))
+                cardRadii.InsertOrAssign(material.GetGpuSceneMaterialIndex(), bounds.w);
+        });
         json rows = json::array();
         reg.ForEachKeyedEntry(
-            [&rows, scene](const Rendering::MeshGPUKey& key, const Rendering::MeshGPUEntry& e)
+            [&rows, &cardRadii, scene](const Rendering::MeshGPUKey& key, const Rendering::MeshGPUEntry& e)
             {
                 const Rendering::GPUMesh* row = nullptr;
                 if (scene && e.gpuMeshIndex != ~0u && e.gpuMeshIndex < scene->GetMeshes().size())
@@ -9072,11 +9081,18 @@ void RegisterDebugHandlers(EditorDebugServer& server,
                         (row->lodFlags & Rendering::kGPUMeshLodTightClassBit) != 0u;
                     // The impostor link (GPUScene::SetMeshImpostorGroup): 0 = none.
                     if (row->impostorCard != 0u)
+                    {
+                        const uint32 material = (row->impostorCard & Rendering::kGPUMeshImpostorMaterialMask) - 1u;
+                        const float* radius = cardRadii.Find(material);
+                        const bool authored = row->impostorSwitchCoverage > 0.0f;
                         entry["impostor"] = json{
-                            {"cardMaterial", (row->impostorCard & Rendering::kGPUMeshImpostorMaterialMask) - 1u},
+                            {"cardMaterial", material},
                             {"primary", (row->impostorCard & Rendering::kGPUMeshImpostorPrimaryBit) != 0u},
                             {"nextPart", row->nextImpostorPart},
-                            {"switchCoverage", row->impostorSwitchCoverage}};
+                            {"switchCoverage", authored ? json(row->impostorSwitchCoverage) : json()},
+                            {"switchCoverageSource", authored ? "authored" : "view default (atlas frame size / render height)"},
+                            {"cardRadius", radius ? json(*radius) : json()}};
+                    }
                 }
                 rows.push_back(std::move(entry));
             });
