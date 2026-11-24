@@ -24,9 +24,8 @@ namespace Rendering::RenderGraph
 class RGFrame;
 }
 
-/// --benchmark: holds the active camera at each pose of a plan and records raw frame data. For each
-/// pose it renders the warm-up frames, then the timing frames with GPU profiling off, then the
-/// profiled frames with per-pass GPU timings. After the last pose it writes one JSON file.
+/// --benchmark records raw frame data for held poses or an ordered camera path. It warms up first,
+/// times frames with profiling off, then profiles at a held pose. The result is one JSON file.
 ///
 /// Frame time is the wall time between two Advance calls. CPU time is the frame time less the
 /// time the frame waited for the GPU and the swapchain (fence wait, acquire and present).
@@ -35,10 +34,11 @@ class PlayerBenchmark
   public:
     PlayerBenchmark(PlayerBenchmarkPlan plan, std::filesystem::path outputPath);
 
-    /// Call once per frame after the startup scene is ready, before the frame renders. Poses the
-    /// active camera and records the frame that ended. True when the run is complete and its
-    /// result is written: the caller exits.
-    bool Advance(ECS::World& world, Rendering::RenderGraph::RGFrame* frame, const Rendering::IDevice* device);
+    /// Poses the active camera before rendering and records the previous frame. Route mode
+    /// requires a submitted previous frame after the first call. True when the caller should exit.
+    bool Advance(ECS::World& world, Rendering::RenderGraph::RGFrame* frame, const Rendering::IDevice* device,
+                 bool previousFrameSubmitted);
+    bool UsesTimingPath() const { return !m_Plan.TimingPath.empty(); }
 
     /// False when the result could not be written; the reason is logged.
     bool Succeeded() const { return m_Succeeded; }
@@ -75,10 +75,11 @@ class PlayerBenchmark
         std::vector<float> MonitorPeaks;
     };
 
-    void ApplyPose(ECS::World& world) const;
+    bool ApplyPose(ECS::World& world) const;
     void RecordTimingFrame(double frameMs, const Rendering::IDevice* device);
     void RecordProfiledFrame(const Rendering::RenderGraph::RGFrame& frame);
     void EnterPhase(Phase phase, Rendering::RenderGraph::RGFrame* frame);
+    bool FailRoute(const char* reason, Rendering::RenderGraph::RGFrame* frame);
     void WriteResult();
 
     PlayerBenchmarkPlan m_Plan;

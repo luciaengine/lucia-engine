@@ -37,6 +37,8 @@ struct PlayerBenchmarkPlan
     uint32_t TimingFrames = 600;
     uint32_t ProfiledFrames = 120;
     std::vector<PlayerBenchmarkPose> Poses;
+    /// Optional per-frame positions during timing. The final pose is held for GPU profiling.
+    std::vector<PlayerBenchmarkPose> TimingPath;
     /// Named debug monitors sampled for their peak positive value in each profiled pose.
     std::vector<std::string> ActiveMonitors;
 };

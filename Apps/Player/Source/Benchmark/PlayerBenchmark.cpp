@@ -1,5 +1,6 @@
 #include "Benchmark/PlayerBenchmark.h"
 
+#include "Components/Hierarchy.h"
 #include "Components/Transform.h"
 #include "Components/TransformDirtyFeed.h"
 #include "Core/DebugMetrics.h"
@@ -38,10 +39,12 @@ PlayerBenchmark::PlayerBenchmark(PlayerBenchmarkPlan plan, std::filesystem::path
 }
 
 bool PlayerBenchmark::Advance(ECS::World& world, Rendering::RenderGraph::RGFrame* frame,
-                              const Rendering::IDevice* device)
+                              const Rendering::IDevice* device, bool previousFrameSubmitted)
 {
     if (m_Phase == Phase::Done)
         return true;
+    if (UsesTimingPath() && m_LastAdvance && !previousFrameSubmitted)
+        return FailRoute("the previous frame was not submitted", frame);
 
     const auto now = std::chrono::steady_clock::now();
     const std::optional<double> frameMs =
@@ -90,8 +93,18 @@ bool PlayerBenchmark::Advance(ECS::World& world, Rendering::RenderGraph::RGFrame
         WriteResult();
         return true;
     }
-    ApplyPose(world);
+    if (!ApplyPose(world) && UsesTimingPath())
+        return FailRoute("the scene needs an active root camera with a Transform", frame);
     return false;
+}
+
+bool PlayerBenchmark::FailRoute(const char* reason, Rendering::RenderGraph::RGFrame* frame)
+{
+    Logger::Log::Error("PlayerBenchmark: timingPath stopped because {}.", reason);
+    if (frame)
+        frame->SetProfilingEnabled(false);
+    EnterPhase(Phase::Done, frame);
+    return true;
 }
 
 void PlayerBenchmark::EnterPhase(Phase phase, Rendering::RenderGraph::RGFrame* frame)
@@ -102,20 +115,35 @@ void PlayerBenchmark::EnterPhase(Phase phase, Rendering::RenderGraph::RGFrame* f
         frame->SetProfilingEnabled(true);
     if (phase == Phase::Warmup || phase == Phase::Done)
         return;
+    if (phase == Phase::Timing && !m_Plan.TimingPath.empty())
+        Logger::Log::Info("PlayerBenchmark: replaying {} ordered camera poses", m_Plan.TimingPath.size());
     Logger::Log::Info("PlayerBenchmark: pose '{}' {}", m_Plan.Poses[m_PoseIndex].Name,
                       phase == Phase::Timing ? "timing" : (phase == Phase::ProfileLead ? "profiling" : "profiled window"));
 }
 
-void PlayerBenchmark::ApplyPose(ECS::World& world) const
+bool PlayerBenchmark::ApplyPose(ECS::World& world) const
 {
     const std::optional<Engine::Renderer::Camera> camera = Engine::Renderer::FindActiveCamera(world);
     if (!camera)
-        return;
+        return false;
+    if (!m_Plan.TimingPath.empty())
+    {
+        if (const auto* parent = world.GetComponent<Components::Parent>(camera->entity);
+            parent && parent->Entity.IsValid())
+            return false;
+    }
     auto* transform = world.GetComponentForWrite<Components::Transform>(camera->entity);
     if (!transform)
-        return;
-    const PlayerBenchmarkPose& pose = m_Plan.Poses[m_PoseIndex];
-    *transform = Components::Transform::FromTRS(pose.Position, pose.Rotation(), Mathematics::Vector3(1.0f, 1.0f, 1.0f));
+        return false;
+    const PlayerBenchmarkPose* pose = &m_Plan.Poses[m_PoseIndex];
+    if (!m_Plan.TimingPath.empty())
+    {
+        if (m_Phase == Phase::Timing)
+            pose = &m_Plan.TimingPath[m_PhaseFrames];
+        else if (m_Phase == Phase::ProfileLead || m_Phase == Phase::Profiled)
+            pose = &m_Plan.TimingPath.back();
+    }
+    *transform = Components::Transform::FromTRS(pose->Position, pose->Rotation(), Mathematics::Vector3(1.0f, 1.0f, 1.0f));
     // A root camera: its world transform is its transform. Write both, as the camera controller does.
     if (auto* worldTransform = world.GetComponentForWrite<Components::WorldTransform>(camera->entity))
     {
@@ -123,6 +151,7 @@ void PlayerBenchmark::ApplyPose(ECS::World& world) const
         worldTransform->Basis = transform->Basis;
         Components::BumpWorldTransform(world, camera->entity, *worldTransform);
     }
+    return true;
 }
 
 void PlayerBenchmark::RecordTimingFrame(double frameMs, const Rendering::IDevice* device)
@@ -186,10 +215,21 @@ void PlayerBenchmark::WriteResult()
                          {"monitorPeaks", std::move(monitorPeaks)},
                          {"profiledFrames", std::move(profiled)}});
     }
-    const nlohmann::json result = {{"warmupFrames", m_Plan.WarmupFrames},
-                                   {"timingFrames", m_Plan.TimingFrames},
-                                   {"profiledFrames", m_Plan.ProfiledFrames},
-                                   {"poses", std::move(poses)}};
+    nlohmann::json result = {{"warmupFrames", m_Plan.WarmupFrames},
+                             {"timingFrames", m_Plan.TimingFrames},
+                             {"profiledFrames", m_Plan.ProfiledFrames},
+                             {"poses", std::move(poses)}};
+
+    if (!m_Plan.TimingPath.empty())
+    {
+        auto& path = result["timingPath"];
+        path = nlohmann::json::array();
+        for (const auto& pose : m_Plan.TimingPath)
+            path.push_back({{"position", {pose.Position.X, pose.Position.Y, pose.Position.Z}},
+                            {"yawDeg", pose.YawDeg},
+                            {"pitchDeg", pose.PitchDeg}});
+        result["profiledPose"] = path.back();
+    }
 
     std::ofstream out(m_OutputPath, std::ios::binary | std::ios::trunc);
     out << result.dump();
