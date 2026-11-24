@@ -77,6 +77,8 @@ if(BUILD_TESTING)
         PlayerRunOptionsTests.cpp
         PlayerStartupReadinessTests.cpp
         PlayerBenchmarkPlanTests.cpp
+        PlayerBenchmarkReplayTests.cpp
+        ${CMAKE_SOURCE_DIR}/Apps/Player/Source/Benchmark/PlayerBenchmark.cpp
         ${CMAKE_SOURCE_DIR}/Apps/Player/Source/Benchmark/PlayerBenchmarkPlan.cpp
         ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerStartupReadiness.cpp
         ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerHdrOptions.cpp

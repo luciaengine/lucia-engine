@@ -60,7 +60,7 @@ private:
     // save-state hook, and request a clean exit. One-shot per process.
     void HandleFatalDeviceLoss();
     // --benchmark: poses the camera and records the frame once the startup scene is ready.
-    void AdvanceBenchmark();
+    bool AdvanceBenchmark(bool previousFrameSubmitted);
     bool m_FatalDeviceLossHandled = false;
 
     // The host's settings from game.config; the window size from the application
@@ -188,6 +188,7 @@ private:
     std::unique_ptr<RuntimeHost> m_Host;
     // --benchmark: null for a normal run.
     std::unique_ptr<PlayerBenchmark> m_Benchmark;
+    bool m_BenchmarkFrameSubmitted = false;
 #if defined(GE_PLATFORM_MOBILE)
     // GE_PLAYER_DEMO_CONTROLS=1: touch orbit and the frame statistics overlay. Null otherwise.
     std::unique_ptr<PlayerDemoControls> m_DemoControls;
