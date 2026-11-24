@@ -24,7 +24,8 @@ struct DepthPrepassLineage
 // must also check that the served producer and consumer pipelines disable stencil.
 inline DepthPrepassLineage CheckDepthPrepassLineage(const RGGraph& graph, const RGAttachmentRec& prepass,
                                                     const RGAttachmentRec& forward, bool verifiedPoolImport,
-                                                    std::span<const RGAttachmentRec* const> continuations = {})
+                                                    std::span<const RGAttachmentRec* const> continuations = {},
+                                                    bool allowMultisampledDepth = false)
 {
     const RGResourceId depth = prepass.Tex;
     if (depth >= graph.ResourceCount() || depth != forward.Tex ||
@@ -40,7 +41,7 @@ inline DepthPrepassLineage CheckDepthPrepassLineage(const RGGraph& graph, const 
     const bool hasFloat32Depth =
         format == TextureFormat::D32_FLOAT || format == TextureFormat::D32_SFLOAT_S8_UINT;
     if (desc.Kind != RGResourceKind::Texture ||
-        !hasFloat32Depth || desc.SampleCount != 1 ||
+        !hasFloat32Depth || (!allowMultisampledDepth && desc.SampleCount != 1) ||
         desc.ArrayLayers != 1 || desc.MipLevels != 1 ||
         (graph.IsImported(depth) ? !verifiedPoolImport : graph.IsExternal(depth)))
         return {"texture descriptor or provenance"};
