@@ -305,15 +305,11 @@ void PipelineVariantCache::LogColdServe(std::string_view materialName, Rendering
     const uint64_t occurrence = m_ColdServeLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if ((occurrence & (occurrence - 1)) != 0)
         return;
-    // The device or its backend logs why a build failed; this line only names the material whose
-    // draws are skipped.
     if (state == Rendering::PipelineBuildState::Pending)
-        Logger::Log::Info("Cold pipeline '{}': graphics pipeline id={} is still building for the current pass ({}); "
-                          "its draws are skipped until it is ready [{}x]",
+        Logger::Log::Info("Cold pipeline '{}': graphics pipeline id={} is still building for the current pass ({}) [{}x]",
                           materialName, id.Value, FormatPipelineKey(formatKey), occurrence);
     else
-        Logger::Log::Info("Cold pipeline '{}': graphics pipeline id={} did not build for the current pass ({}); "
-                          "its draws are skipped; the device logged why [{}x]",
+        Logger::Log::Info("Cold pipeline '{}': graphics pipeline id={} did not build for the current pass ({}) [{}x]",
                           materialName, id.Value, FormatPipelineKey(formatKey), occurrence);
 }
 
@@ -422,6 +418,23 @@ PipelineVariantCache::PrepareColorVariant(
     return ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace, context);
 }
 
+Rendering::PipelineHandle PipelineVariantCache::PrepareWhiteMapVariant(
+    const Material& material, Rendering::GraphicsPipelineId base, const Rendering::PipelineFormatKey& formatKey)
+{
+    auto* device = m_Materials->GetDevice();
+    if (!device)
+        return {};
+    Rendering::SpecializationConstants overrides;
+    overrides.AddConstant(kStandardWhiteMapsConstant, uint32_t{1});
+    const auto id = device->GetMutablePipelineCache().SpecializeGraphicsPipeline(base, overrides);
+    if (!id.IsValid())
+        return {};
+    const auto pipeline = device->TryGetWarmGraphicsPipeline(id, formatKey);
+    if (!pipeline.IsValid())
+        QueueConcreteWarm(material, id, formatKey);
+    return pipeline;
+}
+
 PipelineVariantCache::PreparedVariant PipelineVariantCache::PrepareIndexedDepthEqual(
     const Material& material, const Rendering::ShaderMeta& shader, Rendering::GraphicsPipelineId base,
     const Rendering::GraphicsPipelineDesc& desc, const Rendering::PipelineFormatKey& formatKey,
@@ -454,7 +467,6 @@ PipelineVariantCache::PreparedVariant PipelineVariantCache::PrepareIndexedDepthE
     {
         Rendering::SpecializationConstants overrides;
         overrides.AddConstant(kForwardMaterialRowConstant, materialRow);
-        constexpr uint32_t kStandardWhiteMapsConstant = 308;
         const bool canSpecializeWhiteMaps = useWhiteMaps &&
             std::any_of(shader.SpecConstants.begin(), shader.SpecConstants.end(),
                 [](const auto& constant) { return constant.Id == kStandardWhiteMapsConstant; });

@@ -3224,6 +3224,50 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedColdPreparationDefersBothBack
     }
 }
 
+TEST_F(MaterialPipelineCompilationTest, OrdinaryWhiteMapsWarmOnlyTheServedColorVariant)
+{
+    MaterialDocument document{};
+    document.materialName = "OrdinaryWhiteMaps";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    document.alphaMode = MaterialAlphaMode::Mask;
+    auto* material = m_rs->Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+    ASSERT_NE(material, nullptr);
+    auto& variants = m_rs->Materials().Variants();
+    const auto flags = VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasColor;
+    const auto keywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced;
+    const auto key = variants.EnqueueColorVariantCompileForTesting(
+        *material, flags, PrimitiveTopology::TriangleList, keywords, 1u, FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    variants.ApplyPendingVariantPublishes();
+    const auto published = variants.SnapshotColorVariantForTesting(key);
+    ASSERT_TRUE(published.CurrentPipelineId.IsValid());
+
+    auto& cache = m_device->GetMutablePipelineCache();
+    const auto served = cache.SpecializeGraphicsPipeline(published.CurrentPipelineId, *MakeForwardPreparationOverrides());
+    SpecializationConstants white;
+    white.AddConstant(308, 1u);
+    const auto expected = cache.SpecializeGraphicsPipeline(served, white);
+    ASSERT_TRUE(expected.IsValid());
+    ASSERT_NE(expected, served);
+    PipelineFormatKey format{};
+    format.ColorCount = 1;
+    format.ColorFormats[0] = TextureFormat::R16_FLOAT;
+    const auto original = m_device->GetOrCreateGraphicsPipeline(served, format);
+    ASSERT_TRUE(original.IsValid());
+    HeldPipelineBuilds held(*m_device);
+    EXPECT_FALSE(variants.PrepareWhiteMapVariant(*material, served, format).IsValid());
+    EXPECT_TRUE(held.Jobs.empty());
+    variants.PruneSettledConcreteWarmWaits();
+    ASSERT_EQ(held.Jobs.size(), 1u);
+    held.RunAll();
+    variants.PruneSettledConcreteWarmWaits();
+    const auto warm = m_device->TryGetWarmGraphicsPipeline(expected, format);
+    ASSERT_TRUE(warm.IsValid());
+    EXPECT_EQ(variants.PrepareWhiteMapVariant(*material, served, format), warm);
+    EXPECT_EQ(m_device->TryGetWarmGraphicsPipeline(served, format), original);
+}
+
 TEST_F(MaterialPipelineCompilationTest, SpecializedCurrentFallbackSurvivesAbortedPreparationAndRetry)
 {
     MaterialDocument document{};

@@ -206,6 +206,10 @@ class PipelineVariantCache
         FrontFace frontFace,
         const RenderGraph::RGPrepareContext& context);
 
+    /// Return a warm specialization of the served color pipeline for a certified white-map draw.
+    PipelineHandle PrepareWhiteMapVariant(const Material& material, Rendering::GraphicsPipelineId base,
+                                          const Rendering::PipelineFormatKey& formatKey);
+
     /// Prepare an Equal-depth pipeline for a certified masked draw from its served shader metadata.
     /// Cold pipelines join the frame-begin warm queue. A warm per-instance row remains usable.
     PreparedVariant PrepareIndexedDepthEqual(const Material& material, const Rendering::ShaderMeta& shader,
