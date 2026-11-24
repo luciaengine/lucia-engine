@@ -197,7 +197,9 @@ class TextureCoverageGPU : public testing::Test
         m_Materials.Initialize(m_Device.get());
         ASSERT_TRUE(m_Textures.Initialize(m_Device.get(), m_Materials,
                                           RendererProfile::FromCapabilities(m_Device->GetCapabilities())));
-        m_Sampler = m_Device->CreateSampler(SamplerDesc::MaterialLinearRepeat("Coverage.Trilinear"));
+        // The material sampler: trilinear with the profile's anisotropy, as SamplerPreset::LinearRepeat.
+        m_Sampler = m_Device->CreateSampler(ResolveSamplerPreset(
+            SamplerPreset::LinearRepeat, RendererProfile::FromCapabilities(m_Device->GetCapabilities())));
         ASSERT_TRUE(m_Sampler.IsValid());
         DescriptorBinding binding{};
         binding.binding = 0;
@@ -1867,6 +1869,78 @@ TEST_F(TextureCoverageGPU, FoliageCoverageMovesWithTheSurface)
             best = std::max(best, double(same) / double(compared));
         }
     EXPECT_GT(best, 0.99);
+}
+
+// A masked surface has no leaf seed: its threshold is the seed of the triangle's first vertex and its
+// instance (mask_coverage.glsl). A grid of masked cards keeps the base coverage through the mip
+// tail, where the cutoff test keeps no pixel.
+TEST_F(TextureCoverageGPU, MaskedCardCoverageKeepsTheBaseCoverageThroughTheMipTail)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kCutoffMode = 1, kLeafCutoffMode = 4, kMaskedCardMode = 6;
+    constexpr float kSixteenTexelLod = 2, kTailLod = 6; // 16 x 16 and 1 x 1 for the 64 x 64 image
+    const double reference = Coverage(Render(texture, 256, 256, 0, kCutoffMode));
+    ASSERT_GT(reference, 0.2);
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kMaskedCardMode)), Coverage(Render(texture, 256, 256, 0, kLeafCutoffMode)));
+    for (float lod = kSixteenTexelLod; lod <= kTailLod; lod += .5f)
+        EXPECT_NEAR(Coverage(Render(texture, 256, 256, lod, kMaskedCardMode)), reference, 0.03) << "lod " << lod;
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kLeafCutoffMode)), 0.0);
+}
+
+// Two instances of the same card mesh overlap with independent thresholds, so their far coverage adds
+// up as two independent layers. One instance drawn twice adds nothing.
+TEST_F(TextureCoverageGPU, MaskedCardCoverageOfOverlappingInstancesAddsUp)
+{
+    constexpr uint8 kUniformAlpha = 128;
+    const GUID guid = Register(Image(false, 64, 16, kUniformAlpha), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kMaskedCardMode = 6, kTwoInstanceMode = 7;
+    constexpr float kTailLod = 6;
+    const float secondInstance = std::bit_cast<float>(uint32(1)); // the probe reads the bits
+    const double single = Coverage(Render(texture, 256, 256, kTailLod, kMaskedCardMode));
+    ASSERT_GT(single, 0.2);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoInstanceMode, 0.0f, 0.0f)), single, 0.01);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTwoInstanceMode, 0.0f, secondInstance)),
+                1.0 - (1.0 - single) * (1.0 - single), 0.03);
+}
+
+// The tint and vertex alpha of a masked surface move its cutoff and add no coverage. A tint under the
+// cutoff hides the cards near and at range; an opaque tint keeps the base coverage at range.
+TEST_F(TextureCoverageGPU, MaskedCardTintUnderTheCutoffStaysHiddenAtRange)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kCutoffMode = 1, kTintedCardMode = 8;
+    constexpr float kTailLod = 6, kHiddenTint = 0.4f, kOpaqueTint = 1.0f; // the probe's cutoff is 0.538
+    const double reference = Coverage(Render(texture, 256, 256, 0, kCutoffMode));
+    ASSERT_GT(reference, 0.2);
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, 0, kTintedCardMode, 0.0f, kHiddenTint)), 0.0);
+    EXPECT_EQ(Coverage(Render(texture, 256, 256, kTailLod, kTintedCardMode, 0.0f, kHiddenTint)), 0.0);
+    EXPECT_NEAR(Coverage(Render(texture, 256, 256, kTailLod, kTintedCardMode, 0.0f, kOpaqueTint)), reference, 0.03);
+}
+
+// A card seen edge-on near the camera has a coarse footprint along one axis only. The anisotropic
+// sampler still reads its fine level, so the mask keeps its cutoff test, pixel for pixel.
+TEST_F(TextureCoverageGPU, MaskedCardSeenEdgeOnKeepsItsCutoffTest)
+{
+    const GUID guid = Register(Image(), false);
+    const auto texture = WaitForUpload(guid);
+    ASSERT_TRUE(texture.IsValid());
+    constexpr uint32 kProductionMode = 9, kCutoffMode = 10;
+    constexpr float kGrazingLod = 3.5f; // 2^3.5 = 11 texels along x, one along y: inside 16x anisotropy
+    const auto production = Render(texture, 256, 256, kGrazingLod, kProductionMode);
+    const auto cutoff = Render(texture, 256, 256, kGrazingLod, kCutoffMode);
+    if (RendererProfile::FromCapabilities(m_Device->GetCapabilities()).MaterialSamplerAnisotropy < 16.0f)
+        GTEST_SKIP() << "the device filters with less than the 16x anisotropy kFoliageMaxAnisotropy assumes";
+    ASSERT_GT(Coverage(cutoff), 0.2);
+    size_t differing = 0;
+    for (size_t pixel = 0; pixel < production.size() / 4; ++pixel)
+        differing += (production[pixel * 4 + 3] > .5f) != (cutoff[pixel * 4 + 3] > .5f);
+    EXPECT_EQ(differing, 0u);
 }
 
 TEST_F(TextureCoverageGPU, FullChainMaskedCardsMeasureIntegerFractionalAndPhaseCoverage)

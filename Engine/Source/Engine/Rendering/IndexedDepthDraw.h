@@ -226,7 +226,7 @@ inline bool MatchesIndexedOwnerMeshFragmentInputs(
 {
     for (const auto& input : fragment.Inputs)
     {
-        if (input.Builtin || input.Component != 0u || !input.Type.ArrayDims.empty())
+        if (input.Builtin || !input.Type.ArrayDims.empty())
             return false;
         const auto output = std::find_if(mesh.Outputs.begin(), mesh.Outputs.end(),
             [&input](const auto& candidate) {

@@ -16,6 +16,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/Shader/ShaderComposer.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/Shader/ShaderVariantKey.h"
@@ -1248,4 +1249,30 @@ TEST(ForwardAdapterVariantCompile, TheFrameSetFitsItsSamplerBudgetInEveryHeavyVa
         std::string names;
         EXPECT_LE(FragmentSamplerCount(result, 0u, &names), kFrameSetSamplerBudget) << "set 0 samplers: " << names;
     }
+}
+
+TEST(ForwardAdapterVariant, MaskCoverageNeedsAnInstancedMeshWithAStableSeed)
+{
+    MaterialDocument doc{};
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    doc.lightingModel = "StandardPBR";
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    ShaderVariantKey key{};
+    key.materialKeywords = MaterialKeyword::Instanced | MaterialKeyword::AlphaTest;
+
+    const auto carriesSeed = [&](const MaterialDocument& material, const ShaderVariantKey& variant) {
+        const auto source = ShaderComposer::Compose(material, variant, {}, context);
+        EXPECT_TRUE(source.IsValid());
+        return std::ranges::find(source.defines, "GE_MASK_COVERAGE_SEED") != source.defines.end();
+    };
+    EXPECT_TRUE(carriesSeed(doc, key));
+    ShaderVariantKey procedural = key;
+    procedural.materialKeywords |= MaterialKeyword::ProceduralVertexOutput;
+    EXPECT_FALSE(carriesSeed(doc, procedural));
+    auto particle = doc;
+    particle.keywords = {"PARTICLE_BUFFER"};
+    EXPECT_FALSE(carriesSeed(particle, key));
+    key.materialKeywords = MaterialKeyword::AlphaTest;
+    EXPECT_FALSE(carriesSeed(doc, key));
 }

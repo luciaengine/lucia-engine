@@ -13,6 +13,7 @@
 // @texture aoMap linear
 // @texture coatNormalMap linear
 // @texture heightMap linear
+// @maskCoverageSeed
 //
 // Parallax (GE_PARALLAX_MARCH): a bound height map displaces uv0 by the relief
 // march, and every map samples at the displaced UV through its own tiling with
@@ -92,12 +93,19 @@ GE_StandardRelief GE_StandardParallax(SurfaceInput sIn)
     return relief;
 }
 
-// One map at uv0 through its own tiling, with the tiling's linear part applied to
-// the undisplaced footprint: the transforms are affine, so the gradients are exact.
+// The undisplaced uv0 footprint through a map's tiling: the transforms are affine, so the
+// gradients are exact.
+void GE_StandardTiledFootprint(vec4 st, vec4 st2, vec4 uvFootprint, out vec2 uvPerPixelX, out vec2 uvPerPixelY)
+{
+    uvPerPixelX = vec2(dot(uvFootprint.xy, st.xy), dot(uvFootprint.xy, st2.xy));
+    uvPerPixelY = vec2(dot(uvFootprint.zw, st.xy), dot(uvFootprint.zw, st2.xy));
+}
+
+// One map at uv0 through its own tiling, sampled with the undisplaced footprint.
 vec4 GE_StandardSampleAt(GE_MaterialTexture map, vec4 st, vec4 st2, vec2 uv0, vec4 uvFootprint)
 {
-    vec2 uvPerPixelX = vec2(dot(uvFootprint.xy, st.xy), dot(uvFootprint.xy, st2.xy));
-    vec2 uvPerPixelY = vec2(dot(uvFootprint.zw, st.xy), dot(uvFootprint.zw, st2.xy));
+    vec2 uvPerPixelX, uvPerPixelY;
+    GE_StandardTiledFootprint(st, st2, uvFootprint, uvPerPixelX, uvPerPixelY);
     return textureGrad(map, GE_TransformUV(uv0, st, st2), uvPerPixelX, uvPerPixelY);
 }
 #else
@@ -118,6 +126,46 @@ vec3 GE_StandardSampleHexNormal(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 s
     float blend = 0.0;
     GE_ComputeHexBlendUV(uv, st, st2, Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x, uvA, uvB, blend);
     return mix(GE_DecodeTangentNormal(texture(map, uvA)), GE_DecodeTangentNormal(texture(map, uvB)), blend);
+}
+#endif
+
+#ifdef GE_MASK_COVERAGE_SEED
+// The far mask (mask_coverage.glsl): the albedo footprint selects the coverage test, and past the
+// 32-texel bound the alpha is read at the bound, so a triangle that passes keeps the mask's shape.
+
+// UV per pixel of the albedo map at uv0, through its tiling, along the longer axis.
+float GE_StandardMaskFootprint(SurfaceInput sIn)
+{
+    vec4 st = sIn.textureST[0];
+    vec4 st2 = sIn.textureST2[0];
+#ifdef GE_PARALLAX_MARCH
+    vec2 uvDx, uvDy;
+    GE_StandardTiledFootprint(st, st2, sIn.uvFootprint, uvDx, uvDy);
+#else
+    vec2 uv = GE_TransformUV(sIn.uv0, st, st2);
+    vec2 uvDx = GE_DFDX(uv);
+    vec2 uvDy = GE_DFDY(uv);
+#endif
+    return GE_AnisotropicMaskFootprint(uvDx, uvDy, GE_MATERIAL_MIP_BIAS);
+}
+
+// The alpha of `map` at `uv` through its tiling, read at the 32-texel bound. The bound is the same
+// along both axes, so the hex rotation does not change it.
+float GE_StandardMaskShapeAlpha(GE_MaterialTexture map, vec2 uv, vec4 st, vec4 st2)
+{
+    float shapeGradient = GE_MaskCoverageShapeGradient(GE_MATERIAL_MIP_BIAS);
+    vec2 shapeDx = vec2(shapeGradient, 0.0);
+    vec2 shapeDy = vec2(0.0, shapeGradient);
+#ifdef GE_PARALLAX_MARCH
+    return textureGrad(map, GE_TransformUV(uv, st, st2), shapeDx, shapeDy).a;
+#else
+    if (!GE_FORWARD_HEX_TILING || Mat.uParams0.z < 0.5)
+        return textureGrad(map, GE_TransformUV(uv, st, st2), shapeDx, shapeDy).a;
+    vec2 uvA, uvB;
+    float blend = 0.0;
+    GE_ComputeHexBlendUV(uv, st, st2, Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x, uvA, uvB, blend);
+    return mix(textureGrad(map, uvA, shapeDx, shapeDy).a, textureGrad(map, uvB, shapeDx, shapeDy).a, blend);
+#endif
 }
 #endif
 
@@ -160,6 +208,21 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 {
     SurfaceOutput o = DefaultSurfaceOutput();
 
+#if defined(GE_MASK_COVERAGE_SEED) && defined(GE_DEPTH_ONLY_FRAGMENT) && \
+    !defined(GE_PARALLAX_MARCH) && !defined(GE_STANDARD_UV1_CROSSFADE)
+    // Depth passes need only coverage. In the mip tail the bounded sample already provides it.
+    float maskTail = GE_MaskCoverageTailWeight(GE_StandardMaskFootprint(sIn));
+    if (maskTail > 0.0)
+    {
+        float alpha = GE_StandardMaskShapeAlpha(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
+        float scale = Mat.uBaseColor.a * sIn.vertexColor.a;
+        o.opacity = GE_MaskCoverageOpacity(alpha, scale, clamp(Props.alphaCutoff, 0.0, 1.0), maskTail,
+                                           sIn.maskCoverageThreshold);
+        return o;
+    }
+#define GE_STANDARD_DEPTH_MASK_TESTED
+#endif
+
 #ifdef GE_PARALLAX_MARCH
     GE_StandardRelief relief = GE_StandardParallax(sIn);
     vec2 reliefUv0 = relief.uv0;
@@ -195,6 +258,23 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     o.opacity = albedo.a * Mat.uBaseColor.a;
 #else
     o.opacity = albedo.a * Mat.uBaseColor.a * sIn.vertexColor.a;
+#endif
+#if defined(GE_MASK_COVERAGE_SEED) && !defined(GE_STANDARD_DEPTH_MASK_TESTED)
+    // In the mip tail the far test keeps the coverage of the texture alpha on average (mask_coverage.glsl).
+    float maskTail = GE_MaskCoverageTailWeight(GE_StandardMaskFootprint(sIn));
+    if (maskTail > 0.0)
+    {
+        float maskAlpha = GE_StandardMaskShapeAlpha(albedoMap, sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
+  #ifdef GE_STANDARD_UV1_CROSSFADE
+        maskAlpha = mix(maskAlpha, GE_StandardMaskShapeAlpha(albedoMap, sIn.uv1, sIn.textureST[0], sIn.textureST2[0]),
+                        uv1Weight);
+        float maskScale = Mat.uBaseColor.a;
+  #else
+        float maskScale = Mat.uBaseColor.a * sIn.vertexColor.a;
+  #endif
+        o.opacity = GE_MaskCoverageOpacity(maskAlpha, maskScale, clamp(Props.alphaCutoff, 0.0, 1.0), maskTail,
+                                           sIn.maskCoverageThreshold);
+    }
 #endif
 
     // Metallic-roughness (glTF convention: G=roughness, B=metallic)

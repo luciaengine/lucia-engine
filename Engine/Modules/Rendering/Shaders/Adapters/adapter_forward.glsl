@@ -110,6 +110,11 @@ flat layout(location = 14, component = 1) in uint vLodFadeCode;
 flat layout(location = 14) in uint vInstanceFlags;
 #endif
 
+#ifdef GE_MASK_COVERAGE_SEED
+#include "../Includes/mask_coverage.glsl"
+flat layout(location = 14, component = 3) in uint vMaskCoverageSeed;
+#endif
+
 #ifdef GE_INDEXED_DEPTH_OWNER
 flat layout(location = 14, component = 2) in uint vDepthOwnerSlot;
 layout(location = 0) out uint oDepthOwner;
@@ -817,6 +822,10 @@ void main()
 
 #ifdef HAS_UV1
     si.uv1 = vUV1;
+#endif
+
+#ifdef GE_MASK_COVERAGE_SEED
+    si.maskCoverageThreshold = GE_MaskCoverageThreshold(vMaskCoverageSeed);
 #endif
 
 #if defined(HAS_UV2) && !defined(GE_USER_PARTICLE_BUFFER)

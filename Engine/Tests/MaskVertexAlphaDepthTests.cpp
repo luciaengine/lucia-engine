@@ -52,6 +52,7 @@
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include "StagedTestPaths.h"
@@ -255,6 +256,72 @@ Mesh MakeCardMesh()
     }
     SetBounds(mesh);
     return mesh;
+}
+
+enum class MaskProjection
+{
+    VertexAlpha,
+    NearTexture,
+    MipTailTexture
+};
+
+Mesh MakeTexturedCards(MaskProjection projection)
+{
+    Mesh mesh{};
+    mesh.Name = "MaskedTextureCards";
+    const uint32 columns = projection == MaskProjection::NearTexture ? 1u : 8u;
+    constexpr float extent = 0.9f;
+    const float spacing = 2.0f * extent / static_cast<float>(columns);
+    for (uint32 y = 0; y < columns; ++y)
+        for (uint32 x = 0; x < columns; ++x)
+        {
+            const float left = -extent + static_cast<float>(x) * spacing;
+            const float bottom = -extent + static_cast<float>(y) * spacing;
+            const size_t first = mesh.Vertices.size();
+            AppendRectangle(mesh, left, bottom, left + spacing, bottom + spacing, kCardDepth);
+            for (uint32 corner = 0; corner < 4; ++corner)
+            {
+                Vertex& vertex = mesh.Vertices[first + corner];
+                vertex.TexCoords[0] = corner == 1 || corner == 2 ? 1.0f : 0.0f;
+                vertex.TexCoords[1] = corner >= 2 ? 1.0f : 0.0f;
+                mesh.Color0.insert(mesh.Color0.end(), {1.0f, 1.0f, 1.0f, 1.0f});
+            }
+        }
+    SetBounds(mesh);
+    return mesh;
+}
+
+TextureHandle UploadMaskTexture(IDevice& device)
+{
+    // A quarter of the base is opaque. Its tail mips hold that average everywhere,
+    // so a cutoff would reject the entire card once it samples those levels.
+    constexpr uint32 levels = 6;
+    constexpr uint32 size = 1u << (levels - 1u);
+    TextureDesc desc = TargetDesc(TextureFormat::RGBA8_UNORM,
+        static_cast<uint32>(TextureUsage::ShaderResource | TextureUsage::TransferDst));
+    desc.width = size;
+    desc.height = size;
+    desc.mipLevels = levels;
+    const auto texture = device.CreateTexture(desc);
+    if (!texture.IsValid())
+        return {};
+
+    std::array<std::vector<uint8>, levels> pixels;
+    std::array<TextureMipUploadEntry, levels> entries;
+    for (uint32 level = 0; level < levels; ++level)
+    {
+        const uint32 side = size >> level;
+        auto& bytes = pixels[level];
+        bytes.resize(size_t{side} * side * 4u, 255u);
+        for (uint32 y = 0; y < side; ++y)
+            for (uint32 x = 0; x < side; ++x)
+                bytes[(y * side + x) * 4u + 3u] = level == 0
+                    ? ((x % 8 < 4 && y % 8 < 4) ? 255u : 0u) : 64u;
+        entries[level] = {bytes.data(), bytes.size(), side, side};
+    }
+    UploadTextureMips(&device, texture, entries.data(), levels, TextureFormat::RGBA8_UNORM,
+                      "MaskVertexAlpha.TextureCoverage");
+    return texture;
 }
 
 // The opaque floor behind the card, covering the whole target.
@@ -473,7 +540,8 @@ RenderGraph::RGTexture DeclarePublisherCascade(RenderGraph::RGFrame& frame, Rend
 // vertex-alpha-1 half both reach the depth target, so a variant still compiling
 // cannot pass for a cut-out.
 void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocument, float& cutOutDepth,
-                             RestoreMode restore = RestoreMode::None)
+                             RestoreMode restore = RestoreMode::None,
+                             MaskProjection projection = MaskProjection::VertexAlpha)
 {
     const std::filesystem::path shaderDir = TestPaths::StagedRenderingShadersDir();
     ASSERT_TRUE(std::filesystem::exists(shaderDir)) << "staged shader tree not found: " << shaderDir.string();
@@ -513,7 +581,8 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
     ASSERT_EQ(card->GetAlphaMode(), MaterialAlphaMode::Mask) << "the card material must stay masked";
     ASSERT_EQ(card->IgnoresVertexColor(), cardDocument.ignoreVertexColor);
 
-    Mesh cardMesh = MakeCardMesh();
+    const bool measuresTextureCoverage = projection != MaskProjection::VertexAlpha;
+    Mesh cardMesh = measuresTextureCoverage ? MakeTexturedCards(projection) : MakeCardMesh();
     if (pendingTexture)
         for (Vertex& vertex : cardMesh.Vertices)
         {
@@ -599,13 +668,23 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
         ASSERT_FALSE(rs.Textures().IsMaterialTextureBindingComplete(card->GetGuid()));
     }
 
+    TextureHandle maskTexture;
+    if (measuresTextureCoverage)
+    {
+        maskTexture = UploadMaskTexture(*device);
+        ASSERT_TRUE(maskTexture.IsValid());
+        device->WaitForIdle();
+        card->SetTexture("albedoMap"_sid, maskTexture);
+        card->SetBindlessTextureIndex("albedoMap"_sid, rs.Textures().GetBindlessIndex(maskTexture));
+    }
+
     FramePools pools(device);
     RenderGraph::RGFrame frame(device, &pools.Persistent, &pools.Transient, &pools.Ring);
     std::optional<ViewReadbackResult> settled;
     std::optional<ViewReadbackResult> composedResult;
     bool shadowWarm = false;
     ShadowReadbackProbes probes;
-    const int maxFrames = pendingScenario ? kHeldPublisherFrames + kAbortedPublisherFrames + kMaxFrames :
+    const int maxFrames = measuresTextureCoverage ? kMaxFrames * 2 : pendingScenario ? kHeldPublisherFrames + kAbortedPublisherFrames + kMaxFrames :
                           missingGroup ? kMaxFrames * 2 : kMaxFrames;
     for (int frameIndex = 0; frameIndex < maxFrames && !settled; ++frameIndex)
     {
@@ -756,6 +835,15 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
         ASSERT_EQ(result.width, kTargetSize);
         ASSERT_EQ(result.pixels.size(), static_cast<size_t>(kTargetSize) * kTargetSize * sizeof(float));
         const bool floorDrawn = std::abs(DepthAt(result, kFloorX, kCentreY) - kFloorDepth) < kDepthTolerance;
+        if (measuresTextureCoverage)
+        {
+            if (frameIndex == maxFrames - 1)
+            {
+                ASSERT_TRUE(floorDrawn);
+                settled = std::move(result);
+            }
+            continue;
+        }
         const bool cardDrawn = std::abs(DepthAt(result, kKeptX, kCentreY) - kCardDepth) < kDepthTolerance;
         if (pendingPublisher && frameIndex == kHeldPublisherFrames - 1)
         {
@@ -836,6 +924,16 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
         << "the floor and the kept half of the card never both reached the depth target in " << maxFrames
         << " frames: the scene did not draw, so the cut-out cannot be judged";
     cutOutDepth = DepthAt(*settled, kCutOutX, kCentreY);
+    if (measuresTextureCoverage)
+    {
+        constexpr uint32 border = 4u;
+        constexpr uint32 span = kTargetSize - 2u * border;
+        uint32 covered = 0;
+        for (uint32 y = border; y < kTargetSize - border; ++y)
+            for (uint32 x = border; x < kTargetSize - border; ++x)
+                covered += std::abs(DepthAt(*settled, x, y) - kCardDepth) < kDepthTolerance;
+        cutOutDepth = static_cast<float>(covered) / static_cast<float>(span * span);
+    }
     if (restore != RestoreMode::None)
     {
         ASSERT_TRUE(composedResult.has_value());
@@ -859,6 +957,8 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
     }
 
     rs.Shutdown();
+    if (maskTexture.IsValid())
+        device->DestroyTexture(maskTexture);
     std::error_code ec;
     std::filesystem::remove_all(cacheRoot, ec);
 }
@@ -917,10 +1017,32 @@ TEST(IndexedDepthReuse, MeshReplayRejectsUnservedFragmentInputs)
     fragment.Inputs.front().Type.VecSize = 3u;
     fragment.Inputs.front().Component = 1u;
     EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+    mesh.Outputs.front().Component = 1u;
+    EXPECT_TRUE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+    mesh.Outputs.front().Component = 0u;
 
     fragment.Inputs.front().Component = 0u;
     fragment.Inputs.push_back({.Location = 3u});
     EXPECT_FALSE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh));
+}
+
+// A masked fragment reads the coverage seed at location 14, component 3 (mask_coverage.glsl). Both
+// shipped replay mesh shaders write it there, so masked batches keep the owner replay.
+TEST(IndexedDepthReuse, ShippedMeshReplayServesTheMaskCoverageSeed)
+{
+    namespace R = GameEngine::Rendering;
+    using GameEngine::Engine::Renderer::MatchesIndexedOwnerMeshFragmentInputs;
+    R::StageMeta fragment;
+    fragment.Inputs = {{.Location = 14u, .Component = 3u, .Type = {.Kind = R::TypeKind::Scalar, .Base = R::BaseType::UInt}}};
+    for (const char* name : {"indexed_depth_replay_mesh_forward.shaderpkg", "indexed_depth_replay_mesh_forward_color.shaderpkg"})
+    {
+        R::ShaderPackage package;
+        ASSERT_TRUE(R::LoadShaderPkg((TestPaths::StagedRoot() / "Shaders" / name).string(), R::ShaderSourceKind::SpirV, package))
+            << name;
+        const auto mesh = package.meta.Stages.find("ms");
+        ASSERT_NE(mesh, package.meta.Stages.end()) << name;
+        EXPECT_TRUE(MatchesIndexedOwnerMeshFragmentInputs(fragment, mesh->second)) << name;
+    }
 }
 
 TEST(IndexedDepthReuse, OwnerMaterialRowPreservesDonorConstantsAndRejectsInheritedRowOverrides)
@@ -1149,6 +1271,26 @@ TEST(MaskVertexAlphaDepth, AMaskThatIgnoresVertexColourKeepsItsDepthWhereTheVert
     EXPECT_NEAR(cutOutDepth, kCardDepth, kDepthTolerance)
         << "a material that ignores vertex colour draws its whole card in the colour pass, so the prepass must "
            "write the card's depth where the vertex alpha is 0";
+    device->Shutdown();
+}
+
+TEST(MaskVertexAlphaDepth, ComposedMaskedCardsKeepNearCoverageInTheMipTail)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No graphics device available";
+    auto document = StandardDocument("MipTailMask", MaterialAlphaMode::Mask);
+    document.textures["albedoMap"] = {};
+    float nearCoverage = 0.0f;
+    float farCoverage = 0.0f;
+    ASSERT_NO_FATAL_FAILURE(DrawTheCardOverTheFloor(device.get(), document, nearCoverage, RestoreMode::None,
+                                                   MaskProjection::NearTexture));
+    ASSERT_NO_FATAL_FAILURE(DrawTheCardOverTheFloor(device.get(), document, farCoverage, RestoreMode::None,
+                                                   MaskProjection::MipTailTexture));
+    RecordProperty("NearCoverage", std::to_string(nearCoverage));
+    RecordProperty("MipTailCoverage", std::to_string(farCoverage));
+    EXPECT_NEAR(nearCoverage, 0.25f, 0.07f);
+    EXPECT_NEAR(farCoverage, nearCoverage, 0.09f);
     device->Shutdown();
 }
 
