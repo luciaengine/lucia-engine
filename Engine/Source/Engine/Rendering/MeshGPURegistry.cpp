@@ -600,8 +600,6 @@ static GPUMesh BuildGpuMeshRow(const MeshGPUEntry& entry, LodSelectionMode lodMo
                   "MeshGPUEntry LOD capacity must match GPUMesh LOD capacity");
     GPUMesh row{};
     row.vertexOffset   = entry.vertexOffset;
-    // vertexCount isn't tracked on the entry today; consumers infer via indices.
-    row.vertexCount    = 0;
     row.indexOffset    = entry.firstIndex;
     row.indexCount     = entry.indexCount;
     row.boundingCenter = Vector3(entry.bounds.center.x,

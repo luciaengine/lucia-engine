@@ -154,7 +154,7 @@ static_assert(sizeof(GPUInstance) == 240,
  * materialIndex, flags, lodBias, boundingCenter, boundingRadius, sectorPacked) but strides
  * the full 240 B struct, so consecutive threads' reads land in disjoint cache
  * lines (uncoalesced — the 48% fetch cost in the Scatter.World attribution).
- * This tightly-packed 40 B array lets consecutive threads read consecutive
+ * This tightly-packed 44 B array lets consecutive threads read consecutive
  * bytes → coalesced. It is written alongside GPUInstance in the three instance
  * mutators (Add/Update/Remove) so it stays in exact lockstep with the
  * authoritative buffer; GPUInstance remains the sole source for shading.
@@ -172,27 +172,34 @@ struct GPUInstanceScatterHot
     Vector3 boundingCenter; // 16 (three scalars in GLSL: the struct stays 4 B aligned)
     float boundingRadius;   // 28
     uint32_t sectorPacked[2]; // 32 (the sector boundingCenter is local to)
+    float axisScale;          // 40 (the transform's largest axis scale: a local radius to world)
 };
-static_assert(sizeof(GPUInstanceScatterHot) == 40,
-              "GPUInstanceScatterHot must be 40 bytes to match the shader's std430 layout");
+static_assert(sizeof(GPUInstanceScatterHot) == 44,
+              "GPUInstanceScatterHot must be 44 bytes to match the shader's std430 layout");
 static_assert(offsetof(GPUInstanceScatterHot, boundingCenter) == 16,
               "GPUInstanceScatterHot.boundingCenter offset drift");
 static_assert(offsetof(GPUInstanceScatterHot, boundingRadius) == 28,
               "GPUInstanceScatterHot.boundingRadius offset drift");
 static_assert(offsetof(GPUInstanceScatterHot, sectorPacked) == 32,
               "GPUInstanceScatterHot.sectorPacked offset drift");
+static_assert(offsetof(GPUInstanceScatterHot, axisScale) == 40, "GPUInstanceScatterHot.axisScale offset drift");
 
 /// Extract the scatter-hot fields from a full instance. Kept inline so the
 /// three mutators write the mirror without indirection.
 inline GPUInstanceScatterHot MakeScatterHot(const GPUInstance& instance)
 {
+    const Matrix4x4& transform = instance.transform;
+    const float axisScale = std::max({Vector3(transform[0][0], transform[0][1], transform[0][2]).Length(),
+                                      Vector3(transform[1][0], transform[1][1], transform[1][2]).Length(),
+                                      Vector3(transform[2][0], transform[2][1], transform[2][2]).Length()});
     return GPUInstanceScatterHot{instance.meshIndex,
                                  instance.materialIndex,
                                  instance.flags,
                                  instance.lodBias,
                                  instance.boundingCenter,
                                  instance.boundingRadius,
-                                 {instance.sectorPacked[0], instance.sectorPacked[1]}};
+                                 {instance.sectorPacked[0], instance.sectorPacked[1]},
+                                 axisScale};
 }
 
 /**
@@ -226,7 +233,10 @@ struct GPUMesh
     // the part that draws the card. GPUScene owns these links.
     uint32_t impostorCard;  // 20
     uint32_t vertexOffset;  // 24     (in vertices, NOT bytes)
-    uint32_t vertexCount;   // 28     (total vertex count for this submesh)
+    // Radius of the impostor card's sphere in the mesh's local space (the sphere the atlas was
+    // baked on), set with the link: the scatter measures the card switch on it, times the
+    // instance's largest axis scale. 0 measures the switch on the instance sphere.
+    float impostorRadius;   // 28
     uint32_t indexOffset;   // 32     (LOD0 firstIndex into bound IB pool, in indices)
     uint32_t indexCount;    // 36     (LOD0 index count)
     uint32_t lodCount;      // 40     (1..kMaxMeshLODs)
@@ -270,6 +280,7 @@ inline constexpr uint32_t kGPUMeshImpostorPrimaryBit   = 1u << 31;
 static_assert(offsetof(GPUMesh, impostorCard) == 20, "GPUMesh.impostorCard offset drift");
 static_assert(offsetof(GPUMesh, nextImpostorPart) == 44, "GPUMesh.nextImpostorPart offset drift");
 static_assert(offsetof(GPUMesh, impostorSwitchCoverage) == 48, "GPUMesh.impostorSwitchCoverage offset drift");
+static_assert(offsetof(GPUMesh, impostorRadius) == 28, "GPUMesh.impostorRadius offset drift");
 static_assert(sizeof(GPUMesh) == 128,
               "GPUMesh must be 128 bytes to match draw_command_scatter.comp std430 layout");
 static_assert(offsetof(GPUMesh, lodCoverageScale) == 16, "GPUMesh.lodCoverageScale offset drift");
@@ -372,7 +383,7 @@ inline constexpr float kCullMarginTightCascade = 1.05f;
 struct GPUSceneFrameResources
 {
     BufferHandle instanceBuffer;
-    BufferHandle scatterHotBuffer; // 40 B/instance coalesced mirror (scatter fetch)
+    BufferHandle scatterHotBuffer; // 44 B/instance coalesced mirror (scatter fetch)
     BufferHandle impostorOwnerBuffer; // 4 B/instance: the placement owner of a linked part
     BufferHandle meshBuffer;
     BufferHandle indirectArgsBuffer;
@@ -547,7 +558,7 @@ class GPUScene
      * capacity to its batch. Invalid or conflicting groups leave the existing links in place.
      */
     bool SetMeshImpostorGroup(std::span<const uint32_t> parts, uint32_t cardMaterialIndex,
-                              uint32_t cardMeshIndex, float switchCoverage = 0.0f);
+                              uint32_t cardMeshIndex, float switchCoverage = 0.0f, float cardRadius = 0.0f);
     /// Clear the group that contains this mesh, if any.
     void ClearMeshImpostorGroup(uint32_t meshIndex);
 
@@ -672,7 +683,7 @@ class GPUScene
     struct GPUSceneFrameRG
     {
         RenderGraph::RGBuffer Instances{};
-        // Coalesced 40 B/instance scatter-hot mirror. Invalid when the compact
+        // Coalesced 44 B/instance scatter-hot mirror. Invalid when the compact
         // scatter fetch is disabled (GE_SCATTER_COMPACT=0) — the scatter then
         // binds Instances directly, exactly as before.
         RenderGraph::RGBuffer ScatterHot{};
@@ -753,11 +764,11 @@ class GPUScene
 
     // Cumulative bytes uploaded to the instance buffer FAMILY since creation:
     // the authoritative 240 B GPUInstance buffer plus, when the compact scatter
-    // fetch is enabled, its 40 B/instance scatter-hot mirror (uploaded on the
-    // same dirty-instance runs, so the mirror adds exactly 40/240 of the instance
+    // fetch is enabled, its 44 B/instance scatter-hot mirror (uploaded on the
+    // same dirty-instance runs, so the mirror adds exactly 44/240 of the instance
     // bytes). Monotonic; diff across frames for per-frame upload bandwidth
     // (R1.1 metric). Enabling the mirror re-baselines this metric upward by
-    // 40/240 (see baselines/scatter-fetch-lever1 note).
+    // 44/240 (see baselines/scatter-fetch-lever1 note).
     uint64_t GetInstanceUploadBytesTotal() const
     {
         return m_InstanceUploadBytesTotal.load(std::memory_order_relaxed);
@@ -778,7 +789,7 @@ class GPUScene
 
     // Debug / test accessors: the free-slot reuse pool and the coalesced
     // scatter-hot mirror. Used by the batched-removal state-equivalence tests
-    // to assert the free-list set and the 40 B mirror stay in lockstep with the
+    // to assert the free-list set and the 44 B mirror stay in lockstep with the
     // single-index path.
     const std::vector<uint32_t>& GetFreeInstanceSlots() const { return m_FreeInstanceSlots; }
     const std::vector<GPUInstanceScatterHot>& GetScatterHot() const { return m_ScatterHot; }
