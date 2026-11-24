@@ -36,14 +36,25 @@ using namespace Rendering::RenderGraph;
 constexpr uint64 kUploadRingBytes = 64 * 1024;
 
 #if defined(RENDERING_HAS_VULKAN)
-// Reports a timeline value no higher than HeldValue, so a test decides when a submission is complete.
+// Controls which completion evidence the upload can observe.
 class HeldTimelineDevice final : public VulkanDevice
 {
 public:
     std::optional<uint64_t> HeldValue;
+    SemaphoreHandle UnreadableTimeline;
+    bool HideGraphicsToken = false;
+
+    GpuSyncToken LastSubmissionToken(QueueType queue) const override
+    {
+        if (HideGraphicsToken && queue == QueueType::Graphics)
+            return {};
+        return VulkanDevice::LastSubmissionToken(queue);
+    }
 
     bool GetTimelineSemaphoreValue(SemaphoreHandle semaphore, uint64_t& value) const override
     {
+        if (UnreadableTimeline.IsValid() && UnreadableTimeline == semaphore)
+            return false;
         if (!VulkanDevice::GetTimelineSemaphoreValue(semaphore, value))
             return false;
         if (HeldValue)
@@ -247,6 +258,43 @@ TEST_F(ForestPlacementGpuUploadTest, ACompletedOverviewSubmissionRetiresAnUnknow
 }
 
 #if defined(RENDERING_HAS_VULKAN)
+TEST_F(ForestPlacementGpuUploadTest, ACompletedGraphicsQueueRetiresAnUnreadableUploadFence)
+{
+    const ForestPageTicket ticket = ReadFirstPage();
+    FramePools pools(m_Device.get());
+    RGFrame graph(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    ASSERT_TRUE(m_Device->BeginFrame());
+    graph.BeginFrame(0);
+    ForestPlacementGpuUploads uploader(m_Runtime, m_Slots, 1);
+    const ForestPlacementUpload upload{ticket, kFirstPage};
+    ASSERT_TRUE(uploader.Record(graph, std::span(&upload, 1)));
+    graph.Execute();
+    uploader.FinishFrame(graph);
+    const auto completion = graph.SubmissionToken();
+    ASSERT_TRUE(completion.IsValid());
+    auto& held = static_cast<HeldTimelineDevice&>(*m_Device);
+    held.UnreadableTimeline = completion.sem;
+    const auto graphics = m_Device->LastSubmissionToken(IDevice::QueueType::Graphics);
+    ASSERT_TRUE(graphics.IsValid());
+    ASSERT_NE(graphics.sem, completion.sem);
+    ASSERT_TRUE(m_Device->WaitGpuSyncToken(graphics));
+    const auto drains = m_Device->GetIdleDrainCount();
+
+    held.HeldValue = 0;
+    EXPECT_EQ(uploader.DrainCompleted(*m_Device), 0u);
+    held.HeldValue.reset();
+    held.HideGraphicsToken = true;
+    EXPECT_EQ(uploader.DrainCompleted(*m_Device), 0u) << "an untracked queue cannot certify the copy";
+    held.HideGraphicsToken = false;
+    EXPECT_EQ(uploader.DrainCompleted(*m_Device), 1u);
+    EXPECT_EQ(uploader.DrainCompleted(*m_Device), 0u);
+    EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
+    ForestPlacementFrame plan;
+    ASSERT_TRUE(m_Runtime->Prepare(m_View, 2, 1, plan));
+    ASSERT_EQ(plan.DetailedDraws.size(), 1u);
+    EXPECT_EQ(plan.DetailedDraws.front().Ticket, ticket);
+}
+
 TEST_F(ForestPlacementGpuUploadTest, AnOutstandingCopyBlocksOnlyItsOwnTicket)
 {
     const ForestPageTicket stale = ReadFirstPage();
