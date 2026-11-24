@@ -611,7 +611,7 @@ void DrawStreamInstanceComputeTest::CheckProductionSchedule(bool repeatedMeshes,
         }
         const auto sentinel = builder.ScheduleUnifiedScatter(frame, "InstanceTest", 0, visibility,
             instances, hot, meshes, {}, scene.GetBatchRegistry(), depthClasses, {}, ordered, groups,
-            kCount, static_cast<uint32_t>(scene.GetMeshes().size()));
+            kCount, scene.GetMeshes());
         ASSERT_TRUE(sentinel.IsValid());
         sentinels.push_back(sentinel);
         for (uint32_t material = 0; material < (repeatedMeshes ? 2u : 1u); ++material)

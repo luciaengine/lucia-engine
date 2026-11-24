@@ -129,6 +129,7 @@ struct LodDispatchParams
     // pre-existing expectation in this file is unaffected by it.
     bool renderedHistory = false;
     bool impostorCrossfade = false;
+    std::vector<uint32_t> impostorFadeReady;
     // Impostor stage. 0xFFFFFFFF (the default) selects no card in this dispatch.
     uint32_t impostorCardMesh = 0xFFFFFFFFu;
     float impostorEnterCoverage = 0.0f;
@@ -438,11 +439,14 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         // 10-binding layout is valid; contents matter only when
         // meshGroupMode != 0.
         const uint32_t groupCount = std::max<uint32_t>(
-            static_cast<uint32_t>(meshPoolGroup.size()), 1u);
+            static_cast<uint32_t>(std::max(meshPoolGroup.size(), lod.impostorFadeReady.size())), 1u);
         BufferHandle poolGroup = MakeStorageBuffer(groupCount * sizeof(uint32_t),
                                                    "Test.MeshPoolGroup");
         std::vector<uint32_t> groupData = meshPoolGroup;
-        groupData.resize(groupCount, 0u);
+        groupData.resize(groupCount, GPUDrawStreamBuilder::kAbsentPoolGroup);
+        for (size_t mesh = 0; mesh < lod.impostorFadeReady.size(); ++mesh)
+            if (lod.impostorFadeReady[mesh])
+                groupData[mesh] |= GPUDrawStreamBuilder::kImpostorFadeReadyBit;
         WriteBuffer(poolGroup, groupData.data(), groupCount * sizeof(uint32_t));
 
         if (cull)
@@ -533,6 +537,8 @@ class BatchScatterComputeTest : public ::testing::TestWithParam<ScatterVariant>
         pc.classMode       = classMode;
         pc.statsBase       = 0u; // single-slice dispatch → row 0
         pc.meshGroupMode   = meshGroupMode;
+        if (!lod.impostorFadeReady.empty())
+            pc.meshGroupMode |= GPUDrawStreamBuilder::kCheckImpostorFadeReady;
         pc.projScaleY      = lod.projScaleY;
         pc.cameraPosX      = lod.cameraPos[0];
         pc.cameraPosY      = lod.cameraPos[1];
@@ -4689,7 +4695,7 @@ TEST_P(BatchScatterComputeTest, ImpostorCrossfadeDithersAllMeshPartsAgainstOneCa
     SeedLodFade({NoHistoryFadeState(), NoHistoryFadeState()});
     SeedRenderedHistory({GPUDrawStreamBuilder::kLodNoHistory, GPUDrawStreamBuilder::kLodNoHistory});
 
-    const auto dispatch = [&](float distance, float seconds)
+    const auto dispatch = [&](float distance, float seconds, bool ready = true)
     {
         auto lod = ImpostorLod(distance, cardMesh, true);
         lod.crossfadeDuration = kFadeDuration;
@@ -4698,6 +4704,8 @@ TEST_P(BatchScatterComputeTest, ImpostorCrossfadeDithersAllMeshPartsAgainstOneCa
         lod.tailRecordBase = total;
         lod.renderedHistory = true;
         lod.impostorCrossfade = true;
+        lod.impostorFadeReady.resize(cardMesh + 1u);
+        lod.impostorFadeReady[barkMesh] = ready;
         return Dispatch(table, total, 0u, 0u, 2u * rows, 3u * total, 0u, {}, 0xFFFFFFFFu, {}, 0u, lod);
     };
 
@@ -4708,6 +4716,14 @@ TEST_P(BatchScatterComputeTest, ImpostorCrossfadeDithersAllMeshPartsAgainstOneCa
     EXPECT_EQ(InstancesInRows(table, near.cursors, near.records, near.indirection, leafMesh,
                               kImpostorSecondaryIndices), std::multiset<uint32_t>{leaves});
     SeedRenderedHistory(near.renderedCurrent);
+    const auto cold = dispatch(kImpostorFarDist, kStartSeconds + 0.5f * kFadeDuration, false);
+    EXPECT_EQ(InstancesInRows(table, cold.cursors, cold.records, cold.indirection, barkMesh, kImpostorPrimaryIndices),
+              std::multiset<uint32_t>{bark});
+    EXPECT_EQ(InstancesInRows(table, cold.cursors, cold.records, cold.indirection, leafMesh, kImpostorSecondaryIndices),
+              std::multiset<uint32_t>{leaves});
+    EXPECT_EQ(cold.renderedCurrent[bark], MakeRenderedEntry(0u, false, true));
+    EXPECT_EQ(cold.renderedCurrent[leaves], MakeRenderedEntry(0u, false, true));
+    SeedRenderedHistory(cold.renderedCurrent);
     const auto startFade = dispatch(kImpostorFarDist, kStartSeconds + kFadeDuration);
     SeedRenderedHistory(startFade.renderedCurrent);
     const auto quarter = dispatch(kImpostorFarDist, kStartSeconds + 1.25f * kFadeDuration);
@@ -4746,6 +4762,12 @@ TEST_P(BatchScatterComputeTest, ImpostorCrossfadeDithersAllMeshPartsAgainstOneCa
                                 kImpostorPrimaryIndices).empty());
     EXPECT_TRUE(InstancesInRows(table, settled.cursors, settled.records, settled.indirection, leafMesh,
                                 kImpostorSecondaryIndices).empty());
+    SeedRenderedHistory(settled.renderedCurrent);
+    const auto coldReturn = dispatch(kImpostorNearDist, kStartSeconds + 4.0f * kFadeDuration, false);
+    EXPECT_EQ(InstancesInRows(table, coldReturn.cursors, coldReturn.records, coldReturn.indirection, cardMesh,
+                              kImpostorCardIndices), std::multiset<uint32_t>{bark});
+    for (uint32_t row = 0; row < rows; ++row)
+        EXPECT_EQ(coldReturn.cursors[rows + row], 0u);
 }
 
 // A placement switches as one: every part follows the owner that the impostor system names. A part

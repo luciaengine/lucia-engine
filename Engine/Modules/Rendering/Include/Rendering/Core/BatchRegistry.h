@@ -107,6 +107,9 @@ class BatchRegistry
     /// prefix-summing, and split each batch into even/odd sibling rows.
     const std::unordered_map<uint64_t, ParityCounts>& Counts() const { return m_Counts; }
 
+    /// The synthetic card batch key for each linked primary mesh.
+    const FlatMap<uint32_t, uint64_t>& CardRows() const { return m_CardRows; }
+
     size_t BatchCount() const { return m_Counts.size(); }
 
     /// Links the mesh to an impostor card row: each instance of the mesh also counts in the row

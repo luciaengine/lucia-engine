@@ -1432,6 +1432,8 @@ bool GPUDrawStreamBuilder::EnsureArenaBuffers()
 void GPUDrawStreamBuilder::BeginArenaFrame()
 {
     ++m_ArenaFrameStamp;
+    m_ImpostorTailPasses.Clear();
+    m_ImpostorPrepassSlices.Clear();
 
     for (auto it = m_RetiredBuffers.begin(); it != m_RetiredBuffers.end();)
     {
@@ -1523,6 +1525,26 @@ void GPUDrawStreamBuilder::BeginArenaFrame()
     m_RangeInsertsBeforeEnd = 0;
     m_SliceStatsBindings.clear();
     m_UnobservableTailSlices = 0;
+}
+
+void GPUDrawStreamBuilder::ReportImpostorTail(size_t countOffset, FadePass pass, bool prepared)
+{
+    if (auto* status = m_ImpostorTailPasses.Find(countOffset))
+    {
+        if (prepared)
+        {
+            ++status->Prepared;
+            status->Passes |= static_cast<uint8_t>(pass);
+        }
+        else
+            ++status->Requested;
+    }
+}
+
+void GPUDrawStreamBuilder::RequireImpostorPrepass(uint32_t view, SlicePhase phase)
+{
+    if (!m_ImpostorTailPasses.Empty())
+        m_ImpostorPrepassSlices.Insert(MakeStreamKey(view, kCascadeIndexNone, 0, 0, phase));
 }
 
 void GPUDrawStreamBuilder::RegisterSlice(const SliceRegistration& slice)
@@ -1725,6 +1747,21 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         uint32_t CompactRegionCount = 0;
     };
 
+    struct FadeGroup
+    {
+        uint32_t OwnerMesh;
+        std::vector<size_t> TailOffsets;
+    };
+    struct FadeReadiness
+    {
+        RenderGraph::RGUploadRing::Alloc Upload{};
+        size_t Bytes = 0;
+        std::vector<FadeGroup> Groups;
+    };
+    std::vector<FadeReadiness> FadeViews;
+    const GPUDrawStreamBuilder* Builder = nullptr;
+    bool* ImpostorPipelinePending = nullptr;
+
     std::vector<SliceRegistration> Slices{};
     PipelineHandle Pipeline{};
     PipelineHandle CompactPipeline{};
@@ -1865,7 +1902,10 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         // meshPoolGroup (draw consolidation). Bound on every dispatch so
         // the 10th layout binding is always valid; read only when
         // meshGroupMode != 0.
-        writes[9] = StorageBufferWrite(9, TableRing, GroupBindOffset, GroupBindBytes);
+        const auto& readiness = FadeViews[sliceIndex];
+        writes[9] = readiness.Upload.Valid()
+            ? StorageBufferWrite(9, readiness.Upload.Buffer, readiness.Upload.Offset, readiness.Bytes)
+            : StorageBufferWrite(9, TableRing, GroupBindOffset, GroupBindBytes);
         WriteHistory(writes, sliceIndex);
         // Placement owners; the stand-in is never read because the stage is off without them.
         writes[14] = OwnersBound ? StorageBufferWrite(14, ownerBuffer, 0, static_cast<size_t>(InstanceCount) * sizeof(uint32_t))
@@ -1960,6 +2000,8 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         pushConstants.renderedHistoryEnabled = historyBound ? 1u : 0u;
         // The stage reads the placement owners; without them every linked part keeps its mesh.
         pushConstants.impostorCardMesh = OwnersBound ? slice.lod.impostorCardMesh : 0xFFFFFFFFu;
+        if (FadeViews[sliceIndex].Upload.Valid())
+            pushConstants.meshGroupMode |= kCheckImpostorFadeReady;
         pushConstants.impostorEnterCoverage = slice.lod.impostorSwitchCoverage;
         // The hysteresis band reads the owner's rendered history: without it the switch is stateless.
         pushConstants.impostorExitCoverage =
@@ -2139,6 +2181,150 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         }
     }
 
+    void InitFadeViews(RenderGraph::RGFrame& frame, GPUDrawStreamBuilder& builder,
+                       std::span<const GPUMesh> meshes, const BatchRegistry& registry,
+                       std::span<const uint32_t> colorClasses, std::span<const uint32_t> orderedMeshes,
+                       std::span<const uint32_t> groups, size_t alignment, bool crossfades)
+    {
+        FadeViews.resize(Slices.size());
+        if (!crossfades || registry.CardRows().Empty())
+            return;
+        struct SourceRow
+        {
+            uint32_t Class;
+            uint32_t Mesh;
+            BatchRegistry::ParityCounts Counts;
+        };
+        struct Model
+        {
+            uint32_t Owner;
+            uint32_t CardMaterial;
+            std::vector<SourceRow> Parts;
+        };
+        std::vector<Model> models;
+        FlatMap<uint32_t, size_t> modelOfMesh;
+        models.reserve(registry.CardRows().Size());
+        for (const auto& [mesh, cardKey] : registry.CardRows())
+        {
+            // GPUScene::SetMeshImpostorGroup validates distinct live indices before linking
+            // the closed ring. UpdateMesh preserves it and RemoveMesh clears the entire group.
+            if (mesh >= meshes.size() || !(meshes[mesh].impostorCard & kGPUMeshImpostorPrimaryBit))
+                continue;
+            uint32_t part = mesh;
+            while (part < meshes.size() && !modelOfMesh.Contains(part))
+            {
+                modelOfMesh.InsertOrAssign(part, models.size());
+                part = meshes[part].nextImpostorPart;
+            }
+            assert(part == mesh && "the registered model must form a closed ring");
+            models.push_back({mesh, BatchRegistry::MaterialIndexFromKey(cardKey), {}});
+        }
+        // Resolve the same class and pool-group keys as the submitted raster range. A
+        // representative of a merged range can have a different material or mesh index.
+        auto sourceRow = [&](uint32_t material, uint32_t mesh, BatchRegistry::ParityCounts counts) {
+            const uint32_t klass = material < colorClasses.size() ? colorClasses[material] : material;
+            if (!orderedMeshes.empty())
+            {
+                const uint32_t rank = mesh < orderedMeshes.size() ? orderedMeshes[mesh] : kAbsentPoolGroup;
+                mesh = rank < groups.size() ? groups[rank] : kAbsentPoolGroup;
+            }
+            return SourceRow{klass, mesh, counts};
+        };
+        for (const auto& [key, counts] : registry.Counts())
+        {
+            const uint32_t mesh = BatchRegistry::MeshIndexFromKey(key);
+            if (const auto* model = modelOfMesh.Find(mesh))
+                models[*model].Parts.push_back(sourceRow(BatchRegistry::MaterialIndexFromKey(key), mesh, counts));
+        }
+        for (size_t i = 0; i < Slices.size(); ++i)
+        {
+            const auto& slice = Slices[i];
+            if (SliceTailIndex[i] == kNoTailBlock || slice.lod.impostorCardMesh == 0xFFFFFFFFu)
+                continue;
+            auto& view = FadeViews[i];
+            view.Bytes = meshes.size() * sizeof(uint32_t);
+            view.Upload = frame.AllocUpload(view.Bytes, alignment);
+            if (!view.Upload.Valid())
+            {
+                Slices[i].lod.impostorCardMesh = 0xFFFFFFFFu;
+                continue;
+            }
+            auto* ranks = static_cast<uint32_t*>(view.Upload.Ptr);
+            std::fill_n(ranks, meshes.size(), kAbsentPoolGroup);
+            std::copy_n(orderedMeshes.begin(), std::min(meshes.size(), orderedMeshes.size()), ranks);
+            std::vector<size_t> requestedOffsets;
+            for (const Model& model : models)
+            {
+                if (model.Parts.empty())
+                    continue;
+                auto& group = view.Groups.emplace_back(FadeGroup{model.Owner, {}});
+                auto requireRow = [&](const SourceRow& row) {
+                    const auto range = builder.FindBatchDrawRange(slice.viewId, slice.cascadeIndex, row.Class, row.Mesh, slice.phase);
+                    auto require = [&](const BatchDrawSegment& segment) {
+                        group.TailOffsets.push_back(segment.IsPresent() ? segment.countByteOffset : SIZE_MAX);
+                        if (segment.IsPresent())
+                            requestedOffsets.push_back(segment.countByteOffset);
+                    };
+                    if (row.Counts.Even)
+                        require(range.evenTail);
+                    if (row.Counts.Odd)
+                        require(range.mirroredTail);
+                };
+                for (const auto& row : model.Parts)
+                    requireRow(row);
+                const auto card = registry.Counts().find(BatchRegistry::MakeKey(model.CardMaterial, slice.lod.impostorCardMesh));
+                if (card != registry.Counts().end())
+                    requireRow(sourceRow(model.CardMaterial, slice.lod.impostorCardMesh, card->second));
+                else
+                    group.TailOffsets.push_back(SIZE_MAX);
+            }
+            // Each slice appends a fresh arena range. Insert its keys in order so the flat
+            // pass table never shifts earlier groups' entries as a forest grows.
+            std::ranges::sort(requestedOffsets);
+            for (const size_t offset : requestedOffsets)
+                builder.m_ImpostorTailPasses.GetOrInsert(offset);
+        }
+    }
+
+    // All scheduled passes finish preparation before the graph records its first dispatch.
+    // A missing range, an unprepared binding or a head fallback leaves its tail unacknowledged.
+    void PublishFadeReadiness() const
+    {
+        bool pending = false;
+        for (size_t i = 0; i < FadeViews.size(); ++i)
+        {
+            const auto& view = FadeViews[i];
+            if (!view.Upload.Valid())
+                continue;
+            auto* ready = static_cast<uint32_t*>(view.Upload.Ptr);
+            uint8_t required = static_cast<uint8_t>(FadePass::Color);
+            if (Builder->m_ImpostorPrepassSlices.Contains(SliceStreamKey(Slices[i])))
+                required |= static_cast<uint8_t>(FadePass::Depth);
+            for (const FadeGroup& group : view.Groups)
+            {
+                bool complete = !group.TailOffsets.empty();
+                bool participates = false;
+                for (const size_t offset : group.TailOffsets)
+                {
+                    const auto* status = Builder->m_ImpostorTailPasses.Find(offset);
+                    if (!status)
+                        complete = false;
+                    else
+                    {
+                        participates |= status->Requested != 0u;
+                        complete &= status->Prepared == status->Requested && (status->Passes & required) == required;
+                    }
+                }
+                if (complete)
+                    ready[group.OwnerMesh] |= kImpostorFadeReadyBit;
+                pending |= participates && !complete;
+            }
+        }
+        if (pending != *ImpostorPipelinePending && IdleElisionLoggingEnabled())
+            Logger::Log::Info("[IdleElision] Impostor fade pipelines {}", pending ? "pending" : "ready");
+        *ImpostorPipelinePending = pending;
+    }
+
     void RecordScatter(RenderGraph::RGContext& context) const
     {
         context.Cmd->SetPipeline(Pipeline);
@@ -2270,6 +2456,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
+        PublishFadeReadiness();
         RecordScatter(context);
         CommitRenderedHistory();
         RecordInstanceCompaction(context);
@@ -2286,8 +2473,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     const BatchRegistry& registry,
     std::span<const uint8_t> materialDepthClass, std::span<const uint32_t> materialColorClass,
     std::span<const uint32_t> meshPoolOrdered, std::span<const uint32_t> orderedToGroup,
-    uint32_t instanceCount, uint32_t meshTableCount)
+    uint32_t instanceCount, std::span<const GPUMesh> sceneMeshes)
 {
+    const auto meshTableCount = static_cast<uint32_t>(sceneMeshes.size());
     std::vector<SliceRegistration> slices = std::move(m_FrameSlices);
     m_FrameSlices.clear();
 
@@ -2682,9 +2870,12 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         b.Append(static_cast<uint32_t>(orderedToGroup.size()));
         b.AppendBytes(orderedToGroup.data(), orderedToGroup.size() * sizeof(uint32_t));
     }
+    // The caller permits crossfade elision only after observing an empty tail. An elided
+    // frame reuses opaque heads, even if a new format is still building. Recheck a held
+    // crossing every frame until its actual raster passes release it.
     const RecomputeElisionGate::Decision elide =
         elisionGate.Gate.Evaluate(m_ArenaFrameStamp, std::move(elisionInputs),
-                                  m_ElisionCtx.AllowElision, kElisionSettleFrames);
+                                  m_ElisionCtx.AllowElision && !elisionGate.ImpostorPipelinePending, kElisionSettleFrames);
     // Settle/unsettle edges are the same opt-in instrument as the window below.
     if (IdleElisionLoggingEnabled() && elide.Skip != elisionGate.LogState)
     {
@@ -3175,6 +3366,11 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     pass->OwnersBound = impostorOwners.IsValid();
     pass->ClearRecordRange = !m_Device->GetCapabilities().supportsDrawIndirectCountNative;
     pass->PreparedSlices.resize(pass->Slices.size());
+
+    pass->Builder = this;
+    pass->ImpostorPipelinePending = &elisionGate.ImpostorPipelinePending;
+    pass->InitFadeViews(frame, *this, sceneMeshes, registry, materialColorClass, meshPoolOrdered,
+                        orderedToGroup, align, impostorCrossfade);
 
     frame.AddPass(
         passName, rgPassPhase,

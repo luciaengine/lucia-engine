@@ -169,7 +169,8 @@ layout(set = 0, binding = 8, std430) restrict readonly buffer MaterialColorClass
 // schedule call alongside the tables so the (map, table) pair always comes
 // from ONE snapshot -- the materialColorClass per-call precedent; the ranks
 // have no cross-frame stability and need none. Read only when
-// meshGroupMode != 0; bound (valid) on every dispatch regardless.
+// meshGroupMode bit 0 is set. With bit 1, a view-local copy also carries the
+// group's fade readiness in bit 31 of its primary mesh's word.
 layout(set = 0, binding = 9, std430) restrict readonly buffer MeshPoolGroupBuffer {
     uint meshPoolGroup[];
 };
@@ -287,7 +288,7 @@ layout(push_constant) uniform PushConstants {
     // Arena-absolute row this slice attributes its per-slice stats to (mirrors
     // cursorBase/recordBase). P0 shadow-arc instrumentation only.
     uint  statsBase;
-    // Draw consolidation: != 0 routes the batch search's MESH axis through
+    // Draw consolidation: bit 0 routes the batch search's MESH axis through
     // meshPoolGroup[] (per-mesh ORDERED ranks — rows stay per-mesh, but one
     // pool group's rows are contiguous so the group-compact pass can merge
     // them into one mesh-major draw region downstream).
@@ -381,6 +382,8 @@ vec3 ge_InstanceCenterRelativeToOrigin(uint instanceIndex)
 
 // GPUMesh.impostorCard layout -- MUST match GPUScene.h kGPUMeshImpostor*.
 const uint kImpostorMaterialMask = 0xFFFFFFu;
+const uint kCheckImpostorFadeReady = 2u;
+const uint kImpostorFadeReadyBit = 1u << 31;
 const uint kImpostorPrimaryBit   = 0x80000000u;
 // prevLod value of an instance that drew its card. It is above every level count, so the mesh
 // LOD pick reads it as "no usable history".
@@ -677,8 +680,8 @@ uint ge_FindRepresentationBatch(uint meshIndex, uint materialIndex, uint flags)
     uint parity = pc.classMode == kClassModeShadow ? ge_ShadowParityBit(flags)
                   : (((flags & kMirroredBit) != 0u) ? kMeshParityBit : 0u);
     uint searchMesh = meshIndex;
-    if (pc.meshGroupMode != 0u)
-        searchMesh = meshIndex < meshPoolGroup.length() ? meshPoolGroup[meshIndex] : kAbsentPoolGroup;
+    if ((pc.meshGroupMode & 1u) != 0u)
+        searchMesh = meshIndex < meshPoolGroup.length() ? (meshPoolGroup[meshIndex] & 0xFFFFFFu) : kAbsentPoolGroup;
     return ge_FindBatch(searchMaterial, searchMesh | parity, pc.batchCount);
 }
 
@@ -773,10 +776,19 @@ void main() {
     uint impostorCard = meshes[meshIndex].impostorCard;
     uint owner = (impostorCard != 0u && ge_ImpostorStageActive()) ? impostorOwner[instanceIndex] : kNoImpostorOwner;
     bool linked = owner != kNoImpostorOwner && ge_ImpostorOwnerValid(owner, instanceIndex, impostorCard);
-    bool drawCard = linked && ge_SelectImpostor(owner, instances[owner].meshIndex, owner);
+    bool fadeReady = linked && ((pc.meshGroupMode & kCheckImpostorFadeReady) == 0u ||
+        (meshPoolGroup[instances[owner].meshIndex] & kImpostorFadeReadyBit) != 0u);
+    bool drawCard = false;
+    if (fadeReady)
+        drawCard = ge_SelectImpostor(owner, instances[owner].meshIndex, owner);
+    else if (linked && pc.renderedHistoryEnabled != 0u) {
+        // Keep the last target opaque while its pair is cold. A first observation holds the mesh.
+        uint previous = prevRendered[owner];
+        drawCard = previous != kLodNoHistory && (previous & kRenderedHistoryLevelMask) == kImpostorRenderedLevel;
+    }
     bool isPrimary = (impostorCard & kImpostorPrimaryBit) != 0u;
     uint impostorStamp = 0u;
-    uint impostorWeight = linked && instanceIndex <= kLodFadeIndexMask
+    uint impostorWeight = fadeReady && instanceIndex <= kLodFadeIndexMask
         ? ge_ImpostorFadeWeight(owner, drawCard, impostorStamp) : 0u;
     if (drawCard && !isPrimary && impostorWeight == 0u) {
         if (pc.crossfadeTailActive != 0u)

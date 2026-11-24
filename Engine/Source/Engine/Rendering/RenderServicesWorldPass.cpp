@@ -1718,11 +1718,15 @@ class RenderServices::WorldPassPreparation
         const size_t commandOffset = segment.cmdByteOffset;
         const size_t countOffset = segment.countByteOffset;
         const uint32_t maxDrawCount = segment.maxDrawCount;
+        if (crossfading)
+            m_Services.m_DrawStreamBuilder->ReportImpostorTail(countOffset, Rendering::GPUDrawStreamBuilder::FadePass::Color, false);
         const Rendering::MaterialKeyword segmentKeywords =
             crossfading ? (batch.Keywords | Rendering::MaterialKeyword::LodCrossfade)
                         : batch.Keywords;
         auto variant = m_Services.m_MaterialSystem.Variants().PrepareColorVariant(
             *batch.Material, batch.VertexFlags, batch.Mesh->topology, segmentKeywords, winding, m_Context);
+        const bool exactTail = crossfading && variant.Pipeline.IsValid() && variant.Unit &&
+                               variant.Unit->MaterialVersion == batch.Material->GetVersion();
         // A cold fade variant uses the head variant to preserve mesh coverage.
         if (!variant.Pipeline.IsValid() && crossfading)
         {
@@ -1765,6 +1769,8 @@ class RenderServices::WorldPassPreparation
         command.IndirectStride = 5u * sizeof(uint32_t);
         command.IndirectCommandOffset = commandOffset;
         command.IndirectCountOffset = countOffset;
+        if (exactTail)
+            m_Services.m_DrawStreamBuilder->ReportImpostorTail(countOffset, Rendering::GPUDrawStreamBuilder::FadePass::Color, true);
         PreparedForwardDraw prepared{nullptr, preparedBindings, batch.Geometry, {}, {}, batch.Material->GetGpuSceneMaterialIndex()};
         prepared.Geometry.indexType = batch.Mesh->indexType;
         if (variantEntry)
