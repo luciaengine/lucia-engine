@@ -531,8 +531,17 @@ vec3 GE_AccumulateClusteredLighting(
         vec3 dirCol = Light.uLightColorWorld.rgb;
         float dirAtten = 1.0;
         vec3 dirTint = vec3(1.0); // glass transmittance between the light and this surface
+#if defined(GE_FORWARD_EARLY_ALPHA_TEST) && !defined(GE_DIFFUSE_TRANSMISSION_ENABLED) \
+    && !defined(GE_USER_PARTICLE_LIT) && !defined(GE_USER_CUSTOM_LIGHTING)
+        const bool reflectsPrimary = dot(so.normalWS, dirL) > 0.0;
+#endif
 #ifdef HAS_SHADOWS
-        if (Light.uLightColorWorld.w > 0.5) // castsShadows packed in .w
+        bool sampleShadow = Light.uLightColorWorld.w > 0.5;
+  #if defined(GE_FORWARD_EARLY_ALPHA_TEST) && !defined(GE_DIFFUSE_TRANSMISSION_ENABLED) \
+      && !defined(GE_USER_PARTICLE_LIT) && !defined(GE_USER_CUSTOM_LIGHTING)
+        sampleShadow = sampleShadow && (reflectsPrimary || GE_ShadowDebugMode() != 0);
+  #endif
+        if (sampleShadow)
         {
             // Directional cascade shadow projects the render-origin-relative
             // position through the rebased ge_shadowVP (Earth-scale precision).
@@ -549,7 +558,16 @@ vec3 GE_AccumulateClusteredLighting(
         // turns the sun off through its colour.
         if (dirI * max(dirCol.r, max(dirCol.g, dirCol.b)) > 0.0)
         {
+#if defined(GE_FORWARD_EARLY_ALPHA_TEST) && !defined(GE_DIFFUSE_TRANSMISSION_ENABLED) \
+    && !defined(GE_USER_PARTICLE_LIT) && !defined(GE_USER_CUSTOM_LIGHTING)
+            // Reflection contributes only where both the normal and the shadow admit the light.
+            // Accumulate subsurface transmission independently of this test.
+            vec3 brdf = vec3(0.0);
+            if (reflectsPrimary && dirAtten != 0.0)
+                brdf = GE_EvaluateDirectionalSurfaceLight(so, V, dirL);
+#else
             vec3 brdf = GE_EvaluateDirectionalSurfaceLight(so, V, dirL);
+#endif
             // The front-lit BRDF is shadowed AND glass-tinted; subsurface transmission is NOT
             // shadowed (light through a thin object must survive the object's own back-shadow)
             // — added outside dirAtten/dirTint.
