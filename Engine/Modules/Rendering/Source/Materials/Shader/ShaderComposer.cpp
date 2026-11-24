@@ -410,7 +410,8 @@ static std::string DescribeSearchedShaderRoots(const std::filesystem::path& mate
 // already-read surface source (Compose reads it once) so the tag scan, the
 // texture-slot resolution, and the user-keyword emission all share one read.
 static void MergeSurfaceShaderVariantDefines(std::vector<std::string>& defines,
-                                             const MaterialDocument& doc,
+                                             const std::string& surfaceShader,
+                                             const std::vector<std::string>& keywords,
                                              const std::string& surfaceSource,
                                              const std::filesystem::path& materialDir)
 {
@@ -427,7 +428,7 @@ static void MergeSurfaceShaderVariantDefines(std::vector<std::string>& defines,
     if (IsGraphLivePreviewMaterialDirectory(materialDir))
         addDefine("HAS_TANGENT");
 
-    if (doc.surfaceShader.find("terrain_grass_surface.glsl") != std::string::npos)
+    if (surfaceShader.find("terrain_grass_surface.glsl") != std::string::npos)
         addDefine("GE_TWO_SIDED_KEEP_NORMAL");
 
     if (ShaderGraph::IsShaderGraphSource(surfaceSource))
@@ -443,7 +444,7 @@ static void MergeSurfaceShaderVariantDefines(std::vector<std::string>& defines,
     // textual injection, so re-sanitize at this boundary — an unsanitized name
     // is a shader-injection footgun, and GE_USER_ namespacing keeps a user
     // keyword from ever clobbering an engine define.
-    for (const std::string& kw : doc.keywords)
+    for (const std::string& kw : keywords)
     {
         if (const auto sanitized = SanitizeUserKeyword(kw))
             addDefine("GE_USER_" + *sanitized);
@@ -454,7 +455,7 @@ static void MergeSurfaceShaderVariantDefines(std::vector<std::string>& defines,
     // surface never reads is legal but almost always a typo, and it is otherwise
     // completely silent.
     for (const std::string& line :
-         ShaderComposer::DiagnoseUnreadKeywords(surfaceSource, doc.keywords, doc.surfaceShader))
+         ShaderComposer::DiagnoseUnreadKeywords(surfaceSource, keywords, surfaceShader))
         Logger::Log::Warning("{}", line);
 }
 
@@ -763,6 +764,19 @@ std::string ShaderComposer::ShaderRootRelative(const std::filesystem::path& path
     return path.lexically_normal().filename().generic_string();
 }
 
+// Only identity inputs reconstructed by ShaderCompilationCache reach source composition.
+// The material name is carried for diagnostics. Render state and authored uniform values
+// cannot select an adapter branch here without changing this boundary.
+struct ShaderComposer::SourceInputs
+{
+    const std::string& name;
+    const std::string& surfaceShader;
+    const std::string& vertexModifier;
+    const std::string& lightingModel;
+    const std::vector<std::string>& keywords;
+    bool customVertexShader;
+};
+
 ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
                                               const ShaderVariantKey& key,
                                               const std::filesystem::path& materialDir,
@@ -770,9 +784,27 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
                                               std::vector<std::string>* outErrors,
                                               const ShaderCompileTarget& target)
 {
+    const SourceInputs source{
+        .name = doc.materialName,
+        .surfaceShader = doc.surfaceShader,
+        .vertexModifier = doc.vertexModifier,
+        .lightingModel = doc.lightingModel,
+        .keywords = doc.keywords,
+        .customVertexShader = doc.customVertexShader,
+    };
+    return ComposeSources(source, key, materialDir, context, outErrors, target);
+}
+
+ComposedShaderSource ShaderComposer::ComposeSources(const SourceInputs& source,
+                                                     const ShaderVariantKey& key,
+                                                     const std::filesystem::path& materialDir,
+                                                     const MaterialBuildContext& context,
+                                                     std::vector<std::string>* outErrors,
+                                                     const ShaderCompileTarget& target)
+{
     const std::filesystem::path& adapterShaderDir = context.AdapterShaderDir;
     ComposedShaderSource result{};
-    result.defines = GenerateDefines(key, doc.lightingModel.empty() ? "Unlit" : doc.lightingModel, target);
+    result.defines = GenerateDefines(key, source.lightingModel.empty() ? "Unlit" : source.lightingModel, target);
 
     auto addError = [&](const std::string& msg)
     {
@@ -783,9 +815,9 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
     // Resolve + read the surface source ONCE and derive everything
     // source-dependent from it: the surface/graph variant defines, the
     // named-texture-slot map, and the include literal substituted below.
-    const bool surfaceAuthored = !doc.surfaceShader.empty();
+    const bool surfaceAuthored = !source.surfaceShader.empty();
     const std::filesystem::path resolvedSurfacePath =
-        ResolveSurfaceShaderPath(doc.surfaceShader, materialDir, context);
+        ResolveSurfaceShaderPath(source.surfaceShader, materialDir, context);
     std::string surfaceSource;
     const bool haveSurface = ShaderSourceCache::Get().ReadText(resolvedSurfacePath, surfaceSource);
 
@@ -797,24 +829,24 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
     // that author no surface at all.
     if (surfaceAuthored && !haveSurface)
     {
-        const std::string materialName = doc.materialName.empty() ? "<unnamed>" : doc.materialName;
+        const std::string materialName = source.name.empty() ? "<unnamed>" : source.name;
         const std::string searched = DescribeSearchedShaderRoots(materialDir, context);
         addError("ShaderComposer: material '" + materialName + "': authored surfaceShader '" +
-                 doc.surfaceShader + "' did not resolve to a readable file. Searched " + searched +
+                 source.surfaceShader + "' did not resolve to a readable file. Searched " + searched +
                  ". Compose FAILED — an authored surface never falls back to the default surface.");
         Logger::Log::Error(
             "ShaderComposer: material '{}': authored surfaceShader '{}' UNRESOLVED — searched {}. "
             "Compose FAILED; fix the surface path/staging (no silent default-surface fallback).",
-            materialName, doc.surfaceShader, searched);
+            materialName, source.surfaceShader, searched);
         return result; // invalid (no sources) — the build fails loudly
     }
     if (surfaceAuthored)
     {
-        Logger::Log::Debug("ShaderComposer: surface '{}' -> '{}'", doc.surfaceShader,
+        Logger::Log::Debug("ShaderComposer: surface '{}' -> '{}'", source.surfaceShader,
                            resolvedSurfacePath.generic_string());
     }
     if (haveSurface)
-        MergeSurfaceShaderVariantDefines(result.defines, doc, surfaceSource, materialDir);
+        MergeSurfaceShaderVariantDefines(result.defines, source.surfaceShader, source.keywords, surfaceSource, materialDir);
 
     // Either modifier form deforms vertices. The vertex adapter guards the InstanceData
     // clock fields on this one define, so a variant without a modifier composes exactly
@@ -848,8 +880,8 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         const TextureSlotResolution slots = ResolveTextureSlots(surfaceSource);
         if (slots.Rejected)
         {
-            addError("ShaderComposer: surface '" + doc.surfaceShader + "': " + slots.RejectReason);
-            Logger::Log::Error("ShaderComposer: surface '{}' REJECTED: {}", doc.surfaceShader,
+            addError("ShaderComposer: surface '" + source.surfaceShader + "': " + slots.RejectReason);
+            Logger::Log::Error("ShaderComposer: surface '{}' REJECTED: {}", source.surfaceShader,
                                slots.RejectReason);
             return result; // invalid (no sources) — the build fails loudly
         }
@@ -878,7 +910,7 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
     // literal below is spelled against these, so composition is reproducible on
     // any machine that has the same content.
     const std::vector<std::filesystem::path> includeRoots = BuildMaterialIncludeRoots(
-        context, ShaderLocalDirectory(doc.surfaceShader, doc.vertexModifier, materialDir));
+        context, ShaderLocalDirectory(source.surfaceShader, source.vertexModifier, materialDir));
 
     // Read adapter vertex source.
     std::string vsSrc;
@@ -907,8 +939,8 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
     // compose failure carrying file:line, so it reaches the Shader Errors panel
     // and the inspector's diagnostics; the material keeps its last good shader.
     const std::filesystem::path vertexModifierPath =
-        doc.vertexModifier.empty() ? std::filesystem::path{}
-                                   : ResolveShaderReference(doc.vertexModifier, materialDir, context);
+        source.vertexModifier.empty() ? std::filesystem::path{}
+                                   : ResolveShaderReference(source.vertexModifier, materialDir, context);
     std::shared_ptr<const ShaderPropertyTable> declared = ShaderPropertyTableCache::Instance().Resolve(
         ShaderPropertyTableInputs{fsPath, haveSurface ? resolvedSurfacePath : std::filesystem::path{},
                                   vertexModifierPath});
@@ -918,7 +950,7 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
                                         declarationErrors);
     if (!declarationErrors.empty())
     {
-        std::string message = "ShaderComposer: surface '" + doc.surfaceShader + "' has " +
+        std::string message = "ShaderComposer: surface '" + source.surfaceShader + "' has " +
                               std::to_string(declarationErrors.size()) + " property declaration error(s):";
         for (const ShaderPropertyDiagnostic& e : declarationErrors)
             message += "\n" + e.Format("error");
@@ -972,7 +1004,7 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
     const auto stockMaskSurface = adapterShaderDir / "Surfaces/standard_pbr.glsl";
     const auto stockMaskSurfaceHash = HashShaderBytes(surfaceSource.data(), surfaceSource.size());
     if (stockAdapters && fsSrc.find(surfaceIncludeMarker) != std::string::npos &&
-        !doc.customVertexShader && doc.vertexModifier.empty() && IsRigidStandardMask(result.defines) &&
+        !source.customVertexShader && source.vertexModifier.empty() && IsRigidStandardMask(result.defines) &&
         ShaderSourceCache::NormalizedKey(resolvedSurfacePath) == ShaderSourceCache::NormalizedKey(stockMaskSurface) &&
         MatchesStockShaderSource("Surfaces/standard_pbr.glsl", stockMaskSurfaceHash))
     {
@@ -1038,15 +1070,15 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         {
             fsSrc.replace(at, surfaceIncludeMarker.size(),
                           "#include " + MakeIncludeLiteral(resolvedSurfacePath, includeRoots,
-                                                           doc.surfaceShader));
+                                                           source.surfaceShader));
         }
         else if (surfaceAuthored)
         {
             addError("ShaderComposer: adapter fragment has no '#include GE_SURFACE_SHADER_PATH' "
-                     "marker; authored surfaceShader '" + doc.surfaceShader + "' was NOT substituted.");
+                     "marker; authored surfaceShader '" + source.surfaceShader + "' was NOT substituted.");
             Logger::Log::Error("ShaderComposer: no GE_SURFACE_SHADER_PATH marker in the fragment "
                                "adapter; authored surfaceShader '{}' NOT substituted (default surface used)",
-                               doc.surfaceShader);
+                               source.surfaceShader);
         }
     }
 
@@ -1056,7 +1088,7 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
     // above) is its own vertex modifier: the same file, stage-guarded inside.
     {
         const bool graphVertexModifier =
-            doc.vertexModifier.empty() && haveSurface && ShaderGraph::IsShaderGraphSource(surfaceSource) &&
+            source.vertexModifier.empty() && haveSurface && ShaderGraph::IsShaderGraphSource(surfaceSource) &&
             std::find(result.defines.begin(), result.defines.end(), "HAS_VERTEX_MODIFIER") !=
                 result.defines.end();
         const std::filesystem::path& modifierIncludePath =
@@ -1068,7 +1100,7 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
         {
             const std::string includeDirective =
                 "#include " + MakeIncludeLiteral(modifierIncludePath, includeRoots,
-                                                 graphVertexModifier ? doc.surfaceShader : doc.vertexModifier);
+                                                 graphVertexModifier ? source.surfaceShader : source.vertexModifier);
             while (at != std::string::npos)
             {
                 vsSrc.replace(at, marker.size(), includeDirective);
