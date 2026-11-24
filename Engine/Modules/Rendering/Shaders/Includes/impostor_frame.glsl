@@ -15,13 +15,31 @@ vec3 GE_ImpostorDecode(vec2 code, vec4 impostorAtlas)
     return impostorAtlas.y < 0.5 ? GE_HemiOctDecode(code) : GE_OctDecode(code);
 }
 
+// The zenith is the midpoint of the central cell's diagonal.
+const vec2 kGE_ImpostorPoleFrame = vec2(3.5);
+
+vec4 GE_ImpostorFrameRect(vec2 frame, vec4 impostorAtlas)
+{
+    if (impostorAtlas.y < 0.0)
+    {
+        if (frame.y == kGE_ImpostorPoleFrame.y)
+            return vec4(4.5, 3.0, 0.75, 1.0);
+        if (frame.y == 3.0 && frame.x >= 3.0 && frame.x <= 5.0)
+        {
+            float packedColumn = frame.x - 3.0 + (frame.x == 5.0 ? 1.0 : 0.0);
+            return vec4(3.0 + packedColumn * 0.75, 3.0, 0.75, 1.0);
+        }
+    }
+    return vec4(frame, 1.0, 1.0);
+}
+
 vec3 GE_ImpostorFrameDirection(vec2 frame, vec4 impostorAtlas)
 {
     return GE_ImpostorDecode(frame / max(impostorAtlas.x - 1.0, 1.0), impostorAtlas);
 }
 
-// The direction from a card center toward its viewer, not normalized. Both are relative to the
-// render origin. viewer is a point (w = 1) or the direction toward the viewer (w = 0).
+// The card center and viewer are relative to the render origin. The viewer is a point
+// (w = 1) or the direction toward the viewer (w = 0).
 vec3 GE_ImpostorTowardViewer(vec4 viewer, vec3 centerRel)
 {
     return viewer.w > 0.5 ? viewer.xyz - centerRel : viewer.xyz;
@@ -57,18 +75,36 @@ void GE_ImpostorBlendFrames(vec2 viewCode, vec4 impostorAtlas, out vec2 frames[3
         frames[2] = cell + vec2(1.0, 0.0);
         weights = vec3(f.x + f.y - 1.0, 1.0 - f.x, 1.0 - f.y);
     }
+    if (impostorAtlas.y < 0.0 && all(equal(cell, vec2(3.0))))
+    {
+        // Add the pole on the shared diagonal. Keep the outer corner and
+        // replace the smaller diagonal weight with the center contribution.
+        float centerWeight = min(weights.y, weights.z);
+        if (weights.y < weights.z)
+        {
+            frames[1] = kGE_ImpostorPoleFrame;
+            weights.y = 2.0 * centerWeight;
+            weights.z -= centerWeight;
+        }
+        else
+        {
+            frames[2] = kGE_ImpostorPoleFrame;
+            weights.z = 2.0 * centerWeight;
+            weights.y -= centerWeight;
+        }
+    }
 }
 
 // The atlas UV of object-space point `offset` (from the sphere center, in sphere radii) seen by
 // `frame`: the frame camera's orthographic projection into its tile. UV (0,0) is the tile's
 // top-left; the top of the baked image is the frame camera's up.
-vec2 GE_ImpostorFrameUv(vec2 frame, vec3 offset, vec4 impostorAtlas)
+vec2 GE_ImpostorFrameUv(vec4 rect, vec3 frameDirection, vec3 offset, float gridSize)
 {
     vec3 right;
     vec3 up;
-    GE_ImpostorFrameAxes(GE_ImpostorFrameDirection(frame, impostorAtlas), right, up);
+    GE_ImpostorFrameAxes(frameDirection, right, up);
     vec2 tile = clamp(vec2(dot(offset, right) * 0.5 + 0.5, 0.5 - dot(offset, up) * 0.5), vec2(0.0), vec2(1.0));
-    return (frame + tile) / max(impostorAtlas.x, 1.0);
+    return (rect.xy + tile * rect.zw) / gridSize;
 }
 
 #endif

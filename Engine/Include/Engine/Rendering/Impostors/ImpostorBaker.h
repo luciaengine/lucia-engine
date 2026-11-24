@@ -45,7 +45,8 @@ struct ImpostorBakeRequest
     std::vector<ImpostorBakePart> Parts;
 };
 
-/// A baked atlas: FramesPerSide x FramesPerSide tiles of FrameSize pixels in two textures.
+/// A baked atlas with two square textures, each FramesPerSide * FrameSize pixels on a side.
+/// The 8x8, 128-pixel hemisphere shares three tiles with a dedicated overhead view.
 /// Color: RGB base colour, A coverage. NormalDepth: RGB object normal * 0.5 + 0.5, A the depth along
 /// the frame axis (1 at the bounding sphere's near side, 0 at its far side).
 struct ImpostorAtlas
@@ -53,6 +54,7 @@ struct ImpostorAtlas
     Rendering::TextureHandle Color;
     Rendering::TextureHandle NormalDepth;
     uint32 HighestReadyMip = 0;
+    bool HasPoleFrame = false;
 };
 
 /// Bakes impostor atlases on the GPU. Each frame it draws a few atlas frames of the oldest

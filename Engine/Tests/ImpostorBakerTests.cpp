@@ -121,6 +121,8 @@ TEST_F(ImpostorBakerTests, ARefusedMeshNeverPublishesEvenWhenAnotherCaptureCompl
     auto warm = good;
     warm.Key.MeshHash = 3;
     warm.Key.FramesPerSide = 8;
+    warm.Key.FrameSize = 128;
+    warm.Key.FilterMips = true;
     bool warmed = false;
     bool sawComplete = false;
     bool sawRefused = false;
@@ -156,6 +158,12 @@ TEST_F(ImpostorBakerTests, ARefusedMeshNeverPublishesEvenWhenAnotherCaptureCompl
     ASSERT_TRUE(Device->BeginFrame());
     Graph->BeginFrame(101);
     const auto atlas = Baker->Request(good, Services);
+    const auto hemisphere = Baker->Request(warm, Services);
+    ASSERT_TRUE(hemisphere.HasPoleFrame);
+    EXPECT_GT(hemisphere.HighestReadyMip, 0u);
+    auto packed = Rendering::RequestDeviceTextureReadbackRG(Device.get(), *Graph, hemisphere.Color,
+        Rendering::ResourceState::ShaderResource, "Completed hemisphere cube atlas");
+    ASSERT_TRUE(packed);
     auto readback = Rendering::RequestDeviceTextureReadbackRG(Device.get(), *Graph, atlas.Color,
         Rendering::ResourceState::ShaderResource, "Completed cube atlas");
     auto relief = Rendering::RequestDeviceTextureReadbackRG(Device.get(), *Graph, atlas.NormalDepth,
@@ -168,6 +176,21 @@ TEST_F(ImpostorBakerTests, ARefusedMeshNeverPublishesEvenWhenAnotherCaptureCompl
     Rendering::ViewReadbackResult image{};
     ASSERT_TRUE(readback->TryGet(image));
     ASSERT_EQ(image.pixels.size(), 16u * 16u * 4u);
+    Rendering::ViewReadbackResult packedImage{};
+    ASSERT_TRUE(packed->TryGet(packedImage));
+    constexpr uint32 kAtlasSide = 1024;
+    ASSERT_EQ(packedImage.pixels.size(), kAtlasSide * kAtlasSide * 4u);
+    const auto packedAlphaAt = [&packedImage](uint32 column)
+    {
+        constexpr uint32 kRowCenter = 3u * 128u + 64u;
+        return packedImage.pixels[4u * (kRowCenter * kAtlasSide + column) + 3u];
+    };
+    // All four view centers contain cube data, with cleared gaps between their rectangles.
+    for (uint32 center : {432u, 528u, 624u, 720u})
+        EXPECT_NE(packedAlphaAt(center), 0u) << center;
+    for (uint32 boundary : {480u, 576u, 672u})
+        EXPECT_EQ(packedAlphaAt(boundary), 0u) << boundary;
+
     Rendering::ViewReadbackResult normalDepth{};
     ASSERT_TRUE(relief->TryGet(normalDepth));
     ASSERT_EQ(normalDepth.pixels.size(), 16u * 16u * 8u);

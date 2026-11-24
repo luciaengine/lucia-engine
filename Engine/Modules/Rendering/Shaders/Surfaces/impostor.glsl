@@ -5,6 +5,7 @@
 // the three frames around the view direction at the surface point that the baked depth gives.
 //
 // @property vec4 impostorAtlas "Impostor Atlas" default=8,0,0,0 group=Impostor
+// impostorAtlas.y selects the layout: -1 packed hemisphere, 0 hemisphere, 1 sphere.
 // impostorAtlas.z enables the debug tint. impostorAtlas.w is the highest ready mip.
 // @property float impostorNormalCoherenceWeight "Normal Coherence Weight" default=1 group=Impostor
 //
@@ -15,10 +16,10 @@
 #include "Includes/impostor_depth.glsl"
 #include "Includes/mask_coverage.glsl"
 
-vec2 GE_ImpostorClampTile(vec2 atlasUv, vec2 frame, float gridSize, vec2 inset)
+vec2 GE_ImpostorClampTile(vec2 uv, vec4 rect, float gridSize, vec2 inset)
 {
-    vec2 tile = clamp(atlasUv * gridSize - frame, inset, vec2(1.0) - inset);
-    return (frame + tile) / gridSize;
+    vec2 tile = clamp(uv * gridSize - rect.xy, inset, rect.zw - inset);
+    return (rect.xy + tile) / gridSize;
 }
 
 // How much of the primary light reaches object-space point `surface` through the object itself. The
@@ -38,17 +39,20 @@ float GE_ImpostorCrownLight(vec3 surface, vec3 lightWS, float c, float s, vec4 i
     GE_ImpostorBlendFrames(code, impostorAtlas, frames, weights);
     const float kShadowDepth = 0.02;  // Window depth: 0.04 sphere radii.
     const float kShadowFade = 0.05;
+    float gridSize = max(impostorAtlas.x, 1.0);
     float light = 0.0;
     for (int i = 0; i < 3; ++i)
     {
-        vec2 uv = GE_ImpostorFrameUv(frames[i], surface, impostorAtlas);
-        bool filtered = impostorAtlas.w > 0.0;
+        vec4 rect = GE_ImpostorFrameRect(frames[i], impostorAtlas);
+        vec3 direction = GE_ImpostorFrameDirection(frames[i], impostorAtlas);
+        vec2 uv = GE_ImpostorFrameUv(rect, direction, surface, gridSize);
+        bool filtered = impostorAtlas.w > 0.0 || rect.z < 1.0;
         if (filtered)
-            uv = GE_ImpostorClampTile(uv, frames[i], impostorAtlas.x, halfTexel);
+            uv = GE_ImpostorClampTile(uv, rect, gridSize, halfTexel);
         vec4 sampleColor = filtered ? textureLod(albedoMap, uv, 0.0) : texture(albedoMap, uv);
         float storedNormalDepth = filtered ? textureLod(normalMap, uv, 0.0).w : texture(normalMap, uv).w;
         float storedDepth = storedNormalDepth / max(sampleColor.a, 0.0001);
-        float expectedDepth = dot(surface, GE_ImpostorFrameDirection(frames[i], impostorAtlas)) * 0.5 + 0.5;
+        float expectedDepth = dot(surface, direction) * 0.5 + 0.5;
         float shadowed = smoothstep(kShadowDepth, kShadowDepth + kShadowFade, storedDepth - expectedDepth) *
                          smoothstep(0.25, 0.75, sampleColor.a);
         light += weights[i] * (1.0 - shadowed);
@@ -77,7 +81,6 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec2 uvDy = dFdy(sIn.uv0);
     float mip = 0.0;
     vec2 halfTexel = vec2(0.0);
-    vec2 shadingInset = vec2(0.0);
     if (filtered)
     {
         vec2 tileTexels = vec2(textureSize(albedoMap, 0)) / gridSize;
@@ -86,23 +89,34 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         float footprint = max(dot(dx, dx), dot(dy, dy));
         mip = min(Props.impostorAtlas.w, 0.5 * log2(max(1.0, footprint)));
         halfTexel = 0.5 / tileTexels;
-        // Keep both trilinear samples inside one view tile.
-        shadingInset = halfTexel * exp2(ceil(mip));
     }
+    else if (Props.impostorAtlas.y < 0.0)
+    {
+        // The packed layout is used only for atlases with 128-pixel tiles.
+        halfTexel = vec2(0.5 / 128.0);
+    }
+    // Clamp both trilinear samples inside each view. The packed rectangles are aligned
+    // to 32 pixels, so their boundaries also hold through the final baked mip.
+    vec2 shadingInset = halfTexel * exp2(ceil(mip));
 
     // Atlas texels outside the tree hold 0 in every channel, so a filtered sample at a leaf edge is
     // already premultiplied by its coverage. Divide by the summed coverage; never multiply by it.
     // Coverage comes from the frames at the card point. Every pass reads the same coverage, so the
     // depth prepass and the colour pass keep the same pixels, including the filtered leaf edges.
+    vec4 frameRect[3];
+    vec3 frameDirection[3];
     vec2 cardUv[3];
     vec4 frameColor[3];
     vec4 cardColor = vec4(0.0);
     for (int i = 0; i < 3; ++i)
     {
-        cardUv[i] = GE_ImpostorFrameUv(frames[i], offset, Props.impostorAtlas);
-        if (filtered)
-            cardUv[i] = GE_ImpostorClampTile(cardUv[i], frames[i], gridSize, shadingInset);
-        frameColor[i] = filtered ? textureLod(albedoMap, cardUv[i], mip) : texture(albedoMap, cardUv[i]);
+        frameRect[i] = GE_ImpostorFrameRect(frames[i], Props.impostorAtlas);
+        frameDirection[i] = GE_ImpostorFrameDirection(frames[i], Props.impostorAtlas);
+        cardUv[i] = GE_ImpostorFrameUv(frameRect[i], frameDirection[i], offset, gridSize);
+        bool explicitLod = filtered || frameRect[i].z < 1.0;
+        if (explicitLod)
+            cardUv[i] = GE_ImpostorClampTile(cardUv[i], frameRect[i], gridSize, shadingInset);
+        frameColor[i] = explicitLod ? textureLod(albedoMap, cardUv[i], mip) : texture(albedoMap, cardUv[i]);
         cardColor += frameColor[i] * weights[i];
     }
     o.opacity = cardColor.a;
@@ -136,9 +150,10 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec3 surface = vec3(0.0);
     for (int i = 0; i < 3; ++i)
     {
-        float storedDepth = filtered ? textureLod(normalMap, cardUv[i], mip).w : texture(normalMap, cardUv[i]).w;
+        float storedDepth = filtered || frameRect[i].z < 1.0
+            ? textureLod(normalMap, cardUv[i], mip).w : texture(normalMap, cardUv[i]).w;
         float coverage = frameColor[i].a;
-        vec3 direction = GE_ImpostorFrameDirection(frames[i], Props.impostorAtlas);
+        vec3 direction = frameDirection[i];
         float depth = storedDepth / max(coverage, 0.0001);
         vec3 framePoint = offset - direction * dot(offset, direction) + direction * (2.0 * depth - 1.0);
         surface += mix(offset, framePoint, smoothstep(0.25, 0.75, coverage)) * weights[i];
@@ -160,12 +175,13 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     float weightSum = 0.0;
     for (int i = 0; i < 3; ++i)
     {
-        vec2 uv = GE_ImpostorFrameUv(frames[i], surface, Props.impostorAtlas);
-        if (filtered)
-            uv = GE_ImpostorClampTile(uv, frames[i], gridSize, shadingInset);
-        vec4 sampleColor = filtered ? textureLod(albedoMap, uv, mip) : texture(albedoMap, uv);
-        vec4 sampleNormalDepth = filtered ? textureLod(normalMap, uv, mip) : texture(normalMap, uv);
-        float expectedDepth = dot(surface, GE_ImpostorFrameDirection(frames[i], Props.impostorAtlas)) * 0.5 + 0.5;
+        vec2 uv = GE_ImpostorFrameUv(frameRect[i], frameDirection[i], surface, gridSize);
+        bool explicitLod = filtered || frameRect[i].z < 1.0;
+        if (explicitLod)
+            uv = GE_ImpostorClampTile(uv, frameRect[i], gridSize, shadingInset);
+        vec4 sampleColor = explicitLod ? textureLod(albedoMap, uv, mip) : texture(albedoMap, uv);
+        vec4 sampleNormalDepth = explicitLod ? textureLod(normalMap, uv, mip) : texture(normalMap, uv);
+        float expectedDepth = dot(surface, frameDirection[i]) * 0.5 + 0.5;
         float storedDepth = sampleNormalDepth.w / max(sampleColor.a, 0.0001);
         float occluded = smoothstep(kOccluderDepth, kOccluderDepth + kOccluderFade, storedDepth - expectedDepth) *
                          smoothstep(0.25, 0.75, sampleColor.a) * (1.0 - smoothstep(1.0, 3.0, mip));
