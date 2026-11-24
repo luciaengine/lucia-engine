@@ -2756,7 +2756,9 @@ bool AssetRegistry::IsAssetPathAvailable(const std::filesystem::path& absolutePa
     const auto normalized = NormalizePathForMap(absolutePath);
     const auto* guid = FindPathGuidLocked(PathMapKey(normalized));
     const auto* source = FindSourceForPath(normalized);
-    return guid && source && source->IsReadOnly;
+    // A shipped manifest names packaged assets. A developer Player can also mount an
+    // authored database read-only, but its old rows cannot shadow files in other mounts.
+    return guid && source && source->IsReadOnly && !source->DerivedIdentity;
 }
 
 std::filesystem::path AssetRegistry::ResolveRelativeAssetPath(const std::filesystem::path& relativePath) const

@@ -14,6 +14,7 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string_view>
 #include <vector>
 
@@ -130,6 +131,40 @@ TEST_F(PackagedAssetManifestTest, RuntimeSettingsSurviveExportAndPlayerManifestM
     EXPECT_EQ(boneLOD.BoneBudget, 24u);
     EXPECT_EQ(boneLOD.MandatoryPaths, (std::vector<std::vector<std::string>>{{"Root", "Hand"}}));
     playerAssets.Shutdown();
+}
+
+TEST_F(PackagedAssetManifestTest, DeveloperPlayerReadsProjectSettingsWithoutWritingTheDatabase)
+{
+    const auto database = Project / "AssetDatabase.assetdb";
+    const auto model = Assets / "Model.obj";
+    auto& authoringRegistry = Engine.GetAssetManager().GetRegistry();
+    ASSERT_TRUE(authoringRegistry.SetMetaValue(model, ModelAssetSettings::kImpostorKey, "true"));
+    ASSERT_TRUE(authoringRegistry.SaveToFile(database));
+    Engine.Shutdown();
+
+    auto readDatabase = [&database]() {
+        std::ifstream input(database, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    const std::string original = readDatabase();
+    ASSERT_FALSE(original.empty());
+    const auto missingModel = Assets / "Low.obj";
+    ASSERT_TRUE(fs::remove(missingModel));
+    const auto runtimeCache = Temporary.Path() / "UserData/.Cache/AssetDatabase";
+
+    AssetManager playerAssets;
+    ASSERT_TRUE(playerAssets.Initialize(Assets, nullptr, database, runtimeCache,
+                                        /*readOnlyAssetDatabase=*/true));
+    playerAssets.WaitForStartupScan();
+    auto& playerRegistry = playerAssets.GetRegistry();
+    EXPECT_TRUE(ModelAssetSettings::Load(playerRegistry, model).Impostor);
+    EXPECT_FALSE(playerRegistry.IsAssetPathAvailable(missingModel));
+
+    const auto addedModel = Assets / "New.obj";
+    WriteFile(addedModel, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+    ASSERT_TRUE(playerRegistry.RegisterAsset(addedModel));
+    playerAssets.Shutdown();
+    EXPECT_EQ(readDatabase(), original);
 }
 
 namespace

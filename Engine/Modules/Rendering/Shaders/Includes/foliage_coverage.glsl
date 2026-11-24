@@ -34,4 +34,12 @@ float GE_FoliageCoverageOpacity(float alpha, float cutoff, float coarseWeight, f
     return coverage > threshold ? 1.0 : 0.0;
 }
 
+// Reject the weak alpha fringe of a filtered leaf shape before the stochastic coverage test.
+float GE_FoliageLeafCoverageOpacity(float shapeAlpha, float alphaScale, float cutoff, float coarseWeight, float threshold)
+{
+    const float kMinimumAlphaFractionOfCutoff = 0.75;
+    float shapeMask = step(kMinimumAlphaFractionOfCutoff * cutoff, shapeAlpha);
+    return shapeMask * GE_FoliageCoverageOpacity(shapeAlpha * alphaScale, cutoff, coarseWeight, threshold);
+}
+
 #endif

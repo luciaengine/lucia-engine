@@ -1,0 +1,30 @@
+#!/bin/sh
+# The GitHub repository requires the project identity for commits landing on main.
+case "$2" in
+    https://github.com/luciaengine/lucia-engine|https://github.com/luciaengine/lucia-engine.git|    git@github.com:luciaengine/lucia-engine|git@github.com:luciaengine/lucia-engine.git|    ssh://git@github.com/luciaengine/lucia-engine|ssh://git@github.com/luciaengine/lucia-engine.git)
+        ;;
+    *) exit 0 ;;
+esac
+
+expected_email=352078336+lucia-engine@users.noreply.github.com
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$remote_ref" = refs/heads/main ] || continue
+    [ "$local_ref" != "(delete)" ] || continue
+    commits=$(git log --format='%H %ae %ce' "$remote_sha..$local_sha") || {
+        printf '%s\n' "Cannot check the commits going to main. Fetch main and retry." >&2
+        exit 1
+    }
+
+    while read -r commit author committer; do
+        [ -n "$commit" ] || continue
+        if [ "$author" != "$expected_email" ] || [ "$committer" != "$expected_email" ]; then
+            printf '%s\n' "Commit $commit cannot land on main." \
+                "Expected author and committer email: $expected_email" \
+                "Found author: $author. Found committer: $committer." \
+                "Recreate the reviewed squash with the project identity (see CONTRIBUTING.md)." >&2
+            exit 1
+        fi
+    done <<EOF
+$commits
+EOF
+done

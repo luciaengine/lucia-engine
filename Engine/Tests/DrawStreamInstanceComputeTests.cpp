@@ -561,7 +561,7 @@ void DrawStreamInstanceComputeTest::CheckProductionSchedule(bool repeatedMeshes,
     GPUScene scene(m_Device.get());
     ASSERT_TRUE(scene.Initialize(256, 256));
     GPUMesh mesh{};
-    mesh.indexCount = mesh.vertexCount = mesh.lodIndexCount[0] = 3;
+    mesh.indexCount = mesh.lodIndexCount[0] = 3;
     mesh.lodCount = 1;
     mesh.boundingRadius = 1;
     const auto depthClass = repeatedMeshes ? MaterialDepthClass::EligibleSingleSided

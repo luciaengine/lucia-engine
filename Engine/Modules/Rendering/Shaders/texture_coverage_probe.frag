@@ -5,7 +5,7 @@ layout(set=0,binding=0) uniform sampler2D sourceImage;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
 layout(push_constant) uniform Probe { float lod; float cutoff; vec2 phase; uint mode; float seed; } probe;
-// Modes 2 to 4 draw a grid of kLeaves x kLeaves leaves. Each leaf is one copy of the image with its
+// Modes 2 to 5 draw a grid of kLeaves x kLeaves leaves. Each leaf is one copy of the image with its
 // own seed: the golden-ratio sequence over the leaf index, as the tree generator writes it (UV1.x).
 const float kLeaves=16.0;
 float LeafSeed(vec2 position,uint layerKey)
@@ -17,13 +17,16 @@ float LeafSeed(vec2 position,uint layerKey)
         index=GE_HashU32(index^layerKey)&0xffffu;
     return fract(float(index)*0.6180339887);
 }
-// The production coverage test of the leaf at `position`, read at probe.lod as a sampler would.
+// The bounded coverage sample at `position`, read at probe.lod as a sampler would.
 float Foliage(vec2 position,float layerSeed)
 {
     float footprint=exp2(probe.lod)/float(textureSize(sourceImage,0).x);
     float shapeFootprint=min(footprint,kFoliageShapeFootprint);
     float alpha=textureGrad(sourceImage,fract(position*kLeaves),vec2(shapeFootprint,0.0),vec2(0.0,shapeFootprint)).a;
-    return GE_FoliageCoverageOpacity(alpha,probe.cutoff,GE_FoliageTailWeight(footprint),layerSeed);
+    float tailWeight=GE_FoliageTailWeight(footprint);
+    if(probe.mode==5u)
+        return GE_FoliageLeafCoverageOpacity(alpha,1.0,probe.cutoff,tailWeight,layerSeed);
+    return GE_FoliageCoverageOpacity(alpha,probe.cutoff,tailWeight,layerSeed);
 }
 void main()
 {
@@ -40,11 +43,12 @@ void main()
         result=vec4(1.0);
         return;
     }
-    // Mode 2: the production foliage coverage test of the leaves.
+    // Mode 2: the generic foliage coverage test of the leaves.
     // Mode 3: two layers of leaves, the second with the layer key of probe.seed (0: the same seeds).
     // Mode 4: the cutoff test of the leaves.
+    // Mode 5: the EZ Tree foliage coverage test.
     float opacity=textureLod(sourceImage,fract(position*kLeaves),probe.lod).a;
-    if(probe.mode==2u)
+    if(probe.mode==2u || probe.mode==5u)
         opacity=Foliage(position,LeafSeed(position,0u));
     else if(probe.mode==3u)
         opacity=max(Foliage(position,LeafSeed(position,0u)),Foliage(position,LeafSeed(position,floatBitsToUint(probe.seed))));

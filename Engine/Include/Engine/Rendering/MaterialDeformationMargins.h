@@ -21,6 +21,11 @@
 #include <unordered_map>
 #include <vector>
 
+namespace GameEngine::Rendering
+{
+struct GPUInstance;
+}
+
 namespace GameEngine::Engine::Renderer
 {
 
@@ -37,6 +42,11 @@ struct DeformationMargin
 /// The margin `mat` culls with right now, from its installed declaration and its
 /// current property values.
 DeformationMargin ResolveDeformationMargin(const Material& mat);
+
+/// The radius an instance culls with: its sphere grown by its material's margin times the largest
+/// axis scale of its transform. The CPU twin of DeformedCullRadius in cull_deformation_margin.glsl,
+/// for the compatibility profile's CPU cull. A material without a margin culls with boundingRadius.
+float DeformedCullRadius(const Rendering::GPUInstance& instance, std::span<const float> margins);
 
 /// The per-materialIndex margin array the culling kernels bind. Rebuilt when the
 /// registry stamp moves (an index assignment, or any material's content

@@ -2897,6 +2897,7 @@ endif()
 			    set(_GE_EZTREE_PKG_NATIVE "${CMAKE_SOURCE_DIR}/Packages/eztree/Native")
 			    add_executable(EZTreeNativeTests Tests/EZTreeNativeTests.cpp
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTree/EZTreeGenerator.cpp"
+			        "${_GE_EZTREE_PKG_NATIVE}/EZTree/FoliageOcclusionProbes.cpp"
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTree/EZTreeOptions.cpp"
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTree/EZTreePresets.cpp"
 			        "${_GE_EZTREE_PKG_NATIVE}/EZTree/EZTreeRng.cpp"

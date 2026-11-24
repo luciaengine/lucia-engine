@@ -212,7 +212,7 @@ bool FileWatcher::StartChangeSignal()
     FSEventStreamSetDispatchQueue(stream, queue);
     if (!FSEventStreamStart(stream))
     {
-        FSEventStreamSetDispatchQueue(stream, nullptr);
+        FSEventStreamInvalidate(stream);
         FSEventStreamRelease(stream);
         dispatch_release(queue);
         return false;
@@ -225,30 +225,20 @@ bool FileWatcher::StartChangeSignal()
 
 void FileWatcher::StopChangeSignal()
 {
-    if (m_ChangeSignalStream != nullptr)
-    {
-        auto stream = static_cast<FSEventStreamRef>(m_ChangeSignalStream);
-        FSEventStreamStop(stream);
-        // Stop + unschedule + invalidate prevent NEW callback invocations from
-        // being enqueued, but FSEvents does not document that any of them waits
-        // for a callback that is already executing — the drain below is what
-        // guarantees that.
-        FSEventStreamSetDispatchQueue(stream, nullptr);
-        FSEventStreamInvalidate(stream);
-        FSEventStreamRelease(stream);
-        m_ChangeSignalStream = nullptr;
-    }
-    if (m_ChangeSignalQueue != nullptr)
-    {
-        auto queue = static_cast<dispatch_queue_t>(m_ChangeSignalQueue);
-        // Serial queue: an empty synchronous block cannot start until a callback
-        // already on the queue has returned. After this line no callback can be
-        // touching `this` (it captures the watcher), so releasing the queue and
-        // tearing the watcher down is safe.
-        dispatch_sync_f(queue, nullptr, [](void*) {});
-        dispatch_release(queue);
-        m_ChangeSignalQueue = nullptr;
-    }
+    if (m_ChangeSignalStream == nullptr)
+        return;
+
+    auto stream = static_cast<FSEventStreamRef>(m_ChangeSignalStream);
+    auto queue = static_cast<dispatch_queue_t>(m_ChangeSignalQueue);
+    FSEventStreamStop(stream);
+    // Invalidation unschedules the stream. Drain any in-flight callback
+    // before releasing the stream or tearing down the watcher it refers to.
+    FSEventStreamInvalidate(stream);
+    dispatch_sync_f(queue, nullptr, [](void*) {});
+    FSEventStreamRelease(stream);
+    dispatch_release(queue);
+    m_ChangeSignalStream = nullptr;
+    m_ChangeSignalQueue = nullptr;
 }
 #endif // PLATFORM_MACOS
 
@@ -1075,21 +1065,20 @@ void FileWatcher::WaitForNextPoll()
     // time, and cut the wait short as soon as a platform change signal arrives.
     // The poll interval stays the upper bound, so a platform with no signal —
     // or one that drops an event — behaves exactly as it did before.
-    uint32 remainingMs = m_PollingInterval;
-    while (remainingMs > 0 && !m_ShouldStop.load())
+    using Clock = std::chrono::steady_clock;
+    const auto nextPoll = Clock::now() + std::chrono::milliseconds(m_PollingInterval);
+    for (auto now = Clock::now(); now < nextPoll && !m_ShouldStop.load(); now = Clock::now())
     {
-        const uint32 sliceMs = std::min(remainingMs, kWatchLoopSliceMs);
+        const auto sliceEnd = std::min(nextPoll, now + std::chrono::milliseconds(kWatchLoopSliceMs));
         bool woken = false;
         {
             std::unique_lock<std::mutex> lock(m_WakeMutex);
-            woken = m_WakeCv.wait_for(lock, std::chrono::milliseconds(sliceMs),
-                                      [this] { return m_WakeRequested; });
+            woken = m_WakeCv.wait_until(lock, sliceEnd, [this] { return m_WakeRequested; });
             m_WakeRequested = false;
         }
         ProcessReadyDebouncedEvents();
         if (woken)
             return;
-        remainingMs -= sliceMs;
     }
 }
 

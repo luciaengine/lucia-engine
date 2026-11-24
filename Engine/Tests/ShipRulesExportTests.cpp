@@ -173,6 +173,26 @@ TEST_P(ShipRulesExport, ABuildStepThatAddsANeverAssetFailsTheExport)
     EXPECT_FALSE(fs::exists(Output / "Assets"));
 }
 
+TEST_P(ShipRulesExport, FailedCustomStepReportsItsDiagnostic)
+{
+    Start();
+    BuildPipeline pipeline(nullptr);
+    BuildStep step;
+    step.name = "bake-lights";
+    step.phase = BuildStep::Phase::PreAssetCopy;
+    step.execute = [](BuildContext& context) {
+        context.errors.push_back("Scenes/Main.scene needs a light before it can be baked.");
+        return false;
+    };
+    pipeline.RegisterStep(std::move(step));
+
+    BuildProgress progress;
+    EXPECT_FALSE(pipeline.Execute(Settings(), [&progress](const BuildProgress& current) { progress = current; }));
+    EXPECT_TRUE(HasError(progress, "Custom step 'bake-lights' failed"));
+    EXPECT_TRUE(HasError(progress, "Scenes/Main.scene needs a light before it can be baked."));
+    EXPECT_FALSE(fs::exists(Output / "Assets"));
+}
+
 TEST_P(ShipRulesExport, ANeverEngineDefaultFailsTheExport)
 {
     // The default UI font is a project asset in this fixture. With no editor mount, the export

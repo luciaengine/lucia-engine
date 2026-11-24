@@ -7,7 +7,9 @@
 
 #include <gtest/gtest.h>
 
+#include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/Shader/ShaderComposer.h"
+#include "TestUtils.h"
 
 #include <string>
 #include <vector>
@@ -152,4 +154,26 @@ TEST(ShaderComposerKeywordDiagnostics, EachUnreadKeywordGetsItsOwnLine)
     ASSERT_EQ(lines.size(), 2u);
     EXPECT_TRUE(AnyMentions(lines, "'PULS'"));
     EXPECT_TRUE(AnyMentions(lines, "'GLOW'"));
+}
+
+TEST(ShaderComposerKeywordDiagnostics, RuntimeMaterialValuesDoNotChangeComposedSource)
+{
+    GameEngine::MaterialDocument authored{};
+    authored.surfaceShader = "Surfaces/standard_pbr.glsl";
+    authored.lightingModel = "StandardPBR";
+    auto runtime = authored;
+    authored.doubleSided = true;
+    authored.properties["roughness"] = 0.2f;
+    authored.textures["albedoMap"] = "Textures/Leaves.png";
+
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = Tests::GetAdapterShaderDir();
+    const ShaderVariantKey key{};
+    const auto direct = ShaderComposer::Compose(authored, key, {}, context);
+    const auto cached = ShaderComposer::Compose(runtime, key, {}, context);
+    ASSERT_TRUE(direct.IsValid());
+    ASSERT_TRUE(cached.IsValid());
+    EXPECT_EQ(direct.defines, cached.defines);
+    EXPECT_EQ(direct.vertexSource, cached.vertexSource);
+    EXPECT_EQ(direct.fragmentSource, cached.fragmentSource);
 }

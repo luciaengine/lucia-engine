@@ -29,9 +29,13 @@ bool ForestPlacementRenderState::Prepare(AssetManager& assets, Rendering::IDevic
         m_ReadFences.pop_front();
     const uint64 completedReaders = m_ReadFences.empty() ? m_LastFinished : m_ReadFences.front().Frame - 1;
     ForestPlacementView demand = view;
-    if (!m_ReadFences.empty() &&
-        device.QueryGpuSyncToken(m_ReadFences.front().Token) == Rendering::IDevice::GpuSyncStatus::Unknown)
+    m_UnknownReader = !m_ReadFences.empty() &&
+        device.QueryGpuSyncToken(m_ReadFences.front().Token) == Rendering::IDevice::GpuSyncStatus::Unknown;
+    if (m_UnknownReader)
+    {
         demand.DetailDistance = 0;
+        m_PrepareGraphicsToken = graph.SubmissionToken();
+    }
     if (!m_Stream.Prepare(assets, demand, m_LastFinished + 1, completedReaders, plan, m_Uploads))
         return false;
 
@@ -48,10 +52,17 @@ void ForestPlacementRenderState::Finish(Rendering::RenderGraph::RGFrame& graph, 
         return;
     m_Uploader.FinishFrame(graph);
     ++m_LastFinished;
-    // An unknown token keeps the reservation: it does not prove that the draws
-    // finished reading the slot.
-    if (submitted && m_DeclaredDetail)
-        m_ReadFences.push_back({m_LastFinished, graph.SubmissionToken()});
+    if (submitted && (m_DeclaredDetail || m_UnknownReader))
+    {
+        const auto token = graph.SubmissionToken();
+        // Detail reads are ordered on graphics. A new signal from the overview frame
+        // covers the unknown reader too. A token left over from an earlier frame cannot.
+        if (m_UnknownReader && token.IsValid() &&
+            (token.sem != m_PrepareGraphicsToken.sem || token.value != m_PrepareGraphicsToken.value))
+            m_ReadFences.front().Token = token;
+        if (m_DeclaredDetail)
+            m_ReadFences.push_back({m_LastFinished, token});
+    }
     m_Prepared = {};
 }
 

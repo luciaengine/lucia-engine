@@ -467,7 +467,7 @@ class GPUDrawStreamBuilder
 
     /// Test-only: build a scatter pipeline for a specific (fetch, stats)
     /// variant, bypassing the GE_SCATTER_COMPACT/GE_SCATTER_STATS selection so
-    /// ONE test run can exercise every combination — the compact 40 B mirror vs
+    /// ONE test run can exercise every combination — the compact 44 B mirror vs
     /// the full-fat 240 B instance buffer, with the drawnTriangles atomic on or
     /// off — and assert identical scatter records across all of them. Returns an
     /// invalid handle if that variant's shaderpkg is unavailable. Never used by
@@ -639,7 +639,7 @@ class GPUDrawStreamBuilder
     // behaviour bit-for-bit. The span is global + frame-invariant; it is
     // uploaded to the table ring ONCE per app frame (the first schedule call)
     // and the same GPU copy is bound by every later call this frame.
-    // `scatterHot` is GPUScene's coalesced 40 B/instance mirror (lever 1). When
+    // `scatterHot` is GPUScene's coalesced 44 B/instance mirror (lever 1). When
     // the compact fetch is active AND this buffer is valid, the scatter binds it
     // at binding 1 in place of `instances`; otherwise `instances` (240 B) is
     // bound, exactly as before. Callers pass both; the builder picks.
@@ -1162,7 +1162,7 @@ class GPUDrawStreamBuilder
     // GE_SCATTER_COMPACT (default on), read once; Active is the variant the
     // pipeline actually compiled to — false if the compact shaderpkg was
     // unavailable and we fell back to the full-fat package. When Active, the
-    // scatter binds GPUScene's 40 B mirror at binding 1 instead of the 240 B
+    // scatter binds GPUScene's 44 B mirror at binding 1 instead of the 240 B
     // instance buffer. GPUScene reads the same env var, so the mirror it
     // maintains and this variant agree by construction.
     bool           m_ScatterCompactRequested      = false;

@@ -294,7 +294,7 @@ layout(push_constant) uniform PC
     vec4 uN0; // normal matrix col0 (xyz)
     vec4 uN1; // normal matrix col1 (xyz)
     vec4 uN2; // normal matrix col2 (xyz)
-    vec4 uExtra; // x = materialIndex, y = skinPaletteOffset, z = LOD crossfade code (all as uint bits)
+    vec4 uExtra; // material index, skin palette offset, instance flags, LOD crossfade code (uint bits)
 } pc;
 
 InstanceData ge_FetchInstanceData()
@@ -305,7 +305,7 @@ InstanceData ge_FetchInstanceData()
     inst.instanceIndex = 0u;
     inst.materialIndex = floatBitsToUint(pc.uExtra.x);
     inst.skinPaletteOffset = floatBitsToUint(pc.uExtra.y);
-    inst.flags = 2u; // non-instanced path: default receiveShadows on (bit 1)
+    inst.flags = 2u | floatBitsToUint(pc.uExtra.z); // receiveShadows on (bit 1), plus the draw's own bits
     inst.custom0 = vec4(1.0);
 #ifdef GE_USER_PARTICLE_BUFFER
     inst.particleVelocityAngle = vec4(0.0);
@@ -315,7 +315,7 @@ InstanceData ge_FetchInstanceData()
 #endif
     inst.sector = ivec3(0); // push-constant path is editor/near-origin: no sector
 #ifdef GE_LOD_CROSSFADE
-    inst.lodFadeCode = floatBitsToUint(pc.uExtra.z); // set by a draw that fades itself (the forest handoff)
+    inst.lodFadeCode = floatBitsToUint(pc.uExtra.w); // set by a draw that fades itself (the forest handoff)
 #endif
 #ifdef GE_VERTEX_DEFORMATION
     ge_StampDeformationClock(inst);

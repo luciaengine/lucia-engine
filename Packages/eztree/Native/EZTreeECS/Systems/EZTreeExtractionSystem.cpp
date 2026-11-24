@@ -37,9 +37,6 @@ namespace GameEngine::EZTreeECS
 namespace
 {
 
-// ez_tree_wind.glsl's @deformationEnvelope: the largest displacement per unit of wind, local meters.
-constexpr float kWindDisplacementEnvelope = 1.21f;
-
 void WriteGuidToArray(const GUID& guid, std::array<uint8, 16>& out)
 {
     std::copy(guid.GetData().begin(), guid.GetData().end(), out.begin());
@@ -56,23 +53,6 @@ float WindVolumeSpeedBound(ECS::World& world)
             bound += std::max(volume.Speed, 0.0f) * std::clamp(volume.Weight, 0.0f, 1.0f);
         });
     return bound;
-}
-
-float LargestAxisScale(const Components::WorldTransform& worldTransform)
-{
-    return std::max({Mathematics::Vector3(worldTransform.Basis[0]).Length(),
-                     Mathematics::Vector3(worldTransform.Basis[1]).Length(),
-                     Mathematics::Vector3(worldTransform.Basis[2]).Length()});
-}
-
-// The culling sphere of a tree grows by the largest sway its wind can make, local meters.
-// The GPU resolves the wind per instance, so the bound takes every volume at full strength.
-float WindBoundsInflation(const EZTree::TreeOptions& options, float largestAxisScale, float volumeSpeedBound)
-{
-    const float scale = WindScaleBound(options);
-    if (scale <= 0.0f)
-        return 0.0f;
-    return kWindDisplacementEnvelope * scale * (options.wind.strength.Length() * largestAxisScale + volumeSpeedBound);
 }
 
 void SubmitPart(Engine::Renderer::RenderServices& renderServices,
@@ -451,11 +431,12 @@ void EZTreeExtractionSystem::ExtractTree(FrameContext& frame,
         return;
 
     // Every part has the same bounds and inflation, so every part has the same instance sphere and
-    // the scatter switches all parts of a tree to its impostor card in the same frame.
+    // the scatter switches all parts of a tree to its impostor card in the same frame. The wind
+    // material's own envelope covers the authored wind in the cull kernels; the inflation holds only
+    // what the wind volumes can add.
     Components::LocalBounds bounds{};
     bounds.Box = variant->Bounds;
-    const float inflation =
-        WindBoundsInflation(tree.Options, LargestAxisScale(*worldTransform), frame.VolumeSpeedBound);
+    const float inflation = WindVolumeCullMargin(tree.Options, frame.VolumeSpeedBound);
     SubmitPart(*m_RenderServices, frame.World, entity, *worldTransform, bounds, variant->Branches,
                SelectBarkMaterial(*m_RenderServices, variant->Materials), inflation,
                tree.RuntimeBranchInstanceIndex);

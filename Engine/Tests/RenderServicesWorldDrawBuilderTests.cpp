@@ -526,7 +526,7 @@ TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_ListsOneBatchAsOneDrawWh
     wdb.BuildBatchKeys(rs.GetMeshGPURegistry(), /*materialColorClass=*/{}, kTestMaterialGeneration);
 
     CpuDrawStreamBuilder cds;
-    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), nullptr);
+    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), {}, nullptr);
 
     const CpuDrawStreamBuilder::InstanceList batch = cds.GetInstances(
         viewId, 5u, entry->gpuMeshIndex, CpuDrawStreamBuilder::InstanceSet::Camera);
@@ -592,7 +592,7 @@ TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_CullsCameraSetButKeepsOf
     wdb.BuildBatchKeys(rs.GetMeshGPURegistry(), /*materialColorClass=*/{}, kTestMaterialGeneration);
 
     CpuDrawStreamBuilder cds;
-    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), nullptr);
+    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), {}, nullptr);
 
     // Camera set: the in-frustum caster and non-caster; the offscreen caster is
     // culled and the shadows-only caster draws in no color pass.
@@ -615,6 +615,64 @@ TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_CullsCameraSetButKeepsOf
     EXPECT_EQ(list[shadow.First + 1u], offscreenCaster);
     EXPECT_EQ(list[shadow.First + 2u], inFrustumShadowsOnly);
     EXPECT_EQ(cds.GetStats().ShadowCasters, 3u);
+
+    rs.Shutdown();
+    device->Shutdown();
+}
+
+// A deforming material widens the cull sphere on the CPU path as the GPU kernels do: an instance
+// whose mesh sphere sits just outside the frustum still draws when its material's deformation margin
+// reaches in, and is culled without the margin.
+TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_ADeformingMaterialCullsWithItsDeformationMargin)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices rs;
+    ASSERT_TRUE(rs.Initialize(device.get()));
+    Rendering::GPUScene* scene = rs.GetGPUScene();
+    ASSERT_NE(scene, nullptr);
+
+    Rendering::MeshGPUHandle mesh = RegisterTestMesh(rs);
+    const auto* entry = rs.GetMeshGPURegistry().Find(mesh);
+    ASSERT_NE(entry, nullptr);
+
+    constexpr uint32_t kMaterialIndex = 7u;
+    Material mat = Material::TestFactory::Create(GUID::Generate(), "Mat", 32u);
+    Material::TestFactory::SetGraphicsPipelineId(mat, Rendering::GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(mat, kMaterialIndex);
+
+    // Centre 0.2 past the +X plane, unit transform: only a grown sphere reaches the frustum.
+    Rendering::GPUInstance swaying{};
+    swaying.transform = Mathematics::Matrix4x4::Identity();
+    swaying.materialIndex = kMaterialIndex;
+    swaying.boundingCenter = Rendering::Vector3(1.2f, 0.0f, 0.5f);
+    swaying.boundingRadius = 0.0f;
+    const uint32_t instance = scene->AddInstance(swaying);
+
+    const CameraId camId = rs.Views().AllocateCamera("cam");
+    rs.Views().SetCameraData(camId, ::GameEngine::Tests::TestCameraWithEye(MakeIdentityFrustumCamera()), {0.1f, 1000.0f});
+    const ViewId viewId = rs.Views().AllocateView("view", camId);
+
+    const WorldSubmissionRecord rec = MakeRecord(viewId, mesh, mat, instance, 0u);
+    WorldDrawBuilder wdb(nullptr);
+    wdb.BeginFrame();
+    wdb.Submit(std::span<const WorldSubmissionRecord>(&rec, 1u));
+    wdb.BuildBatchKeys(rs.GetMeshGPURegistry(), /*materialColorClass=*/{}, kTestMaterialGeneration);
+
+    std::vector<float> margins(kMaterialIndex + 1u, 0.0f);
+    margins[kMaterialIndex] = 0.3f;
+    CpuDrawStreamBuilder withMargin;
+    withMargin.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), margins, nullptr);
+    EXPECT_EQ(withMargin.GetInstances(viewId, kMaterialIndex, entry->gpuMeshIndex,
+                                      CpuDrawStreamBuilder::InstanceSet::Camera).Count, 1u)
+        << "the margin grows the sphere into the frustum";
+
+    CpuDrawStreamBuilder withoutMargin;
+    withoutMargin.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), {}, nullptr);
+    EXPECT_EQ(withoutMargin.GetInstances(viewId, kMaterialIndex, entry->gpuMeshIndex,
+                                         CpuDrawStreamBuilder::InstanceSet::Camera).Count, 0u);
 
     rs.Shutdown();
     device->Shutdown();
@@ -664,7 +722,7 @@ TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_TheSceneViewLeavesOutWha
     wdb.BuildBatchKeys(rs.GetMeshGPURegistry(), /*materialColorClass=*/{}, kTestMaterialGeneration);
 
     CpuDrawStreamBuilder cds;
-    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), nullptr);
+    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), {}, nullptr);
 
     using Set = CpuDrawStreamBuilder::InstanceSet;
     for (const Set set : {Set::Camera, Set::ShadowCasters})
@@ -726,7 +784,7 @@ TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_KeysPerMaterialAndClears
     wdb.BuildBatchKeys(rs.GetMeshGPURegistry(), /*materialColorClass=*/{}, kTestMaterialGeneration);
 
     CpuDrawStreamBuilder cds;
-    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), nullptr);
+    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), {}, nullptr);
 
     const std::span<const uint32_t> list = cds.GetIndexList(viewId);
     const CpuDrawStreamBuilder::InstanceList a = cds.GetInstances(
@@ -744,7 +802,7 @@ TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_KeysPerMaterialAndClears
 
     wdb.BeginFrame();
     wdb.BuildBatchKeys(rs.GetMeshGPURegistry(), /*materialColorClass=*/{}, kTestMaterialGeneration);
-    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), nullptr);
+    cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), {}, nullptr);
     EXPECT_EQ(cds.GetInstances(viewId, 5u, entry->gpuMeshIndex,
                                CpuDrawStreamBuilder::InstanceSet::Camera).Count, 0u);
     EXPECT_TRUE(cds.GetIndexList(viewId).empty());
@@ -808,10 +866,10 @@ TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_PooledCullMatchesSerial)
     wdb.BuildBatchKeys(rs.GetMeshGPURegistry(), /*materialColorClass=*/{}, kTestMaterialGeneration);
 
     CpuDrawStreamBuilder serial;
-    serial.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), nullptr);
+    serial.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), {}, nullptr);
     JobSystem::WorkStealingThreadPool pool(3);
     CpuDrawStreamBuilder pooled;
-    pooled.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), &pool);
+    pooled.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), {}, &pool);
 
     const std::span<const uint32_t> serialList = serial.GetIndexList(viewId);
     const std::span<const uint32_t> pooledList = pooled.GetIndexList(viewId);
@@ -1491,7 +1549,7 @@ TEST(RenderServicesWorldDrawBuilderTests, CpuDrawStream_SteadySceneRebuildAlloca
         uint64_t count = 0;
         {
             Memory::AllocationCountScope scope(Memory::CountWindow::ThisThread);
-            cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), nullptr);
+            cds.Build(wdb, rs.GetMeshGPURegistry(), *scene, rs.Views(), {}, nullptr);
             for (uint32_t m = 0; m < kMaterials; ++m)
             {
                 for (const auto set : {CpuDrawStreamBuilder::InstanceSet::Camera,

@@ -1,5 +1,5 @@
-// The render-origin sector of an instance, and points local to it. Stand-alone: it needs no
-// binding, so compute kernels and the vertex stage share it.
+// The render-origin sector of an instance, points local to it, and the scale of its transform.
+// Stand-alone: it needs no binding, so compute kernels and the vertex stage share it.
 // C++ mirror: Rendering/Core/GPUScene.h (PackSector, UnpackSector, SectorLocalPointRelativeTo).
 
 #ifndef GE_INSTANCE_SECTOR_GLSL
@@ -25,6 +25,13 @@ ivec3 ge_UnpackInstanceSector(uint p0, uint p1)
 vec3 ge_SectorRelativePoint(vec3 local, uint p0, uint p1, ivec3 originSector)
 {
     return vec3(ge_UnpackInstanceSector(p0, p1) - originSector) * GE_SECTOR_SIZE + local;
+}
+
+// The largest axis scale of an instance transform: the length of its longest basis column. It
+// carries a radius in the mesh's local space to world space.
+float ge_TransformAxisScale(mat4 transform)
+{
+    return max(length(transform[0].xyz), max(length(transform[1].xyz), length(transform[2].xyz)));
 }
 
 #endif // GE_INSTANCE_SECTOR_GLSL
