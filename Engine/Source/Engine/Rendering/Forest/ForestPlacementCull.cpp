@@ -8,6 +8,7 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstring>
 
@@ -23,6 +24,7 @@ constexpr uint32 kPagesBinding = 1;
 constexpr uint32 kVisibleBinding = 2;
 constexpr uint32 kArgsBinding = 3;
 constexpr uint32 kViewBinding = 0;
+constexpr uint32 kWindBinding = 1;
 constexpr uint32 kMaxCullGroups = 65535;
 constexpr uint32 kSlotSize = PageStreaming::PackedPlacementStore::kPlacementsPerPage;
 
@@ -33,11 +35,13 @@ DescriptorBinding StorageBinding(uint32 binding, bool readOnly)
 }
 } // namespace
 
-bool ForestPlacementCull::Initialize(IDevice& device)
+bool ForestPlacementCull::Initialize(IDevice& device, bool splats)
 {
+    m_Splats = splats;
     ShaderPackage package{};
     std::string error;
-    if (!LoadShaderPkg("Shaders/forest_placement_cull.shaderpkg", device.PreferredShaderSource(), package, &error))
+    const char* path = splats ? "Shaders/forest_splat_cull.shaderpkg" : "Shaders/forest_placement_cull.shaderpkg";
+    if (!LoadShaderPkg(path, device.PreferredShaderSource(), package, &error))
     {
         LOG_WARNING("Forest placement culling shader failed to load: {}", error);
         return false;
@@ -52,6 +56,9 @@ bool ForestPlacementCull::Initialize(IDevice& device)
     m_ViewLayout.debugName = "Forest.Cull.View";
     m_ViewLayout.bindings = {{.binding = kViewBinding, .type = DescriptorType::UniformBuffer,
                              .shaderStages = kShaderStageCompute}};
+    if (splats)
+        m_ViewLayout.bindings.push_back({.binding = kWindBinding, .type = DescriptorType::UniformBuffer,
+                                         .shaderStages = kShaderStageCompute});
     ComputePipelineDesc desc{};
     desc.DebugName = "Forest.CullPlacements";
     desc.ComputeShader = std::make_shared<const std::vector<uint8>>(std::move(stage->second));
@@ -66,10 +73,10 @@ bool ForestPlacementCull::Initialize(IDevice& device)
 
 std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGFrame& frame,
     std::string_view scope, BufferHandle slots, uint32 slotCount, const ForestPlacementGpuView& view,
-    std::span<const ForestPlacementGpuPage> pages)
+    std::span<const ForestPlacementGpuPage> pages, uint32 indexCount, const ForestSplatWindGpu* wind)
 {
     if (!m_Pipeline.IsValid() || !slots.IsValid() || pages.empty() || pages.size() > slotCount ||
-        pages.size() > kMaxCullGroups)
+        pages.size() > kMaxCullGroups || (wind != nullptr) != m_Splats || indexCount == 0)
         return std::nullopt;
     auto* device = frame.Device();
     if (!device || device->RequestComputePipeline(m_Pipeline) != PipelineBuildState::Warm)
@@ -80,27 +87,41 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
     // when demand drops to avoid replacing in-flight buffers during camera motion.
     const uint32 visiblePages = std::min(slotCount, std::max(m_VisiblePageCapacity,
         std::bit_ceil(static_cast<uint32>(pages.size()))));
-    const uint64 visibleBytes = uint64{visiblePages} * kSlotSize * sizeof(ForestPlacementGpuVisible);
+    const uint32 visibleStride = m_Splats ? sizeof(ForestPlacementGpuVisibleSplat) : sizeof(ForestPlacementGpuVisible);
+    const uint64 visibleBytes = uint64{visiblePages} * kSlotSize * visibleStride;
     const auto pageUpload = frame.AllocUpload(pages.size_bytes());
     const auto viewUpload = frame.AllocUpload(sizeof(view));
     const auto argsUpload = frame.AllocUpload(sizeof(ForestPlacementIndirectDraw));
     if (!pageUpload.Valid() || !viewUpload.Valid() || !argsUpload.Valid())
         return std::nullopt;
 
-    constexpr ForestPlacementIndirectDraw kInitialDraw{};
+    const ForestPlacementIndirectDraw initialDraw{.IndexCount = indexCount};
     std::memcpy(pageUpload.Ptr, pages.data(), pages.size_bytes());
     std::memcpy(viewUpload.Ptr, &view, sizeof(view));
-    std::memcpy(argsUpload.Ptr, &kInitialDraw, sizeof(kInitialDraw));
+    std::memcpy(argsUpload.Ptr, &initialDraw, sizeof(initialDraw));
 
     const auto slotBuffer = frame.ImportExternalBuffer("Forest.PlacementSlots", slots, slotBytes);
     const auto pageBuffer = frame.ImportExternalBuffer("Forest.CullPages", pageUpload.Buffer);
     const auto viewBuffer = frame.ImportExternalBuffer("Forest.CullView", viewUpload.Buffer);
     const auto argsStaging = frame.ImportExternalBuffer("Forest.CullArgsUpload", argsUpload.Buffer);
+    RGBuffer windBuffer{};
+    uint64 windOffset = 0;
+    if (wind)
+    {
+        const auto windUpload = frame.AllocUpload(sizeof(*wind));
+        if (!windUpload.Valid())
+            return std::nullopt;
+        std::memcpy(windUpload.Ptr, wind, sizeof(*wind));
+        windBuffer = frame.ImportExternalBuffer("Forest.SplatWind", windUpload.Buffer);
+        windOffset = windUpload.Offset;
+        if (!windBuffer.IsValid())
+            return std::nullopt;
+    }
 
     const BufferDesc visibleDesc{.size = visibleBytes,
         .usage = static_cast<uint32>(BufferUsage::Storage | BufferUsage::TransferSrc),
-        .memoryUsage = BufferMemoryUsage::DeviceLocal, .stride = sizeof(ForestPlacementGpuVisible)};
-    const BufferDesc argsDesc{.size = sizeof(kInitialDraw),
+        .memoryUsage = BufferMemoryUsage::DeviceLocal, .stride = visibleStride};
+    const BufferDesc argsDesc{.size = sizeof(initialDraw),
         .usage = static_cast<uint32>(BufferUsage::Storage | BufferUsage::Indirect | BufferUsage::TransferDst |
                                      BufferUsage::TransferSrc),
         .memoryUsage = BufferMemoryUsage::DeviceLocal, .stride = sizeof(uint32)};
@@ -128,7 +149,7 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
         [=, offset = argsUpload.Offset](RGContext& ctx)
         {
             if (ctx.Cmd)
-                ctx.Cmd->CopyBuffer(ctx.GetBuffer(argsStaging), ctx.GetBuffer(args), sizeof(kInitialDraw), offset, 0);
+                ctx.Cmd->CopyBuffer(ctx.GetBuffer(argsStaging), ctx.GetBuffer(args), sizeof(initialDraw), offset, 0);
         });
     if (!reset.IsValid())
         return std::nullopt;
@@ -140,6 +161,8 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
             builder.Read(slotBuffer, RGBufferRead::Storage);
             builder.Read(pageBuffer, RGBufferRead::Storage);
             builder.Read(viewBuffer, RGBufferRead::Uniform);
+            if (windBuffer.IsValid())
+                builder.Read(windBuffer, RGBufferRead::Uniform);
             builder.Read(args, RGBufferRead::Storage);
             builder.Write(visible, RGBufferWrite::Storage);
             builder.Write(args, RGBufferWrite::Storage);
@@ -160,12 +183,16 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
                 {.Binding = kVisibleBinding, .Type = DescriptorType::StorageBuffer,
                  .Buffer = ctx.GetBuffer(visible), .Range = visibleBytes},
                 {.Binding = kArgsBinding, .Type = DescriptorType::StorageBuffer,
-                 .Buffer = ctx.GetBuffer(args), .Range = sizeof(kInitialDraw)}};
-            const DescriptorWrite camera[] = {
+                 .Buffer = ctx.GetBuffer(args), .Range = sizeof(initialDraw)}};
+            std::array<DescriptorWrite, 2> camera{{
                 {.Binding = kViewBinding, .Type = DescriptorType::UniformBuffer,
-                 .Buffer = ctx.GetBuffer(viewBuffer), .Offset = viewOffset, .Range = sizeof(ForestPlacementGpuView)}};
+                 .Buffer = ctx.GetBuffer(viewBuffer), .Offset = viewOffset, .Range = sizeof(ForestPlacementGpuView)}}};
+            if (windBuffer.IsValid())
+                camera[1] = {.Binding = kWindBinding, .Type = DescriptorType::UniformBuffer,
+                             .Buffer = ctx.GetBuffer(windBuffer), .Offset = windOffset, .Range = sizeof(ForestSplatWindGpu)};
             const auto set0 = passDevice->GetOrCreateDescriptorSet(m_PlacementsLayout, placements, "Forest.Cull.Placements");
-            const auto set1 = passDevice->GetOrCreateDescriptorSet(m_ViewLayout, camera, "Forest.Cull.View");
+            const auto set1 = passDevice->GetOrCreateDescriptorSet(
+                m_ViewLayout, std::span(camera).first(windBuffer.IsValid() ? 2u : 1u), "Forest.Cull.View");
             if (!set0.IsValid() || !set1.IsValid())
                 return;
             ctx.Cmd->SetPipeline(pipeline);

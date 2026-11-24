@@ -126,6 +126,9 @@ void CollectForestNearMeshCandidates(const ForestPlacementRuntime& runtime,
     const float meshEnterCoverage = view.ImpostorCoverage * (1.0f + ImpostorStage::kSwitchHysteresis);
     for (const auto& detail : draws)
     {
+        // A page in the handoff band is too far for a mesh and draws only part of its trees.
+        if (detail.DetailWeight < 1.0f)
+            continue;
         const auto records = runtime.ReadyPlacements(detail.Ticket);
         if (records.empty() || PageDistanceSquared(archive[detail.Ticket.Page], eye) > maxDistance * maxDistance)
             continue;

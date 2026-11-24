@@ -1,7 +1,7 @@
 // The impostor card material composes and compiles: the impostor surface, the card vertex
 // modifier and the cutout, on the instanced world pass and in the depth prepass. The packed
-// forest card, the packed forest near meshes and the forest canopy surface of the overview mesh
-// compose too.
+// forest card, the packed forest splats, the packed forest near meshes and the forest canopy surface
+// of the overview mesh compose too.
 
 #include <gtest/gtest.h>
 
@@ -127,6 +127,31 @@ TEST(ImpostorSurfaceCompose, TheForestCardFacesADirectionalViewer)
     EXPECT_EQ(viewer->Offset, 48u);
 }
 
+TEST(ImpostorSurfaceCompose, ThePackedForestSplatsComposeWithTheHandoffCrossfade)
+{
+    struct RestoreProfile
+    {
+        bool Previous = IsCompatShaderProfile();
+        ~RestoreProfile() { SetCompatShaderProfile(Previous); }
+    } restore;
+    MaterialDocument splats{};
+    splats.materialName = "ForestSplatProbe";
+    splats.lightingModel = "StandardPBR";
+    splats.surfaceShader = "Surfaces/forest_splat.glsl";
+    splats.vertexModifier = "VertexModifiers/forest_splats.glsl";
+    splats.customVertexShader = true;
+    splats.alphaMode = MaterialAlphaMode::Mask;
+    splats.doubleSided = true;
+    splats.properties["alphaCutoff"] = 0.5f;
+    for (bool compatibility : {false, true})
+    {
+        SCOPED_TRACE(compatibility);
+        SetCompatShaderProfile(compatibility);
+        ExpectCompiles(splats, MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::LodCrossfade,
+                       "packed forest splats");
+    }
+}
+
 TEST(ImpostorSurfaceCompose, TheForestCanopySurfaceComposesForColorAndDepth)
 {
     MaterialDocument canopy{};
@@ -140,6 +165,9 @@ TEST(ImpostorSurfaceCompose, TheForestCanopySurfaceComposesForColorAndDepth)
     ExpectCompiles(canopy, MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows,
                    "canopy color");
     ExpectCompiles(canopy, MaterialKeyword::Instanced | MaterialKeyword::DepthOnlyFragment, "canopy depth");
+    // The overview quads of the splat handoff band draw without instancing, with the crossfade.
+    ExpectCompiles(canopy, MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::LodCrossfade,
+                   "canopy handoff");
 }
 
 TEST(ImpostorSurfaceCompose, PackedNearMeshesReflectTheTransformBufferName)

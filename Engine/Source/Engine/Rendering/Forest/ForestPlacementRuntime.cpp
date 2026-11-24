@@ -20,8 +20,9 @@ constexpr uint32 kPlacementsPerSlot = PageStreaming::PackedPlacementStore::kPlac
 // All six frustum planes still to test.
 constexpr uint32 kAllPlanes = 0x3fu;
 constexpr float kDetailPrefetchDistanceScale = 1.4f;
-constexpr uint8 kDrawDetail = 1;
-constexpr uint8 kPrefetchDetail = 2;
+constexpr uint8 kPrefetchDetail = 1;
+constexpr uint8 kDrawHandoff = 2;
+constexpr uint8 kDrawDetail = 3;
 constexpr uint8 kAllCascades = (1u << kMaxDepthEmitCascades) - 1u;
 // The float rounding margin of a plane test, in epsilons of the summed magnitudes.
 constexpr float kPlaneMarginEpsilons = 8.0f;
@@ -71,6 +72,15 @@ std::optional<uint32> VisiblePlaneMask(const Mathematics::WorldPosition& boundsM
             mask &= ~bit;
     }
     return mask;
+}
+
+// Meters from the eye within which pages draw their trees: the detail distance and the handoff band.
+double DetailReach(const ForestPlacementView& view)
+{
+    if (!std::isfinite(view.DetailDistance) || view.DetailDistance <= 0.0f)
+        return 0.0;
+    const float handoff = std::isfinite(view.HandoffWidth) ? std::max(0.0f, view.HandoffWidth) : 0.0f;
+    return static_cast<double>(view.DetailDistance) + handoff;
 }
 
 bool SameStandView(const ForestPlacementView& a, const ForestPlacementView& b)
@@ -153,7 +163,7 @@ void ForestPlacementRuntime::ResetResidency()
 
 bool ForestPlacementRuntime::CanPrefetchDetails(const ForestPlacementView& view) const
 {
-    return CanRequestWithin(view, static_cast<double>(view.DetailDistance) * kDetailPrefetchDistanceScale);
+    return CanRequestWithin(view, DetailReach(view) * kDetailPrefetchDistanceScale);
 }
 
 bool ForestPlacementRuntime::CanRequestWithin(const ForestPlacementView& view, double distance) const
@@ -333,7 +343,8 @@ std::span<const ForestShadowPage> ForestPlacementRuntime::GatherShadowPages(
 void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
 {
     if (m_DemandView && m_DemandView->DetailDistance == view.DetailDistance &&
-        SameStandView(*m_DemandView, view) && (!m_DemandRetryFrame || m_Frame < *m_DemandRetryFrame))
+        m_DemandView->HandoffWidth == view.HandoffWidth && SameStandView(*m_DemandView, view) &&
+        (!m_DemandRetryFrame || m_Frame < *m_DemandRetryFrame))
         return;
     m_DemandView = view;
     m_DemandRetryFrame.reset();
@@ -343,9 +354,9 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
     m_Visible.clear();
     m_Candidates.clear();
     m_DetailBudget = {};
-    const double detail = m_Slots.empty() || !std::isfinite(view.DetailDistance) ?
-        0.0 : std::max(0.0f, view.DetailDistance);
+    const double detail = m_Slots.empty() ? 0.0 : DetailReach(view);
     const double distanceSquared = detail * detail;
+    const double authoredSquared = static_cast<double>(view.DetailDistance) * view.DetailDistance;
     const double prefetchDistance = detail * kDetailPrefetchDistanceScale;
     Visit(0, view, kAllPlanes,
           prefetchDistance * prefetchDistance, m_Visible);
@@ -354,7 +365,7 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
     // One extra ordered candidate identifies the closest budget omission without scanning the remaining pages.
     const size_t sorted = count < m_Candidates.size() ? count + 1 : count;
     std::partial_sort(m_Candidates.begin(), m_Candidates.begin() + sorted, m_Candidates.end());
-    if (count < sorted && m_Candidates[count].first < distanceSquared)
+    if (count < sorted && m_Candidates[count].first < authoredSquared)
         m_DetailBudget.NearestOmitted = std::sqrt(m_Candidates[count].first);
     // Distance order puts every draw request before speculative reads.
     uint32 prefetchCount = 0;
@@ -363,11 +374,12 @@ void ForestPlacementRuntime::GatherDemand(const ForestPlacementView& view)
         const bool prefetch = distance >= distanceSquared;
         if (prefetch && prefetchCount == m_ReadsPerFrame)
             break;
-        m_Wanted[page] = prefetch ? kPrefetchDetail : kDrawDetail;
+        const bool withinDetailDistance = distance < authoredSquared;
+        m_Wanted[page] = prefetch ? kPrefetchDetail : (withinDetailDistance ? kDrawDetail : kDrawHandoff);
         m_Priority.push_back(page);
         if (prefetch)
             ++prefetchCount;
-        else
+        else if (withinDetailDistance)
             ++m_DetailBudget.Selected;
     }
 }
@@ -390,7 +402,7 @@ void ForestPlacementRuntime::GatherShadowDemand(std::span<const ForestShadowPage
             m_ShadowMasks[page] |= cascades;
             continue;
         }
-        if (m_Wanted[page] != kDrawDetail)
+        if (m_Wanted[page] < kDrawHandoff)
         {
             if (shadowOnly == m_ShadowCapacity)
                 continue;
@@ -403,7 +415,7 @@ void ForestPlacementRuntime::GatherShadowDemand(std::span<const ForestShadowPage
 
 bool ForestPlacementRuntime::IsShadowOnly(uint32 page) const
 {
-    return m_ShadowMasks[page] != 0 && m_Wanted[page] != kDrawDetail;
+    return m_ShadowMasks[page] != 0 && m_Wanted[page] < kDrawHandoff;
 }
 
 void ForestPlacementRuntime::BuildReadOrder()
@@ -414,7 +426,7 @@ void ForestPlacementRuntime::BuildReadOrder()
     m_ReadOrder.assign(m_Priority.begin(), firstPrefetch);
     for (uint32 page : m_ShadowPages)
     {
-        if (m_Wanted[page] != kDrawDetail)
+        if (m_Wanted[page] < kDrawHandoff)
             m_ReadOrder.push_back(page);
     }
     for (uint32 page : std::ranges::subrange(firstPrefetch, m_Priority.end()))
@@ -443,6 +455,7 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
     out.StandDraws.clear();
     out.DetailedDraws.clear();
     out.ShadowDraws.clear();
+    out.StandFades.clear();
     out.Reads.clear();
     out.CancelReads.clear();
     out.DetailBudget = {};
@@ -488,9 +501,8 @@ bool ForestPlacementRuntime::Prepare(const ForestPlacementView& view, uint64 fra
             ReleaseIfRetired(slotIndex);
     }
     AppendReads(out.Reads);
-    EmitDraws(frame, out);
     out.DetailBudget = m_DetailBudget;
-    out.DetailBudget.Resident = static_cast<uint32>(out.DetailedDraws.size());
+    EmitDraws(frame, out);
     return true;
 }
 
@@ -692,6 +704,18 @@ void ForestPlacementRuntime::EmitStand(uint32 first, uint32 end, std::vector<Dra
     draws.push_back({.IndexCount = (end - first) * kIndicesPerPage, .FirstIndex = first * kIndicesPerPage});
 }
 
+float ForestPlacementRuntime::HandoffWeight(uint32 page) const
+{
+    const ForestPlacementView& view = *m_DemandView;
+    if (!(view.HandoffWidth > 0.0f))
+        return 1.0f;
+    const Bounds& box = m_Leaves[page];
+    const double distance = std::sqrt(DistanceSquared(box.Min, box.Max, view.Eye));
+    // A drawn page is nearer than the reach, so its weight is above 0.
+    const double weight = (DetailReach(view) - distance) / view.HandoffWidth;
+    return std::clamp(static_cast<float>(weight), std::numeric_limits<float>::min(), 1.0f);
+}
+
 void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
 {
     m_Ready.clear();
@@ -701,7 +725,7 @@ void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
         if (slot.Current != Stage::Ready || slot.Retiring)
             continue;
         const uint32 page = slot.Ticket.Page;
-        if (m_Wanted[page] == kDrawDetail)
+        if (m_Wanted[page] >= kDrawHandoff)
         {
             slot.LastReader = frame;
             m_Ready.emplace_back(page, slotIndex);
@@ -726,7 +750,13 @@ void ForestPlacementRuntime::EmitDraws(uint64 frame, ForestPlacementFrame& out)
             const auto [page, slot] = *ready++;
             assert(cursor <= page);
             EmitStand(cursor, page, out.StandDraws);
-            out.DetailedDraws.push_back({m_Slots[slot].Ticket, slot * kPlacementsPerSlot, m_Store.Pages()[page].Count});
+            const float weight = HandoffWeight(page);
+            if (m_Wanted[page] == kDrawDetail)
+                ++out.DetailBudget.Resident;
+            out.DetailedDraws.push_back({m_Slots[slot].Ticket, slot * kPlacementsPerSlot, m_Store.Pages()[page].Count,
+                                         weight});
+            if (weight < 1.0f)
+                out.StandFades.push_back({{.IndexCount = kIndicesPerPage, .FirstIndex = page * kIndicesPerPage}, weight});
             cursor = page + 1;
         }
         EmitStand(cursor, end, out.StandDraws);

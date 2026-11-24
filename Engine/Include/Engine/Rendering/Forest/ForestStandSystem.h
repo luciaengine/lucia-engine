@@ -32,9 +32,10 @@ namespace GameEngine::Engine::Renderer
 
 class RenderServices;
 struct ForestPlacementSession;
+struct ForestSplatCells;
 
 /// Attaches the packed forest stand of each ForestStand entity, and releases it when the entity, the
-/// component or the scene goes. A changed archive file attaches the stand again. Detail Distance and
+/// component or the scene goes. A changed archive or splat file attaches the stand again. Detail Distance and
 /// Near Mesh Budget apply to the attached stand, and so does the Shadow Casting of the overview
 /// MeshRenderer. A stand that cannot attach logs one warning. Main thread.
 class ForestStandSystem : public ECS::ISystem
@@ -80,6 +81,8 @@ private:
         GUID Archive;
         GUID TreeModel;
         DetailMode Detail = DetailMode::Off;
+        Components::ForestFarRepresentation Far = Components::ForestFarRepresentation::Cards;
+        GUID Splats;
         GUID OverviewModel;
         uint32 OverviewMesh = 0;
         bool RendererValid = false;
@@ -105,7 +108,7 @@ private:
         StandStatus Status;
     };
 
-    // Archive GUIDs whose file changed. The file watcher thread adds; the main thread takes.
+    // Archive and splat GUIDs whose file changed. The file watcher thread adds; the main thread takes.
     struct ChangedArchives
     {
         std::mutex Mutex;
@@ -117,7 +120,7 @@ private:
     // Attaches the new and changed stands, releases the stands whose entity or component went, and applies
     // Detail Distance and Near Mesh Budget to the kept stands.
     void Reconcile(ECS::World& world);
-    // Releases the stands whose archive file changed, so that the next reconcile attaches them again.
+    // Releases the stands whose archive or splat file changed, so that the next reconcile attaches them again.
     // True when it released a stand.
     bool ReleaseChangedArchives();
     // Reports a stand whose resident overview mesh does not match the pages of its archive.
@@ -129,6 +132,8 @@ private:
     // Registers the stand's draws and fills its registration, details and attach problem.
     void Attach(ECS::World& world, ECS::EntityHandle entity, const Components::ForestStand& settings, Stand& stand);
     static DetailMode DetailModeOf(const Components::ForestStand& settings);
+    // The splat bake of a stand set to Splats, or null with a problem that says why it draws cards.
+    std::shared_ptr<const ForestSplatCells> LoadSplats(const StandSource& source, std::string& problem) const;
 
     RenderServices* m_RenderServices = nullptr;
     AssetManager* m_Assets = nullptr;
@@ -140,6 +145,7 @@ private:
     ECS::ChangeGate m_RendererGate;
     std::shared_ptr<ChangedArchives> m_ChangedArchives = std::make_shared<ChangedArchives>();
     AssetReloadInvalidator m_ArchiveWatch;
+    AssetReloadInvalidator m_SplatWatch;
 };
 
 } // namespace GameEngine::Engine::Renderer

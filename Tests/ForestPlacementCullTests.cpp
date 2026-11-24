@@ -67,7 +67,7 @@ protected:
         for (uint32 i = 0; i < 6; ++i)
             placements[i] = {static_cast<uint16>(i * 100), 0, 0, 0, 0}; // x = i meters, scale 0.75
         m_Device->UpdateBuffer(m_Slots, 0, placements.size() * sizeof(PackedPlacement), placements.data());
-        ASSERT_TRUE(m_Cull.Initialize(*m_Device));
+        ASSERT_TRUE(m_Cull.Initialize(*m_Device, false));
     }
 
     void TearDown() override
@@ -103,7 +103,7 @@ protected:
         graph.BeginFrame(frameIndex);
         std::optional<ForestPlacementCull::DrawBuffers> buffers;
         for (int attempt = 0; attempt < kMaxDeclareAttempts && !buffers; ++attempt)
-            buffers = m_Cull.Declare(graph, "ForestCullTest", m_Slots, 2, view, pages);
+            buffers = m_Cull.Declare(graph, "ForestCullTest", m_Slots, 2, view, pages, 6, nullptr);
         EXPECT_TRUE(buffers);
         if (!buffers)
             return {};

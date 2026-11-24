@@ -9,6 +9,7 @@
 #include "Components/Rendering/MeshRenderer.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
+#include "Engine/Rendering/Forest/ForestSplatCells.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "EngineLogCapture.h"
@@ -20,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <string>
@@ -123,6 +125,8 @@ TEST_F(ForestStandSystemTest, SceneFileKeepsEveryForestStandField)
     authored.TreeModel = Components::ModelRef(GUID::Generate());
     authored.DetailDistance = 275.0f;
     authored.NearMeshBudget = 96;
+    authored.FarRepresentation = Components::ForestFarRepresentation::Splats;
+    authored.Splats = Components::ForestSplatsRef(GUID::Generate());
     world.AddComponentImmediate(entity, authored);
 
     const auto scene = m_Scratch.Path() / "Stand.scene";
@@ -137,6 +141,8 @@ TEST_F(ForestStandSystemTest, SceneFileKeepsEveryForestStandField)
     EXPECT_EQ(stands.front().TreeModel, authored.TreeModel);
     EXPECT_FLOAT_EQ(stands.front().DetailDistance, 275.0f);
     EXPECT_EQ(stands.front().NearMeshBudget, 96u);
+    EXPECT_EQ(stands.front().FarRepresentation, Components::ForestFarRepresentation::Splats);
+    EXPECT_EQ(stands.front().Splats, authored.Splats);
 }
 
 TEST_F(ForestStandSystemTest, EachSceneLoadAttachesOneStandAndReleasesTheLast)
@@ -268,6 +274,81 @@ TEST_F(ForestStandSystemTest, ATreeModelAttachesADetailSessionWithTheBudgetCappe
     EXPECT_TRUE(IsAttached(system, world, entity));
     EXPECT_TRUE(system.FindStatus(world.GetWorldId(), entity)->Problem.empty());
     EXPECT_TRUE(ForestPlacementFeatureTestAccess::Sessions(*feature).empty());
+}
+
+TEST_F(ForestStandSystemTest, SplatsWithoutAValidBakeDrawCardsAndSayHowToFixIt)
+{
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto stand = *world.GetComponent<Components::ForestStand>(entity);
+    stand.TreeModel = Components::ModelRef(m_Archive);
+    stand.FarRepresentation = Components::ForestFarRepresentation::Splats;
+    world.AddComponentImmediate(entity, stand);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    system.Update(world, 0.0f);
+    ASSERT_TRUE(IsAttached(system, world, entity));
+    EXPECT_NE(system.FindStatus(world.GetWorldId(), entity)->Problem.find("ForestPlacementCook --splats"),
+              std::string::npos);
+    const auto* feature = m_Services.GetFeature<ForestPlacementFeature>();
+    ASSERT_NE(feature, nullptr);
+    {
+        const auto sessions = ForestPlacementFeatureTestAccess::Sessions(*feature);
+        ASSERT_EQ(sessions.size(), 1u);
+        EXPECT_EQ(sessions.front()->Splats, nullptr);
+    }
+
+    // A bake that is not valid also draws cards, and names the file.
+    const auto broken = m_Scratch.Path() / "Assets" / "Broken.geforestsplats";
+    std::ofstream(broken, std::ios::binary) << "not a bake";
+    ASSERT_TRUE(m_Assets.GetRegistry().RegisterAsset(broken));
+    const GUID brokenGuid = m_Assets.GetRegistry().GetAssetGUID(broken);
+    ASSERT_FALSE(brokenGuid.IsNull());
+    world.GetComponentForWrite<Components::ForestStand>(entity)->Splats = Components::ForestSplatsRef(brokenGuid);
+    system.Update(world, 0.0f);
+    EXPECT_NE(system.FindStatus(world.GetWorldId(), entity)->Problem.find("cannot read its splat bake"), std::string::npos);
+    EXPECT_EQ(ForestPlacementFeatureTestAccess::Sessions(*feature).front()->Splats, nullptr);
+}
+
+TEST_F(ForestStandSystemTest, AValidSplatBakeGivesTheSessionItsCells)
+{
+    using Engine::Renderer::ForestSplatCells;
+    ForestSplatCells bake{.Origin = {-1.0f, 0.0f, -1.0f}, .CellSize = 0.5f};
+    bake.Cells.push_back({0x40020101u, 0x80406020u, 0x00FF8080u});
+    const auto file = m_Scratch.Path() / "Assets" / "Tree.geforestsplats";
+    const auto bytes = Engine::Renderer::EncodeForestSplatCells(bake);
+    std::ofstream(file, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()),
+                                                static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(m_Assets.GetRegistry().RegisterAsset(file));
+    const GUID splats = m_Assets.GetRegistry().GetAssetGUID(file);
+    ASSERT_FALSE(splats.IsNull());
+
+    ECS::World world;
+    const auto entity = CreateStand(world);
+    auto stand = *world.GetComponent<Components::ForestStand>(entity);
+    stand.TreeModel = Components::ModelRef(m_Archive);
+    stand.FarRepresentation = Components::ForestFarRepresentation::Splats;
+    stand.Splats = Components::ForestSplatsRef(splats);
+    world.AddComponentImmediate(entity, stand);
+    ForestStandSystem system(&m_Services, &m_Assets);
+    system.Update(world, 0.0f);
+    ASSERT_TRUE(IsAttached(system, world, entity));
+    EXPECT_TRUE(system.FindStatus(world.GetWorldId(), entity)->Problem.empty());
+    {
+        const auto sessions =
+            ForestPlacementFeatureTestAccess::Sessions(*m_Services.GetFeature<ForestPlacementFeature>());
+        ASSERT_EQ(sessions.size(), 1u);
+        ASSERT_NE(sessions.front()->Splats, nullptr);
+        EXPECT_EQ(sessions.front()->Splats->Cells.size(), 1u);
+        EXPECT_EQ(sessions.front()->TreeIndexCount(), 6u);
+    }
+
+    // Cards again releases the bake.
+    world.GetComponentForWrite<Components::ForestStand>(entity)->FarRepresentation =
+        Components::ForestFarRepresentation::Cards;
+    system.Update(world, 0.0f);
+    const auto cards = ForestPlacementFeatureTestAccess::Sessions(*m_Services.GetFeature<ForestPlacementFeature>());
+    ASSERT_EQ(cards.size(), 1u);
+    EXPECT_EQ(cards.front()->Splats, nullptr);
 }
 
 TEST_F(ForestStandSystemTest, InspectorStatusFollowsTheLastDetailViewPlan)

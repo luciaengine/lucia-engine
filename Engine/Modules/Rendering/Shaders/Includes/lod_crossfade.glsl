@@ -18,6 +18,10 @@
 //                record keeps. 0 = incoming level, 1 = outgoing level. Both
 //                records of a pair carry the SAME weight, so the two tests
 //                partition the pixels exactly.
+//   bit  23      gradient — only in a code that a draw sets itself (the forest
+//                handoff). It selects interleaved gradient noise instead of
+//                Bayer 4x4. A code from the indirection word never has it:
+//                the vertex unpack keeps only the high byte.
 //
 // C++ mirror: GPUDrawStreamBuilder::kLodFade* (pinned by BatchScatterComputeTests).
 
@@ -38,6 +42,7 @@ const uint  kLodFadeWeightShift = 24u;
 const uint  kLodFadeWeightMask  = 0x7Fu;
 const uint  kLodFadeMaxWeight   = 127u;
 const uint  kLodFadePhaseBit    = 0x80000000u;
+const uint  kLodFadeGradientBit = 0x00800000u;
 const float kLodFadeWeightScale = 1.0 / 127.0;
 
 // Fade state packing (draw_command_scatter.comp binding 11, uvec2.x). Four bits
@@ -71,12 +76,21 @@ bool GE_LodCrossfadeKeep(uint fadeCode, vec2 fragCoord)
 {
     if ((fadeCode & ~kLodFadeIndexMask) == 0u)
         return true;
-    const uint kBayer4x4[16] = uint[16](0u, 8u, 2u, 10u,
-                                        12u, 4u, 14u, 6u,
-                                        3u, 11u, 1u, 9u,
-                                        15u, 7u, 13u, 5u);
-    ivec2 p = ivec2(fragCoord) & 3;
-    float d = float(kBayer4x4[p.y * 4 + p.x]) * (1.0 / 16.0);
+    float d;
+    if ((fadeCode & kLodFadeGradientBit) != 0u)
+    {
+        // Interleaved gradient noise: 127 levels with no visible 4x4 pattern over a wide band.
+        d = fract(52.9829189 * fract(dot(floor(fragCoord), vec2(0.06711056, 0.00583715))));
+    }
+    else
+    {
+        const uint kBayer4x4[16] = uint[16](0u, 8u, 2u, 10u,
+                                            12u, 4u, 14u, 6u,
+                                            3u, 11u, 1u, 9u,
+                                            15u, 7u, 13u, 5u);
+        ivec2 p = ivec2(fragCoord) & 3;
+        d = float(kBayer4x4[p.y * 4 + p.x]) * (1.0 / 16.0);
+    }
     float weight = float((fadeCode >> kLodFadeWeightShift) & kLodFadeWeightMask)
                  * kLodFadeWeightScale;
     return (fadeCode & kLodFadePhaseBit) == 0u ? (d < weight) : (d >= weight);

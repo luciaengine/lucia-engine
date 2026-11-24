@@ -115,7 +115,9 @@ namespace GameEngine {
     X(AiOptionSet) \
     X(AiStateTree) \
     /* Packed tree placements of one forest stand (.geforest), streamed by page at run time. */ \
-    X(ForestPlacementArchive)
+    X(ForestPlacementArchive) \
+    /* The splat bake of one tree model (.geforestsplats), drawn by a forest stand set to splats. */ \
+    X(ForestSplats)
 
 /**
  * @brief Asset types supported by the engine

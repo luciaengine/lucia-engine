@@ -58,6 +58,7 @@ using OceanSettingsRef = AssetRef<AssetType::OceanSettings>;
 using OceanPresetRef = AssetRef<AssetType::OceanPreset>;
 using ParticleStackRef = AssetRef<AssetType::ParticleStack>;
 using ForestPlacementArchiveRef = AssetRef<AssetType::ForestPlacementArchive>;
+using ForestSplatsRef = AssetRef<AssetType::ForestSplats>;
 
 } // namespace GameEngine::Components
 

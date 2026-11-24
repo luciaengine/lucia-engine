@@ -1,4 +1,5 @@
 #include "ForestOverviewCook.h"
+#include "ForestSplatBake.h"
 
 #include "PageStreaming/PageAddress.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
@@ -232,7 +233,8 @@ void Cook(std::istream& input, const std::filesystem::path& output, float boundR
 constexpr std::string_view kUsage =
     "Usage: ForestPlacementCook placements.csv output.geforest boundRadiusMeters [--spatial-order]\n"
     "       ForestPlacementCook --overview input.geforest canopy.png output.glb minX minZ maxX maxZ "
-    "canopyHeight tileSize";
+    "canopyHeight tileSize\n"
+    "       ForestPlacementCook --splats assetRoot treeModel output.geforestsplats [mesh=material.material]...";
 
 void CookOverview(int argc, char** argv)
 {
@@ -248,6 +250,32 @@ void CookOverview(int argc, char** argv)
     source.TileSize = static_cast<uint32>(*size);
     CookForestOverview(PathFromUtf8(argv[2]), PathFromUtf8(argv[3]), output, source);
     std::cout << "Wrote forest overview mesh and atlas\n";
+}
+
+// Parses one mesh=material argument. The material path is relative to the asset root.
+ForestSplatMaterial ParseSplatMaterial(std::string_view argument)
+{
+    const size_t separator = argument.find('=');
+    const auto mesh = ParseInt(argument.substr(0, separator));
+    if (separator == std::string_view::npos || !mesh || *mesh < 0 || *mesh > std::numeric_limits<uint32>::max() ||
+        separator + 1 == argument.size())
+        throw std::runtime_error("'" + std::string(argument) + "' is not a material for a mesh. Pass "
+                                 "<mesh>=<file.material>, for example 1=Materials/Leaves.material.");
+    return {static_cast<uint32>(*mesh), PathFromUtf8(argument.substr(separator + 1))};
+}
+
+void CookSplats(int argc, char** argv)
+{
+    if (argc < 5)
+        throw std::runtime_error(std::string(kUsage));
+    const auto output = PathFromUtf8(argv[4]);
+    if (output.extension() != ".geforestsplats")
+        throw std::runtime_error("Use a .geforestsplats output path");
+    std::vector<ForestSplatMaterial> materials;
+    for (int argument = 5; argument < argc; ++argument)
+        materials.push_back(ParseSplatMaterial(argv[argument]));
+    const uint32 cells = CookForestSplats(PathFromUtf8(argv[2]), PathFromUtf8(argv[3]), output, materials);
+    std::cout << "Wrote " << cells << " splat cells\n";
 }
 
 void CookArchive(int argc, char** argv)
@@ -274,6 +302,8 @@ int main(int argc, char** argv)
     {
         if (argc >= 2 && std::string_view(argv[1]) == "--overview")
             GameEngine::CookOverview(argc, argv);
+        else if (argc >= 2 && std::string_view(argv[1]) == "--splats")
+            GameEngine::CookSplats(argc, argv);
         else
             GameEngine::CookArchive(argc, argv);
         return 0;

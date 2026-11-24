@@ -1,5 +1,6 @@
 #include "Engine/Rendering/Forest/ForestStandSystem.h"
 
+#include "AssetCore/SharedFileRead.h"
 #include "Assets/AssetManager.h"
 #include "Components/Name.h"
 #include "Components/Rendering/MeshRenderer.h"
@@ -10,6 +11,7 @@
 #include "ForestPlacementSession.h"
 #include "ForestStandDrawProducer.h"
 #include "ForestStandDraws.h"
+#include "Engine/Rendering/Forest/ForestSplatCells.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
@@ -104,14 +106,16 @@ ForestStandSystem::ForestStandSystem(RenderServices* renderServices, AssetManage
 {
     if (!m_Assets)
         return;
-    // A cook replaces the archive file; the event comes on the file watcher thread.
+    // A cook replaces the archive or splat file; the event comes on the file watcher thread.
+    const auto remember = [changed = m_ChangedArchives](const GUID& file)
+    {
+        const std::scoped_lock lock(changed->Mutex);
+        changed->Guids.Insert(file);
+    };
     m_ArchiveWatch = AssetReloadInvalidator(m_Assets->GetEventDispatcher(), AssetType::ForestPlacementArchive,
-        [changed = m_ChangedArchives](const GUID& archive)
-        {
-            const std::scoped_lock lock(changed->Mutex);
-            changed->Guids.Insert(archive);
-        },
-        AssetReloadInvalidator::EventSet::ContentEvents);
+                                            remember, AssetReloadInvalidator::EventSet::ContentEvents);
+    m_SplatWatch = AssetReloadInvalidator(m_Assets->GetEventDispatcher(), AssetType::ForestSplats, remember,
+                                          AssetReloadInvalidator::EventSet::ContentEvents);
 }
 
 ForestStandSystem::~ForestStandSystem() = default;
@@ -155,7 +159,7 @@ bool ForestStandSystem::ReleaseChangedArchives()
         return false;
     std::vector<ECS::EntityHandle> released;
     for (const auto& [entity, stand] : m_Stands)
-        if (changed.Contains(stand.Source.Archive))
+        if (changed.Contains(stand.Source.Archive) || changed.Contains(stand.Source.Splats))
             released.push_back(entity);
     for (const ECS::EntityHandle entity : released)
         m_Stands.Erase(entity);
@@ -245,6 +249,31 @@ ForestStandSystem::DetailMode ForestStandSystem::DetailModeOf(const Components::
     return settings.NearMeshBudget == 0 ? DetailMode::Cards : DetailMode::CardsAndNearMeshes;
 }
 
+std::shared_ptr<const ForestSplatCells> ForestStandSystem::LoadSplats(const StandSource& source,
+                                                                     std::string& problem) const
+{
+    AssetMetadata file;
+    if (source.Splats.IsNull() || !m_Assets->GetRegistry().TryGetAssetMetadata(source.Splats, file) ||
+        file.Path.empty())
+    {
+        problem = "draws cards: Far Representation is Splats, but Splats names no splat bake in the project. Bake "
+                  "the tree model with ForestPlacementCook --splats and set Splats to the .geforestsplats file.";
+        return {};
+    }
+    ByteBuffer bytes;
+    std::string error = "the file cannot be read";
+    std::optional<ForestSplatCells> cells;
+    if (ReadFileBytesShared(m_Assets->ResolveAssetPath(file.Path), bytes, ForestSplatCells::kMaxFileBytes))
+        cells = ParseForestSplatCells(bytes, error);
+    if (!cells)
+    {
+        problem = "draws cards: cannot read its splat bake '" + PathToUtf8(file.Path) + "': " + error +
+                  ". Bake the tree model again with ForestPlacementCook --splats.";
+        return {};
+    }
+    return std::make_shared<const ForestSplatCells>(std::move(*cells));
+}
+
 void ForestStandSystem::Reconcile(ECS::World& world)
 {
     std::vector<std::pair<ECS::EntityHandle, Components::ForestStand>> found;
@@ -258,7 +287,10 @@ void ForestStandSystem::Reconcile(ECS::World& world)
         const auto shadowCasting = renderer ? renderer->shadowCasting : Components::ShadowCasting::On;
         StandSource source{.Archive = settings.Archive.ToGuid(),
                            .TreeModel = settings.TreeModel.ToGuid(),
-                           .Detail = DetailModeOf(settings)};
+                           .Detail = DetailModeOf(settings),
+                           .Far = settings.FarRepresentation};
+        if (source.Far == Components::ForestFarRepresentation::Splats)
+            source.Splats = settings.Splats.ToGuid();
         if (renderer)
         {
             source.OverviewModel = renderer->modelAssetGuid.ToGuid();
@@ -314,6 +346,9 @@ void ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandle entity, cons
     }
 
     const uint32 nearBudget = wantsTrees ? std::min(settings.NearMeshBudget, residency.NearMeshCap) : 0;
+    std::shared_ptr<const ForestSplatCells> splats;
+    if (wantsTrees && source.Far == Components::ForestFarRepresentation::Splats)
+        splats = LoadSplats(source, problem);
     ForestPlacementRuntimeDesc desc{};
     if (wantsTrees)
     {
@@ -336,7 +371,7 @@ void ForestStandSystem::Attach(ECS::World& world, ECS::EntityHandle entity, cons
     const uint64 epoch = world.GetEntityHandleEpoch();
     if (wantsTrees)
         stand.Details = m_RenderServices->EnsureFeature<ForestPlacementFeature>().Attach(
-            placements, *m_Assets, worldId, source.TreeModel, settings.DetailDistance, nearBudget);
+            placements, *m_Assets, worldId, source.TreeModel, settings.DetailDistance, nearBudget, std::move(splats));
     const uint32 pageCount = static_cast<uint32>(placements->Store().Pages().size());
     const uint32 placementCount = CountPlacements(*placements);
     stand.OverviewIndexEnd = placements->StandIndexEnd();

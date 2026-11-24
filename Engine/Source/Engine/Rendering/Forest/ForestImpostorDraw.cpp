@@ -1,6 +1,7 @@
 #include "ForestImpostorDraw.h"
 
 #include "ForestPlacementGpuData.h"
+#include "Engine/Rendering/Forest/ForestSplatCells.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/RenderOrigin.h"
@@ -10,6 +11,7 @@
 #include <cstring>
 #include <optional>
 #include <span>
+#include <string_view>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -49,15 +51,36 @@ void BindForestCard(DrawCommand& command, Rendering::BufferHandle indices, Rende
     command.Producer = producer;
 }
 
-// True when `material` is a packed card material that the GPU scene knows.
-bool IsPackedCardMaterial(const Material* material)
+// True when the material is a packed forest material of this vertex modifier with a GPU scene slot.
+bool IsForestDrawMaterial(const Material* material, std::string_view vertexModifier)
 {
     return material && material->GetCompileSpec().customVertexShader &&
-           material->GetCompileSpec().vertexModifierPath == "VertexModifiers/forest_impostor.glsl" &&
+           material->GetCompileSpec().vertexModifierPath == vertexModifier &&
            material->GetGpuSceneMaterialIndex() != 0xFFFFFFFFu;
 }
 
-// Uploads the card parameters for `viewer` and allocates the draw's bindings in the frame.
+std::optional<ForestCardBindings> PrepareForestBindings(Rendering::RenderGraph::RGFrame& frame,
+    const ForestPlacementCull::DrawBuffers& buffers, const ForestCardParameters& params,
+    const DrawBindings::BufferEntry* extra = nullptr)
+{
+    const auto paramUpload = frame.AllocUpload(sizeof(params));
+    if (!paramUpload.Valid())
+        return std::nullopt;
+    std::memcpy(paramUpload.Ptr, &params, sizeof(params));
+    const auto parameterBuffer = frame.ImportExternalBuffer("Forest.CardParameters", paramUpload.Buffer);
+    auto& bindings = *frame.AllocatePassData<std::array<DrawBindings::BufferEntry, 6>>();
+    bindings = {{
+        {HashStringId("ForestPlacementSlots"), frame.PhysicalBuffer(buffers.Slots), 0, buffers.SlotBytes},
+        {HashStringId("ForestPlacementPages"), frame.PhysicalBuffer(buffers.Pages), buffers.PagesOffset, buffers.PagesBytes},
+        {HashStringId("ForestVisiblePlacements"), frame.PhysicalBuffer(buffers.Visible), 0, buffers.VisibleBytes},
+        {HashStringId("forestView"), frame.PhysicalBuffer(buffers.View), buffers.ViewOffset, sizeof(ForestPlacementGpuView)},
+        {HashStringId("forestCard"), paramUpload.Buffer, paramUpload.Offset, sizeof(params)},
+    }};
+    if (extra)
+        bindings[5] = *extra;
+    return ForestCardBindings{std::span(bindings).first(extra ? 6u : 5u), parameterBuffer, frame.PhysicalBuffer(buffers.Args)};
+}
+
 std::optional<ForestCardBindings> PrepareForestCard(Rendering::RenderGraph::RGFrame& frame,
     const ForestPlacementCull::DrawBuffers& buffers, const Material& material, const ImpostorFoliageSway& sway,
     const Mathematics::Vector4& viewer)
@@ -69,20 +92,31 @@ std::optional<ForestCardBindings> PrepareForestCard(Rendering::RenderGraph::RGFr
     params.Material[0] = material.GetGpuSceneMaterialIndex();
     params.Viewer = viewer;
 
-    const auto paramUpload = frame.AllocUpload(sizeof(params));
-    if (!paramUpload.Valid())
-        return std::nullopt;
-    std::memcpy(paramUpload.Ptr, &params, sizeof(params));
-    const auto parameterBuffer = frame.ImportExternalBuffer("Forest.CardParameters", paramUpload.Buffer);
-    auto& bindings = *frame.AllocatePassData<std::array<DrawBindings::BufferEntry, 5>>();
-    bindings = {{
-        {HashStringId("ForestPlacementSlots"), frame.PhysicalBuffer(buffers.Slots), 0, buffers.SlotBytes},
-        {HashStringId("ForestPlacementPages"), frame.PhysicalBuffer(buffers.Pages), buffers.PagesOffset, buffers.PagesBytes},
-        {HashStringId("ForestVisiblePlacements"), frame.PhysicalBuffer(buffers.Visible), 0, buffers.VisibleBytes},
-        {HashStringId("forestView"), frame.PhysicalBuffer(buffers.View), buffers.ViewOffset, sizeof(ForestPlacementGpuView)},
-        {HashStringId("forestCard"), paramUpload.Buffer, paramUpload.Offset, sizeof(params)},
-    }};
-    return ForestCardBindings{bindings, parameterBuffer, frame.PhysicalBuffer(buffers.Args)};
+    return PrepareForestBindings(frame, buffers, params);
+}
+
+bool EmitForestPlacementDraw(const ForwardEmitContext& context, const ForestPlacementCull::DrawBuffers& buffers,
+    Rendering::BufferHandle indices, const ForestCardBindings& card, const DrawBindings::BufferEntry* extra,
+    DrawCommand color)
+{
+    using namespace Rendering::RenderGraph;
+    auto& frame = *context.Frame;
+    auto& services = *context.Services;
+    constexpr auto readers = ForwardBufferReaders::WorldPass;
+    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Slots, RGBufferRead::Storage, readers);
+    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Pages, RGBufferRead::Storage, readers);
+    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Visible, RGBufferRead::Storage, readers);
+    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.View, RGBufferRead::Uniform, readers);
+    services.EmitForwardSampledBufferRead(frame, context.ViewId, card.Parameters, RGBufferRead::Uniform, readers);
+    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Args, RGBufferRead::Indirect, readers);
+    if (extra)
+    {
+        const auto imported = frame.ImportExternalBuffer("Forest.SplatCells", extra->Buffer, extra->Range);
+        services.EmitForwardSampledBufferRead(frame, context.ViewId, imported, RGBufferRead::Storage, readers);
+    }
+    BindForestCard(color, indices, card.Args, card.Buffers);
+    services.EmitForwardCommand(context.ViewId, color, ForwardDrawDepth::ColourPass);
+    return true;
 }
 
 } // namespace
@@ -97,7 +131,7 @@ bool EmitForestImpostorDraw(const ForwardEmitContext& context, const ForestPlace
 {
     using namespace Rendering::RenderGraph;
     if (!context.Frame || !context.Services || context.Purpose != ForwardEmitPurpose::World ||
-        !cardIndices.IsValid() || !IsPackedCardMaterial(color.Material))
+        !cardIndices.IsValid() || !IsForestDrawMaterial(color.Material, "VertexModifiers/forest_impostor.glsl"))
         return false;
     auto& services = *context.Services;
     const auto* view = services.Views().FindViewDesc(context.ViewId);
@@ -109,16 +143,7 @@ bool EmitForestImpostorDraw(const ForwardEmitContext& context, const ForestPlace
     const auto card = PrepareForestCard(frame, buffers, *color.Material, sway, ForestCardEyeViewer(*camera));
     if (!card)
         return false;
-    constexpr auto readers = ForwardBufferReaders::WorldPass;
-    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Slots, RGBufferRead::Storage, readers);
-    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Pages, RGBufferRead::Storage, readers);
-    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Visible, RGBufferRead::Storage, readers);
-    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.View, RGBufferRead::Uniform, readers);
-    services.EmitForwardSampledBufferRead(frame, context.ViewId, card->Parameters, RGBufferRead::Uniform, readers);
-    services.EmitForwardSampledBufferRead(frame, context.ViewId, buffers.Args, RGBufferRead::Indirect, readers);
-    BindForestCard(color, cardIndices, card->Args, card->Buffers);
-    services.EmitForwardCommand(context.ViewId, color, ForwardDrawDepth::ColourPass);
-    return true;
+    return EmitForestPlacementDraw(context, buffers, cardIndices, *card, nullptr, color);
 }
 
 bool EmitForestImpostorShadowDraw(const DepthEmitContext& context, uint32 cascade,
@@ -127,7 +152,7 @@ bool EmitForestImpostorShadowDraw(const DepthEmitContext& context, uint32 cascad
 {
     using namespace Rendering::RenderGraph;
     if (!context.Frame || !context.Services || !context.Cascades || cascade >= context.Cascades->Count ||
-        !cardIndices.IsValid() || !IsPackedCardMaterial(card.Material))
+        !cardIndices.IsValid() || !IsForestDrawMaterial(card.Material, "VertexModifiers/forest_impostor.glsl"))
         return false;
 
     // A cascade is orthographic: every card faces the light along one direction (w = 0).
@@ -148,6 +173,24 @@ bool EmitForestImpostorShadowDraw(const DepthEmitContext& context, uint32 cascad
     card.Producer = producer;
     services.EmitCascadeDepthCommand(context.ViewId, cascade, card);
     return true;
+}
+
+bool EmitForestSplatDraw(const ForwardEmitContext& context, const ForestPlacementCull::DrawBuffers& buffers,
+    const ForestSplatGeometry& splats, DrawCommand color)
+{
+    if (!context.Frame || !context.Services || context.Purpose != ForwardEmitPurpose::World || !splats.Cells ||
+        !splats.CellBuffer.IsValid() || !splats.Indices.IsValid() ||
+        !IsForestDrawMaterial(color.Material, "VertexModifiers/forest_splats.glsl"))
+        return false;
+
+    const ForestSplatCells& cells = *splats.Cells;
+    ForestCardParameters params{};
+    params.Atlas = {cells.Origin.x, cells.Origin.y, cells.Origin.z, cells.CellSize};
+    params.Material[0] = color.Material->GetGpuSceneMaterialIndex();
+    const DrawBindings::BufferEntry cellBinding{HashStringId("ForestSplatCells"), splats.CellBuffer, 0,
+                                                cells.Cells.size() * sizeof(ForestSplatCell)};
+    const auto bindings = PrepareForestBindings(*context.Frame, buffers, params, &cellBinding);
+    return bindings && EmitForestPlacementDraw(context, buffers, splats.Indices, *bindings, &cellBinding, color);
 }
 
 } // namespace GameEngine::Engine::Renderer

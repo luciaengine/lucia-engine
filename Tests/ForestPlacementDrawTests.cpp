@@ -568,7 +568,7 @@ TEST_F(ForestPlacementDrawTest, SplitsAVisibleOverviewRangeAtThePageSectorBounda
             ASSERT_EQ(command.Bindings.PushConstants.size(), sizeof(IdentityMeshDrawConstants));
             IdentityMeshDrawConstants constants(0);
             std::memcpy(&constants, command.Bindings.PushConstants.data(), sizeof(constants));
-            EXPECT_EQ(constants.HasSector, 1u);
+            EXPECT_EQ(constants.SectorAndFade, 1u);
             EXPECT_EQ(constants.MaterialIndex, 17u);
             EXPECT_EQ(std::bit_cast<int32>(constants.NormalColumn0.w), 500000 + static_cast<int32>(page));
             EXPECT_EQ(std::bit_cast<int32>(constants.NormalColumn2.w), 500000);
@@ -890,7 +890,8 @@ protected:
             Engine::Renderer::ForwardEmitContext context{.Device = m_Device.get(), .Services = &m_Services,
                                                          .Frame = &graph, .ViewId = view};
             std::vector<Engine::Renderer::DrawSubCommand> ranges;
-            drew.push_back(m_Feature->EmitDetails(*m_Session, context, {}, m_Near, ranges));
+            std::vector<Engine::Renderer::ForestStandFade> fades;
+            drew.push_back(m_Feature->EmitDetails(*m_Session, context, {}, m_Near, ranges, fades));
         }
         graph.Execute();
         m_Feature->OnFrameSubmittedRG(graph, graph.SubmissionToken());
@@ -1204,13 +1205,14 @@ TEST_F(ForestPlacementSessionDeviceTest, ASessionStaysOnItsGraphWhileItsFrameIsO
     EXPECT_TRUE(m_Device->BeginFrame());
     m_Main->Graph.BeginFrame(3);
     std::vector<Engine::Renderer::DrawSubCommand> ranges;
+    std::vector<Engine::Renderer::ForestStandFade> fades;
     Engine::Renderer::ForwardEmitContext scene{.Device = m_Device.get(), .Services = &m_Services,
                                                .Frame = &m_Main->Graph, .ViewId = m_SceneView};
-    EXPECT_TRUE(m_Feature->EmitDetails(*m_Session, scene, {}, m_Near, ranges));
+    EXPECT_TRUE(m_Feature->EmitDetails(*m_Session, scene, {}, m_Near, ranges, fades));
     m_Other->Graph.BeginFrame(1);
     Engine::Renderer::ForwardEmitContext game{.Device = m_Device.get(), .Services = &m_Services,
                                               .Frame = &m_Other->Graph, .ViewId = m_View};
-    EXPECT_FALSE(m_Feature->EmitDetails(*m_Session, game, {}, m_Near, ranges));
+    EXPECT_FALSE(m_Feature->EmitDetails(*m_Session, game, {}, m_Near, ranges, fades));
     EXPECT_EQ(m_Session->Graph, &m_Main->Graph);
     EXPECT_TRUE(m_Session->Stream);
     m_Main->Graph.Execute();

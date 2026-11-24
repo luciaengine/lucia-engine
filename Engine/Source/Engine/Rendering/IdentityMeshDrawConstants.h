@@ -22,7 +22,7 @@ struct alignas(16) IdentityMeshDrawConstants
     uint32 MaterialIndex;
     uint32 SkinPaletteOffset = 0;
     uint32 InstanceFlags = 0; // GPUInstance flag bits the draw adds (uExtra.z)
-    uint32 HasSector = 0; // The normal columns carry the integer sector in w when set.
+    uint32 SectorAndFade = 0; // Bit 0 enables the sector in the normal columns; the forest handoff uses bits 23..31.
 };
 static_assert(std::is_trivially_copyable_v<IdentityMeshDrawConstants>);
 static_assert(sizeof(IdentityMeshDrawConstants) == 128);
@@ -32,5 +32,6 @@ static_assert(offsetof(IdentityMeshDrawConstants, NormalColumn2) == 96);
 static_assert(offsetof(IdentityMeshDrawConstants, MaterialIndex) == 112);
 static_assert(offsetof(IdentityMeshDrawConstants, SkinPaletteOffset) == 116);
 static_assert(offsetof(IdentityMeshDrawConstants, InstanceFlags) == 120);
+static_assert(offsetof(IdentityMeshDrawConstants, SectorAndFade) == 124);
 
 } // namespace GameEngine::Engine::Renderer

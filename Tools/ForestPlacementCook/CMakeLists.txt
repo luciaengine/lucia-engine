@@ -1,5 +1,5 @@
 find_package(nlohmann_json CONFIG REQUIRED)
-add_executable(ForestPlacementCook ForestPlacementCook.cpp ForestOverviewCook.cpp)
+add_executable(ForestPlacementCook ForestPlacementCook.cpp ForestOverviewCook.cpp ForestSplatBake.cpp)
 target_compile_features(ForestPlacementCook PRIVATE cxx_std_20)
 target_link_libraries(ForestPlacementCook PRIVATE Engine nlohmann_json::nlohmann_json)
 target_include_directories(ForestPlacementCook PRIVATE $<TARGET_PROPERTY:PageStreaming,INTERFACE_INCLUDE_DIRECTORIES>)

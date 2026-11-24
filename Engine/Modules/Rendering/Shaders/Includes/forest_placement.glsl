@@ -5,7 +5,7 @@ const uint kForestPlacementsPerSlot = 144u;
 
 struct ForestPlacementPage
 {
-    uvec4 range; // First placement slot, count, roots fully inside the frustum, padding.
+    uvec4 range; // First placement slot, count, roots fully inside the frustum, handoff fade code.
     vec4 originRel;
     uvec4 meshOwnedLow;
     uvec4 meshOwnedHigh;
@@ -15,6 +15,14 @@ struct ForestVisiblePlacement
 {
     uint placement;
     uint page;
+};
+
+// A visible tree of a splat draw, with its wind sway in meters at full bend.
+struct ForestVisibleSplat
+{
+    uint placement;
+    uint page;
+    vec2 sway;
 };
 
 #ifdef GE_FOREST_CARD_DRAW

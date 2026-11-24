@@ -56,7 +56,7 @@ void EmitCascadeCasters(ForestPlacementFeature& feature, ForestPlacementSession&
             card.Bounds, gpuView, session.Pages, owners))
         return;
     const auto buffers = session.ShadowCulls[cascade].Declare(*context.Frame, session.ShadowScopes[cascade],
-                                                              session.Slots, slotCount, gpuView, session.Pages);
+                                                              session.Slots, slotCount, gpuView, session.Pages, 6u, nullptr);
     if (buffers)
         EmitForestImpostorShadowDraw(context, cascade, *buffers, session.Indices, card.Sway,
                                      DrawCommand{.Material = &material});

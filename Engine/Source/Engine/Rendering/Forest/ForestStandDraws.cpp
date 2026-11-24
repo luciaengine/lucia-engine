@@ -3,17 +3,21 @@
 #include "../IdentityMeshDrawConstants.h"
 #include "ForestStandDrawProducer.h"
 
-#include "ForestPlacementRuntime.h"
 #include "ForestPlacementFeature.h"
 #include "ForestPlacementSession.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
+#include "ForestPlacementGpuData.h"
+#include "ForestPlacementRuntime.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
+#include <algorithm>
+#include <array>
 #include <bit>
+#include <cstring>
 #include <limits>
 
 namespace GameEngine::Engine::Renderer
@@ -117,9 +121,22 @@ void EmitStandCommands(ForwardEmitContext& ctx, ForestStandDrawHeads& heads, std
     ctx.Services->EmitForwardCommand(ctx.ViewId, heads.Color, ForwardDrawDepth::Prepass, &*heads.Depth);
 }
 
+// True when the color head's material can draw with the LOD crossfade in this view.
+bool WarmStandFadeVariant(const ForwardEmitContext& ctx, const DrawCommand& color)
+{
+    auto& views = ctx.Services->Views();
+    const auto pass = views.GetViewDeclaredWorldPassKeywords(ctx.ViewId);
+    const auto format = views.GetViewWorldColorFormatKey(ctx.ViewId);
+    return pass && format.ColorCount != 0 && color.Material &&
+           ctx.Services->Materials().Variants().WarmColorVariant(*color.Material, color.VertexFlags,
+               Rendering::PrimitiveTopology::TriangleList,
+               (*pass & ~Rendering::MaterialKeyword::Instanced) | Rendering::MaterialKeyword::LodCrossfade,
+               ctx.Services->GetFrontFace(), format);
+}
+
 // Split asset-relative ranges at sector boundaries. Each head retains the holes between visible runs.
 void EmitSectorRanges(StandEmitSource& stand, ForwardEmitContext& ctx, ForestStandDrawHeads& heads,
-                      std::span<const DrawSubCommand> draws)
+                      std::span<const DrawSubCommand> draws, uint32 fadeCode = 0)
 {
     constexpr uint32 kIndicesPerQuad = 6;
     if (stand.Sectors.empty())
@@ -155,7 +172,7 @@ void EmitSectorRanges(StandEmitSource& stand, ForwardEmitContext& ctx, ForestSta
                 constants->NormalColumn0.w = std::bit_cast<float>(current->Sector.X);
                 constants->NormalColumn1.w = std::bit_cast<float>(current->Sector.Y);
                 constants->NormalColumn2.w = std::bit_cast<float>(current->Sector.Z);
-                constants->HasSector = 1;
+                constants->SectorAndFade = 1u | fadeCode;
                 heads.Color.Bindings.PushConstants = std::as_bytes(std::span(constants, 1u));
                 if (heads.Depth)
                     heads.Depth->Bindings.PushConstants = heads.Color.Bindings.PushConstants;
@@ -170,6 +187,64 @@ void EmitSectorRanges(StandEmitSource& stand, ForwardEmitContext& ctx, ForestSta
     }
     if (group)
         EmitStandCommands(ctx, heads, *group);
+}
+
+// Draws the overview quads of the handoff band on the pixels that their trees leave. While the crossfade
+// variant warms, the quads join the full overview draws under their trees.
+void EmitStandFades(StandEmitSource& stand, ForwardEmitContext& ctx, const ForestStandDrawHeads& heads,
+                    std::span<const ForestStandFade> fades, std::vector<DrawSubCommand>& draws)
+{
+    if (fades.empty())
+        return;
+    if ((!heads.SectorLocalMaterialIndex && heads.Color.Bindings.PushConstants.size() != sizeof(IdentityMeshDrawConstants)) ||
+        !WarmStandFadeVariant(ctx, heads.Color))
+    {
+        for (const ForestStandFade& fade : fades)
+            draws.push_back(fade.Range);
+        std::ranges::sort(draws, {}, &DrawSubCommand::FirstIndex);
+        return;
+    }
+    using FadeEncoding = Rendering::GPUDrawStreamBuilder;
+    struct FadeRanges
+    {
+        uint32 Code = 0;
+        Vector<DrawSubCommand> Ranges;
+    };
+    std::array<FadeRanges, FadeEncoding::kLodFadeMaxWeight + 1u> batches;
+    for (const ForestStandFade& fade : fades)
+    {
+        auto range = fade.Range;
+        if (!ApplyStandIndexRange(heads.Color, std::span(&range, 1)))
+            continue;
+        const uint32 code = ForestHandoffFadeCode(fade.DetailWeight, true);
+        const uint32 bin = (code >> FadeEncoding::kLodFadeWeightShift) & FadeEncoding::kLodFadeMaxWeight;
+        auto& batch = batches[bin];
+        batch.Code = code;
+        batch.Ranges.push_back(range);
+    }
+
+    // The fade has one packed value per draw. Disjoint overview quads with the
+    // same value can use one draw head and push-constant allocation.
+    for (auto& batch : batches)
+    {
+        if (batch.Ranges.empty())
+            continue;
+        auto* ranges = ctx.Frame->AllocatePassData<Vector<DrawSubCommand>>(std::move(batch.Ranges));
+        ForestStandDrawHeads fading{};
+        fading.Color = heads.Color;
+        fading.Color.PassKeywords |= Rendering::MaterialKeyword::LodCrossfade;
+        fading.SectorLocalMaterialIndex = heads.SectorLocalMaterialIndex;
+        if (fading.SectorLocalMaterialIndex)
+        {
+            EmitSectorRanges(stand, ctx, fading, *ranges, batch.Code);
+            continue;
+        }
+        auto* constants = ctx.Frame->AllocatePassData<IdentityMeshDrawConstants>(0u);
+        std::memcpy(constants, fading.Color.Bindings.PushConstants.data(), sizeof(*constants));
+        constants->SectorAndFade = batch.Code;
+        fading.Color.Bindings.PushConstants = std::as_bytes(std::span(constants, 1));
+        EmitStandCommands(ctx, fading, *ranges);
+    }
 }
 
 void EmitStand(StandEmitSource& stand, ForwardEmitContext& ctx)
@@ -193,10 +268,13 @@ void EmitStand(StandEmitSource& stand, ForwardEmitContext& ctx)
 
     if (usesDetails)
     {
+        std::vector<ForestStandFade> fades;
         auto* detailFeature = ctx.Services->GetFeature<ForestPlacementFeature>();
         if (!detailFeature || !ctx.Frame->RequireExecutionLifetime(stand.Details) ||
-            !detailFeature->EmitDetails(*stand.Details, ctx, *camera, placementView, *draws))
+            !detailFeature->EmitDetails(*stand.Details, ctx, *camera, placementView, *draws, fades))
             stand.Placements->GatherStand(placementView, *draws);
+        else
+            EmitStandFades(stand, ctx, *heads, fades, *draws);
     }
     if (draws->empty() || !ApplyStandIndexRange(heads->Color, *draws))
         return;

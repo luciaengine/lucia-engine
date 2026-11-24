@@ -8,6 +8,7 @@
 #include "Core/Engine.h"
 #include "Engine/Build/AssetCollector.h"
 #include "Engine/Build/BuildPipeline.h"
+#include "Engine/Rendering/Forest/ForestSplatCells.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
 #include "TestTempDir.h"
 
@@ -214,13 +215,15 @@ protected:
     }
 
     // Exports one ForestStand through a selected scene or the all-assets fallback.
-    bool Export(const GUID& archive, const GUID& treeModel, BuildProgress& progress, bool selectScene = true)
+    bool Export(const GUID& archive, const GUID& treeModel, BuildProgress& progress, bool selectScene = true, const GUID& splats = {})
     {
         const fs::path scene = Assets / "Scenes/Forest.scene";
         std::string body = "[scene name=\"Forest\" version=1]\n\n[entity id=\"e_stand\"]\n"
                            "ForestStand.Archive = \"" + archive.ToString() + "\"\n";
         if (!treeModel.IsNull())
             body += "ForestStand.TreeModel = \"" + treeModel.ToString() + "\"\n";
+        if (!splats.IsNull())
+            body += "ForestStand.FarRepresentation = Splats\nForestStand.Splats = \"" + splats.ToString() + "\"\n";
         WriteFile(scene, body);
         Register(scene);
 
@@ -294,6 +297,28 @@ TEST_F(ForestStandExportTest, RefusesACorruptArchive)
     EXPECT_TRUE(HasError(progress, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand archive 'Forests/Broken.geforest' is not valid"))
         << testing::PrintToString(progress.errors);
     EXPECT_FALSE(fs::exists(Output / "Assets/Forests/Broken.geforest"));
+}
+
+TEST_F(ForestStandExportTest, AStandShipsItsSplatBakeAndRefusesACorruptOne)
+{
+    WriteArchive(Assets / "Forests/Stand.geforest");
+    const GUID archive = Register(Assets / "Forests/Stand.geforest");
+    Engine::Renderer::ForestSplatCells bake{.Origin = {-1.0f, 0.0f, -1.0f}, .CellSize = 0.5f};
+    bake.Cells.push_back({0x40020101u, 0x80406020u, 0x00FF8080u});
+    const auto bytes = Engine::Renderer::EncodeForestSplatCells(bake);
+    WriteFile(Assets / "Forests/Tree.geforestsplats", std::string(bytes.begin(), bytes.end()));
+    const GUID splats = Register(Assets / "Forests/Tree.geforestsplats");
+    BuildProgress progress;
+    ASSERT_TRUE(Export(archive, {}, progress, true, splats)) << testing::PrintToString(progress.errors);
+    EXPECT_TRUE(fs::exists(Output / "Assets/Forests/Tree.geforestsplats"));
+
+    WriteFile(Assets / "Forests/Broken.geforestsplats", "not a bake");
+    const GUID broken = Register(Assets / "Forests/Broken.geforestsplats");
+    BuildProgress refused;
+    EXPECT_FALSE(Export(archive, {}, refused, true, broken));
+    EXPECT_TRUE(HasError(refused, "Scene 'Scenes/Forest.scene', entity 'e_stand': the Forest Stand splat bake "
+                                  "'Forests/Broken.geforestsplats' is not valid"))
+        << testing::PrintToString(refused.errors);
 }
 
 TEST_F(ForestStandExportTest, RefusesACorruptPlacementPageInAnOtherwiseValidArchive)

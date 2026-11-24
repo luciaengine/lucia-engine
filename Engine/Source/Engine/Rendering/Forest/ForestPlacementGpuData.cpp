@@ -2,6 +2,7 @@
 
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Rendering/Common/Frustum.h"
+#include "Rendering/Core/GPUDrawStreamBuilder.h"
 
 #include <algorithm>
 #include <cmath>
@@ -37,6 +38,17 @@ bool RootsInsideFrustum(const ForestPlacementRootBounds& roots, const Mathematic
 }
 
 } // namespace
+
+uint32 ForestHandoffFadeCode(float detailWeight, bool overview)
+{
+    using Fade = Rendering::GPUDrawStreamBuilder;
+    if (!(detailWeight < 1.0f))
+        return 0;
+    // Weight 0 means not fading, so the faintest band keeps one level.
+    const auto level = static_cast<uint32>(std::clamp(std::lround(detailWeight * Fade::kLodFadeMaxWeight), 1l,
+                                                      static_cast<long>(Fade::kLodFadeMaxWeight)));
+    return (level << Fade::kLodFadeWeightShift) | Fade::kLodFadeGradientBit | (overview ? Fade::kLodFadePhaseBit : 0u);
+}
 
 std::optional<ForestPlacementGpuViewSource> MakeForestPlacementGpuViewSource(const Rendering::CameraData& camera)
 {
@@ -87,7 +99,8 @@ bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, std::s
         }
         const auto roots = runtime.ReadyRootBounds(detail.Ticket);
         const uint32 inside = roots && RootsInsideFrustum(*roots, local, view.Planes) ? 1u : 0u;
-        pages.push_back({{detail.FirstPlacement, detail.PlacementCount, inside, 0}, {local, 0.0f}, {}});
+        pages.push_back({{detail.FirstPlacement, detail.PlacementCount, inside,
+                          ForestHandoffFadeCode(detail.DetailWeight, false)}, {local, 0.0f}, {}});
     }
     // Draws with mesh claims are in page order. Resolve a mesh claim against
     // its complete ticket so an old mesh cannot suppress a replacement slot.

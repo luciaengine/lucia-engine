@@ -50,6 +50,12 @@ struct ForestPlacementSession
     uint64 World = 0;
     GUID Model;
     std::optional<ForestImpostorCard> Card;
+    // The stand's splat bake when its trees draw as splats, else null; with its GPU copy and draw reach.
+    std::shared_ptr<const ForestSplatCells> Splats;
+    Rendering::BufferHandle SplatCells;
+    Rendering::BufferHandle SplatIndices;
+    // The farthest point of a splat disk from the tree root at unit scale, without wind.
+    float SplatReach = 0;
     bool WantsCard = false;
     std::string Scope;
     // The scope of each cascade's cull: Scope.Shadow<c>.
@@ -99,7 +105,9 @@ struct ForestPlacementSession
 
     /// Frees the slot and index buffers (unless the rebuild freed them) and forgets the stream and the card.
     void Reset(bool deviceRebuilt);
-    /// Creates the cull pipeline, the slot and index buffers and the stream. False while one is missing.
+    /// The indices that one tree draws: a card quad, or four vertices per splat cell.
+    uint32 TreeIndexCount() const;
+    /// Creates the cull pipeline, the slot, index and splat buffers and the stream. False while one is missing.
     bool EnsureGpu(Rendering::IDevice& device);
 };
 
