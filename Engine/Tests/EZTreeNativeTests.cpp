@@ -244,6 +244,40 @@ TEST(EZTreeNativeTests, EachLeafCarriesOneWindSeedOnEveryVertexOfItsCards)
     EXPECT_EQ(std::adjacent_find(seeds.begin(), seeds.end()), seeds.end()) << "two leaves share a wind seed";
 }
 
+TEST(EZTreeNativeTests, FoliageProbesBakeStableAmbientOcclusion)
+{
+    EZTree::TreeOptions options = MakeSmallTree();
+    options.leaves.count = 0u;
+    EZTree::Generator generator;
+
+    const auto isolated = generator.Generate(options);
+    ASSERT_EQ(isolated.leaves.Vertices.size(), 8u);
+    ASSERT_TRUE(isolated.leaves.HasTexCoords1());
+    EXPECT_EQ(isolated.leaves.TexCoords1[1], 0.0f);
+
+    options.leaves.count = 32u;
+    const auto canopy = generator.Generate(options);
+    const auto repeat = generator.Generate(options);
+    ASSERT_TRUE(canopy.leaves.HasTexCoords1());
+    EXPECT_EQ(canopy.leaves.TexCoords1, repeat.leaves.TexCoords1);
+
+    constexpr size_t kVerticesPerLeaf = 8;
+    float minimum = 1.0f;
+    float maximum = 0.0f;
+    for (size_t leaf = 0; leaf < canopy.leaves.Vertices.size(); leaf += kVerticesPerLeaf)
+    {
+        const float occlusion = canopy.leaves.TexCoords1[leaf * 2 + 1];
+        EXPECT_GE(occlusion, 0.0f);
+        EXPECT_LT(occlusion, 1.0f);
+        minimum = std::min(minimum, occlusion);
+        maximum = std::max(maximum, occlusion);
+        for (size_t vertex = leaf; vertex < leaf + kVerticesPerLeaf; ++vertex)
+            EXPECT_EQ(canopy.leaves.TexCoords1[vertex * 2 + 1], occlusion);
+    }
+    EXPECT_GT(maximum, 0.05f);
+    EXPECT_GT(maximum - minimum, 0.01f);
+}
+
 TEST(EZTreeNativeTests, LeafAtlasUvTileIsApplied)
 {
     EZTree::TreeOptions options = MakeSmallTree();
