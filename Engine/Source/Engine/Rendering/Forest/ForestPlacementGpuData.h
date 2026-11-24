@@ -19,10 +19,14 @@ struct alignas(16) ForestPlacementGpuPage
     // One bit per page-local placement. Only a mesh already submitted for this
     // view can claim a bit. The shader reads five of these eight words.
     std::array<uint32, 8> MeshOwned;
+    Mathematics::Vector4 BoundsMinRelative;
+    Mathematics::Vector4 BoundsMaxRelative;
 };
 static_assert(offsetof(ForestPlacementGpuPage, OriginRelative) == 16);
 static_assert(offsetof(ForestPlacementGpuPage, MeshOwned) == 32);
-static_assert(sizeof(ForestPlacementGpuPage) == 64);
+static_assert(offsetof(ForestPlacementGpuPage, BoundsMinRelative) == 64);
+static_assert(offsetof(ForestPlacementGpuPage, BoundsMaxRelative) == 80);
+static_assert(sizeof(ForestPlacementGpuPage) == 96);
 // The shader holds one page in kForestPlacementsPerSlot (forest_placement.glsl) and reads five MeshOwned words.
 static_assert(PageStreaming::PackedPlacementStore::kPlacementsPerPage <= 5 * 32);
 

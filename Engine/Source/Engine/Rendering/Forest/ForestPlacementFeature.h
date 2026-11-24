@@ -54,6 +54,7 @@ public:
 
     /// True when a session of the world draws the model's cards near the camera.
     bool WantsCard(uint64 world, const GUID& model) const;
+    bool WantsPageOcclusion(uint64 world) const;
     /// Forgets the cards of the world's sessions; the MeshImpostor system publishes them again each update.
     void ClearCards(uint64 world);
     /// Gives the model's card, and the parts its near meshes draw, to the world's sessions that want it.

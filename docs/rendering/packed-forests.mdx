@@ -115,6 +115,34 @@ ForestPlacementCook --splats Assets Models/Forest/StandingTree.glb Assets/Forest
 
 Bake the splats again when the tree model or its materials change. A stand attaches again when its splat file changes.
 
+### Cull terrain-hidden pages
+
+A render pipeline can reject detailed forest pages fully occluded by the camera prepass. Add these passes immediately after `DepthPrepass` and before the regular `DepthResolve`. The terrain writes depth before the forest tests its pages. The test keeps pages that intersect the near plane or have any uncovered samples.
+
+```json title="Packed-forest depth passes"
+[
+  {
+    "id": "ForestOcclusionDepth",
+    "type": "DepthResolve",
+    "enabled": true,
+    "resolve": "farthest",
+    "output": "View.ForestOcclusionDepth",
+    "poolName": "Pipeline.ForestOcclusionDepth.View"
+  },
+  {
+    "id": "ForestOcclusionHZB",
+    "type": "HZBBuild",
+    "enabled": true,
+    "requiresPhaseB": false,
+    "input": "View.ForestOcclusionDepth",
+    "output": "View.ForestOcclusionHZB",
+    "poolName": "Pipeline.ForestOcclusionHZB.View"
+  }
+]
+```
+
+Use this in a view where terrain hides many detailed tree pages. Building the depth pyramid adds GPU work even when every page is visible. The test filters packed impostors and splats. Near meshes and shadow casters have their own draw paths.
+
 ### Limits
 
 - Only the sun casts the shadows of a stand. Spot, point, and area lights do not.

@@ -384,6 +384,12 @@ TEST_F(ForestStandSystemTest, AValidSplatBakeGivesTheSessionItsCells)
         ASSERT_NE(sessions.front()->Splats, nullptr);
         EXPECT_EQ(sessions.front()->Splats->Cells.size(), 1u);
         EXPECT_EQ(sessions.front()->TreeIndexCount(), 6u);
+        sessions.front()->Card = Engine::Renderer::ForestImpostorCard{.Bounds = {0.0f, 1.0f, 0.0f, 1.0f}};
+        const auto* feature = m_Services.GetFeature<ForestPlacementFeature>();
+        sessions.front()->SplatReach = 0.0f;
+        EXPECT_TRUE(feature->WantsPageOcclusion(world.GetWorldId()));
+        sessions.front()->SplatReach = sessions.front()->Placements->Store().BoundRadius();
+        EXPECT_FALSE(feature->WantsPageOcclusion(world.GetWorldId()));
     }
 
     // Cards again releases the bake.

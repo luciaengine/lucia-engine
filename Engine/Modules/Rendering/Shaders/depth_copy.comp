@@ -6,16 +6,24 @@
 // sampler2D with RGUsage::Sampled (no DepthSampled format mismatch).
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(constant_id = 0) const int kFarthestTileSize = 1;
 
 layout(set = 0, binding = 0) uniform sampler2D uDepth;
 layout(set = 0, binding = 1, r32f) uniform writeonly image2D uDepthResolved;
 
 void main()
 {
-    ivec2 size = textureSize(uDepth, 0);
-    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
-    if (pix.x >= size.x || pix.y >= size.y)
+    const ivec2 tile = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(tile, imageSize(uDepthResolved))))
         return;
-    float d = texelFetch(uDepth, pix, 0).r;
-    imageStore(uDepthResolved, pix, vec4(d, 0.0, 0.0, 0.0));
+    const ivec2 first = tile * kFarthestTileSize;
+    float depth = texelFetch(uDepth, first, 0).r;
+    if (kFarthestTileSize > 1)
+    {
+        const ivec2 last = min(first + kFarthestTileSize, textureSize(uDepth, 0));
+        for (int y = first.y; y < last.y && depth > 0.0; ++y)
+            for (int x = first.x; x < last.x && depth > 0.0; ++x)
+                depth = min(depth, texelFetch(uDepth, ivec2(x, y), 0).r);
+    }
+    imageStore(uDepthResolved, tile, vec4(depth, 0.0, 0.0, 0.0));
 }

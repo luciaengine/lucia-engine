@@ -40,14 +40,17 @@ public:
     /// indexCount indices. The splat kernel needs wind; the card kernel takes none.
     [[nodiscard]] std::optional<DrawBuffers> Declare(Rendering::RenderGraph::RGFrame& frame,
         std::string_view scope, Rendering::BufferHandle slots, uint32 slotCount, const ForestPlacementGpuView& view,
-        std::span<const ForestPlacementGpuPage> pages, uint32 indexCount, const ForestSplatWindGpu* wind);
+        std::span<const ForestPlacementGpuPage> pages, uint32 indexCount, const ForestSplatWindGpu* wind,
+        Rendering::RenderGraph::RGTexture occlusionHZB = {}, Rendering::SamplerHandle occlusionSampler = {});
 
 private:
     bool m_Splats = false;
     uint32 m_VisiblePageCapacity = 0;
     Rendering::ComputePipelineId m_Pipeline;
+    Rendering::ComputePipelineId m_OcclusionPipeline;
     Rendering::DescriptorSetLayoutDesc m_PlacementsLayout;
     Rendering::DescriptorSetLayoutDesc m_ViewLayout;
+    Rendering::DescriptorSetLayoutDesc m_OcclusionLayout;
 };
 
 } // namespace GameEngine::Engine::Renderer

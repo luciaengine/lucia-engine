@@ -56,6 +56,53 @@ shared uint pageVisibleCount;
 shared uint pageOutputStart;
 shared uint pagePlacements[kForestPlacementsPerSlot];
 
+#ifdef GE_FOREST_PAGE_OCCLUSION
+layout(set = 2, binding = 0) uniform sampler2D forestOcclusionHZB;
+shared bool pageOccluded;
+
+bool ForestPageOccluded(ForestPlacementPage page)
+{
+    vec2 ndcMin = vec2(1.0);
+    vec2 ndcMax = vec2(-1.0);
+    float nearestDepth = 0.0;
+    for (uint corner = 0u; corner < 8u; ++corner)
+    {
+        const bvec3 high = notEqual(uvec3(corner) & uvec3(1u, 2u, 4u), uvec3(0u));
+        const vec3 point = mix(page.boundsMinRel.xyz, page.boundsMaxRel.xyz, high);
+        const vec4 clip = forestView.viewProjectionRel * vec4(point, 1.0);
+        // Clipped edges can be visible even when none of their corners are.
+        if (!(clip.w > 0.0 && clip.z >= 0.0 && clip.z <= clip.w) || any(isinf(clip)))
+            return false;
+        const vec3 ndc = clip.xyz / clip.w;
+        if (any(isinf(ndc)) || any(isnan(ndc)))
+            return false;
+        ndcMin = min(ndcMin, ndc.xy);
+        ndcMax = max(ndcMax, ndc.xy);
+        nearestDepth = max(nearestDepth, ndc.z);
+    }
+
+    const vec2 uvMin = clamp(vec2(ndcMin.x, -ndcMax.y) * 0.5 + 0.5, 0.0, 1.0);
+    const vec2 uvMax = clamp(vec2(ndcMax.x, -ndcMin.y) * 0.5 + 0.5, 0.0, 1.0);
+    const ivec2 size = textureSize(forestOcclusionHZB, 0);
+    // Include a pixel on each edge for rasterization and projection rounding.
+    const ivec2 first = clamp(ivec2(floor(uvMin * vec2(size))) - 1, ivec2(0), size - 1);
+    const ivec2 last = clamp(ivec2(floor(uvMax * vec2(size))) + 1, ivec2(0), size - 1);
+    const int span = max(last.x - first.x, last.y - first.y) + 1;
+    const int mip = min(findMSB(span - 1) + 1, textureQueryLevels(forestOcclusionHZB) - 1);
+    const ivec2 mipMax = textureSize(forestOcclusionHZB, mip) - 1;
+    const ivec2 low = min(first >> mip, mipMax);
+    const ivec2 high = min(last >> mip, mipMax);
+    if (any(greaterThan(high - low, ivec2(1))))
+        return false;
+
+    float occluder = texelFetch(forestOcclusionHZB, low, mip).r;
+    occluder = min(occluder, texelFetch(forestOcclusionHZB, ivec2(low.x, high.y), mip).r);
+    occluder = min(occluder, texelFetch(forestOcclusionHZB, ivec2(high.x, low.y), mip).r);
+    occluder = min(occluder, texelFetch(forestOcclusionHZB, high, mip).r);
+    return nearestDepth + 1e-5 < occluder;
+}
+#endif
+
 void main()
 {
     const uint pageIndex = gl_WorkGroupID.x;
@@ -66,10 +113,21 @@ void main()
     const bool inside = page.range.z != 0u;
     const bool entirePage = inside && all(equal(page.meshOwnedLow | page.meshOwnedHigh, uvec4(0u)));
     if (lane == 0u)
+    {
+    #ifdef GE_FOREST_PAGE_OCCLUSION
+        pageOccluded = ForestPageOccluded(page);
+        pageVisibleCount = !pageOccluded && entirePage ? count : 0u;
+    #else
         pageVisibleCount = entirePage ? count : 0u;
+    #endif
+    }
     barrier();
 
-    if (!entirePage)
+    if (!entirePage
+#ifdef GE_FOREST_PAGE_OCCLUSION
+        && !pageOccluded
+#endif
+        )
     {
         for (uint i = lane; i < count; i += gl_WorkGroupSize.x)
         {

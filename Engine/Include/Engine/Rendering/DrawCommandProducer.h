@@ -6,6 +6,7 @@
 #include "Mathematics/Vector4.h"
 #include "Rendering/Camera/CameraTypes.h"
 #include "Rendering/Core/Handle.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <array>
 #include <cstdint>
@@ -101,6 +102,7 @@ struct ForwardEmitContext
     ::GameEngine::Rendering::ViewId ViewId{};
     uint32_t FrameIndex = 0;
     ForwardEmitPurpose Purpose = ForwardEmitPurpose::World;
+    ::GameEngine::Rendering::RenderGraph::RGTexture ForestOcclusionHZB{};
 };
 
 /// How a registered forward producer takes part in the frame (RenderServices::RegisterForwardEmit).

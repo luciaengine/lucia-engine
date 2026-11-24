@@ -1,0 +1,5 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define GE_FOREST_PAGE_OCCLUSION
+#include "Includes/forest_placement_cull.glsl"

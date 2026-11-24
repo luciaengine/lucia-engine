@@ -64,6 +64,7 @@ namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 //   "id": "HZBBuild",
 //   "type": "HZBBuild",
 //   "enabled": true,
+//   "requiresPhaseB": true,          // false builds from an explicit input for an earlier consumer
 //   "reduce": "farthest",           // optional: "farthest" (default) or "nearest"
 //   "input": "View.DepthResolved",  // optional depth source key
 //   "output": "View.HZB",           // optional blackboard key to publish
@@ -113,6 +114,7 @@ class HZBBuildNode final : public IRenderPipelineNode
     std::string m_PassStem = "HZBBuild";
     // "reduce": "nearest": MAX keeps the nearest depth (the reflection traversal pyramid).
     bool m_Nearest = false;
+    bool m_RequiresPhaseB = true;
 
     bool m_LoadAttempted = false;
     ComputePipelineId m_PipelineId{};
