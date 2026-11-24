@@ -1200,7 +1200,7 @@ void FileWatcher::ReportScanChanges()
 
 void FileWatcher::NotifyFileChangeDebounced(const FileChangeEvent& event)
 {
-    if (!m_Callback)
+    if (m_ShouldStop.load() || !m_Callback)
         return;
 
     const auto now = std::chrono::steady_clock::now();
@@ -1285,7 +1285,7 @@ void FileWatcher::NotifyFileChangeDebounced(const FileChangeEvent& event)
 
 void FileWatcher::ProcessReadyDebouncedEvents()
 {
-    if (m_PendingEvents.empty() && m_PendingDeletedEvents.empty())
+    if (m_ShouldStop.load() || (m_PendingEvents.empty() && m_PendingDeletedEvents.empty()))
         return;
 
     auto now = std::chrono::steady_clock::now();
@@ -1306,6 +1306,8 @@ void FileWatcher::ProcessReadyDebouncedEvents()
 
     for (const auto& path : readyEvents)
     {
+        if (m_ShouldStop.load())
+            return;
         if (m_Callback && ShouldWatchFile(path))
         {
             FileChangeEvent event;
@@ -1337,6 +1339,8 @@ void FileWatcher::ProcessReadyDebouncedEvents()
 
     for (const auto& event : readyDeleted)
     {
+        if (m_ShouldStop.load())
+            return;
         if (m_Callback && ShouldWatchFile(event.Path))
         {
             Logger::Log::Debug("Firing held Deleted event: {}", event.Path.string());

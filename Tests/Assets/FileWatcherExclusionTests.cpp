@@ -408,6 +408,13 @@ class FileWatcherLostEventsTest : public ::testing::Test
         m_Watcher.ProcessReadyDebouncedEvents();
     }
 
+    void DispatchExpiredDeletions()
+    {
+        for (auto& entry : m_Watcher.m_PendingDeletedEvents)
+            entry.second.Deadline = std::chrono::steady_clock::time_point::min();
+        m_Watcher.ProcessReadyDebouncedEvents();
+    }
+
     // What the subscriber heard, as sorted "Type path" lines relative to the root.
     std::vector<std::string> Heard() const
     {
@@ -466,6 +473,25 @@ TEST_F(FileWatcherLostEventsTest, ADeferredCallbackDoesNotExtendThePollDeadline)
 
     ASSERT_NE(callbackFinished, Clock::time_point{});
     EXPECT_LT(Clock::now() - callbackFinished, 400ms);
+}
+
+TEST_F(FileWatcherLostEventsTest, RequestingStopEndsCallbackDispatch)
+{
+    Report(FileChangeType::Deleted, "first.glsl");
+    Report(FileChangeType::Deleted, "second.glsl");
+    m_Watcher.SetCallback([this](const FileChangeEvent& event)
+    {
+        m_Events.push_back(event);
+        m_Watcher.RequestStop();
+    });
+
+    DispatchExpiredDeletions();
+    ASSERT_FALSE(m_Events.empty());
+    EXPECT_EQ(m_Events.size(), 1u);
+    EXPECT_EQ(m_Events.front().Type, FileChangeType::Deleted);
+
+    Report(FileChangeType::Created, "new.glsl");
+    EXPECT_EQ(m_Events.size(), 1u);
 }
 
 TEST_F(FileWatcherLostEventsTest, LostChangesAreReportedAsOrdinaryEventsByTheRescan)
