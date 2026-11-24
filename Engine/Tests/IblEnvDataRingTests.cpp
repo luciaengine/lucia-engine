@@ -15,6 +15,8 @@
 
 #include "Engine/Rendering/IEnvironmentSource.h" // complete type for the feature's unique_ptr member
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
+#include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFrameCounter.h"
 #include "TestDeviceHelper.h"
@@ -147,6 +149,37 @@ TEST_F(IblEnvDataRingTest, EachRingElementHoldsItsOwnFrame)
         EXPECT_FLOAT_EQ(intensity, 1.0f + static_cast<float>(f))
             << "the element bound for frame " << f << " holds another frame's EnvData: two "
                "frames of one cycle aliased onto the same element";
+    }
+}
+
+TEST_F(IblEnvDataRingTest, LocalProbeWorldRetainsEveryFramesEnvData)
+{
+    using namespace GameEngine::Engine::Renderer;
+    RenderServices services;
+    ImageBasedLightingFeature feature;
+    ASSERT_TRUE(feature.Initialize(m_Device.get()));
+    SceneReflectionProbeEnvironmentDesc probe{};
+    probe.WorldId = 1;
+    probe.SourceKey = 1;
+    feature.UpdateLocalProbes(services, probe.WorldId, {&probe, 1});
+    ASSERT_NE(feature.GetLocalProbeDesc(probe.WorldId, 0), nullptr);
+
+    std::vector<BufferHandle> elements;
+    for (uint32_t frame = 0; frame < m_Device->GetFrameRingDepth(); ++frame)
+    {
+        m_Device->BeginFrame();
+        feature.SetIblIntensity(static_cast<float>(frame + 1));
+        elements.push_back(feature.UploadEnvData(m_Device.get(), probe.WorldId));
+        m_Device->Present();
+    }
+
+    for (size_t frame = 0; frame < elements.size(); ++frame)
+    {
+        const auto* mapped = static_cast<const float*>(m_Device->MapBuffer(elements[frame]));
+        ASSERT_NE(mapped, nullptr) << "Local probe Env buffer on frame " << frame;
+        const float intensity = *mapped;
+        m_Device->UnmapBuffer(elements[frame]);
+        EXPECT_FLOAT_EQ(intensity, static_cast<float>(frame + 1)) << "frame " << frame;
     }
 }
 

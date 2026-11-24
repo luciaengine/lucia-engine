@@ -13,6 +13,7 @@
 #include "Logger/Logger.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -292,7 +293,7 @@ static_assert(sizeof(EnvDataGpu) == ImageBasedLightingFeature::kEnvDataBytes,
 struct ImageBasedLightingFeature::LocalProbeWorld
 {
     std::unique_ptr<ImageBasedLightingFeature> captures[kMaxLocalProbes];
-    BufferHandle envBuffers[kCaptureFrameSlots]{};
+    std::array<BufferHandle, IDevice::kMaxFrameRingDepth> envBuffers{};
     bool overflowWarned = false;
     bool registeredSinceCulling = true;
 
