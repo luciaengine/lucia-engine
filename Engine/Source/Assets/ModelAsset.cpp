@@ -263,6 +263,7 @@ uint64 ComputeMeshContentHash(const Mesh& mesh)
         h = Fnv1a64(mesh.ExtraLODSloppy.data(), mesh.ExtraLODSloppy.size() * sizeof(uint8), h);
     // AuthoredLODs selects the threshold table, so equal bytes with a different provenance do not match.
     h = Fnv1a64Value(h, mesh.AuthoredLODs);
+    h = Fnv1a64Value(h, mesh.ForestSectorLocal);
     h = Fnv1a64Value(h, static_cast<uint64>(mesh.ExtraLODVertices.size()));
     for (const auto& block : mesh.ExtraLODVertices)
     {

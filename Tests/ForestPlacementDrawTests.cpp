@@ -9,6 +9,7 @@
 #include "ForestPlacementSession.h"
 #include "ForestPlacementRuntime.h"
 #include "ForestStandDrawProducer.h"
+#include "../Engine/Source/Engine/Rendering/IdentityMeshDrawConstants.h"
 #include "ForestPlacementFeature.h"
 #include "EngineLogCapture.h"
 #include "Engine/Rendering/Impostors/ImpostorStage.h"
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -485,6 +487,60 @@ TEST_F(ForestPlacementDrawTest, EmitsStandRangesAndMatchingDepthOnlyIntoEligible
     EXPECT_EQ(prepared, 2u);
     for (const auto view : {missed, otherWorld, hiddenLayer})
         EXPECT_TRUE(services.Views().PerView(view).ForwardCommands.empty());
+}
+
+TEST_F(ForestPlacementDrawTest, SplitsAVisibleOverviewRangeAtThePageSectorBoundary)
+{
+    using namespace Engine::Renderer;
+    constexpr double boundary = 512'000'512.0;
+    m_Pages[0].Origin.X = boundary - 4.0;
+    m_Pages[1].Origin.X = boundary + 4.0;
+    const auto file = m_Scratch.Path() / "sector.geforest";
+    WriteStore(file);
+    std::string error;
+    auto runtime = ForestPlacementRuntime::Open(file, {}, error);
+    ASSERT_TRUE(runtime) << error;
+
+    RenderServices services;
+    const auto layers = Rendering::RenderLayerMask::Default();
+    const auto view = AddForestStandView(services, boundary, 45, layers);
+    const auto subscription = RegisterForestStandDraws(services, 45, layers, runtime,
+        [](const ForwardEmitContext&) -> std::optional<ForestStandDrawHeads>
+        {
+            auto heads = MakeForestStandDrawHeads(true);
+            heads.SectorLocalMaterialIndex = 17;
+            return heads;
+        });
+    Rendering::RenderGraph::RGFrame graph(nullptr, nullptr, nullptr, nullptr);
+    for (const auto purpose : {ForwardEmitPurpose::World, ForwardEmitPurpose::ReflectionProbeCapture,
+                               ForwardEmitPurpose::PlanarReflectionCapture})
+    {
+        if (purpose == ForwardEmitPurpose::World)
+            services.EmitFrameForwardCommandsForView(graph, view);
+        else
+            services.EmitProducerForwardCommandsForView(view, purpose, &graph);
+        const auto& state = services.Views().PerView(view);
+        const auto& depth = state.DepthCommands[static_cast<size_t>(DepthPassType::Prepass)];
+        ASSERT_EQ(state.ForwardCommands.size(), 2u);
+        const bool expectsCameraDepth = purpose == ForwardEmitPurpose::World;
+        ASSERT_EQ(depth.size(), expectsCameraDepth ? 2u : 0u);
+        for (uint32 page = 0; page < 2; ++page)
+        {
+            const auto& command = state.ForwardCommands[page];
+            ASSERT_EQ(command.SubDraws.size(), 1u);
+            EXPECT_EQ(command.SubDraws.front().FirstIndex, 512u + 6u * page);
+            EXPECT_EQ(command.SubDraws.front().IndexCount, 6u);
+            if (expectsCameraDepth)
+                EXPECT_EQ(command.Bindings.PushConstants.data(), depth[page].Bindings.PushConstants.data());
+            ASSERT_EQ(command.Bindings.PushConstants.size(), sizeof(IdentityMeshDrawConstants));
+            IdentityMeshDrawConstants constants(0);
+            std::memcpy(&constants, command.Bindings.PushConstants.data(), sizeof(constants));
+            EXPECT_EQ(constants.HasSector, 1u);
+            EXPECT_EQ(constants.MaterialIndex, 17u);
+            EXPECT_EQ(std::bit_cast<int32>(constants.NormalColumn0.w), 500000 + static_cast<int32>(page));
+            EXPECT_EQ(std::bit_cast<int32>(constants.NormalColumn2.w), 500000);
+        }
+    }
 }
 
 TEST_F(ForestPlacementDrawTest, ReflectionCapturesDrawTheOverviewWithoutCameraDepthHeads)

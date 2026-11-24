@@ -151,6 +151,8 @@ struct MeshGPUBucket
 // mesh mirror for generated geometry that needs editor picking.
 struct MeshGPUEntry
 {
+    bool ForestSectorLocal = false; // The forest stand supplies a sector for each overview range.
+
     // Draw parameters (LOD0 — kept for non-LOD consumers).
     uint32_t indexCount   = 0;
     uint32_t firstIndex   = 0;   // in indices, not bytes

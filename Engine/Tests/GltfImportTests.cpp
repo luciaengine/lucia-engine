@@ -3468,6 +3468,46 @@ TEST(GltfImport, ClipSchemaRejectsCoincidentSyncMarkers)
     EXPECT_TRUE(read.Settings.SyncMarkers.empty());
 }
 
+TEST(GltfImport, OnlyMarkedOverviewMeshesUseArchiveSectors)
+{
+    std::string source(kTwoNodesShareOneMesh);
+    const auto meshes = source.find("\"meshes\"");
+    const auto mesh = source.find('{', meshes);
+    ASSERT_NE(mesh, std::string::npos);
+    EXPECT_FALSE(LoadOnlyMesh(source, "absolute.gltf").ForestSectorLocal);
+    source.insert(mesh + 1, R"("extras":{"vendor":")" + std::string(1024, 'x') + R"(","luciaForestSectorLocal":true},)");
+    EXPECT_TRUE(LoadOnlyMesh(source, "sector.gltf").ForestSectorLocal);
+}
+
+TEST(GltfImport, AdjacentOverviewSectorsKeepArchiveAxesWithAssetOverrides)
+{
+    const std::string json = R"({"asset":{"version":"2.0"},"nodes":[{"mesh":0}],
+        "meshes":[{"extras":{"luciaForestSectorLocal":true},"primitives":[{"attributes":{"POSITION":0}}]}],
+        "accessors":[{"bufferView":0,"componentType":5126,"count":6,"type":"VEC3","min":[-510,2,3],"max":[511,8,9]}],
+        "bufferViews":[{"buffer":0,"byteLength":72}],"buffers":[{"byteLength":72}]})";
+    // One triangle per page, centered on X = 508 and X = 516 across the sector boundary at 512.
+    const float positions[] = {-505, 2, 3, -509, 2, 5, -510, 2, 9, 511, 8, 6, 507, 8, 3, 506, 8, 8};
+    const auto glb = TestFiles::BinaryGltf(json, std::string(reinterpret_cast<const char*>(positions), sizeof(positions)));
+    FbxLoaderOptions options;
+    options.Axis.MirrorAxis[0] = false;
+    options.Axis.BakeRotationAxisEnabled[1] = true;
+    options.Axis.BakeRotationDeg[1] = 90.0f;
+    ModelAsset asset(GUID::Generate(), "adjacent.glb");
+    ASSERT_TRUE(ModelAssetFbxTestAccess::LoadGltf(asset, Bytes(glb), options));
+    ASSERT_EQ(asset.GetMeshCount(), 1u);
+    const Mesh& mesh = asset.GetMesh(0);
+    ASSERT_EQ(mesh.Vertices.size(), 6u);
+    constexpr float worldX[] = {505, 509, 510, 513, 517, 518};
+    for (size_t i = 0; i < mesh.Vertices.size(); ++i)
+    {
+        const float sectorOriginX = i < 3 ? 0.0f : 1024.0f;
+        EXPECT_FLOAT_EQ(sectorOriginX + mesh.Vertices[i].Position[0], worldX[i]);
+        EXPECT_FLOAT_EQ(mesh.Vertices[i].Position[1], positions[i * 3 + 1]);
+        EXPECT_FLOAT_EQ(mesh.Vertices[i].Position[2], positions[i * 3 + 2]);
+    }
+    EXPECT_EQ(mesh.Indices, (Vector<uint32>{0, 2, 1, 3, 5, 4}));
+}
+
 TEST(GltfImport, CookedForestCanopyCoverageSurvivesMaterialEncoding)
 {
     using Engine::Renderer::ModelMaterialBridge;
