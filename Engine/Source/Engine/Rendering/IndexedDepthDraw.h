@@ -282,21 +282,31 @@ inline bool HasPublishedReplayAlbedo(const Material& material, const TextureServ
            !context.HasDeclaredTextureWrite(albedo);
 }
 
-inline bool HasDefaultWhiteSurfaceSlots(const Material& material, uint32_t whiteIndex)
+inline bool HasDefaultWhiteSurfaceSlot(const Material& material, TextureSlot slot, uint32_t whiteIndex)
 {
-    if (whiteIndex == 0u || material.GetBindlessTextureIndex(TextureSlot::kAO) != whiteIndex ||
-        material.GetBindlessTextureIndex(TextureSlot::kEmissive) != whiteIndex)
+    if (whiteIndex == 0u || material.GetBindlessTextureIndex(slot) != whiteIndex)
         return false;
 
-    const uint32_t samplers = material.GetPackedSamplerIndices();
     constexpr auto kWhiteSampler = static_cast<uint32_t>(Rendering::SamplerPreset::LinearRepeat);
-    const auto usesRepeat = [samplers](TextureSlot slot) {
-        return ((samplers >> (static_cast<uint32_t>(slot) * 4u)) & 0xfu) == kWhiteSampler;
-    };
-    return usesRepeat(TextureSlot::kAO) && usesRepeat(TextureSlot::kEmissive);
+    const uint32_t ordinal = static_cast<uint32_t>(slot);
+    return ((material.GetPackedSamplerIndices() >> (ordinal * 4u)) & 0xfu) == kWhiteSampler;
+}
+
+inline bool HasDefaultWhiteSurfaceSlots(const Material& material, uint32_t whiteIndex)
+{
+    return HasDefaultWhiteSurfaceSlot(material, TextureSlot::kAO, whiteIndex) &&
+        HasDefaultWhiteSurfaceSlot(material, TextureSlot::kEmissive, whiteIndex);
+}
+
+inline bool HasDefaultWhiteMetalRough(const Material& material, uint32_t whiteIndex)
+{
+    constexpr auto kSlot = static_cast<uint32_t>(TextureSlot::kMetalRough);
+    return HasDefaultWhiteSurfaceSlot(material, TextureSlot::kMetalRough, whiteIndex) &&
+        !material.GetTextureForSlot(kSlot).IsValid() && !material.IsTextureAwaited(kSlot);
 }
 
 inline constexpr uint32_t kStandardWhiteMapsConstant = 308;
+inline constexpr uint32_t kStandardWhiteMetalRoughConstant = 309;
 
 inline bool AcceptsOrdinaryWhiteMapOverride(const Rendering::ShaderMeta& shader,
                                             const Rendering::GraphicsPipelineDesc& pipeline, uint32_t materialRow)
@@ -316,6 +326,17 @@ inline bool AcceptsOrdinaryWhiteMapOverride(const Rendering::ShaderMeta& shader,
         (row->second.Size == sizeof(materialRow) && row->second.Offset <= constants.GetDataSize() &&
          row->second.Size <= constants.GetDataSize() - row->second.Offset &&
          std::memcmp(constants.GetDataPtr() + row->second.Offset, &materialRow, sizeof(materialRow)) == 0);
+}
+
+inline bool CanSpecializeWhiteMetalRough(const Material& material, uint32_t whiteIndex,
+                                         const Rendering::ShaderMeta& shader,
+                                         const Rendering::GraphicsPipelineDesc& pipeline)
+{
+    return HasDefaultWhiteMetalRough(material, whiteIndex) &&
+        (!pipeline.Specialization || !pipeline.Specialization->GetEntries().contains(kStandardWhiteMetalRoughConstant)) &&
+        std::any_of(shader.SpecConstants.begin(), shader.SpecConstants.end(), [](const auto& constant) {
+            return constant.Id == kStandardWhiteMetalRoughConstant;
+        });
 }
 
 inline bool CanSpecializeWhiteMaps(const Material& material, const TextureService& textures,

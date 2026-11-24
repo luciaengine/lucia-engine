@@ -208,7 +208,7 @@ class PipelineVariantCache
 
     /// Return a warm specialization of the served color pipeline for a certified white-map draw.
     PipelineHandle PrepareWhiteMapVariant(const Material& material, Rendering::GraphicsPipelineId base,
-                                          const Rendering::PipelineFormatKey& formatKey);
+                                          const Rendering::PipelineFormatKey& formatKey, bool useWhiteMetalRough = false);
 
     /// Prepare an Equal-depth pipeline for a certified masked draw from its served shader metadata.
     /// Cold pipelines join the frame-begin warm queue. A warm per-instance row remains usable.
