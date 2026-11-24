@@ -8,6 +8,7 @@
 #include "PlayerHdrOptions.h"
 #include "PlayerLog.h"
 #include "PlayerRunOptions.h"
+#include "AssetCore/PathNormalization.h"
 #include "Core/EngineLoggerBridge.h"
 #include "Core/Application.h"
 #include "Core/ApplicationPaths.h"
@@ -435,16 +436,26 @@ static int PlayerMainImpl(int argc, char** argv)
     // command line resolves against the LAUNCH cwd (where the user ran the
     // command); without one, the root is the Assets/ the build staged.
     std::filesystem::path assetRoot = GameEngine::ApplicationPaths::GetInstallAssetsRoot();
-    if (std::optional<std::filesystem::path> cliAssetRoot = ParseAssetRoot(argc, argv))
+    const std::optional<std::filesystem::path> cliAssetRoot = ParseAssetRoot(argc, argv);
+    if (cliAssetRoot)
     {
         assetRoot = *cliAssetRoot;
         if (assetRoot.is_relative() && !launchCwdEc)
             assetRoot = launchCwd / assetRoot;
     }
-    std::error_code absEc;
-    if (auto absRoot = std::filesystem::absolute(assetRoot, absEc); !absEc)
-        assetRoot = absRoot;
-    appConfig.AssetDirectory = assetRoot.lexically_normal().string();
+    assetRoot = GameEngine::AssetPaths::NormalizeMountRoot(assetRoot);
+    appConfig.AssetDirectory = assetRoot.string();
+
+    if (cliAssetRoot)
+    {
+        const auto projectDb = assetRoot.parent_path() / GameEngine::kDefaultAssetDatabaseFile;
+        std::error_code dbEc;
+        if (std::filesystem::is_regular_file(projectDb, dbEc))
+        {
+            appConfig.AssetDatabaseFile = projectDb.string();
+            appConfig.AssetDatabaseReadOnly = true;
+        }
+    }
 
     // Workspace root holds writable runtime data (shader cache, asset-db cache).
     // Default it to a per-user data directory instead of the executable dir — on
