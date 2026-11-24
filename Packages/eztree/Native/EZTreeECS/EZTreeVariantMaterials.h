@@ -53,5 +53,11 @@ GUID SelectLeafMaterial(Engine::Renderer::RenderServices& renderServices, const 
 /// The largest strength scale a part of the tree applies to the wind; 0 without wind.
 float WindScaleBound(const EZTree::TreeOptions& options);
 
+/// How far the wind volumes can move a vertex of the tree beyond its authored wind, local meters:
+/// the culling sphere grows by this. The wind material's @deformationEnvelope covers the authored
+/// wind in the cull kernels, so this term holds only the volumes' share. volumeSpeedBound: the
+/// strongest wind the world's volumes can add, m/s (each volume at full weight).
+float WindVolumeCullMargin(const EZTree::TreeOptions& options, float volumeSpeedBound);
+
 } // namespace EZTreeECS
 } // namespace GameEngine
