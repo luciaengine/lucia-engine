@@ -292,12 +292,13 @@ class PackageTests(unittest.TestCase):
         self.assertIn(f"{self.tree.dirs['mt'] / 'opengine-core.mt.js'} is missing", str(refusal.exception))
 
     def test_the_version_comes_from_the_version_file_and_the_release_tag(self):
+        self.assertEqual(package.PackageVersion("v1.0.0", "abc1234567", "1.0.0"), "1.0.0")
         self.assertEqual(package.PackageVersion("v2026.10.0", "abc1234567", "2026.10.0"), "2026.10.0")
         self.assertEqual(package.PackageVersion("v2026.10.0-alpha.1", "abc1234567", "2026.10.0-alpha.1"),
                          "2026.10.0-alpha.1")
         self.assertEqual(package.PackageVersion(None, "abc1234567", "2026.10.0-alpha.4"),
                          "2026.10.0-alpha.4-dev.abc1234567")
-        for tag in ("v12", "v2026.10.0-rc.1", "release-2026.10.0"):
+        for tag in ("v12", "v1.01.0", "v2026.10.0-rc.1", "release-2026.10.0"):
             with self.assertRaises(package.PackageError):
                 package.PackageVersion(tag, "abc1234567", "2026.10.0")
 

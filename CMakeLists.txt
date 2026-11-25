@@ -167,7 +167,7 @@ endif()
 
 # The engine version comes from the root VERSION file (cmake/EngineVersion.cmake):
 # GE_ENGINE_VERSION is the full string, prerelease suffix included, and
-# GE_ENGINE_VERSION_NUMERIC its <year>.<month>.<patch> part, which project() and
+# GE_ENGINE_VERSION_NUMERIC its <major>.<minor>.<patch> part, which project() and
 # the macOS bundle keys take.
 include(cmake/EngineVersion.cmake)
 ge_read_engine_version("${CMAKE_CURRENT_SOURCE_DIR}/VERSION" GE_ENGINE_VERSION GE_ENGINE_VERSION_NUMERIC)
@@ -180,8 +180,8 @@ message(STATUS "Engine version: ${GE_ENGINE_VERSION}")
 # generated header rather than a compile definition: a version bump recompiles
 # only the files that include it, not every target that links Engine.
 string(REPLACE "." ";" _ge_version_parts "${GE_ENGINE_VERSION_NUMERIC}")
-list(GET _ge_version_parts 0 GE_ENGINE_VERSION_YEAR)
-list(GET _ge_version_parts 1 GE_ENGINE_VERSION_MONTH)
+list(GET _ge_version_parts 0 GE_ENGINE_VERSION_MAJOR)
+list(GET _ge_version_parts 1 GE_ENGINE_VERSION_MINOR)
 list(GET _ge_version_parts 2 GE_ENGINE_VERSION_PATCH)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/Engine/Include/Core/EngineVersion.h.in"
                "${CMAKE_BINARY_DIR}/generated/Core/EngineVersion.h" @ONLY)
