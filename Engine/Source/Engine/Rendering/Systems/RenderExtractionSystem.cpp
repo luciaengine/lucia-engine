@@ -16,6 +16,7 @@
 #include "Engine/Rendering/PostProcessSettings.h"
 #include "Engine/Rendering/PostProcessEffectRegistry.h"
 #include "CameraExposureStamp.h"
+#include "Engine/Rendering/SkyRenderFeature.h"
 #include "Engine/Rendering/Exposure.h"
 #include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Engine/Rendering/RenderOrigin.h"
@@ -1570,6 +1571,8 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
                 effectHooks.push_back(&d);
         });
     const PostProcessExtractContext extractCtx = MakePostProcessExtractContext(world, rs);
+    const auto* sky = rs->GetFeature<SkyRenderFeature>();
+    const float dayCycleExposureEv = sky ? sky->GetDayCycleExposureEv(worldId) : 0.0f;
 
     world.Query<
              GameEngine::ECS::Read<GameEngine::Components::PostProcessVolume>,
@@ -1639,7 +1642,7 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
         // Still stamp the default Auto sensor so camera-less views (the editor Scene View) auto-meter
         // even with zero volumes, matching the resolved-volumes path below.
         PostProcessSettings worldSettings{};
-        ApplyCameraExposure(worldSettings, ViewRegistry::CameraExposure{});
+        ApplyCameraExposure(worldSettings, ViewRegistry::CameraExposure{}, dayCycleExposureEv);
         rs->SetWorldPostProcessSettings(worldId, worldSettings);
         rs->SetWorldVolumetricFogVolumes(worldId, {});
     }
@@ -1660,7 +1663,7 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
         // the blended world settings so a scene with post-processing auto-meters even though no volume
         // carries exposure. Camera-driven views override this per-view from their own sensor below.
         PostProcessSettings worldSettings = worldStack.Any ? worldStack.Settings : PostProcessSettings{};
-        ApplyCameraExposure(worldSettings, ViewRegistry::CameraExposure{});
+        ApplyCameraExposure(worldSettings, ViewRegistry::CameraExposure{}, dayCycleExposureEv);
         rs->SetWorldPostProcessSettings(worldId, worldSettings);
         rs->SetWorldVolumetricFogVolumes(worldId, std::move(worldStack.FogVolumes));
     }
@@ -1706,14 +1709,14 @@ void RenderExtractionSystem::ExtractPostProcessVolumes(ECS::World& world, uint64
                     perView.ExposureClampMinWeight = 0.0f;
                     perView.ExposureClampMaxWeight = 0.0f;
                 }
-                ApplyCameraExposure(perView, *camExp);
+                ApplyCameraExposure(perView, *camExp, dayCycleExposureEv);
             }
             else if (any)
             {
                 // Masked but camera-less view (e.g. the bookmark preview): the contributing volume
                 // carries only grading, so stamp the world-default Auto sensor instead of leaving the
                 // static Exposure=1.0 default, which would blow the preview out under physical lighting.
-                ApplyCameraExposure(perView, ViewRegistry::CameraExposure{});
+                ApplyCameraExposure(perView, ViewRegistry::CameraExposure{}, dayCycleExposureEv);
             }
 
             if (any)

@@ -324,29 +324,28 @@ GameEngine::Engine::Renderer::ViewRegistry::CameraExposure SceneViewLensExposure
     using namespace GameEngine;
     using Engine::Renderer::ViewRegistry;
 
-    // Scene View owns its exposure controls, but physical DoF still needs an
-    // authorable lens. Mirror the active scene camera's lens while deriving
-    // focal length from Scene View's own projection so changing Focus Distance
-    // in the Camera inspector is visible in both Scene and Game views.
-    ViewRegistry::CameraExposure result{};
+    // Keep the active camera's lens for depth of field in every exposure mode.
     if (!world)
-        return result;
+        return {};
     const auto camera = Engine::Renderer::FindActiveCamera(*world);
     if (!camera)
-        return result;
+        return {};
 
     Components::Camera lens = camera->params;
-    const Components::Camera sensorDefaults{};
-    lens.ExposureControl = sensorDefaults.ExposureControl;
-    lens.Exposure = sensorDefaults.Exposure;
-    lens.ManualExposureEV = sensorDefaults.ManualExposureEV;
-    lens.ExposureCompensation = sensorDefaults.ExposureCompensation;
-    lens.AutoExposureMinEv = sensorDefaults.AutoExposureMinEv;
-    lens.AutoExposureMaxEv = sensorDefaults.AutoExposureMaxEv;
-    lens.AutoExposureSpeedUp = sensorDefaults.AutoExposureSpeedUp;
-    lens.AutoExposureSpeedDown = sensorDefaults.AutoExposureSpeedDown;
-    lens.AutoExposureMeter = sensorDefaults.AutoExposureMeter;
-    lens.AutoExposureCompensationCurve = sensorDefaults.AutoExposureCompensationCurve;
+    if (Editor::SceneViewSettings::Get().GetExposureMode() != Editor::SceneViewExposureMode::GameCamera)
+    {
+        const Components::Camera sensorDefaults{};
+        lens.ExposureControl = sensorDefaults.ExposureControl;
+        lens.Exposure = sensorDefaults.Exposure;
+        lens.ManualExposureEV = sensorDefaults.ManualExposureEV;
+        lens.ExposureCompensation = sensorDefaults.ExposureCompensation;
+        lens.AutoExposureMinEv = sensorDefaults.AutoExposureMinEv;
+        lens.AutoExposureMaxEv = sensorDefaults.AutoExposureMaxEv;
+        lens.AutoExposureSpeedUp = sensorDefaults.AutoExposureSpeedUp;
+        lens.AutoExposureSpeedDown = sensorDefaults.AutoExposureSpeedDown;
+        lens.AutoExposureMeter = sensorDefaults.AutoExposureMeter;
+        lens.AutoExposureCompensationCurve = sensorDefaults.AutoExposureCompensationCurve;
+    }
     lens.Perspective = true;
     lens.FovY = GetSceneViewFieldOfViewDeg();
     return Engine::Renderer::ToCameraExposure(lens);
@@ -4114,6 +4113,7 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
         const bool crtOn = svSettings.GetPostFxCrtEnabled();
         const Editor::SceneViewExposureMode exposureMode = svSettings.GetExposureMode();
         const bool autoExposureOn = exposureMode == Editor::SceneViewExposureMode::Auto;
+        const bool fixedExposureOn = exposureMode == Editor::SceneViewExposureMode::Fixed;
         const bool lightsMeterOn =
             autoExposureOn && svSettings.GetExposureMeter() == Components::ExposureMeter::Lights;
 
@@ -4157,8 +4157,7 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
         }
 
         const bool needsToolbarOverride =
-            !masterOn || !bloomOn || !tonemapOn || !colorFilterOn || !casOn || !crtOn ||
-            !autoExposureOn;
+            !masterOn || !bloomOn || !tonemapOn || !colorFilterOn || !casOn || !crtOn;
         const bool pp2dAlignCrt = m_Is2DMode && svSettings.GetPixelPerfect2D() && crtOn;
 
         // Extraction has already resolved the camera mask and spatial volume blend for
@@ -4175,7 +4174,8 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
         // after the user turns Auto back on. Make the live toggle authoritative
         // before any optional tuning; otherwise default Auto settings never enter
         // autoExposureTuned and the meter remains latched off indefinitely.
-        pp.AutoExposureActive = autoExposureOn;
+        if (autoExposureOn || fixedExposureOn)
+            pp.AutoExposureActive = autoExposureOn;
         // The view output is the Scene View's alone and feeds back the same way: start each
         // frame from the look, and let the switches below choose otherwise.
         pp.ViewOutput = Engine::Renderer::PostProcessViewOutput::Look;
@@ -4194,7 +4194,7 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
         pp.DofDebugMode = lens.FocusDebugMode != 0 ? 1 : 0;
         pp.DofDebugAlpha = Math::Clamp01(lens.FocusDebugAlpha);
 
-        if (needsToolbarOverride || pp2dAlignCrt || autoExposureOn)
+        if (needsToolbarOverride || pp2dAlignCrt || autoExposureOn || fixedExposureOn)
         {
             if (pp2dAlignCrt)
             {
@@ -4216,21 +4216,13 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
                      .ContrastAdaptiveSharpening = casOn,
                      .Crt = crtOn},
                     hdrOutputActive, pp);
-                // Fixed: pin the Scene View to the Fixed EV100 instead of leaving a
-                // metered/stale scale. This override is authoritative for
-                // the view, so exposure is set here rather than via the clobbered camera path.
-                // Compensation trims the pinned EV exactly as the camera-sensor resolve does
-                // (ResolveExposureScale: a +/- stop multiplier in every mode). Stack the
-                // Scene View's relative knob with the blended volume adjustment so
-                // ExposureAdjustmentEffect remains effective while the meter is off.
-                if (!autoExposureOn)
-                {
-                    pp.AutoExposureActive = false;
-                    pp.Exposure = Rendering::ResolveExposureScale(
-                        Components::ExposureMode::Manual, 1.0f, svSettings.GetPostFxFixedExposureEv(),
-                        svSettings.GetPostFxExposureCompensation() +
-                            pp.ExposureCompensationEv);
-                }
+            }
+            // Keep the blended volume adjustment when overriding the camera with a fixed EV100.
+            if (fixedExposureOn)
+            {
+                pp.Exposure = Rendering::ResolveExposureScale(
+                    Components::ExposureMode::Manual, 1.0f, svSettings.GetPostFxFixedExposureEv(),
+                    svSettings.GetPostFxExposureCompensation() + pp.ExposureCompensationEv);
             }
             // Active is set explicitly because the world settings default to inactive until
             // extraction stamps the world sensor. Only this view's copy is touched.

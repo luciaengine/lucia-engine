@@ -127,6 +127,7 @@ private:
     SliderRow m_AutoMinEvRow;
     SliderRow m_AutoMaxEvRow;
     SliderRow m_CompensationRow;
+    UIElement* m_CompensationTicks = nullptr;
     UIElement* m_ExposureEvTicks = nullptr;
     UIElement* m_ExposureEvLegend = nullptr;
     UIElement* m_AdaptationDelayRow = nullptr;

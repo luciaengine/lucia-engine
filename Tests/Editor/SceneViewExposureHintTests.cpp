@@ -142,21 +142,23 @@ TEST(SceneViewExposureHint, WithoutAReadingItComparesTheSettings)
     EXPECT_EQ(DecideOnce(framingGap, Message::Brighter), Message::None);
 }
 
-// A Scene View and a camera at their own defaults are matched: both ship fixed exposure with the same
-// settings, so without a reading no notice shows.
-TEST(SceneViewExposureHint, AStockPairCountsAsMatched)
+TEST(SceneViewExposureHint, GameCameraModeTracksExposureEditsWithoutAMismatchNotice)
 {
     const SceneViewSettings::Exposure stockView;
-    const Components::Camera stockCamera{};
-    EXPECT_EQ(SceneViewExposureHintOverlay::CompareSettings(stockView, stockCamera), SettingsMatch::Same);
-    EXPECT_EQ(WithoutAReading(stockView, stockCamera), Message::None) << "the stock pair showed the settings sentence";
+    Components::Camera camera{};
+    camera.ExposureControl = Components::ExposureMode::Manual;
+    camera.ManualExposureEV = 6.0f;
+    EXPECT_EQ(SceneViewExposureHintOverlay::CompareSettings(stockView, camera), SettingsMatch::Same);
+    camera.ExposureControl = Components::ExposureMode::Auto;
+    camera.ExposureCompensation = -2.0f;
+    EXPECT_EQ(WithoutAReading(stockView, camera), Message::None);
 }
 
 // A setting changed on one side shows the settings sentence when the other side holds a different value.
 // A change to the other side's own default leaves the pair matched.
 TEST(SceneViewExposureHint, ASettingChangedOnOneSideShowsTheSettingsSentence)
 {
-    const SceneViewSettings::Exposure stockView;
+    const SceneViewSettings::Exposure stockView{.Mode = SceneViewExposureMode::Fixed};
     const Components::Camera stockCamera{};
     SceneViewSettings::Exposure brighterView = stockView;
     brighterView.Compensation = 1.0f;
@@ -178,7 +180,7 @@ TEST(SceneViewExposureHint, ASettingChangedOnOneSideShowsTheSettingsSentence)
 // count as matched.
 TEST(SceneViewExposureHint, SettingsChangedOnBothSidesShowTheSentenceOnlyWhenTheyDiffer)
 {
-    SceneViewSettings::Exposure view;
+    SceneViewSettings::Exposure view{.Mode = SceneViewExposureMode::Fixed};
     view.Compensation = 1.0f;
     Components::Camera camera{};
     camera.ExposureCompensation = 2.0f;

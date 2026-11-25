@@ -1316,6 +1316,19 @@ void RegisterSkyEnvironmentInspector()
             "Seconds per full day.",
             extras);
 
+        auto* exposureProfile = InspectorUI::AddAssetFieldRow(
+            physical, "Exposure Profile", sky->DayCycleExposureProfile.ToGuid(), {AssetType::DayCycleProfile},
+            &EngineCore::GetInstance().GetAssetManager().GetRegistry(),
+            [getWorld = ctx.GetWorld, e, n, undo, extras](const GUID& profile)
+            {
+                if (ECS::World* world = getWorld ? getWorld() : nullptr)
+                    CommitComponentsWithUndo<Components::SkyEnvironment>(
+                        world, e, extras, n, undo, "Change Day Cycle Exposure Profile",
+                        [profile](Components::SkyEnvironment& sky) { sky.DayCycleExposureProfile.Set(profile); });
+            }, ctx.Thumbnails);
+        if (exposureProfile)
+            exposureProfile->SetTooltip("Exposure curve for cameras with eye adaptation off. An empty field uses the Default Day Cycle.");
+
         AddComponentFloatRowWithDrag<Components::SkyEnvironment>(
             physical,
             "Sky Exposure Trim",
@@ -1329,8 +1342,7 @@ void RegisterSkyEnvironmentInspector()
                 u.SkyExposureTrim = std::clamp(v, -Components::kSkyExposureTrimLimitEv, Components::kSkyExposureTrimLimitEv);
             },
             sky->SkyExposureTrim,
-            "Flat sky-vs-object/ambient trim in stops (+/-2). 0 = physical; the day/night arc is "
-            "owned by the atmosphere + camera auto-exposure, not this knob.",
+            "Sky and ambient brightness trim in stops (+/-2). Use Exposure Profile for the day and night curve.",
             extras);
 
         InspectorUI::AddTextBlock(physical, "Ground (below horizon)", "inspector-section-subheader");

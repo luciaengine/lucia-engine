@@ -78,7 +78,7 @@ SceneViewSettings::Exposure WithGameCameraExposure(SceneViewSettings::Exposure e
 SceneViewSettings::Exposure WithoutDefaultDifferences(const SceneViewSettings::Exposure& scene,
                                                       SceneViewSettings::Exposure game)
 {
-    const SceneViewSettings::Exposure sceneDefault;
+    const SceneViewSettings::Exposure sceneDefault{.Mode = SceneViewExposureMode::Fixed};
     const SceneViewSettings::Exposure gameDefault = WithGameCameraExposure(sceneDefault, Components::Camera{});
     if (scene.Mode == sceneDefault.Mode && game.Mode == gameDefault.Mode)
         game.Mode = scene.Mode;
@@ -231,6 +231,8 @@ bool SceneViewExposureHintOverlay::ObserveGameSample(std::optional<GameSample>& 
 SceneViewExposureHintOverlay::SettingsMatch SceneViewExposureHintOverlay::CompareSettings(
     const SceneViewSettings::Exposure& scene, const Components::Camera& gameCamera)
 {
+    if (scene.Mode == SceneViewExposureMode::GameCamera)
+        return SettingsMatch::Same;
     const SceneViewSettings::Exposure game = WithGameCameraExposure(scene, gameCamera);
     if (SameExposure(scene, game))
         return SettingsMatch::Same;
@@ -255,6 +257,11 @@ SceneViewExposureHintOverlay::Message SceneViewExposureHintOverlay::Read(Hint& h
     if (!gameCamera)
         return Message::None;
     const SceneViewSettings::Exposure sceneSettings = SceneViewSettings::Get().GetExposure();
+    if (sceneSettings.Mode == SceneViewExposureMode::GameCamera)
+    {
+        hint.Last.reset();
+        return Message::None;
+    }
     Comparison comparison;
     comparison.Settings = CompareSettings(sceneSettings, gameCamera->params);
     comparison.SceneEv = SceneViewEv(*controller);

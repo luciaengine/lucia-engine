@@ -4,6 +4,8 @@
 #include "Components/Rendering/PostProcessEffects/ExposureAdjustmentEffect.h"
 #include "Engine/Rendering/CameraExposureHelpers.h"
 #include "../Source/Engine/Rendering/Systems/CameraExposureStamp.h"
+#include "Assets/DayCycleProfile.h"
+#include "Rendering/Sky/SkySunState.h"
 #include "Engine/Rendering/Exposure.h"
 #include "Engine/Rendering/ViewRegistry.h"
 #include "Engine/Rendering/PostProcessSettings.h"
@@ -367,6 +369,29 @@ TEST(ExposureCompensationCurve, TheCameraPublishesItsCurve)
     const auto published = Engine::Renderer::ToCameraExposure(camera);
     ASSERT_EQ(published.AutoExposureCompensationCurve.KeyCount, 1u);
     EXPECT_FLOAT_EQ(published.AutoExposureCompensationCurve.Keys[0].Value, -1.0f);
+}
+
+TEST(Exposure, DefaultDayCycleLiftsFixedExposureAtNightWithoutEnablingAdaptation)
+{
+    Rendering::SkySunState sun;
+    EXPECT_FLOAT_EQ(EvaluateDayCycleExposure(nullptr, sun), 0.0f);
+    sun.SunElevation = Mathematics::Radians{-0.5f};
+    const float offset = EvaluateDayCycleExposure(nullptr, sun);
+    EXPECT_FLOAT_EQ(offset, 16.0f);
+
+    Engine::Renderer::ViewRegistry::CameraExposure camera;
+    Engine::Renderer::PostProcessSettings settings;
+    Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
+    EXPECT_FALSE(settings.AutoExposureActive);
+    EXPECT_FLOAT_EQ(settings.Exposure, camera.Exposure * std::exp2(offset));
+
+    camera.Mode = static_cast<int32>(ExposureMode::Auto);
+    Engine::Renderer::PostProcessSettings metered;
+    Engine::Renderer::ApplyCameraExposure(metered, camera);
+    Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
+    EXPECT_TRUE(settings.AutoExposureActive);
+    EXPECT_FLOAT_EQ(settings.Exposure, metered.Exposure);
+    EXPECT_FLOAT_EQ(settings.AutoExposureBiasEv, metered.AutoExposureBiasEv);
 }
 
 // An Auto view takes the shared floor and default compensation curve.

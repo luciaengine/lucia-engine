@@ -3,6 +3,7 @@
 #include "Mathematics/Interpolation.h"
 #include "Types/Types.h"
 
+#include "Components/AssetRef.h"
 #include "ECS/Entity.h" // ECS::EntityHandle
 #include "Rendering/Sky/SkySettings.h" // Rendering::SkyBelowHorizonMode
 #include "Rendering/Sky/SolarPath.h" // Rendering::kMarchEquinoxDay
@@ -258,6 +259,8 @@ struct SkyEnvironment {
     /// When true, `TimeOfDayHours` advances every frame (`TimeOfDayCycleSeconds` wall time per full 24 h).
     bool    AnimateTimeOfDay     = false;
     float32 TimeOfDayCycleSeconds = 120.0f;
+    /// Solar-elevation exposure for unmetered cameras. An empty profile uses the built-in curve.
+    AssetRef<AssetType::DayCycleProfile> DayCycleExposureProfile;
     /// Flat sky-vs-object/ambient exposure trim, in EV (stops), applied to the visible sky dome and
     /// the baked IBL. This is NOT a day/night brightness driver: once the sky is physically anchored
     /// to the directional sun, the atmosphere model + camera auto-exposure own the day/night arc

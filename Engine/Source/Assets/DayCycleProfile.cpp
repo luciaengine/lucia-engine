@@ -1,5 +1,7 @@
 #include "Assets/DayCycleProfile.h"
 
+#include "DefaultDayCycleProfile.h"
+
 #include "AssetCore/SharedFileRead.h"
 #include "Logger/Logger.h"
 #include "Rendering/Sky/SkySunState.h"
@@ -9,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 #include <utility>
@@ -348,6 +351,23 @@ float EvaluateDayCycleTrack(const DayCycleTrackKeys& keys, Mathematics::Radians 
 bool IsDuskHalf(const Rendering::SkySunState& sunState)
 {
     return sunState.SunAzimuth > std::numbers::pi_v<float>;
+}
+
+float EvaluateDayCycleExposure(const DayCycleProfileData* profile, const Rendering::SkySunState& sunState)
+{
+    static const DayCycleProfileData builtIn = []
+    {
+        DayCycleProfileData data;
+        std::string error;
+        if (!ParseDayCycleProfile(kDefaultDayCycleProfileJson, data, error))
+            LOG_ERROR("The built-in Day Cycle profile could not be read: {}", error);
+        return data;
+    }();
+    const auto* track = (profile ? profile : &builtIn)->Find(DayCycleTrack::ExposureOffset);
+    if (!track)
+        return 0.0f;
+    const float offset = EvaluateDayCycleTrack(*track, sunState.SunElevation, IsDuskHalf(sunState));
+    return std::isfinite(offset) ? std::clamp(offset, -20.0f, 20.0f) : 0.0f;
 }
 
 DayCycleProfile::DayCycleProfile(const GUID& guid, const std::filesystem::path& path)

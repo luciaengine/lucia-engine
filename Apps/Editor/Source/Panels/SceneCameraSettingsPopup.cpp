@@ -131,9 +131,9 @@ constexpr const char* kAccelerationTooltip =
     "Fly-camera velocity smoothing time in seconds (0 = instant).";
 
 constexpr const char* kExposureSectionTooltip =
-    "Editor-only Scene View exposure override.";
+    "Exposure for the Scene View.";
 constexpr const char* kExposureModeTooltip =
-    "Auto meters the view with the Meter below, within Min and Max EV100. Fixed holds the Fixed EV100 below.";
+    "Game Camera follows the active game camera's settings. Auto meters the Scene View. Fixed holds the selected EV100.";
 constexpr const char* kLightsReadingTooltip =
     "What the Lights meter reads from the light on a horizontal surface: every directional light at its "
     "elevation plus the sky. When Min or Max EV100 or the Compensation Curve moves the exposure, the "
@@ -153,7 +153,8 @@ constexpr const char* kMaxEvTooltip =
     "Auto mode, either meter: darkest the metering may expose to (higher EV = more darkening in bright scenes).";
 constexpr const char* kCompensationTooltip =
     "+/- stops applied after auto metering (+ brightens).";
-constexpr std::array kExposureModes = {Editor::SceneViewExposureMode::Auto,
+constexpr std::array kExposureModes = {Editor::SceneViewExposureMode::GameCamera,
+                                       Editor::SceneViewExposureMode::Auto,
                                        Editor::SceneViewExposureMode::Fixed};
 constexpr std::array kExposureMeters = {Components::ExposureMeter::Picture,
                                         Components::ExposureMeter::Lights};
@@ -373,7 +374,7 @@ SceneCameraSettingsPopup::SceneCameraSettingsPopup()
     // 0-centered ± stops, + brightens, active in both exposure modes.
     if (m_CompensationRow.slider)
         m_CompensationRow.slider->SetCentered(true);
-    AddTickStrip(*panel, "SceneCameraExposureComp", m_CompensationRow.slider,
+    m_CompensationTicks = AddTickStrip(*panel, "SceneCameraExposureComp", m_CompensationRow.slider,
                  {{-8.0f, "-8"}, {-4.0f, "-4"}, {0.0f, "0"}, {4.0f, "+4"}, {8.0f, "+8"}});
 
     // The arrow points up at the toolbar button. It is the panel's last child: a press on it is
@@ -623,7 +624,7 @@ void SceneCameraSettingsPopup::UpdateExposureRowVisibility()
 {
     const Editor::SceneViewSettings& settings = Editor::SceneViewSettings::Get();
     const bool autoOn = settings.GetExposureMode() == Editor::SceneViewExposureMode::Auto;
-    const bool fixedOn = !autoOn;
+    const bool fixedOn = settings.GetExposureMode() == Editor::SceneViewExposureMode::Fixed;
     const bool lightsOn = autoOn && settings.GetExposureMeter() == Components::ExposureMeter::Lights;
     auto setVisible = [](UIElement* el, bool visible)
     {
@@ -641,8 +642,8 @@ void SceneCameraSettingsPopup::UpdateExposureRowVisibility()
     setVisible(m_ExposureEvRow.row, fixedOn);
     setVisible(m_ExposureEvLegend, fixedOn);
     setVisible(m_ExposureEvTicks, fixedOn);
-    // Compensation (row + ticks) stays visible in every mode: it trims either
-    // meter and the fixed EV pin alike.
+    setVisible(m_CompensationRow.row, autoOn || fixedOn);
+    setVisible(m_CompensationTicks, autoOn || fixedOn);
 }
 
 void SceneCameraSettingsPopup::RefreshReading(std::optional<float> meteredEv, std::optional<float> lightsReadingEv)
