@@ -1323,6 +1323,23 @@ void EditorApplication::AttachEditorPluginHost()
         return std::any_of(modules.begin(), modules.end(),
                            [moduleId](const PackageCodeModule& module) { return module.AssemblyName == moduleId; });
     };
+#if defined(__APPLE__)
+    services.NativeHostForPanel = [this](UIManager* manager) -> Editor::NativePanelHost {
+        if (!manager || m_IsShuttingDown ||
+            (m_ProjectPickerModal && m_ProjectPickerModal->ShouldSuppressNativeWebView()) ||
+            (m_SceneEditor && m_SceneEditor->IsAnyModalOpen()) || m_VideoPlayer.IsOpen())
+            return {};
+        for (const auto& context : m_Windows)
+        {
+            if (context && context->ui.get() == manager && context->window)
+            {
+                return {context->window->GetNativeViewHost(),
+                        WindowInputRouter::UiLogicalToClientScale(context->window.get(), manager)};
+            }
+        }
+        return {};
+    };
+#endif
     Editor::EditorPluginRegistry::Get().AttachHost(std::move(services));
 }
 

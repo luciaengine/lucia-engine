@@ -1,0 +1,3 @@
+<UIElement id="WorkspaceHost" class="media-workspace-host">
+  <Label id="WorkspaceStatus" class="media-workspace-status" text="Loading workspace…" />
+</UIElement>
