@@ -26,9 +26,9 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           if ((git rev-parse HEAD) -ne '9523265fa6137d94a8f7e031480f89d2d82c9a3a') { throw 'Unexpected checkout' }
           if ((Get-Content VERSION -Raw).Trim() -ne '1.0.0') { throw 'Unexpected engine version' }
-          cmake --preset vs2026-x64-local-unity -B D:/lucia-release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_TOOLS=OFF
+          cmake --preset vs2026-x64-local -B D:/lucia-release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_TOOLS=OFF
           cmake --build D:/lucia-release --config Release --target Editor Player --parallel 4
-      - name: Package staged Editor and Player
+      - name: Package staged Editor
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -37,7 +37,8 @@ jobs:
           $name = 'LuciaEngine-1.0.0-Windows-x86_64'
           $stage = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory $stage | Out-Null
-          Copy-Item "$bin/Apps" "$stage/Apps" -Recurse
+          New-Item -ItemType Directory "$stage/Apps" | Out-Null
+          Copy-Item "$bin/Apps/Editor" "$stage/Apps/Editor" -Recurse
           if (Test-Path "$bin/Tools") { Copy-Item "$bin/Tools" "$stage/Tools" -Recurse }
           Copy-Item LICENSE,THIRD_PARTY_NOTICES.md "$stage/"
           @'
@@ -46,10 +47,10 @@ jobs:
           Platform: Windows x86-64
 
           Extract the entire archive. Open Apps/Editor/Editor.exe to create
-          or open a project. Apps/Player/Player.exe is the standalone runtime.
+          or open a project.
           A Vulkan-capable GPU driver is required to render.
           '@ | Set-Content "$stage/README.txt"
-          foreach ($app in @('Editor', 'Player')) {
+          foreach ($app in @('Editor')) {
             $exe = "$stage/Apps/$app/$app.exe"
             $bytes = [System.IO.File]::ReadAllBytes($exe)
             $header = [BitConverter]::ToInt32($bytes, 0x3c)
@@ -61,7 +62,7 @@ jobs:
           New-Item -ItemType Directory D:/lucia-artifacts | Out-Null
           tar.exe -a -cf "D:/lucia-artifacts/$name.zip" -C $env:RUNNER_TEMP $name
           $members = @(tar.exe -tf "D:/lucia-artifacts/$name.zip")
-          foreach ($app in @('Editor', 'Player')) {
+          foreach ($app in @('Editor')) {
             if ($members -notcontains "$name/Apps/$app/$app.exe") { throw "Archive missing $app" }
           }
           Get-FileHash "D:/lucia-artifacts/$name.zip"
