@@ -1244,10 +1244,10 @@ set(GE_ENGINE_MODULES
     Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation NumericExpression UI Physics PhysicsECS
     Pathfinding PathfindingECS AI AIECS SpatialGrid SpatialGridECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS SplineRecipes MarkupECS Graph
     GenerationalVector Scheduler SceneLoadTracker Scene SceneBvh MeshPicking Text Input PluginAPI Image
-    Sprite2D TileMap TileMapECS
+    Sprite2D TileMap TileMapECS Localization
     PlatformServices PlatformProvider${GE_PLATFORM_BACKEND})
 target_link_libraries(Engine
-    PRIVATE ${GE_ENGINE_MODULES} ${PLATFORM_LIBS} concurrentqueue::concurrentqueue Localization
+    PRIVATE ${GE_ENGINE_MODULES} ${PLATFORM_LIBS} concurrentqueue::concurrentqueue
 )
 foreach(_ge_mod IN LISTS GE_ENGINE_MODULES)
     # Splice each OBJECT module's .obj files into Engine via TARGET_OBJECTS so
