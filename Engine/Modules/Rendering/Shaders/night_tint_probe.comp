@@ -10,7 +10,7 @@
 //                                                              -> slot1.x = the contrast
 //   slot0.x = 2: GE_NightTintSceneNits(stored luminance slot0.y, pre-exposure slot0.z)
 //                                                              -> slot1.x = the scene nits
-//   slot0.x = 3: GE_NightTintAdaptationNits(metered nits slot0.y, applied exposure slot0.z)
+//   slot0.x = 3: GE_NightTintAdaptationNits(metered nits slot0.y, applied exposure slot0.z, solar EV slot0.w)
 //                                                              -> slot1.x = the adaptation nits
 //   slot0.x = 4: GE_NightTintApply(display colour slot0.yzw, tint slot1.yzw, amount 1)
 //                                                              -> slot1.xyz = the tinted colour
@@ -40,7 +40,7 @@ void main()
     else if (inSlot.x < 2.5)
         outSlot.x = GE_NightTintSceneNits(inSlot.y, inSlot.z);
     else if (inSlot.x < 3.5)
-        outSlot.x = GE_NightTintAdaptationNits(inSlot.y, inSlot.z);
+        outSlot.x = GE_NightTintAdaptationNits(inSlot.y, inSlot.z, inSlot.w);
     else
         outSlot.xyz = GE_NightTintApply(inSlot.yzw, uData.slots[q * 2u + 1u].yzw, 1.0);
     uData.slots[q * 2u + 1u] = outSlot;
