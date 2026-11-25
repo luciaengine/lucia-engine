@@ -63,13 +63,21 @@ enum class SceneViewExposureMode : uint8_t
     Auto = 0,
     // The pinned Fixed EV100.
     Fixed = 1,
+    // The active game camera's exposure settings.
+    GameCamera = 2,
 };
 
 // The user-facing name of each exposure mode, shared by the camera popover, the
 // post-processing menu and Preferences.
 inline const char* SceneViewExposureModeLabel(SceneViewExposureMode mode)
 {
-    return mode == SceneViewExposureMode::Fixed ? "Fixed" : "Auto";
+    switch (mode)
+    {
+    case SceneViewExposureMode::Auto: return "Auto";
+    case SceneViewExposureMode::Fixed: return "Fixed";
+    case SceneViewExposureMode::GameCamera: return "Game Camera";
+    }
+    return "Game Camera";
 }
 
 // User-level settings for the editor Scene View camera.
@@ -103,8 +111,7 @@ public:
     // Game View does. The ceiling ships at the slider's top: the editor shows what the meter reads.
     static constexpr float kDefaultAutoExposureMinEv = Components::kDefaultAutoExposureMinEv;
     static constexpr float kDefaultAutoExposureMaxEv = kMaxExposureEv;
-    // Fixed exposure uses the same EV100 as a new game camera.
-    static constexpr SceneViewExposureMode kDefaultExposureMode = SceneViewExposureMode::Fixed;
+    static constexpr SceneViewExposureMode kDefaultExposureMode = SceneViewExposureMode::GameCamera;
     static constexpr Components::ExposureMeter kDefaultExposureMeter = Components::ExposureMeter::Lights;
     // Auto applies each new reading at once by default: the lights reading then lands in the frame
     // a light or the sky changes, and the Picture meter re-meters every frame unsmoothed. The delay
@@ -255,8 +262,14 @@ public:
         prefs.TryGetBool("sceneView.postFxCrtEnabled", m_PostFxCrtEnabled);
         {
             std::string name;
+            m_ExposureMode = kDefaultExposureMode;
             if (prefs.TryGetString("sceneView.exposure", name))
-                m_ExposureMode = name == "fixed" ? SceneViewExposureMode::Fixed : SceneViewExposureMode::Auto;
+            {
+                if (name == "fixed")
+                    m_ExposureMode = SceneViewExposureMode::Fixed;
+                else if (name == "auto")
+                    m_ExposureMode = SceneViewExposureMode::Auto;
+            }
             if (prefs.TryGetString("sceneView.exposureMeter", name))
                 m_ExposureMeter =
                     name == "picture" ? Components::ExposureMeter::Picture : Components::ExposureMeter::Lights;
@@ -435,7 +448,18 @@ public:
         prefs.SetBool("sceneView.postFxCrtEnabled", m_PostFxCrtEnabled);
         // While the view uses a session-only exposure, the user's own is the one saved.
         const Exposure exposure = m_UserExposure.value_or(GetExposure());
-        prefs.SetString("sceneView.exposure", exposure.Mode == SceneViewExposureMode::Fixed ? "fixed" : "auto");
+        switch (exposure.Mode)
+        {
+        case SceneViewExposureMode::Auto:
+            prefs.SetString("sceneView.exposure", "auto");
+            break;
+        case SceneViewExposureMode::Fixed:
+            prefs.SetString("sceneView.exposure", "fixed");
+            break;
+        case SceneViewExposureMode::GameCamera:
+            prefs.SetString("sceneView.exposure", "gameCamera");
+            break;
+        }
         prefs.SetString("sceneView.exposureMeter",
                         exposure.Meter == Components::ExposureMeter::Picture ? "picture" : "lights");
         prefs.SetBool("sceneView.autoExposureAdaptationDelay", exposure.AdaptationDelay);

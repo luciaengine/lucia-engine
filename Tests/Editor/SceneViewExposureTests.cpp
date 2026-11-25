@@ -82,11 +82,10 @@ class ScopedScenePreferences
 };
 } // namespace
 
-// Fixed exposure matches a new camera; Auto keeps its meter, range and adaptation settings.
-TEST(SceneViewExposure, TheDefaultIsFixedAndMatchesANewCamera)
+TEST(SceneViewExposure, TheDefaultFollowsTheGameCamera)
 {
-    EXPECT_EQ(SceneViewSettings::kDefaultExposureMode, SceneViewExposureMode::Fixed);
-    EXPECT_EQ(SceneViewSettings::Exposure{}.Mode, SceneViewExposureMode::Fixed);
+    EXPECT_EQ(SceneViewSettings::kDefaultExposureMode, SceneViewExposureMode::GameCamera);
+    EXPECT_EQ(SceneViewSettings::Exposure{}.Mode, SceneViewExposureMode::GameCamera);
     EXPECT_FLOAT_EQ(SceneViewSettings::Exposure{}.FixedEv, Components::kDefaultManualExposureEv);
     EXPECT_EQ(Components::Camera{}.ExposureControl, Components::ExposureMode::Fixed);
     EXPECT_NEAR(Rendering::LinearExposureToEv(Components::Camera{}.Exposure),
@@ -130,6 +129,10 @@ TEST(SceneViewExposure, TheModeAndTheMeterPersistByName)
     settings.Load();
     EXPECT_EQ(settings.GetExposureMode(), SceneViewExposureMode::Auto);
     EXPECT_EQ(settings.GetExposureMeter(), Components::ExposureMeter::Lights);
+
+    settings.SetExposureMode(SceneViewExposureMode::GameCamera, /*fromUserSwitch=*/true);
+    settings.Load();
+    EXPECT_EQ(settings.GetExposureMode(), SceneViewExposureMode::GameCamera);
 }
 
 // The keys of the former three-mode exposure and its 4 / 18 clamps are not read: a preferences file

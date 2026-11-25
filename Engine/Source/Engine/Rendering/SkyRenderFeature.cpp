@@ -26,10 +26,13 @@ bool SkyRenderFeature::Initialize(Rendering::IDevice* device)
     return true;
 }
 
-void SkyRenderFeature::SetSettings(const Rendering::SkySettings& settings, const Rendering::SkySunState& sunState)
+void SkyRenderFeature::SetSettings(const Rendering::SkySettings& settings, const Rendering::SkySunState& sunState,
+                                   float dayCycleExposureEv, uint64 dayCycleWorld)
 {
     m_Settings = settings;
     m_SunState = sunState;
+    m_DayCycleExposureEv = dayCycleExposureEv;
+    m_DayCycleWorld = dayCycleWorld;
     m_HasSettings = true;
 }
 

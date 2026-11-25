@@ -24,7 +24,12 @@ class SkyRenderFeature : public IRenderFeature
     bool Initialize(Rendering::IDevice* device);
     bool IsInitialized() const { return m_Initialized; }
 
-    void SetSettings(const Rendering::SkySettings& settings, const Rendering::SkySunState& sunState);
+    void SetSettings(const Rendering::SkySettings& settings, const Rendering::SkySunState& sunState,
+                     float dayCycleExposureEv = 0.0f, uint64 dayCycleWorld = 0);
+    float GetDayCycleExposureEv(uint64 worldId) const
+    {
+        return m_HasSettings && m_DayCycleWorld == worldId ? m_DayCycleExposureEv : 0.0f;
+    }
     void ClearActiveSettings();
     const Rendering::SkySettings& GetSettings() const { return m_Settings; }
     /// The sun state the sky published with its settings this frame (SkySunState).
@@ -46,6 +51,8 @@ class SkyRenderFeature : public IRenderFeature
     Rendering::SkyRenderer m_Renderer;
     Rendering::SkySettings m_Settings;
     Rendering::SkySunState m_SunState;
+    float m_DayCycleExposureEv = 0.0f;
+    uint64 m_DayCycleWorld = 0;
     bool m_HasSettings = false;
     bool m_Initialized = false;
 };

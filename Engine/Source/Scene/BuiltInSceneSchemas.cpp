@@ -2508,6 +2508,9 @@ class SkyEnvironmentSchema final : public ISceneComponentSchema
         outLines.push_back(std::string("SkyEnvironment.DayKeyTimeSunset = ") + FormatFloat(c->DayKeyTimesHours.Sunset));
         outLines.push_back(std::string("SkyEnvironment.AnimateTimeOfDay = ") + (c->AnimateTimeOfDay ? "true" : "false"));
         outLines.push_back(std::string("SkyEnvironment.TimeOfDayCycleSeconds = ") + FormatFloat(c->TimeOfDayCycleSeconds));
+        if (!c->DayCycleExposureProfile.IsNull())
+            outLines.push_back(std::string("SkyEnvironment.DayCycleExposureProfile = ") +
+                               FormatAssetReferenceForSave(ctx, c->DayCycleExposureProfile.ToGuid(), ""));
         outLines.push_back(std::string("SkyEnvironment.SkyExposureTrim = ") + FormatFloat(c->SkyExposureTrim));
         outLines.push_back(std::string("SkyEnvironment.IblIntensity = ") + FormatFloat(c->IblIntensity));
         outLines.push_back(std::string("SkyEnvironment.IblLowerHemisphereDarkness = ") + FormatFloat(c->IblLowerHemisphereDarkness));
@@ -2723,6 +2726,16 @@ class SkyEnvironmentSchema final : public ISceneComponentSchema
         {
             if (!ParseF32(value, c.TimeOfDayCycleSeconds, outError))
                 return false;
+        }
+        else if (property == "daycycleexposureprofile")
+        {
+            SceneValue parsed{};
+            if (!ParseValue(value, parsed, outError))
+                return false;
+            AssetReference reference{};
+            if (!TryResolveAssetReference(ctx, parsed, AssetType::DayCycleProfile, reference, outError))
+                return false;
+            c.DayCycleExposureProfile.Set(reference.guid);
         }
         else if (property == "skyexposuretrim")
         {
@@ -3667,6 +3680,14 @@ class SkyEnvironmentSchema final : public ISceneComponentSchema
         Components::SkyEnvironment c{};
         world.AddComponentImmediate(entity, c);
         return true;
+    }
+
+    void EnumerateAssetReferences(const ECS::World& world, ECS::EntityHandle entity,
+                                  const AssetRefVisitor& visitor) const override
+    {
+        const auto* sky = world.GetComponent<Components::SkyEnvironment>(entity);
+        if (sky && visitor && !sky->DayCycleExposureProfile.IsNull())
+            visitor(sky->DayCycleExposureProfile.ToGuid(), AssetType::DayCycleProfile, "", "DayCycleExposureProfile");
     }
 
     bool Remove(ECS::World& world, ECS::EntityHandle entity) const override

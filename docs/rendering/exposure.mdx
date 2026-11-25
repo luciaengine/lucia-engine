@@ -1,9 +1,9 @@
 ---
 title: Exposure
-description: How a camera turns physical light values into a picture, the exposure modes, the two meters under Auto, how a night stays dark, how the picture meter treats the sky, and how the Scene View sets its own exposure.
+description: How a camera turns physical light values into a picture, the exposure modes, the two meters under Auto, how a night stays dark, how the picture meter treats the sky, and how the Scene View follows the game camera.
 ---
 
-Lights in this engine use physical units: the sun is about 100,000 lux, a lamp a few hundred lumens. Exposure turns those values into a picture, the way a camera's aperture, shutter, and sensitivity do. Exposure belongs to the **Camera** component. A Post Process Volume can only offset it (the **Exposure Adjustment** effect, in stops). The editor's Scene View has no camera and sets its own exposure. See [The Scene View's exposure](#the-scene-views-exposure).
+Lights in this engine use physical units: the sun is about 100,000 lux, a lamp a few hundred lumens. Exposure turns those values into a picture, the way a camera's aperture, shutter, and sensitivity do. Exposure belongs to the **Camera** component. A Post Process Volume can only offset it (the **Exposure Adjustment** effect, in stops). The editor's Scene View follows the game camera's exposure settings by default. See [The Scene View's exposure](#the-scene-views-exposure).
 
 ## What the sun's lux means
 
@@ -18,7 +18,7 @@ The default atmosphere is a crisp clear day: a deep blue zenith over a light haz
 | **Auto** | The camera's **Meter** reads the scene, and the exposure adapts to the reading over time, like an eye. See [The two meters](#the-two-meters). | Games that adapt between lighting conditions. |
 | **Manual** | **Manual EV100**, an absolute EV100: 15 is bright sun, 12 overcast, 7 to 9 an interior, 2 to 5 night. | Shots that must not change with what is on screen or with the light. |
 | **Physical** | Aperture, shutter time, and ISO, as on a real camera (f/16, 1/100 s, ISO 100 is about EV 14.6). | Matching photographic reference. |
-| **Fixed** (default) | A plain linear multiplier, initialized to the equivalent of EV100 15.4. | Consistent brightness while editing and playing. |
+| **Fixed** | A plain linear multiplier, initialized to the equivalent of EV100 15.4. | Consistent brightness while editing and playing. |
 
 **Exposure Compensation** applies in every mode, in stops: +1 doubles the brightness, -1 halves it.
 
@@ -65,7 +65,7 @@ To make a game's nights brighter, raise the -2.5 key toward 0; to darken them, l
 
 The curve is set in the Camera inspector and in the scene file. It cannot be set from C#, the debug port or the web library yet.
 
-The meter cannot tell a dusk from a lamp-lit room, because both read about the same. A [Day Cycle profile](day-cycle-profiles.mdx) keys an exposure offset over the sun's elevation, which tells them apart: the shipped Default profile dips the dusk through civil twilight.
+On a physical sky, the [Day Cycle exposure profile](day-cycle-profiles.mdx) can shape twilight and night using the sun's elevation when eye adaptation is off. Exposure stays stable as the camera moves.
 
 ## How the picture meter works
 
@@ -109,18 +109,19 @@ In a scene file the meter is written by name: `Camera.autoExposureMeter = pictur
 
 ## The Scene View's exposure
 
-The Scene View has no Camera component, so it sets its exposure with its own settings. The Game View always shows its camera's exposure. The two views may differ.
+The Scene View follows the active game camera by default. Use **Auto** or **Fixed** to override its exposure for editing.
 
 | Mode | What sets the exposure |
 |---|---|
+| **Game Camera** (default) | The active game camera's exposure settings. Auto Picture metering samples the Scene View's own image, so framing can affect the reading. With no game camera, the Scene View uses the default camera exposure. |
 | **Auto** | The Scene View's **Meter**, Lights by default, within its own **Min EV100** and **Max EV100**. Each new reading applies at once: the Lights reading lands in the frame a light or the sky changes. Turn on **Adaptation Delay** to smooth it at the camera's default speeds. With the Picture meter and the delay off, the view re-meters every frame, unsmoothed. |
-| **Fixed** (default) | The EV100 you set with **Fixed EV100**, initially 15.4 to match a new camera. Switching to Fixed from Auto starts it at the exposure the view was showing, so the picture does not jump. |
+| **Fixed** | The EV100 you set with **Fixed EV100**, initially 15.4 to match a new camera. Switching to Fixed from Auto starts it at the exposure the view was showing, so the picture does not jump. |
 
 With Auto enabled, the Scene View shows a night by the same rule as an Auto game camera: the same **Min EV** floor of -7 and the scene's main camera's **Compensation Curve** (the engine's default when the scene has no camera), so a curve you tune on the camera shows in the Scene View too. It keeps two differences, so the picture stays steady while you fly the view: its Auto meter starts on Lights and applies each reading at once. The two meters read a scene differently, so a night in the Scene View can sit a stop or so away from the Game View's.
 
 | Setting | Camera | Scene View |
 |---|---|---|
-| Exposure | Fixed, equivalent to EV100 15.4 | Fixed, EV100 15.4 |
+| Exposure | Fixed, equivalent to EV100 15.4 | Game Camera |
 | Meter | Picture | Lights |
 | Min EV | -7 | -7; the slider goes down to -14, below a moonless night |
 | Compensation Curve | The camera's own | The scene's main camera's; the default when the scene has none |
@@ -128,7 +129,7 @@ With Auto enabled, the Scene View shows a night by the same rule as an Auto game
 | Adaptation | Speed Up 1, Speed Down 3 | At once (**Adaptation Delay** off); on smooths at Speed Up 1, Speed Down 3 |
 | Exposure Compensation | 0 | 0; the slider goes from -8 to +8 stops |
 
-Change the Scene View's exposure from the Scene View toolbar's camera button (the **Exposure** section; under the Lights meter its **Reading** line shows the EV100 the lights give and, when the clamps or the curve move it, the EV100 the view is exposed at), from the right-click menu on the toolbar's post-processing button (**Exposure: Auto, Picture**, **Exposure: Auto, Lights**, **Exposure: Fixed**), or in **Project Settings > Scene View > Exposure**. **EV Compensation** applies on top in every mode.
+Change the Scene View's exposure from the Scene View toolbar's camera button (the **Exposure** section; under the Lights meter its **Reading** line shows the EV100 the lights give and, when the clamps or the curve move it, the EV100 the view is exposed at), from the right-click menu on the toolbar's post-processing button (**Exposure: Game Camera**, **Exposure: Auto, Picture**, **Exposure: Auto, Lights**, **Exposure: Fixed**), or in **Project Settings > Scene View > Exposure**. **EV Compensation** applies in Auto and Fixed.
 
 When the Scene View's exposure differs from the game camera's, a notice along the top of the Scene View says so. When the editor can measure both views' exposure, the notice says which way the Scene View is exposed and how the game will look. Otherwise it says that the exposure settings differ. A Scene View and a camera that both keep their default settings count as matched. **Match game camera** gives the Scene View the game camera's exposure settings until the editor restarts; change an exposure setting to make the values your own and save them. **Dismiss** hides the notice until the editor restarts.
 

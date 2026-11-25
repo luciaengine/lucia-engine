@@ -70,16 +70,16 @@ class DayCycleProfileSaveTests : public ::testing::Test
 };
 } // namespace
 
-TEST_F(DayCycleProfileSaveTests, TheShippedDefaultDipsThroughCivilTwilightAndClearDayIsIdentity)
+TEST_F(DayCycleProfileSaveTests, TheShippedDefaultLiftsTwilightAndNightAndClearDayIsIdentity)
 {
     const DayCycleProfileData dusk = Read(ShippedDefault());
     const DayCycleTrackKeys* exposure = dusk.Find(DayCycleTrack::ExposureOffset);
     ASSERT_NE(exposure, nullptr);
-    EXPECT_NEAR(EvaluateDayCycleTrack(*exposure, 0.0f, true), 0.0f, 1e-5f);
-    EXPECT_NEAR(EvaluateDayCycleTrack(*exposure, -6.0f * kRadiansPerDegree, true), -1.5f, 1e-5f);
-    EXPECT_NEAR(EvaluateDayCycleTrack(*exposure, -11.0f * kRadiansPerDegree, true), 0.0f, 1e-5f);
+    EXPECT_NEAR(EvaluateDayCycleTrack(*exposure, 0.0f, true), 4.0f, 1e-5f);
+    EXPECT_NEAR(EvaluateDayCycleTrack(*exposure, -6.0f * kRadiansPerDegree, true), 9.0f, 1e-5f);
+    EXPECT_NEAR(EvaluateDayCycleTrack(*exposure, -12.0f * kRadiansPerDegree, true), 13.0f, 1e-5f);
     EXPECT_NEAR(EvaluateDayCycleTrack(*exposure, 30.0f * kRadiansPerDegree, true), 0.0f, 1e-5f);
-    EXPECT_NEAR(EvaluateDayCycleTrack(*exposure, -40.0f * kRadiansPerDegree, true), 0.0f, 1e-5f);
+    EXPECT_NEAR(EvaluateDayCycleTrack(*exposure, -40.0f * kRadiansPerDegree, true), 16.0f, 1e-5f);
 
     const DayCycleProfileData clear = Read(Root / "Editor" / "DayCycles" / "ClearDay.daycycle.json");
     const DayCycleTrackKeys* flat = clear.Find(DayCycleTrack::ExposureOffset);

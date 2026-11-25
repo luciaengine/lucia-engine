@@ -113,11 +113,21 @@ std::vector<ContextMenuManipulator::Item> BuildScenePostFxMenuItems(
                                  toolbar->UpdatePostProcessButtonState();
                          }});
 
-    // The Scene View's exposure applies to the camera-less view regardless of post-process
-    // volumes, so its choices always appear and are independent of the master toggle: one radio
-    // row per look, Auto with each meter and Fixed.
+    // Exposure choices stay available when the post-processing toolbar toggle is off.
     items.push_back({.Separator = true});
-    const bool autoOn = settings.GetExposureMode() == SceneViewExposureMode::Auto;
+    const SceneViewExposureMode exposureMode = settings.GetExposureMode();
+    const bool autoOn = exposureMode == SceneViewExposureMode::Auto;
+    items.push_back({.Path = std::string("Exposure: ") + SceneViewExposureModeLabel(SceneViewExposureMode::GameCamera),
+                     .IconPath = EditorIcons::kPostFx,
+                     .Flags = checkedFlag(exposureMode == SceneViewExposureMode::GameCamera) | MenuItemFlag_Radio,
+                     .OnActivate =
+                         [onExposureModeChanged]
+                         {
+                             SceneViewSettings::Get().SetExposureMode(SceneViewExposureMode::GameCamera,
+                                                                      /*fromUserSwitch=*/true);
+                             if (onExposureModeChanged)
+                                 onExposureModeChanged();
+                         }});
     for (const Components::ExposureMeter meter : {Components::ExposureMeter::Picture, Components::ExposureMeter::Lights})
     {
         items.push_back({.Path = std::string("Exposure: Auto, ") + ExposureMeterLabel(meter),
@@ -135,7 +145,7 @@ std::vector<ContextMenuManipulator::Item> BuildScenePostFxMenuItems(
     }
     items.push_back({.Path = std::string("Exposure: ") + SceneViewExposureModeLabel(SceneViewExposureMode::Fixed),
                      .IconPath = EditorIcons::kPostFx,
-                     .Flags = checkedFlag(!autoOn) | MenuItemFlag_Radio,
+                     .Flags = checkedFlag(exposureMode == SceneViewExposureMode::Fixed) | MenuItemFlag_Radio,
                      .OnActivate =
                          [onExposureModeChanged]
                          {
