@@ -7,16 +7,16 @@ permissions:
 jobs:
   build:
     runs-on: windows-2025-vs2026
-    timeout-minutes: 150
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: d5cd8bb8c2c17b066f2a1794eb6379cc67e47ba2
+          ref: f8a45874fbd39affb85dc914be887507ab20423d
           persist-credentials: false
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - name: Configure and build Release
+      - name: Configure Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -24,9 +24,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          if ((git rev-parse HEAD) -ne 'd5cd8bb8c2c17b066f2a1794eb6379cc67e47ba2') { throw 'Unexpected checkout' }
+          if ((git rev-parse HEAD) -ne 'f8a45874fbd39affb85dc914be887507ab20423d') { throw 'Unexpected checkout' }
           if ((Get-Content VERSION -Raw).Trim() -ne '1.0.0') { throw 'Unexpected engine version' }
           cmake --preset vs2026-x64-local -B D:/lucia-release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_TOOLS=OFF
+      - name: Build Release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           cmake --build D:/lucia-release --config Release --target Editor Player --parallel 4
       - name: Package staged Editor
         shell: pwsh
@@ -43,7 +48,7 @@ jobs:
           Copy-Item LICENSE,THIRD_PARTY_NOTICES.md "$stage/"
           @'
           Lucia Engine 1.0.0
-          Source commit: d5cd8bb8c2c17b066f2a1794eb6379cc67e47ba2
+          Source commit: f8a45874fbd39affb85dc914be887507ab20423d
           Platform: Windows x86-64
 
           Extract the entire archive. Open Apps/Editor/Editor.exe to create
