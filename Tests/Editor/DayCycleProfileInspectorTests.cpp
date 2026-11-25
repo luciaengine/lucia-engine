@@ -318,7 +318,7 @@ TEST_F(DayCycleEditorTests, TheEndLabelNearTheZeroGivesWay)
     ASSERT_EQ(config.ValueAxisMarks.size(), 3u);
     EXPECT_TRUE(config.ValueLabel(config.ValueAxisMarks[0]).empty());
     EXPECT_EQ(config.ValueLabel(0.0f), "0");
-    EXPECT_EQ(config.ValueLabel(config.ValueAxisMarks[2]), "18.0");
+    EXPECT_EQ(config.ValueLabel(config.ValueAxisMarks[2]), "+18.0");
 }
 
 } // namespace GameEngine::Editor
