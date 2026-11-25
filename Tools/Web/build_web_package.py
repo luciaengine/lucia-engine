@@ -39,7 +39,7 @@ player template (the WebPlayer build runs it into its bin directory): the same l
 entries only the package ships. Tools/Web/export_web_player.py copies it into every game.
 `--editor-notices <dir>` writes the same list for the web editor (the WebEditor build runs it).
 
-The version is the engine's, from the repository root's VERSION file: `<year>.<month>.<patch>`,
+The version is the engine's, from the repository root's VERSION file: `<major>.<minor>.<patch>`,
 with an optional prerelease suffix `-alpha.<n>` or `-beta.<n>`. A packaged commit carrying a
 release tag (`v` plus the version, `v2026.10.0-alpha.4`) is that version, and a tag that differs
 from VERSION is refused; a commit without one is `<VERSION>-dev.<commit>`. `--version` names the
@@ -142,7 +142,7 @@ kRepoNotices = (
            "Tools/Web/licenses/CC0-1.0.txt", PackageOnly=True),
 )
 kWasmMagic = b"\0asm"
-kReleaseTag = re.compile(r"^v(\d{4}\.\d{1,2}\.\d+)(?:-(alpha|beta)\.\d+)?$")
+kReleaseTag = re.compile(r"^v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))(?:-(alpha|beta)\.(?:0|[1-9][0-9]*))?$")
 
 # The examples import the library by this specifier; in the source tree the import map points
 # it at the facade's tsc output, in the package at the bundled facade two folders up.
@@ -178,7 +178,7 @@ def SourceVersion(versionFile: Path) -> str:
     """The engine version the VERSION file holds."""
     version = versionFile.read_text(encoding="utf-8").strip()
     if not kReleaseTag.match(f"v{version}"):
-        raise PackageError(f"{versionFile} holds '{version}', which is not <year>.<month>.<patch>, "
+        raise PackageError(f"{versionFile} holds '{version}', which is not <major>.<minor>.<patch>, "
                            "optionally followed by -alpha.<n> or -beta.<n>")
     return version
 
@@ -187,7 +187,7 @@ def PackageVersion(releaseTag: str | None, commit: str, sourceVersion: str) -> s
     if releaseTag is None:
         return f"{sourceVersion}-dev.{commit}"
     if not kReleaseTag.match(releaseTag):
-        raise PackageError(f"release tag '{releaseTag}' is not v<year>.<month>.<patch>, optionally "
+        raise PackageError(f"release tag '{releaseTag}' is not v<major>.<minor>.<patch>, optionally "
                            "followed by -alpha.<n> or -beta.<n>")
     if releaseTag[1:] != sourceVersion:
         raise PackageError(f"release tag '{releaseTag}' does not match VERSION, which holds "
