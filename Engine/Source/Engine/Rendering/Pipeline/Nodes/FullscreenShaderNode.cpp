@@ -1038,6 +1038,7 @@ PostProcessSettings Detail::FullscreenShaderNodeRenderer::ViewSettings(const Ful
         if (shadows != nullptr && shadows->ShowsDiagnosticValues())
         {
             settings.Exposure = 1.0f;
+            settings.DayCycleExposureEv = 0.0f;
             settings.AutoExposureActive = false;
             settings.ViewOutput = PostProcessViewOutput::NoLook; // preserve the diagnostic values
         }
@@ -1587,6 +1588,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                             const auto& hdrMetadata = hdrState.staticMetadata;
                             const float outputMaxLinear =
                                 Rendering::GetHdrOutputMaxLinearValue(hdrState);
+                            pcw.Add("dayCycleExposureEv", settings.DayCycleExposureEv);
                             pcw.Add("paperWhiteNits", hdrMetadata.paperWhiteNits);
                             pcw.Add("maxOutputNits",
                                     std::max(hdrMetadata.paperWhiteNits,

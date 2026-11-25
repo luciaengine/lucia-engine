@@ -52,6 +52,7 @@ layout(push_constant) uniform TonemapPC {
     float nightTintG;
     float nightTintB;
     GE_CUBE_LUT_PUSH_MEMBERS // the Cube LUT: intensity 0 = none; sampled here at the Finish stage
+    float dayCycleExposureEv;
 } pc;
 
 // Canonical HDR paper-white floor (framebuffer 1.0 == 80 nits anchor). Mirrors
@@ -325,7 +326,7 @@ void main()
     // curve), else what the exposure maps to mid-grey. exposure x P is the scale from absolute
     // scene-linear to display.
     float meteredNits = pc.useAutoExposure != 0 ? GE_MeteredNits() : -1.0;
-    float adaptationNits = GE_NightTintAdaptationNits(meteredNits, exposure * GE_PreExposure());
+    float adaptationNits = GE_NightTintAdaptationNits(meteredNits, exposure * GE_PreExposure(), pc.dayCycleExposureEv);
     lin = ApplyNightTint(lin, adaptationNits, uv, stored);
     lin = ApplyOutputRangeTonemap(hdr, lin);
     // Default to opaque (1.0) so the main view is unchanged. Lens-flare thumbnails
