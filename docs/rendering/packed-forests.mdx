@@ -93,6 +93,8 @@ The Shadow Casting field of the overview MeshRenderer (`MeshRenderer.shadowCasti
 
 A splat draws a tree as about a thousand small disks, one for each cell of a grid around the tree. Each disk has the color, the normal and the leaf coverage of the tree's surface in its cell, and moves with the wind. The disks form a three-dimensional crown that can be viewed from above. Close up, they look coarser than cards, so the near meshes still draw the trees nearest to the camera.
 
+The GPU selects the disk resolution from the tree's projected cell size. If a fine cell covers one pixel or less, it draws the coarser cell groups. Those groups keep separate leaf and bark disks and use the source disks' coverage to size each group. The view's LOD bias scales the projected footprint.
+
 With Splats, the trees draw in full to Detail Distance. Over the next 64 meters, the splats fade into the overview mesh with a dither, so the stand has no hard edge where the trees end. Pages in that band stay resident, so the stand streams the pages up to Detail Distance plus 64 meters.
 
 1. Bake the tree model into splats with `ForestPlacementCook --splats` (see below).

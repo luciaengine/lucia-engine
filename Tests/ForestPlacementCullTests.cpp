@@ -4,6 +4,7 @@
 #include "ForestPlacementCull.h"
 #include "ForestPlacementGpuData.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
+#include "Engine/Rendering/Forest/ForestSplatCells.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Mathematics/MatrixOps.h"
 #include "PageStreaming/Placement/PackedPlacementStore.h"
@@ -14,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <memory>
 #include <set>
@@ -44,6 +46,7 @@ constexpr uint32 kReadRows = 300;
 struct CullResult
 {
     uint32 Instances = 0;
+    uint32 CoarseInstances = 0;
     std::vector<std::pair<uint32, uint32>> Rows; // placement slot, page index
 };
 
@@ -100,7 +103,7 @@ protected:
     }
 
     CullResult Run(std::vector<ForestPlacementGpuPage> pages, uint32 frameIndex, const ForestPlacementGpuView& view,
-                   TextureHandle depth = {}, SamplerHandle sampler = {})
+                   TextureHandle depth = {}, SamplerHandle sampler = {}, const ForestSplatWindGpu* splats = nullptr)
     {
         Pools pools(m_Device.get());
         RGFrame graph(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
@@ -110,12 +113,19 @@ protected:
             "ForestCullTest.HZB", depth, ResourceState::ShaderResource, TextureFormat::R32_FLOAT) : RGTexture{};
         std::optional<ForestPlacementCull::DrawBuffers> buffers;
         for (int attempt = 0; attempt < kMaxDeclareAttempts && !buffers; ++attempt)
-            buffers = m_Cull.Declare(graph, "ForestCullTest", m_Slots, 2, view, pages, 6, nullptr, hzb, sampler);
+            buffers = m_Cull.Declare(graph, "ForestCullTest", m_Slots, 2, view, pages, 6, splats, hzb, sampler,
+                                     splats ? 6u : 0u);
         EXPECT_TRUE(buffers);
         if (!buffers)
             return {};
         auto args = RequestBufferReadbackRG(m_Device.get(), graph, buffers->Args, 0, sizeof(ForestPlacementIndirectDraw), "ForestCullTest.Args");
-        auto rows = RequestBufferReadbackRG(m_Device.get(), graph, buffers->Visible, 0, kReadRows * sizeof(ForestPlacementGpuVisible), "ForestCullTest.Rows");
+        const auto rowStride = splats ? sizeof(ForestPlacementGpuVisibleSplat) : sizeof(ForestPlacementGpuVisible);
+        auto rows = RequestBufferReadbackRG(m_Device.get(), graph, buffers->Visible, 0,
+            std::min<uint64>(buffers->VisibleBytes, kReadRows * rowStride), "ForestCullTest.Rows");
+        auto coarseArgs = buffers->CoarseArgs.IsValid()
+            ? RequestBufferReadbackRG(m_Device.get(), graph, buffers->CoarseArgs, 0, sizeof(ForestPlacementIndirectDraw),
+                                     "ForestCullTest.CoarseArgs")
+            : nullptr;
         graph.Execute();
         OnFrameSubmittedReadbacksRG(graph, graph.SubmissionToken());
         m_Device->WaitForIdle();
@@ -127,12 +137,22 @@ protected:
         std::memcpy(&draw, bytes.bytes.data(), sizeof(draw));
         EXPECT_EQ(draw.IndexCount, 6u);
         result.Instances = draw.InstanceCount;
+        if (coarseArgs)
+        {
+            BufferReadbackResult coarseBytes{};
+            EXPECT_TRUE(coarseArgs->TryGet(coarseBytes));
+            ForestPlacementIndirectDraw coarseDraw{};
+            EXPECT_EQ(coarseBytes.bytes.size(), sizeof(coarseDraw));
+            if (coarseBytes.bytes.size() == sizeof(coarseDraw))
+                std::memcpy(&coarseDraw, coarseBytes.bytes.data(), sizeof(coarseDraw));
+            result.CoarseInstances = coarseDraw.InstanceCount;
+        }
         BufferReadbackResult rowBytes{};
         EXPECT_TRUE(rows && rows->TryGet(rowBytes));
         for (uint32 i = 0; i < std::min(draw.InstanceCount, kReadRows); ++i)
         {
             ForestPlacementGpuVisible row{};
-            std::memcpy(&row, rowBytes.bytes.data() + i * sizeof(row), sizeof(row));
+            std::memcpy(&row, rowBytes.bytes.data() + i * rowStride, sizeof(row));
             result.Rows.emplace_back(row.Placement, row.Page);
         }
         std::ranges::sort(result.Rows);
@@ -222,6 +242,41 @@ TEST_F(ForestPlacementCullTest, DepthPyramidRejectsOnlyACompletelyHiddenPage)
     EXPECT_EQ(result.Rows, (Rows{{kPerPage, 1u}}));
     m_Device->DestroySampler(sampler);
     m_Device->DestroyTexture(texture);
+}
+
+TEST_F(ForestPlacementCullTest, SplatComplexityFollowsTheProjectedFootprint)
+{
+    m_Cull = {};
+    ASSERT_TRUE(m_Cull.Initialize(*m_Device, true));
+    const std::array<PackedPlacement, 2> placements{{{0, 0, 0, 0, 0}, {0, 0, 0, 0, 255}}};
+    m_Device->UpdateBuffer(m_Slots, 0, sizeof(placements), placements.data());
+    auto view = MakeView({0, 0, 0, 1}, {0, 0, 0, 1});
+    view.ViewProjectionRelative = Mathematics::Matrix4x4::Identity();
+    ForestSplatWindGpu wind{};
+    wind.Lod = {1.0f, 1.0f, 1.0f, 1.0f};
+    const auto result = Run({Page(0u, 2u, true)}, 0, view, {}, {}, &wind);
+    EXPECT_EQ(result.Instances, 1u);
+    EXPECT_EQ(result.CoarseInstances, 1u);
+    EXPECT_EQ(result.Rows, (Rows{{1u, 0u}}));
+}
+
+TEST(ForestSplatGeometry, CoarseGroupsRetainDiskAreaAndKeepBarkSeparate)
+{
+    ForestSplatCells fine{.CellSize = 1.0f};
+    constexpr uint32 kHalfCoverage = 128u << 24u;
+    constexpr uint32 kNormalAndColor = 0x80602010u;
+    constexpr uint32 kLeaf = 0x00ff8080u;
+    constexpr uint32 kBark = 0x00008080u;
+    fine.Cells = {{kHalfCoverage, kNormalAndColor, kLeaf}, {kHalfCoverage | 1u, kNormalAndColor, kLeaf},
+                  {kHalfCoverage, kNormalAndColor, kBark}};
+    const auto coarse = CoarsenForestSplatCells(fine);
+    ASSERT_TRUE(coarse);
+    ASSERT_EQ(coarse->Cells.size(), 2u);
+    EXPECT_EQ(coarse->CellSize, 2.0f);
+    EXPECT_EQ(coarse->Cells[0].PositionCoverage >> 24u, 32u);
+    EXPECT_EQ(coarse->Cells[1].PositionCoverage >> 24u, 64u);
+    EXPECT_EQ((coarse->Cells[0].NormalYBendLeaf >> 16u) & 255u, 0u);
+    EXPECT_EQ((coarse->Cells[1].NormalYBendLeaf >> 16u) & 255u, 255u);
 }
 
 TEST_F(ForestPlacementCullTest, TwoPagesCompactIntoDisjointTailRanges)

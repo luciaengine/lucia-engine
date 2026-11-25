@@ -12,6 +12,7 @@ layout(std140, set = 1, binding = 1) uniform ForestWindParameters
     ivec4 uSector;
     vec4 uTimeAndDisplacement; // Deformation clock in seconds, largest sway in meters.
 #include "Includes/weather_wind_fields.glsl"
+    vec4 uScreenFootprint; // Fine cell width, pixels per world unit, footprint threshold, orthographic flag.
 } forestWind;
 
 #define GE_WEATHER_LIGHT forestWind
@@ -51,6 +52,40 @@ layout(std430, set = 0, binding = 3) buffer ForestPlacementIndirectDraw
     int vertexOffset;
     uint firstInstance;
 } indirectDraw;
+
+#ifdef GE_FOREST_SPLAT_CULL
+layout(std430, set = 0, binding = 4) GE_STORAGE_WRITEONLY buffer ForestCoarsePlacements
+{
+    ForestVisibleSplat coarsePlacements[];
+};
+layout(std430, set = 0, binding = 5) buffer ForestCoarseIndirectDraw
+{
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+} coarseDraw;
+
+shared uint fineCount;
+shared uint coarseCount;
+shared uint fineStart;
+shared uint coarseStart;
+shared uint fineSlots[kForestPlacementsPerSlot];
+shared uint coarseSlots[kForestPlacementsPerSlot];
+
+bool WantsCoarseSplats(uint slot, ForestPlacementPage page)
+{
+    const uvec2 packed = forestPlacements[slot];
+    const float scale = GE_ForestPlacementScale(packed);
+    const vec3 root = GE_ForestPlacementRoot(packed, page);
+    const float clipW = (forestView.viewProjectionRel * vec4(root, 1.0)).w;
+    const float nearDistance = forestWind.uScreenFootprint.w > 0.0
+        ? 1.0 : clipW - scale * forestView.eyeRelAndRadius.w;
+    const float pixelsAtUnitDistance = forestWind.uScreenFootprint.x * scale * forestWind.uScreenFootprint.y;
+    return nearDistance > 0.0 && pixelsAtUnitDistance <= forestWind.uScreenFootprint.z * nearDistance;
+}
+#endif
 
 shared uint pageVisibleCount;
 shared uint pageOutputStart;
@@ -146,6 +181,46 @@ void main()
         }
     }
     barrier();
+
+#ifdef GE_FOREST_SPLAT_CULL
+    if (forestWind.uScreenFootprint.x > 0.0)
+    {
+        if (lane == 0u)
+        {
+            fineCount = 0u;
+            coarseCount = 0u;
+        }
+        barrier();
+        for (uint i = lane; i < pageVisibleCount; i += gl_WorkGroupSize.x)
+        {
+            const uint slot = entirePage ? page.range.x + i : pagePlacements[i];
+            if (WantsCoarseSplats(slot, page))
+                coarseSlots[atomicAdd(coarseCount, 1u)] = slot;
+            else
+                fineSlots[atomicAdd(fineCount, 1u)] = slot;
+        }
+        barrier();
+        if (lane == 0u)
+        {
+            if (fineCount != 0u)
+                fineStart = atomicAdd(indirectDraw.instanceCount, fineCount);
+            if (coarseCount != 0u)
+                coarseStart = atomicAdd(coarseDraw.instanceCount, coarseCount);
+        }
+        barrier();
+        for (uint i = lane; i < fineCount; i += gl_WorkGroupSize.x)
+        {
+            const uint slot = fineSlots[i];
+            visiblePlacements[fineStart + i] = ForestVisibleSplat(slot, pageIndex, GE_VisibleTreeSway(slot, page));
+        }
+        for (uint i = lane; i < coarseCount; i += gl_WorkGroupSize.x)
+        {
+            const uint slot = coarseSlots[i];
+            coarsePlacements[coarseStart + i] = ForestVisibleSplat(slot, pageIndex, GE_VisibleTreeSway(slot, page));
+        }
+        return;
+    }
+#endif
 
     // The writer reserves one tail range per page. The output has space
     // for every placement in the unique resident page list.

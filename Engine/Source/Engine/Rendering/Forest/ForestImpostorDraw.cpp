@@ -192,21 +192,41 @@ bool EmitForestImpostorShadowDraw(const DepthEmitContext& context, uint32 cascad
 }
 
 bool EmitForestSplatDraw(const ForwardEmitContext& context, const ForestPlacementCull::DrawBuffers& buffers,
-    const ForestSplatGeometry& splats, DrawCommand color)
+    const ForestSplatGeometry& splats, DrawCommand color, const ForestSplatGeometry& coarse)
 {
     if (!context.Frame || !context.Services || context.Purpose != ForwardEmitPurpose::World || !splats.Cells ||
         !splats.CellBuffer.IsValid() || !splats.Indices.IsValid() ||
         !IsForestDrawMaterial(color.Material, "VertexModifiers/forest_splats.glsl"))
         return false;
 
-    const ForestSplatCells& cells = *splats.Cells;
-    ForestCardParameters params{};
-    params.Atlas = {cells.Origin.x, cells.Origin.y, cells.Origin.z, cells.CellSize};
-    params.Material[0] = color.Material->GetGpuSceneMaterialIndex();
-    const DrawBindings::BufferEntry cellBinding{HashStringId("ForestSplatCells"), splats.CellBuffer, 0,
-                                                cells.Cells.size() * sizeof(ForestSplatCell)};
-    const auto bindings = PrepareForestBindings(*context.Frame, buffers, params, &cellBinding);
-    return bindings && EmitForestPlacementDraw(context, buffers, splats.Indices, *bindings, &cellBinding, color);
+    const auto prepare = [&context, &color](const ForestSplatGeometry& geometry,
+        const ForestPlacementCull::DrawBuffers& drawBuffers, DrawBindings::BufferEntry& cellBinding) {
+        const auto& cells = *geometry.Cells;
+        ForestCardParameters params{};
+        params.Atlas = {cells.Origin.x, cells.Origin.y, cells.Origin.z, cells.CellSize};
+        params.Material[0] = color.Material->GetGpuSceneMaterialIndex();
+        cellBinding = {HashStringId("ForestSplatCells"), geometry.CellBuffer, 0,
+                       cells.Cells.size() * sizeof(ForestSplatCell)};
+        return PrepareForestBindings(*context.Frame, drawBuffers, params, &cellBinding);
+    };
+    DrawBindings::BufferEntry fineCellBinding{};
+    const auto fineBindings = prepare(splats, buffers, fineCellBinding);
+    if (!fineBindings)
+        return false;
+    if (buffers.CoarseArgs.IsValid())
+    {
+        if (!coarse.Cells || !coarse.CellBuffer.IsValid() || !coarse.Indices.IsValid())
+            return false;
+        auto coarseBuffers = buffers;
+        coarseBuffers.Visible = buffers.CoarseVisible;
+        coarseBuffers.Args = buffers.CoarseArgs;
+        DrawBindings::BufferEntry coarseCellBinding{};
+        const auto coarseBindings = prepare(coarse, coarseBuffers, coarseCellBinding);
+        if (!coarseBindings)
+            return false;
+        EmitForestPlacementDraw(context, coarseBuffers, coarse.Indices, *coarseBindings, &coarseCellBinding, color);
+    }
+    return EmitForestPlacementDraw(context, buffers, splats.Indices, *fineBindings, &fineCellBinding, color);
 }
 
 } // namespace GameEngine::Engine::Renderer

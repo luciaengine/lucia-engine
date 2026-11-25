@@ -82,6 +82,12 @@ std::shared_ptr<ForestPlacementSession> ForestPlacementFeature::Attach(
     session->World = world;
     session->Model = model;
     session->SplatReach = splats ? SplatReach(*splats) : 0.0f;
+    if (splats)
+        if (auto coarse = CoarsenForestSplatCells(*splats))
+        {
+            session->CoarseSplatReach = SplatReach(*coarse) + coarse->CellSize * kSplatJitterRadius;
+            session->CoarseSplats = std::make_shared<const ForestSplatCells>(std::move(*coarse));
+        }
     session->Splats = std::move(splats);
     session->Scope = "Forest.Detail." + std::to_string(++m_NextSession);
     for (uint32 cascade = 0; cascade < kMaxDepthEmitCascades; ++cascade)
@@ -187,16 +193,28 @@ void ObservePlacementCounts(ForestPlacementSession& session, const ForwardEmitCo
     auto& sample = session.CountSample;
     if (sample.Ticket)
     {
-        BufferReadbackResult result{};
-        uint32 cards = 0;
-        if (sample.Ticket->TryGet(result) && result.bytes.size() == sizeof(cards))
+        const auto readCount = [](const auto& ticket, std::optional<uint32>& count)
         {
-            std::memcpy(&cards, result.bytes.data(), sizeof(cards));
+            if (!ticket || count)
+                return;
+            BufferReadbackResult result{};
+            uint32 value = 0;
+            if (ticket->TryGet(result) && result.bytes.size() == sizeof(value))
+            {
+                std::memcpy(&value, result.bytes.data(), sizeof(value));
+                count = value;
+            }
+        };
+        readCount(sample.Ticket, sample.FineCount);
+        readCount(sample.CoarseTicket, sample.CoarseCount);
+        if (sample.FineCount && sample.CoarseCount)
+        {
             LOG_INFO("Forest.PlacedCount view={} frame={} standPages={} detailPages={} detailPlacements={} "
-                     "cards={} meshes={} meshBatches={}", sample.View, sample.Frame, sample.StandPages,
-                     sample.DetailPages, sample.DetailPlacements, cards, sample.Meshes, sample.MeshBatches);
+                     "cards={} meshes={} meshBatches={} coarseSplats={}", sample.View, sample.Frame, sample.StandPages,
+                     sample.DetailPages, sample.DetailPlacements, *sample.FineCount + *sample.CoarseCount,
+                     sample.Meshes, sample.MeshBatches, *sample.CoarseCount);
         }
-        if (sample.Ticket->IsConsumed())
+        if (sample.Ticket->IsConsumed() && (!sample.CoarseTicket || sample.CoarseTicket->IsConsumed()))
             sample = {};
     }
 
@@ -209,14 +227,21 @@ void ObservePlacementCounts(ForestPlacementSession& session, const ForwardEmitCo
         "Forest.PlacedCount");
     if (!ticket)
         return;
+    auto coarseTicket = buffers.CoarseArgs.IsValid() ? RequestBufferReadbackRG(context.Device, frame, buffers.CoarseArgs,
+        offsetof(ForestPlacementIndirectDraw, InstanceCount), sizeof(ForestPlacementIndirectDraw::InstanceCount),
+        "Forest.CoarsePlacedCount") : nullptr;
+    if (buffers.CoarseArgs.IsValid() && !coarseTicket)
+        return;
 
     uint32 placements = 0;
     for (const auto& page : session.Plan.DetailedDraws)
         placements += page.PlacementCount;
     const auto pages = static_cast<uint32>(session.Plan.DetailedDraws.size());
+    const bool hasCoarse = coarseTicket != nullptr;
     sample = {std::move(ticket), frame.FrameIndex(), context.ViewId, session.Plan.VisiblePages - pages, pages,
               placements, near ? static_cast<uint32>(near->Owners.size()) : 0u,
-              near ? static_cast<uint32>(near->Commands.size()) : 0u};
+              near ? static_cast<uint32>(near->Commands.size()) : 0u, std::move(coarseTicket), std::nullopt,
+              hasCoarse ? std::nullopt : std::optional<uint32>(0u)};
 }
 
 struct ForestSourcePart
@@ -529,7 +554,8 @@ float DrawReach(const ForestPlacementSession& session, const ForestImpostorCard&
 {
     if (!session.Splats)
         return ForestCardReach(card);
-    return session.SplatReach + std::max(kSplatMinimumSway, card.Sway.MaxDisplacement);
+    return session.SplatReach + session.Splats->CellSize * kSplatJitterRadius +
+           std::max(kSplatMinimumSway, card.Sway.MaxDisplacement);
 }
 
 // The wind that the splat cull resolves for each visible tree.
@@ -694,23 +720,46 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     const std::span<const ForestMeshOwnedPlacement> owners = near ? std::span(near->Owners) :
         std::span<const ForestMeshOwnedPlacement>{};
     const auto source = MakeForestPlacementGpuViewSource(camera);
+    ForestSplatWindGpu wind{};
+    uint32 coarseIndexCount = 0;
+    float radius = DrawReach(session, *card);
+    if (session.Splats)
+    {
+        ResolveSplatWind(services, context.ViewId, session.World, camera, *card, wind);
+        const float coarseRadius = session.CoarseSplatReach + wind.MaxDisplacement;
+        const uint32 height = services.Views().GetViewWorldViewportHeight(context.ViewId);
+        if (session.CoarseSplats && session.CoarseSplatCells.IsValid() && session.CoarseSplatIndices.IsValid() &&
+            height != 0 && coarseRadius <= session.Placements->Store().BoundRadius() &&
+            services.ResolveViewForceLOD(context.ViewId) == 0xFFFFFFFFu &&
+            services.GetMeshGPURegistry().GetLodSelectionMode() != LodSelectionMode::Off)
+        {
+            constexpr float kBudgetPixels = 1.0f;
+            const float pixelsPerUnit = 0.5f * static_cast<float>(height) * std::abs(camera.proj[1][1]) *
+                std::exp2(services.GetLODGlobalBias());
+            if (std::isfinite(pixelsPerUnit) && pixelsPerUnit > 0.0f)
+            {
+                wind.Lod = {session.Splats->CellSize, pixelsPerUnit, kBudgetPixels, camera.cameraPos.w};
+                coarseIndexCount = static_cast<uint32>(session.CoarseSplats->Cells.size()) * 6u;
+                radius = std::max(radius, coarseRadius);
+            }
+        }
+    }
     ForestPlacementGpuView gpuView{};
     if (!source || !BuildForestPlacementGpuInputs(*session.Placements, session.Plan.DetailedDraws, *source,
-            session.Placements->SlotCount(), DrawReach(session, *card), card->Bounds, gpuView, session.Pages, owners))
+            session.Placements->SlotCount(), radius, card->Bounds, gpuView, session.Pages, owners))
         return false;
-    ForestSplatWindGpu wind{};
-    if (session.Splats)
-        ResolveSplatWind(services, context.ViewId, session.World, camera, *card, wind);
     const auto occlusion = FitsPageOcclusionBounds(session) ? context.ForestOcclusionHZB : RGTexture{};
     const auto buffers = session.Cull.Declare(frame, session.Scope, session.Slots, session.Placements->SlotCount(),
                                               gpuView, session.Pages, session.TreeIndexCount(),
                                               session.Splats ? &wind : nullptr, occlusion,
-                                              services.Textures().GetSampler(SamplerPreset::PointClamp));
+                                              services.Textures().GetSampler(SamplerPreset::PointClamp),
+                                              coarseIndexCount);
     if (!buffers)
         return false;
     const bool drawn = session.Splats
         ? EmitForestSplatDraw(context, *buffers, {session.Splats.get(), session.SplatCells, session.SplatIndices},
-                              DrawCommand{.Material = material, .PassKeywords = fadeKeyword})
+                              DrawCommand{.Material = material, .PassKeywords = fadeKeyword},
+                              {session.CoarseSplats.get(), session.CoarseSplatCells, session.CoarseSplatIndices})
         : EmitForestImpostorDraw(context, *buffers, session.Indices, card->Sway, DrawCommand{.Material = material});
     if (!drawn)
         return false;

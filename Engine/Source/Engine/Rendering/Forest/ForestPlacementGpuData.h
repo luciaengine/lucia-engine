@@ -72,6 +72,7 @@ struct alignas(16) ForestSplatWindGpu
     float MaxDisplacement = 0.0f;
     Mathematics::Vector2 Padding{};
     WeatherWindGPU Weather;
+    Mathematics::Vector4 Lod; // Fine cell width, pixels per world unit, footprint threshold, orthographic flag.
 };
 static_assert(offsetof(ForestSplatWindGpu, Weather) == 32);
 

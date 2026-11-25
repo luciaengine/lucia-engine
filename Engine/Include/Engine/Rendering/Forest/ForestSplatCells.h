@@ -47,4 +47,7 @@ std::optional<ForestSplatCells> ParseForestSplatCells(std::span<const uint8> byt
 /// Writes a bake in the .geforestsplats format. The cells must be valid for ParseForestSplatCells.
 std::vector<uint8> EncodeForestSplatCells(const ForestSplatCells& cells);
 
+/// Groups fine splats into twice-wide cells. Leaves and bark keep separate disks.
+std::optional<ForestSplatCells> CoarsenForestSplatCells(const ForestSplatCells& fine);
+
 } // namespace GameEngine::Engine::Renderer
