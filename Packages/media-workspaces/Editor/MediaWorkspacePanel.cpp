@@ -25,6 +25,7 @@ struct MediaWorkspacePanel::Workspace
     void* View = nullptr;
     Place PlaceView = nullptr;
     Destroy DestroyView = nullptr;
+    void* HostedWindow = nullptr;
 
     ~Workspace()
     {
@@ -123,6 +124,11 @@ void MediaWorkspacePanel::SyncHost(const NativePanelHost& host)
     m_Workspace->PlaceView(m_Workspace->View, host.Window,
                            bounds->GetLayoutX() * scale, bounds->GetLayoutY() * scale,
                            bounds->GetLayoutWidth() * scale, bounds->GetLayoutHeight() * scale);
+    if (host.Window && m_Workspace->HostedWindow != host.Window)
+    {
+        m_Workspace->HostedWindow = host.Window;
+        Logger::Log::Info("Editor mounted the {} native workspace.", m_Name);
+    }
 }
 
 void MediaWorkspacePanel::OnMountVisibilityChanged(bool visible)

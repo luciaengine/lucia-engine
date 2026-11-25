@@ -1,3 +1,5 @@
+# Xcode supplies the bundle's loader paths and signs its nested code.
+set(VCPKG_FIXUP_MACHO_RPATH OFF)
 set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
 
 vcpkg_from_github(
