@@ -3871,8 +3871,11 @@ TEST(PostProcessExtractHooks, BloomFoldClampsAndGatesOnEnabled)
     EXPECT_FLOAT_EQ(out.Settings.BloomTintR, 1.0f);
     EXPECT_FLOAT_EQ(out.Settings.BloomDepthVeilIntensity, 1.0f);
 
-    world.GetComponent<GameEngine::Components::BloomEffect>(e)->DepthVeilOpacity = 0.0f;
-    const auto transparent = ExtractAllEffects(world, e);
+    const auto transparentEntity = world.CreateEntity();
+    auto transparentBloom = bloom;
+    transparentBloom.DepthVeilOpacity = 0.0f;
+    world.AddComponentImmediate(transparentEntity, transparentBloom);
+    const auto transparent = ExtractAllEffects(world, transparentEntity);
     EXPECT_FLOAT_EQ(transparent.Settings.BloomDepthVeilIntensity, 0.0f);
     EXPECT_FLOAT_EQ(transparent.Settings.BloomIntensity, 2.0f);
 
