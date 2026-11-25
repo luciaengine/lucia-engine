@@ -114,6 +114,14 @@
   "default-features": [ "video", "physics", "nav", "ui-extras", "tests" ],
 
   "features": {
+    "editor-workspaces": {
+      "description": "Optional macOS Editor workspaces for video editing and image compositing.",
+      "dependencies": [
+        { "name": "lucia-editroom-workspace", "platform": "osx & arm64" },
+        { "name": "lucia-compositor-workspace", "platform": "osx & arm64" }
+      ]
+    },
+
     "video": {
       "description": "Video playback / recording via FFmpeg (VideoPlayerFFmpeg + AsyncVideoRecorder). Linux encodes H.264 through openh264 (BSD-2), Windows through Media Foundation. Without this feature, the engine compiles VideoPlayerNull as a stub and video playback/capture is unavailable.",
       "dependencies": [

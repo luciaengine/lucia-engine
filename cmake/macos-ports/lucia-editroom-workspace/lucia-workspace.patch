@@ -1,0 +1,158 @@
+diff --git a/Editroom/App/EditroomApp.swift b/Editroom/App/EditroomApp.swift
+index 2ccc1b2..9878fc8 100644
+--- a/Editroom/App/EditroomApp.swift
++++ b/Editroom/App/EditroomApp.swift
+@@ -174,7 +174,9 @@ enum AboutPanel {
+     }
+ }
+ 
++#if !LUCIA_HOSTED
+ @main
++#endif
+ struct EditroomApp: App {
+     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+     @StateObject private var model = EditorModel()
+diff --git a/Editroom/App/LuciaWorkspace.swift b/Editroom/App/LuciaWorkspace.swift
+new file mode 100644
+index 0000000..2b974f2
+--- /dev/null
++++ b/Editroom/App/LuciaWorkspace.swift
+@@ -0,0 +1,73 @@
++#if LUCIA_HOSTED
++import AppKit
++import SwiftUI
++
++@MainActor
++private struct HostedEditroom: View {
++    @StateObject private var model = EditorModel()
++
++    var body: some View {
++        VStack(spacing: 0) {
++            HStack {
++                Button("New", action: model.newProject)
++                Button("Open…", action: model.openProject)
++                Button("Save", action: model.save)
++                Button("Import Media…", action: model.showImportPanel)
++                Spacer()
++                Button("Export…") { model.showExport = true }
++            }
++            .padding(8)
++            ContentView(model: model)
++                .defaultAppStorage(UserDefaults(suiteName: "lucia.workspace.editroom") ?? .standard)
++        }
++    }
++}
++
++
++private enum WorkspaceResources {
++    static var bundle: Bundle = .main
++}
++
++@_cdecl("LuciaCreateMediaWorkspace")
++public func luciaCreateMediaWorkspace(_ bundlePath: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
++    MainActor.assumeIsolated {
++        guard let bundle = Bundle(path: String(cString: bundlePath)) else { return nil }
++        WorkspaceResources.bundle = bundle
++        return Unmanaged.passRetained(NSHostingView(rootView: HostedEditroom())).toOpaque()
++    }
++}
++
++@_cdecl("LuciaPlaceMediaWorkspace")
++public func luciaPlaceMediaWorkspace(
++    _ viewHandle: UnsafeMutableRawPointer, _ windowHandle: UnsafeMutableRawPointer?,
++    _ x: Double, _ y: Double, _ width: Double, _ height: Double
++) {
++    MainActor.assumeIsolated {
++        let view = Unmanaged<NSView>.fromOpaque(viewHandle).takeUnretainedValue()
++        guard let windowHandle,
++              let content = Unmanaged<NSWindow>.fromOpaque(windowHandle).takeUnretainedValue().contentView
++        else {
++            view.isHidden = true
++            return
++        }
++        let top = content.isFlipped ? y : content.bounds.height - y - height
++        let frame = NSRect(x: x, y: top, width: width, height: height)
++        if view.superview !== content {
++            view.removeFromSuperview()
++            content.addSubview(view, positioned: .above, relativeTo: nil)
++        }
++        if view.frame != frame { view.frame = frame }
++        view.isHidden = false
++    }
++}
++
++@_cdecl("LuciaDestroyMediaWorkspace")
++public func luciaDestroyMediaWorkspace(_ viewHandle: UnsafeMutableRawPointer) {
++    MainActor.assumeIsolated {
++        let view = Unmanaged<NSView>.fromOpaque(viewHandle).takeRetainedValue()
++        view.removeFromSuperview()
++    }
++}
++
++var luciaWorkspaceResourceBundle: Bundle { WorkspaceResources.bundle }
++#endif
+diff --git a/Editroom/Engine/CompositionBuilder.swift b/Editroom/Engine/CompositionBuilder.swift
+index b68807d..c9ce4bc 100644
+--- a/Editroom/Engine/CompositionBuilder.swift
++++ b/Editroom/Engine/CompositionBuilder.swift
+@@ -20,7 +20,7 @@ enum BaseVideo {
+     private static var asset: AVURLAsset?
+ 
+     static func load() async {
+-        guard track == nil, let url = Bundle.main.url(forResource: "Base", withExtension: "mp4") else { return }
++        guard track == nil, let url = mediaResourceBundle.url(forResource: "Base", withExtension: "mp4") else { return }
+         let a = AVURLAsset(url: url)
+         guard let t = try? await a.loadTracks(withMediaType: .video).first,
+               let r = try? await t.load(.timeRange) else { return }
+@@ -438,3 +438,11 @@ enum TextRenderer {
+         return image
+     }
+ }
++
++private var mediaResourceBundle: Bundle {
++    #if LUCIA_HOSTED
++    return luciaWorkspaceResourceBundle
++    #else
++    return .main
++    #endif
++}
+diff --git a/Editroom/Engine/MediaStore.swift b/Editroom/Engine/MediaStore.swift
+index e977a43..65fb2c6 100644
+--- a/Editroom/Engine/MediaStore.swift
++++ b/Editroom/Engine/MediaStore.swift
+@@ -679,7 +679,7 @@ enum FFmpeg {
+     /// Editroom's own (a small LGPL build in the app, Contents/MacOS/ffmpeg); one installed on the
+     /// Mac only if that's missing.
+     static var binary: String? {
+-        ([Bundle.main.url(forAuxiliaryExecutable: "ffmpeg")?.path].compactMap { $0}
++        ([mediaResourceBundle.url(forAuxiliaryExecutable: "ffmpeg")?.path].compactMap { $0}
+             + ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"])
+             .first { FileManager.default.isExecutableFile(atPath: $0) }
+     }
+@@ -731,3 +731,11 @@ enum FFmpeg {
+         }
+     }
+ }
++
++private var mediaResourceBundle: Bundle {
++    #if LUCIA_HOSTED
++    return luciaWorkspaceResourceBundle
++    #else
++    return .main
++    #endif
++}
+diff --git a/Editroom/UI/ContentView.swift b/Editroom/UI/ContentView.swift
+index 5fef208..c4ae7f0 100644
+--- a/Editroom/UI/ContentView.swift
++++ b/Editroom/UI/ContentView.swift
+@@ -136,8 +136,10 @@ struct ContentView: View {
+             Text(model.importError ?? "")
+         }
+         .onAppear {
++            #if !LUCIA_HOSTED
+             KeyCommands.install(model)
+             AppDelegate.shared?.model = model
++            #endif
+         }
+     }
+ }

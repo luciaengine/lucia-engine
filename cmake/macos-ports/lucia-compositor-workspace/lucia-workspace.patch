@@ -1,0 +1,150 @@
+diff --git a/Compositor/CompositorApp.swift b/Compositor/CompositorApp.swift
+index 2867cf2..f93b5d4 100644
+--- a/Compositor/CompositorApp.swift
++++ b/Compositor/CompositorApp.swift
+@@ -2,7 +2,9 @@ import SwiftUI
+ import UniformTypeIdentifiers
+ import Sparkle
+ 
++#if !LUCIA_HOSTED
+ @main
++#endif
+ struct CompositorApp: App {
+     @NSApplicationDelegateAdaptor(CompositorApplicationDelegate.self) private var applicationDelegate
+     @AppStorage("navigator.visible") private var showsNavigator = false
+diff --git a/Compositor/Document/CameraRawShadows.swift b/Compositor/Document/CameraRawShadows.swift
+index 8bd2b63..0ae8b08 100644
+--- a/Compositor/Document/CameraRawShadows.swift
++++ b/Compositor/Document/CameraRawShadows.swift
+@@ -24,7 +24,7 @@ nonisolated enum CameraRawShadows {
+     /// long side the second set starts at, x's low end and step, K's low end and step, the amounts, and each set's
+     /// coefficients amount by amount.
+     static let tables: Tables? = {
+-        guard let url = Bundle.main.url(forResource: "CameraRawShadows", withExtension: "bin"),
++        guard let url = mediaResourceBundle.url(forResource: "CameraRawShadows", withExtension: "bin"),
+               let data = try? Data(contentsOf: url), data.count > 34, data.prefix(4) == Data("CRS2".utf8) else { return nil }
+         let bytes = [UInt8](data)
+         func int16(_ at: Int) -> Int { Int(Int16(bitPattern: UInt16(bytes[at]) | UInt16(bytes[at + 1]) << 8)) }
+@@ -70,3 +70,11 @@ nonisolated enum CameraRawShadows {
+         }
+     }
+ }
++
++private var mediaResourceBundle: Bundle {
++    #if LUCIA_HOSTED
++    return luciaWorkspaceResourceBundle
++    #else
++    return .main
++    #endif
++}
+diff --git a/Compositor/Document/CameraRawTables.swift b/Compositor/Document/CameraRawTables.swift
+index ccbc24c..bb8f1ee 100644
+--- a/Compositor/Document/CameraRawTables.swift
++++ b/Compositor/Document/CameraRawTables.swift
+@@ -34,7 +34,7 @@ nonisolated enum CameraRawTables {
+     /// (the rounding is at most a level, within the jitter of Photoshop's own 8-bit renders), as a running difference
+     /// from the entry before, packed with LZMA (xz): the tables move smoothly, so this comes to about 1.25 MB.
+     private static func load() -> UnsafeMutablePointer<UInt8>? {
+-        guard let url = Bundle.main.url(forResource: "CameraRawTables", withExtension: "bin"),
++        guard let url = mediaResourceBundle.url(forResource: "CameraRawTables", withExtension: "bin"),
+               let file = try? Data(contentsOf: url), file.count > 10, file.prefix(4) == Data("CRT3".utf8) else { return nil }
+         let header = [UInt8](file.prefix(10))
+         func field(_ at: Int) -> Int { Int(header[at]) | Int(header[at + 1]) << 8 }
+@@ -292,3 +292,11 @@ nonisolated enum CameraRawTables {
+         return (best.temperature, best.tint)
+     }
+ }
++
++private var mediaResourceBundle: Bundle {
++    #if LUCIA_HOSTED
++    return luciaWorkspaceResourceBundle
++    #else
++    return .main
++    #endif
++}
+diff --git a/Compositor/LuciaWorkspace.swift b/Compositor/LuciaWorkspace.swift
+new file mode 100644
+index 0000000..5488956
+--- /dev/null
++++ b/Compositor/LuciaWorkspace.swift
+@@ -0,0 +1,80 @@
++#if LUCIA_HOSTED
++import AppKit
++import SwiftUI
++
++@MainActor
++private struct HostedCompositor: View {
++    @State private var session: EditorSession
++    private let projects: ProjectController
++
++    init() {
++        let session = EditorSession()
++        _session = State(initialValue: session)
++        projects = ProjectController(session: session)
++    }
++
++    var body: some View {
++        VStack(spacing: 0) {
++            HStack {
++                Button("New Canvas…") { Task { await projects.newCanvas() } }
++                Button("Open…") { Task { await projects.open() } }
++                Button("Save") { Task { await projects.save() } }.disabled(session.document == nil)
++                Button("Import…") { session.showsImporter = true }
++                Spacer()
++                Button("Export PNG…") { Task { await projects.exportPNG() } }.disabled(session.document == nil)
++            }
++            .padding(8)
++            ContentView(session: session)
++                .defaultAppStorage(UserDefaults(suiteName: "lucia.workspace.compositor") ?? .standard)
++        }
++    }
++}
++
++
++private enum WorkspaceResources {
++    static var bundle: Bundle = .main
++}
++
++@_cdecl("LuciaCreateMediaWorkspace")
++public func luciaCreateMediaWorkspace(_ bundlePath: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
++    MainActor.assumeIsolated {
++        guard let bundle = Bundle(path: String(cString: bundlePath)) else { return nil }
++        WorkspaceResources.bundle = bundle
++        return Unmanaged.passRetained(NSHostingView(rootView: HostedCompositor())).toOpaque()
++    }
++}
++
++@_cdecl("LuciaPlaceMediaWorkspace")
++public func luciaPlaceMediaWorkspace(
++    _ viewHandle: UnsafeMutableRawPointer, _ windowHandle: UnsafeMutableRawPointer?,
++    _ x: Double, _ y: Double, _ width: Double, _ height: Double
++) {
++    MainActor.assumeIsolated {
++        let view = Unmanaged<NSView>.fromOpaque(viewHandle).takeUnretainedValue()
++        guard let windowHandle,
++              let content = Unmanaged<NSWindow>.fromOpaque(windowHandle).takeUnretainedValue().contentView
++        else {
++            view.isHidden = true
++            return
++        }
++        let top = content.isFlipped ? y : content.bounds.height - y - height
++        let frame = NSRect(x: x, y: top, width: width, height: height)
++        if view.superview !== content {
++            view.removeFromSuperview()
++            content.addSubview(view, positioned: .above, relativeTo: nil)
++        }
++        if view.frame != frame { view.frame = frame }
++        view.isHidden = false
++    }
++}
++
++@_cdecl("LuciaDestroyMediaWorkspace")
++public func luciaDestroyMediaWorkspace(_ viewHandle: UnsafeMutableRawPointer) {
++    MainActor.assumeIsolated {
++        let view = Unmanaged<NSView>.fromOpaque(viewHandle).takeRetainedValue()
++        view.removeFromSuperview()
++    }
++}
++
++var luciaWorkspaceResourceBundle: Bundle { WorkspaceResources.bundle }
++#endif

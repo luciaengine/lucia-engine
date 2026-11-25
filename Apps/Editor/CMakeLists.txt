@@ -1895,6 +1895,14 @@ ge_add_engine_package_module(GePkgModule_AiAssistantEditor
 	SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor
 	KIND editor
 	PREBUILT_SUBDIR Binaries/Editor)
+if(APPLE AND NOT GE_MOBILE)
+    ge_add_engine_package_module(GePkgModule_MediaWorkspacesEditor
+        PACKAGE media-workspaces
+        MODULE_NAME MediaWorkspaces.Editor
+        SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/media-workspaces/Editor
+        KIND editor
+        PREBUILT_SUBDIR Binaries/Editor)
+endif()
 ge_add_engine_package_module(GePkgModule_LocalizationEditor
 	PACKAGE localization
 	MODULE_NAME Localization.Editor
@@ -2240,6 +2248,29 @@ add_dependencies(Editor EnginePackagePrebuilts)
 # First-party packages (Packages/eztree, ...) staged next to Editor.exe;
 # the package resolver's implicit engine-package scan mounts them per project.
 ge_stage_packages(Editor)
+if(APPLE AND NOT GE_MOBILE)
+    set(_ge_workspace_host "$<TARGET_FILE_DIR:Editor>/Packages/media-workspaces/Host")
+    if("editor-workspaces" IN_LIST VCPKG_MANIFEST_FEATURES)
+        set(_ge_workspace_tools "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools")
+        foreach(_ge_workspace IN ITEMS Editroom Compositor)
+            string(TOLOWER "${_ge_workspace}" _ge_workspace_port)
+            set(_ge_workspace_app "${_ge_workspace_tools}/lucia-${_ge_workspace_port}-workspace/${_ge_workspace}.app")
+            if(NOT EXISTS "${_ge_workspace_app}/Contents/MacOS/${_ge_workspace}")
+                message(FATAL_ERROR "The editor-workspaces feature requires the ${_ge_workspace} host bundle.")
+            endif()
+            set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS
+                "${_ge_workspace_app}/Contents/MacOS/${_ge_workspace}")
+            add_custom_command(TARGET Editor POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}/${_ge_workspace}.app"
+                COMMAND /usr/bin/ditto "${_ge_workspace_app}" "${_ge_workspace_host}/${_ge_workspace}.app"
+                COMMENT "Staging ${_ge_workspace} workspace")
+        endforeach()
+    else()
+        add_custom_command(TARGET Editor POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}"
+            COMMENT "Removing disabled media workspace hosts")
+    endif()
+endif()
 set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_localization_assets}")
 
 # On Linux, the staging step above copies libGameEngine.Native.so into the exe

@@ -18,6 +18,7 @@ namespace GameEngine
 {
 struct EditorContext;
 class UIElement;
+class UIManager;
 }
 
 namespace GameEngine::Editor
@@ -75,12 +76,20 @@ struct SelectionMaskPart
 
 // Main-thread host services borrowed until OnEditorShutdown. Packages own their
 // jobs and panels; the host owns scene lifetime and selection semantics.
+struct NativePanelHost
+{
+    void* Window = nullptr;
+    float UiScale = 1.0f;
+};
+
 struct EditorHostServices
 {
     EditorChangeNotifications* ChangeNotifications = nullptr;
     std::function<std::vector<uint32_t>()> SelectedEntityIds;
     std::function<bool()> CanWriteScene;
     std::function<bool(std::string_view)> IsModuleAvailable;
+    // Empty while a Lucia modal covers this window or the manager is unmounted.
+    std::function<NativePanelHost(UIManager*)> NativeHostForPanel;
 };
 
 class IEditorPlugin

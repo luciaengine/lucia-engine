@@ -1,0 +1,10 @@
+.media-workspace-host {
+  flex: 1;
+  justify-content: center;
+  align-items: center;
+}
+
+.media-workspace-status {
+  color: var(--text-secondary);
+  font-size: 13px;
+}

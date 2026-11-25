@@ -1,0 +1,8 @@
+{
+  "name": "lucia-compositor-workspace",
+  "version-string": "2026.11.25",
+  "description": "Compositor native workspace for the Lucia Editor",
+  "homepage": "https://github.com/robbietilton/Compositor",
+  "license": "MIT",
+  "supports": "osx & arm64"
+}

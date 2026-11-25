@@ -1,0 +1,16 @@
+{
+  "name": "media-workspaces",
+  "version": "0.1.0",
+  "displayName": "Media Workspaces",
+  "enabledByDefault": false,
+  "assets": "Assets/",
+  "modules": [
+    {
+      "name": "MediaWorkspaces.Editor",
+      "kind": "Editor",
+      "lang": "Cpp",
+      "root": "Editor/",
+      "prebuilt": "Binaries/Editor/"
+    }
+  ]
+}

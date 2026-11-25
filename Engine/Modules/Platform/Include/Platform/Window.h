@@ -71,6 +71,8 @@ class Window
     // Native handle for swapchain/surface creation
     void* GetNativeHandle() const;     // returns GLFWwindow*
     GLFWwindow* GetGLFWHandle() const; // convenience
+    // AppKit window used to host native editor views on macOS.
+    void* GetNativeViewHost() const;
 
     // Window queries
     void GetFramebufferSize(int& outWidth, int& outHeight) const;   // pixels
