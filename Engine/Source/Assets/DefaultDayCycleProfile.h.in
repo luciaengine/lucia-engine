@@ -1,6 +1,0 @@
-#pragma once
-
-namespace GameEngine
-{
-inline constexpr char kDefaultDayCycleProfileJson[] = R"DayCycle(@GE_DEFAULT_DAY_CYCLE_JSON@)DayCycle";
-}

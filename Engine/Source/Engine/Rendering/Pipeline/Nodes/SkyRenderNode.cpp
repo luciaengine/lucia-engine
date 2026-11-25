@@ -798,7 +798,7 @@ void SkyRenderNode::DeclareForView(ViewDeclare& d)
     const bool drawsStars = starLight.Draw.IsValid() && starLight.Resolve.IsValid() && compensation.IsValid();
     const auto postProcess = rs.GetEffectivePostProcessSettings(viewId, d.View.worldId);
     const bool starsUndoCompensation = postProcess.IsAutoExposureActive();
-    // Match the Default profile's transition from sunset to nautical twilight.
+    // Match the Day and Night preset's transition from sunset to nautical twilight.
     constexpr float kSunsetLiftEv = 4.0f;
     constexpr float kNauticalTwilightLiftEv = 13.0f;
     const float fixedNightWeight = Math::SmoothStep(kSunsetLiftEv, kNauticalTwilightLiftEv,

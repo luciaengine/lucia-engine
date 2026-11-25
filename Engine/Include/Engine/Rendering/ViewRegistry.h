@@ -67,6 +67,7 @@ public:
     struct CameraExposure
     {
         int32 Mode = static_cast<int32>(Components::ExposureMode::Fixed);
+        Components::FixedExposurePreset FixedPreset = Components::FixedExposurePreset::DayAndNight;
         float32 Exposure = Rendering::EvToLinearExposure(Components::kDefaultManualExposureEv);
         float32 ManualExposureEV = Components::kDefaultManualExposureEv;
         float32 ExposureCompensation = 0.0f;

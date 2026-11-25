@@ -26,6 +26,12 @@ enum class ExposureMode : int32 {
     Auto     = 3,
 };
 
+enum class FixedExposurePreset : uint8
+{
+    DayAndNight = 0,
+    Constant = 1,
+};
+
 // What Auto exposure meters. The Min/Max EV clamps, the adaptation speeds and the compensation apply
 // to both meters alike (one resolve, auto_exposure_resolve.comp).
 enum class ExposureMeter : int32 {

@@ -220,11 +220,6 @@ vec3 SampleOrthoBackdropDirection(vec3 dirWS)
                                      uAtmos.nightSkyHorizonColor);
 }
 
-// 2D sky backdrop: simple screen-vertical gradient through HDR zenith / horizon /
-// lower-sky samples, plus a sun tag at the sun's elevation. Stars are drawn by
-// the billboard pass in their own ortho branch. This deliberately bypasses the
-// per-pixel atmospheric ray simulation, which has no meaningful per-pixel
-// angular variation in an orthographic projection, while keeping its radiance.
 // Apply one gain to the disc so the craters retain their contrast as the scene brightens.
 float MoonTrimForView(vec3 sunInDisc)
 {
@@ -237,6 +232,11 @@ float MoonTrimForView(vec3 sunInDisc)
     return uSky.moonUboPad2 - reduction * uSky.fixedNightWeight;
 }
 
+// 2D sky backdrop: simple screen-vertical gradient through HDR zenith / horizon /
+// lower-sky samples, plus a sun tag at the sun's elevation. Stars are drawn by
+// the billboard pass in their own ortho branch. This deliberately bypasses the
+// per-pixel atmospheric ray simulation, which has no meaningful per-pixel
+// angular variation in an orthographic projection, while keeping its radiance.
 void RenderOrthoBackdrop(vec2 ndc)
 {
     float nightAmount = clamp(uSky.nightSkyBlend, 0.0, 1.0);

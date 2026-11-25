@@ -259,7 +259,7 @@ struct SkyEnvironment {
     /// When true, `TimeOfDayHours` advances every frame (`TimeOfDayCycleSeconds` wall time per full 24 h).
     bool    AnimateTimeOfDay     = false;
     float32 TimeOfDayCycleSeconds = 120.0f;
-    /// Solar-elevation exposure for unmetered cameras. An empty profile uses the built-in curve.
+    /// Legacy per-scene override of the camera’s Day and Night exposure curve.
     AssetRef<AssetType::DayCycleProfile> DayCycleExposureProfile;
     /// Flat sky-vs-object/ambient exposure trim, in EV (stops), applied to the visible sky dome and
     /// the baked IBL. This is NOT a day/night brightness driver: once the sky is physically anchored

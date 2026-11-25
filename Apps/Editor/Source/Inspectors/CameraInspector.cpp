@@ -702,6 +702,18 @@ void RegisterCameraInspector()
 
         if (cam->ExposureControl == Components::ExposureMode::Fixed)
         {
+            static constexpr EnumEntry<Components::FixedExposurePreset> kFixedPresets[] = {
+                {Components::FixedExposurePreset::DayAndNight, "Day and Night"},
+                {Components::FixedExposurePreset::Constant, "Constant"},
+            };
+            auto* presetField = InspectorUI::AddEnumRow(ctx.Parent, "Fixed Exposure Preset", kFixedPresets,
+                cam->FixedPreset, "Day and Night follows the sun through twilight and night. Constant keeps the same exposure.");
+            presetField->SetOnValueChanged([w, e, n, undo, extras](Components::FixedExposurePreset v)
+            {
+                CommitComponentsWithUndo<Components::Camera>(w, e, extras, n, undo, "Change Fixed Exposure Preset",
+                    [v](Components::Camera& u) { u.FixedPreset = v; });
+            });
+
             AddComponentFloatRowWithDrag<Components::Camera>(ctx.Parent, "Exposure", cam->Exposure, w, e, n,
                 undo, "Change Exposure",
                 [](Components::Camera& u, float v) { u.Exposure = std::max(0.01f, v); },

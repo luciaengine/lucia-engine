@@ -18,6 +18,7 @@ inline ViewRegistry::CameraExposure ToCameraExposure(const Components::Camera& c
 {
     ViewRegistry::CameraExposure e{};
     e.Mode = static_cast<int32>(c.ExposureControl);
+    e.FixedPreset = c.FixedPreset;
     e.Exposure = c.Exposure;
     e.ManualExposureEV = c.ManualExposureEV;
     e.ExposureCompensation = c.ExposureCompensation;

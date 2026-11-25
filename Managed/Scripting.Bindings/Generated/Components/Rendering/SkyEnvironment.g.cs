@@ -170,7 +170,7 @@ namespace GameEngine.Scripting
         public float AnchorEndY;
     }
 
-    [StructLayout(LayoutKind.Explicit, Size = 4636)]
+    [StructLayout(LayoutKind.Explicit, Size = 4652)]
     [BuiltInComponent("GameEngine::Components::SkyEnvironment")]
     public partial struct SkyEnvironment : IComponent
     {
@@ -242,39 +242,42 @@ namespace GameEngine.Scripting
         public float TimeOfDayCycleSeconds;
 
         [FieldOffset(96)]
+        public AssetGuid DayCycleExposureProfile;
+
+        [FieldOffset(112)]
         public float SkyExposureTrim;
 
-        [FieldOffset(100)]
+        [FieldOffset(116)]
         public float IblIntensity;
 
-        [FieldOffset(104)]
+        [FieldOffset(120)]
         public float IblLowerHemisphereDarkness;
 
-        [FieldOffset(108)]
+        [FieldOffset(124)]
         public ColorLinear AmbientTintSky;
 
-        [FieldOffset(124)]
+        [FieldOffset(140)]
         public ColorLinear AmbientTintEquator;
 
-        [FieldOffset(140)]
+        [FieldOffset(156)]
         public ColorLinear AmbientTintGround;
 
-        [FieldOffset(156)]
+        [FieldOffset(172)]
         public SkyScalarDayKeys DayKeyTimesHours;
 
-        [FieldOffset(172)]
+        [FieldOffset(188)]
         public SkyVec3DayKeys SunTintKeys;
 
-        [FieldOffset(220)]
+        [FieldOffset(236)]
         public SkyVec3DayKeys GroundAlbedoKeys;
 
-        [FieldOffset(268)]
+        [FieldOffset(284)]
         public SkyVec3DayKeys GroundNightColorKeys;
 
-        [FieldOffset(316)]
+        [FieldOffset(332)]
         public Curve GroundBrightnessKeys;
 
-        [FieldOffset(960)]
+        [FieldOffset(976)]
         private SkyScalarCurveShapeMode m_GroundBrightnessShapeMode;
         public SkyScalarCurveShapeMode GroundBrightnessShapeMode
         {
@@ -284,10 +287,10 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "SkyEnvironment.GroundBrightnessShapeMode is KeyCurve or CubicBezier.");
         }
 
-        [FieldOffset(964)]
+        [FieldOffset(980)]
         public SkyScalarCubicBezier GroundBrightnessBezier;
 
-        [FieldOffset(988)]
+        [FieldOffset(1004)]
         private SkyBelowHorizonMode m_BelowHorizonMode;
         public SkyBelowHorizonMode BelowHorizonMode
         {
@@ -297,10 +300,10 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "SkyEnvironment.BelowHorizonMode is ContinueHorizon, PlanetGround or StylizedGround.");
         }
 
-        [FieldOffset(992)]
+        [FieldOffset(1008)]
         public Curve BelowHorizonBlendSharpnessKeys;
 
-        [FieldOffset(1636)]
+        [FieldOffset(1652)]
         private SkyScalarCurveShapeMode m_BelowHorizonBlendSharpnessShapeMode;
         public SkyScalarCurveShapeMode BelowHorizonBlendSharpnessShapeMode
         {
@@ -310,13 +313,13 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "SkyEnvironment.BelowHorizonBlendSharpnessShapeMode is KeyCurve or CubicBezier.");
         }
 
-        [FieldOffset(1640)]
+        [FieldOffset(1656)]
         public SkyScalarCubicBezier BelowHorizonBlendSharpnessBezier;
 
-        [FieldOffset(1664)]
+        [FieldOffset(1680)]
         public Curve BelowHorizonDarknessKeys;
 
-        [FieldOffset(2308)]
+        [FieldOffset(2324)]
         private SkyScalarCurveShapeMode m_BelowHorizonDarknessShapeMode;
         public SkyScalarCurveShapeMode BelowHorizonDarknessShapeMode
         {
@@ -326,28 +329,28 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "SkyEnvironment.BelowHorizonDarknessShapeMode is KeyCurve or CubicBezier.");
         }
 
-        [FieldOffset(2312)]
+        [FieldOffset(2328)]
         public SkyScalarCubicBezier BelowHorizonDarknessBezier;
 
-        [FieldOffset(2336)]
+        [FieldOffset(2352)]
         public SkyVec3DayKeys BelowHorizonDarkColorKeys;
 
-        [FieldOffset(2384)]
+        [FieldOffset(2400)]
         public float GroundHazeStrength;
 
-        [FieldOffset(2388)]
+        [FieldOffset(2404)]
         public SkyVec3DayKeys GroundHorizonColorKeys;
 
-        [FieldOffset(2436)]
+        [FieldOffset(2452)]
         public SkyVec3DayKeys GroundHorizonNightColorKeys;
 
-        [FieldOffset(2484)]
+        [FieldOffset(2500)]
         public SkyVec3DayKeys NightSkyHorizonColorKeys;
 
-        [FieldOffset(2532)]
+        [FieldOffset(2548)]
         public Curve GroundHorizonCosWidthKeys;
 
-        [FieldOffset(3176)]
+        [FieldOffset(3192)]
         private SkyScalarCurveShapeMode m_GroundHorizonCosWidthShapeMode;
         public SkyScalarCurveShapeMode GroundHorizonCosWidthShapeMode
         {
@@ -357,13 +360,13 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "SkyEnvironment.GroundHorizonCosWidthShapeMode is KeyCurve or CubicBezier.");
         }
 
-        [FieldOffset(3180)]
+        [FieldOffset(3196)]
         public SkyScalarCubicBezier GroundHorizonCosWidthBezier;
 
-        [FieldOffset(3204)]
+        [FieldOffset(3220)]
         public Curve GroundHorizonNightCosWidthKeys;
 
-        [FieldOffset(3848)]
+        [FieldOffset(3864)]
         private SkyScalarCurveShapeMode m_GroundHorizonNightCosWidthShapeMode;
         public SkyScalarCurveShapeMode GroundHorizonNightCosWidthShapeMode
         {
@@ -373,7 +376,7 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "SkyEnvironment.GroundHorizonNightCosWidthShapeMode is KeyCurve or CubicBezier.");
         }
 
-        [FieldOffset(3852)]
+        [FieldOffset(3868)]
         public SkyScalarCubicBezier GroundHorizonNightCosWidthBezier;
 
         [InlineArray(3)]
@@ -382,22 +385,22 @@ namespace GameEngine.Scripting
             private float m_Element;
         }
 
-        [FieldOffset(3876)]
+        [FieldOffset(3892)]
         public SunDirOverrideArray SunDirOverride;
 
-        [FieldOffset(3888)]
+        [FieldOffset(3904)]
         public bool AutoSunMoon;
 
-        [FieldOffset(3892)]
+        [FieldOffset(3908)]
         public Entity SunLight;
 
-        [FieldOffset(3896)]
+        [FieldOffset(3912)]
         public bool TimeOfDayDrivesSunLight;
 
-        [FieldOffset(3897)]
+        [FieldOffset(3913)]
         public bool DriveSunColor;
 
-        [FieldOffset(3898)]
+        [FieldOffset(3914)]
         private SkySunIlluminanceSource m_SunIlluminanceSource;
         public SkySunIlluminanceSource SunIlluminanceSource
         {
@@ -407,67 +410,67 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "SkyEnvironment.SunIlluminanceSource is Light or Curve.");
         }
 
-        [FieldOffset(3900)]
+        [FieldOffset(3916)]
         public Curve SunIlluminanceCurve;
 
-        [FieldOffset(4544)]
+        [FieldOffset(4560)]
         public float MoonlightIlluminance;
 
-        [FieldOffset(4548)]
+        [FieldOffset(4564)]
         public bool ShowSun;
 
-        [FieldOffset(4549)]
+        [FieldOffset(4565)]
         public bool ShowMoon;
 
-        [FieldOffset(4552)]
+        [FieldOffset(4568)]
         public float SunSize;
 
-        [FieldOffset(4556)]
+        [FieldOffset(4572)]
         public float SunSize2D;
 
-        [FieldOffset(4560)]
+        [FieldOffset(4576)]
         public float SkyPan2D;
 
-        [FieldOffset(4564)]
+        [FieldOffset(4580)]
         public float MoonArcPosition;
 
-        [FieldOffset(4568)]
+        [FieldOffset(4584)]
         public bool AutoMoonArc;
 
-        [FieldOffset(4572)]
+        [FieldOffset(4588)]
         public float MoonCycleDays;
 
-        [FieldOffset(4576)]
+        [FieldOffset(4592)]
         public float MoonSize;
 
-        [FieldOffset(4580)]
+        [FieldOffset(4596)]
         public float MoonSize2D;
 
-        [FieldOffset(4584)]
+        [FieldOffset(4600)]
         public float MoonExposureEV;
 
-        [FieldOffset(4588)]
+        [FieldOffset(4604)]
         public bool FallingStarsEnabled;
 
-        [FieldOffset(4592)]
+        [FieldOffset(4608)]
         public float FallingStarIntervalSeconds;
 
-        [FieldOffset(4596)]
+        [FieldOffset(4612)]
         public float StarLimitingMagnitude;
 
-        [FieldOffset(4600)]
+        [FieldOffset(4616)]
         public float StarTwinkleAmount;
 
-        [FieldOffset(4604)]
+        [FieldOffset(4620)]
         public float StarHighlightCompression;
 
-        [FieldOffset(4608)]
+        [FieldOffset(4624)]
         public float StarGlow;
 
-        [FieldOffset(4612)]
+        [FieldOffset(4628)]
         public float StarTwinkleRate;
 
-        [FieldOffset(4616)]
+        [FieldOffset(4632)]
         private StarObserverKind m_StarObserver;
         public StarObserverKind StarObserver
         {
@@ -477,16 +480,16 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "SkyEnvironment.StarObserver is Eye or Camera.");
         }
 
-        [FieldOffset(4620)]
+        [FieldOffset(4636)]
         public float StarCoreScale;
 
-        [FieldOffset(4624)]
+        [FieldOffset(4640)]
         public float StarSpikes;
 
-        [FieldOffset(4628)]
+        [FieldOffset(4644)]
         public float StarSpikeLength;
 
-        [FieldOffset(4632)]
+        [FieldOffset(4648)]
         private StarShapeKind m_StarShape;
         public StarShapeKind StarShape
         {

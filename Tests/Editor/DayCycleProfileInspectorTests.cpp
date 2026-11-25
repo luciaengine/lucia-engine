@@ -302,7 +302,8 @@ TEST_F(DayCycleEditorTests, TheScrubStripSharesTheTracksAxis)
     }
 }
 
-// The low end lies near zero. The zero keeps its label and the low end gives way.
+// Exposure's zero lies a quarter of the range from the top: the zero, the value that changes nothing,
+// keeps its label, and the +1.0 at the top gives way to it.
 TEST_F(DayCycleEditorTests, TheEndLabelNearTheZeroGivesWay)
 {
     std::string error;
@@ -316,9 +317,9 @@ TEST_F(DayCycleEditorTests, TheEndLabelNearTheZeroGivesWay)
     ASSERT_EQ(graphs.size(), 1u);
     const CurveField::Config& config = graphs.front()->GetConfig();
     ASSERT_EQ(config.ValueAxisMarks.size(), 3u);
-    EXPECT_TRUE(config.ValueLabel(config.ValueAxisMarks[0]).empty());
+    EXPECT_EQ(config.ValueLabel(config.ValueAxisMarks[0]), "-3.0");
     EXPECT_EQ(config.ValueLabel(0.0f), "0");
-    EXPECT_EQ(config.ValueLabel(config.ValueAxisMarks[2]), "+18.0");
+    EXPECT_TRUE(config.ValueLabel(config.ValueAxisMarks[2]).empty());
 }
 
 } // namespace GameEngine::Editor
