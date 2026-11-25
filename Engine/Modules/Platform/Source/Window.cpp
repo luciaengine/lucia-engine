@@ -748,7 +748,7 @@ void* Window::GetNativeHandle() const
 void* Window::GetNativeViewHost() const
 {
 #if defined(__APPLE__)
-    return m_Handle ? (__bridge void*)glfwGetCocoaWindow(m_Handle) : nullptr;
+    return m_Handle ? glfwGetCocoaWindow(m_Handle) : nullptr;
 #else
     return nullptr;
 #endif
