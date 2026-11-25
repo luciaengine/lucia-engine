@@ -2154,7 +2154,7 @@ constexpr std::size_t kTailPad = sizeof(PostProcessSettings) -
 // The pads are pinned to literals: a derived pad would silently absorb a NEW
 // member appended after the anchor it is measured from.
 static_assert(kPadAfterAutoExposureActive == 3, "layout moved: re-derive the pad pins");
-static_assert(kPadBeforeBloomDirtGuid == 0, "layout moved: re-derive the pad pins");
+static_assert(kPadBeforeBloomDirtGuid == 4, "layout moved: re-derive the pad pins");
 static_assert(kPadBeforeLutGuid == 0, "layout moved: re-derive the pad pins");
 // The eight-byte alignment leaves four bytes after the final clamp weight.
 // Pin the padding so an unlisted field cannot hide in that space.
@@ -2206,7 +2206,7 @@ constexpr std::size_t kDepthPixelationFieldBytes =
     sizeof(PostProcessSettings::DepthPixelationDebugRanges);
 constexpr std::size_t kRainFieldBytes = sizeof(int32) + 3 * sizeof(float32);
 constexpr std::size_t kCameraResolvedFieldBytes = sizeof(PostProcessSettings::ViewOutput) +
-    sizeof(PostProcessSettings::AutoExposureCompensation);
+    sizeof(PostProcessSettings::AutoExposureCompensation) + sizeof(PostProcessSettings::DayCycleExposureEv);
 static_assert(kFieldBytes + kRainFieldBytes + kCameraResolvedFieldBytes + kDepthPixelationFieldBytes + kPadAfterAutoExposureActive + kPadBeforeBloomDirtGuid +
                   kPadBeforeLutGuid + kTailPad == sizeof(PostProcessSettings),
               "PP_BLEND_LOCK_FIELDS is stale: a PostProcessSettings member is missing from the equivalence lock");

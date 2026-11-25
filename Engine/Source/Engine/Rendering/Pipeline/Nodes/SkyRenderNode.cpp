@@ -14,6 +14,8 @@
 #include "Rendering/Sky/SkySettings.h"
 #include "Rendering/Sky/SkyViewLutAltitude.h"
 
+#include "Mathematics/Interpolation.h"
+
 #include <nlohmann/json.hpp>
 #include <array>
 #include <cmath>
@@ -794,8 +796,13 @@ void SkyRenderNode::DeclareForView(ViewDeclare& d)
     const PipelineBufferBindingRG compensation =
         starLight.Draw.IsValid() ? ResolveViewExposureCompensation(d) : PipelineBufferBindingRG{};
     const bool drawsStars = starLight.Draw.IsValid() && starLight.Resolve.IsValid() && compensation.IsValid();
-    const bool starsUndoCompensation =
-        d.Services.GetEffectivePostProcessSettings(viewId, d.View.worldId).IsAutoExposureActive();
+    const auto postProcess = rs.GetEffectivePostProcessSettings(viewId, d.View.worldId);
+    const bool starsUndoCompensation = postProcess.IsAutoExposureActive();
+    // Match the Day and Night preset's transition from sunset to nautical twilight.
+    constexpr float kSunsetLiftEv = 4.0f;
+    constexpr float kNauticalTwilightLiftEv = 13.0f;
+    const float fixedNightWeight = Math::SmoothStep(kSunsetLiftEv, kNauticalTwilightLiftEv,
+                                                    postProcess.DayCycleExposureEv);
     if (drawsStars)
         d.PublishTexture(Names::Res::SkyStarLight, starLight.Resolve);
     else
@@ -846,7 +853,7 @@ void SkyRenderNode::DeclareForView(ViewDeclare& d)
             p.Read(exposure.Graph, RenderGraph::RGBufferRead::Storage);
         },
         [this, rendererPtr, skyPtr, rsPtr, viewId, viewKey, vpX, vpY, vpW, vpH, exposure,
-         starsUndoCompensation, fog](RenderGraph::RGContext& passCtx)
+         starsUndoCompensation, fixedNightWeight, fog](RenderGraph::RGContext& passCtx)
         {
             auto* cl = passCtx.Cmd;
             auto* dev = passCtx.GetDevice();
@@ -899,6 +906,7 @@ void SkyRenderNode::DeclareForView(ViewDeclare& d)
             skyUbo.viewportResolution[0] = vw;
             skyUbo.viewportResolution[1] = vh;
             skyUbo.starsUndoCompensation = starsUndoCompensation ? 1.0f : 0.0f;
+            skyUbo.moonUboPad1 = fixedNightWeight;
 
             const uint32_t slot = rendererPtr->GetFrameSlot(dev);
             Rendering::BufferHandle bSky = GetOrCreatePerViewSkyUBO(dev, viewKey, slot);

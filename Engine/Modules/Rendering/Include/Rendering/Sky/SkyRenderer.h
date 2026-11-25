@@ -106,7 +106,7 @@ struct SkyUBOGPU
     Mathematics::Vector3 moonDirection;  float moonIntensity;
     float moonAngularRadius;
     float skyRotateAroundZenithRadians;
-    float moonUboPad1;
+    float moonUboPad1; // View: fixed-night weight. IBL capture: HDRI rotation.
     float moonUboPad2;
     Mathematics::Vector3 sunColor;       float sunIntensity;
     float timeOfDayHours;    float starsUndoCompensation; // 1: the star pass undoes the exposure compensation

@@ -35,7 +35,7 @@ layout(set = 0, binding = 1) uniform SkyUBO
     vec3  moonDirectionWS;    float moonIntensity;
     float moonAngularRadius;
     float skyRotateAroundZenithRadians;
-    float moonUboPad1;
+    float fixedNightWeight;
     float moonUboPad2;
     vec3  sunColor;           float sunIntensity;
     float timeOfDayHours;     float starsUndoCompensation;
@@ -88,7 +88,9 @@ void main()
         radiance = GE_StarRadianceAt(vPixelOffset, star);
     }
     float undo = uSky.starsUndoCompensation > 0.5 ? GE_ExposureCompensationUndo() : 1.0;
-    vec3 stored = radiance * exp2(uSky.exposureEV) * GE_PreExposure() * undo;
+    const float kFixedNightStarLiftEv = 3.0;
+    float starLiftEv = meteor ? 0.0 : kFixedNightStarLiftEv * uSky.fixedNightWeight;
+    vec3 stored = radiance * exp2(uSky.exposureEV + starLiftEv) * GE_PreExposure() * undo;
     oColor = vec4(stored, 0.0);
     oStarLight = dot(stored, vec3(0.2126, 0.7152, 0.0722));
 }

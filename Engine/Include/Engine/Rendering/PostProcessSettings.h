@@ -90,6 +90,8 @@ struct PostProcessSettings
     float32 WaterRippleSpeed = 1.0f;
 
     float32 Exposure       = 1.0f;
+    // Solar profile contribution to a non-metered view, in stops.
+    float32 DayCycleExposureEv = 0.0f;
     float32 BloomThreshold = 1.0f;
     float32 BloomKnee      = 0.1f;
     int32   BloomAntiFlicker = 1;
