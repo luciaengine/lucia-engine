@@ -1034,6 +1034,13 @@ message(STATUS "NVTX ranges: ${GE_NVTX_ACTIVE} (runtime gate: GE_NVTX)")
 # CMakeLists.txt, and Jobs/CompileServerVersion.h, written below.
 target_include_directories(Engine PUBLIC "${CMAKE_BINARY_DIR}/generated")
 
+set(_ge_default_day_cycle "${CMAKE_CURRENT_SOURCE_DIR}/Assets/DayCycles/Default.daycycle.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_ge_default_day_cycle}")
+file(READ "${_ge_default_day_cycle}" GE_DEFAULT_DAY_CYCLE_JSON)
+configure_file(Source/Assets/DefaultDayCycleProfile.h.in "${CMAKE_BINARY_DIR}/generated/DefaultDayCycleProfile.h" @ONLY)
+unset(GE_DEFAULT_DAY_CYCLE_JSON)
+unset(_ge_default_day_cycle)
+
 # GE_ENGINE_BUILD_CONFIG: the configuration this Engine library is built in ("DebugFast",
 # "Release", ...), from the generator's per-config $<CONFIG>. The build pipeline compares it with
 # the configuration a packaged player links, to know whether the running engine is that player's

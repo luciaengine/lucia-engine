@@ -13,7 +13,8 @@ namespace GameEngine::Editor
 {
 namespace
 {
-constexpr std::array kModes = {SceneViewExposureMode::Auto, SceneViewExposureMode::Fixed};
+constexpr std::array kModes = {SceneViewExposureMode::GameCamera, SceneViewExposureMode::Auto,
+                               SceneViewExposureMode::Fixed};
 constexpr std::array kMeters = {Components::ExposureMeter::Picture, Components::ExposureMeter::Lights};
 constexpr const char* kSearchKeywords = "scene view exposure ev100 auto fixed meter picture lights";
 
@@ -40,8 +41,8 @@ SettingsFieldDescriptor ModeRow()
 {
     SettingsFieldDescriptor row;
     row.Label = "Exposure Mode";
-    row.Tooltip = "How the Scene View sets its exposure. Auto meters the view with the Meter below, within "
-                  "Auto Min and Max EV100. Fixed holds the Fixed EV100 below.";
+    row.Tooltip = "Game Camera follows the active game camera's settings. Auto meters the Scene View. "
+                  "Fixed holds the selected EV100.";
     row.SearchKeywords = kSearchKeywords;
     SettingsFieldDescriptor::DropdownField dropdown;
     for (const SceneViewExposureMode mode : kModes)
@@ -115,11 +116,9 @@ void RegisterSceneViewExposureSettingsCategory()
     category.Group = SettingsCategoryGroup::SceneView;
     category.SearchKeywords = kSearchKeywords;
     category.Description =
-        "How the editor's Scene View sets its exposure; the Game View always uses its camera's. Auto meters "
-        "the view with the Meter: Lights reads the light falling on the world from the directional lights and "
-        "the sky, Picture meters the image like a camera in Auto. Either is clamped to the Auto Min and Max "
-        "EV100, which ship wide enough that a night scene stays workable. Fixed holds the Fixed EV100. Only the "
-        "rows for the selected mode apply; EV Compensation applies in every mode.";
+        "Game Camera is the default and follows the active game camera's exposure settings. "
+        "Auto meters the Scene View within the Auto Min and Max EV100. Fixed holds the Fixed EV100. "
+        "EV Compensation applies in Auto and Fixed.";
 
     category.Fields.push_back(ModeRow());
     category.Fields.push_back(MeterRow());
@@ -143,7 +142,7 @@ void RegisterSceneViewExposureSettingsCategory()
         &SceneViewSettings::GetPostFxAutoExposureMaxEv, &SceneViewSettings::SetPostFxAutoExposureMaxEv));
     category.Fields.push_back(EvRow(
         "EV Compensation",
-        "Every mode: +/- stops applied on top of the Scene View's exposure (+ brightens).", 0.0f,
+        "Auto and Fixed: +/- stops applied to the Scene View's exposure (+ brightens).", 0.0f,
         -SceneViewSettings::kMaxExposureCompensation, SceneViewSettings::kMaxExposureCompensation,
         &SceneViewSettings::GetPostFxExposureCompensation, &SceneViewSettings::SetPostFxExposureCompensation));
 

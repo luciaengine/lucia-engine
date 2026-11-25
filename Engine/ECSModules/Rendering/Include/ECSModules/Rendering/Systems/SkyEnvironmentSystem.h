@@ -74,6 +74,7 @@ private:
     float32 m_AccumulatedSkyTime = 0.0f;
     // The skybox HDRI the sky pass samples. A switched-to HDRI loads (and cooks) asynchronously;
     // this one stays resident and bound until the new one is on the GPU, and is evicted then.
+    GUID m_RequestedDayCycleExposureProfile{};
     GUID m_BoundSkyboxHdriGuid{};
 
     // The light the sky drove last frame, the fields it drove (SkySunIlluminance::kDrives*), and the

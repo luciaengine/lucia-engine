@@ -11,7 +11,7 @@ namespace GameEngine
 /// The order is the table's order in kDayCycleTracks and the order the editor lists them in.
 enum class DayCycleTrack : std::uint8_t
 {
-    /// A picture-wide exposure offset in stops, added after the camera's metering.
+    /// A picture-wide offset in stops for cameras with eye adaptation off.
     ExposureOffset,
 };
 
@@ -36,7 +36,7 @@ struct DayCycleTrackDesc
 /// Every track a profile may hold. A profile file naming a track that is not here is refused; adding
 /// a keyable field is one row here and one combine line in the field's consumer.
 inline constexpr std::array<DayCycleTrackDesc, 1> kDayCycleTracks = {{
-    {DayCycleTrack::ExposureOffset, "exposureOffset", "Exposure offset", "stops", 0.0f, -3.0f, 1.0f},
+    {DayCycleTrack::ExposureOffset, "exposureOffset", "Exposure offset", "stops", 0.0f, -4.0f, 18.0f},
 }};
 
 /// The row for `track`.

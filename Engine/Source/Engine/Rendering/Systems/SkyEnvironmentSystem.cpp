@@ -1,5 +1,8 @@
 #include "ECSModules/Rendering/Systems/SkyEnvironmentSystem.h"
 
+#include "Assets/AssetManager.h"
+#include "Assets/DayCycleProfile.h"
+#include "Core/Engine.h"
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/Light.h"
 #include "Components/Rendering/LightPhotometry.h"
@@ -798,7 +801,26 @@ void SkyEnvironmentSystem::Update(ECS::World& world, float32 deltaTime)
     m_AccumulatedSkyTime += deltaTime;
     settings.skyTimeSeconds = m_AccumulatedSkyTime;
 
-    sky.SetSettings(settings, sunState);
+    float dayCycleExposureEv = 0.0f;
+    if (comp.Mode == Components::SkyMode::Physical)
+    {
+        std::shared_ptr<const DayCycleProfileData> profile;
+        const GUID profileId = comp.DayCycleExposureProfile.ToGuid();
+        if (!profileId.IsNull())
+        {
+            if (auto* assets = EngineCore::GetInstance().TryGetAssetManager())
+            {
+                const auto asset = std::dynamic_pointer_cast<DayCycleProfile>(assets->GetAsset(profileId));
+                if (asset)
+                    profile = asset->GetData();
+                else if (profileId != m_RequestedDayCycleExposureProfile)
+                    assets->LoadAssetAsync(profileId);
+            }
+        }
+        m_RequestedDayCycleExposureProfile = profileId;
+        dayCycleExposureEv = EvaluateDayCycleExposure(profile.get(), sunState);
+    }
+    sky.SetSettings(settings, sunState, dayCycleExposureEv, world.GetWorldId());
 }
 
 void SkyEnvironmentSystem::TrackDrive(ECS::World& world, ECS::EntityHandle candidate,

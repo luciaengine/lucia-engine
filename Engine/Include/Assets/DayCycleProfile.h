@@ -61,6 +61,9 @@ std::string WriteDayCycleProfile(const DayCycleProfileData& data);
 /// `duskHalf` (which reads DuskKeys under SeparateDusk).
 float EvaluateDayCycleTrack(const DayCycleTrackKeys& keys, Mathematics::Radians elevation, bool duskHalf);
 
+/// The renderer's exposure offset in stops at the published solar elevation.
+float EvaluateDayCycleExposure(const DayCycleProfileData* profile, const Rendering::SkySunState& sunState);
+
 /// Whether the sun stands on the setting half of its day: its bearing west of the meridian, azimuth in
 /// (pi, 2 pi). The same in both hemispheres and under a sun set by hand (the azimuth is computed from
 /// its direction); a polar day that never sets splits at local noon and midnight, its afternoon the

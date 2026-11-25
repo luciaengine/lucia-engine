@@ -88,12 +88,13 @@ TEST_F(DayCycleEditorTests, SaveACopyMovesTheEditsIntoTheCopy)
     const std::shared_ptr<DayCycleWorkingCopy> shipped = DayCycleWorkingCopy::Open(Assets, ShippedDefault(), error);
     ASSERT_NE(shipped, nullptr) << error;
     DayCycleProfileData edited = shipped->GetData();
+    const float originalValue = edited.Tracks.front().Keys.Keys[1].Value;
     edited.Tracks.front().Keys.Keys[1].Value = -2.0f;
     shipped->Commit(edited, "Edit", &Undo);
     const std::shared_ptr<DayCycleWorkingCopy> copy = shipped->SaveCopy(error);
     ASSERT_NE(copy, nullptr) << error;
     EXPECT_FALSE(shipped->IsDirty());
-    EXPECT_FLOAT_EQ(shipped->GetData().Tracks.front().Keys.Keys[1].Value, -1.5f);
+    EXPECT_FLOAT_EQ(shipped->GetData().Tracks.front().Keys.Keys[1].Value, originalValue);
     EXPECT_FALSE(copy->IsDirty());
     EXPECT_FLOAT_EQ(copy->GetData().Tracks.front().Keys.Keys[1].Value, -2.0f);
     EXPECT_EQ(copy->GetData().Name, "Default copy") << "the copy reads like the shipped profile";

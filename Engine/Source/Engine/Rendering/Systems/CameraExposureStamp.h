@@ -20,7 +20,8 @@ namespace GameEngine::Engine::Renderer
 // grading, plus the Exposure Adjustment modifiers stacked on top. Called by the per-view post-process
 // resolve (RenderExtractionSystem) for a camera-driven view, and with a default CameraExposure for a
 // view with no camera.
-inline void ApplyCameraExposure(PostProcessSettings& s, const ViewRegistry::CameraExposure& ce)
+inline void ApplyCameraExposure(PostProcessSettings& s, const ViewRegistry::CameraExposure& ce,
+                                float dayCycleExposureEv = 0.0f)
 {
     const auto mode = static_cast<Components::ExposureMode>(ce.Mode);
     const float ev100 = Rendering::ExposureEv100ForMode(mode, ce.ManualExposureEV,
@@ -74,7 +75,7 @@ inline void ApplyCameraExposure(PostProcessSettings& s, const ViewRegistry::Came
     }
     else
     {
-        s.Exposure *= std::exp2(s.ExposureCompensationEv);
+        s.Exposure *= std::exp2(s.ExposureCompensationEv + dayCycleExposureEv);
     }
 }
 
