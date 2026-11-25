@@ -1,6 +1,6 @@
 // The packed placement cull kernel on a headless device: ForestPlacementCull::Declare runs
 // forest_placement_cull.comp, and the test reads back the indirect instance count and the visible
-// rows. Device-gated: each test skips without a Vulkan device.
+// rows on the native GPU backend.
 #include "ForestPlacementCull.h"
 #include "ForestPlacementGpuData.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
@@ -53,11 +53,15 @@ protected:
     void SetUp() override
     {
         DeviceDesc desc{};
+#if defined(__APPLE__)
+        desc.preferredAPI = GraphicsAPI::Metal;
+#else
         desc.preferredAPI = GraphicsAPI::Vulkan;
+#endif
         desc.enableDynamicRendering = true;
         m_Device = DeviceFactory::CreateDevice(desc);
         if (!m_Device || !m_Device->Initialize(desc))
-            GTEST_SKIP() << "No Vulkan device";
+            GTEST_SKIP() << "No native graphics device";
         constexpr uint32 kPerPage = PackedPlacementStore::kPlacementsPerPage;
         m_Slots = m_Device->CreateBuffer({.size = 2 * kPerPage * sizeof(PackedPlacement),
             .usage = static_cast<uint32>(BufferUsage::Storage | BufferUsage::TransferDst),
@@ -72,7 +76,7 @@ protected:
 
     void TearDown() override
     {
-        if (!m_Device)
+        if (!m_Device || !m_Slots.IsValid())
             return;
         m_Device->WaitForIdle();
         m_Device->DestroyBuffer(m_Slots);
@@ -95,15 +99,18 @@ protected:
         return Run(std::move(pages), frameIndex, MakeView({-1, 0, 0, 2.5f}, {0, 0, 0, 1}));
     }
 
-    CullResult Run(std::vector<ForestPlacementGpuPage> pages, uint32 frameIndex, const ForestPlacementGpuView& view)
+    CullResult Run(std::vector<ForestPlacementGpuPage> pages, uint32 frameIndex, const ForestPlacementGpuView& view,
+                   TextureHandle depth = {}, SamplerHandle sampler = {})
     {
         Pools pools(m_Device.get());
         RGFrame graph(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
         EXPECT_TRUE(m_Device->BeginFrame());
         graph.BeginFrame(frameIndex);
+        const auto hzb = depth.IsValid() ? graph.ImportExternalTexture(
+            "ForestCullTest.HZB", depth, ResourceState::ShaderResource, TextureFormat::R32_FLOAT) : RGTexture{};
         std::optional<ForestPlacementCull::DrawBuffers> buffers;
         for (int attempt = 0; attempt < kMaxDeclareAttempts && !buffers; ++attempt)
-            buffers = m_Cull.Declare(graph, "ForestCullTest", m_Slots, 2, view, pages, 6, nullptr);
+            buffers = m_Cull.Declare(graph, "ForestCullTest", m_Slots, 2, view, pages, 6, nullptr, hzb, sampler);
         EXPECT_TRUE(buffers);
         if (!buffers)
             return {};
@@ -170,6 +177,51 @@ TEST_F(ForestPlacementCullTest, InsidePageSkipsTheFrustumAndKeepsOwnership)
     page.MeshOwned[0] = 1u << 5;
     result = Run({page}, 1);
     EXPECT_EQ(result.Rows, (Rows{{0, 0}, {1, 0}, {2, 0}, {3, 0}, {4, 0}}));
+}
+
+TEST_F(ForestPlacementCullTest, DepthPyramidRejectsOnlyACompletelyHiddenPage)
+{
+    constexpr float kOccluderDepth = 0.7f;
+    const auto texture = m_Device->CreateTexture({
+        .format = static_cast<uint32>(TextureFormat::R32_FLOAT),
+        .usage = static_cast<uint32>(TextureUsage::ShaderResource | TextureUsage::TransferDst)});
+    ASSERT_TRUE(texture.IsValid());
+    const auto sampler = m_Device->CreateSampler(SamplerDesc::PointClamp("ForestCullTest.HZB"));
+    ASSERT_TRUE(sampler.IsValid());
+    const auto staging = m_Device->CreateUploadBuffer(sizeof(kOccluderDepth), "ForestCullTest.HZB.Upload");
+    ASSERT_TRUE(staging.IsValid());
+    m_Device->UpdateBuffer(staging, 0, sizeof(kOccluderDepth), &kOccluderDepth);
+    auto commands = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
+    commands->Begin();
+    commands->CopyBufferToTextureSubresource(staging, texture, 0, 0, 1, 1, 0, sizeof(kOccluderDepth),
+                                              1, 0, 0, 0, ResourceState::Undefined);
+    commands->Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::CopyDest,
+                                                              ResourceState::ShaderResource));
+    commands->End();
+    m_Device->ExecuteCommandLists({commands.get()});
+    m_Device->WaitForIdle();
+    m_Device->DestroyBuffer(staging);
+
+    constexpr uint32 kPerPage = PackedPlacementStore::kPlacementsPerPage;
+    auto hidden = Page(0u, 3u, true);
+    hidden.BoundsMinRelative = {-0.1f, -0.1f, 0.2f, 0.0f};
+    hidden.BoundsMaxRelative = {0.1f, 0.1f, 0.4f, 0.0f};
+    auto visible = Page(kPerPage, 1u, true);
+    visible.BoundsMinRelative = {-0.1f, -0.1f, 0.5f, 0.0f};
+    visible.BoundsMaxRelative = {0.1f, 0.1f, 0.8f, 0.0f};
+    auto view = MakeView({0, 0, 0, 1}, {0, 0, 0, 1});
+    view.ViewProjectionRelative = Mathematics::Matrix4x4::Identity();
+    EXPECT_EQ(Run({hidden, visible}, 0, view).Instances, 4u);
+    CullResult result;
+    for (uint32 frame = 1; frame < 8; ++frame)
+    {
+        result = Run({hidden, visible}, frame, view, texture, sampler);
+        if (result.Instances == 1u)
+            break;
+    }
+    EXPECT_EQ(result.Rows, (Rows{{kPerPage, 1u}}));
+    m_Device->DestroySampler(sampler);
+    m_Device->DestroyTexture(texture);
 }
 
 TEST_F(ForestPlacementCullTest, TwoPagesCompactIntoDisjointTailRanges)

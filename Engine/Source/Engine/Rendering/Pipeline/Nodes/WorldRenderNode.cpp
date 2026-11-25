@@ -88,7 +88,7 @@ bool WorldRenderNode::Initialize(std::string nodeId, std::string nodeJson, std::
 
 void WorldRenderNode::DeclareForView(ViewDeclare& d)
 {
-    d.Services.EmitFrameForwardCommandsForView(d.Frame, d.View.id);
+    d.Services.EmitFrameForwardCommandsForView(d.Frame, d.View.id, d.ResolveTexture(Names::View::ForestOcclusionHZB));
     if (!d.ViewColor.IsValid() && !d.ViewDepth.IsValid())
         return;
 

@@ -9,6 +9,8 @@ struct ForestPlacementPage
     vec4 originRel;
     uvec4 meshOwnedLow;
     uvec4 meshOwnedHigh;
+    vec4 boundsMinRel;
+    vec4 boundsMaxRel;
 };
 
 struct ForestVisiblePlacement

@@ -25,6 +25,7 @@ constexpr uint32 kVisibleBinding = 2;
 constexpr uint32 kArgsBinding = 3;
 constexpr uint32 kViewBinding = 0;
 constexpr uint32 kWindBinding = 1;
+constexpr uint32 kOcclusionBinding = 0;
 constexpr uint32 kMaxCullGroups = 65535;
 constexpr uint32 kSlotSize = PageStreaming::PackedPlacementStore::kPlacementsPerPage;
 
@@ -68,12 +69,36 @@ bool ForestPlacementCull::Initialize(IDevice& device, bool splats)
     if (!m_Pipeline.IsValid())
         return false;
     device.RequestComputePipeline(m_Pipeline);
+
+    const char* occlusionPath = splats ? "Shaders/forest_splat_occlusion_cull.shaderpkg" :
+                                        "Shaders/forest_placement_occlusion_cull.shaderpkg";
+    ShaderPackage occlusionPackage{};
+    if (LoadShaderPkg(occlusionPath, device.PreferredShaderSource(), occlusionPackage))
+    {
+        const auto occlusionStage = occlusionPackage.stageBytes.find("cs");
+        if (occlusionStage != occlusionPackage.stageBytes.end() && !occlusionStage->second.empty())
+        {
+            m_OcclusionLayout.debugName = "Forest.Cull.Occlusion";
+            m_OcclusionLayout.bindings = {{.binding = kOcclusionBinding, .type = DescriptorType::CombinedImageSampler,
+                                           .shaderStages = kShaderStageCompute}};
+            ComputePipelineDesc occlusionDesc{};
+            occlusionDesc.DebugName = "Forest.CullOccludedPlacements";
+            occlusionDesc.ComputeShader =
+                std::make_shared<const std::vector<uint8>>(std::move(occlusionStage->second));
+            occlusionDesc.DescriptorSetLayouts = {device.InternDescriptorSetLayout(m_PlacementsLayout),
+                device.InternDescriptorSetLayout(m_ViewLayout), device.InternDescriptorSetLayout(m_OcclusionLayout)};
+            m_OcclusionPipeline = device.InternComputePipeline(std::move(occlusionDesc));
+            if (m_OcclusionPipeline.IsValid())
+                device.RequestComputePipeline(m_OcclusionPipeline);
+        }
+    }
     return true;
 }
 
 std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGFrame& frame,
     std::string_view scope, BufferHandle slots, uint32 slotCount, const ForestPlacementGpuView& view,
-    std::span<const ForestPlacementGpuPage> pages, uint32 indexCount, const ForestSplatWindGpu* wind)
+    std::span<const ForestPlacementGpuPage> pages, uint32 indexCount, const ForestSplatWindGpu* wind,
+    RGTexture occlusionHZB, SamplerHandle occlusionSampler)
 {
     if (!m_Pipeline.IsValid() || !slots.IsValid() || pages.empty() || pages.size() > slotCount ||
         pages.size() > kMaxCullGroups || (wind != nullptr) != m_Splats || indexCount == 0)
@@ -81,6 +106,9 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
     auto* device = frame.Device();
     if (!device || device->RequestComputePipeline(m_Pipeline) != PipelineBuildState::Warm)
         return std::nullopt;
+    const bool useOcclusion = occlusionHZB.IsValid() && occlusionSampler.IsValid() && m_OcclusionPipeline.IsValid() &&
+        device->RequestComputePipeline(m_OcclusionPipeline) == PipelineBuildState::Warm;
+    const auto cullPipeline = useOcclusion ? m_OcclusionPipeline : m_Pipeline;
 
     const uint64 slotBytes = uint64{slotCount} * kSlotSize * sizeof(PageStreaming::PackedPlacement);
     // Each submitted page emits at most one row per placement. Keep capacity
@@ -154,15 +182,18 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
     if (!reset.IsValid())
         return std::nullopt;
 
-    const auto pass = frame.AddPass("Forest.CullPlacements", PassPhase::kEarlySetup,
+    const auto pass = frame.AddPass(useOcclusion ? "Forest.CullOccludedPlacements" : "Forest.CullPlacements",
+        useOcclusion ? PassPhase::kDefault : PassPhase::kEarlySetup,
         [=, this](RGPassBuilder& builder)
         {
-            builder.UsePipeline(m_Pipeline);
+            builder.UsePipeline(cullPipeline);
             builder.Read(slotBuffer, RGBufferRead::Storage);
             builder.Read(pageBuffer, RGBufferRead::Storage);
             builder.Read(viewBuffer, RGBufferRead::Uniform);
             if (windBuffer.IsValid())
                 builder.Read(windBuffer, RGBufferRead::Uniform);
+            if (useOcclusion)
+                builder.Read(occlusionHZB, RGTextureRead::Sampled);
             builder.Read(args, RGBufferRead::Storage);
             builder.Write(visible, RGBufferWrite::Storage);
             builder.Write(args, RGBufferWrite::Storage);
@@ -170,7 +201,7 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
         [=, this, groups = static_cast<uint32>(pages.size()), pageBytes = pages.size_bytes(),
          pageOffset = pageUpload.Offset, viewOffset = viewUpload.Offset](RGContext& ctx)
         {
-            const auto pipeline = ctx.GetOrCreatePipelineVariant(m_Pipeline);
+            const auto pipeline = ctx.GetOrCreatePipelineVariant(cullPipeline);
             auto* passDevice = ctx.GetDevice();
             if (!pipeline.IsValid() || !passDevice || !ctx.Cmd)
                 return;
@@ -195,9 +226,21 @@ std::optional<ForestPlacementCull::DrawBuffers> ForestPlacementCull::Declare(RGF
                 m_ViewLayout, std::span(camera).first(windBuffer.IsValid() ? 2u : 1u), "Forest.Cull.View");
             if (!set0.IsValid() || !set1.IsValid())
                 return;
+            DescriptorSetHandle occlusionSet;
+            if (useOcclusion)
+            {
+                const DescriptorWrite depth{.Binding = kOcclusionBinding, .Type = DescriptorType::CombinedImageSampler,
+                    .Texture = ctx.GetTexture(occlusionHZB), .Sampler = occlusionSampler};
+                occlusionSet = passDevice->GetOrCreateDescriptorSet(m_OcclusionLayout, std::span(&depth, 1),
+                                                                     "Forest.Cull.Occlusion");
+                if (!occlusionSet.IsValid())
+                    return;
+            }
             ctx.Cmd->SetPipeline(pipeline);
             ctx.Cmd->BindDescriptorSet(0, set0, pipeline);
             ctx.Cmd->BindDescriptorSet(1, set1, pipeline);
+            if (useOcclusion)
+                ctx.Cmd->BindDescriptorSet(2, occlusionSet, pipeline);
             ctx.Cmd->Dispatch(groups, 1, 1);
         });
     if (!pass.IsValid())

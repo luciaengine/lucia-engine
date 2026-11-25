@@ -37,6 +37,24 @@ bool RootsInsideFrustum(const ForestPlacementRootBounds& roots, const Mathematic
     return true;
 }
 
+float PageBoundAxis(double originOffset, float localBound, float direction)
+{
+    // The vertex shader rounds the page origin and local position separately.
+    constexpr double kRoundingFactor = 8 * std::numeric_limits<float>::epsilon();
+    const double margin = kRoundingFactor * (std::abs(originOffset) + std::abs(localBound));
+    return std::nextafter(static_cast<float>(originOffset + localBound + margin * direction),
+                          direction * std::numeric_limits<float>::infinity());
+}
+
+Mathematics::Vector4 PageBound(const Mathematics::WorldPosition& pageOrigin,
+                              const Mathematics::WorldPosition& viewOrigin,
+                              const Mathematics::Vector3& offset, float direction)
+{
+    return {PageBoundAxis(pageOrigin.X - viewOrigin.X, offset.x, direction),
+            PageBoundAxis(pageOrigin.Y - viewOrigin.Y, offset.y, direction),
+            PageBoundAxis(pageOrigin.Z - viewOrigin.Z, offset.z, direction), 0.0f};
+}
+
 } // namespace
 
 uint32 ForestHandoffFadeCode(float detailWeight, bool overview)
@@ -100,7 +118,9 @@ bool BuildForestPlacementGpuInputs(const ForestPlacementRuntime& runtime, std::s
         const auto roots = runtime.ReadyRootBounds(detail.Ticket);
         const uint32 inside = roots && RootsInsideFrustum(*roots, local, view.Planes) ? 1u : 0u;
         pages.push_back({{detail.FirstPlacement, detail.PlacementCount, inside,
-                          ForestHandoffFadeCode(detail.DetailWeight, false)}, {local, 0.0f}, {}});
+                          ForestHandoffFadeCode(detail.DetailWeight, false)}, {local, 0.0f}, {},
+                         PageBound(archive[page].Origin, origin, archive[page].LocalMin, -1.0f),
+                         PageBound(archive[page].Origin, origin, archive[page].LocalMax, 1.0f)});
     }
     // Draws with mesh claims are in page order. Resolve a mesh claim against
     // its complete ticket so an old mesh cannot suppress a replacement slot.

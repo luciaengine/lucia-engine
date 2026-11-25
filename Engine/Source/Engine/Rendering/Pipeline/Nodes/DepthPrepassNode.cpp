@@ -76,6 +76,7 @@ void DepthPrepassNode::DeclareForView(ViewDeclare& d)
     }
     if (!depth.IsValid())
         return;
-    d.Services.AddWorldDepthPrepassForView(d.Frame, d.View.id, depth, m_ClearDepthValue);
+    if (d.Services.AddWorldDepthPrepassForView(d.Frame, d.View.id, depth, m_ClearDepthValue).IsValid())
+        d.PublishTexture(Names::View::CameraPrepassDepth, depth);
 }
 } // namespace GameEngine::Engine::Renderer::Pipeline::Nodes

@@ -1,12 +1,8 @@
 #version 450
 
-// Resolves a multisampled depth texture to a single-sample R32F image.
-// Writes sample 0, which is what every consumer already used when the depth
-// was bound directly as sampler2DMS.
-//
-// This pass runs at phase ~110, after DepthPrepass and before cluster/fog
-// consumers. When MSAA is off (sampleCount == 1) the node aliases
-// View.DepthResolved to View.Depth and this shader never dispatches.
+// Resolves multisampled depth to R32F. Occlusion uses the farthest sample so a
+// pixel with uncovered samples cannot hide geometry behind the covered samples.
+layout(constant_id = 0) const int kFarthestTileSize = 1;
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -15,10 +11,20 @@ layout(set = 0, binding = 1, r32f) uniform writeonly image2D uDepthResolved;
 
 void main()
 {
-    ivec2 size = textureSize(uDepthMS);
-    ivec2 pix  = ivec2(gl_GlobalInvocationID.xy);
-    if (pix.x >= size.x || pix.y >= size.y)
+    const ivec2 sourceSize = textureSize(uDepthMS);
+    const ivec2 tile = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(tile, imageSize(uDepthResolved))))
         return;
-    float d = texelFetch(uDepthMS, pix, 0).r;
-    imageStore(uDepthResolved, pix, vec4(d, 0.0, 0.0, 0.0));
+    const ivec2 first = tile * kFarthestTileSize;
+    float depth = texelFetch(uDepthMS, first, 0).r;
+    if (kFarthestTileSize > 1)
+    {
+        const ivec2 last = min(first + kFarthestTileSize, sourceSize);
+        const int samples = textureSamples(uDepthMS);
+        for (int y = first.y; y < last.y && depth > 0.0; ++y)
+            for (int x = first.x; x < last.x && depth > 0.0; ++x)
+                for (int sampleIndex = 0; sampleIndex < samples && depth > 0.0; ++sampleIndex)
+                    depth = min(depth, texelFetch(uDepthMS, ivec2(x, y), sampleIndex).r);
+    }
+    imageStore(uDepthResolved, tile, vec4(depth, 0.0, 0.0, 0.0));
 }

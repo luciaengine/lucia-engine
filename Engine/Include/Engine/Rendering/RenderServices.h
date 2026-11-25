@@ -1877,7 +1877,8 @@ class RenderServices
     void EmitForwardCommand(::GameEngine::Rendering::ViewId viewId, const DrawCommand& cmd,
                             ForwardDrawDepth depth, const DrawCommand* prepassHead = nullptr);
     void EmitSortedTransparentCommand(Rendering::ViewId viewId, const SortedTransparentCommand& command);
-    void EmitFrameForwardCommandsForView(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId);
+    void EmitFrameForwardCommandsForView(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
+                                        Rendering::RenderGraph::RGTexture forestOcclusionHZB = {});
     void EmitLateForwardCommand(::GameEngine::Rendering::ViewId viewId, const DrawCommand& cmd);
     // Declared-read side channel for EmitForwardCommand: a producer whose
     // emitted draw samples a render-graph-written texture descriptor-direct

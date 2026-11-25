@@ -130,11 +130,23 @@ bool HZBBuildNode::Initialize(std::string nodeId, std::string nodeJson, std::str
                 m_OutputKey = j["output"].get<std::string>();
             if (j.contains("poolName") && j["poolName"].is_string())
                 m_PoolPrefix = j["poolName"].get<std::string>();
+            m_RequiresPhaseB = j.value("requiresPhaseB", true);
+            if (!m_RequiresPhaseB)
+                m_PassStem = m_Id;
         }
     }
     catch (const std::exception&)
     {
         // Keep defaults on malformed config.
+    }
+    if (m_OutputKey == Names::View::ForestOcclusionHZB)
+    {
+        // The forest cull only admits the conservative prepass resolve.
+        m_Nearest = false;
+        m_RequiresPhaseB = false;
+        m_InputKey = Names::View::ForestOcclusionDepth;
+        m_PoolPrefix = "Pipeline.ForestOcclusionHZB.View";
+        m_PassStem = m_Id;
     }
     return true;
 }
@@ -160,7 +172,7 @@ void HZBBuildNode::DeclareForView(ViewDeclare& d)
     // reflection traversal pyramid needs an active SSSR volume. A view that
     // needs neither pays zero cost with the node still enabled in the blueprint.
     if (m_Nearest ? !d.Services.GetEffectivePostProcessSettings(d.View.id, d.View.worldId).IsSSSRActive()
-                  : !ViewHasPhaseB(d))
+                  : (m_RequiresPhaseB && !ViewHasPhaseB(d)))
         return;
 
     // Source depth: a single-sample R32F resolved depth (View.DepthResolved by
@@ -169,7 +181,7 @@ void HZBBuildNode::DeclareForView(ViewDeclare& d)
     // the effective resolved depth value on the ViewDeclare when the key is
     // unpublished.
     RenderGraph::RGTexture depth = d.ResolveTexture(m_InputKey);
-    if (!depth.IsValid())
+    if (!depth.IsValid() && m_RequiresPhaseB)
         depth = d.ViewDepthResolved;
     if (!depth.IsValid())
         return;
@@ -179,6 +191,22 @@ void HZBBuildNode::DeclareForView(ViewDeclare& d)
     const uint32_t h = dd.Height;
     if (w == 0u || h == 0u)
         return;
+    const bool useSpd = BuildsWithSpd(w, h);
+    if (!m_RequiresPhaseB)
+    {
+        auto* device = d.Frame.Device();
+        if (!device)
+            return;
+        if (useSpd)
+        {
+            const auto tile = device->RequestComputePipeline(m_SpdPipelineId);
+            const auto finalize = device->RequestComputePipeline(m_SpdFinalizePipelineId);
+            if (tile != PipelineBuildState::Warm || finalize != PipelineBuildState::Warm)
+                return;
+        }
+        else if (device->RequestComputePipeline(m_PipelineId) != PipelineBuildState::Warm)
+            return;
+    }
 
     const uint32_t levels = MipChainLength(w, h);
 
@@ -201,7 +229,7 @@ void HZBBuildNode::DeclareForView(ViewDeclare& d)
         return;
     d.PublishTexture(m_OutputKey, hzb);
 
-    if (BuildsWithSpd(w, h))
+    if (useSpd)
         DeclareSpdBuild(d, depth, hzb, w, h, levels);
     else
         DeclareChainBuild(d, depth, hzb, w, h, levels, m_Nearest ? kReduceMax : kReduceMin);

@@ -414,7 +414,8 @@ void RenderServices::EmitSortedTransparentCommand(Rendering::ViewId viewId,
     m_ViewRegistry.PerView(viewId).SortedTransparentCommands.push_back(command);
 }
 
-void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame, ViewId viewId)
+void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame, ViewId viewId,
+                                                     RenderGraph::RGTexture forestOcclusionHZB)
 {
     if (!Spine().BindWorldGeometry(frame))
         return;
@@ -430,6 +431,7 @@ void RenderServices::EmitFrameForwardCommandsForView(RenderGraph::RGFrame& frame
     context.FrameIndex = m_Device ? m_Device->GetFrameIndex() : 0;
     context.ViewId = viewId;
     context.Purpose = ForwardEmitPurpose::World;
+    context.ForestOcclusionHZB = forestOcclusionHZB;
     for (const auto& entry : m_DrawProducers->Forward)
         if (entry.Options.RequiresFrame)
         {

@@ -379,6 +379,8 @@ if(GLSLC_EXECUTABLE)
         draw_command_scatter.comp
         forest_placement_cull.comp
         forest_splat_cull.comp
+        forest_placement_occlusion_cull.comp
+        forest_splat_occlusion_cull.comp
         compact_visible_transforms.comp
         minimal_test.comp
         pc_compute.comp
@@ -1420,6 +1422,8 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(volumetric_fog_cull volumetric_fog_cull.comp)
     _ge_add_shaderpkg_compute(forest_placement_cull forest_placement_cull.comp)
     _ge_add_shaderpkg_compute(forest_splat_cull forest_splat_cull.comp)
+    _ge_add_shaderpkg_compute(forest_placement_occlusion_cull forest_placement_occlusion_cull.comp)
+    _ge_add_shaderpkg_compute(forest_splat_occlusion_cull forest_splat_occlusion_cull.comp)
     # Ocean. The module asks ShaderCompileService for these by name; without a
     # cooked package the request falls through to a runtime GLSL compile, which
     # only a developer desktop can serve.

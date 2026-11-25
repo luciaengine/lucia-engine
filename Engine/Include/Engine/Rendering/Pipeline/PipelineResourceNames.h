@@ -32,6 +32,9 @@ inline constexpr const char* DepthResolved = "View.DepthResolved";
 // The occluders' depth GTAO and the world pass's contact shadows read: View.DepthResolved without the
 // non-occluding prepass heads (grass). The same texture when the view has none (DepthResolveNode).
 inline constexpr const char* OccluderDepthResolved = "View.OccluderDepthResolved";
+inline constexpr const char* ForestOcclusionDepth = "View.ForestOcclusionDepth";
+inline constexpr const char* ForestOcclusionHZB = "View.ForestOcclusionHZB";
+inline constexpr const char* CameraPrepassDepth = "View.CameraPrepassDepth";
 inline constexpr const char* GTAO = "View.GTAO";
 inline constexpr const char* HZB = "View.HZB";
 // Per-view movers pass (RGBA16F): .rg = unjittered current-minus-previous

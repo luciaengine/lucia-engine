@@ -39,6 +39,7 @@ constexpr float kSplatDiskGrowth = 1.15f;
 constexpr float kSplatDiskRadius = 0.79788456f;
 // The smallest sway in meters of a splat crown; a calm card still lets the splats move.
 constexpr float kSplatMinimumSway = 0.35f;
+constexpr float kSplatJitterRadius = 0.519616f; // sqrt(3) times 0.3 cells per axis.
 
 float SplatReach(const ForestSplatCells& splats)
 {
@@ -51,6 +52,18 @@ float SplatReach(const ForestSplatCells& splats)
         reach = std::max(reach, (splats.Origin + grid * splats.CellSize).Length());
     }
     return reach + splats.CellSize * kSplatDiskRadius * kSplatDiskGrowth;
+}
+
+bool FitsPageOcclusionBounds(const ForestPlacementSession& session)
+{
+    if (!session.Card)
+        return false;
+    const auto& card = *session.Card;
+    const float reach = session.Splats
+        ? session.SplatReach + session.Splats->CellSize * kSplatJitterRadius +
+              std::max(kSplatMinimumSway, card.Sway.MaxDisplacement)
+        : ForestCardReach(card);
+    return reach <= session.Placements->Store().BoundRadius();
 }
 } // namespace
 
@@ -75,6 +88,15 @@ std::shared_ptr<ForestPlacementSession> ForestPlacementFeature::Attach(
         session->ShadowScopes[cascade] = session->Scope + ".Shadow" + std::to_string(cascade);
     m_Sessions.push_back(session);
     return session;
+}
+
+bool ForestPlacementFeature::WantsPageOcclusion(uint64 world) const
+{
+    return std::ranges::any_of(m_Sessions, [world](const auto& weak) {
+        const auto session = weak.lock();
+        return session && session->World == world && session->DrawsColor && !session->Refused &&
+               FitsPageOcclusionBounds(*session);
+    });
 }
 
 bool ForestPlacementFeature::WantsCard(uint64 world, const GUID& model) const
@@ -679,9 +701,11 @@ bool ForestPlacementFeature::EmitDetails(ForestPlacementSession& session, const 
     ForestSplatWindGpu wind{};
     if (session.Splats)
         ResolveSplatWind(services, context.ViewId, session.World, camera, *card, wind);
+    const auto occlusion = FitsPageOcclusionBounds(session) ? context.ForestOcclusionHZB : RGTexture{};
     const auto buffers = session.Cull.Declare(frame, session.Scope, session.Slots, session.Placements->SlotCount(),
                                               gpuView, session.Pages, session.TreeIndexCount(),
-                                              session.Splats ? &wind : nullptr);
+                                              session.Splats ? &wind : nullptr, occlusion,
+                                              services.Textures().GetSampler(SamplerPreset::PointClamp));
     if (!buffers)
         return false;
     const bool drawn = session.Splats

@@ -45,6 +45,7 @@ namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 //   "id": "DepthResolve",
 //   "type": "DepthResolve",
 //   "enabled": true,
+//   "resolve": "sample0",             // optional: "farthest" keeps uncovered MSAA samples
 //   "output": "View.DepthResolved",   // optional blackboard key to publish
 //   "poolName": "Pipeline.DepthResolved.View" // optional persistent-pool prefix
 // }
@@ -83,6 +84,7 @@ class DepthResolveNode final : public IRenderPipelineNode
     std::string m_Id;
     std::string m_OutputKey = Names::View::DepthResolved;
     std::string m_PoolPrefix = "Pipeline.DepthResolved.View";
+    bool m_Farthest = false;
 
     bool m_LoadAttempted = false;
 

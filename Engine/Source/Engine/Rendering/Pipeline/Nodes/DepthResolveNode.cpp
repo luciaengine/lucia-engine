@@ -3,6 +3,7 @@
 #include "Engine/Rendering/Pipeline/Nodes/PipelineNodeUtils.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "../../Forest/ForestPlacementFeature.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
@@ -20,6 +21,11 @@ namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 {
 using namespace ::GameEngine::Rendering;
 
+namespace
+{
+constexpr int32 kForestDepthTileSize = 4;
+}
+
 bool DepthResolveNode::Initialize(std::string nodeId, std::string nodeJson, std::string* /*outError*/)
 {
     m_Id = std::move(nodeId);
@@ -32,11 +38,17 @@ bool DepthResolveNode::Initialize(std::string nodeId, std::string nodeJson, std:
                 m_OutputKey = j["output"].get<std::string>();
             if (j.contains("poolName") && j["poolName"].is_string())
                 m_PoolPrefix = j["poolName"].get<std::string>();
+            m_Farthest = j.value("resolve", std::string{}) == "farthest";
         }
     }
     catch (const std::exception&)
     {
         // Keep defaults on malformed config.
+    }
+    if (m_OutputKey == Names::View::ForestOcclusionDepth)
+    {
+        m_Farthest = true;
+        m_PoolPrefix = "Pipeline.ForestOcclusionDepth.View";
     }
     return true;
 }
@@ -68,23 +80,43 @@ void DepthResolveNode::RequestPausedViewPipelines(const PausedViewPrewarm& prewa
 
 void DepthResolveNode::DeclareForView(ViewDeclare& d)
 {
+    if (m_OutputKey == Names::View::ForestOcclusionDepth)
+    {
+        const auto* forest = d.Services.GetFeature<ForestPlacementFeature>();
+        const auto prepassDepth = d.ResolveTexture(Names::View::CameraPrepassDepth);
+        if (!forest || !forest->WantsPageOcclusion(d.View.worldId) ||
+            !prepassDepth.IsValid() || prepassDepth.Id != d.ViewDepth.Id ||
+            d.Services.Views().GetViewLetterbox(d.View.id).active ||
+            d.Services.Views().GetViewWorldPassFlipY(d.View.id))
+            return;
+    }
     const RenderGraph::RGTexture depth = d.ViewDepth; // prepass override already published
     if (!depth.IsValid())
         return;
     const auto& dd = d.Frame.Graph().ResourceDesc(depth.Id);
-    const uint32_t w = dd.Width;
-    const uint32_t h = dd.Height;
+    const uint32_t tileSize = m_Farthest ? kForestDepthTileSize : 1u;
+    const uint32_t w = (dd.Width + tileSize - 1u) / tileSize;
+    const uint32_t h = (dd.Height + tileSize - 1u) / tileSize;
     if (w == 0 || h == 0)
         return;
-    if (!(dd.SampleCount > 1 ? m_ResolvePipelineId.IsValid() : m_CopyPipelineId.IsValid()))
+    const auto pipeline = dd.SampleCount > 1 ? m_ResolvePipelineId : m_CopyPipelineId;
+    if (!pipeline.IsValid())
         return;
+    if (m_Farthest)
+    {
+        auto* device = d.Frame.Device();
+        if (!device || device->RequestComputePipeline(pipeline) != PipelineBuildState::Warm)
+            return;
+    }
 
     const std::string poolName = m_PoolPrefix + std::to_string(static_cast<uint32_t>(d.View.id));
     const RenderGraph::RGTexture resolved = ImportResolveTarget(d, poolName, w, h);
     if (!resolved.IsValid())
         return;
     const RenderGraph::RGPass resolvePass =
-        DeclareResolvePass(d, d.PassName("DepthResolve").c_str(), depth, resolved, w, h);
+        DeclareResolvePass(d, d.PassName(m_Farthest ? m_Id.c_str() : "DepthResolve").c_str(), depth, resolved, w, h);
+    if (m_Farthest && !resolvePass.IsValid())
+        return;
     // View.DepthResolved holds the view depth the colour pass depth-tests against, and every depth reader
     // takes it except the occlusion passes below. Until the non-occluding heads draw, this copy is that depth.
     d.PublishTexture(m_OutputKey, resolved);
@@ -217,7 +249,7 @@ void DepthResolveNode::LoadShaders(IDevice* device)
                            ComputePipelineId& outPipeline,
                            std::unique_ptr<ShaderMeta>& outMeta,
                            DescriptorSetLayoutDesc& outLayout,
-                           const char* debugName) -> bool
+                           const char* debugName, bool farthest) -> bool
     {
         ShaderPackage pkg{};
         std::string loadErr;
@@ -238,6 +270,8 @@ void DepthResolveNode::LoadShaders(IDevice* device)
         ComputePipelineDesc cd{};
         cd.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(itCs->second));
         cd.DebugName = debugName;
+        if (farthest)
+            cd.Specialization.emplace().AddConstant(0u, kForestDepthTileSize);
 
         outLayout = DescriptorSetLayoutDesc{};
         if (outMeta)
@@ -258,9 +292,9 @@ void DepthResolveNode::LoadShaders(IDevice* device)
     };
 
     loadCompute("Shaders/depth_resolve.shaderpkg",
-                m_ResolvePipelineId, m_ResolveMeta, m_ResolveSet0Layout, "DepthResolve_MSAA");
+                m_ResolvePipelineId, m_ResolveMeta, m_ResolveSet0Layout, "DepthResolve_MSAA", m_Farthest);
     loadCompute("Shaders/depth_copy.shaderpkg",
-                m_CopyPipelineId, m_CopyMeta, m_CopySet0Layout, "DepthResolve_Copy");
+                m_CopyPipelineId, m_CopyMeta, m_CopySet0Layout, "DepthResolve_Copy", m_Farthest);
 
     if (!m_Sampler.IsValid())
     {
