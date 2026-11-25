@@ -112,7 +112,7 @@ A falling star (a meteor) is one of the night sky's stars that moves: the same b
 
 ## The night tint
 
-The night tint is an artistic setting on the **Post Process Volume**. It gives a night image the blue color that films use for night scenes.
+The night tint is an artistic setting on the **Post Process Volume**. It gives a night image the blue color that films use for night scenes. With eye adaptation off, the Day and Night preset lets the tint appear as the sky darkens.
 
 - **Strength** sets how much the tint acts. 0 turns the tint off (physical). 1 gives the dark sky exactly the color's hue. The default is 1, the Vivid look, an artistic choice. A world without a global Post Process Volume uses the default.
 - **Color** sets the hue of the tint. Pick it with the color picker. Only the hue is used: the engine keeps the image's brightness. The engine applies the tint after the look, so the dark sky shows this hue exactly. The default is a navy blue.
@@ -130,6 +130,8 @@ In a night image, the tint changes the dark sky and keeps the stars' color:
 How much of a star's color shows on screen also depends on the look: the **Photographic** look keeps more of it than the **Neutral** look.
 
 ## Exposure at night
+
+When the camera uses **Day and Night** exposure, the night view lifts the stars and limits the moon disc's highlights so its surface stays visible. Moonlight on the ground follows the physical sky.
 
 A physical night is very dark compared to a day. A full moon lights the ground with less than one millionth of the sun's light. The camera's exposure decides what the picture shows:
 

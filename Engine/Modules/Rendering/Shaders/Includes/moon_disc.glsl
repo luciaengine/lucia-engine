@@ -96,6 +96,12 @@ float GE_MoonEarthshineFraction(vec3 sunInDisc)
     return GE_MOON_EARTHSHINE_AT_FULL_EARTH * 0.5 * (1.0 - sunInDisc.z);
 }
 
+float GE_MoonMeanLitRadiance(float illuminance, vec3 sunInDisc)
+{
+    float realSolidAngle = GE_SKY_PI * GE_MOON_ANGULAR_RADIUS * GE_MOON_ANGULAR_RADIUS;
+    return illuminance / (realSolidAngle * GE_MoonLitFraction(sunInDisc));
+}
+
 // Radiance of the lunar surface at one disc sample, scene-linear on the sky's unitless scale: the
 // moon's illuminance (with the phase already in it) over the real moon's solid angle and the lit
 // share of its face, shaped by the texture's albedo (`albedo`, linear); the sunlit part in the moon's
@@ -103,9 +109,8 @@ float GE_MoonEarthshineFraction(vec3 sunInDisc)
 // (SkyEnvironment::MoonExposureEV, 0 by default).
 vec3 GE_MoonSurfaceRadiance(vec3 albedo, float phaseMask, float illuminance, vec3 sunInDisc, float trimEv)
 {
-    float realSolidAngle = GE_SKY_PI * GE_MOON_ANGULAR_RADIUS * GE_MOON_ANGULAR_RADIUS;
     float albedoPattern = dot(albedo, vec3(0.2126, 0.7152, 0.0722)) / GE_MOON_TEXTURE_MEAN;
-    float lit = illuminance / (realSolidAngle * GE_MoonLitFraction(sunInDisc));
+    float lit = GE_MoonMeanLitRadiance(illuminance, sunInDisc);
     vec3 color = mix(GE_MOON_EARTHSHINE_TINT * GE_MoonEarthshineFraction(sunInDisc), GE_MOON_TINT, phaseMask);
     return color * (lit * albedoPattern * exp2(trimEv));
 }

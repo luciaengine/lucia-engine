@@ -2154,7 +2154,7 @@ constexpr std::size_t kTailPad = sizeof(PostProcessSettings) -
 // The pads are pinned to literals: a derived pad would silently absorb a NEW
 // member appended after the anchor it is measured from.
 static_assert(kPadAfterAutoExposureActive == 3, "layout moved: re-derive the pad pins");
-static_assert(kPadBeforeBloomDirtGuid == 0, "layout moved: re-derive the pad pins");
+static_assert(kPadBeforeBloomDirtGuid == 4, "layout moved: re-derive the pad pins");
 static_assert(kPadBeforeLutGuid == 0, "layout moved: re-derive the pad pins");
 // The eight-byte alignment leaves four bytes after the final clamp weight.
 // Pin the padding so an unlisted field cannot hide in that space.
@@ -2206,7 +2206,7 @@ constexpr std::size_t kDepthPixelationFieldBytes =
     sizeof(PostProcessSettings::DepthPixelationDebugRanges);
 constexpr std::size_t kRainFieldBytes = sizeof(int32) + 3 * sizeof(float32);
 constexpr std::size_t kCameraResolvedFieldBytes = sizeof(PostProcessSettings::ViewOutput) +
-    sizeof(PostProcessSettings::AutoExposureCompensation);
+    sizeof(PostProcessSettings::AutoExposureCompensation) + sizeof(PostProcessSettings::DayCycleExposureEv);
 static_assert(kFieldBytes + kRainFieldBytes + kCameraResolvedFieldBytes + kDepthPixelationFieldBytes + kPadAfterAutoExposureActive + kPadBeforeBloomDirtGuid +
                   kPadBeforeLutGuid + kTailPad == sizeof(PostProcessSettings),
               "PP_BLEND_LOCK_FIELDS is stale: a PostProcessSettings member is missing from the equivalence lock");
@@ -3858,6 +3858,9 @@ TEST(PostProcessExtractHooks, BloomFoldClampsAndGatesOnEnabled)
     bloom.Radius = 9.0f;   // clamps to 7
     bloom.Octaves = 99;    // clamps to 8
     bloom.Tint[0] = 2.0f;  // clamps to 1
+    bloom.DepthVeilEnabled = true;
+    bloom.DepthVeilIntensity = 4.0f;
+    bloom.DepthVeilOpacity = 0.25f;
     world.AddComponentImmediate(e, bloom);
 
     auto out = ExtractAllEffects(world, e);
@@ -3866,6 +3869,15 @@ TEST(PostProcessExtractHooks, BloomFoldClampsAndGatesOnEnabled)
     EXPECT_FLOAT_EQ(out.Settings.BloomRadius, 7.0f);
     EXPECT_EQ(out.Settings.BloomOctaves, 8);
     EXPECT_FLOAT_EQ(out.Settings.BloomTintR, 1.0f);
+    EXPECT_FLOAT_EQ(out.Settings.BloomDepthVeilIntensity, 1.0f);
+
+    const auto transparentEntity = world.CreateEntity();
+    auto transparentBloom = bloom;
+    transparentBloom.DepthVeilOpacity = 0.0f;
+    world.AddComponentImmediate(transparentEntity, transparentBloom);
+    const auto transparent = ExtractAllEffects(world, transparentEntity);
+    EXPECT_FLOAT_EQ(transparent.Settings.BloomDepthVeilIntensity, 0.0f);
+    EXPECT_FLOAT_EQ(transparent.Settings.BloomIntensity, 2.0f);
 
     // Disabled component folds nothing: defaults stay.
     GameEngine::ECS::EntityHandle e2 = world.CreateEntity();

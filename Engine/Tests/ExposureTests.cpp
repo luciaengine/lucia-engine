@@ -371,7 +371,7 @@ TEST(ExposureCompensationCurve, TheCameraPublishesItsCurve)
     EXPECT_FLOAT_EQ(published.AutoExposureCompensationCurve.Keys[0].Value, -1.0f);
 }
 
-TEST(Exposure, DefaultDayCycleLiftsFixedExposureAtNightWithoutEnablingAdaptation)
+TEST(Exposure, DayAndNightLiftsNonAdaptiveExposureAtNight)
 {
     Rendering::SkySunState sun;
     EXPECT_FLOAT_EQ(EvaluateDayCycleExposure(nullptr, sun), 0.0f);
@@ -383,13 +383,26 @@ TEST(Exposure, DefaultDayCycleLiftsFixedExposureAtNightWithoutEnablingAdaptation
     Engine::Renderer::PostProcessSettings settings;
     Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
     EXPECT_FALSE(settings.AutoExposureActive);
+    EXPECT_FLOAT_EQ(settings.DayCycleExposureEv, offset);
     EXPECT_FLOAT_EQ(settings.Exposure, camera.Exposure * std::exp2(offset));
+
+    for (const auto mode : {ExposureMode::Manual, ExposureMode::Physical})
+    {
+        camera.Mode = static_cast<int32>(mode);
+        Engine::Renderer::PostProcessSettings daylight;
+        Engine::Renderer::ApplyCameraExposure(daylight, camera);
+        Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
+        EXPECT_FALSE(settings.AutoExposureActive);
+        EXPECT_FLOAT_EQ(settings.DayCycleExposureEv, offset);
+        EXPECT_FLOAT_EQ(settings.Exposure, daylight.Exposure * std::exp2(offset));
+    }
 
     camera.Mode = static_cast<int32>(ExposureMode::Auto);
     Engine::Renderer::PostProcessSettings metered;
     Engine::Renderer::ApplyCameraExposure(metered, camera);
     Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
     EXPECT_TRUE(settings.AutoExposureActive);
+    EXPECT_FLOAT_EQ(settings.DayCycleExposureEv, 0.0f);
     EXPECT_FLOAT_EQ(settings.Exposure, metered.Exposure);
     EXPECT_FLOAT_EQ(settings.AutoExposureBiasEv, metered.AutoExposureBiasEv);
 }

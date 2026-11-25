@@ -19,7 +19,7 @@ layout(set = 0, binding = 0) uniform SkyUBO
     vec3  moonDirectionWS;    float moonIntensity;
     float moonAngularRadius;
     float skyRotateAroundZenithRadians;
-    float moonUboPad1;
+    float fixedNightWeight;
     float moonUboPad2;
     vec3  sunColor;           float sunIntensity;
     float timeOfDayHours;     float skyPad0;
@@ -220,6 +220,18 @@ vec3 SampleOrthoBackdropDirection(vec3 dirWS)
                                      uAtmos.nightSkyHorizonColor);
 }
 
+// Apply one gain to the disc so the craters retain their contrast as the scene brightens.
+float MoonTrimForView(vec3 sunInDisc)
+{
+    if (uSky.fixedNightWeight <= 0.0)
+        return uSky.moonUboPad2;
+    const float kMeanLitDiscLimit = 0.65;
+    float exposedMean = GE_MoonMeanLitRadiance(uSky.moonIntensity, sunInDisc) *
+                        exp2(uSky.moonUboPad2) * SkyStoreScale();
+    float reduction = log2(max(1.0, exposedMean / kMeanLitDiscLimit));
+    return uSky.moonUboPad2 - reduction * uSky.fixedNightWeight;
+}
+
 // 2D sky backdrop: simple screen-vertical gradient through HDR zenith / horizon /
 // lower-sky samples, plus a sun tag at the sun's elevation. Stars are drawn by
 // the billboard pass in their own ortho branch. This deliberately bypasses the
@@ -377,7 +389,7 @@ void RenderOrthoBackdrop(vec2 ndc)
             // The backdrop's disc frame is the screen's: right, and up (moon UV runs down it).
             vec3 sunInDisc = GE_MoonSunInDiscFrame(normalize(uSky.sunDirectionWS), moonDir, basisRight, basisUp);
             col += GE_MoonDiscRadiance(moonAlbedo, moonUv, diskDist, sunInDisc, uSky.moonIntensity,
-                                       uSky.moonUboPad2) *
+                                       MoonTrimForView(sunInDisc)) *
                    moonHorizonMask * moonAboveHorizon;
         }
     }
@@ -500,7 +512,7 @@ void main()
             // The planet hides the disc where the view ray meets it (transmittance 0), and the
             // air reddens and dims it at moonrise exactly as it does the sun.
             moonRadiance = GE_MoonDiscRadiance(moonAlbedo, moonUv, tDisk, sunInDisc, uSky.moonIntensity,
-                                               uSky.moonUboPad2) *
+                                               MoonTrimForView(sunInDisc)) *
                            transmittance;
             moonCover = GE_MoonDiscCover(tDisk, moonAlbedo.a);
         }

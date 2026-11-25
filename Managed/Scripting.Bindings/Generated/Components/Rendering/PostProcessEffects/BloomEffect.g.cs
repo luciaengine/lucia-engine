@@ -11,7 +11,7 @@ using System.Runtime.InteropServices;
 
 namespace GameEngine.Scripting
 {
-    [StructLayout(LayoutKind.Explicit, Size = 132)]
+    [StructLayout(LayoutKind.Explicit, Size = 136)]
     [BuiltInComponent("GameEngine::Components::BloomEffect")]
     public partial struct BloomEffect : IComponent
     {
@@ -66,9 +66,12 @@ namespace GameEngine.Scripting
         public float DepthVeilIntensity;
 
         [FieldOffset(56)]
-        public float DepthVeilStart;
+        public float DepthVeilOpacity;
 
         [FieldOffset(60)]
+        public float DepthVeilStart;
+
+        [FieldOffset(64)]
         public float DepthVeilEnd;
 
         [InlineArray(3)]
@@ -77,25 +80,25 @@ namespace GameEngine.Scripting
             private float m_Element;
         }
 
-        [FieldOffset(64)]
+        [FieldOffset(68)]
         public DepthVeilTintArray DepthVeilTint;
 
-        [FieldOffset(76)]
+        [FieldOffset(80)]
         public bool LensDirtEnabled;
 
-        [FieldOffset(77)]
+        [FieldOffset(81)]
         public bool LensDirtVignette;
 
-        [FieldOffset(80)]
+        [FieldOffset(84)]
         public float LensDirtVignetteIntensity;
 
-        [FieldOffset(84)]
+        [FieldOffset(88)]
         public float LensDirtVignetteRadius;
 
-        [FieldOffset(88)]
+        [FieldOffset(92)]
         public float LensDirtVignetteSmoothness;
 
-        [FieldOffset(92)]
+        [FieldOffset(96)]
         public bool LensDirtVignetteRounded;
 
         [InlineArray(3)]
@@ -104,16 +107,16 @@ namespace GameEngine.Scripting
             private float m_Element;
         }
 
-        [FieldOffset(96)]
+        [FieldOffset(100)]
         public LensDirtVignetteColorArray LensDirtVignetteColor;
 
-        [FieldOffset(108)]
+        [FieldOffset(112)]
         public float LensDirtIntensity;
 
-        [FieldOffset(112)]
+        [FieldOffset(116)]
         public float LensDirtScatter;
 
-        [FieldOffset(116)]
+        [FieldOffset(120)]
         public AssetGuid LensDirtTexture;
     }
 }

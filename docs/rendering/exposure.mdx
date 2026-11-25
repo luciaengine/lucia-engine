@@ -16,9 +16,9 @@ The default atmosphere is a crisp clear day: a deep blue zenith over a light haz
 | Mode | What sets the exposure | Use it for |
 |---|---|---|
 | **Auto** | The camera's **Meter** reads the scene, and the exposure adapts to the reading over time, like an eye. See [The two meters](#the-two-meters). | Games that adapt between lighting conditions. |
-| **Manual** | **Manual EV100**, an absolute EV100: 15 is bright sun, 12 overcast, 7 to 9 an interior, 2 to 5 night. | Shots that must not change with what is on screen or with the light. |
+| **Manual** | **Manual EV100**, an absolute EV100: 15 is bright sun, 12 overcast, 7 to 9 an interior, 2 to 5 night. | Shots that need a photographic base EV100 without eye adaptation. |
 | **Physical** | Aperture, shutter time, and ISO, as on a real camera (f/16, 1/100 s, ISO 100 is about EV 14.6). | Matching photographic reference. |
-| **Fixed** | A plain linear multiplier, initialized to the equivalent of EV100 15.4. | Consistent brightness while editing and playing. |
+| **Fixed** | A linear multiplier, initialized to the equivalent of EV100 15.4. | A simple exposure control without eye adaptation. |
 
 **Exposure Compensation** applies in every mode, in stops: +1 doubles the brightness, -1 halves it.
 
@@ -65,7 +65,7 @@ To make a game's nights brighter, raise the -2.5 key toward 0; to darken them, l
 
 The curve is set in the Camera inspector and in the scene file. It cannot be set from C#, the debug port or the web library yet.
 
-On a physical sky, the [Day Cycle exposure profile](day-cycle-profiles.mdx) can shape twilight and night using the sun's elevation when eye adaptation is off. Exposure stays stable as the camera moves.
+With a physical sky, the built-in **Day and Night** preset uses the sun's elevation to lift twilight and night in **Fixed**, **Manual**, and **Physical** modes. Each camera's exposure settings still control its base exposure.
 
 ## How the picture meter works
 

@@ -160,9 +160,9 @@ class NightTintTest : public ::testing::Test
         return Run({{{2.0f, storedY, preExposure, 0.0f}, {-1.0f, 0.0f, 0.0f, 0.0f}}})[0][0];
     }
 
-    float AdaptationNits(float meteredNits, float appliedExposure)
+    float AdaptationNits(float meteredNits, float appliedExposure, float dayCycleExposureEv = 0.0f)
     {
-        return Run({{{3.0f, meteredNits, appliedExposure, 0.0f}, {-1.0f, 0.0f, 0.0f, 0.0f}}})[0][0];
+        return Run({{{3.0f, meteredNits, appliedExposure, dayCycleExposureEv}, {-1.0f, 0.0f, 0.0f, 0.0f}}})[0][0];
     }
 
     // A display colour tinted in full by tint.
@@ -256,6 +256,18 @@ TEST_F(NightTintTest, TheGateReadsTheMeterAndElseTheExposure)
 {
     EXPECT_NEAR(AdaptationNits(0.31f, 4096.0f), 0.31f, 1e-6f) << "a metered view";
     EXPECT_NEAR(AdaptationNits(-1.0f, 4096.0f), 0.18f * 203.0f / 4096.0f, 1e-6f) << "a Manual exposure";
+}
+
+TEST_F(NightTintTest, TheDayAndNightCurveKeepsTheTintAtMidnight)
+{
+    constexpr float kExposedNightScale = 300.0f;
+    const float twilight = AdaptationNits(-1.0f, kExposedNightScale, 9.0f);
+    const float midnight = AdaptationNits(-1.0f, kExposedNightScale, 16.0f);
+    EXPECT_GE(twilight, 0.05f);
+    EXPECT_NEAR(midnight, 0.005f, 1e-6f);
+    EXPECT_NEAR(Amount(1.0f, midnight, 0.01f, 1.0f), 1.0f, 1e-6f);
+    EXPECT_FLOAT_EQ(Amount(1.0f, midnight, 3.0f, 1.0f), 0.0f);
+    EXPECT_NEAR(AdaptationNits(0.31f, kExposedNightScale, 16.0f), 0.31f, 1e-6f);
 }
 
 // The tint keeps a pixel's luminance and stays inside its display range: a bright twilight sky (a pale

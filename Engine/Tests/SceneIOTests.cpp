@@ -3601,6 +3601,7 @@ TEST(SceneIO, SaveThenLoad_RoundTripBloomControls)
     bloom.Scatter = 0.95f;
     bloom.DepthVeilEnabled = true;
     bloom.DepthVeilIntensity = 1.75f;
+    bloom.DepthVeilOpacity = 0.35f;
     bloom.DepthVeilStart = 12.0f;
     bloom.DepthVeilEnd = 640.0f;
     bloom.DepthVeilTint[0] = 0.3f;
@@ -3639,6 +3640,7 @@ TEST(SceneIO, SaveThenLoad_RoundTripBloomControls)
     EXPECT_FLOAT_EQ(b2->Scatter, 0.95f);
     EXPECT_TRUE(b2->DepthVeilEnabled);
     EXPECT_FLOAT_EQ(b2->DepthVeilIntensity, 1.75f);
+    EXPECT_FLOAT_EQ(b2->DepthVeilOpacity, 0.35f);
     EXPECT_FLOAT_EQ(b2->DepthVeilStart, 12.0f);
     EXPECT_FLOAT_EQ(b2->DepthVeilEnd, 640.0f);
     EXPECT_FLOAT_EQ(b2->DepthVeilTint[0], 0.3f);
@@ -3687,6 +3689,7 @@ TEST(SceneIO, SaveThenLoad_RoundTripBloomControls)
     EXPECT_FLOAT_EQ(b3->Scatter, 0.5f);
     EXPECT_FALSE(b3->DepthVeilEnabled);
     EXPECT_FLOAT_EQ(b3->DepthVeilIntensity, 1.0f);
+    EXPECT_FLOAT_EQ(b3->DepthVeilOpacity, 1.0f);
     EXPECT_FLOAT_EQ(b3->DepthVeilStart, 25.0f);
     EXPECT_FLOAT_EQ(b3->DepthVeilEnd, 500.0f);
     EXPECT_FLOAT_EQ(b3->DepthVeilTint[0], 1.0f);

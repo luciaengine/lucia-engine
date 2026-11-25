@@ -10,6 +10,7 @@
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshRenderer.h"
+#include "Components/Rendering/PostProcessEffects/BloomEffect.h"
 #include "Components/Rendering/PostProcessEffects/HeightFogEffect.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/ReflectionProbe.h"
@@ -104,6 +105,26 @@ TEST(DefaultSceneEntities, ANewSceneHasTheDefaultSkyAndHorizonFog)
             EXPECT_FLOAT_EQ(fog.SkyFillEnd, defaultFog.SkyFillEnd);
         });
     EXPECT_EQ(fogs, 1) << "the global post-process volume carries the height fog";
+
+    int blooms = 0;
+    world.Query<ECS::Read<Components::PostProcessVolume>, ECS::Read<Components::BloomEffect>>().Each(
+        [&](ECS::EntityHandle, const Components::PostProcessVolume& volume, const Components::BloomEffect& bloom)
+        {
+            ++blooms;
+            EXPECT_TRUE(volume.IsGlobal);
+            EXPECT_TRUE(bloom.Enabled);
+            EXPECT_FLOAT_EQ(bloom.Threshold, 0.18062502f);
+            EXPECT_FLOAT_EQ(bloom.Knee, 0.2808203f);
+            EXPECT_FLOAT_EQ(bloom.Intensity, 0.7525f);
+            EXPECT_TRUE(bloom.AntiFlicker);
+            EXPECT_FLOAT_EQ(bloom.Radius, 2.5f);
+            EXPECT_EQ(bloom.Octaves, 8);
+            EXPECT_FLOAT_EQ(bloom.Scatter, 0.5f);
+            EXPECT_FLOAT_EQ(bloom.ScatteringAmount, 0.0f);
+            EXPECT_FALSE(bloom.DepthVeilEnabled);
+            EXPECT_FALSE(bloom.LensDirtEnabled);
+        });
+    EXPECT_EQ(blooms, 1);
 }
 
 // The Main Camera sees, and the ground reaches, as far as the default height fog takes to cover the

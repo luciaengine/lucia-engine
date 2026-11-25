@@ -249,8 +249,8 @@ TEST(PreExposureSourceContract, TheTonemapGivesTheTintTheMetersReadingAndTheScen
     EXPECT_TRUE(ContainsTokens(tonemap, "float meteredNits = pc.useAutoExposure != 0 ? GE_MeteredNits() : -1.0;"))
         << "under Auto exposure the gate must read the meter's reading";
     EXPECT_TRUE(ContainsTokens(tonemap,
-                               "float adaptationNits = GE_NightTintAdaptationNits(meteredNits, exposure * GE_PreExposure());"))
-        << "the gate's fallback is the luminance the applied exposure maps to mid-grey";
+                               "float adaptationNits = GE_NightTintAdaptationNits(meteredNits, exposure * GE_PreExposure(), pc.dayCycleExposureEv);"))
+        << "the gate receives the applied exposure and the Day and Night offset";
     EXPECT_TRUE(ContainsTokens(tonemap, "float sceneNits = GE_NightTintSceneNits(dot(storedColor, kY), GE_PreExposure());"))
         << "the dark field reads the stored luminance with the pre-exposure divided out";
     EXPECT_TRUE(ContainsTokens(tonemap, "lin = ApplyNightTint(lin, adaptationNits, uv, stored);"))

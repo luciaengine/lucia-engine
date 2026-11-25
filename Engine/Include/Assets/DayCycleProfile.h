@@ -61,7 +61,7 @@ std::string WriteDayCycleProfile(const DayCycleProfileData& data);
 /// `duskHalf` (which reads DuskKeys under SeparateDusk).
 float EvaluateDayCycleTrack(const DayCycleTrackKeys& keys, Mathematics::Radians elevation, bool duskHalf);
 
-/// The renderer's exposure offset in stops at the published solar elevation.
+/// The fixed Day and Night exposure offset at the published solar elevation. A null profile uses the built-in curve.
 float EvaluateDayCycleExposure(const DayCycleProfileData* profile, const Rendering::SkySunState& sunState);
 
 /// Whether the sun stands on the setting half of its day: its bearing west of the meridian, azimuth in

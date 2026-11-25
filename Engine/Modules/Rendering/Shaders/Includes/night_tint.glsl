@@ -34,12 +34,19 @@ float GE_NightTintSceneNits(float storedY, float preExposure)
     return storedY / max(preExposure, 1e-12) * 203.0;
 }
 
-// The adaptation the gate reads: the meter's reading when the view meters (meteredNits >= 0), else the
-// luminance the exposure maps to mid-grey (0.18); appliedExposure is the scale from absolute
-// scene-linear to display (the exposure times the pre-exposure).
-float GE_NightTintAdaptationNits(float meteredNits, float appliedExposure)
+// Read the meter in Auto. Otherwise use the luminance mapped to mid-grey, with a solar ceiling
+// when the Day and Night curve reaches its night keys. The ceiling keeps the artistic tint available
+// even when the camera exposure is set for daylight.
+float GE_NightTintAdaptationNits(float meteredNits, float appliedExposure, float dayCycleExposureEv)
 {
-    return meteredNits >= 0.0 ? meteredNits : 0.18 * 203.0 / max(appliedExposure, 1e-12);
+    if (meteredNits >= 0.0)
+        return meteredNits;
+    float exposureNits = 0.18 * 203.0 / max(appliedExposure, 1e-12);
+    const float kCivilTwilightLiftEv = 9.0;
+    const float kNightLiftEv = 16.0;
+    float nightWeight = smoothstep(kCivilTwilightLiftEv, kNightLiftEv, dayCycleExposureEv);
+    float skyNits = mix(kNightTintPhotopicNits, kNightTintScotopicNits, nightWeight);
+    return nightWeight > 0.0 ? min(exposureNits, skyNits) : exposureNits;
 }
 
 // How far the star light lifts a pixel: its stored luminance over the luminance without the star

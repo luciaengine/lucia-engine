@@ -1,6 +1,6 @@
 #include "Assets/DayCycleProfile.h"
 
-#include "DefaultDayCycleProfile.h"
+#include "FixedExposureDayCycle.h"
 
 #include "AssetCore/SharedFileRead.h"
 #include "Logger/Logger.h"
@@ -359,8 +359,8 @@ float EvaluateDayCycleExposure(const DayCycleProfileData* profile, const Renderi
     {
         DayCycleProfileData data;
         std::string error;
-        if (!ParseDayCycleProfile(kDefaultDayCycleProfileJson, data, error))
-            LOG_ERROR("The built-in Day Cycle profile could not be read: {}", error);
+        if (!ParseDayCycleProfile(kFixedExposureDayCycleJson, data, error))
+            LOG_ERROR("The built-in fixed exposure Day and Night profile could not be read: {}", error);
         return data;
     }();
     const auto* track = (profile ? profile : &builtIn)->Find(DayCycleTrack::ExposureOffset);

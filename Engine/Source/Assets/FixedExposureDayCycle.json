@@ -1,0 +1,9 @@
+{
+  "name": "Day and Night",
+  "description": "A daylight exposure that lifts the scene through twilight and night when eye adaptation is off.",
+  "tracks": {
+    "exposureOffset": {
+      "keys": "-18,16,0,0,1,1;-12,13,0,0,1,1;-6,9,0,0,1,1;0,4,0,0,1,1;10,1,0,0,1,1;25,0,0,0,1,1"
+    }
+  }
+}

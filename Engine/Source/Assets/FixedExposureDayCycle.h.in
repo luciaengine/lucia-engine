@@ -1,0 +1,6 @@
+#pragma once
+
+namespace GameEngine
+{
+inline constexpr char kFixedExposureDayCycleJson[] = R"DayCycle(@GE_FIXED_EXPOSURE_DAY_CYCLE_JSON@)DayCycle";
+}
