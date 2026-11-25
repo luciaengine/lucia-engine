@@ -41,6 +41,10 @@ Transform.scale = (1, 1, 1)
 ; ground reaches 3000 m from the origin, the Main Camera's far clip and the fog's maxDistance, so by
 ; day the end of the ground does not show; at night it reads as a faint line where the ground ends.
 HeightFogEffect.enabled = true
+BloomEffect.threshold = 0.18062502
+BloomEffect.knee = 0.2808203
+BloomEffect.intensity = 0.7525
+BloomEffect.depthVeilIntensity = 0.48800784
 HierarchyOrder.order = 40
 Name.value = "Post Process Volume"
 PostProcessVolume.enabled = true

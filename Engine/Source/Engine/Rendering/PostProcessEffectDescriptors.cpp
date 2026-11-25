@@ -1214,7 +1214,8 @@ void RegisterBuiltInPostProcessEffectDescriptors()
                 out.Settings.BloomOctaves   = std::clamp(bloom->Octaves, 3, 8);
                 out.Settings.BloomScatter   = Math::Clamp01(bloom->Scatter);
                 out.Settings.BloomDepthVeilEnabled = bloom->DepthVeilEnabled ? 1 : 0;
-                out.Settings.BloomDepthVeilIntensity = std::clamp(bloom->DepthVeilIntensity, 0.0f, 10.0f);
+                out.Settings.BloomDepthVeilIntensity =
+                    std::clamp(bloom->DepthVeilIntensity, 0.0f, 10.0f) * Math::Clamp01(bloom->DepthVeilOpacity);
                 out.Settings.BloomDepthVeilStart = std::max(bloom->DepthVeilStart, 0.0f);
                 out.Settings.BloomDepthVeilEnd = std::max(bloom->DepthVeilEnd, 0.0f);
                 out.Settings.BloomDepthVeilTintR = Math::Clamp01(bloom->DepthVeilTint[0]);

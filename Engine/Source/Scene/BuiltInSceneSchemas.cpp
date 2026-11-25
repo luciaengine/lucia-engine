@@ -6308,6 +6308,7 @@ class BloomEffectSchema final : public ISceneComponentSchema
         outLines.push_back(std::string("BloomEffect.scatter = ") + FormatFloat(c->Scatter));
         outLines.push_back(std::string("BloomEffect.depthVeilEnabled = ") + (c->DepthVeilEnabled ? "true" : "false"));
         outLines.push_back(std::string("BloomEffect.depthVeilIntensity = ") + FormatFloat(c->DepthVeilIntensity));
+        outLines.push_back(std::string("BloomEffect.depthVeilOpacity = ") + FormatFloat(c->DepthVeilOpacity));
         outLines.push_back(std::string("BloomEffect.depthVeilStart = ") + FormatFloat(c->DepthVeilStart));
         outLines.push_back(std::string("BloomEffect.depthVeilEnd = ") + FormatFloat(c->DepthVeilEnd));
         outLines.push_back(std::string("BloomEffect.depthVeilTintR = ") + FormatFloat(c->DepthVeilTint[0]));
@@ -6406,6 +6407,11 @@ class BloomEffectSchema final : public ISceneComponentSchema
         else if (property == "depthveilintensity")
         {
             if (!ParseF32(value, c.DepthVeilIntensity, outError))
+                return false;
+        }
+        else if (property == "depthveilopacity")
+        {
+            if (!ParseF32(value, c.DepthVeilOpacity, outError))
                 return false;
         }
         else if (property == "depthveilstart")
@@ -6526,6 +6532,7 @@ class BloomEffectSchema final : public ISceneComponentSchema
         c.Octaves = std::clamp(c.Octaves, 3, 8);
         c.Scatter = Math::Clamp01(c.Scatter);
         c.DepthVeilIntensity = std::clamp(c.DepthVeilIntensity, 0.0f, 10.0f);
+        c.DepthVeilOpacity = Math::Clamp01(c.DepthVeilOpacity);
         c.DepthVeilStart = std::clamp(c.DepthVeilStart, 0.0f, 100000.0f);
         c.DepthVeilEnd = std::clamp(c.DepthVeilEnd, 0.0f, 100000.0f);
         for (float32& channel : c.DepthVeilTint)

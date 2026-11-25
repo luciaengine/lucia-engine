@@ -37,6 +37,10 @@ Transform.scale = (1, 1, 1)
 
 [entity id="post_process_volume"]
 HeightFogEffect.enabled = true
+BloomEffect.threshold = 0.18062502
+BloomEffect.knee = 0.2808203
+BloomEffect.intensity = 0.7525
+BloomEffect.depthVeilIntensity = 0.48800784
 HierarchyOrder.order = 40
 Name.value = "Post Process Volume"
 PostProcessVolume.enabled = true

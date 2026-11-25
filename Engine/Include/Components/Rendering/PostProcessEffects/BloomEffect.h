@@ -39,6 +39,8 @@ struct BloomEffect {
     // sky can form an atmospheric veil independently of pixel brightness.
     bool DepthVeilEnabled{false};
     float32 DepthVeilIntensity{1.0f};
+    // Fraction of the depth veil's authored contribution.
+    float32 DepthVeilOpacity{1.0f};
     // Linear camera-space distances in world units.
     float32 DepthVeilStart{25.0f};
     float32 DepthVeilEnd{500.0f};

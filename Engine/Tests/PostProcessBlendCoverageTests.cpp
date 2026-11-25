@@ -3858,6 +3858,9 @@ TEST(PostProcessExtractHooks, BloomFoldClampsAndGatesOnEnabled)
     bloom.Radius = 9.0f;   // clamps to 7
     bloom.Octaves = 99;    // clamps to 8
     bloom.Tint[0] = 2.0f;  // clamps to 1
+    bloom.DepthVeilEnabled = true;
+    bloom.DepthVeilIntensity = 4.0f;
+    bloom.DepthVeilOpacity = 0.25f;
     world.AddComponentImmediate(e, bloom);
 
     auto out = ExtractAllEffects(world, e);
@@ -3866,6 +3869,15 @@ TEST(PostProcessExtractHooks, BloomFoldClampsAndGatesOnEnabled)
     EXPECT_FLOAT_EQ(out.Settings.BloomRadius, 7.0f);
     EXPECT_EQ(out.Settings.BloomOctaves, 8);
     EXPECT_FLOAT_EQ(out.Settings.BloomTintR, 1.0f);
+    EXPECT_FLOAT_EQ(out.Settings.BloomDepthVeilIntensity, 1.0f);
+
+    const auto transparentEntity = world.CreateEntity();
+    auto transparentBloom = bloom;
+    transparentBloom.DepthVeilOpacity = 0.0f;
+    world.AddComponentImmediate(transparentEntity, transparentBloom);
+    const auto transparent = ExtractAllEffects(world, transparentEntity);
+    EXPECT_FLOAT_EQ(transparent.Settings.BloomDepthVeilIntensity, 0.0f);
+    EXPECT_FLOAT_EQ(transparent.Settings.BloomIntensity, 2.0f);
 
     // Disabled component folds nothing: defaults stay.
     GameEngine::ECS::EntityHandle e2 = world.CreateEntity();
