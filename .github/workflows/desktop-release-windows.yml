@@ -1,0 +1,73 @@
+name: Lucia Windows release build
+on:
+  push:
+    branches: [release-build/2026.11.0-alpha.2-windows]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 26e224cab5f86d0e0540ae4247a5a59ff05644c7
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Configure and build Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VCPKG_MAX_CONCURRENCY: '4'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ((git rev-parse HEAD) -ne '26e224cab5f86d0e0540ae4247a5a59ff05644c7') { throw 'Unexpected checkout' }
+          cmake --preset vs2026-x64-local-unity -B D:/lucia-release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_TOOLS=OFF
+          cmake --build D:/lucia-release --config Release --target Editor Player --parallel 4
+      - name: Package staged Editor and Player
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $bin = 'D:/lucia-release/bin/Release'
+          $name = 'LuciaEngine-2026.11.0-alpha.2-Windows-x86_64'
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory $stage | Out-Null
+          Copy-Item "$bin/Apps" "$stage/Apps" -Recurse
+          if (Test-Path "$bin/Tools") { Copy-Item "$bin/Tools" "$stage/Tools" -Recurse }
+          Copy-Item LICENSE,THIRD_PARTY_NOTICES.md "$stage/"
+          @'
+          Lucia Engine 2026.11.0-alpha.2
+          Source commit: 26e224cab5f86d0e0540ae4247a5a59ff05644c7
+          Platform: Windows x86-64
+
+          Extract the entire archive. Open Apps/Editor/Editor.exe to create
+          or open a project. Apps/Player/Player.exe is the standalone runtime.
+          A Vulkan-capable GPU driver is required to render.
+          '@ | Set-Content "$stage/README.txt"
+          foreach ($app in @('Editor', 'Player')) {
+            $exe = "$stage/Apps/$app/$app.exe"
+            $bytes = [System.IO.File]::ReadAllBytes($exe)
+            $header = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ([BitConverter]::ToUInt32($bytes, $header) -ne 0x4550 -or
+                [BitConverter]::ToUInt16($bytes, $header + 4) -ne 0x8664) { throw "Invalid x86-64 executable: $exe" }
+            if (-not (Test-Path "$stage/Apps/$app/Assets/Shaders")) { throw "Shaders missing for $app" }
+            Get-FileHash $exe
+          }
+          New-Item -ItemType Directory D:/lucia-artifacts | Out-Null
+          tar.exe -a -cf "D:/lucia-artifacts/$name.zip" -C $env:RUNNER_TEMP $name
+          $members = @(tar.exe -tf "D:/lucia-artifacts/$name.zip")
+          foreach ($app in @('Editor', 'Player')) {
+            if ($members -notcontains "$name/Apps/$app/$app.exe") { throw "Archive missing $app" }
+          }
+          Get-FileHash "D:/lucia-artifacts/$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lucia-windows-release
+          path: D:/lucia-artifacts/*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
