@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fa3358b1e4a25979df8db3d5d67323280518e522
+          ref: d5cd8bb8c2c17b066f2a1794eb6379cc67e47ba2
           persist-credentials: false
       - uses: actions/setup-dotnet@v4
         with:
@@ -24,7 +24,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          if ((git rev-parse HEAD) -ne 'fa3358b1e4a25979df8db3d5d67323280518e522') { throw 'Unexpected checkout' }
+          if ((git rev-parse HEAD) -ne 'd5cd8bb8c2c17b066f2a1794eb6379cc67e47ba2') { throw 'Unexpected checkout' }
           if ((Get-Content VERSION -Raw).Trim() -ne '1.0.0') { throw 'Unexpected engine version' }
           cmake --preset vs2026-x64-local -B D:/lucia-release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_TOOLS=OFF
           cmake --build D:/lucia-release --config Release --target Editor Player --parallel 4
@@ -43,7 +43,7 @@ jobs:
           Copy-Item LICENSE,THIRD_PARTY_NOTICES.md "$stage/"
           @'
           Lucia Engine 1.0.0
-          Source commit: fa3358b1e4a25979df8db3d5d67323280518e522
+          Source commit: d5cd8bb8c2c17b066f2a1794eb6379cc67e47ba2
           Platform: Windows x86-64
 
           Extract the entire archive. Open Apps/Editor/Editor.exe to create
