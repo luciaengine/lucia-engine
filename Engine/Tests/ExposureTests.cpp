@@ -371,7 +371,7 @@ TEST(ExposureCompensationCurve, TheCameraPublishesItsCurve)
     EXPECT_FLOAT_EQ(published.AutoExposureCompensationCurve.Keys[0].Value, -1.0f);
 }
 
-TEST(Exposure, DayAndNightIsTheDefaultFixedExposurePreset)
+TEST(Exposure, DayAndNightLiftsNonAdaptiveExposureAtNight)
 {
     Rendering::SkySunState sun;
     EXPECT_FLOAT_EQ(EvaluateDayCycleExposure(nullptr, sun), 0.0f);
@@ -386,22 +386,16 @@ TEST(Exposure, DayAndNightIsTheDefaultFixedExposurePreset)
     EXPECT_FLOAT_EQ(settings.DayCycleExposureEv, offset);
     EXPECT_FLOAT_EQ(settings.Exposure, camera.Exposure * std::exp2(offset));
 
-    Components::Camera authored;
-    EXPECT_EQ(authored.FixedPreset, Components::FixedExposurePreset::DayAndNight);
-    authored.FixedPreset = Components::FixedExposurePreset::Constant;
-    camera = Engine::Renderer::ToCameraExposure(authored);
-    Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
-    EXPECT_FALSE(settings.AutoExposureActive);
-    EXPECT_FLOAT_EQ(settings.DayCycleExposureEv, 0.0f);
-    EXPECT_FLOAT_EQ(settings.Exposure, camera.Exposure);
-
-    camera.FixedPreset = Components::FixedExposurePreset::DayAndNight;
-    camera.Mode = static_cast<int32>(ExposureMode::Manual);
-    Engine::Renderer::PostProcessSettings manual;
-    Engine::Renderer::ApplyCameraExposure(manual, camera);
-    Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
-    EXPECT_FLOAT_EQ(settings.DayCycleExposureEv, 0.0f);
-    EXPECT_FLOAT_EQ(settings.Exposure, manual.Exposure);
+    for (const auto mode : {ExposureMode::Manual, ExposureMode::Physical})
+    {
+        camera.Mode = static_cast<int32>(mode);
+        Engine::Renderer::PostProcessSettings daylight;
+        Engine::Renderer::ApplyCameraExposure(daylight, camera);
+        Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
+        EXPECT_FALSE(settings.AutoExposureActive);
+        EXPECT_FLOAT_EQ(settings.DayCycleExposureEv, offset);
+        EXPECT_FLOAT_EQ(settings.Exposure, daylight.Exposure * std::exp2(offset));
+    }
 
     camera.Mode = static_cast<int32>(ExposureMode::Auto);
     Engine::Renderer::PostProcessSettings metered;

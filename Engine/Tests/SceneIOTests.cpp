@@ -12999,7 +12999,6 @@ TEST(SceneIO, TheDefaultSunIlluminanceCurveSurvivesSaveAndLoad)
 TEST(SceneIO, CameraExposureCompensationCurveRoundTrips)
 {
     Components::Camera authored{};
-    authored.FixedPreset = Components::FixedExposurePreset::Constant;
     authored.AutoExposureCompensationCurve = Math::Curve{};
     authored.AutoExposureCompensationCurve.TryInsert(
         Math::CurveKey{-9.5f, -3.25f, 0.0f, 0.0f, Math::CurveInterp::Smooth, Math::CurveTangentMode::Flat});
@@ -13023,7 +13022,6 @@ TEST(SceneIO, CameraExposureCompensationCurveRoundTrips)
     ASSERT_TRUE(Scene::ReadSceneInto(w2, path, Scene::SceneReadOptions{}));
     const auto* loaded = w2.GetComponent<Components::Camera>(FindByTag(w2, "cam"));
     ASSERT_NE(loaded, nullptr);
-    EXPECT_EQ(loaded->FixedPreset, Components::FixedExposurePreset::Constant);
     const Math::Curve& curve = loaded->AutoExposureCompensationCurve;
     ASSERT_EQ(curve.KeyCount, 3u);
     for (uint8 i = 0; i < curve.KeyCount; ++i)
@@ -13047,7 +13045,6 @@ TEST(SceneIO, CameraExposureCompensationCurveRoundTrips)
     ASSERT_TRUE(Scene::ReadSceneInto(w3, plainPath, Scene::SceneReadOptions{}));
     const auto* plain = w3.GetComponent<Components::Camera>(FindByTag(w3, "cam"));
     ASSERT_NE(plain, nullptr);
-    EXPECT_EQ(plain->FixedPreset, Components::FixedExposurePreset::DayAndNight);
     const Math::Curve defaults = Components::DefaultExposureCompensationCurve();
     ASSERT_EQ(plain->AutoExposureCompensationCurve.KeyCount, defaults.KeyCount);
     for (uint8 i = 0; i < defaults.KeyCount; ++i)

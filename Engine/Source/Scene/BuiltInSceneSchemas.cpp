@@ -4101,8 +4101,6 @@ class CameraSchema final : public ISceneComponentSchema
         outLines.push_back(std::string("Camera.pixelPerfectExpand = ") + (c->PixelPerfectExpand ? "true" : "false"));
         outLines.push_back(std::string("Camera.worldDrawingPaused = ") + (c->WorldDrawingPaused ? "true" : "false"));
         outLines.push_back(std::string("Camera.exposureControl = ") + std::to_string(static_cast<int>(c->ExposureControl)));
-        outLines.push_back(std::string("Camera.fixedExposurePreset = ") +
-                           std::to_string(static_cast<int>(c->FixedPreset)));
         outLines.push_back(std::string("Camera.exposure = ") + FormatFloat(c->Exposure));
         outLines.push_back(std::string("Camera.manualExposureEV = ") + FormatFloat(c->ManualExposureEV));
         outLines.push_back(std::string("Camera.exposureCompensation = ") + FormatFloat(c->ExposureCompensation));
@@ -4258,14 +4256,6 @@ class CameraSchema final : public ISceneComponentSchema
             if (!ParseU32(value, m, outError))
                 return false;
             c.ExposureControl = static_cast<Components::ExposureMode>(m > 3u ? 3u : m);
-        }
-        else if (property == "fixedexposurepreset")
-        {
-            uint32 preset = 0;
-            if (!ParseU32(value, preset, outError))
-                return false;
-            c.FixedPreset = preset == static_cast<uint32>(Components::FixedExposurePreset::Constant)
-                ? Components::FixedExposurePreset::Constant : Components::FixedExposurePreset::DayAndNight;
         }
         else if (property == "exposure")
         {

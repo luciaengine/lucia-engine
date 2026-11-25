@@ -27,12 +27,6 @@ namespace GameEngine.Scripting
         Auto = 3,
     }
 
-    public enum FixedExposurePreset : byte
-    {
-        DayAndNight = 0,
-        Constant = 1,
-    }
-
     public enum ExposureMeter : int
     {
         Picture = 0,

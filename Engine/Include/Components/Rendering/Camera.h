@@ -127,7 +127,6 @@ struct Camera {
     // from the world default (Fixed). Fields mirror the photographic controls: Fixed linear, Manual EV100,
     // Physical camera, or Auto (a meter + eye adaptation). See Engine/Rendering/Exposure.h.
     ExposureMode ExposureControl {ExposureMode::Fixed};
-    FixedExposurePreset FixedPreset {FixedExposurePreset::DayAndNight};
     float32 Exposure {Rendering::EvToLinearExposure(kDefaultManualExposureEv)};
     float32 ManualExposureEV {kDefaultManualExposureEv}; // Manual mode: absolute EV100
     float32 ExposureCompensation {0.0f};  // +/- stops, applied in every mode (+ = brighter)
