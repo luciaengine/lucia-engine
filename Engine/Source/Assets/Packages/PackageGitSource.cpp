@@ -1,6 +1,7 @@
 #include "Assets/Packages/PackageGitSource.h"
 
 #include "Assets/Packages/PackageResolver.h"
+#include "Logger/Logger.h"
 #include "Types/Fnv1a.h"
 
 #include <cstdint>
