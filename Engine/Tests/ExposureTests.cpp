@@ -383,6 +383,7 @@ TEST(Exposure, DefaultDayCycleLiftsFixedExposureAtNightWithoutEnablingAdaptation
     Engine::Renderer::PostProcessSettings settings;
     Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
     EXPECT_FALSE(settings.AutoExposureActive);
+    EXPECT_FLOAT_EQ(settings.DayCycleExposureEv, offset);
     EXPECT_FLOAT_EQ(settings.Exposure, camera.Exposure * std::exp2(offset));
 
     camera.Mode = static_cast<int32>(ExposureMode::Auto);
@@ -390,6 +391,7 @@ TEST(Exposure, DefaultDayCycleLiftsFixedExposureAtNightWithoutEnablingAdaptation
     Engine::Renderer::ApplyCameraExposure(metered, camera);
     Engine::Renderer::ApplyCameraExposure(settings, camera, offset);
     EXPECT_TRUE(settings.AutoExposureActive);
+    EXPECT_FLOAT_EQ(settings.DayCycleExposureEv, 0.0f);
     EXPECT_FLOAT_EQ(settings.Exposure, metered.Exposure);
     EXPECT_FLOAT_EQ(settings.AutoExposureBiasEv, metered.AutoExposureBiasEv);
 }

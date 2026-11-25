@@ -24,6 +24,7 @@ inline void ApplyCameraExposure(PostProcessSettings& s, const ViewRegistry::Came
                                 float dayCycleExposureEv = 0.0f)
 {
     const auto mode = static_cast<Components::ExposureMode>(ce.Mode);
+    s.DayCycleExposureEv = mode == Components::ExposureMode::Auto ? 0.0f : dayCycleExposureEv;
     const float ev100 = Rendering::ExposureEv100ForMode(mode, ce.ManualExposureEV,
                                                         ce.Aperture, ce.ShutterTime, ce.Iso);
     s.Exposure = Rendering::ResolveExposureScale(mode, ce.Exposure, ev100, ce.ExposureCompensation);

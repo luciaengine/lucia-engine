@@ -4175,7 +4175,10 @@ bool SceneViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& fram
         // before any optional tuning; otherwise default Auto settings never enter
         // autoExposureTuned and the meter remains latched off indefinitely.
         if (autoExposureOn || fixedExposureOn)
+        {
             pp.AutoExposureActive = autoExposureOn;
+            pp.DayCycleExposureEv = 0.0f;
+        }
         // The view output is the Scene View's alone and feeds back the same way: start each
         // frame from the look, and let the switches below choose otherwise.
         pp.ViewOutput = Engine::Renderer::PostProcessViewOutput::Look;

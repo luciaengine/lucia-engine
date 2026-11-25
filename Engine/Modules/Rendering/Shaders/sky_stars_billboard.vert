@@ -38,7 +38,7 @@ layout(set = 0, binding = 1) uniform SkyUBO
     vec3  moonDirectionWS;    float moonIntensity;
     float moonAngularRadius;
     float skyRotateAroundZenithRadians;
-    float moonUboPad1;
+    float fixedNightWeight;
     float moonUboPad2;
     vec3  sunColor;           float sunIntensity;
     float timeOfDayHours;     float starsUndoCompensation;
