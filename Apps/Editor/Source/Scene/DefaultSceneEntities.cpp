@@ -7,6 +7,7 @@
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/Light.h"
 #include "Components/Rendering/MeshRenderer.h"
+#include "Components/Rendering/PostProcessEffects/BloomEffect.h"
 #include "Components/Rendering/PostProcessEffects/HeightFogEffect.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/SkyEnvironment.h"
@@ -149,6 +150,12 @@ void SeedDefaultSceneEntities(ECS::World& world, Engine::Renderer::RenderService
         e.Set(volume);
         // The default height fog is the horizon haze in the sky's own horizon color.
         e.Set(HeightFogEffect{});
+        BloomEffect bloom{};
+        bloom.Threshold = 0.18062502f;
+        bloom.Knee = 0.2808203f;
+        bloom.Intensity = 0.7525f;
+        bloom.DepthVeilIntensity = 0.48800784f;
+        e.Set(bloom);
         // Exposure is on the Main Camera (default Auto); camera-less views (the editor Scene View)
         // auto-meter from the world default.
 

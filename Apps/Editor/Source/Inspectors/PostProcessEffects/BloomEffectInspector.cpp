@@ -431,6 +431,12 @@ void RegisterBloomEffectInspector()
                 1.0f, "Brightness of the depth-driven veil before the bloom pyramid",
                 {}, 0.0f, 10.0f);
 
+            AddComponentFloatRowWithDrag<Bloom>(depthVeilControlsRaw, "Veil Opacity",
+                Math::Clamp01(effect->DepthVeilOpacity), w, e, n, undo, "Change Bloom Depth Veil Opacity",
+                [](Bloom& bloom, float opacity) { bloom.DepthVeilOpacity = Math::Clamp01(opacity); },
+                1.0f, "Fades the depth veil from fully transparent at 0 to its full intensity at 1.",
+                {}, 0.0f, 1.0f);
+
             AddComponentFloatRowWithDrag<Bloom>(depthVeilControlsRaw, "Distance Start",
                 std::max(effect->DepthVeilStart, 0.0f), w, e, n,
                 undo, "Change Bloom Depth Veil Start",
