@@ -7,7 +7,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-2025-vs2026
-    timeout-minutes: 180
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
         with:
@@ -16,23 +16,38 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: D:/lucia-vcpkg-binaries
+          key: windows-vs2026-vcpkg-v1-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/ports/**', 'cmake/triplets/**') }}
       - name: Configure Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           VCPKG_MAX_CONCURRENCY: '4'
+          VCPKG_BINARY_SOURCES: 'files,D:/lucia-vcpkg-binaries,readwrite'
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           if ((git rev-parse HEAD) -ne 'f8a45874fbd39affb85dc914be887507ab20423d') { throw 'Unexpected checkout' }
           if ((Get-Content VERSION -Raw).Trim() -ne '1.0.0') { throw 'Unexpected engine version' }
+          New-Item -ItemType Directory -Force D:/lucia-vcpkg-binaries | Out-Null
           cmake --preset vs2026-x64-local -B D:/lucia-release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_TOOLS=OFF
+      - name: Save vcpkg binary cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: D:/lucia-vcpkg-binaries
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
       - name: Build Release
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          cmake --build D:/lucia-release --config Release --target Editor Player --parallel 4
+          cmake --build D:/lucia-release --config Release --target Editor --parallel 4
       - name: Package staged Editor
         shell: pwsh
         run: |
