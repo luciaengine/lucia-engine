@@ -1,7 +1,7 @@
 name: Lucia Windows release build
 on:
   push:
-    branches: [release-build/2026.11.0-alpha.2-windows]
+    branches: [release-build/1.0.0-windows]
 permissions:
   contents: read
 jobs:
@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 26e224cab5f86d0e0540ae4247a5a59ff05644c7
+          ref: 9523265fa6137d94a8f7e031480f89d2d82c9a3a
           persist-credentials: false
       - uses: actions/setup-dotnet@v4
         with:
@@ -24,7 +24,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          if ((git rev-parse HEAD) -ne '26e224cab5f86d0e0540ae4247a5a59ff05644c7') { throw 'Unexpected checkout' }
+          if ((git rev-parse HEAD) -ne '9523265fa6137d94a8f7e031480f89d2d82c9a3a') { throw 'Unexpected checkout' }
+          if ((Get-Content VERSION -Raw).Trim() -ne '1.0.0') { throw 'Unexpected engine version' }
           cmake --preset vs2026-x64-local-unity -B D:/lucia-release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_TOOLS=OFF
           cmake --build D:/lucia-release --config Release --target Editor Player --parallel 4
       - name: Package staged Editor and Player
@@ -33,15 +34,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $bin = 'D:/lucia-release/bin/Release'
-          $name = 'LuciaEngine-2026.11.0-alpha.2-Windows-x86_64'
+          $name = 'LuciaEngine-1.0.0-Windows-x86_64'
           $stage = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory $stage | Out-Null
           Copy-Item "$bin/Apps" "$stage/Apps" -Recurse
           if (Test-Path "$bin/Tools") { Copy-Item "$bin/Tools" "$stage/Tools" -Recurse }
           Copy-Item LICENSE,THIRD_PARTY_NOTICES.md "$stage/"
           @'
-          Lucia Engine 2026.11.0-alpha.2
-          Source commit: 26e224cab5f86d0e0540ae4247a5a59ff05644c7
+          Lucia Engine 1.0.0
+          Source commit: 9523265fa6137d94a8f7e031480f89d2d82c9a3a
           Platform: Windows x86-64
 
           Extract the entire archive. Open Apps/Editor/Editor.exe to create
