@@ -18,7 +18,7 @@ namespace
 // again, and RemoveStaleModelCacheFiles deletes the PNGs of other versions.
 constexpr std::string_view kModelCacheFileFamily = "modelthumb_";
 
-constexpr std::string_view kModelCacheFilePrefix = "modelthumb_v2_";
+constexpr std::string_view kModelCacheFilePrefix = "modelthumb_v3_";
 } // namespace
 
 bool ModelThumbnailHandler::IsEphemeralPreviewMaterialPath(const std::filesystem::path& path)
