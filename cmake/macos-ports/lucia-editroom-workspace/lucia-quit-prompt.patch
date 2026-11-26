@@ -1,0 +1,79 @@
+--- a/Editroom/App/LuciaWorkspace.swift
++++ b/Editroom/App/LuciaWorkspace.swift
+@@ -8,7 +8,7 @@
+
+ @MainActor
+ private struct HostedEditroom: View {
+-    @StateObject private var model = EditorModel()
++    @ObservedObject var model: EditorModel
+
+     var body: some View {
+         VStack(spacing: 0) {
+@@ -39,7 +39,10 @@
+     MainActor.assumeIsolated {
+         guard let bundle = Bundle(path: String(cString: bundlePath)) else { return nil }
+         WorkspaceResources.bundle = bundle
+-        return Unmanaged.passRetained(NSHostingView(rootView: HostedEditroom())).toOpaque()
++        let model = EditorModel()
++        let view = NSHostingView(rootView: HostedEditroom(model: model))
++        let workspace = LuciaMediaWorkspaceHost(view: view) { model.confirmDiscard(quitting: true, forceSavePrompt: true) }
++        return Unmanaged.passRetained(workspace).toOpaque()
+     }
+ }
+
+@@ -49,7 +52,7 @@
+     _ x: Double, _ y: Double, _ width: Double, _ height: Double
+ ) {
+     MainActor.assumeIsolated {
+-        let view = Unmanaged<NSView>.fromOpaque(viewHandle).takeUnretainedValue()
++        let view = Unmanaged<LuciaMediaWorkspaceHost>.fromOpaque(viewHandle).takeUnretainedValue().view
+         guard let windowHandle,
+               let content = Unmanaged<NSWindow>.fromOpaque(windowHandle).takeUnretainedValue().contentView
+         else {
+@@ -70,7 +73,7 @@
+ @_cdecl("LuciaDestroyMediaWorkspace")
+ public func luciaDestroyMediaWorkspace(_ viewHandle: UnsafeMutableRawPointer) {
+     MainActor.assumeIsolated {
+-        let view = Unmanaged<NSView>.fromOpaque(viewHandle).takeRetainedValue()
++        let view = Unmanaged<LuciaMediaWorkspaceHost>.fromOpaque(viewHandle).takeRetainedValue().view
+         view.removeFromSuperview()
+     }
+ }
+--- a/Editroom/Model/EditorModel.swift
++++ b/Editroom/Model/EditorModel.swift
+@@ -2080,8 +2080,8 @@
+
+     /// Before the project is closed (another opened, a new one, or quitting). With Auto-save on, a saved project
+     /// is already on disk; untitled work asks before it's thrown away. With it off, any unsaved changes ask to be saved.
+-    func confirmDiscard(quitting: Bool = false) -> Bool {
+-        if Self.autosaves {
++    func confirmDiscard(quitting: Bool = false, forceSavePrompt: Bool = false) -> Bool {
++        if Self.autosaves && !forceSavePrompt {
+             // Quitting keeps untitled work in the recovery copy, which reopens next time.
+             guard !quitting, isDirty, !project.clips.isEmpty else { return true }
+             if fileURL != nil { autosaveNow(); return true }
+@@ -2095,10 +2095,12 @@
+             return true
+         }
+         commitLive()
+-        guard isDirty, !(project.clips.isEmpty && project.assets.isEmpty) else { return true }
++        guard isDirty, forceSavePrompt || !(project.clips.isEmpty && project.assets.isEmpty) else { return true }
+         let alert = EditroomAlert()
+-        alert.messageText = "Save changes to “\(title)”?"
+-        alert.informativeText = "Your changes will be lost if you don't save them."
++        alert.messageText = forceSavePrompt ? "Save Editroom changes to “\(title)”?" : "Save changes to “\(title)”?"
++        alert.informativeText = forceSavePrompt
++            ? "Save an Editroom project file before closing Lucia."
++            : "Your changes will be lost if you don't save them."
+         alert.addButton(withTitle: "Save")
+         alert.addButton(withTitle: "Cancel")
+         let dont = alert.addButton(withTitle: "Don't Save")
+@@ -2109,7 +2111,7 @@
+             save()
+             return !isDirty
+         case .alertThirdButtonReturn:
+-            dropUnsaved()
++            if !forceSavePrompt { dropUnsaved() }
+             return true
+         default:
+             return false

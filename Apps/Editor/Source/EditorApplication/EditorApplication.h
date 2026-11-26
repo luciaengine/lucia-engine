@@ -187,7 +187,8 @@ class EditorApplication : public Application
 
     // Actions callable from native menu handlers
     /// Prompt to save dirty scene, graph and script documents; true when quitting is deferred.
-    bool TryInterceptQuitForDirtyScene();
+    bool TryInterceptQuitForUnsavedChanges();
+    bool m_WorkspaceQuitPending = false;
     void ResetLayoutToDefault();
     /// Show or activate the named panel in the main editor window.
     /// preferredLeafId optionally hints which existing leaf the new tab should join.

@@ -1,0 +1,49 @@
+--- a/Compositor/LuciaWorkspace.swift
++++ b/Compositor/LuciaWorkspace.swift
+@@ -24,12 +24,11 @@
+     @State private var exportError: String?
+     @State private var isLinking = false
+
+-    init(assetsRoot: URL?, publishTexture: @escaping LuciaTexturePreview) {
++    init(session: EditorSession, projects: ProjectController, assetsRoot: URL?, publishTexture: @escaping LuciaTexturePreview) {
+         self.assetsRoot = assetsRoot
+         self.publishTexture = publishTexture
+-        let session = EditorSession()
+         _session = State(initialValue: session)
+-        projects = ProjectController(session: session)
++        self.projects = projects
+     }
+
+     var body: some View {
+@@ -178,7 +177,12 @@
+         WorkspaceResources.bundle = bundle
+         let path = String(cString: assetsPath)
+         let assetsRoot = path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath()
+-        return Unmanaged.passRetained(NSHostingView(rootView: HostedCompositor(assetsRoot: assetsRoot, publishTexture: publishTexture))).toOpaque()
++        let session = EditorSession()
++        let projects = ProjectController(session: session)
++        let view = NSHostingView(rootView: HostedCompositor(
++            session: session, projects: projects, assetsRoot: assetsRoot, publishTexture: publishTexture))
++        let workspace = LuciaMediaWorkspaceHost(view: view) { await projects.confirmQuit() }
++        return Unmanaged.passRetained(workspace).toOpaque()
+     }
+ }
+
+@@ -188,7 +192,7 @@
+     _ x: Double, _ y: Double, _ width: Double, _ height: Double
+ ) {
+     MainActor.assumeIsolated {
+-        let view = Unmanaged<NSView>.fromOpaque(viewHandle).takeUnretainedValue()
++        let view = Unmanaged<LuciaMediaWorkspaceHost>.fromOpaque(viewHandle).takeUnretainedValue().view
+         guard let windowHandle,
+               let content = Unmanaged<NSWindow>.fromOpaque(windowHandle).takeUnretainedValue().contentView
+         else {
+@@ -209,7 +213,7 @@
+ @_cdecl("LuciaDestroyMediaWorkspace")
+ public func luciaDestroyMediaWorkspace(_ viewHandle: UnsafeMutableRawPointer) {
+     MainActor.assumeIsolated {
+-        let view = Unmanaged<NSView>.fromOpaque(viewHandle).takeRetainedValue()
++        let view = Unmanaged<LuciaMediaWorkspaceHost>.fromOpaque(viewHandle).takeRetainedValue().view
+         view.removeFromSuperview()
+     }
+ }

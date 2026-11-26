@@ -1,4 +1,5 @@
 #if LUCIA_HOSTED
+import AppKit
 import SwiftUI
 
 /// Mirrors the Lucia editor's standard secondary button and slider styles.
@@ -38,6 +39,35 @@ struct LuciaMediaButtonStyle: ButtonStyle {
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 6))
                 .onHover { hovering = $0 }
+        }
+    }
+}
+#endif
+
+#if LUCIA_HOSTED
+@MainActor
+final class LuciaMediaWorkspaceHost {
+    let view: NSView
+    let confirmClose: @MainActor () async -> Bool
+
+    init(view: NSView, confirmClose: @escaping @MainActor () async -> Bool) {
+        self.view = view
+        self.confirmClose = confirmClose
+    }
+}
+
+public typealias LuciaMediaCloseReply = @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void
+
+@_cdecl("LuciaConfirmMediaWorkspaceClose")
+public func luciaConfirmMediaWorkspaceClose(
+    _ handle: UnsafeMutableRawPointer, _ context: UnsafeMutableRawPointer?, _ reply: LuciaMediaCloseReply
+) {
+    MainActor.assumeIsolated {
+        let workspace = Unmanaged<LuciaMediaWorkspaceHost>.fromOpaque(handle).takeUnretainedValue()
+        let contextAddress = context.map { UInt(bitPattern: $0) }
+        Task { @MainActor in
+            let approved = await workspace.confirmClose()
+            reply(contextAddress.flatMap { UnsafeMutableRawPointer(bitPattern: $0) }, approved ? 1 : 0)
         }
     }
 }

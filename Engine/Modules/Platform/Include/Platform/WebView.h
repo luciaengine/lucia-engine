@@ -93,6 +93,9 @@ public:
     // it at registration. Fired on Windows only: elsewhere CreateWebView returns nullptr instead.
     virtual void SetOnUnavailable(std::function<void(const std::string& message)> callback) = 0;
 
+    /// Ask a bundled page to resolve unsaved documents before the editor closes.
+    virtual void ConfirmBundledAppClose(std::function<void(bool)> done) { done(true); }
+
     // Destroy the web view and clean up resources
     virtual void Destroy() = 0;
 };

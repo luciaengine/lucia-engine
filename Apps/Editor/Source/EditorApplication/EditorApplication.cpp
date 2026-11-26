@@ -2431,7 +2431,7 @@ bool EditorApplication::Initialize()
             if (((mods & Input::kModSuper) != 0) && key == Input::kKeyCode_Q)
             {
                 // RequestClose() does not run the GLFW close callback; mirror the title-bar flow.
-                if (TryInterceptQuitForDirtyScene())
+                if (TryInterceptQuitForUnsavedChanges())
                     return true;
                 for (auto& w : m_Windows)
                 {
@@ -2453,7 +2453,7 @@ bool EditorApplication::Initialize()
     mainCtx->window->SetCloseRequestedHandler(
         [this]
         {
-            if (TryInterceptQuitForDirtyScene())
+            if (TryInterceptQuitForUnsavedChanges())
                 return true;
             RequestExit();
             return false;
@@ -7068,7 +7068,7 @@ void EditorApplication::Update(float64 deltaTime)
     m_LastAppUpdateSubPhases.tailMs        = dMs(tUiWindowsEnd, tAppUpdate1);
 }
 
-bool EditorApplication::TryInterceptQuitForDirtyScene()
+bool EditorApplication::TryInterceptQuitForUnsavedChanges()
 {
     const bool sceneDirty   = m_SceneEditor && m_SceneEditor->IsSceneDirty();
     std::vector<GraphPanel*> dirtyGraphs;
@@ -7080,7 +7080,30 @@ bool EditorApplication::TryInterceptQuitForDirtyScene()
     const bool graphDirty  = !dirtyGraphs.empty();
     const bool scriptDirty = sePanel && sePanel->HasUnsavedChanges();
 
-    if (!sceneDirty && !graphDirty && !scriptDirty)
+    if (m_WorkspaceQuitPending)
+        return true;
+
+    using CloseConfirmation = std::function<void(std::function<void(bool)>)>;
+    std::vector<CloseConfirmation> confirmations;
+    for (auto* plugin : Editor::EditorPluginRegistry::Get().GetEnabledPlugins())
+    {
+        if (plugin->HasCloseConfirmation())
+            confirmations.push_back([plugin](std::function<void(bool)> done) { plugin->ConfirmClose(std::move(done)); });
+    }
+    for (const auto& element : m_PanelStorage)
+    {
+        auto* panel = dynamic_cast<WebPanel*>(element.get());
+        if (!panel || !panel->HasBundledAppCloseConfirmation())
+            continue;
+        confirmations.push_back([reference = UIElement::MakeWeakRef(panel)](std::function<void(bool)> done) {
+            if (auto* openPanel = reference.Get())
+                openPanel->ConfirmBundledAppClose(std::move(done));
+            else
+                done(true);
+        });
+    }
+
+    if (!sceneDirty && !graphDirty && !scriptDirty && confirmations.empty())
         return false;
 
     auto focusMainEditorWindow = [this]()
@@ -7097,16 +7120,32 @@ bool EditorApplication::TryInterceptQuitForDirtyScene()
 
     focusMainEditorWindow();
 
-    /* Build a chain: scene → node graph → script editor → quit.
-       Each step calls the next only when the user saves or discards. */
-    auto doQuit = [this]() { RequestExit(); };
+    // Check scene, graphs, scripts, and hosted workspaces in order.
+    auto checkWorkspaces = [this, confirmations = std::move(confirmations)]() {
+        m_WorkspaceQuitPending = true;
+        std::function<void(bool)> complete = [this](bool approved) {
+            m_WorkspaceQuitPending = false;
+            if (approved)
+                RequestExit();
+        };
+        for (auto it = confirmations.rbegin(); it != confirmations.rend(); ++it)
+        {
+            complete = [confirm = *it, next = std::move(complete)](bool approved) {
+                if (approved)
+                    confirm(next);
+                else
+                    next(false);
+            };
+        }
+        complete(true);
+    };
 
-    auto checkScript = [sePanel, scriptDirty, doQuit]()
+    auto checkScript = [sePanel, scriptDirty, checkWorkspaces]()
     {
         if (scriptDirty && sePanel)
-            sePanel->PromptSaveBeforeQuit(doQuit);
+            sePanel->PromptSaveBeforeQuit(checkWorkspaces);
         else
-            doQuit();
+            checkWorkspaces();
     };
 
     std::function<void()> checkGraph = checkScript;

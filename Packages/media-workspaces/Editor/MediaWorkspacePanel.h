@@ -18,6 +18,9 @@ class MediaWorkspacePanel final : public AssetBoundDockPanel
     explicit MediaWorkspacePanel(std::string name);
     ~MediaWorkspacePanel() override;
 
+    bool HasCloseConfirmation() const;
+    void ConfirmClose(std::function<void(bool)> done);
+
     void SyncHost(const NativePanelHost& host);
     void OnMountVisibilityChanged(bool visible) override;
 

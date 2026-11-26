@@ -39,6 +39,30 @@ class MediaWorkspacePlugin final : public IEditorPlugin
         }
     }
 
+    bool HasCloseConfirmation() const override
+    {
+        return std::any_of(m_Panels.begin(), m_Panels.end(), [](const auto& reference) {
+            const auto* panel = reference.Get();
+            return panel && panel->HasCloseConfirmation();
+        });
+    }
+
+    void ConfirmClose(std::function<void(bool)> done) override
+    {
+        for (auto it = m_Panels.rbegin(); it != m_Panels.rend(); ++it)
+        {
+            if (!it->Get() || !it->Get()->HasCloseConfirmation())
+                continue;
+            done = [reference = *it, next = std::move(done)](bool approved) {
+                if (auto* panel = reference.Get(); approved && panel)
+                    panel->ConfirmClose(next);
+                else
+                    next(approved);
+            };
+        }
+        done(true);
+    }
+
     void OnEditorShutdown() override
     {
         for (const auto& reference : m_Panels)

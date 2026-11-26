@@ -24,7 +24,7 @@
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSArray<NSURL*>*>* destinations;
 @end
 
-@interface BundledWebAppHandler : NSObject <WKURLSchemeHandler, WKScriptMessageHandlerWithReply>
+@interface BundledWebAppHandler : NSObject <WKURLSchemeHandler, WKScriptMessageHandlerWithReply, WKUIDelegate>
 @property(nonatomic, strong) NSURL* directory;
 @end
 
@@ -79,6 +79,30 @@
     [task didFinish];
 }
 
+- (void)webView:(WKWebView*)webView runOpenPanelWithParameters:(WKOpenPanelParameters*)parameters
+    initiatedByFrame:(WKFrameInfo*)frame completionHandler:(void (^)(NSArray<NSURL*>*))completion
+{
+    NSURL* source = frame.request.URL;
+    if (!self.directory || !frame.isMainFrame ||
+        ![source.scheme isEqualToString:@"lucia-app"] || ![source.host isEqualToString:@"editor"])
+    {
+        completion(nil);
+        return;
+    }
+
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = parameters.allowsDirectories;
+    panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
+    void (^finish)(NSModalResponse) = ^(NSModalResponse result) {
+        completion(result == NSModalResponseOK ? panel.URLs : nil);
+    };
+    if (NSWindow* window = webView.window)
+        [panel beginSheetModalForWindow:window completionHandler:finish];
+    else
+        [panel beginWithCompletionHandler:finish];
+}
+
 - (void)userContentController:(WKUserContentController*)controller
     didReceiveScriptMessage:(WKScriptMessage*)message replyHandler:(void (^)(id, NSString*))reply
 {
@@ -88,6 +112,31 @@
         ![source.scheme isEqualToString:@"lucia-app"] || ![source.host isEqualToString:@"editor"])
     {
         reply(nil, @"Only the bundled workspace can save documents.");
+        return;
+    }
+
+    if ([message.name isEqualToString:@"luciaChooseDocumentClose"])
+    {
+        NSString* filename = [message.body isKindOfClass:NSString.class] ? message.body : @"Untitled";
+        NSAlert* alert = [[NSAlert alloc] init];
+        alert.messageText = [NSString stringWithFormat:@"Save OpenPencil changes to “%@”?", filename];
+        alert.informativeText = @"Your changes will be lost if you don’t save them.";
+        [alert addButtonWithTitle:@"Save"];
+        [alert addButtonWithTitle:@"Cancel"];
+        [alert addButtonWithTitle:@"Don’t Save"];
+        [alert.buttons[1] setKeyEquivalent:@"\033"];
+        void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
+            switch (response)
+            {
+            case NSAlertFirstButtonReturn: reply(@"save", nil); break;
+            case NSAlertThirdButtonReturn: reply(@"discard", nil); break;
+            default: reply(@"cancel", nil); break;
+            }
+        };
+        if (NSWindow* window = message.webView.window)
+            [alert beginSheetModalForWindow:window completionHandler:finish];
+        else
+            finish([alert runModal]);
         return;
     }
 
@@ -373,6 +422,8 @@ public:
         [userContentController addUserScript:userScript];
         [userContentController addScriptMessageHandlerWithReply:m_BundledApp
             contentWorld:WKContentWorld.pageWorld name:@"luciaSaveDocument"];
+        [userContentController addScriptMessageHandlerWithReply:m_BundledApp
+            contentWorld:WKContentWorld.pageWorld name:@"luciaChooseDocumentClose"];
         config.userContentController = userContentController;
 
         m_WebView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:config];
@@ -476,6 +527,7 @@ public:
         if (!path)
             return false;
         m_BundledApp.directory = [[NSURL fileURLWithPath:path isDirectory:YES] URLByResolvingSymlinksInPath];
+        m_WebView.UIDelegate = m_BundledApp;
         return LoadURL("lucia-app://editor/");
     }
 
@@ -679,6 +731,24 @@ public:
     // Creation fails synchronously here: CreateWebView returns nullptr instead.
     void SetOnUnavailable(std::function<void(const std::string&)> /*callback*/) override {}
 
+    void ConfirmBundledAppClose(std::function<void(bool)> done) override
+    {
+        if (!m_WebView || ![m_WebView.URL.scheme isEqualToString:@"lucia-app"])
+        {
+            done(true);
+            return;
+        }
+
+        [m_WebView callAsyncJavaScript:
+            @"return typeof window.luciaPrepareForQuit === 'function' ? await window.luciaPrepareForQuit() : true;"
+            arguments:nil inFrame:nil inContentWorld:WKContentWorld.pageWorld
+            completionHandler:^(id result, NSError* error) {
+                if (error)
+                    NSLog(@"Could not confirm OpenPencil close: %@", error);
+                done(!error && [result isKindOfClass:NSNumber.class] && [result boolValue]);
+            }];
+    }
+
     void Destroy() override {
         if (m_MouseMonitor) {
             [NSEvent removeMonitor:m_MouseMonitor];
@@ -686,6 +756,7 @@ public:
         }
         if (m_WebView) {
             [m_WebView setNavigationDelegate:nil];
+            m_WebView.UIDelegate = nil;
             [m_WebView removeFromSuperview];
             m_WebView = nil;
         }

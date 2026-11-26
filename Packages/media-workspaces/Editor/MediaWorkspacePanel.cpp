@@ -22,11 +22,14 @@ struct MediaWorkspacePanel::Workspace
     using Create = void* (*)(const char*, const char*, Preview);
     using Place = void (*)(void*, void*, double, double, double, double);
     using Destroy = void (*)(void*);
+    using CloseReply = void (*)(void*, int32_t);
+    using Confirm = void (*)(void*, void*, CloseReply);
 
     void* Image = nullptr;
     void* View = nullptr;
     Place PlaceView = nullptr;
     Destroy DestroyView = nullptr;
+    Confirm ConfirmViewClose = nullptr;
     void* HostedWindow = nullptr;
 
     static void UpdateTexturePreview(const char* path, const uint8_t* rgba, uint32_t width,
@@ -65,6 +68,26 @@ MediaWorkspacePanel::MediaWorkspacePanel(std::string name)
 }
 
 MediaWorkspacePanel::~MediaWorkspacePanel() = default;
+
+bool MediaWorkspacePanel::HasCloseConfirmation() const
+{
+    return m_Workspace && m_Workspace->ConfirmViewClose;
+}
+
+void MediaWorkspacePanel::ConfirmClose(std::function<void(bool)> done)
+{
+    if (!HasCloseConfirmation())
+    {
+        done(true);
+        return;
+    }
+
+    auto reply = std::make_unique<std::function<void(bool)>>(std::move(done));
+    m_Workspace->ConfirmViewClose(m_Workspace->View, reply.release(), [](void* context, int32_t approved) {
+        std::unique_ptr<std::function<void(bool)>> completion(static_cast<std::function<void(bool)>*>(context));
+        (*completion)(approved != 0);
+    });
+}
 
 void MediaWorkspacePanel::SetStatus(const std::string& status)
 {
@@ -109,6 +132,8 @@ void MediaWorkspacePanel::LoadWorkspace()
     const auto create = reinterpret_cast<Workspace::Create>(dlsym(workspace->Image, "LuciaCreateProjectMediaWorkspace"));
     workspace->PlaceView = reinterpret_cast<Workspace::Place>(dlsym(workspace->Image, "LuciaPlaceMediaWorkspace"));
     workspace->DestroyView = reinterpret_cast<Workspace::Destroy>(dlsym(workspace->Image, "LuciaDestroyMediaWorkspace"));
+    workspace->ConfirmViewClose = reinterpret_cast<Workspace::Confirm>(
+        dlsym(workspace->Image, "LuciaConfirmMediaWorkspaceClose"));
     if (!create || !workspace->PlaceView || !workspace->DestroyView)
     {
         SetStatus("The workspace host is incompatible with this Editor build.");

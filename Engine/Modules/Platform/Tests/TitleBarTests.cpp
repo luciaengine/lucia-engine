@@ -441,7 +441,11 @@ TEST_F(TitleBarTests, NativeCloseStillHonorsTheUnsavedChangesHandler)
 {
     Customize();
     bool requested = false;
-    m_Window.SetCloseRequestedHandler([&requested]() { requested = true; return true; });
+    m_Window.SetCloseRequestedHandler([this, &requested]() {
+        EXPECT_FALSE(m_Window.ShouldClose());
+        requested = true;
+        return true;
+    });
     SendMessageW(m_Handle, WM_CLOSE, 0, 0);
     EXPECT_TRUE(requested);
     EXPECT_FALSE(m_Window.ShouldClose());

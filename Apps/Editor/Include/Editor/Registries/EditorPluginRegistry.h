@@ -125,6 +125,10 @@ public:
     virtual void CollectSelectionMaskParts(ECS::World& /*world*/,
                                            ECS::EntityHandle /*entity*/,
                                            std::vector<SelectionMaskPart>& /*outParts*/) {}
+
+    /// A mounted workspace can approve or cancel a normal editor quit on the main thread.
+    virtual bool HasCloseConfirmation() const { return false; }
+    virtual void ConfirmClose(std::function<void(bool)> done) { done(true); }
 };
 
 class EditorPluginRegistry

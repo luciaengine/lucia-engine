@@ -1600,9 +1600,11 @@ void Window::CloseThunk(GLFWwindow* win)
     auto* self = FromGLFW(win);
     if (!self || !self->m_CloseRequestedHandler)
         return;
-    // Handler returns true to cancel this close attempt.
-    if (self->m_CloseRequestedHandler())
-        glfwSetWindowShouldClose(win, GLFW_FALSE);
+    // A close handler can enter a native modal loop or trigger a refresh.
+    // Keep the window open until it accepts the request.
+    glfwSetWindowShouldClose(win, GLFW_FALSE);
+    if (!self->m_CloseRequestedHandler())
+        glfwSetWindowShouldClose(win, GLFW_TRUE);
 }
 
 void Window::DropThunk(GLFWwindow* win, int count, const char** paths)

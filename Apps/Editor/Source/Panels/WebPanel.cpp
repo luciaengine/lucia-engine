@@ -902,6 +902,21 @@ bool WebPanel::IsBundledAppDragActive()
     return view && view->IsPointerDragActive();
 }
 
+bool WebPanel::HasBundledAppCloseConfirmation()
+{
+    return !m_BundledApp.empty() && ActiveView();
+}
+
+void WebPanel::ConfirmBundledAppClose(std::function<void(bool)> done)
+{
+    if (!HasBundledAppCloseConfirmation())
+    {
+        done(true);
+        return;
+    }
+    ActiveView()->ConfirmBundledAppClose(std::move(done));
+}
+
 bool WebPanel::CreateTabWebView(WebTab& tab)
 {
     if (!m_ParentWindow)
