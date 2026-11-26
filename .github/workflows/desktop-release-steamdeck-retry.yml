@@ -1,0 +1,38 @@
+name: Lucia Steam Deck release retry
+on:
+  push:
+    branches: [release-build/0ed69a0b-steamdeck-retry]
+permissions:
+  contents: read
+env:
+  SOURCE_COMMIT: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+jobs:
+  steam-deck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+          persist-credentials: false
+      - name: Build and package the Steam Runtime 4 Player
+        shell: bash
+        env:
+          VCPKG_MAX_CONCURRENCY: '4'
+          GE_STEAMDECK_HOST_DIST_DIR: ${{ runner.temp }}/lucia-steam-deck
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          mkdir -p dependencies
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git dependencies/vcpkg
+          git -C dependencies/vcpkg checkout --detach a4f7741c53c97354fc43222fea17955c657dd549
+          bash Tools/Scripts/build-steamdeck-docker.sh -j 4
+          tar -tzf "$GE_STEAMDECK_HOST_DIST_DIR/steamdeck-player.tar.gz" > "$RUNNER_TEMP/deck-members.txt"
+          grep -E '/Player$' "$RUNNER_TEMP/deck-members.txt"
+          sha256sum "$GE_STEAMDECK_HOST_DIST_DIR/steamdeck-player.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lucia-steam-deck-player-0ed69a0b
+          path: ${{ runner.temp }}/lucia-steam-deck/steamdeck-player.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
