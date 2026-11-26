@@ -58,12 +58,12 @@ std::unique_ptr<UIElement> MakePanel()
 
 std::unique_ptr<UIElement> MakeOpenPencilPanel()
 {
-    return std::make_unique<WebPanel>("OpenPencil", "https://cloud.openpencil.dev/");
+    return std::make_unique<WebPanel>("OpenPencil Online", "https://cloud.openpencil.dev/");
 }
 
 std::unique_ptr<UIElement> MakeLocalOpenPencilPanel()
 {
-    return std::make_unique<WebPanel>("OpenPencil Local", "",
+    return std::make_unique<WebPanel>("OpenPencil", "",
         GetEditorGlobalPaths().installToolsRoot / "OpenPencil");
 }
 
