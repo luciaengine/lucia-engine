@@ -50,6 +50,63 @@ static bool JsonTryGetString(const nlohmann::json& j, const char* key, std::stri
     return true;
 }
 
+constexpr const char* kLegacyHeightFogOutput = "HDRHeightFog";
+constexpr const char* kLegacyHeightFogInput = "SceneColor";
+
+// Surface shaders apply height fog. Bypass only the shipped fullscreen pass.
+void BypassLegacyHeightFog(nlohmann::json& root)
+{
+    auto passes = root.find("passes");
+    if (passes == root.end() || !passes->is_array())
+        return;
+
+    const auto hasField = [](const nlohmann::json& value, const char* key, std::string_view expected)
+    {
+        const auto field = value.find(key);
+        return field != value.end() && field->is_string() && field->get_ref<const std::string&>() == expected;
+    };
+    auto fog = passes->end();
+    for (auto pass = passes->begin(); pass != passes->end(); ++pass)
+    {
+        if (hasField(*pass, "output", kLegacyHeightFogOutput))
+        {
+            if (fog != passes->end() || !hasField(*pass, "id", "HeightFog") ||
+                !hasField(*pass, "type", "FullscreenShader") ||
+                !hasField(*pass, "shaderPkg", "Shaders/height_fog.shaderpkg") ||
+                !hasField(*pass, "passthroughInput", "uSceneColor") ||
+                pass->contains("shaderSourceOverrides"))
+                return;
+            const auto inputs = pass->find("inputs");
+            if (inputs == pass->end() || !hasField(*inputs, "uSceneColor", kLegacyHeightFogInput))
+                return;
+            fog = pass;
+        }
+        if (hasField(*pass, "colorResolveTarget", kLegacyHeightFogOutput))
+            return;
+    }
+    if (fog == passes->end())
+        return;
+
+    passes->erase(fog);
+    const auto reconnect = [](nlohmann::json& object, const char* key)
+    {
+        auto bindings = object.find(key);
+        if (bindings == object.end() || !bindings->is_object())
+            return;
+        for (auto& resource : *bindings)
+        {
+            if (resource == kLegacyHeightFogOutput)
+                resource = kLegacyHeightFogInput;
+        }
+    };
+    for (auto& pass : *passes)
+        reconnect(pass, "inputs");
+    reconnect(root, "outputs");
+    auto resources = root.find("resources");
+    if (resources != root.end() && resources->is_object())
+        resources->erase(kLegacyHeightFogOutput);
+}
+
 static bool JsonTryGetBool(const nlohmann::json& j, const char* key, bool& out)
 {
     if (!j.is_object() || !key)
@@ -1431,6 +1488,8 @@ RenderPipelineBlueprint RenderPipelineCompiler::Compile(const GameEngine::Render
         return bp;
     }
 
+    BypassLegacyHeightFog(root);
+
     // Read canonical schemaVersion/pipelineName from compiler view (authoritative for runtime)
     {
         int v = 0;
@@ -1716,9 +1775,10 @@ std::vector<std::string> RenderPipelineCompiler::ShaderPackagesOf(const GameEngi
                                                                   Rendering::ShaderSourceKind sourceKind)
 {
     std::vector<std::string> packages;
-    const nlohmann::json root = nlohmann::json::parse(asset.GetDocument().jsonText, nullptr, false);
+    nlohmann::json root = nlohmann::json::parse(asset.GetDocument().jsonText, nullptr, false);
     if (!root.is_object())
         return packages;
+    BypassLegacyHeightFog(root);
     const auto passes = root.find("passes");
     if (passes == root.end() || !passes->is_array())
         return packages;
