@@ -1223,6 +1223,11 @@ void AssetViewPanel::Update(float dt)
         ReleaseVideoPreviewGpuResources();
     }
 
+    // The preview lane discovers the clips after the first asset selection.
+    if (m_PreviewIsModel && !m_IsVideoPreview && m_AnimLabel && m_AnimLabel->GetText().empty() &&
+        ModelThumbnailHandler::GetFocusedAnimationCount() != 0)
+        UpdateAnimationBadge(ModelThumbnailHandler::GetFocusedAnimationLabel());
+
     if (m_FilterPillSecondsRemaining > 0.0f)
     {
         m_FilterPillSecondsRemaining = std::max(0.0f, m_FilterPillSecondsRemaining - dt);
