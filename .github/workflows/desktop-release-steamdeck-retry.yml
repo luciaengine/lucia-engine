@@ -1,7 +1,7 @@
 name: Lucia Steam Deck release retry
 on:
   push:
-    branches: [release-build/0ed69a0b-steamdeck-retry]
+    branches: [release-build/0ed69a0b-steamdeck-deps]
 permissions:
   contents: read
 env:
@@ -25,6 +25,13 @@ jobs:
           mkdir -p dependencies
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git dependencies/vcpkg
           git -C dependencies/vcpkg checkout --detach a4f7741c53c97354fc43222fea17955c657dd549
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          dockerfile = Path('Tools/Docker/Dockerfile.steamdeck-dev')
+          text = dockerfile.read_text()
+          packages = "RUN apt-get update && apt-get install -y --no-install-recommends autoconf autoconf-archive automake libtool && rm -rf /var/lib/apt/lists/*"
+          dockerfile.write_text(text.replace('WORKDIR /src', packages + '\nWORKDIR /src'))
+          PYTHON
           bash Tools/Scripts/build-steamdeck-docker.sh -j 4
           tar -tzf "$GE_STEAMDECK_HOST_DIST_DIR/steamdeck-player.tar.gz" > "$RUNNER_TEMP/deck-members.txt"
           grep -E '/Player$' "$RUNNER_TEMP/deck-members.txt"
