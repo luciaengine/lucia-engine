@@ -14,12 +14,22 @@ Written in C++20, it combines hot-reloadable C# scripting, an archetype ECS, and
 
 ![Lucia Engine editor preview](docs/images/lucia-engine-editor.webp)
 
+![Lucia Editor showing sunlight and fog over a rocky creek in the Nordic Forest scene](docs/images/lucia-engine-editor-nordic-forest.webp)
+
+## Editor
+
+Build scenes in the Scene View, organize entities in the Hierarchy, edit components in the Inspector, and test your game in the Game View. The editor supports multiple windows and saves [dockable panel layouts](docs/editor/panel-layouts.mdx) per project. Editor UI uses XML and CSS with live reload, and games can use the same UI runtime for flexbox layout and GPU text rendering.
+
+- **Animation** has a dockable [Animation window](docs/editor/animation-window.mdx) with a timeline, Dope Sheet, and curve editor for keyframes and clips.
+- **Lighting** previews [game camera exposure](docs/rendering/exposure.mdx#the-scene-views-exposure) in the Scene View by default. Edit [day-cycle profiles](docs/rendering/day-cycle-profiles.mdx), including the camera exposure curve. Startup and template scenes include authored [bloom](docs/Bloom.html) settings. The Bloom Effect has a separate depth veil opacity control.
+- **Localization** has a dockable [Localization panel](docs/localization.html) for editing string catalogs and importing or exporting PO files.
+- **Media authoring** on Apple Silicon can use optional [Editroom and Compositor panels](Packages/media-workspaces/README.md). Build with the `editor-workspaces` feature and enable the package for the project. Compositor requires macOS 26 or later.
+
 ## Highlights
 
 - **Renderer**: native Metal and Vulkan backends with GPU-driven rendering: a render graph with automatic barriers and resource aliasing, clustered Forward+ lighting, cascaded shadow maps, schema-driven materials with composed shader variants, physical light units with an HDR pipeline, instanced draw batching, camera-relative rendering for planet-scale coordinates, reverse-Z depth.
 - **ECS**: archetype-based with chunked SoA storage: cache-coherent iteration, chunk-level change tracking, parallel queries, deferred commands, generational handles.
 - **C# scripting**: CoreCLR (.NET 10) embedded in the engine. Save a script and it recompiles through a resident Roslyn compile server and hot-swaps into the running process, with no restart.
-- **Editor**: a dockable multi-window editor. All editor UI is XML and CSS with live hot reload, and the same UI runtime ships in games (flexbox layout through Yoga, GPU text rendering).
 - **Assets**: GUID-based identity, parsers for glTF, KTX, audio, scenes, materials and animations, dependency-graph hot reload, async priority streaming.
 - **World systems**: Jolt physics, Recast/Detour navigation, GPU-adaptive CBT terrain for large worlds, skeletal animation with humanoid retargeting.
 - **AI-assisted development**: a bundled MCP server lets AI agents drive the running editor: query scenes and ECS state, read logs, take screenshots, inspect the render graph, trigger GPU captures, run tests. See [docs/MCP_SETUP.md](docs/MCP_SETUP.md).
