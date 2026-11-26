@@ -894,6 +894,14 @@ void WebPanel::SetWebViewOffScreen(bool offScreen)
     }
 }
 
+bool WebPanel::IsBundledAppDragActive()
+{
+    if (m_BundledApp.empty())
+        return false;
+    const Platform::IWebView* view = ActiveView();
+    return view && view->IsPointerDragActive();
+}
+
 bool WebPanel::CreateTabWebView(WebTab& tab)
 {
     if (!m_ParentWindow)

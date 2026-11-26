@@ -417,21 +417,14 @@ public:
         [contentView addSubview:m_WebView];
         [webViewAsView setClipsToBounds:YES];
 
-        // WKWebView swallows mouse events before the engine's input path sees them,
-        // so watch for clicks landing inside the view and forward a notification.
-        WKWebView* webViewRef = m_WebView;
-        std::function<void()>* callbackRef = &m_OnMouseDown;
-        m_MouseDownMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown)
-                                                                   handler:^NSEvent*(NSEvent* event) {
-            NSView* view = (NSView*)webViewRef;
-            if (*callbackRef && view && ![view isHidden] && event.window == [view window]) {
-                NSPoint pointInView = [view convertPoint:[event locationInWindow] fromView:nil];
-                if (NSPointInRect(pointInView, [view bounds])) {
-                    (*callbackRef)();
-                }
-            }
-            return event;
-        }];
+        // WKWebView receives native input before the editor's input router.
+        const NSEventMask mouseEvents = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown |
+            NSEventMaskOtherMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp;
+        m_MouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:mouseEvents
+            handler:^NSEvent*(NSEvent* event) {
+                ObserveMouseEvent(event);
+                return event;
+            }];
 
         m_Initialized = true;
     }
@@ -587,6 +580,12 @@ public:
         return ![m_WebView isHidden];
     }
 
+    bool IsPointerDragActive() const override
+    {
+        return m_PointerDragActive && m_WebView && !m_WebView.hidden &&
+            m_WebView.window.isKeyWindow && (NSEvent.pressedMouseButtons & 1u) != 0;
+    }
+
     void SetBackgroundColor(unsigned char r, unsigned char g, unsigned char b) override {
         if (!m_Initialized || !m_WebView) {
             return;
@@ -681,9 +680,9 @@ public:
     void SetOnUnavailable(std::function<void(const std::string&)> /*callback*/) override {}
 
     void Destroy() override {
-        if (m_MouseDownMonitor) {
-            [NSEvent removeMonitor:m_MouseDownMonitor];
-            m_MouseDownMonitor = nil;
+        if (m_MouseMonitor) {
+            [NSEvent removeMonitor:m_MouseMonitor];
+            m_MouseMonitor = nil;
         }
         if (m_WebView) {
             [m_WebView setNavigationDelegate:nil];
@@ -700,15 +699,42 @@ public:
     }
 
 private:
+    void ObserveMouseEvent(NSEvent* event)
+    {
+        if (event.type == NSEventTypeLeftMouseUp)
+        {
+            m_IsPrimaryPressInView = false;
+            m_PointerDragActive = false;
+            return;
+        }
+        if (event.type == NSEventTypeLeftMouseDragged)
+        {
+            m_PointerDragActive = m_IsPrimaryPressInView && event.window == m_WebView.window;
+            return;
+        }
+
+        const bool overView = m_WebView && !m_WebView.hidden && event.window == m_WebView.window &&
+            NSPointInRect([m_WebView convertPoint:event.locationInWindow fromView:nil], m_WebView.bounds);
+        if (event.type == NSEventTypeLeftMouseDown)
+        {
+            m_IsPrimaryPressInView = overView;
+            m_PointerDragActive = false;
+        }
+        if (overView && m_OnMouseDown)
+            m_OnMouseDown();
+    }
+
     Window* m_ParentWindow = nullptr;
     WKWebView* m_WebView = nil;
     BundledWebAppHandler* m_BundledApp = nil;
     NSView* m_HostView = nil;
     YouTubeNavigationDelegate* m_NavigationDelegate = nil;
     WebViewFileDragSource* m_DragSource = nil;
-    id m_MouseDownMonitor = nil;
+    id m_MouseMonitor = nil;
     std::function<void()> m_OnMouseDown;
     bool m_Initialized = false;
+    bool m_IsPrimaryPressInView = false;
+    bool m_PointerDragActive = false;
 };
 
 std::unique_ptr<IWebView> CreateWebView(Window* parentWindow, const std::filesystem::path& /*userDataFolder*/) {

@@ -61,6 +61,9 @@ class WebPanel : public DockPanel
     // hiding them, so pages stay alive and audio keeps playing in the background.
     void SetWebViewOffScreen(bool offScreen);
 
+    /// The installed app owns the current pointer drag.
+    bool IsBundledAppDragActive();
+
   private:
     struct WebTab
     {
