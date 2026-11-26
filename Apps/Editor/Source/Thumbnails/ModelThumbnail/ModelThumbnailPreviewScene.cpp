@@ -223,7 +223,7 @@ void ModelThumbnailHandler::SpawnOrUpdateModel(RenderLane& lane, Slot& slot, con
         Engine::Renderer::ModelEntityFactoryOptions previewOptions{};
         previewOptions.SpawnImportedCameras = false;
         previewOptions.SpawnImportedLights = false;
-        previewOptions.SpawnImportedHelperNodes = false;
+        // Meshes can inherit their orientation from imported helper nodes.
         lane.spawnedResult = Engine::Renderer::ModelEntityFactory::CreateFromModel(
             *m_RenderServices, thumbWorld, modelAsset, guid, "Preview", previewOptions);
 
