@@ -2,7 +2,12 @@
 
 #include "Platform/WebView.h"
 #include "Platform/Window.h"
+#include "Logger/Logger.h"
+#include "../MacWindowInput.h"
 #include "WebViewPageStyle_mac.h"
+
+#include <cstdlib>
+#include <vector>
 
 #define GLFW_EXPOSE_NATIVE_COCOA
 #include <GLFW/glfw3.h>
@@ -476,6 +481,11 @@ public:
                 ObserveMouseEvent(event);
                 return event;
             }];
+        m_WindowResignObserver = [[NSNotificationCenter defaultCenter]
+            addObserverForName:NSWindowDidResignKeyNotification object:window queue:nil
+            usingBlock:^(__unused NSNotification* notification) {
+                EndMouseDrag();
+            }];
 
         m_Initialized = true;
     }
@@ -489,6 +499,7 @@ public:
             return false;
         }
 
+        EndMouseDrag();
         NSView* webViewAsView = (NSView*)m_WebView;
         if (webViewAsView && webViewAsView.layer) {
             webViewAsView.layer.backgroundColor = [[NSColor colorWithRed:39.0/255.0 green:39.0/255.0 blue:39.0/255.0 alpha:1.0] CGColor];
@@ -621,6 +632,8 @@ public:
         if (!m_Initialized || !m_WebView) {
             return;
         }
+        if (!visible)
+            EndMouseDrag();
         if (m_WebView.hidden == visible)
             [m_WebView setHidden:!visible];
     }
@@ -750,6 +763,11 @@ public:
     }
 
     void Destroy() override {
+        EndMouseDrag();
+        if (m_WindowResignObserver) {
+            [[NSNotificationCenter defaultCenter] removeObserver:m_WindowResignObserver];
+            m_WindowResignObserver = nil;
+        }
         if (m_MouseMonitor) {
             [NSEvent removeMonitor:m_MouseMonitor];
             m_MouseMonitor = nil;
@@ -770,17 +788,60 @@ public:
     }
 
 private:
+    struct DragEventSample
+    {
+        CFTimeInterval EventTime;
+        CFTimeInterval DispatchTime;
+    };
+
+    void EndMouseDrag()
+    {
+        m_UncoalescedMouseInput.End();
+        m_IsPrimaryPressInView = false;
+        m_PointerDragActive = false;
+        if (m_DragSamples.empty())
+            return;
+
+        // Save only timing data, once on release, and only for a requested local trace.
+        std::string samples;
+        for (const auto& [eventTime, dispatchTime] : m_DragSamples)
+        {
+            if (!samples.empty())
+                samples += ',';
+            samples += std::to_string(static_cast<long long>(eventTime * 1000.0));
+            samples += '/';
+            samples += std::to_string(static_cast<long long>(dispatchTime * 1000.0));
+        }
+        Logger::Log::Info("[BundledWebDrag] epochOffsetMs={} event/dispatch={}",
+                          static_cast<long long>(m_DragEpochOffset * 1000.0), samples);
+        m_DragSamples.clear();
+    }
+
     void ObserveMouseEvent(NSEvent* event)
     {
         if (event.type == NSEventTypeLeftMouseUp)
         {
-            m_IsPrimaryPressInView = false;
-            m_PointerDragActive = false;
+            EndMouseDrag();
             return;
         }
         if (event.type == NSEventTypeLeftMouseDragged)
         {
-            m_PointerDragActive = m_IsPrimaryPressInView && event.window == m_WebView.window;
+            if (!m_IsPrimaryPressInView || event.window != m_WebView.window ||
+                !m_WebView.window.isKeyWindow || m_WebView.hidden)
+            {
+                EndMouseDrag();
+                return;
+            }
+            if (!m_PointerDragActive && [m_WebView.URL.scheme isEqualToString:@"lucia-app"])
+            {
+                m_UncoalescedMouseInput.Begin();
+                if (m_TraceDragInput)
+                    m_DragEpochOffset = NSDate.date.timeIntervalSince1970 - CACurrentMediaTime();
+            }
+            m_PointerDragActive = true;
+            if (m_TraceDragInput && [m_WebView.URL.scheme isEqualToString:@"lucia-app"] &&
+                m_DragSamples.size() < 1024)
+                m_DragSamples.push_back({event.timestamp, CACurrentMediaTime()});
             return;
         }
 
@@ -788,8 +849,10 @@ private:
             NSPointInRect([m_WebView convertPoint:event.locationInWindow fromView:nil], m_WebView.bounds);
         if (event.type == NSEventTypeLeftMouseDown)
         {
+            EndMouseDrag();
             m_IsPrimaryPressInView = overView;
-            m_PointerDragActive = false;
+            if (overView && m_TraceDragInput && [m_WebView.URL.scheme isEqualToString:@"lucia-app"])
+                m_DragSamples.reserve(1024);
         }
         if (overView && m_OnMouseDown)
             m_OnMouseDown();
@@ -802,6 +865,11 @@ private:
     YouTubeNavigationDelegate* m_NavigationDelegate = nil;
     WebViewFileDragSource* m_DragSource = nil;
     id m_MouseMonitor = nil;
+    id m_WindowResignObserver = nil;
+    Detail::ScopedUncoalescedMouseInput m_UncoalescedMouseInput;
+    const bool m_TraceDragInput = std::getenv("GE_TRACE_BUNDLED_WEB_DRAG") != nullptr;
+    CFTimeInterval m_DragEpochOffset = 0.0;
+    std::vector<DragEventSample> m_DragSamples;
     std::function<void()> m_OnMouseDown;
     bool m_Initialized = false;
     bool m_IsPrimaryPressInView = false;

@@ -50,3 +50,28 @@ TEST(MacWindowInput, RejectsEventsForAnotherWindowOrButton)
         [window release];
     }
 }
+
+TEST(MacWindowInput, RestoresMouseCoalescingAfterTheDrag)
+{
+    using GameEngine::Platform::Detail::ScopedUncoalescedMouseInput;
+    const BOOL original = NSEvent.mouseCoalescingEnabled;
+
+    NSEvent.mouseCoalescingEnabled = YES;
+    {
+        ScopedUncoalescedMouseInput drag;
+        drag.Begin();
+        drag.Begin();
+        EXPECT_FALSE(NSEvent.mouseCoalescingEnabled);
+        drag.End();
+        EXPECT_TRUE(NSEvent.mouseCoalescingEnabled);
+    }
+
+    NSEvent.mouseCoalescingEnabled = NO;
+    {
+        ScopedUncoalescedMouseInput drag;
+        drag.Begin();
+        EXPECT_FALSE(NSEvent.mouseCoalescingEnabled);
+    }
+    EXPECT_FALSE(NSEvent.mouseCoalescingEnabled);
+    NSEvent.mouseCoalescingEnabled = original;
+}
