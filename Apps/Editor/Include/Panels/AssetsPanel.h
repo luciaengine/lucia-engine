@@ -157,7 +157,6 @@ private:
     UIElement* m_ExtraViewToolbar = nullptr;
     UIElement* m_ExtraViewToolbarSearchHost = nullptr;
     UIElement* m_ExtraViewToolbarRight = nullptr;
-    UIElement* m_ExtraViewButtons = nullptr;
     UIElement* m_SearchBar = nullptr;
     TextField* m_SearchField = nullptr;
     Dropdown* m_SearchFilter = nullptr;
