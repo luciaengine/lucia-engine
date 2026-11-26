@@ -53,10 +53,10 @@ static constexpr EnumEntry<Look> kTonemappers[] = {
 };
 
 static constexpr EnumEntry<PostProcessVolumeShape> kVolumeShapes[] = {
-    {PostProcessVolumeShape::Box,      "Box"},
-    {PostProcessVolumeShape::Sphere,   "Sphere"},
-    {PostProcessVolumeShape::Capsule,  "Capsule"},
-    {PostProcessVolumeShape::Cylinder, "Cylinder"},
+    {PostProcessVolumeShape::Box,      "Box",      "dropdown-icon--shape-box"},
+    {PostProcessVolumeShape::Sphere,   "Sphere",   "dropdown-icon--shape-sphere"},
+    {PostProcessVolumeShape::Capsule,  "Capsule",  "dropdown-icon--shape-capsule"},
+    {PostProcessVolumeShape::Cylinder, "Cylinder", "dropdown-icon--shape-cylinder"},
 };
 
 constexpr float kPostProcessEffectPickerWidthPx = 360.0f;
