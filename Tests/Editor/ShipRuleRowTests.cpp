@@ -105,6 +105,7 @@ TEST_F(ShipRuleRowTests, AnAssetSetHereWritesItsKeyAndUndoLeavesNoKey)
     ShipRuleSelection::State state = Describe({units});
     EXPECT_EQ(state.SelectedIndex, -1);
     EXPECT_EQ(state.NoSelectionText, "Always (from Data/)");
+    EXPECT_EQ(state.InheritedIndex, 1);
     EXPECT_FALSE(state.AnyOwn);
 
     SetShipRuleCommand setNever({units}, ShipRule::Never, nullptr);
@@ -138,7 +139,10 @@ TEST_F(ShipRuleRowTests, AFileMadeThisSessionHasARow)
     const fs::path made = s_Root / "Loose" / "made_now.json";
     WriteTextFile(made, "{}");
     ASSERT_TRUE(Registry().GetAssetGUID(made).IsNull());
-    EXPECT_EQ(Describe({made}).NoSelectionText, "Inferred (default)");
+    const ShipRuleSelection::State state = Describe({made});
+    EXPECT_EQ(state.NoSelectionText, "Inferred (default)");
+    EXPECT_EQ(state.SelectedIndex, -1);
+    EXPECT_EQ(state.InheritedIndex, 0);
     EXPECT_FALSE(Registry().GetAssetGUID(made).IsNull());
 }
 
@@ -165,6 +169,7 @@ TEST_F(ShipRuleRowTests, AMixedSelectionCountsEachRuleAndSetsAllInOneStep)
     setNever.Do();
     ShipRuleSelection::State state = Describe(both);
     EXPECT_EQ(state.NoSelectionText, "Mixed");
+    EXPECT_EQ(state.InheritedIndex, -1);
     EXPECT_EQ(state.Caption, "1 Always, 1 Never.");
 
     SetShipRuleCommand setAlways(both, ShipRule::Always, nullptr);

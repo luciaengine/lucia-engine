@@ -213,12 +213,22 @@ void Dropdown::SetOptionsFromString(const std::string& csv)
     SetOptionsFromLabels(labels);
 }
 
-void Dropdown::SetNoSelectionText(std::string text)
+void Dropdown::SetNoSelectionText(std::string text, int checkedIndex)
 {
-    if (m_NoSelectionText == text)
+    if (m_NoSelectionText == text && m_NoSelectionCheckIndex == checkedIndex)
         return;
     m_NoSelectionText = std::move(text);
+    m_NoSelectionCheckIndex = checkedIndex;
     UpdateHeaderLabel();
+    SyncItemSelectionClasses();
+}
+
+int Dropdown::CheckedIndex() const
+{
+    if (m_SelectedIndex >= 0)
+        return m_SelectedIndex;
+    return m_NoSelectionCheckIndex >= 0 && m_NoSelectionCheckIndex < static_cast<int>(m_Options.size())
+        ? m_NoSelectionCheckIndex : -1;
 }
 
 const Dropdown::Option* Dropdown::SelectedOption() const
@@ -345,7 +355,7 @@ void Dropdown::SyncItemSelectionClasses()
         auto* raw = dynamic_cast<Label*>(children[i].get());
         if (!raw)
             continue;
-        const bool isSelected = (static_cast<int>(i) == m_SelectedIndex);
+        const bool isSelected = (static_cast<int>(i) == CheckedIndex());
         if (isSelected)
             raw->AddClass("selected");
         else
@@ -668,7 +678,7 @@ void Dropdown::RebuildUiItems()
         UpdateTextRowClass(*raw);
         raw->SetFocusProxy(this);
         const int index = static_cast<int>(i);
-        const bool isSelected = (m_SelectedIndex == index);
+        const bool isSelected = (CheckedIndex() == index);
         if (isSelected)
             raw->AddClass("selected");
         switch (m_OptionArt)
@@ -816,7 +826,7 @@ void Dropdown::OpenMenuNative()
     for (const auto& opt : m_Options)
         labels.push_back(opt.label);
 
-    int current = m_SelectedIndex;
+    const int current = CheckedIndex();
     Dropdown* self = this;
     auto       onSelected = [self](int index) {
         if (!self)

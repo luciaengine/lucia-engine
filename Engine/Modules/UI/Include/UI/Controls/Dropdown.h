@@ -89,8 +89,9 @@ public:
 
     // The header text while no option is selected (index -1). A preset list whose
     // values match no preset sets "Custom" here and selects -1, so the state reads in
-    // the field without being an entry the user can pick. Empty by default.
-    void SetNoSelectionText(std::string text);
+    // the field without being an entry the user can pick. An optional checked
+    // index marks an effective choice without committing it to the field.
+    void SetNoSelectionText(std::string text, int checkedIndex = -1);
 
     const std::string& GetSelectedValue() const;
     void SetSelectedValue(const std::string& value);
@@ -141,6 +142,7 @@ public:
 private:
     // The option the current index names, or null when nothing is selected.
     const Option* SelectedOption() const;
+    int CheckedIndex() const;
 
     void EnsureHeader();
     // What the options draw beside their labels. Pictures take the place of icons
@@ -182,6 +184,7 @@ private:
     std::string             m_HeaderArtClass;
     UIElement*              m_Chevron{nullptr};
     std::string             m_NoSelectionText;
+    int                     m_NoSelectionCheckIndex{-1};
     UIElement*              m_ItemsContainer{nullptr};
     UIElement*              m_ItemsContent{nullptr};
     float                   m_MaxPopupHeight{0};

@@ -34,6 +34,7 @@ struct ShipRuleSelection
     struct State
     {
         int SelectedIndex = -1;      ///< In kChoices, when every item has the same own rule; else -1.
+        int InheritedIndex = -1;     ///< In kChoices, when every item inherits the same rule and source.
         std::string NoSelectionText; ///< The dropdown text when SelectedIndex is -1.
         std::string Caption;         ///< The line under the row; empty for none.
         bool AnyOwn = false;         ///< An item has a rule of its own, so the row offers to clear it.
