@@ -33,7 +33,7 @@
 #include "Panels/VisualProfilerPanel.h"
 #include "Panels/VramPanel.h"
 #include "Panels/WebPanel.h"
-#include "Core/ApplicationPaths.h"
+#include "Editor/EditorPaths.h"
 
 #include <memory>
 
@@ -64,7 +64,7 @@ std::unique_ptr<UIElement> MakeOpenPencilPanel()
 std::unique_ptr<UIElement> MakeLocalOpenPencilPanel()
 {
     return std::make_unique<WebPanel>("OpenPencil Local", "",
-        ApplicationPaths::GetExecutableDirectory() / "Tools" / "OpenPencil");
+        GetEditorGlobalPaths().installToolsRoot / "OpenPencil");
 }
 
 std::unique_ptr<UIElement> MakeMaterialGraphPanel()

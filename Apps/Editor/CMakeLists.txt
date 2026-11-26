@@ -2257,13 +2257,13 @@ if(APPLE AND NOT GE_MOBILE)
         file(GLOB_RECURSE _ge_openpencil_files CONFIGURE_DEPENDS "${GE_OPENPENCIL_WEB_ROOT}/*")
         set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_openpencil_files}")
         add_custom_command(TARGET Editor POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:Editor>/Tools/OpenPencil"
+            COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil"
             COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${GE_OPENPENCIL_WEB_ROOT}" "$<TARGET_FILE_DIR:Editor>/Tools/OpenPencil"
+                "${GE_OPENPENCIL_WEB_ROOT}" "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil"
             COMMENT "Staging the bundled OpenPencil editor")
     else()
         add_custom_command(TARGET Editor POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:Editor>/Tools/OpenPencil")
+            COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil")
     endif()
 endif()
 if(APPLE AND NOT GE_MOBILE)
