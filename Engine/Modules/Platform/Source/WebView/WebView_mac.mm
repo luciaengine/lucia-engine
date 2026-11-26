@@ -24,7 +24,7 @@
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSArray<NSURL*>*>* destinations;
 @end
 
-@interface BundledWebAppHandler : NSObject <WKURLSchemeHandler>
+@interface BundledWebAppHandler : NSObject <WKURLSchemeHandler, WKScriptMessageHandlerWithReply>
 @property(nonatomic, strong) NSURL* directory;
 @end
 
@@ -77,6 +77,53 @@
     [task didReceiveResponse:response];
     [task didReceiveData:bytes];
     [task didFinish];
+}
+
+- (void)userContentController:(WKUserContentController*)controller
+    didReceiveScriptMessage:(WKScriptMessage*)message replyHandler:(void (^)(id, NSString*))reply
+{
+    (void)controller;
+    NSURL* source = message.frameInfo.request.URL;
+    if (!self.directory || !message.frameInfo.isMainFrame ||
+        ![source.scheme isEqualToString:@"lucia-app"] || ![source.host isEqualToString:@"editor"])
+    {
+        reply(nil, @"Only the bundled workspace can save documents.");
+        return;
+    }
+
+    NSDictionary* payload = [message.body isKindOfClass:NSDictionary.class] ? message.body : nil;
+    NSString* filename = payload[@"filename"];
+    NSString* contents = payload[@"contents"];
+    if (![filename isKindOfClass:NSString.class] || ![contents isKindOfClass:NSString.class])
+    {
+        reply(nil, @"Invalid document data.");
+        return;
+    }
+
+    NSData* bytes = [[NSData alloc] initWithBase64EncodedString:contents options:0];
+    if (!bytes.length)
+    {
+        reply(nil, @"Could not read the document data.");
+        return;
+    }
+
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = filename.lastPathComponent;
+    [panel beginWithCompletionHandler:^(NSModalResponse result) {
+        if (result != NSModalResponseOK || !panel.URL)
+        {
+            reply(NSNull.null, nil);
+            return;
+        }
+
+        NSError* error = nil;
+        if (![bytes writeToURL:panel.URL options:NSDataWritingAtomic error:&error])
+        {
+            reply(nil, error.localizedDescription);
+            return;
+        }
+        reply(panel.URL.lastPathComponent, nil);
+    }];
 }
 
 - (void)webView:(WKWebView*)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task
@@ -324,6 +371,8 @@ public:
                                                            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                         forMainFrameOnly:NO]; // Inject in all frames
         [userContentController addUserScript:userScript];
+        [userContentController addScriptMessageHandlerWithReply:m_BundledApp
+            contentWorld:WKContentWorld.pageWorld name:@"luciaSaveDocument"];
         config.userContentController = userContentController;
 
         m_WebView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:config];
@@ -496,10 +545,9 @@ public:
             return;
         }
 
-        NSRect frame = [m_WebView frame];
-        frame.size.width = static_cast<CGFloat>(width);
-        frame.size.height = static_cast<CGFloat>(height);
-        [m_WebView setFrame:frame];
+        const NSSize size = NSMakeSize(width, height);
+        if (!NSEqualSizes(m_WebView.frame.size, size))
+            [m_WebView setFrameSize:size];
     }
 
     void SetPosition(int x, int y) override {
@@ -516,9 +564,9 @@ public:
                 NSView* contentView = [window contentView];
                 if (contentView) {
                     NSRect contentRect = [contentView bounds];
-                    frame.origin.x = static_cast<CGFloat>(x);
-                    frame.origin.y = contentRect.size.height - static_cast<CGFloat>(y) - frame.size.height;
-                    [m_WebView setFrame:frame];
+                    const NSPoint origin = NSMakePoint(x, contentRect.size.height - y - frame.size.height);
+                    if (!NSEqualPoints(frame.origin, origin))
+                        [m_WebView setFrameOrigin:origin];
                 }
             }
         }
@@ -528,7 +576,8 @@ public:
         if (!m_Initialized || !m_WebView) {
             return;
         }
-        [m_WebView setHidden:!visible];
+        if (m_WebView.hidden == visible)
+            [m_WebView setHidden:!visible];
     }
 
     bool IsVisible() const override {

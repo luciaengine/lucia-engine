@@ -7,6 +7,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 output="$1"
+script_directory="$(cd "$(dirname "$0")" && pwd)"
 if [[ -e "$output" ]]; then
     printf 'The output directory already exists: %s\n' "$output" >&2
     exit 2
@@ -33,6 +34,9 @@ SUMS
     mkdir source
     tar -xf source.tar.gz -C source --strip-components 1
     cd source
+    patch -p1 < "$script_directory/openpencil-lucia-save.patch"
+    patch -p1 < "$script_directory/openpencil-shape-preview.patch"
+    patch -p1 < "$script_directory/openpencil-share-style.patch"
     bun install --frozen-lockfile
     tar -xf ../html-engine.tgz -C packages/html-engine --strip-components 1 \
         package/wasm/html-engine.wasm package/wasm/html-engine.wasm.sha256 package/wasm/THIRD-PARTY-NOTICES.md

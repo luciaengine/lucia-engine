@@ -1,0 +1,91 @@
+--- a/src/components/FileApiBanner.vue
++++ b/src/components/FileApiBanner.vue
+@@ -1,6 +1,7 @@
+ <script setup lang="ts">
+ import { useI18n } from '@open-pencil/vue/i18n'
+
++import { luciaSaveBridge } from '@/app/document/io/lucia'
+ import { supportsFileSystemAccess } from '@/app/document/io/capability'
+ import ExternalLink from '@/components/links/ExternalLink.vue'
+ import AppBanner from '@/components/ui/feedback/AppBanner.vue'
+@@ -10,7 +11,7 @@
+ const supportURL = 'https://caniuse.com/native-filesystem-api'
+
+ const { files, common } = useI18n()
+-const show = !IS_TAURI && !supportsFileSystemAccess()
++const show = !IS_TAURI && !luciaSaveBridge() && !supportsFileSystemAccess()
+ </script>
+
+ <template>
+--- a/src/app/document/io/save/actions.ts
++++ b/src/app/document/io/save/actions.ts
+@@ -2,6 +2,7 @@
+
+ import { downloadBlob } from '@/app/document/io/browser'
+ import { isFileWriteRefused } from '@/app/document/io/capability'
++import { luciaSaveBridge, saveThroughLucia } from '@/app/document/io/lucia'
+ import { documentFileName, documentNameFromFigPath } from '@/app/document/io/names'
+ import { startSaveProgress, type SaveProgress } from '@/app/document/io/save/feedback'
+ import { chooseBrowserFigSaveHandle, chooseTauriFigSavePath } from '@/app/document/io/save/targets'
+@@ -81,6 +82,7 @@
+         return wrote
+       })
+     }
++    if (luciaSaveBridge()) return saveFigFileAs()
+     if (downloadName) {
+       return withProgress(async (progress) => {
+         const { stream, version } = await buildVersionedFigStream()
+@@ -93,6 +95,21 @@
+   }
+
+   async function saveFigFileAs() {
++    const bridge = luciaSaveBridge()
++    if (bridge) {
++      const filename = getDownloadName() ?? documentFileName(state.documentName, state.documentKind)
++      return withProgress(async (progress) => {
++        const { stream, version } = await buildVersionedFigStream()
++        const savedName = await saveThroughLucia(bridge, filename, progress.track(stream))
++        if (!savedName) return false
++        setStorageBinding(null)
++        setDownloadName(savedName)
++        state.documentName = documentNameFromFigPath(savedName)
++        await onDownloadSuccess?.(version)
++        return true
++      })
++    }
++
+     if (IS_TAURI) {
+       const path = await chooseTauriFigSavePath(state.documentKind)
+       if (!path) return false
+--- /dev/null
++++ b/src/app/document/io/lucia.ts
+@@ -0,0 +1,29 @@
++type LuciaSaveBridge = {
++  postMessage(data: { filename: string; contents: string }): Promise<string | null>
++}
++
++export function luciaSaveBridge(): LuciaSaveBridge | undefined {
++  if (window.location.origin !== 'lucia-app://editor') return undefined
++  const host = window as Window & {
++    webkit?: { messageHandlers?: { luciaSaveDocument?: LuciaSaveBridge } }
++  }
++  return host.webkit?.messageHandlers?.luciaSaveDocument
++}
++
++export async function saveThroughLucia(
++  bridge: LuciaSaveBridge,
++  filename: string,
++  stream: ReadableStream<Uint8Array>
++): Promise<string | null> {
++  const blob = await new Response(stream).blob()
++  const contents = await new Promise<string>((resolve, reject) => {
++    const reader = new FileReader()
++    reader.onerror = () => reject(reader.error)
++    reader.onload = () => {
++      const dataURL = reader.result as string
++      resolve(dataURL.slice(dataURL.indexOf(',') + 1))
++    }
++    reader.readAsDataURL(blob)
++  })
++  return bridge.postMessage({ filename, contents })
++}
