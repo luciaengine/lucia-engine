@@ -43,6 +43,7 @@ SUMS
     patch -p1 < "$script_directory/openpencil-marquee-bounds.patch"
     patch -p1 < "$script_directory/openpencil-bulk-move.patch"
     patch -p1 < "$script_directory/openpencil-move-snapping.patch"
+    patch -p1 < "$script_directory/openpencil-move-frame-preview.patch"
     bun install --frozen-lockfile
     tar -xf ../html-engine.tgz -C packages/html-engine --strip-components 1 \
         package/wasm/html-engine.wasm package/wasm/html-engine.wasm.sha256 package/wasm/THIRD-PARTY-NOTICES.md
