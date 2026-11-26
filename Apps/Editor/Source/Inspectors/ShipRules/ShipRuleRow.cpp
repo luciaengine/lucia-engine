@@ -89,7 +89,7 @@ ShipRuleRow::ShipRuleRow(const ShipRuleSelection::State& state, std::function<vo
     for (ShipRule choice : ShipRuleSelection::kChoices)
         options.push_back({std::string(ShipRules::ToText(choice)), ShipRuleSelection::Label(choice)});
     dropdown->SetOptions(options, state.SelectedIndex);
-    dropdown->SetNoSelectionText(state.NoSelectionText);
+    dropdown->SetNoSelectionText(state.NoSelectionText, state.InheritedIndex);
     dropdown->SetSelectedIndexWithoutNotify(state.SelectedIndex);
     InspectorUI::SetRowOverridden(InspectorUI::RowOfControl(dropdown), state.AnyOwn);
     if (state.NeverShips)

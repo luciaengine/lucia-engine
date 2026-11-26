@@ -136,6 +136,36 @@ TEST(DropdownTests, UiModeItemClickChangesSelection)
     EXPECT_FALSE(dd.HasClass("open"));
 }
 
+TEST(DropdownTests, AnEffectiveOptionIsCheckedWithoutCommittingIt)
+{
+    Dropdown dropdown;
+    dropdown.SetOptionsFromString("Inferred,Always,Never");
+    dropdown.SetSelectedIndexWithoutNotify(-1);
+
+    std::string committedValue;
+    dropdown.SetOnValueChanged([&committedValue](const std::string& value) { committedValue = value; });
+    dropdown.SetNoSelectionText("Inferred (default)", 0);
+
+    ASSERT_NE(dropdown.GetItemsContainer(), nullptr);
+    const auto& rows = dropdown.GetItemsContainer()->GetChildren();
+    ASSERT_EQ(rows.size(), 3u);
+    EXPECT_TRUE(rows[0]->HasClass("selected"));
+    EXPECT_FALSE(rows[1]->HasClass("selected"));
+    EXPECT_EQ(dropdown.GetHeaderLabel()->GetText(), "Inferred (default)");
+    EXPECT_EQ(dropdown.GetSelectedIndex(), -1);
+    EXPECT_TRUE(dropdown.GetSelectedValue().empty());
+    EXPECT_TRUE(committedValue.empty());
+
+    dropdown.SetNoSelectionText("Always (from Data/)", 1);
+    EXPECT_FALSE(rows[0]->HasClass("selected"));
+    EXPECT_TRUE(rows[1]->HasClass("selected"));
+
+    SendMouse(*rows[1], kEventMouseDown, 10.0f, 25.0f, 0);
+    EXPECT_EQ(dropdown.GetSelectedIndex(), 1);
+    EXPECT_EQ(committedValue, "Always");
+    EXPECT_EQ(dropdown.GetHeaderLabel()->GetText(), "Always");
+}
+
 TEST(DropdownTests, NativeModeUsesInvokerAndUpdatesSelection)
 {
     Dropdown dd;

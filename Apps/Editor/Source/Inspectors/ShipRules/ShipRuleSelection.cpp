@@ -30,6 +30,12 @@ std::string ShipRuleSelection::Label(ShipRule rule)
 namespace
 {
 
+size_t ChoiceIndex(ShipRule rule)
+{
+    const auto& choices = ShipRuleSelection::kChoices;
+    return static_cast<size_t>(std::find(std::begin(choices), std::end(choices), rule) - std::begin(choices));
+}
+
 // "Always (from Data/)", "Never (from the asset root)" or "Inferred (default)".
 std::string InheritedText(const ShipRules::Resolved& inherited)
 {
@@ -109,19 +115,18 @@ ShipRuleSelection::State ShipRuleSelection::Describe() const
         sameOwn &= item.OwnIsValid && item.Own == first.Own;
         sameInherited &= !item.Own && item.OwnIsValid && SameInherited(item.Inherited, first.Inherited);
         const ShipRule effective = item.Own.value_or(item.Inherited.Rule);
-        ++effectiveCounts[static_cast<size_t>(std::find(std::begin(kChoices), std::end(kChoices), effective) -
-                                              std::begin(kChoices))];
+        ++effectiveCounts[ChoiceIndex(effective)];
     }
 
     if (sameOwn && first.Own)
     {
-        state.SelectedIndex = static_cast<int>(std::find(std::begin(kChoices), std::end(kChoices), *first.Own) -
-                                               std::begin(kChoices));
+        state.SelectedIndex = static_cast<int>(ChoiceIndex(*first.Own));
         state.Caption = Items.size() == 1 ? "Set here. " + WithoutOwnRuleText(first.Inherited)
                                           : "Set here on all " + std::to_string(Items.size()) + " items.";
     }
     else if (sameInherited)
     {
+        state.InheritedIndex = static_cast<int>(ChoiceIndex(first.Inherited.Rule));
         state.NoSelectionText = InheritedText(first.Inherited);
     }
     else if (Items.size() == 1)
