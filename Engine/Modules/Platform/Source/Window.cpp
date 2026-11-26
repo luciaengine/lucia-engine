@@ -1038,7 +1038,17 @@ void Window::SetResizable(bool resizable)
 
 namespace {
 bool pollingWindowEvents = false;
+#if defined(__APPLE__)
+double nextEventWaitSeconds = 0.0;
+#endif
 }
+
+#if defined(__APPLE__)
+void Window::WaitOnNextEventPoll(double timeoutSeconds)
+{
+    nextEventWaitSeconds = timeoutSeconds;
+}
+#endif
 
 void Window::RefreshThunk(GLFWwindow* win)
 {
@@ -1060,7 +1070,16 @@ void Window::PollEvents()
 #if !defined(_WIN32) && !defined(__APPLE__)
     OnDisplayConfigurationChanged();
 #endif
+#if defined(__APPLE__)
+    const double timeoutSeconds = nextEventWaitSeconds;
+    nextEventWaitSeconds = 0.0;
+    if (timeoutSeconds > 0.0)
+        glfwWaitEventsTimeout(timeoutSeconds);
+    else
+        glfwPollEvents();
+#else
     glfwPollEvents();
+#endif
 #if defined(__linux__)
     PumpWebViewEvents();
 #endif
@@ -1116,6 +1135,9 @@ void Window::PollGlobalMouseMonitors()
 
 void Window::Terminate()
 {
+#if defined(__APPLE__)
+    nextEventWaitSeconds = 0.0;
+#endif
     if (!s_GlfwInitialized)
         return;
 

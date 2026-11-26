@@ -29,4 +29,27 @@ TEST(WindowFocusPolicyMacTests, ApplicationThatTakesNoFocusHidesWhenItBecomesAct
         EXPECT_TRUE([NSApp isHidden]);
     }
 }
+
+TEST(WindowFocusPolicyMacTests, RequestedEventWaitServicesTheMainRunLoop)
+{
+    @autoreleasepool {
+        Window::SetTakesFocus(false);
+        ASSERT_TRUE(Window::Initialize());
+        Window::PollEvents();
+
+        __block bool fired = false;
+        CFRunLoopTimerRef timer = CFRunLoopTimerCreateWithHandler(
+            kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 0.005, 0.0, 0, 0,
+            ^(CFRunLoopTimerRef) { fired = true; });
+        ASSERT_NE(timer, nullptr);
+        CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopDefaultMode);
+
+        Window::WaitOnNextEventPoll(0.030);
+        Window::PollEvents();
+
+        EXPECT_TRUE(fired);
+        CFRunLoopTimerInvalidate(timer);
+        CFRelease(timer);
+    }
+}
 }  // namespace

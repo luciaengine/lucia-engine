@@ -178,6 +178,10 @@ class Window
     // Global event pump
     static bool Initialize();
     static void PollEvents();
+#if defined(__APPLE__) && !defined(GE_PLATFORM_MOBILE)
+    /// Let AppKit service its run loop while waiting for input on the next event poll only.
+    static void WaitOnNextEventPoll(double timeoutSeconds);
+#endif
     static void Terminate();
 
     // Global cursor helpers (best-effort cross-platform; fully implemented on Win32)

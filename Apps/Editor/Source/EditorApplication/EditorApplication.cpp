@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <thread>
 #include <ctime>
 #include <cmath>
 #include <cstdio>
@@ -7682,7 +7681,9 @@ void EditorApplication::Render()
         // Native WKWebView/WebView2 is a subview above GPU UI, so also hide it while any modal is visible
         // (or fading out) — otherwise the modal renders underneath.
         // We keep the view "alive" (not hidden) so the page and audio keep playing in the background.
+#if defined(__APPLE__)
         bool bundledAppDragging = false;
+#endif
         if (ctx->docking)
         {
             const bool modalBlocking =
@@ -7699,18 +7700,22 @@ void EditorApplication::Render()
                 if (webPanel->IsHostedBy(ctx->window.get()))
                 {
                     webPanel->SetWebViewOffScreen(!isActive || modalBlocking);
+#if defined(__APPLE__)
                     bundledAppDragging |= isActive && !modalBlocking && webPanel->IsBundledAppDragActive();
+#endif
                 }
             }
         }
 
+#if defined(__APPLE__)
         if (bundledAppDragging && m_Windows.size() == 1 && !IsFixedFrameRateEnabled())
         {
-            // The native canvas presents independently. Keep pumping AppKit while it owns the drag
-            // instead of waiting on a drawable for the editor chrome underneath it.
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            // The native canvas presents independently. Let AppKit run its sources on the next
+            // event poll instead of blocking the main thread in a sleep or a swapchain present.
+            Platform::Window::WaitOnNextEventPoll(0.008);
             continue;
         }
+#endif
 
         // Keep debug zones up-to-date even when not hovering/dragging
         if (DockOverlay::IsDebugZonesEnabled())
