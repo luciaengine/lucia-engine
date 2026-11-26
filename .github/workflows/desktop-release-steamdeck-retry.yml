@@ -1,7 +1,7 @@
 name: Lucia Steam Deck release retry
 on:
   push:
-    branches: [release-build/1.0.0-windows]
+    branches: [release-build/d3b45f34-steamdeck-release-deps]
 permissions:
   contents: read
 env:
@@ -32,10 +32,14 @@ jobs:
           packages = "RUN apt-get update && apt-get install -y --no-install-recommends autoconf autoconf-archive automake libtool && rm -rf /var/lib/apt/lists/*"
           dockerfile.write_text(text.replace('WORKDIR /src', packages + '\nWORKDIR /src'))
           PYTHON
+          printf '\nset(VCPKG_BUILD_TYPE release)\n' >> cmake/triplets/x64-steamdeck.cmake
           if ! bash Tools/Scripts/build-steamdeck-docker.sh -j 4; then
             diagnostic_dir="$GE_STEAMDECK_HOST_DIST_DIR/vcpkg-failure-logs"
             if [ -d "$diagnostic_dir" ]; then
-              grep -rniE 'error:|fatal error|Killed|not found|No space' "$diagnostic_dir" | cut -c1-750 | tail -55 || true
+              find "$diagnostic_dir" -type f -name '*-out.log' -print0 |
+                xargs -0 -r grep -nEi 'FAILED:|error:|fatal error|Killed|not found|No space' |
+                grep -vC0 'CMakeScratch/' | cut -c1-900 | tail -80 || true
+              find "$diagnostic_dir/harfbuzz" -name 'package-*-out.log' -exec tail -n 30 '{}' ';' || true
             fi
             exit 1
           fi
