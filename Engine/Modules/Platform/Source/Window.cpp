@@ -53,6 +53,7 @@ extern "C" {
     void GE_MacOS_FocusWindow(void* nsWindow);
     void GE_MacOS_RefuseApplicationActivation();
     bool GE_MacOS_GetMouseButtonEventPosition(void* nsWindow, int button, double* x, double* y);
+    void GE_MacOS_WaitForEventsAndUpdateWindows(double timeoutSeconds);
     void* GE_MacOS_InstallTitleBarRightClickMonitor(void* nsWindow, void (*callback)(int, int, void*), void* userData);
     void GE_MacOS_RemoveTitleBarRightClickMonitor(void* monitor);
 }
@@ -1074,7 +1075,7 @@ void Window::PollEvents()
     const double timeoutSeconds = nextEventWaitSeconds;
     nextEventWaitSeconds = 0.0;
     if (timeoutSeconds > 0.0)
-        glfwWaitEventsTimeout(timeoutSeconds);
+        GE_MacOS_WaitForEventsAndUpdateWindows(timeoutSeconds);
     else
         glfwPollEvents();
 #else
