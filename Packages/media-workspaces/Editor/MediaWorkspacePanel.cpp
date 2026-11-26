@@ -3,6 +3,7 @@
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
 #include "Core/Engine.h"
+#include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
 #include "UI/Controls/Label.h"
 
@@ -17,7 +18,8 @@ namespace GameEngine::Editor
 {
 struct MediaWorkspacePanel::Workspace
 {
-    using Create = void* (*)(const char*);
+    using Preview = void (*)(const char*, const uint8_t*, uint32_t, uint32_t, size_t);
+    using Create = void* (*)(const char*, const char*, Preview);
     using Place = void (*)(void*, void*, double, double, double, double);
     using Destroy = void (*)(void*);
 
@@ -26,6 +28,24 @@ struct MediaWorkspacePanel::Workspace
     Place PlaceView = nullptr;
     Destroy DestroyView = nullptr;
     void* HostedWindow = nullptr;
+
+    static void UpdateTexturePreview(const char* path, const uint8_t* rgba, uint32_t width,
+                                     uint32_t height, size_t size)
+    {
+        auto& engine = EngineCore::GetInstance();
+        auto* assets = engine.TryGetAssetManager();
+        auto* renderServices = engine.GetRenderServices();
+        if (!path || !assets || !renderServices)
+            return;
+
+        const auto root = assets->GetRegistry().GetSourceRoot("project");
+        const auto relative = std::filesystem::path(path).lexically_relative(root);
+        if (relative.empty() || relative.is_absolute() || *relative.begin() == "..")
+            return;
+
+        const auto guid = assets->ResolveAssetGuid(relative, "project");
+        renderServices->Textures().QueueEditorTexturePreview(guid, width, height, {rgba, size});
+    }
 
     ~Workspace()
     {
@@ -86,7 +106,7 @@ void MediaWorkspacePanel::LoadWorkspace()
         return;
     }
 
-    const auto create = reinterpret_cast<Workspace::Create>(dlsym(workspace->Image, "LuciaCreateMediaWorkspace"));
+    const auto create = reinterpret_cast<Workspace::Create>(dlsym(workspace->Image, "LuciaCreateProjectMediaWorkspace"));
     workspace->PlaceView = reinterpret_cast<Workspace::Place>(dlsym(workspace->Image, "LuciaPlaceMediaWorkspace"));
     workspace->DestroyView = reinterpret_cast<Workspace::Destroy>(dlsym(workspace->Image, "LuciaDestroyMediaWorkspace"));
     if (!create || !workspace->PlaceView || !workspace->DestroyView)
@@ -94,7 +114,8 @@ void MediaWorkspacePanel::LoadWorkspace()
         SetStatus("The workspace host is incompatible with this Editor build.");
         return;
     }
-    workspace->View = create(bundle.c_str());
+    const auto projectAssets = assets->GetRegistry().GetSourceRoot("project");
+    workspace->View = create(bundle.c_str(), projectAssets.c_str(), Workspace::UpdateTexturePreview);
     if (!workspace->View)
     {
         SetStatus("The workspace could not start.");
