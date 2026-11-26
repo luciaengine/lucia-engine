@@ -325,7 +325,7 @@ namespace
     }
 
     // The asset files of a drag may land in `dest` unless a file is the folder itself, a folder would
-    // move into its own descendant, or a file is in `dest` already.
+    // land inside its own descendant, or a file is in `dest` already.
     static UI::Interaction::DropFeedback CanDropAssetPaths(const Editor::AssetPathsDragPayload& payload,
                                                            const std::filesystem::path& dest, int mods)
     {
@@ -336,13 +336,13 @@ namespace
             if (src.empty())
                 continue;
             if (AssetPathKey(src) == destKey)
-                return {false, "Cannot move into itself"};
+                return {false, "Cannot drop a folder onto itself"};
             if (std::filesystem::is_directory(src))
             {
-                if (copy)
+                if (copy && !payload.copyOnly)
                     return {false, "Copy folder not supported"};
                 if (IsUnderAssetDir(src, dest))
-                    return {false, "Cannot move folder into its descendant"};
+                    return {false, "Cannot drop a folder into its descendant"};
             }
             if (IsDirectChildOfAssetDir(dest, src))
                 return {false, "Already in destination"};
