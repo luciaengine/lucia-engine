@@ -7604,7 +7604,7 @@ bool EditorApplication::NativeWebDragOwnsFrameLoop() const
     {
         auto* webPanel = dynamic_cast<WebPanel*>(panel);
         if (webPanel && webPanel->IsHostedBy(context->window.get()) &&
-            context->docking->IsPanelActiveTab(id) && webPanel->IsBundledAppDragActive())
+            context->docking->IsPanelActiveTab(id) && webPanel->HasBundledAppDragFramePriority())
             return true;
     }
     return false;

@@ -73,8 +73,8 @@ public:
     // Check if the web view is visible
     virtual bool IsVisible() const = 0;
 
-    /// Whether the native view is handling a primary-button drag that began in its content.
-    virtual bool IsPointerDragActive() const { return false; }
+    /// Whether a native drag or its release still needs the frame loop for the web view.
+    virtual bool HasNativeDragFramePriority() const { return false; }
 
     // Set the background color (RGB values 0-255)
     virtual void SetBackgroundColor(unsigned char r, unsigned char g, unsigned char b) = 0;

@@ -645,10 +645,12 @@ public:
         return ![m_WebView isHidden];
     }
 
-    bool IsPointerDragActive() const override
+    bool HasNativeDragFramePriority() const override
     {
-        return m_PointerDragActive && m_WebView && !m_WebView.hidden &&
-            m_WebView.window.isKeyWindow && (NSEvent.pressedMouseButtons & 1u) != 0;
+        if (!m_WebView || m_WebView.hidden || !m_WebView.window.isKeyWindow)
+            return false;
+        return (m_PointerDragActive && (NSEvent.pressedMouseButtons & 1u) != 0) ||
+            m_ReleaseFramePriority.IsActive(CACurrentMediaTime());
     }
 
     void SetBackgroundColor(unsigned char r, unsigned char g, unsigned char b) override {
@@ -796,6 +798,7 @@ private:
 
     void EndMouseDrag()
     {
+        m_ReleaseFramePriority.Reset();
         m_UncoalescedMouseInput.End();
         m_IsPrimaryPressInView = false;
         m_PointerDragActive = false;
@@ -821,7 +824,13 @@ private:
     {
         if (event.type == NSEventTypeLeftMouseUp)
         {
+            const bool settlingBundledDrag = m_PointerDragActive &&
+                event.window == m_WebView.window &&
+                [m_WebView.URL.scheme isEqualToString:@"lucia-app"];
+            const CFTimeInterval releaseTime = CACurrentMediaTime();
             EndMouseDrag();
+            if (settlingBundledDrag)
+                m_ReleaseFramePriority.Begin(releaseTime);
             return;
         }
         if (event.type == NSEventTypeLeftMouseDragged)
@@ -867,6 +876,7 @@ private:
     id m_MouseMonitor = nil;
     id m_WindowResignObserver = nil;
     Detail::ScopedUncoalescedMouseInput m_UncoalescedMouseInput;
+    Detail::NativeDragReleaseFramePriority m_ReleaseFramePriority;
     const bool m_TraceDragInput = std::getenv("GE_TRACE_BUNDLED_WEB_DRAG") != nullptr;
     CFTimeInterval m_DragEpochOffset = 0.0;
     std::vector<DragEventSample> m_DragSamples;

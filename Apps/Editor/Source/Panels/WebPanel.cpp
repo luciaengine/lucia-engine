@@ -894,12 +894,12 @@ void WebPanel::SetWebViewOffScreen(bool offScreen)
     }
 }
 
-bool WebPanel::IsBundledAppDragActive()
+bool WebPanel::HasBundledAppDragFramePriority()
 {
     if (m_BundledApp.empty())
         return false;
     const Platform::IWebView* view = ActiveView();
-    return view && view->IsPointerDragActive();
+    return view && view->HasNativeDragFramePriority();
 }
 
 bool WebPanel::HasBundledAppCloseConfirmation()

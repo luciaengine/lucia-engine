@@ -62,7 +62,7 @@ class WebPanel : public DockPanel
     void SetWebViewOffScreen(bool offScreen);
 
     /// The installed app owns the current pointer drag.
-    bool IsBundledAppDragActive();
+    bool HasBundledAppDragFramePriority();
 
     bool HasBundledAppCloseConfirmation();
     void ConfirmBundledAppClose(std::function<void(bool)> done);
