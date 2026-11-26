@@ -1,7 +1,7 @@
 name: Lucia Steam Deck release retry
 on:
   push:
-    branches: [release-build/d3b45f34-steamdeck-release-deps]
+    branches: [release-build/d3b45f34-remaining]
 permissions:
   contents: read
 env:
@@ -29,7 +29,7 @@ jobs:
           from pathlib import Path
           dockerfile = Path('Tools/Docker/Dockerfile.steamdeck-dev')
           text = dockerfile.read_text()
-          packages = "RUN apt-get update && apt-get install -y --no-install-recommends autoconf autoconf-archive automake libtool && rm -rf /var/lib/apt/lists/*"
+          packages = "RUN apt-get update && apt-get install -y --no-install-recommends autoconf autoconf-archive automake libtool nasm && rm -rf /var/lib/apt/lists/*"
           dockerfile.write_text(text.replace('WORKDIR /src', packages + '\nWORKDIR /src'))
           PYTHON
           printf '\nset(VCPKG_BUILD_TYPE release)\n' >> cmake/triplets/x64-steamdeck.cmake

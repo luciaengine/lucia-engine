@@ -1,7 +1,7 @@
-name: Lucia Linux, Intel macOS, and Steam Deck builds
+name: Lucia Intel macOS release packaging retry
 on:
   push:
-    branches: [release-build/1.0.0-windows]
+    branches: [release-build/d3b45f34-remaining]
 permissions:
   contents: read
 env:
@@ -36,7 +36,7 @@ jobs:
           mkdir -p "$stage" "$RUNNER_TEMP/lucia-artifacts"
           for app in Editor Player; do
             ditto "$RUNNER_TEMP/lucia-build/bin/Release/Apps/$app/$app.app" "$stage/$app.app"
-            lipo -verify_arch x86_64 "$stage/$app.app/Contents/MacOS/$app"
+            lipo "$stage/$app.app/Contents/MacOS/$app" -verify_arch x86_64
             codesign --verify --deep --strict "$stage/$app.app"
           done
           cp LICENSE THIRD_PARTY_NOTICES.md "$stage/"
