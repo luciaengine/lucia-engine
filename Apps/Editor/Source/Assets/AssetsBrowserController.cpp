@@ -356,6 +356,12 @@ namespace
                Editor::AssetsFolderDropRegistry::Get().Accepts(typeId);
     }
 
+    static bool IsNativeAssetDrop(const UI::Interaction::DropRequest& request)
+    {
+        const auto* payload = request.payload.TryGet<Editor::AssetPathsDragPayload>();
+        return payload && payload->copyOnly;
+    }
+
     // OPFS (wasm) rejects std::filesystem::copy_file with EPERM because it has
     // no POSIX permission bits to preserve. Streaming bytes works on every mount.
     static bool CopyFileByStreaming(const std::filesystem::path& from, const std::filesystem::path& to)
@@ -566,7 +572,11 @@ AssetsBrowserController::ResolveGridDropFolder(const UI::Interaction::DropReques
         return {m_GridProvider->GetCurrentDirectory(), nullptr};
     const GridId item = static_cast<GridId>(request.hit.TargetId);
     if (!m_GridProvider->IsDirectory(item))
+    {
+        if (IsNativeAssetDrop(request))
+            return {m_GridProvider->GetCurrentDirectory(), nullptr};
         return {{}, "Drop onto a folder"};
+    }
     return {m_GridProvider->GetPath(item), nullptr};
 }
 
@@ -579,7 +589,11 @@ AssetsBrowserController::ResolveListDropFolder(const UI::Interaction::DropReques
         return {m_GridProvider->GetCurrentDirectory(), nullptr};
     const ListId item = static_cast<ListId>(request.hit.TargetId);
     if (!m_ListProvider->IsDirectory(item))
+    {
+        if (IsNativeAssetDrop(request))
+            return {m_GridProvider->GetCurrentDirectory(), nullptr};
         return {{}, "Drop onto a folder"};
+    }
     return {m_ListProvider->GetPath(item), nullptr};
 }
 
