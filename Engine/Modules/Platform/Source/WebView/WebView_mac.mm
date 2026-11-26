@@ -20,7 +20,8 @@
 @end
 
 // Custom navigation delegate to intercept YouTube embed requests and inject proper headers
-@interface YouTubeNavigationDelegate : NSObject <WKNavigationDelegate>
+@interface YouTubeNavigationDelegate : NSObject <WKNavigationDelegate, WKDownloadDelegate>
+@property(nonatomic, strong) NSMapTable<WKDownload*, NSArray<NSURL*>*>* destinations;
 @end
 
 @interface BundledWebAppHandler : NSObject <WKURLSchemeHandler>
@@ -59,7 +60,9 @@
     }
     NSString* extension = file.pathExtension.lowercaseString;
     UTType* type = [UTType typeWithFilenameExtension:extension];
-    NSString* mime = type.preferredMIMEType ?: @"application/octet-stream";
+    NSString* mime = type.preferredMIMEType;
+    if (!mime)
+        mime = @"application/octet-stream";
     if ([extension isEqualToString:@"wasm"])
         mime = @"application/wasm";
     else if ([extension isEqualToString:@"js"] || [extension isEqualToString:@"mjs"])
@@ -91,9 +94,88 @@
 @implementation YouTubeNavigationDelegate
 
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
-    // Allow all navigation - the base URL and referrerpolicy should handle referrer
-    // WKWebView should send Referer header based on the base URL of the parent page
+    if ([webView.URL.scheme isEqualToString:@"lucia-app"] && navigationAction.shouldPerformDownload)
+    {
+        decisionHandler(WKNavigationActionPolicyDownload);
+        return;
+    }
     decisionHandler(WKNavigationActionPolicyAllow);
+}
+
+- (void)webView:(WKWebView*)webView navigationAction:(WKNavigationAction*)action
+    didBecomeDownload:(WKDownload*)download
+{
+    (void)webView;
+    (void)action;
+    download.delegate = self;
+}
+
+- (void)download:(WKDownload*)download decideDestinationUsingResponse:(NSURLResponse*)response
+    suggestedFilename:(NSString*)filename completionHandler:(void (^)(NSURL*))completionHandler
+{
+    (void)response;
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = filename.lastPathComponent;
+    [panel beginWithCompletionHandler:^(NSModalResponse result) {
+        if (result != NSModalResponseOK || !panel.URL)
+        {
+            completionHandler(nil);
+            return;
+        }
+
+        // WKDownload requires a new file. Write next to the selected file and replace it
+        // only when WebKit has finished and the save panel approved the destination.
+        NSURL* directory = [[panel.URL URLByDeletingLastPathComponent]
+            URLByAppendingPathComponent:[NSString stringWithFormat:@".lucia-download-%@", NSUUID.UUID.UUIDString]
+            isDirectory:YES];
+        NSError* error = nil;
+        if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:NO
+                                                   attributes:nil error:&error])
+        {
+            NSLog(@"Could not create a temporary web app download: %@", error);
+            completionHandler(nil);
+            return;
+        }
+        NSURL* temporary = [directory URLByAppendingPathComponent:@"download"];
+        if (!self.destinations)
+            self.destinations = [NSMapTable strongToStrongObjectsMapTable];
+        [self.destinations setObject:@[temporary, panel.URL] forKey:download];
+        completionHandler(temporary);
+    }];
+}
+
+- (void)downloadDidFinish:(WKDownload*)download
+{
+    NSArray<NSURL*>* paths = [self.destinations objectForKey:download];
+    [self.destinations removeObjectForKey:download];
+    if (!paths)
+        return;
+
+    NSURL* temporary = paths[0];
+    NSURL* destination = paths[1];
+    NSFileManager* files = NSFileManager.defaultManager;
+    NSError* error = nil;
+    if ([files fileExistsAtPath:destination.path])
+        [files replaceItemAtURL:destination withItemAtURL:temporary backupItemName:nil options:0
+             resultingItemURL:nullptr error:&error];
+    else
+        [files moveItemAtURL:temporary toURL:destination error:&error];
+    if (error)
+    {
+        NSAlert* alert = [NSAlert alertWithError:error];
+        [alert runModal];
+    }
+    [files removeItemAtURL:[temporary URLByDeletingLastPathComponent] error:nullptr];
+}
+
+- (void)download:(WKDownload*)download didFailWithError:(NSError*)error resumeData:(NSData*)resumeData
+{
+    (void)resumeData;
+    NSURL* temporary = [[self.destinations objectForKey:download] firstObject];
+    [self.destinations removeObjectForKey:download];
+    if (temporary)
+        [NSFileManager.defaultManager removeItemAtURL:[temporary URLByDeletingLastPathComponent] error:nullptr];
+    NSLog(@"Web app download failed: %@", error);
 }
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
