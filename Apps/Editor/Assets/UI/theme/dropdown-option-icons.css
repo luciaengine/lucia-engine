@@ -45,6 +45,14 @@
 	background-image: url("editor:Icons/Dropdown/shape-disc.svg");
 }
 
+.dropdown-icon--shape-box {
+	background-image: url("editor:Icons/Dropdown/shape-box.svg");
+}
+
+.dropdown-icon--shape-capsule {
+	background-image: url("editor:Icons/Dropdown/shape-capsule.svg");
+}
+
 .dropdown-icon--shape-sphere {
 	background-image: url("editor:Icons/Dropdown/shape-sphere.svg");
 }

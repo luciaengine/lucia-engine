@@ -22,10 +22,10 @@ using Components::WindVolumeBlendMode;
 using Components::WindVolumeShape;
 
 static constexpr EnumEntry<WindVolumeShape> kWindVolumeShapes[] = {
-    {WindVolumeShape::Box, "Box"},
-    {WindVolumeShape::Sphere, "Sphere"},
-    {WindVolumeShape::Capsule, "Capsule"},
-    {WindVolumeShape::Cylinder, "Cylinder"},
+    {WindVolumeShape::Box, "Box", "dropdown-icon--shape-box"},
+    {WindVolumeShape::Sphere, "Sphere", "dropdown-icon--shape-sphere"},
+    {WindVolumeShape::Capsule, "Capsule", "dropdown-icon--shape-capsule"},
+    {WindVolumeShape::Cylinder, "Cylinder", "dropdown-icon--shape-cylinder"},
 };
 
 static constexpr EnumEntry<WindVolumeBlendMode> kWindVolumeBlendModes[] = {
