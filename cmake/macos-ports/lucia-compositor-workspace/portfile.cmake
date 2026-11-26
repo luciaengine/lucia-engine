@@ -7,7 +7,7 @@ vcpkg_from_github(
     REPO robbietilton/Compositor
     REF cbb9fb65da647b1e9c36cd396d35e5b7fea2f199
     SHA512 92c80b67d7fe6b3c0ba74f30b0c96a67f90450f87355f4ac7959f79171cbcfa55eb29d8bb78eb2d58fe5ba2e810133a14422a1ac55b4979d3dd112bde5979715
-    PATCHES lucia-workspace.patch
+    PATCHES lucia-workspace.patch lucia-editor-interaction.patch
 )
 
 find_program(XCODEBUILD xcodebuild REQUIRED)
