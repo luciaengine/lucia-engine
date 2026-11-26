@@ -21,6 +21,8 @@
 #endif
 
 #if defined(_WIN32)
+#include "WebView/WebViewHost_Win32.h"
+
 #ifndef OEMRESOURCE
 #define OEMRESOURCE
 #endif
@@ -1081,7 +1083,9 @@ void Window::PollEvents()
 #else
     glfwPollEvents();
 #endif
-#if defined(__linux__)
+#if defined(_WIN32)
+    PumpWebViewDialogs();
+#elif defined(__linux__)
     PumpWebViewEvents();
 #endif
     if (s_DisplayConfigurationChanged)

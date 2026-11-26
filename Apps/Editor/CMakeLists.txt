@@ -2248,22 +2248,44 @@ add_dependencies(Editor EnginePackagePrebuilts)
 # First-party packages (Packages/eztree, ...) staged next to Editor.exe;
 # the package resolver's implicit engine-package scan mounts them per project.
 ge_stage_packages(Editor)
-set(GE_OPENPENCIL_WEB_ROOT "" CACHE PATH "Built OpenPencil web app to bundle with the macOS Editor")
-if(APPLE AND NOT GE_MOBILE)
+set(GE_OPENPENCIL_WEB_ROOT "" CACHE PATH "Built OpenPencil web app to bundle with the desktop Editor")
+if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    set(_ge_openpencil_dest "$<TARGET_FILE_DIR:Editor>/Tools/OpenPencil")
+    if(APPLE)
+        set(_ge_openpencil_dest "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil")
+    endif()
+
+    set(_ge_openpencil_stage
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_openpencil_dest}")
     if(GE_OPENPENCIL_WEB_ROOT)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT TARGET PlatformWebViewGtk)
+            message(FATAL_ERROR "Bundled OpenPencil requires WebKitGTK 4.1 (2.40 or newer) with GTK X11 support.")
+        endif()
         if(NOT EXISTS "${GE_OPENPENCIL_WEB_ROOT}/index.html")
             message(FATAL_ERROR "GE_OPENPENCIL_WEB_ROOT must contain the built OpenPencil index.html")
         endif()
-        file(GLOB_RECURSE _ge_openpencil_files CONFIGURE_DEPENDS "${GE_OPENPENCIL_WEB_ROOT}/*")
-        set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_openpencil_files}")
+        list(APPEND _ge_openpencil_stage
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory "${GE_OPENPENCIL_WEB_ROOT}" "${_ge_openpencil_dest}")
+    endif()
+
+    if(APPLE)
+        # Bundle content must be staged before the final Editor signature.
+        if(GE_OPENPENCIL_WEB_ROOT)
+            file(GLOB_RECURSE _ge_openpencil_files CONFIGURE_DEPENDS "${GE_OPENPENCIL_WEB_ROOT}/*")
+            set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_openpencil_files}")
+        endif()
         add_custom_command(TARGET Editor POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil"
-            COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${GE_OPENPENCIL_WEB_ROOT}" "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil"
-            COMMENT "Staging the bundled OpenPencil editor")
+            ${_ge_openpencil_stage}
+            COMMENT "Staging the bundled OpenPencil editor"
+            VERBATIM)
     else()
-        add_custom_command(TARGET Editor POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil")
+        # Stage even when only the bundle changed and the editor needs no relink.
+        add_custom_target(StageOpenPencil
+            ${_ge_openpencil_stage}
+            COMMENT "Staging the bundled OpenPencil editor"
+            VERBATIM)
+        set_target_properties(StageOpenPencil PROPERTIES FOLDER "Apps/Editor")
+        add_dependencies(Editor StageOpenPencil)
     endif()
 endif()
 if(APPLE AND NOT GE_MOBILE)

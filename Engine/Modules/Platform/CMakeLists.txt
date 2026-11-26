@@ -182,7 +182,8 @@ endif()
 	        message(FATAL_ERROR "The WebView2 SDK (vcpkg port 'webview2', declared in vcpkg.json) was not found. "
 	                            "Configure with the vcpkg toolchain file (CMAKE_TOOLCHAIN_FILE) so the port installs.")
 	    endif()
-	    target_link_libraries(Platform PRIVATE unofficial::webview2::webview2)
+	    find_package(nlohmann_json CONFIG REQUIRED)
+	    target_link_libraries(Platform PRIVATE unofficial::webview2::webview2 nlohmann_json::nlohmann_json Crypt32)
  endif()
 
 if (APPLE AND NOT GE_MOBILE)
@@ -226,7 +227,7 @@ if (UNIX AND NOT APPLE AND NOT EMSCRIPTEN AND NOT GE_MOBILE)
             # System packages only: vcpkg's .pc files on CMAKE_PREFIX_PATH (harfbuzz, freetype2,
             # zlib) fail the exact versions the system's GTK requires.
             pkg_check_modules(WEBKITGTK QUIET IMPORTED_TARGET NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH
-                webkit2gtk-4.1 gtk+-x11-3.0)
+                webkit2gtk-4.1>=2.40 gtk+-x11-3.0)
             pkg_check_modules(LIBSECRET QUIET IMPORTED_TARGET NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH libsecret-1)
         endif()
     endif()
@@ -258,7 +259,7 @@ if (UNIX AND NOT APPLE AND NOT EMSCRIPTEN AND NOT GE_MOBILE)
         message(STATUS "WebKitGTK ${WEBKITGTK_webkit2gtk-4.1_VERSION} found: the web view is built")
     else()
         target_compile_definitions(Platform PRIVATE GE_HAVE_WEBKITGTK=0)
-        message(STATUS "WebKitGTK 4.1 not found: the web view is not built. Install webkit2gtk4.1-devel "
+        message(STATUS "WebKitGTK 4.1 (2.40 or newer) not found: the web view is not built. Install webkit2gtk4.1-devel "
                        "(Fedora) or libwebkit2gtk-4.1-dev (Debian, Ubuntu) to build it.")
     endif()
 endif()

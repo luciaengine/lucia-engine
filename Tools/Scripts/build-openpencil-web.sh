@@ -38,6 +38,7 @@ SUMS
     patch -p1 < "$script_directory/openpencil-shape-preview.patch"
     patch -p1 < "$script_directory/openpencil-share-style.patch"
     patch -p1 < "$script_directory/openpencil-quit-prompt.patch"
+    patch -p1 < "$script_directory/openpencil-desktop-bridge.patch"
     patch -p1 < "$script_directory/openpencil-selection-preview.patch"
     patch -p1 < "$script_directory/openpencil-marquee-performance.patch"
     patch -p1 < "$script_directory/openpencil-marquee-bounds.patch"
