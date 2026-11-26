@@ -66,11 +66,14 @@ struct DragState
 };
 extern DragState g_DragState;
 
-WebPanel::WebPanel()
-    : DockPanel("Web")
+WebPanel::WebPanel(std::string title, std::string startURL, std::filesystem::path bundledApp)
+    : DockPanel(title), m_StartURL(std::move(startURL)), m_BundledApp(std::move(bundledApp))
 {
     AddClass("web-panel");
-    s_NativeDragPanel = this;
+    if (!m_BundledApp.empty())
+        AddClass("web-panel-bundled-app");
+    else if (m_StartURL.empty())
+        s_NativeDragPanel = this;
 }
 
 WebPanel::~WebPanel()
@@ -304,7 +307,7 @@ void WebPanel::RefreshElementPointers()
     m_WebViewContainer = FindById("WebViewContainer"_sid);
     m_ErrorLabel = dynamic_cast<Label*>(FindById("WebErrorLabel"_sid));
 
-    if (m_WebViewContainer && !m_WebViewContainer->HasClass("web-asset-drop-initialized"))
+    if (m_StartURL.empty() && m_BundledApp.empty() && m_WebViewContainer && !m_WebViewContainer->HasClass("web-asset-drop-initialized"))
     {
         m_WebViewContainer->AddClass("web-asset-drop-initialized");
 
@@ -476,7 +479,7 @@ void WebPanel::OnLoadButtonClicked()
     LoadURL(url);
 
     // Remember the page the user chose so the panel reopens on it next session.
-    if (WebTab* tab = ActiveTab(); tab && !tab->url.empty())
+    if (WebTab* tab = ActiveTab(); m_StartURL.empty() && tab && !tab->url.empty())
     {
         auto prefs = Editor::OpenEditorPreferences();
         std::string err;
@@ -1071,7 +1074,20 @@ void WebPanel::SetupWebView()
     m_ActiveTab = 0;
     UpdateWebViewSize();
 
-    std::string startURL = m_PendingURL;
+    if (!m_BundledApp.empty())
+    {
+        if (!ActiveView()->LoadBundledApp(m_BundledApp))
+        {
+            auto& view = ActiveTab()->view;
+            view->Destroy();
+            view.reset();
+            if (m_ErrorLabel)
+                m_ErrorLabel->SetText("This Editor build does not include the local web app.");
+        }
+        return;
+    }
+
+    std::string startURL = m_PendingURL.empty() ? m_StartURL : std::move(m_PendingURL);
     m_PendingURL.clear();
     if (startURL.empty())
     {

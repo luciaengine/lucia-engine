@@ -3336,7 +3336,6 @@ bool EditorApplication::Initialize()
         auto* settingsPanel = FindFirstPanelOfType<SettingsPanel>(m_PanelStorage);
         auto* uiDemoPanel = FindFirstPanelOfType<UIDemoPanel>(m_PanelStorage);
         auto* logPanel = FindFirstPanelOfType<LogPanel>(m_PanelStorage);
-        auto* webPanel = FindFirstPanelOfType<WebPanel>(m_PanelStorage);
         auto* nodeGraphPanel = FindFirstPanelOfType<GraphPanel>(m_PanelStorage);
         auto* monitorsPanel = FindFirstPanelOfType<MonitorsPanel>(m_PanelStorage);
 
@@ -4279,10 +4278,6 @@ bool EditorApplication::Initialize()
                     // EditorVersionControlUi and registered with
                     // Editor::EditorSettingsRegistry; the SettingsPanel renders
                     // it from that descriptor and needs no wiring here.
-                    if (webPanel && main && main->window)
-                    {
-                        webPanel->SetWindow(main->window.get());
-                    }
                     // Wire SettingsPanel to UIManager for AA strength control
                     if (settingsPanel && main && main->ui)
                     {
@@ -7649,16 +7644,19 @@ void EditorApplication::Render()
         // We keep the view "alive" (not hidden) so the page and audio keep playing in the background.
         if (ctx->docking)
         {
-            if (auto* webPanel = FindFirstPanelOfType<WebPanel>(m_PanelStorage))
+            const bool modalBlocking =
+                (m_ProjectPickerModal && m_ProjectPickerModal->ShouldSuppressNativeWebView()) ||
+                (m_SceneEditor && m_SceneEditor->IsAnyModalOpen()) || m_VideoPlayer.IsOpen();
+            for (const auto& [id, panel] : ctx->docking->GetPanels())
             {
-                const bool webTabInactive = !ctx->docking->IsPanelActiveTab(EditorPanelIds::Web);
-                const bool projectPickerBlocking =
-                    m_ProjectPickerModal != nullptr && m_ProjectPickerModal->ShouldSuppressNativeWebView();
-                const bool sceneModalBlocking =
-                    m_SceneEditor && m_SceneEditor->IsAnyModalOpen();
-                const bool videoModalBlocking = m_VideoPlayer.IsOpen();
-                webPanel->SetWebViewOffScreen(webTabInactive || projectPickerBlocking
-                    || sceneModalBlocking || videoModalBlocking);
+                auto* webPanel = dynamic_cast<WebPanel*>(panel);
+                if (!webPanel)
+                    continue;
+                const bool isActive = ctx->docking->IsPanelActiveTab(id);
+                if (isActive)
+                    webPanel->SetWindow(ctx->window.get());
+                if (webPanel->IsHostedBy(ctx->window.get()))
+                    webPanel->SetWebViewOffScreen(!isActive || modalBlocking);
             }
         }
 

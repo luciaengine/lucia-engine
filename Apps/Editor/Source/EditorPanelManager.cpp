@@ -524,7 +524,7 @@ void EditorPanelManager::ShowOrActivateWebPanel(EditorWindowContext* ctx)
     // Open in center (same tab group as Scene/Game/NodeGraph view)
     ShowOrActivatePanel(ctx, EditorPanelIds::Web, EditorPanelIds::SceneView);
 
-    if (auto* webPanel = FindFirstPanelOfType<WebPanel>())
+    if (auto* webPanel = dynamic_cast<WebPanel*>(ctx->docking->GetPanel(EditorPanelIds::Web)))
     {
         if (ctx->window)
             webPanel->SetWindow(ctx->window.get());
@@ -538,7 +538,7 @@ void EditorPanelManager::ShowOrActivateHelpPanel(std::string_view page)
 
     EditorWindowContext* ctx = m_Windows->front().get();
     ShowOrActivateWebPanel(ctx);
-    if (auto* webPanel = FindFirstPanelOfType<WebPanel>())
+    if (auto* webPanel = ctx->docking ? dynamic_cast<WebPanel*>(ctx->docking->GetPanel(EditorPanelIds::Web)) : nullptr)
         webPanel->Navigate(std::string(WebPanel::kHelpDocsURL) + std::string(page));
 }
 

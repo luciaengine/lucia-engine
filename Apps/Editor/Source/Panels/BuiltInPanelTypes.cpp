@@ -33,6 +33,7 @@
 #include "Panels/VisualProfilerPanel.h"
 #include "Panels/VramPanel.h"
 #include "Panels/WebPanel.h"
+#include "Core/ApplicationPaths.h"
 
 #include <memory>
 
@@ -53,6 +54,17 @@ template <typename T>
 std::unique_ptr<UIElement> MakePanel()
 {
     return std::make_unique<T>();
+}
+
+std::unique_ptr<UIElement> MakeOpenPencilPanel()
+{
+    return std::make_unique<WebPanel>("OpenPencil", "https://cloud.openpencil.dev/");
+}
+
+std::unique_ptr<UIElement> MakeLocalOpenPencilPanel()
+{
+    return std::make_unique<WebPanel>("OpenPencil Local", "",
+        ApplicationPaths::GetExecutableDirectory() / "Tools" / "OpenPencil");
 }
 
 std::unique_ptr<UIElement> MakeMaterialGraphPanel()
@@ -97,6 +109,8 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"SettingsPanel", &MakePanel<SettingsPanel>},
     {"DiffPanel", &MakePanel<DiffPanel>},
     {"WebPanel", &MakePanel<WebPanel>},
+    {"OpenPencilPanel", &MakeOpenPencilPanel},
+    {"LocalOpenPencilPanel", &MakeLocalOpenPencilPanel},
     {"BuildPanel", &MakePanel<BuildPanel>},
     {"AnimationWindowPanel", &MakePanel<AnimationWindowPanel>},
     {"AnimationTimelinePanel", &MakePanel<AnimationTimelinePanel>},
@@ -122,6 +136,8 @@ constexpr FallbackDockPanel kFallbackDockPanels[] = {
     {EditorPanelIds::Log, "LogPanel"},
     {EditorPanelIds::ScriptErrors, "ScriptErrorsPanel"},
     {EditorPanelIds::Web, "WebPanel"},
+    {"OpenPencil", "OpenPencilPanel"},
+    {"OpenPencilLocal", "LocalOpenPencilPanel"},
     {EditorPanelIds::NodeGraph, "NodeGraphPanel"},
     {EditorPanelIds::Build, "BuildPanel"},
     {EditorPanelIds::Mixer, "MixerPanel"},

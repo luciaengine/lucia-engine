@@ -37,7 +37,8 @@ class WebPanel : public DockPanel
     /// last user-entered URL is restored from editor preferences).
     static constexpr const char* kHelpDocsURL = "https://www.openengine.dev/docs/";
 
-    WebPanel();
+    explicit WebPanel(std::string title = "Web", std::string startURL = {},
+                      std::filesystem::path bundledApp = {});
     ~WebPanel() override;
 
     void OnPostLayout() override;
@@ -49,6 +50,7 @@ class WebPanel : public DockPanel
     /// panel binds (and tries to set up) when it is first shown, while
     /// ShowOrActivateWebPanel shows the panel and only then hands it the window.
     void SetWindow(Platform::Window* window);
+    bool IsHostedBy(const Platform::Window* window) const { return m_ParentWindow == window; }
 
     /// Show a URL without disturbing a page the user is browsing: activates an
     /// existing tab already on that URL, reuses a blank tab, or opens a new tab.
@@ -120,6 +122,8 @@ class WebPanel : public DockPanel
     std::vector<WebTab> m_Tabs;
     size_t m_ActiveTab = 0;
     Platform::Window* m_ParentWindow = nullptr;
+    const std::string m_StartURL;
+    const std::filesystem::path m_BundledApp;
     std::string m_PendingURL;
     // The active view's navigation state the controls last showed; empty until they first show one.
     std::optional<Platform::WebViewNavigation> m_ShownNavigation;

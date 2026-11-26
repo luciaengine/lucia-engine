@@ -11,6 +11,7 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 // Private API to enable HTML5 fullscreen in WKWebView (YouTube and other sites).
 // Without this, pages show "Your browser doesn't support fullscreen".
@@ -20,6 +21,67 @@
 
 // Custom navigation delegate to intercept YouTube embed requests and inject proper headers
 @interface YouTubeNavigationDelegate : NSObject <WKNavigationDelegate>
+@end
+
+@interface BundledWebAppHandler : NSObject <WKURLSchemeHandler>
+@property(nonatomic, strong) NSURL* directory;
+@end
+
+@implementation BundledWebAppHandler
+
+- (void)webView:(WKWebView*)webView startURLSchemeTask:(id<WKURLSchemeTask>)task
+{
+    (void)webView;
+    NSURL* request = task.request.URL;
+    NSURL* directory = self.directory;
+    if (!directory || ![request.host isEqualToString:@"editor"] ||
+        ![task.request.HTTPMethod isEqualToString:@"GET"])
+    {
+        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];
+        return;
+    }
+
+    NSString* path = request.path;
+    NSString* relative = path.length > 1 ? [path substringFromIndex:1] : @"index.html";
+    NSURL* file = [[directory URLByAppendingPathComponent:relative] URLByResolvingSymlinksInPath];
+    NSString* prefix = [directory.path stringByAppendingString:@"/"];
+    if (![file.path hasPrefix:prefix])
+    {
+        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorNoPermissionsToReadFile userInfo:nil]];
+        return;
+    }
+
+    NSData* bytes = [NSData dataWithContentsOfURL:file options:NSDataReadingMappedIfSafe error:nullptr];
+    if (!bytes)
+    {
+        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];
+        return;
+    }
+    NSString* extension = file.pathExtension.lowercaseString;
+    UTType* type = [UTType typeWithFilenameExtension:extension];
+    NSString* mime = type.preferredMIMEType ?: @"application/octet-stream";
+    if ([extension isEqualToString:@"wasm"])
+        mime = @"application/wasm";
+    else if ([extension isEqualToString:@"js"] || [extension isEqualToString:@"mjs"])
+        mime = @"text/javascript";
+    NSHTTPURLResponse* response = [[NSHTTPURLResponse alloc] initWithURL:request
+        statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:@{
+            @"Content-Type": mime,
+            @"Content-Length": [@(bytes.length) stringValue],
+            @"Cross-Origin-Opener-Policy": @"same-origin",
+            @"Cross-Origin-Embedder-Policy": @"require-corp"
+        }];
+    [task didReceiveResponse:response];
+    [task didReceiveData:bytes];
+    [task didFinish];
+}
+
+- (void)webView:(WKWebView*)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task
+{
+    (void)webView;
+    (void)task;
+}
+
 @end
 
 @interface WebViewFileDragSource : NSObject <NSDraggingSource>
@@ -120,6 +182,8 @@ public:
 
         // Create WKWebView with configuration for YouTube embeds
         WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
+        m_BundledApp = [[BundledWebAppHandler alloc] init];
+        [config setURLSchemeHandler:m_BundledApp forURLScheme:@"lucia-app"];
         // Keep the previous page visible until the next document is complete;
         // painting a partial document can expose empty content and changing scrollbars.
         config.suppressesIncrementalRendering = YES;
@@ -277,6 +341,18 @@ public:
 
         [m_WebView loadRequest:request];
         return true;
+    }
+
+    bool LoadBundledApp(const std::filesystem::path& directory) override
+    {
+        if (!m_Initialized || !std::filesystem::is_regular_file(directory / "index.html"))
+            return false;
+
+        NSString* path = [NSString stringWithUTF8String:directory.c_str()];
+        if (!path)
+            return false;
+        m_BundledApp.directory = [[NSURL fileURLWithPath:path isDirectory:YES] URLByResolvingSymlinksInPath];
+        return LoadURL("lucia-app://editor/");
     }
 
     bool LoadHTML(const std::string& html, const std::string& baseURL) override {
@@ -495,6 +571,7 @@ public:
 private:
     Window* m_ParentWindow = nullptr;
     WKWebView* m_WebView = nil;
+    BundledWebAppHandler* m_BundledApp = nil;
     NSView* m_HostView = nil;
     YouTubeNavigationDelegate* m_NavigationDelegate = nil;
     WebViewFileDragSource* m_DragSource = nil;

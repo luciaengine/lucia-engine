@@ -32,6 +32,9 @@ public:
     // Load a URL in the web view
     virtual bool LoadURL(const std::string& url) = 0;
 
+    /// Load an installed static app with its own origin. The directory must have an index.html.
+    virtual bool LoadBundledApp(const std::filesystem::path& /*directory*/) { return false; }
+
     // Load HTML content directly (for better control over iframe embeds)
     virtual bool LoadHTML(const std::string& html, const std::string& baseURL = "https://www.youtube.com") = 0;
 

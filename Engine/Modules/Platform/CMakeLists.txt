@@ -186,7 +186,7 @@ endif()
  endif()
 
 if (APPLE AND NOT GE_MOBILE)
-    target_link_libraries(Platform PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework Cocoa" "-framework WebKit"
+    target_link_libraries(Platform PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework Cocoa" "-framework WebKit" "-framework UniformTypeIdentifiers"
         "-framework AVFoundation" "-framework Speech" "-framework Security")
 endif()
 

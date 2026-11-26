@@ -48,6 +48,10 @@
         <DockablePanel id="Diff" type="DiffPanel" title="Diff" />
         <DockablePanel id="Web" type="WebPanel" title="Web"
                       layout="panels/WebPanel.uxml" style="panels/WebPanel.css" />
+        <DockablePanel id="OpenPencil" type="OpenPencilPanel" title="OpenPencil"
+                      layout="panels/WebPanel.uxml" style="panels/WebPanel.css" />
+        <DockablePanel id="OpenPencilLocal" type="LocalOpenPencilPanel" title="OpenPencil Local"
+                      layout="panels/WebPanel.uxml" style="panels/WebPanel.css" />
         <!-- Graph docks are per kind. NodeGraph keeps its id so saved layouts
              still restore the shader-graph tab. Opened from the panel menu or
              by opening a graph asset. -->
