@@ -1,0 +1,3 @@
+set(VCPKG_POLICY_EMPTY_INCLUDE_FOLDER enabled)
+file(INSTALL "${CMAKE_CURRENT_LIST_DIR}/LuciaMediaControls.swift" DESTINATION "${CURRENT_PACKAGES_DIR}/share/${PORT}")
+vcpkg_install_copyright(FILE_LIST "${CMAKE_CURRENT_LIST_DIR}/../../../LICENSE")

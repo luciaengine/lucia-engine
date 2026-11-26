@@ -15,6 +15,7 @@
         "swscale",
         "ffmpeg"
       ]
-    }
+    },
+    "lucia-media-controls"
   ]
 }
