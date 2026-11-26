@@ -2447,7 +2447,14 @@ bool EditorApplication::Initialize()
     { return GetPlaySurface(mainWindow); };
     mainCtxRaw->inputConfig = mainInput;
     WindowInputRouter::BindBasicHandlers(mainCtxRaw->inputConfig);
-    mainCtx->window->SetRefreshHandler([this] { Tick(); });
+    mainCtx->window->SetRefreshHandler([this]
+    {
+#if defined(__APPLE__)
+        if (NativeWebDragOwnsFrameLoop())
+            return;
+#endif
+        Tick();
+    });
     // The close arrives in the event pump between frames, so the loop stops before the next frame.
     mainCtx->window->SetCloseRequestedHandler(
         [this]
@@ -7578,6 +7585,43 @@ std::string EditorApplication::BuildPerfDumpLine() const
     return std::string(buf);
 }
 
+#if defined(__APPLE__)
+bool EditorApplication::NativeWebDragOwnsFrameLoop() const
+{
+    if (m_IsShuttingDown || m_Windows.size() != 1 || IsFixedFrameRateEnabled() ||
+        (m_PlayMode && m_PlayMode->GetState() != Editor::PlayModeState::Edit) ||
+        (m_MovieRecorder && m_MovieRecorder->IsSessionActive()) ||
+        (m_ProjectPickerModal && m_ProjectPickerModal->ShouldSuppressNativeWebView()) ||
+        (m_SceneEditor && m_SceneEditor->IsAnyModalOpen()) || m_VideoPlayer.IsOpen())
+        return false;
+
+    const auto* context = m_Windows.front().get();
+    if (!context || !context->window || context->window->ShouldClose() || !context->docking ||
+        context->pendingShow)
+        return false;
+
+    for (const auto& [id, panel] : context->docking->GetPanels())
+    {
+        auto* webPanel = dynamic_cast<WebPanel*>(panel);
+        if (webPanel && webPanel->IsHostedBy(context->window.get()) &&
+            context->docking->IsPanelActiveTab(id) && webPanel->IsBundledAppDragActive())
+            return true;
+    }
+    return false;
+}
+
+bool EditorApplication::DeferFrameForNativeEvents()
+{
+    if (!NativeWebDragOwnsFrameLoop())
+        return false;
+
+    // WebKit presents independently. Service AppKit before running another editor or world tick.
+    Platform::Window::WaitOnNextEventPoll(0.008);
+    Editor::MainThreadHangWatchdog::NotifyAlive();
+    return true;
+}
+#endif
+
 void EditorApplication::Render()
 {
     if (m_Windows.empty())
@@ -7681,9 +7725,6 @@ void EditorApplication::Render()
         // Native WKWebView/WebView2 is a subview above GPU UI, so also hide it while any modal is visible
         // (or fading out) — otherwise the modal renders underneath.
         // We keep the view "alive" (not hidden) so the page and audio keep playing in the background.
-#if defined(__APPLE__)
-        bool bundledAppDragging = false;
-#endif
         if (ctx->docking)
         {
             const bool modalBlocking =
@@ -7700,22 +7741,9 @@ void EditorApplication::Render()
                 if (webPanel->IsHostedBy(ctx->window.get()))
                 {
                     webPanel->SetWebViewOffScreen(!isActive || modalBlocking);
-#if defined(__APPLE__)
-                    bundledAppDragging |= isActive && !modalBlocking && webPanel->IsBundledAppDragActive();
-#endif
                 }
             }
         }
-
-#if defined(__APPLE__)
-        if (bundledAppDragging && m_Windows.size() == 1 && !IsFixedFrameRateEnabled())
-        {
-            // The native canvas presents independently. Let AppKit run its sources on the next
-            // event poll instead of blocking the main thread in a sleep or a swapchain present.
-            Platform::Window::WaitOnNextEventPoll(0.008);
-            continue;
-        }
-#endif
 
         // Keep debug zones up-to-date even when not hovering/dragging
         if (DockOverlay::IsDebugZonesEnabled())

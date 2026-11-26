@@ -340,6 +340,10 @@ class EditorApplication : public Application
     void OnFilesDropped(EditorWindowContext* ctx, const std::vector<std::filesystem::path>& paths);
 
   private:
+#if defined(__APPLE__)
+    bool NativeWebDragOwnsFrameLoop() const;
+    bool DeferFrameForNativeEvents() override;
+#endif
     // The startup jobs hook (EngineCore::SetStartupJobsHook): creates the main window on
     // the main thread, then begins its render device on a startup-channel job. The result
     // waits in m_StartupMainWindow; it stays null when the window cannot be created.

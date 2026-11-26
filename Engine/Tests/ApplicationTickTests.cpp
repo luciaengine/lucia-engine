@@ -37,8 +37,11 @@ public:
     int ExitAfterUpdates = -1;
     bool RequestNestedTick = false;
     bool NestedTickResult = false;
+    bool DeferFrame = false;
 
 protected:
+    bool DeferFrameForNativeEvents() override { return DeferFrame; }
+
     void Update(GameEngine::float64) override
     {
         ++UpdateCalls;
@@ -177,7 +180,16 @@ TEST(ApplicationTick, ManualTicksAdvanceOneFrameEachAndStopOnExit)
         EXPECT_TRUE(app.NestedTickResult);
         EXPECT_EQ(app.UpdateCalls, 1);
         EXPECT_EQ(app.RenderCalls, 1);
-        // No window exists, so the pump runs no frame and the step ticks once.
+        // A native interaction can keep the event pump running while deferring editor work.
+        app.DeferFrame = true;
+        EXPECT_TRUE(app.PollEventsAndTick());
+        EXPECT_TRUE(app.PollEventsAndTick());
+        EXPECT_EQ(app.GetFrameCount(), 1u);
+        EXPECT_EQ(app.UpdateCalls, 1);
+        EXPECT_EQ(app.RenderCalls, 1);
+
+        // As soon as the interaction ends, resume exactly one frame per pump.
+        app.DeferFrame = false;
         EXPECT_TRUE(app.PollEventsAndTick());
         EXPECT_EQ(app.UpdateCalls, 2);
         EXPECT_EQ(app.RenderCalls, 2);
