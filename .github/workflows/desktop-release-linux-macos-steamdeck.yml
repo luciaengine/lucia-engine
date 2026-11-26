@@ -1,0 +1,126 @@
+name: Lucia Linux, Intel macOS, and Steam Deck builds
+on:
+  push:
+    branches: [release-build/1.0.0-windows]
+permissions:
+  contents: read
+env:
+  SOURCE_COMMIT: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: mcr.microsoft.com/dotnet/sdk:10.0
+    timeout-minutes: 330
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential clang cmake ninja-build pkg-config python3 nasm autoconf autoconf-archive automake libtool git curl zip unzip tar libxinerama-dev libxcursor-dev libxrandr-dev xorg-dev libglu1-mesa-dev libwayland-dev
+      - uses: actions/checkout@v4
+        with:
+          ref: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+          persist-credentials: false
+      - name: Configure and build Release
+        shell: bash
+        env:
+          VCPKG_MAX_CONCURRENCY: '4'
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          cmake --preset linux-x64-local -B "$RUNNER_TEMP/lucia-build" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_PLAYER=ON -DBUILD_TOOLS=OFF
+          cmake --build "$RUNNER_TEMP/lucia-build" --target Editor Player --parallel 4
+      - name: Package and inspect both applications
+        shell: bash
+        run: |
+          name=LuciaEngine-1.0.0-main-0ed69a0b-Linux-x86_64
+          stage="$RUNNER_TEMP/$name"
+          bin="$RUNNER_TEMP/lucia-build/bin/Release"
+          mkdir -p "$stage/Apps" "$RUNNER_TEMP/lucia-artifacts"
+          cp -a "$bin/Apps/Editor" "$bin/Apps/Player" "$stage/Apps/"
+          if [ -d "$bin/Tools" ]; then cp -a "$bin/Tools" "$stage/"; fi
+          cp LICENSE THIRD_PARTY_NOTICES.md "$stage/"
+          printf 'Source commit: %s\nLinux x86-64 Release. Extract the archive and run Apps/Editor/Editor. Requires Vulkan and X11 or XWayland.\n' "$SOURCE_COMMIT" > "$stage/README.txt"
+          for app in Editor Player; do
+            readelf -h "$stage/Apps/$app/$app" | grep 'Advanced Micro Devices X86-64'
+            test -d "$stage/Apps/$app/Assets/Shaders"
+          done
+          tar -czf "$RUNNER_TEMP/lucia-artifacts/$name.tar.gz" -C "$RUNNER_TEMP" "$name"
+          tar -tzf "$RUNNER_TEMP/lucia-artifacts/$name.tar.gz" > "$RUNNER_TEMP/linux-members.txt"
+          grep -Fx "$name/Apps/Editor/Editor" "$RUNNER_TEMP/linux-members.txt"
+          grep -Fx "$name/Apps/Player/Player" "$RUNNER_TEMP/linux-members.txt"
+          sha256sum "$RUNNER_TEMP/lucia-artifacts/$name.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lucia-linux-x86_64-0ed69a0b
+          path: ${{ runner.temp }}/lucia-artifacts/*.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+  macos-intel:
+    runs-on: macos-26-intel
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Install build dependencies
+        run: brew install ninja pkg-config molten-vk autoconf autoconf-archive automake libtool
+      - name: Configure and build Release
+        shell: bash
+        env:
+          VCPKG_MAX_CONCURRENCY: '4'
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          cmake --preset macos-x64-ninja -B "$RUNNER_TEMP/lucia-build" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_PLAYER=ON -DBUILD_TOOLS=OFF
+          cmake --build "$RUNNER_TEMP/lucia-build" --target Editor Player --parallel 4
+      - name: Package and inspect both applications
+        shell: bash
+        run: |
+          name=LuciaEngine-1.0.0-main-0ed69a0b-macOS-x86_64
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage" "$RUNNER_TEMP/lucia-artifacts"
+          for app in Editor Player; do
+            ditto "$RUNNER_TEMP/lucia-build/bin/Release/Apps/$app/$app.app" "$stage/$app.app"
+            lipo -verify_arch x86_64 "$stage/$app.app/Contents/MacOS/$app"
+            codesign --verify --deep --strict "$stage/$app.app"
+          done
+          cp LICENSE THIRD_PARTY_NOTICES.md "$stage/"
+          printf 'Source commit: %s\nIntel macOS Release. Extract before opening Editor.app.\n' "$SOURCE_COMMIT" > "$stage/README.txt"
+          ditto -c -k --keepParent "$stage" "$RUNNER_TEMP/lucia-artifacts/$name.zip"
+          shasum -a 256 "$RUNNER_TEMP/lucia-artifacts/$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lucia-macos-x86_64-0ed69a0b
+          path: ${{ runner.temp }}/lucia-artifacts/*.zip
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+  steam-deck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+          persist-credentials: false
+      - name: Build and package the Steam Runtime 4 Player
+        shell: bash
+        env:
+          VCPKG_MAX_CONCURRENCY: '4'
+          GE_STEAMDECK_HOST_DIST_DIR: ${{ runner.temp }}/lucia-steam-deck
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          bash Tools/Scripts/build-steamdeck-docker.sh -j 4
+          tar -tzf "$GE_STEAMDECK_HOST_DIST_DIR/steamdeck-player.tar.gz" > "$RUNNER_TEMP/deck-members.txt"
+          grep -E '/Player$' "$RUNNER_TEMP/deck-members.txt"
+          sha256sum "$GE_STEAMDECK_HOST_DIST_DIR/steamdeck-player.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lucia-steam-deck-player-0ed69a0b
+          path: ${{ runner.temp }}/lucia-steam-deck/steamdeck-player.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
