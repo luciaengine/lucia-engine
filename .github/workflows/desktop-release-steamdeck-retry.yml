@@ -1,11 +1,11 @@
 name: Lucia Steam Deck release retry
 on:
   push:
-    branches: [release-build/0ed69a0b-steamdeck-deps]
+    branches: [release-build/1.0.0-windows]
 permissions:
   contents: read
 env:
-  SOURCE_COMMIT: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+  SOURCE_COMMIT: d3b45f3471421c11335afc66f785fe243b12b98c
 jobs:
   steam-deck:
     runs-on: ubuntu-24.04
@@ -13,12 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+          ref: d3b45f3471421c11335afc66f785fe243b12b98c
           persist-credentials: false
       - name: Build and package the Steam Runtime 4 Player
         shell: bash
         env:
-          VCPKG_MAX_CONCURRENCY: '4'
+          VCPKG_MAX_CONCURRENCY: '2'
           GE_STEAMDECK_HOST_DIST_DIR: ${{ runner.temp }}/lucia-steam-deck
         run: |
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
@@ -32,13 +32,19 @@ jobs:
           packages = "RUN apt-get update && apt-get install -y --no-install-recommends autoconf autoconf-archive automake libtool && rm -rf /var/lib/apt/lists/*"
           dockerfile.write_text(text.replace('WORKDIR /src', packages + '\nWORKDIR /src'))
           PYTHON
-          bash Tools/Scripts/build-steamdeck-docker.sh -j 4
+          if ! bash Tools/Scripts/build-steamdeck-docker.sh -j 4; then
+            diagnostic_dir="$GE_STEAMDECK_HOST_DIST_DIR/vcpkg-failure-logs"
+            if [ -d "$diagnostic_dir" ]; then
+              grep -rniE 'error:|fatal error|Killed|not found|No space' "$diagnostic_dir" | cut -c1-750 | tail -55 || true
+            fi
+            exit 1
+          fi
           tar -tzf "$GE_STEAMDECK_HOST_DIST_DIR/steamdeck-player.tar.gz" > "$RUNNER_TEMP/deck-members.txt"
           grep -E '/Player$' "$RUNNER_TEMP/deck-members.txt"
           sha256sum "$GE_STEAMDECK_HOST_DIST_DIR/steamdeck-player.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
-          name: lucia-steam-deck-player-0ed69a0b
+          name: lucia-steam-deck-player-d3b45f34
           path: ${{ runner.temp }}/lucia-steam-deck/steamdeck-player.tar.gz
           compression-level: 0
           if-no-files-found: error

@@ -1,11 +1,11 @@
 name: Lucia Linux and Windows ARM64 release retry
 on:
   push:
-    branches: [release-build/0ed69a0b-linux-arm64-retry]
+    branches: [release-build/1.0.0-windows]
 permissions:
   contents: read
 env:
-  SOURCE_COMMIT: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+  SOURCE_COMMIT: d3b45f3471421c11335afc66f785fe243b12b98c
 jobs:
   linux:
     runs-on: ubuntu-24.04
@@ -18,7 +18,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential clang cmake ninja-build pkg-config python3 nasm autoconf autoconf-archive automake libtool git curl zip unzip tar libxinerama-dev libxcursor-dev libxrandr-dev xorg-dev libglu1-mesa-dev libwayland-dev
       - uses: actions/checkout@v4
         with:
-          ref: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+          ref: d3b45f3471421c11335afc66f785fe243b12b98c
           persist-credentials: false
       - name: Configure and build Release
         shell: bash
@@ -32,7 +32,7 @@ jobs:
       - name: Package and inspect both applications
         shell: bash
         run: |
-          name=LuciaEngine-1.0.0-main-0ed69a0b-Linux-x86_64
+          name=LuciaEngine-1.0.0-main-d3b45f34-Linux-x86_64
           stage="$RUNNER_TEMP/$name"
           bin="$RUNNER_TEMP/lucia-build/bin/Release"
           mkdir -p "$stage/Apps" "$RUNNER_TEMP/lucia-artifacts"
@@ -51,7 +51,7 @@ jobs:
           sha256sum "$RUNNER_TEMP/lucia-artifacts/$name.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
-          name: lucia-linux-x86_64-0ed69a0b
+          name: lucia-linux-x86_64-d3b45f34
           path: ${{ runner.temp }}/lucia-artifacts/*.tar.gz
           compression-level: 0
           if-no-files-found: error
@@ -62,7 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+          ref: d3b45f3471421c11335afc66f785fe243b12b98c
           persist-credentials: false
       - uses: actions/setup-dotnet@v4
         with:
@@ -82,7 +82,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          if ((git rev-parse HEAD) -ne '0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b') { throw 'Unexpected checkout' }
+          if ((git rev-parse HEAD) -ne 'd3b45f3471421c11335afc66f785fe243b12b98c') { throw 'Unexpected checkout' }
           if ((Get-Content VERSION -Raw).Trim() -ne '1.0.0') { throw 'Unexpected engine version' }
           New-Item -ItemType Directory -Force C:/lucia-vcpkg-binaries | Out-Null
           cmake --preset vs2026-arm64-local -B C:/lucia-release -DBUILD_TESTING=OFF -DBUILD_EDITOR=ON -DBUILD_TOOLS=OFF
@@ -105,7 +105,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $bin = 'C:/lucia-release/bin/Release'
-          $name = 'LuciaEngine-1.0.0-main-0ed69a0b-Windows-arm64'
+          $name = 'LuciaEngine-1.0.0-main-d3b45f34-Windows-arm64'
           $stage = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory $stage | Out-Null
           New-Item -ItemType Directory "$stage/Apps" | Out-Null
@@ -114,7 +114,7 @@ jobs:
           Copy-Item LICENSE,THIRD_PARTY_NOTICES.md "$stage/"
           @'
           Lucia Engine 1.0.0
-          Source commit: 0ed69a0bf69eaa2ac785891476e2ef905ae6bc3b
+          Source commit: d3b45f3471421c11335afc66f785fe243b12b98c
           Platform: Windows arm64
 
           Extract the entire archive. Open Apps/Editor/Editor.exe to create
@@ -139,7 +139,7 @@ jobs:
           Get-FileHash "C:/lucia-artifacts/$name.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: lucia-windows-arm64-0ed69a0b
+          name: lucia-windows-arm64-d3b45f34
           path: C:/lucia-artifacts/*.zip
           if-no-files-found: error
           compression-level: 0
