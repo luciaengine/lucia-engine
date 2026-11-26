@@ -1550,8 +1550,7 @@ ListView {
 	gap: 4px;
 }
 
-/* A search row's leading icon while Show Icon and Search Hint is off. After the group rule
-   above, so it wins over that rule's display. */
+/* A search row's leading icon while Show Icon and Search Hint is off. */
 .search-row-icon-hidden {
 	display: none;
 }
