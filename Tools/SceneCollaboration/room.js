@@ -259,6 +259,7 @@ byId('accept').addEventListener('click', async () => {
     const current = makeCall(state, offer.from, offer.call);
     current.candidates = offer.candidates;
     await setRemote(current, offer.value);
+    for (const transceiver of current.pc.getTransceivers()) transceiver.direction = 'sendrecv';
     await current.pc.setLocalDescription(await current.pc.createAnswer());
     await shareDescription(state, current);
   } catch (error) {
