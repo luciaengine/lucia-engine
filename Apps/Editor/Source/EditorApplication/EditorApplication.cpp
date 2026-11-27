@@ -33,6 +33,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "UI/Layout/DockLayoutController.h"
 #include "UI/Layout/DockingHitTest.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/Layout/EditorDockConfigParser.h"
@@ -3215,6 +3216,8 @@ bool EditorApplication::Initialize()
             // Instantiate panels from inventory.
             for (const auto& def : dockCfg.panels)
             {
+                if (def.type == "PackagePanel")
+                    continue;
                 std::unique_ptr<UIElement> panel = Editor::EditorPanelRegistry::Get().CreatePanelOfType(def.type);
                 if (!panel)
                 {
@@ -3267,6 +3270,8 @@ bool EditorApplication::Initialize()
         // the startup order where packages mounted before the dock was built).
         m_Packages->WirePanels();
         RefreshOpenPencilPackagePanels();
+        if (m_DefaultDockLayout)
+            (void)DockLayoutController(*m_Docking).ApplyForRegisteredPanels(m_DefaultDockLayout.get(), {});
 
         // Docking model exists: start consuming package panel / editor-chrome
         // stylesheet registrations (EditorSDK phase 2). Package Editor modules
@@ -5186,11 +5191,18 @@ void EditorApplication::ConsumePackagePanelDescriptor(const Editor::EditorPanelD
     // fresh instance, then drop the old one (its DLL stays mapped, so the
     // destructor is safe to run; the dockspace rebuild below unmounts it).
     UIElement* previous = m_Docking->GetPanel(descriptor.PanelId);
+    // A package may register after the default layout was filtered for the available panels.
+    const bool restoreDefaultTab = !previous && m_ActiveLayoutPresetIndex == 0 && !m_LayoutPresets.empty() &&
+        EditorPanelManager::FindLeafContainingPanel(m_DefaultDockLayout.get(), descriptor.PanelId) &&
+        !IsActiveLayoutDirty();
     UIElement* raw = panel.get();
     m_PanelStorage.emplace_back(std::move(panel));
     m_Docking->RegisterPanel(descriptor.PanelId, raw);
     Logger::Log::Info("Editor: package panel '{}' registered{}", descriptor.PanelId,
                       previous ? " (replacing forward)" : "");
+
+    if (restoreDefaultTab)
+        (void)DockLayoutController(*m_Docking).ApplyForRegisteredPanels(m_DefaultDockLayout.get(), {});
 
     // A saved layout (or the pre-reload session) may already show this id as
     // an empty tab; rebuild so the mount binds the live element.

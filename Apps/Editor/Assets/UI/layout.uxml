@@ -48,6 +48,10 @@
         <DockablePanel id="Diff" type="DiffPanel" title="Diff" />
         <DockablePanel id="Web" type="WebPanel" title="Web"
                       layout="panels/WebPanel.uxml" style="panels/WebPanel.css" />
+        <!-- Package panels are registered by their enabled packages. -->
+        <DockablePanel id="OpenPencilLocal" type="PackagePanel" title="OpenPencil" />
+        <DockablePanel id="Editroom" type="PackagePanel" title="Editroom" />
+        <DockablePanel id="Compositor" type="PackagePanel" title="Compositor" />
         <!-- Graph docks are per kind. NodeGraph keeps its id so saved layouts
              still restore the shader-graph tab. Opened from the panel menu or
              by opening a graph asset. -->
@@ -85,6 +89,9 @@
                 <DockTabNode panel="SceneView" />
                 <DockTabNode panel="GameView" />
                 <DockTabNode panel="Settings" />
+                <DockTabNode panel="OpenPencilLocal" />
+                <DockTabNode panel="Editroom" />
+                <DockTabNode panel="Compositor" />
               </DockLeafNode>
             </DockSplit>
 
