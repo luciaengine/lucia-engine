@@ -22,4 +22,7 @@ onnx_urls='https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/on
 cmake -S "$scratch/source" -B "$scratch/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DONNXRUNTIME_ARCHIVE="$onnx_urls" -DLUCIA_COMPOSITOR_HOST_SOURCE="$adapter/LuciaCompositor.cpp"
 cmake --build "$scratch/build" --target LuciaMediaWorkspace
-cmake --install "$scratch/build" --component LuciaWorkspace --prefix "$destination/Compositor"
+staged="$scratch/staged/Compositor"
+cmake --install "$scratch/build" --component LuciaWorkspace --prefix "$staged"
+bash "$adapter/bundle-runtime.sh" "$staged"
+cmake -E copy_directory "$staged" "$destination/Compositor"

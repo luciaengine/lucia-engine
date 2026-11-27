@@ -36,8 +36,11 @@ project's Assets folder. Painting updates the scene from memory as each
 composite is ready. Use Compositor's export action to write the image.
 **Stop Live Preview** restores the source texture in the scene.
 
-For Linux x64, install the CompositorLX build dependencies and use the pinned
-host builder. The host uses X11 or XWayland.
+For Linux x64, install the CompositorLX build dependencies and `patchelf`, then
+use the pinned host builder. It stages the linked imaging libraries in a private
+runtime folder and records their package versions and notices on Debian. Use a
+Debian build environment for release artifacts. The host uses the system Qt and
+Poppler Qt runtimes and an X11 or XWayland session.
 
 ```sh
 bash Packages/media-workspaces/Hosts/compositor-linux/build.sh \
