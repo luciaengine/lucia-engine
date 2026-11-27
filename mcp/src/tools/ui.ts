@@ -28,6 +28,26 @@ function noKeyMessage(key: string | number): { message: string } {
 
 export const tools: ToolDef[] = [
   proxyTool({
+    name: "list_creative_workspaces",
+    category: "ui",
+    description:
+      "Find Lucia's creative workspaces: Editroom for video editing, Compositor for images and textures, and bundled OpenPencil for design. Returns each workspace's package-panel registration, current dock visibility, and any visible host status message. A registered panel may still be loading or missing its platform host.",
+    schema: {},
+  }),
+
+  proxyTool({
+    name: "open_creative_workspace",
+    category: "ui",
+    description:
+      "Show an enabled creative workspace in the current Lucia editor: Editroom, Compositor, or the bundled offline OpenPencil. Preserves its existing dock placement and document. When closed, opens it beside Scene View using the editor's normal docking rules. Use list_creative_workspaces to check the host's status after it opens.",
+    schema: {
+      workspace: z.enum(["editroom", "compositor", "openpencil"]).describe(
+        "Workspace id: editroom for video, compositor for images and textures, openpencil for design.",
+      ),
+    },
+  }),
+
+  proxyTool({
     name: "dock_panel",
     category: "ui",
     description:

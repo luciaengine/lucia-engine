@@ -242,6 +242,34 @@ try {
         await mcp.stop();
     }
 
+    // Creative workspaces are available through the same bound assistant session.
+    {
+        const mcp = new McpProcess({
+            ...assistantEnv, GE_MCP_TOOLS: 'list_creative_workspaces,open_creative_workspace',
+        });
+        await mcp.initialize();
+        const tools = (await mcp.request('tools/list', {})).result.tools;
+        check('the assistant lists both creative workspace tools',
+              tools.map(t => t.name).sort().join(',') === 'list_creative_workspaces,open_creative_workspace',
+              JSON.stringify(tools.map(t => t.name)));
+        editor.requests.length = 0;
+        await mcp.request('tools/call', { name: 'list_creative_workspaces', arguments: {} });
+        for (const workspace of ['editroom', 'compositor', 'openpencil'])
+            await mcp.request('tools/call', { name: 'open_creative_workspace', arguments: { workspace } });
+        const forwarded = editor.requests.filter(r => r.method === 'open_creative_workspace');
+        check('the assistant forwards the three bundled workspaces',
+              forwarded.map(r => r.params.workspace).join(',') === 'editroom,compositor,openpencil',
+              JSON.stringify(editor.requests));
+        const before = editor.requests.length;
+        const invalid = await mcp.request('tools/call', {
+            name: 'open_creative_workspace', arguments: { workspace: 'openpencil-online' },
+        });
+        check('the assistant refuses a workspace outside the bundled set',
+              !!(invalid.error || invalid.result?.isError) && editor.requests.length === before,
+              JSON.stringify(invalid));
+        await mcp.stop();
+    }
+
     // A refused binding refuses every call and sends nothing else.
     {
         editor.requests.length = 0;

@@ -110,7 +110,10 @@
 #include "EditorContextMenu/InterceptableContextMenu.h"
 #include "Platform/Display.h"
 #include "EditorPanelIds.h"
+#include "Docking/WindowDockingController.h"
 #include "EditorPanelManager.h"
+#include "Packages/OpenPencilPackageOptions.h"
+#include "UI/Controls/Label.h"
 #include "Engine/Build/BuildPlatforms.h"
 #include "Engine/Build/PlayerBuildConfig.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
@@ -2761,6 +2764,37 @@ static json ReadSceneLoadStatus(const SceneLoadTracker& tracker)
                 {"categories", std::move(categories)}};
 }
 
+namespace
+{
+struct CreativeWorkspace
+{
+    std::string_view Id;
+    const char* Title;
+    const char* PanelId;
+    const char* StatusLabel;
+};
+
+constexpr CreativeWorkspace kCreativeWorkspaces[] = {
+    {"editroom", "Editroom", "Editroom", "WorkspaceStatus"},
+    {"compositor", "Compositor", "Compositor", "WorkspaceStatus"},
+    {"openpencil", "OpenPencil", Editor::kOpenPencilPackageOptions.front().PanelId, "WebErrorLabel"},
+};
+
+json CreativeWorkspaceStatus(const CreativeWorkspace& workspace, DockingManager& docking,
+                             const std::vector<std::string>& floatingPanels)
+{
+    auto* panel = docking.GetPanel(workspace.PanelId);
+    const bool docked = EditorPanelManager::FindLeafContainingPanel(docking.GetRoot(), workspace.PanelId) != nullptr;
+    const bool floating = std::ranges::find(floatingPanels, workspace.PanelId) != floatingPanels.end();
+    const auto* status = panel ? dynamic_cast<const Label*>(panel->FindById(HashStringId(workspace.StatusLabel)))
+                               : nullptr;
+    return {{"workspace", workspace.Id}, {"title", workspace.Title}, {"panelId", workspace.PanelId},
+            {"registered", panel != nullptr}, {"docked", docked}, {"floating", floating},
+            {"visible", panel && (floating || docking.IsPanelActiveTab(workspace.PanelId))},
+            {"statusMessage", status ? status->GetText() : std::string{}}};
+}
+} // namespace
+
 void RegisterDebugHandlers(EditorDebugServer& server,
                            EditorApplication& app,
                            Logger::RingBufferSink* ringBufferSink)
@@ -3458,6 +3492,45 @@ void RegisterDebugHandlers(EditorDebugServer& server,
             tree = json::object();
         Editor::AnnotateDumpCompleteness(tree, completeness, options, Editor::UITreeDumpLookupAdvice::RootIdAvailable);
         return tree; });
+
+    server.RegisterHandler("list_creative_workspaces", [&app](const EditorDebugServer::RequestContext&) -> json
+    {
+        if (!app.m_Docking)
+            return Editor::RefuseRequest("The editor layout is not ready.");
+
+        const auto floatingPanels = app.m_DockDnd ? app.m_DockDnd->FloatingFrames().PanelIds()
+                                                  : std::vector<std::string>{};
+        json workspaces = json::array();
+        for (const auto& workspace : kCreativeWorkspaces)
+            workspaces.push_back(CreativeWorkspaceStatus(workspace, *app.m_Docking, floatingPanels));
+        return {{"workspaces", std::move(workspaces)}};
+    });
+
+    server.RegisterHandler("open_creative_workspace", [&app](const EditorDebugServer::RequestContext& ctx) -> json
+    {
+        const auto id = ctx.params.find("workspace");
+        if (id == ctx.params.end() || !id->is_string())
+            return Editor::RefuseRequest("Provide a workspace id: editroom, compositor, or openpencil.");
+
+        const auto& workspaceId = id->get_ref<const std::string&>();
+        const auto* selected = std::ranges::find(kCreativeWorkspaces, workspaceId, &CreativeWorkspace::Id);
+        if (selected == std::end(kCreativeWorkspaces))
+            return Editor::RefuseRequest("Unknown creative workspace. Use editroom, compositor, or openpencil.");
+        if (!app.m_Docking || !app.m_PanelManager || app.m_Windows.empty())
+            return Editor::RefuseRequest("The editor layout is not ready.");
+        if (!app.m_Docking->GetPanel(selected->PanelId))
+            return Editor::RefuseRequest(std::string(selected->Title) +
+                " is unavailable in this project. Check its package in the Packages panel.");
+
+        app.m_PanelManager->ShowOrActivatePanel(app.m_Windows.front().get(), selected->PanelId,
+                                               EditorPanelIds::SceneView);
+        const auto floatingPanels = app.m_DockDnd ? app.m_DockDnd->FloatingFrames().PanelIds()
+                                                  : std::vector<std::string>{};
+        auto result = CreativeWorkspaceStatus(*selected, *app.m_Docking, floatingPanels);
+        if (!result.value("visible", false))
+            return Editor::RefuseRequest("The workspace could not be shown in the current layout.", std::move(result));
+        return result;
+    });
 
     // get_panel_tree — resolve a docked panel by name and return its UI subtree.
     // Unlike get_ui_tree with rootId, this finds the actual panel content regardless
