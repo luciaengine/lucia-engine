@@ -696,14 +696,10 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
         // Project geometry derivatives captured before per-pixel branches.
         // Derivatives of a normal-map-dependent biased position would describe
         // the bias field rather than the receiver plane we want to compare.
-        vec2 rpBias = vec2(0.0);
-        if (ge_shadowPcss.w > 0.5)
-        {
-            vec3 dx = mat3(ge_shadowVP[cascadeIdx]) * receiverDx;
-            vec3 dy = mat3(ge_shadowVP[cascadeIdx]) * receiverDy;
-            vec3 uvDepthScale = vec3(0.5, -0.5, 1.0) / ge_shadowVP[cascadeIdx][3][3];
-            rpBias = GE_ShadowReceiverPlaneGradient(dx * uvDepthScale, dy * uvDepthScale);
-        }
+        vec3 uvDepthScale = vec3(0.5, -0.5, 1.0) / ge_shadowVP[cascadeIdx][3][3];
+        vec3 dx = (mat3(ge_shadowVP[cascadeIdx]) * receiverDx) * uvDepthScale;
+        vec3 dy = (mat3(ge_shadowVP[cascadeIdx]) * receiverDy) * uvDepthScale;
+        vec2 rpBias = ge_shadowPcss.w > 0.5 ? GE_ShadowReceiverPlaneGradient(dx, dy) : vec2(0.0);
 
         // Kernel bound, in WORLD units. It has to be: a bound expressed in
         // texels makes the penumbra's physical size a function of shadow-map
@@ -794,6 +790,8 @@ float GE_SampleCascade(vec3 biasedPos, int cascadeIdx, vec2 screenPos,
                 averageBlocker, refDepth, depthSpanWorld, tanHalfAngle, worldPerTexel, effectiveCapWorld);
         }
 
+        float texelsPerPixel = max(length(dx.xy), length(dy.xy)) / texelSize;
+        penumbraTexels = GE_PcssMagnificationRadius(penumbraTexels, pcfCapTexels, texelsPerPixel);
         float filterRadius = penumbraTexels * texelSize;
         float shadow = 0.0;
         // Taps track the kernel's width in texels, which after the world-unit

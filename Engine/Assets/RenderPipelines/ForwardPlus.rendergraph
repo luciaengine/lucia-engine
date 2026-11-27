@@ -118,8 +118,8 @@
       "id": "CascadedShadowMap",
       "maxShadowDistance": 200.0,
       "normalBias": 0.5,
-      "resolution": 2048,
-      "splitLambda": 0.75,
+      "resolution": 4096,
+      "splitLambda": 0.97,
       "type": "ShadowMap"
     },
     {
