@@ -475,7 +475,8 @@ public:
 
         // WKWebView receives native input before the editor's input router.
         const NSEventMask mouseEvents = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown |
-            NSEventMaskOtherMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp | NSEventMaskScrollWheel;
+            NSEventMaskOtherMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp |
+            NSEventMaskOtherMouseDragged | NSEventMaskOtherMouseUp | NSEventMaskScrollWheel;
         m_MouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:mouseEvents
             handler:^NSEvent*(NSEvent* event) {
                 ObserveMouseEvent(event);
@@ -649,7 +650,7 @@ public:
     {
         if (!m_WebView || m_WebView.hidden || !m_WebView.window.isKeyWindow)
             return false;
-        return (m_PointerDragActive && (NSEvent.pressedMouseButtons & 1u) != 0) ||
+        return (m_PointerDragActive && (NSEvent.pressedMouseButtons & (1u << m_DragButton)) != 0) ||
             m_ReleaseFramePriority.IsActive(CACurrentMediaTime());
     }
 
@@ -794,21 +795,31 @@ private:
     {
         CFTimeInterval EventTime;
         CFTimeInterval DispatchTime;
+        NSPoint PositionInWindow;
     };
 
     void EndMouseDrag()
     {
         m_ReleaseFramePriority.Reset();
         m_UncoalescedMouseInput.End();
-        m_IsPrimaryPressInView = false;
+        const auto button = m_DragButton;
+        m_DragButton = -1;
         m_PointerDragActive = false;
         if (m_DragSamples.empty())
             return;
 
-        // Save only timing data, once on release, and only for a requested local trace.
+        // Log timings and axis counts once, keeping the pointer coordinates inside this process.
         std::string samples;
-        for (const auto& [eventTime, dispatchTime] : m_DragSamples)
+        size_t horizontal = 0;
+        size_t vertical = 0;
+        size_t downward = 0;
+        auto previous = m_DragSamples.front().PositionInWindow;
+        for (const auto& [eventTime, dispatchTime, position] : m_DragSamples)
         {
+            horizontal += position.x != previous.x;
+            vertical += position.y != previous.y;
+            downward += position.y < previous.y;
+            previous = position;
             if (!samples.empty())
                 samples += ',';
             samples += std::to_string(static_cast<long long>(eventTime * 1000.0));
@@ -817,13 +828,19 @@ private:
         }
         Logger::Log::Info("[BundledWebDrag] epochOffsetMs={} event/dispatch={}",
                           static_cast<long long>(m_DragEpochOffset * 1000.0), samples);
+        Logger::Log::Info("[BundledWebDrag] button={} samples={} horizontal={} vertical={} downward={}",
+                          button, m_DragSamples.size(), horizontal, vertical, downward);
         m_DragSamples.clear();
     }
 
     void ObserveMouseEvent(NSEvent* event)
     {
-        if (event.type == NSEventTypeLeftMouseUp)
+        const auto type = event.type;
+        const NSInteger button = type == NSEventTypeScrollWheel ? -1 : event.buttonNumber;
+        if (type == NSEventTypeLeftMouseUp || type == NSEventTypeOtherMouseUp)
         {
+            if (button != m_DragButton)
+                return;
             const bool settlingBundledDrag = m_PointerDragActive &&
                 event.window == m_WebView.window &&
                 [m_WebView.URL.scheme isEqualToString:@"lucia-app"];
@@ -833,9 +850,11 @@ private:
                 m_ReleaseFramePriority.Begin(releaseTime);
             return;
         }
-        if (event.type == NSEventTypeLeftMouseDragged)
+        if (type == NSEventTypeLeftMouseDragged || type == NSEventTypeOtherMouseDragged)
         {
-            if (!m_IsPrimaryPressInView || event.window != m_WebView.window ||
+            if (button != m_DragButton)
+                return;
+            if (event.window != m_WebView.window ||
                 !m_WebView.window.isKeyWindow || m_WebView.hidden)
             {
                 EndMouseDrag();
@@ -850,7 +869,7 @@ private:
             m_PointerDragActive = true;
             if (m_TraceDragInput && [m_WebView.URL.scheme isEqualToString:@"lucia-app"] &&
                 m_DragSamples.size() < 1024)
-                m_DragSamples.push_back({event.timestamp, CACurrentMediaTime()});
+                m_DragSamples.push_back({event.timestamp, CACurrentMediaTime(), event.locationInWindow});
             return;
         }
 
@@ -868,10 +887,11 @@ private:
             return;
         }
 
-        if (event.type == NSEventTypeLeftMouseDown)
+        if (type == NSEventTypeLeftMouseDown || (type == NSEventTypeOtherMouseDown && button == 2))
         {
             EndMouseDrag();
-            m_IsPrimaryPressInView = overView;
+            if (overView)
+                m_DragButton = button;
             if (overView && [m_WebView.URL.scheme isEqualToString:@"lucia-app"])
             {
                 // Make time for the first motion before AppKit starts delivering drag events.
@@ -899,7 +919,7 @@ private:
     std::vector<DragEventSample> m_DragSamples;
     std::function<void()> m_OnMouseDown;
     bool m_Initialized = false;
-    bool m_IsPrimaryPressInView = false;
+    NSInteger m_DragButton = -1;
     bool m_PointerDragActive = false;
 };
 

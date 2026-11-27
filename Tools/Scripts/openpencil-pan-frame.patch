@@ -15,6 +15,9 @@
 +++ b/packages/vue/src/canvas/useCanvasInput.ts
 @@ -31,0 +32 @@
 +import { settleCanvasNavigation } from '#vue/shared/input/pan/navigation'
+@@ -262 +262 @@
+-    if (e.button === 0) e.preventDefault()
++    if (e.button === 0 || e.button === 1) e.preventDefault()
 @@ -315,2 +318,4 @@
 -    const coords = getCoords(e)
 -    lastPointer.value = { cx: coords.cx, cy: coords.cy, sx: coords.sx, sy: coords.sy }
@@ -48,8 +51,15 @@
 -    } else if (d.type === 'move') handleMoveUp(d, editor)
 +    } else if (d.type === 'pan') endPan()
 +    else if (d.type === 'move') handleMoveUp(d, editor)
-@@ -377,0 +391 @@
+@@ -374,2 +387,3 @@
+     const d = drag.value
 +    if (d?.type === 'pan') endPan()
+     // Cleared first: ending a preview fires events whose listeners cancel again.
+@@ -390,3 +403,3 @@
+   function onPointerDown(e: PointerEvent) {
+-    if (e.pointerType !== 'mouse' || e.button !== 0) return
++    if (e.pointerType !== 'mouse' || (e.button !== 0 && e.button !== 1)) return
+     canvasRef.value?.setPointerCapture(e.pointerId)
 --- a/packages/vue/src/shared/input/pan/zoom.ts
 +++ b/packages/vue/src/shared/input/pan/zoom.ts
 @@ -50,4 +50,2 @@
