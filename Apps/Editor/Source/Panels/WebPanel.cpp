@@ -1,10 +1,15 @@
 #include "Panels/WebPanel.h"
+#include "Panels/SaveSceneChangesModal.h"
+#include "Panels/SaveSceneAsModal.h"
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "AssetCore/AssetTypes.h"
 #include "Core/Engine.h"
+#include "Engine/Rendering/RenderServices.h"
+#include "Rendering/Utils/TextureUploadHelpers.h"
+#include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/Assets/UILayoutAsset.h"
 #include "UI/Assets/UIStyleAsset.h"
 #include "UI/Controls/Button.h"
@@ -23,6 +28,7 @@
 #include <regex>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <sstream>
 #include <filesystem>
 
@@ -66,11 +72,14 @@ struct DragState
 };
 extern DragState g_DragState;
 
-WebPanel::WebPanel()
-    : DockPanel("Web")
+WebPanel::WebPanel(std::string title, std::string startURL, std::filesystem::path bundledApp)
+    : DockPanel(title), m_StartURL(std::move(startURL)), m_BundledApp(std::move(bundledApp))
 {
     AddClass("web-panel");
-    s_NativeDragPanel = this;
+    if (!m_BundledApp.empty())
+        AddClass("web-panel-bundled-app");
+    else if (m_StartURL.empty())
+        s_NativeDragPanel = this;
 }
 
 WebPanel::~WebPanel()
@@ -86,6 +95,25 @@ WebPanel::~WebPanel()
 
     if (s_NativeDragPanel == this)
         s_NativeDragPanel = nullptr;
+    ClearWebViewBackdrop();
+
+    if (auto* modal = m_BundledSaveModal.Get())
+    {
+        modal->Hide();
+        modal->SetOnSave({});
+        modal->SetOnDontSave({});
+        modal->SetOnCancel({});
+    }
+    if (auto reply = std::exchange(m_BundledSaveReply, {}))
+        reply(Platform::DocumentCloseChoice::Cancel);
+    if (auto* modal = m_BundledSaveAsModal.Get())
+    {
+        modal->Hide();
+        modal->SetOnSave({});
+        modal->SetOnCancel({});
+    }
+    if (auto reply = std::exchange(m_BundledSaveAsReply, {}))
+        reply({});
 
     for (auto& tab : m_Tabs)
     {
@@ -304,7 +332,7 @@ void WebPanel::RefreshElementPointers()
     m_WebViewContainer = FindById("WebViewContainer"_sid);
     m_ErrorLabel = dynamic_cast<Label*>(FindById("WebErrorLabel"_sid));
 
-    if (m_WebViewContainer && !m_WebViewContainer->HasClass("web-asset-drop-initialized"))
+    if (m_StartURL.empty() && m_BundledApp.empty() && m_WebViewContainer && !m_WebViewContainer->HasClass("web-asset-drop-initialized"))
     {
         m_WebViewContainer->AddClass("web-asset-drop-initialized");
 
@@ -476,7 +504,7 @@ void WebPanel::OnLoadButtonClicked()
     LoadURL(url);
 
     // Remember the page the user chose so the panel reopens on it next session.
-    if (WebTab* tab = ActiveTab(); tab && !tab->url.empty())
+    if (WebTab* tab = ActiveTab(); m_StartURL.empty() && tab && !tab->url.empty())
     {
         auto prefs = Editor::OpenEditorPreferences();
         std::string err;
@@ -788,7 +816,8 @@ int WebPanel::ConvertTimestampToSeconds(const std::string& timestamp)
 void WebPanel::UpdateWebViewSize()
 {
     Platform::IWebView* view = ActiveView();
-    if (!view || !m_WebViewContainer)
+    if (!view || !m_WebViewContainer || m_BundledSaveReply || m_BundledSaveAsReply ||
+        m_OverlayBackdropActive)
         return;
 
     float x = m_WebViewContainer->GetLayoutX();
@@ -870,9 +899,10 @@ void WebPanel::UpdateNavigationControls()
     m_ShownNavigation = navigation;
 }
 
-void WebPanel::SetWebViewOffScreen(bool offScreen)
+void WebPanel::SetWebViewOffScreen(bool offScreen, bool editorOverlayOpen)
 {
-    if (offScreen)
+    UpdateEditorOverlayBackdrop(!offScreen && editorOverlayOpen);
+    if (offScreen || m_OverlayBackdropActive)
     {
         for (auto& tab : m_Tabs)
         {
@@ -891,6 +921,223 @@ void WebPanel::SetWebViewOffScreen(bool offScreen)
     }
 }
 
+bool WebPanel::HasBundledAppDragFramePriority()
+{
+    if (m_BundledApp.empty())
+        return false;
+    const Platform::IWebView* view = ActiveView();
+    return view && view->HasNativeDragFramePriority();
+}
+
+bool WebPanel::HasBundledAppCloseConfirmation()
+{
+    return !m_BundledApp.empty() && ActiveView();
+}
+
+void WebPanel::ConfirmBundledAppClose(std::function<void(bool)> done)
+{
+    if (!HasBundledAppCloseConfirmation())
+    {
+        done(true);
+        return;
+    }
+    ActiveView()->ConfirmBundledAppClose(std::move(done));
+}
+
+void WebPanel::ShowBundledSavePrompt(const std::string& name, Platform::DocumentCloseReply reply)
+{
+    auto* view = ActiveView();
+    auto* manager = GetOwnerManager();
+    auto* root = manager ? manager->GetRootElement() : nullptr;
+    if (!view || !root || m_BundledSaveReply || m_BundledSaveAsReply)
+    {
+        reply(Platform::DocumentCloseChoice::Cancel);
+        return;
+    }
+
+    auto* modal = m_BundledSaveModal.Get();
+    if (!modal)
+    {
+        auto prompt = std::make_unique<SaveSceneChangesModal>("openpencil");
+        modal = prompt.get();
+        modal->SetOnSave([this]() { FinishBundledSavePrompt(Platform::DocumentCloseChoice::Save); });
+        modal->SetOnDontSave([this]() { FinishBundledSavePrompt(Platform::DocumentCloseChoice::Discard); });
+        modal->SetOnCancel([this]() { FinishBundledSavePrompt(Platform::DocumentCloseChoice::Cancel); });
+        m_BundledSaveModal = UIElement::MakeWeakRef(modal);
+        root->AddChild(std::move(prompt));
+    }
+
+    m_BundledSaveReply = std::move(reply);
+    WithBundledDialogBackdrop([name](WebPanel& panel) {
+        if (auto* prompt = panel.m_BundledSaveModal.Get())
+            prompt->Show("Save changes to “" + name + "”?", "Your changes will be lost if you don't save them.");
+    });
+}
+
+void WebPanel::FinishBundledSavePrompt(Platform::DocumentCloseChoice choice)
+{
+    auto reply = std::exchange(m_BundledSaveReply, {});
+    ClearWebViewBackdrop();
+    if (m_WasVisible)
+        UpdateWebViewSize();
+    if (reply)
+        reply(choice);
+}
+
+void WebPanel::ShowBundledSaveAs(const std::string& name, Platform::DocumentSaveReply reply)
+{
+    auto* view = ActiveView();
+    auto* manager = GetOwnerManager();
+    auto* root = manager ? manager->GetRootElement() : nullptr;
+    std::error_code error;
+    const auto project = std::filesystem::canonical(EngineCore::GetInstance().GetWorkspaceRoot(), error);
+    const auto filename = PathFromUtf8(name).filename();
+    if (!view || !root || error || project.empty() || LowerCaseExtension(filename) != ".fig" ||
+        m_BundledSaveReply || m_BundledSaveAsReply)
+    {
+        reply({});
+        return;
+    }
+
+    auto* modal = m_BundledSaveAsModal.Get();
+    if (!modal)
+    {
+        auto prompt = std::make_unique<SaveSceneAsModal>("openpencil");
+        modal = prompt.get();
+        modal->SetOnSave([this](const std::filesystem::path& path) { FinishBundledSaveAs(path); });
+        modal->SetOnCancel([this]() { FinishBundledSaveAs({}); });
+        m_BundledSaveAsModal = UIElement::MakeWeakRef(modal);
+        root->AddChild(std::move(prompt));
+    }
+
+    m_BundledSaveAsReply = std::move(reply);
+    WithBundledDialogBackdrop([project, filename](WebPanel& panel) {
+        if (auto* prompt = panel.m_BundledSaveAsModal.Get())
+            prompt->Show(project, filename);
+    });
+}
+
+void WebPanel::FinishBundledSaveAs(std::filesystem::path path)
+{
+    auto reply = std::exchange(m_BundledSaveAsReply, {});
+    ClearWebViewBackdrop();
+    if (m_WasVisible)
+        UpdateWebViewSize();
+    if (reply)
+        reply(std::move(path));
+}
+
+void WebPanel::UpdateEditorOverlayBackdrop(bool open)
+{
+    auto* view = open && m_WasVisible && !m_BundledSaveReply && !m_BundledSaveAsReply
+        ? ActiveView()
+        : nullptr;
+    if (view == m_OverlaySnapshotView)
+        return;
+
+    m_OverlaySnapshotView = view;
+    const uint64_t request = ++m_OverlaySnapshotRequest;
+    if (m_OverlayBackdropActive)
+    {
+        m_OverlayBackdropActive = false;
+        ClearWebViewBackdrop();
+    }
+    if (!view)
+        return;
+
+    // Keep the page visible until the GPU has its backdrop. Dismissing the overlay or changing
+    // tabs invalidates the pending snapshot before it can move a different view off-screen.
+    auto panel = UIElement::MakeWeakRef(this);
+    view->CaptureSnapshot([panel, view, request](Platform::WebViewSnapshot snapshot) {
+        auto* owner = panel.Get();
+        if (!owner || request != owner->m_OverlaySnapshotRequest || !owner->m_WasVisible ||
+            owner->ActiveView() != view || owner->m_BundledSaveReply || owner->m_BundledSaveAsReply)
+            return;
+
+        owner->BindWebViewBackdrop(snapshot);
+        owner->m_OverlayBackdropActive = !owner->m_WebViewBackdropName.empty();
+        if (owner->m_OverlayBackdropActive)
+            owner->MoveViewOffScreen(*view);
+    });
+}
+
+void WebPanel::WithBundledDialogBackdrop(std::function<void(WebPanel&)> show)
+{
+    UpdateEditorOverlayBackdrop(false);
+    auto* view = ActiveView();
+    if (!view)
+    {
+        show(*this);
+        return;
+    }
+
+    auto panel = UIElement::MakeWeakRef(this);
+    view->CaptureSnapshot([panel, view, show = std::move(show)](Platform::WebViewSnapshot snapshot) {
+        auto* owner = panel.Get();
+        if (!owner || (!owner->m_BundledSaveReply && !owner->m_BundledSaveAsReply))
+            return;
+        if (owner->ActiveView() == view)
+        {
+            owner->BindWebViewBackdrop(snapshot);
+            owner->MoveViewOffScreen(*view);
+        }
+        show(*owner);
+    });
+}
+
+void WebPanel::BindWebViewBackdrop(const Platform::WebViewSnapshot& snapshot)
+{
+    auto* services = EngineCore::GetInstance().GetRenderServices();
+    auto* device = services ? services->GetDevice() : nullptr;
+    auto* manager = GetOwnerManager();
+    if (snapshot.Rgba.empty() || !device || !manager || !m_WebViewContainer)
+        return;
+
+    ClearWebViewBackdrop();
+    Rendering::TextureDesc desc{};
+    desc.width = snapshot.Width;
+    desc.height = snapshot.Height;
+    desc.format = static_cast<uint32_t>(Rendering::TextureFormat::RGBA8_SRGB);
+    desc.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource) |
+                 static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
+    desc.debugName = "Web panel backdrop";
+    m_WebViewBackdrop = device->CreateTexture(desc);
+    if (!m_WebViewBackdrop.IsValid())
+        return;
+
+    Rendering::TextureUploadEntry upload{m_WebViewBackdrop, snapshot.Rgba.data(),
+        snapshot.Width, snapshot.Height, 1, static_cast<size_t>(snapshot.Width) * 4, 0};
+    if (!Rendering::UploadTexturesBatched(device, &upload, 1, "Web panel snapshot upload"))
+    {
+        ClearWebViewBackdrop();
+        return;
+    }
+
+    m_WebViewBackdropName = "web_panel_backdrop_" + std::to_string(GetInstanceId());
+    manager->SetExternalTexture(m_WebViewBackdropName, m_WebViewBackdrop,
+        snapshot.Width, snapshot.Height, UI::UITextureSpace::SrgbAuthored());
+    UI::Layout::SetBackgroundResourceName(*m_WebViewContainer, m_WebViewBackdropName);
+}
+
+void WebPanel::ClearWebViewBackdrop()
+{
+    if (!m_WebViewBackdropName.empty())
+    {
+        if (auto* manager = GetOwnerManager())
+            manager->RemoveExternalTexture(m_WebViewBackdropName);
+        if (m_WebViewContainer)
+            UI::Layout::DisableBackgroundOverride(*m_WebViewContainer);
+        m_WebViewBackdropName.clear();
+    }
+    if (m_WebViewBackdrop.IsValid())
+    {
+        auto* services = EngineCore::GetInstance().GetRenderServices();
+        if (auto* device = services ? services->GetDevice() : nullptr)
+            device->DestroyTexture(m_WebViewBackdrop);
+        m_WebViewBackdrop = {};
+    }
+}
+
 bool WebPanel::CreateTabWebView(WebTab& tab)
 {
     if (!m_ParentWindow)
@@ -903,6 +1150,15 @@ bool WebPanel::CreateTabWebView(WebTab& tab)
         return false;
     }
 
+    if (!m_BundledApp.empty())
+    {
+        tab.view->SetDocumentSavePrompt([this](const std::string& name, Platform::DocumentSaveReply reply) {
+            ShowBundledSaveAs(name, std::move(reply));
+        });
+        tab.view->SetDocumentClosePrompt([this](const std::string& name, Platform::DocumentCloseReply reply) {
+            ShowBundledSavePrompt(name, std::move(reply));
+        });
+    }
     tab.view->SetOnUnavailable([this](const std::string& message) { OnWebViewUnavailable(message); });
     tab.view->SetBackgroundColor(39, 39, 39);
     // Load minimal dark page so clicking in content area never shows white (blank default)
@@ -1071,7 +1327,20 @@ void WebPanel::SetupWebView()
     m_ActiveTab = 0;
     UpdateWebViewSize();
 
-    std::string startURL = m_PendingURL;
+    if (!m_BundledApp.empty())
+    {
+        if (!ActiveView()->LoadBundledApp(m_BundledApp))
+        {
+            auto& view = ActiveTab()->view;
+            view->Destroy();
+            view.reset();
+            if (m_ErrorLabel)
+                m_ErrorLabel->SetText("This Editor build does not include the local web app.");
+        }
+        return;
+    }
+
+    std::string startURL = m_PendingURL.empty() ? m_StartURL : std::move(m_PendingURL);
     m_PendingURL.clear();
     if (startURL.empty())
     {

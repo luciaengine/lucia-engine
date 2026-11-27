@@ -1,5 +1,7 @@
 #include "Panels/BuiltInPanelTypes.h"
 
+#include "Editor/EditorPaths.h"
+
 #include "Editor/Registries/EditorPanelRegistry.h"
 #include "EditorPanelIds.h"
 #include "Graph/GraphModel.h"
@@ -55,6 +57,17 @@ std::unique_ptr<UIElement> MakePanel()
     return std::make_unique<T>();
 }
 
+std::unique_ptr<UIElement> MakeOpenPencilPanel()
+{
+    return std::make_unique<WebPanel>("OpenPencil Online", "https://cloud.openpencil.dev/");
+}
+
+std::unique_ptr<UIElement> MakeLocalOpenPencilPanel()
+{
+    return std::make_unique<WebPanel>("OpenPencil", "",
+        GetEditorGlobalPaths().installToolsRoot.parent_path() / "Packages" / "open-pencil" / "Host");
+}
+
 std::unique_ptr<UIElement> MakeMaterialGraphPanel()
 {
     return GraphPanel::CreateForKind(GameEngine::Graph::kKindIdMaterial);
@@ -97,6 +110,8 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"SettingsPanel", &MakePanel<SettingsPanel>},
     {"DiffPanel", &MakePanel<DiffPanel>},
     {"WebPanel", &MakePanel<WebPanel>},
+    {"OpenPencilPanel", &MakeOpenPencilPanel},
+    {"LocalOpenPencilPanel", &MakeLocalOpenPencilPanel},
     {"BuildPanel", &MakePanel<BuildPanel>},
     {"AnimationWindowPanel", &MakePanel<AnimationWindowPanel>},
     {"AnimationTimelinePanel", &MakePanel<AnimationTimelinePanel>},

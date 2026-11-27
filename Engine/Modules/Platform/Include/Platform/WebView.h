@@ -4,11 +4,37 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <cstdint>
+#include <vector>
 
 namespace GameEngine {
 namespace Platform {
 
 class Window;
+
+struct WebViewSnapshot
+{
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    std::vector<uint8_t> Rgba;
+};
+
+enum class DocumentCloseChoice { Save, Discard, Cancel };
+using DocumentSaveReply = std::function<void(std::filesystem::path)>;
+using DocumentSavePrompt = std::function<void(const std::string&, DocumentSaveReply)>;
+using DocumentCloseReply = std::function<void(DocumentCloseChoice)>;
+using DocumentClosePrompt = std::function<void(const std::string&, DocumentCloseReply)>;
+
+inline const char* DocumentCloseChoiceName(DocumentCloseChoice choice)
+{
+    switch (choice)
+    {
+    case DocumentCloseChoice::Save: return "save";
+    case DocumentCloseChoice::Discard: return "discard";
+    case DocumentCloseChoice::Cancel: return "cancel";
+    }
+    return "cancel";
+}
 
 /// What a web view's navigation controls show: the history around the current page, whether a page
 /// is loading, and the page's URL.
@@ -31,6 +57,9 @@ public:
 
     // Load a URL in the web view
     virtual bool LoadURL(const std::string& url) = 0;
+
+    /// Load an installed static app with its own origin. The directory must have an index.html.
+    virtual bool LoadBundledApp(const std::filesystem::path& /*directory*/) { return false; }
 
     // Load HTML content directly (for better control over iframe embeds)
     virtual bool LoadHTML(const std::string& html, const std::string& baseURL = "https://www.youtube.com") = 0;
@@ -70,6 +99,9 @@ public:
     // Check if the web view is visible
     virtual bool IsVisible() const = 0;
 
+    /// Whether a native drag or its release still needs the frame loop for the web view.
+    virtual bool HasNativeDragFramePriority() const { return false; }
+
     // Set the background color (RGB values 0-255)
     virtual void SetBackgroundColor(unsigned char r, unsigned char g, unsigned char b) = 0;
 
@@ -86,6 +118,18 @@ public:
     // fix (for example the runtime to install). A view whose creation has already failed invokes
     // it at registration. Fired on Windows only: elsewhere CreateWebView returns nullptr instead.
     virtual void SetOnUnavailable(std::function<void(const std::string& message)> callback) = 0;
+
+    /// Captures the view's content for an editor-owned modal backdrop.
+    virtual void CaptureSnapshot(std::function<void(WebViewSnapshot)> done) { done({}); }
+
+    /// Asks the host UI for a save destination. An empty path means cancel.
+    virtual void SetDocumentSavePrompt(DocumentSavePrompt /*prompt*/) {}
+
+    /// Routes a bundled page's unsaved-changes prompt through its host UI.
+    virtual void SetDocumentClosePrompt(DocumentClosePrompt /*prompt*/) {}
+
+    /// Ask a bundled page to resolve unsaved documents before the editor closes.
+    virtual void ConfirmBundledAppClose(std::function<void(bool)> done) { done(true); }
 
     // Destroy the web view and clean up resources
     virtual void Destroy() = 0;

@@ -1,0 +1,103 @@
+--- a/packages/scene-graph/src/coordinate.ts
++++ b/packages/scene-graph/src/coordinate.ts
+@@ -3,9 +3,13 @@
+ import { FITTED_CONTAINER_TYPES } from './node-defaults'
+ import type { Rect, Vector } from './primitives'
+ import type { SceneNode } from './types'
+
+-export function getWorldMatrix(node: SceneNode, graph: Pick<SceneGraph, 'getNode'>): Mat3 {
++export function getWorldMatrix(
++  node: SceneNode,
++  graph: Pick<SceneGraph, 'getNode'>,
++  position: Vector = node
++): Mat3 {
+   const chain: SceneNode[] = []
+   let current: SceneNode | undefined = node
+
+   while (current) {
+@@ -16,9 +20,9 @@
+
+   let matrix = Matrix.identity()
+
+   for (const n of chain) {
+-    const local = getNodeLocalMatrix(n)
++    const local = getNodeLocalMatrix(n, n === node ? position : n)
+     matrix = Matrix.multiply(matrix, local)
+   }
+
+   return matrix
+@@ -43,10 +47,14 @@
+ function cornersOf(node: Pick<SceneNode, 'width' | 'height'>): number[] {
+   return [0, 0, node.width, 0, node.width, node.height, 0, node.height]
+ }
+
+-export function getAxisAlignedWorldBounds(node: SceneNode, graph: Pick<SceneGraph, 'getNode'>) {
+-  return boundsOfPoints(Matrix.mapPoints(getWorldMatrix(node, graph), cornersOf(node)))
++export function getAxisAlignedWorldBounds(
++  node: SceneNode,
++  graph: Pick<SceneGraph, 'getNode'>,
++  position: Vector = node
++) {
++  return boundsOfPoints(Matrix.mapPoints(getWorldMatrix(node, graph, position), cornersOf(node)))
+ }
+
+ /** World matrix of a parent; the document root and a missing parent are the identity. */
+ export function getParentWorldMatrix(
+--- a/packages/scene-graph/tests/world-bounds.test.ts
++++ b/packages/scene-graph/tests/world-bounds.test.ts
+@@ -47,8 +47,15 @@
+     expect(bounds.x).toBeCloseTo(250, 10)
+     expect(bounds.y).toBeCloseTo(120, 10)
+     expect(bounds.width).toBeCloseTo(20, 10)
+     expect(bounds.height).toBeCloseTo(40, 10)
++
++    const position = { x: 45, y: 60 }
++    expect(getAxisAlignedWorldBounds(child, graph, position)).toEqual(
++      getAxisAlignedWorldBounds({ ...child, ...position }, graph)
++    )
++    expect(child.x).toBe(20)
++    expect(child.y).toBe(30)
+   })
+ })
+
+ describe('axis-aligned bounds in a parent', () => {
+--- a/packages/vue/src/shared/input/move/snap.ts
++++ b/packages/vue/src/shared/input/move/snap.ts
+@@ -15,9 +15,9 @@
+   const boxes = []
+   for (const [id, original] of drag.originals) {
+     const node = editor.graph.getNode(id)
+     if (!node) continue
+-    boxes.push(getAxisAlignedWorldBounds({ ...node, x: original.x, y: original.y }, editor.graph))
++    boxes.push(getAxisAlignedWorldBounds(node, editor.graph, original))
+   }
+   if (boxes.length === 0) return null
+   const bounds = computeBounds(boxes)
+   return { ...bounds, x: bounds.x + dx, y: bounds.y + dy }
+--- a/packages/vue/tests/shared/input/move/threshold.test.ts
++++ b/packages/vue/tests/shared/input/move/threshold.test.ts
+@@ -88,8 +88,24 @@
+       editor.dispose()
+     }
+   })
+
++  test('uses geometry alone to place moving layers for snapping', () => {
++    const { editor, drag, nodeId } = setupMoveDrag()
++    const node = editor.graph.getNode(nodeId)!
++    editor.state.snappingPreferences = { geometry: true, objects: false, pixelGrid: true }
++    const name = spyOn(node, 'name', 'get')
++    try {
++      expect(applyMoveSnap(drag, 6.25, 7.75, editor)).toEqual({ dx: 6, dy: 8 })
++      expect(name).not.toHaveBeenCalled()
++      expect(node.x).toBe(10)
++      expect(node.y).toBe(20)
++    } finally {
++      name.mockRestore()
++      editor.dispose()
++    }
++  })
++
+   test('Control bypasses object and pixel snapping during movement', () => {
+     const { editor, drag, nodeId } = setupMoveDrag()
+
+     handleMoveMove(drag, 16.25, 27.75, 110, 200, editor, { ctrlKey: true })

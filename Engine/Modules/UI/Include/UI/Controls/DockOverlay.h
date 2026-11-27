@@ -33,7 +33,11 @@ public:
     void SetZones(std::vector<ZoneRect> zones) { m_Zones = std::move(zones); MarkDirty(VisualDirty); }
     const std::vector<ZoneRect>& GetZones() const { return m_Zones; }
 
-    void Clear() { m_Zones.clear(); MarkDirty(VisualDirty); }
+    void Clear()
+    {
+        SetOverlayLayer(OverlayLayer::None);
+        SetZones({});
+    }
 
     // Convenience: compute and set zones from a DockDropTarget and DockingManager
     void SetTargetZones(const DockDropTarget& target, const DockingManager& dm, float containerW, float containerH);

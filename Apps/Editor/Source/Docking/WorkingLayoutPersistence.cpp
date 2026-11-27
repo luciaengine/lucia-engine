@@ -1,5 +1,7 @@
 #include "Docking/WorkingLayoutPersistence.h"
 
+#include "Packages/OpenPencilPackageOptions.h"
+
 #include "Editor/Registries/EditorPanelRegistry.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "EditorDockNodeJson.h"
@@ -146,6 +148,9 @@ std::unique_ptr<DockNode> WorkingLayoutPersistence::Load(const std::filesystem::
     for (const std::string& id : panelIds)
     {
         if (docking.GetPanel(id))
+            continue;
+        if (std::any_of(kOpenPencilPackageOptions.begin(), kOpenPencilPackageOptions.end(),
+                        [&](const OpenPencilPackageOption& option) { return id == option.PanelId; }))
             continue;
         if (Contains(packagePanels, id))
             pendingPackagePanels.push_back(id);

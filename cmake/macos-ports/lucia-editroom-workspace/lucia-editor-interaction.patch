@@ -1,0 +1,68 @@
+--- a/Editroom/UI/ContentView.swift
++++ b/Editroom/UI/ContentView.swift
+@@ -80,6 +80,7 @@
+             }
+         }
+         .preferredColorScheme(Theme.scheme)
++        #if !LUCIA_HOSTED
+         // The title bar in the panel black, not macOS's lighter default.
+         .toolbarBackground(Theme.panel, for: .windowToolbar)
+         .toolbarBackground(.visible, for: .windowToolbar)
+@@ -117,6 +118,7 @@
+             }
+             .withoutGlass()
+         }
++        #endif
+         .sheet(isPresented: $model.showExport) {
+             ExportSheet(model: model)
+         }
+--- a/Editroom/UI/Theme.swift
++++ b/Editroom/UI/Theme.swift
+@@ -53,7 +53,14 @@
+     static var macOSIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
+ 
+     static let key = "appearance"
+-    static var saved: AppTheme { UserDefaults.standard.string(forKey: key).flatMap(AppTheme.init(rawValue:)) ?? .dark }
++    static var saved: AppTheme {
++        #if LUCIA_HOSTED
++        let defaultTheme: AppTheme = .grey
++        #else
++        let defaultTheme: AppTheme = .dark
++        #endif
++        return UserDefaults.standard.string(forKey: key).flatMap(AppTheme.init(rawValue:)) ?? defaultTheme
++    }
+ }
+ 
+ /// Every colour a theme sets. Chrome tints (hovers, strokes, quiet fills) are `ink` at low opacity:
+@@ -257,10 +264,12 @@
+ 
+     /// The windows' own colours, and light or dark for what macOS draws.
+     func apply() {
++        #if !LUCIA_HOSTED
+         NSApp.appearance = NSAppearance(named: resolved.isLight ? .aqua : .darkAqua)
+         for window in NSApp.windows where window.canBecomeMain || window.title == "Settings" {
+             window.backgroundColor = Theme.NS.panel
+         }
++        #endif
+         TimelineCanvas.current?.needsDisplay = true
+     }
+ }
+--- a/Editroom/UI/LibraryView.swift
++++ b/Editroom/UI/LibraryView.swift
+@@ -326,14 +326,14 @@
+     func body(content: Content) -> some View {
+         content
+             .onTapGesture(count: 2) { model.addAtPlayhead(.asset(asset.id)) }
+-            .onDrag {
++            .onDrag({
+                 model.dragPayload = .asset(asset.id)
+                 // Dragging one of several picked items takes them all, in the Media panel's order.
+                 let ids = picked && pickedCount > 1
+                     ? model.project.assets.map(\.id).filter { model.mediaSelection.contains($0) }
+                     : [asset.id]
+                 return NSItemProvider(object: ("editroom:" + ids.map(\.uuidString).joined(separator: ",")) as NSString)
+-            }
++            }, preview: { content })
+             .contextMenu {
+                 if offline {
+                     Button("Locate…") { model.locate(asset.id) }

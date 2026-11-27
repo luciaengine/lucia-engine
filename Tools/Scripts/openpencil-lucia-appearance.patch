@@ -1,0 +1,34 @@
+--- a/src/boot.ts
++++ b/src/boot.ts
+@@ -7,6 +7,8 @@
+ import { createRetainedScopePlugin } from '@open-pencil/vue/lifecycle/retention'
+
+ import './app.css'
++import './lucia-editor-palette.css'
++import './lucia-editor-appearance.css'
+ import { recordRuntimeError } from '@/app/diagnostics'
+ import { installNativeFigArchives } from '@/app/document/io/native-fig'
+ import { preloadCanvasKit } from '@/app/editor/canvas/canvaskit'
+@@ -29,6 +31,12 @@
+  * evaluates the app bundle and can still show the gate's guidance.
+  */
+ export async function boot(): Promise<void> {
++  if (
++    (location.protocol === 'lucia-app:' && location.hostname === 'editor') ||
++    location.origin === 'https://lucia-editor.invalid'
++  ) {
++    document.documentElement.classList.add('lucia-embedded')
++  }
+   registerInterfaceFont()
+   if (IS_TAURI) {
+     installNativeFigArchives()
+--- a/src/components/PropertiesPanel.vue
++++ b/src/components/PropertiesPanel.vue
+@@ -101,6 +101,7 @@
+       </TabsList>
+
+       <TabsContent
++        data-test-id="properties-design-inspector"
+         value="design"
+         class="flex min-h-0 flex-1 flex-col"
+         :force-mount="true"

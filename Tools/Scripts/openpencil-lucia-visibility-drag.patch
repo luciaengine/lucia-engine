@@ -1,0 +1,86 @@
+--- a/src/components/LayerTree/LayerTree.vue
++++ b/src/components/LayerTree/LayerTree.vue
+@@ -73,6 +73,50 @@
+ const store = useEditorStore()
+ const viewport = useTemplateRef<HTMLElement>('viewport')
+ const mac = /Mac/.test(globalThis.navigator?.platform ?? '')
++
++const visibilityControl = '[data-layer-visibility]'
++let visibilityDrag: { pointerId: number; visible: boolean; visited: Set<string> } | undefined
++
++function visibilityLayerAt(target: EventTarget | null, tree: HTMLElement) {
++  const control = target instanceof Element ? target.closest(visibilityControl) : null
++  if (control && tree.contains(control))
++    return control.closest<HTMLElement>('[data-node-id]')?.dataset.nodeId
++}
++
++function beginVisibilityDrag(event: PointerEvent) {
++  if (!bundledInLucia || !event.isPrimary || event.button !== 0 || visibilityDrag) return
++  const tree = event.currentTarget as HTMLElement
++  const id = visibilityLayerAt(event.target, tree)
++  const node = id ? store.graph.getNode(id) : undefined
++  if (!node) return
++  tree.setPointerCapture(event.pointerId)
++  visibilityDrag = { pointerId: event.pointerId, visible: !node.visible, visited: new Set([node.id]) }
++  event.preventDefault()
++  event.stopPropagation()
++  store.setNodeVisibility(node.id, visibilityDrag.visible)
++}
++
++function extendVisibilityDrag(event: PointerEvent) {
++  const drag = visibilityDrag
++  if (!drag || event.pointerId !== drag.pointerId) return
++  const tree = event.currentTarget as HTMLElement
++  const id = visibilityLayerAt(tree.ownerDocument.elementFromPoint(event.clientX, event.clientY), tree)
++  if (!id || drag.visited.has(id)) return
++  drag.visited.add(id)
++  if (store.graph.getNode(id)?.visible !== drag.visible) store.setNodeVisibility(id, drag.visible)
++}
++
++function endVisibilityDrag(event: PointerEvent) {
++  if (visibilityDrag?.pointerId === event.pointerId) visibilityDrag = undefined
++}
++
++function consumeVisibilityClick(event: MouseEvent) {
++  // Pointer input commits on press. Keyboard activation still uses the button's click handler.
++  if (bundledInLucia && event.detail > 0 &&
++      visibilityLayerAt(event.target, event.currentTarget as HTMLElement)) {
++    event.stopPropagation()
++  }
++}
+ function resizeLayerIcons(event: WheelEvent) {
+   if (!bundledInLucia || event.shiftKey || event.altKey ||
+       !(event.ctrlKey || (mac && event.metaKey)) || !event.deltaY) return
+@@ -305,6 +349,12 @@
+           :class="{ 'lucia-layer-tree': bundledInLucia }"
+           :style="{ '--lucia-layer-icon-size': bundledInLucia ? `${iconSize}px` : undefined }"
+           @wheel="resizeLayerIcons"
++          @pointerdown.capture="beginVisibilityDrag"
++          @pointermove="extendVisibilityDrag"
++          @pointerup="endVisibilityDrag"
++          @pointercancel="endVisibilityDrag"
++          @lostpointercapture="endVisibilityDrag"
++          @click.capture="consumeVisibilityClick"
+           @focusin="scope.actions.setFocused(true)"
+           @focusout="onFocusOut($event, scope.actions)"
+         >
+@@ -460,6 +510,9 @@
+   column-gap: 6px;
+   opacity: 1;
+ }
++.lucia-layer-tree :deep([data-layer-visibility]) {
++  touch-action: none;
++}
+ .lucia-layer-tree :deep([data-slot="action-icon"]) {
+   opacity: 0.7;
+ }
+--- a/src/components/LayerTree/LayerTreeActions.vue
++++ b/src/components/LayerTree/LayerTreeActions.vue
+@@ -41,6 +41,7 @@
+       <button
+         type="button"
+         data-slot="action"
++        data-layer-visibility
+         :aria-label="node.visible ? t.hide : t.show"
+         :class="ui.action"
+         @pointerdown.stop

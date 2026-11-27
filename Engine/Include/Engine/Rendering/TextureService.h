@@ -288,6 +288,10 @@ class TextureService
     // FlushPendingUploads — materials keep sampling the old texture until the
     // new one is ready (no default-texture gap).
     void RequestReupload(const GUID& textureGuid);
+    /// Publish an editor-only RGBA8 image over an authored texture, or clear it with empty pixels.
+    /// The render thread consumes the most recent image per asset. The source stays intact.
+    void QueueEditorTexturePreview(const GUID& textureGuid, uint32_t width, uint32_t height,
+                                   std::span<const uint8_t> pixels);
     // Re-run the asset decode + import cook for a loaded texture (async, via
     // AssetManager::StartAsyncReload) so a cook-setting change (compression /
     // usage / mips meta) rebuilds the cached artifact; the reload's
@@ -472,7 +476,9 @@ class TextureService
     // Re-upload a texture and atomically swap every material slot bound to it,
     // then destroy the old texture (no default-texture gap, unlike Evict).
     // Render-thread only; called from FlushPendingUploads.
-    void HotSwapTexture(const GUID& textureGuid);
+    void HotSwapTexture(const GUID& textureGuid, TextureGPUCache::Entry replacement = {},
+                        bool keepPrevious = false);
+    void FlushEditorTexturePreviews();
     // The new cache entry a hot swap binds: a cook source's resident AssetManager instance
     // re-uploaded (empty when none is resident), anything else through GetOrUploadEntry.
     // Render-thread only.
@@ -863,6 +869,21 @@ class TextureService
     // GUIDs requested for re-upload from another thread; drained + hot-swapped
     // on the render thread at the start of FlushPendingUploads.
     std::vector<GUID> m_PendingTextureReupload;
+    struct EditorTexturePreview
+    {
+        uint32_t Width = 0;
+        uint32_t Height = 0;
+        std::vector<uint8_t> Pixels;
+    };
+    struct ResidentEditorTexturePreview
+    {
+        uint32_t Width = 0;
+        uint32_t Height = 0;
+        TextureHandle Texture;
+        TextureGPUCache::Entry Original;
+    };
+    FlatMap<GUID, EditorTexturePreview> m_PendingEditorTexturePreviews;
+    FlatMap<GUID, ResidentEditorTexturePreview> m_ResidentEditorTexturePreviews;
     // GUIDs with an in-flight AssetManager load (prevents redundant LoadAsset
     // calls when many materials reference the same texture).
     std::unordered_set<GUID> m_TextureLoadsKicked;

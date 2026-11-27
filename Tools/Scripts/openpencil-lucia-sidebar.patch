@@ -1,0 +1,138 @@
+--- a/src/components/LayerTree/LayerTree.vue
++++ b/src/components/LayerTree/LayerTree.vue
+@@ -1,5 +1,7 @@
+ <script setup lang="ts">
+ import { useElementSize, useLocalStorage, useScroll } from '@vueuse/core'
+-import { TreeItem, TreeVirtualizer, ContextMenuPortal } from 'reka-ui'
++import {
++  ContextMenuPortal, SliderRange, SliderRoot, SliderThumb, SliderTrack, TreeItem, TreeVirtualizer
++} from 'reka-ui'
+ import { tv } from 'tailwind-variants'
+ import { computed, nextTick, useAttrs, useTemplateRef, watch } from 'vue'
+@@ -298,5 +300,5 @@
+         <div
+           v-bind="attrs"
+-          class="relative min-h-0 flex-1 overflow-hidden px-1"
++          class="relative flex min-h-0 flex-1 flex-col overflow-hidden px-1"
+           :style="{ '--lucia-layer-icon-size': bundledInLucia ? `${iconSize}px` : undefined }"
+           @wheel="resizeLayerIcons"
+@@ -308,5 +310,5 @@
+             data-test-id="layers-scroll"
+             data-slot="viewport"
+-            :class="styles.viewport({ class: ui?.viewport })"
++            :class="styles.viewport({ class: ['h-auto min-h-0 flex-1', ui?.viewport] })"
+           >
+             <TreeVirtualizer
+@@ -386,4 +388,24 @@
+             @rename-start="renamePinned"
+           />
++          <div v-if="bundledInLucia" class="flex h-8 shrink-0 items-center gap-2 border-t border-border px-2">
++            <span class="shrink-0 text-xs text-muted">Icon size</span>
++            <SliderRoot
++              :model-value="[iconSize]"
++              :min="12"
++              :max="64"
++              :step="1"
++              class="relative flex h-6 min-w-0 flex-1 touch-none items-center"
++              @update:model-value="(value) => { if (value?.[0] !== undefined) storedIconSize = value[0] }"
++            >
++              <SliderTrack class="relative h-1 grow rounded-full bg-hover">
++                <SliderRange class="absolute h-full rounded-full bg-accent" />
++              </SliderTrack>
++              <SliderThumb
++                aria-label="Layer icon size"
++                data-test-id="layers-icon-size"
++                class="block size-3 rounded-full border border-accent bg-panel shadow focus-visible:outline focus-visible:outline-accent"
++              />
++            </SliderRoot>
++          </div>
+         </div>
+       </AppContextMenuTrigger>
+--- a/src/theme/layer-tree.ts
++++ b/src/theme/layer-tree.ts
+@@ -4,6 +4,6 @@
+   slots: {
+     // No padding here: scrolled names would show through it beside the buttons pinned to the edge.
+-    viewport: 'h-full overflow-auto text-2xs',
+-    row: 'group/row relative flex w-full cursor-pointer items-center gap-1 rounded border-none bg-panel text-start text-2xs text-surface hover:bg-hover',
++    viewport: 'h-full overflow-auto text-xs',
++    row: 'group/row relative flex w-full cursor-pointer items-center gap-1 rounded border-none bg-panel text-start text-xs text-surface hover:bg-hover',
+     // Everything before the buttons, indented by depth. The indent is here and not on the row,
+     // since a sticky part stays inside its row's padding and the buttons must reach the edge.
+@@ -24,8 +24,8 @@
+     actionIcon: 'size-3',
+     dropIndicator: 'pointer-events-none absolute bg-accent',
+-    renameRow: 'group/row relative flex w-full items-center pe-1 text-2xs text-surface',
++    renameRow: 'group/row relative flex w-full items-center pe-1 text-xs text-surface',
+     renameIcon: 'size-[var(--lucia-layer-icon-size,0.75rem)] shrink-0 opacity-70',
+     renameInput:
+-      'min-w-0 flex-1 rounded border border-accent bg-input px-1 py-0 text-2xs text-surface outline-none'
++      'min-w-0 flex-1 rounded border border-accent bg-input px-1 py-0 text-xs text-surface outline-none'
+   },
+   variants: {
+--- a/src/theme/page-list.ts
++++ b/src/theme/page-list.ts
+@@ -5,5 +5,5 @@
+     panel: 'flex min-h-0 flex-1 flex-col',
+     header: 'flex shrink-0 items-center justify-between px-3 py-1.5',
+-    title: 'text-2xs font-semibold text-surface',
++    title: 'text-xs font-semibold text-surface',
+     add: [
+       'cursor-pointer rounded border-none bg-transparent px-1 text-base leading-none text-muted hover:bg-hover hover:text-surface',
+@@ -17,9 +17,9 @@
+     icon: 'size-3 shrink-0 opacity-70',
+     renameInput:
+-      'min-w-0 flex-1 rounded border border-accent bg-input px-1 py-0 text-2xs text-surface outline-none',
++      'min-w-0 flex-1 rounded border border-accent bg-input px-1 py-0 text-xs text-surface outline-none',
+     divider: 'my-1 flex cursor-pointer items-center px-2',
+     dividerLine: 'h-px flex-1 bg-border',
+     item: [
+-      'flex h-6 w-full cursor-pointer items-center gap-1.5 rounded border-none px-2 text-start text-2xs',
++      'flex h-6 w-full cursor-pointer items-center gap-1.5 rounded border-none px-2 text-start text-xs',
+       focusStyles.ring
+     ],
+--- a/src/components/LayersPanel.vue
++++ b/src/components/LayersPanel.vue
+@@ -76,5 +76,5 @@
+         <header
+           data-test-id="layers-header"
+-          class="shrink-0 px-3 py-2 text-2xs font-semibold text-surface"
++          class="shrink-0 px-3 py-2 text-xs font-semibold text-surface"
+         >
+           {{ panels.layers }}
+--- a/src/theme/panel/section.ts
++++ b/src/theme/panel/section.ts
+@@ -4,5 +4,5 @@
+     header: 'flex h-8 min-w-0 items-center gap-1.5',
+     title:
+-      'min-w-0 flex-1 cursor-default truncate border-0 bg-transparent p-0 text-start text-2xs font-semibold text-surface',
++      'min-w-0 flex-1 cursor-default truncate border-0 bg-transparent p-0 text-start text-xs font-semibold text-surface',
+     actions:
+       'flex h-7 w-6.5 shrink-0 items-center justify-end gap-0.5 [&_[data-slot=icon-button]]:size-6 [&_[data-slot=icon-button]]:rounded',
+--- a/src/theme/panel/field/shell.ts
++++ b/src/theme/panel/field/shell.ts
+@@ -8,5 +8,5 @@
+ const panelFieldShellTheme = {
+   slots: {
+-    root: [panelFieldBase, 'flex items-center overflow-hidden text-2xs'],
++    root: [panelFieldBase, 'flex items-center overflow-hidden text-xs'],
+     leading:
+       'flex shrink-0 items-center justify-center self-stretch px-1.25 text-muted select-none [&>*]:pointer-events-none',
+--- a/src/theme/panel/field/group.ts
++++ b/src/theme/panel/field/group.ts
+@@ -2,5 +2,5 @@
+   slots: {
+     root: 'min-w-0',
+-    label: 'mb-1 block truncate text-2xs leading-none text-muted',
++    label: 'mb-1 block truncate text-xs leading-none text-muted',
+     container: 'flex min-w-0 flex-col gap-1.5'
+   }
+--- a/src/theme/panel/properties-tabs.ts
++++ b/src/theme/panel/properties-tabs.ts
+@@ -10,5 +10,5 @@
+     list: '@container/tabs flex h-10 shrink-0 items-center gap-0.5 overflow-x-clip border-b border-border px-2',
+     trigger: [
+-      'relative flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-2xs text-muted hover:text-surface data-[state=active]:font-semibold data-[state=active]:text-surface after:absolute after:inset-x-1.5 after:-bottom-2.25 after:h-0.5 after:rounded-full after:bg-transparent data-[state=active]:after:bg-accent',
++      'relative flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs text-muted hover:text-surface data-[state=active]:font-semibold data-[state=active]:text-surface after:absolute after:inset-x-1.5 after:-bottom-2.25 after:h-0.5 after:rounded-full after:bg-transparent data-[state=active]:after:bg-accent',
+       focusStyles.ring
+     ],

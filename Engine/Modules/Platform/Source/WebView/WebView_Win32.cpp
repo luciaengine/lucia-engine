@@ -2,8 +2,10 @@
 
 #include "Platform/WebView.h"
 #include "Platform/Window.h"
+#include "Platform/Shell.h"
 #include "Utf8ToWide_Win32.h"
 #include "WebViewEnvironment_Win32.h"
+#include "WebViewHost_Win32.h"
 #include "WebViewState.h"
 
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -13,16 +15,75 @@
 #include "Logger/Logger.h"
 
 #include <windows.h>
+#include <wincrypt.h>
 #include <ole2.h> // WebView2.h needs the COM declarations WIN32_LEAN_AND_MEAN leaves out
 
 #include <WebView2.h>
 #include <wrl/client.h>
 #include <wrl/event.h>
 
+#include <nlohmann/json.hpp>
+
+#include <fstream>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace GameEngine {
 namespace Platform {
+
+namespace {
+constexpr wchar_t kBundledHost[] = L"lucia-editor.invalid";
+constexpr char kBundledPage[] = "https://lucia-editor.invalid/index.html";
+constexpr std::wstring_view kBundledOrigin = L"https://lucia-editor.invalid/";
+using Json = nlohmann::json;
+
+std::vector<std::function<void()>> s_WebDialogTasks;
+
+Json SaveBundledDocument(const Json& payload, const std::filesystem::path* chosenPath = nullptr)
+{
+    if (!payload.is_object() || !payload.contains("filename") || !payload["filename"].is_string() ||
+        !payload.contains("contents") || !payload["contents"].is_string())
+        return {{"error", "Invalid document data."}};
+
+    const auto& encoded = payload["contents"].get_ref<const std::string&>();
+    DWORD size = 0;
+    if (encoded.size() > MAXDWORD ||
+        !CryptStringToBinaryA(encoded.data(), static_cast<DWORD>(encoded.size()), CRYPT_STRING_BASE64 |
+            CRYPT_STRING_STRICT, nullptr, &size, nullptr, nullptr) || !size)
+        return {{"error", "Invalid document data."}};
+    std::vector<BYTE> bytes(size);
+    if (!CryptStringToBinaryA(encoded.data(), static_cast<DWORD>(encoded.size()), CRYPT_STRING_BASE64 |
+            CRYPT_STRING_STRICT, bytes.data(), &size, nullptr, nullptr))
+        return {{"error", "Invalid document data."}};
+
+    const auto name = std::filesystem::path(Utf8ToWide(payload["filename"].get_ref<const std::string&>())).filename();
+    const auto path = chosenPath ? *chosenPath : SaveFile(name);
+    if (path.empty())
+        return {{"value", nullptr}};
+
+    wchar_t temporary[MAX_PATH]{};
+    if (!GetTempFileNameW(path.parent_path().c_str(), L"lwp", 0, temporary))
+        return {{"error", "Could not create a temporary document."}};
+    std::ofstream output(std::filesystem::path(temporary), std::ios::binary);
+    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(size));
+    output.close();
+    if (output && MoveFileExW(temporary, path.c_str(), MOVEFILE_REPLACE_EXISTING))
+        return {{"value", WideToUtf8(path.filename().c_str())}};
+
+    DeleteFileW(temporary);
+    return {{"error", "Could not save the document."}};
+}
+}
+
+void PumpWebViewDialogs()
+{
+    // A WebView2 callback must return before a native dialog starts a nested message loop.
+    auto tasks = std::exchange(s_WebDialogTasks, {});
+    for (auto& task : tasks)
+        task();
+}
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
@@ -55,6 +116,17 @@ public:
     ~WebView_Win32() override { Destroy(); }
 
     bool LoadURL(const std::string& url) override { return !m_Failed && m_State.LoadURL(url); }
+
+    bool LoadBundledApp(const std::filesystem::path& directory) override
+    {
+        std::error_code error;
+        auto root = std::filesystem::canonical(directory, error);
+        if (m_Failed || m_Destroyed || error || !std::filesystem::is_regular_file(root / "index.html", error))
+            return false;
+
+        m_BundledRoot = std::move(root);
+        return m_State.LoadURL(kBundledPage);
+    }
 
     // NavigateToString takes no base URL; pages that need one arrive through LoadURL.
     bool LoadHTML(const std::string& html, const std::string& /*baseURL*/) override
@@ -132,6 +204,35 @@ public:
             m_OnUnavailable(m_Failure);
     }
 
+    void SetDocumentClosePrompt(DocumentClosePrompt prompt) override { m_DocumentClosePrompt = std::move(prompt); }
+    void SetDocumentSavePrompt(DocumentSavePrompt prompt) override { m_DocumentSavePrompt = std::move(prompt); }
+
+    void ConfirmBundledAppClose(std::function<void(bool)> done) override
+    {
+        if (!IsBundledPage())
+        {
+            done(true);
+            return;
+        }
+
+        m_CloseReply = std::move(done);
+        constexpr wchar_t script[] = LR"JS(
+            Promise.resolve().then(() => window.luciaPrepareForQuit?.() ?? true).then(
+                result => window.chrome.webview.postMessage({ kind: 'quit', approved: result === true }),
+                () => window.chrome.webview.postMessage({ kind: 'quit', approved: false }));
+        )JS";
+        auto handlers = m_Handlers;
+        const HRESULT result = m_WebView->ExecuteScript(script,
+            Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+                [handlers](HRESULT status, LPCWSTR) -> HRESULT {
+                    if (FAILED(status) && handlers->Owner)
+                        handlers->Owner->FinishBundledClose(false);
+                    return S_OK;
+                }).Get());
+        if (FAILED(result))
+            FinishBundledClose(false);
+    }
+
     void Destroy() override
     {
         if (m_Destroyed)
@@ -145,11 +246,14 @@ public:
         {
             m_WebView->remove_NavigationStarting(m_NavigationStartingToken);
             m_WebView->remove_NavigationCompleted(m_NavigationCompletedToken);
+            m_WebView->remove_WebMessageReceived(m_WebMessageToken);
+            m_WebView->remove_ProcessFailed(m_ProcessFailedToken);
             m_Controller->Close();
         }
         m_WebView = nullptr;
         m_Controller = nullptr;
         m_Environment.reset();
+        FinishBundledClose(false);
     }
 
 private:
@@ -161,6 +265,99 @@ private:
         bool Loading = false;
         UINT64 LatestNavigation = 0;
     };
+
+    bool IsBundledPage() const
+    {
+        if (!m_WebView || m_BundledRoot.empty())
+            return false;
+        LPWSTR source = nullptr;
+        m_WebView->get_Source(&source);
+        const bool bundled = source && std::wstring_view(source).starts_with(kBundledOrigin);
+        CoTaskMemFree(source);
+        return bundled;
+    }
+
+    void FinishBundledClose(bool approved)
+    {
+        auto reply = std::exchange(m_CloseReply, {});
+        if (reply)
+            reply(approved);
+    }
+
+    void OnWebMessage(ICoreWebView2WebMessageReceivedEventArgs* args)
+    {
+        if (!IsBundledPage())
+            return;
+        LPWSTR source = nullptr;
+        args->get_Source(&source);
+        const bool bundled = source && std::wstring_view(source).starts_with(kBundledOrigin);
+        CoTaskMemFree(source);
+        if (!bundled)
+            return;
+
+        LPWSTR json = nullptr;
+        if (FAILED(args->get_WebMessageAsJson(&json)) || !json)
+            return;
+        auto message = Json::parse(WideToUtf8(json), nullptr, false);
+        CoTaskMemFree(json);
+        if (!message.is_object() || !message.contains("kind") || !message["kind"].is_string())
+            return;
+        const auto& kind = message["kind"].get_ref<const std::string&>();
+        if (kind == "quit")
+        {
+            FinishBundledClose(message.contains("approved") && message["approved"] == true);
+            return;
+        }
+        if ((kind != "save" && kind != "confirm") || !message.contains("id") ||
+            !message["id"].is_number_unsigned() || !message.contains("payload"))
+            return;
+
+        s_WebDialogTasks.emplace_back([handlers = m_Handlers, navigation = m_Handlers->LatestNavigation,
+                                      message = std::move(message)] {
+            if (handlers->Owner)
+                handlers->Owner->ReplyToWebDialog(message, navigation);
+        });
+    }
+
+    void ReplyToWebDialog(const Json& message, UINT64 navigation)
+    {
+        if (m_Handlers->LatestNavigation != navigation || !IsBundledPage())
+            return;
+
+        auto send = [handlers = m_Handlers, navigation, id = message["id"]](Json reply) {
+            reply["id"] = id;
+            if (auto* owner = handlers->Owner;
+                owner && handlers->LatestNavigation == navigation && owner->IsBundledPage())
+                owner->m_WebView->PostWebMessageAsJson(Utf8ToWide(reply.dump()).c_str());
+        };
+        const auto& payload = message["payload"];
+        if (message["kind"] == "save")
+        {
+            if (m_DocumentSavePrompt && payload.is_object() &&
+                payload.contains("filename") && payload["filename"].is_string())
+            {
+                m_DocumentSavePrompt(payload["filename"].get_ref<const std::string&>(),
+                    [payload, send](std::filesystem::path path) {
+                        send(path.empty() ? Json{{"value", nullptr}} : SaveBundledDocument(payload, &path));
+                    });
+            }
+            else
+                send(SaveBundledDocument(payload));
+            return;
+        }
+
+        const auto name = payload.is_string() ? payload.get<std::string>() : "Untitled";
+        if (m_DocumentClosePrompt)
+        {
+            m_DocumentClosePrompt(name, [send](DocumentCloseChoice choice) {
+                send(Json{{"value", DocumentCloseChoiceName(choice)}});
+            });
+            return;
+        }
+        const int choice = ShowNativeChoiceDialog("OpenPencil", "Save changes to “" + name + "”?",
+            {"Save", "Don't Save", "Cancel"}, 2);
+        send(Json{{"value", choice == 0 ? "save" : choice == 1 ? "discard" : "cancel"}});
+    }
 
     void OnEnvironmentCreated(ICoreWebView2Environment* environment, const std::string& failure)
     {
@@ -209,6 +406,8 @@ private:
                 [handlers](ICoreWebView2* /*sender*/, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
                     args->get_NavigationId(&handlers->LatestNavigation);
                     handlers->Loading = true;
+                    if (handlers->Owner)
+                        handlers->Owner->FinishBundledClose(false);
                     return S_OK;
                 })
                 .Get(),
@@ -269,8 +468,49 @@ private:
             controller2->put_DefaultBackgroundColor(COREWEBVIEW2_COLOR{255, color.R, color.G, color.B});
     }
 
+    HRESULT InstallBundledMessageHandlers()
+    {
+        auto handlers = m_Handlers;
+        const HRESULT result = m_WebView->add_WebMessageReceived(
+            Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                [handlers](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                    if (handlers->Owner)
+                        handlers->Owner->OnWebMessage(args);
+                    return S_OK;
+                }).Get(), &m_WebMessageToken);
+        if (FAILED(result))
+            return result;
+        return m_WebView->add_ProcessFailed(
+            Callback<ICoreWebView2ProcessFailedEventHandler>(
+                [handlers](ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs*) -> HRESULT {
+                    if (handlers->Owner)
+                        handlers->Owner->FinishBundledClose(false);
+                    return S_OK;
+                }).Get(), &m_ProcessFailedToken);
+    }
+
     bool NavigateToURL(const std::string& url) override
     {
+        if (url == kBundledPage && !m_BundledRoot.empty())
+        {
+            ComPtr<ICoreWebView2_3> webView;
+            HRESULT result = m_WebView.As(&webView);
+            if (SUCCEEDED(result))
+                result = webView->SetVirtualHostNameToFolderMapping(
+                    kBundledHost, m_BundledRoot.c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY);
+            if (SUCCEEDED(result) && !m_BundledMessagesRegistered)
+            {
+                result = InstallBundledMessageHandlers();
+                m_BundledMessagesRegistered = SUCCEEDED(result);
+            }
+            if (FAILED(result))
+            {
+                Logger::Log::Error("WebView: could not mount the bundled web app (hr=0x{:08x})",
+                                   static_cast<unsigned>(result));
+                Fail("Could not load the bundled web app. Update the WebView2 Runtime and restart the Editor.");
+                return false;
+            }
+        }
         return SUCCEEDED(m_WebView->Navigate(Utf8ToWide(url).c_str()));
     }
 
@@ -281,13 +521,20 @@ private:
 
     HWND m_Host = nullptr;
     std::shared_ptr<Handlers> m_Handlers;
+    DocumentClosePrompt m_DocumentClosePrompt;
+    DocumentSavePrompt m_DocumentSavePrompt;
     std::shared_ptr<WebViewEnvironment_Win32> m_Environment;
     ComPtr<ICoreWebView2Controller> m_Controller;
     ComPtr<ICoreWebView2> m_WebView;
     EventRegistrationToken m_NavigationStartingToken{};
     EventRegistrationToken m_NavigationCompletedToken{};
+    EventRegistrationToken m_WebMessageToken{};
+    EventRegistrationToken m_ProcessFailedToken{};
     WebViewState m_State;
     std::function<void(const std::string&)> m_OnUnavailable;
+    std::filesystem::path m_BundledRoot;
+    std::function<void(bool)> m_CloseReply;
+    bool m_BundledMessagesRegistered = false;
     std::string m_Failure;
     bool m_Failed = false;
     bool m_Destroyed = false;

@@ -86,7 +86,7 @@ bool EditorToolbar::Install(Platform::Window* window, EditorApplication* app)
         .Path = "File/Exit",
         .Priority = 4,
         .Action = [app]() {
-            if (!app->TryInterceptQuitForDirtyScene())
+            if (!app->TryInterceptQuitForUnsavedChanges())
                 app->RequestExit();
         },
         .SeparatorBefore = true});

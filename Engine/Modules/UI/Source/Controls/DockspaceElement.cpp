@@ -995,6 +995,7 @@ void DockspaceElement::ShowDockDragGhost(const std::string& title, float mouseX,
         // Only the tab and body have visible surfaces so the area beside the tab is see-through.
         auto ghost = std::make_unique<UIElement>();
         ghost->SetId("dock-drag-ghost");
+        ghost->SetOverlayLayer(OverlayLayer::DragPreview);
         ghost->Style()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::PointerEvents, false)

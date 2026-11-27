@@ -4,11 +4,11 @@
 <UIElement class="modal-backdrop">
   <UIElement class="modal-window modal-window-shadow modal-window-560">
     <UIElement class="modal-header">
-      <Label class="modal-title" text="Save Scene As" />
+      <Label id="save-scene-as-title" class="modal-title" text="Save Scene As" />
     </UIElement>
     <UIElement class="modal-content modal-content-column">
       <UIElement class="modal-field-row">
-        <Label class="modal-field-label" text="Scene name" />
+        <Label id="save-scene-as-name-label" class="modal-field-label" text="Scene name" />
         <TextField id="save-scene-as-name" class="modal-text-field" value="NewScene" />
       </UIElement>
       <UIElement class="modal-field-row">

@@ -4,6 +4,7 @@
 #include "Logger/Logger.h"
 #include "Platform/Capabilities.h"
 #include "Platform/Shell.h"
+#include "Types/PathUtils.h"
 #include "UI/ControlLayoutLoader.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
@@ -27,8 +28,10 @@ constexpr const char* kLayoutAssetPath = "UI/controls/SaveSceneAsModal/SaveScene
 constexpr const char* kStyleAssetPath = "UI/controls/SaveSceneAsModal/SaveSceneAsModal.css";
 constexpr const char* kFolderRowLayoutAssetPath = "UI/controls/SaveSceneAsModal/SaveSceneAsFolderRow.uxml";
 // The ids the constructor looks up. A layout that lacks one does not load.
-constexpr std::array<std::string_view, 7> kRequiredIds = {
+constexpr std::array<std::string_view, 9> kRequiredIds = {
     "save-scene-as-name",
+    "save-scene-as-title",
+    "save-scene-as-name-label",
     "save-scene-as-browse",
     "save-scene-as-directory",
     "save-scene-as-folders",
@@ -58,7 +61,7 @@ static std::string SanitizeFileStem(std::string s)
 }
 } // namespace
 
-SaveSceneAsModal::SaveSceneAsModal()
+SaveSceneAsModal::SaveSceneAsModal(std::string_view idPrefix)
 {
     AddClass("modal-overlay");
     SetOverlayLayer(OverlayLayer::BlockingDialog);
@@ -67,6 +70,8 @@ SaveSceneAsModal::SaveSceneAsModal()
     std::unique_ptr<UIElement> backdrop = Editor::ControlLayoutLoader::Load(kLayoutAssetPath, kRequiredIds);
     if (!backdrop)
         return;
+    m_Title = dynamic_cast<Label*>(backdrop->FindById("save-scene-as-title"_sid));
+    m_NameLabel = dynamic_cast<Label*>(backdrop->FindById("save-scene-as-name-label"_sid));
     m_NameField = dynamic_cast<TextField*>(backdrop->FindById("save-scene-as-name"_sid));
     m_DirLabel = dynamic_cast<Label*>(backdrop->FindById("save-scene-as-directory"_sid));
     m_FolderList = backdrop->FindById("save-scene-as-folders"_sid);
@@ -97,11 +102,24 @@ SaveSceneAsModal::SaveSceneAsModal()
         }
     });
 
+    if (!idPrefix.empty())
+    {
+        for (auto id : kRequiredIds)
+            backdrop->FindById(HashStringId(id))->SetId(std::string(idPrefix) + "-" + std::string(id));
+    }
     AddChild(std::move(backdrop));
 }
 
-void SaveSceneAsModal::Show(const std::filesystem::path& initialDirectory)
+void SaveSceneAsModal::Show(const std::filesystem::path& initialDirectory,
+                            const std::filesystem::path& documentName)
 {
+    m_DocumentExtension = documentName.extension();
+    if (m_Title)
+        m_Title->SetText(m_DocumentExtension.empty() ? "Save Scene As" : "Save Design As");
+    if (m_NameLabel)
+        m_NameLabel->SetText(m_DocumentExtension.empty() ? "Scene name" : "File name");
+    if (m_NameField && !m_DocumentExtension.empty())
+        m_NameField->SetValueWithoutNotify(PathToUtf8(documentName.stem()));
     m_Visible = true;
     ClearOverwritePrompt();
     m_SelectedDir = initialDirectory;
@@ -184,7 +202,7 @@ void SaveSceneAsModal::PopulateFolderList()
     for (std::filesystem::directory_iterator it(m_SelectedDir, listError), end; !listError && it != end; it.increment(listError))
     {
         std::error_code entryError;
-        if (!it->is_directory(entryError))
+        if (!it->is_directory(entryError) || (!m_DocumentExtension.empty() && it->is_symlink(entryError)))
             continue;
         const std::string name = it->path().filename().string();
         if (!name.empty() && name.front() != '.')
@@ -240,11 +258,35 @@ void SaveSceneAsModal::OnSaveClicked()
 {
     if (!m_NameField)
         return;
-    std::string stem = SanitizeFileStem(m_NameField->GetValue());
+    auto stem = PathFromUtf8(SanitizeFileStem(m_NameField->GetValue()));
+    if (!m_DocumentExtension.empty())
+    {
+        const auto name = PathFromUtf8(m_NameField->GetValue());
+        if (!name.empty() && name == name.filename() && name != "." && name != ".." &&
+            m_NameField->GetValue().find_first_of("\\/:*?\"<>|") == std::string::npos)
+            stem = name.extension() == m_DocumentExtension ? name.stem() : name;
+    }
     if (m_SelectedDir.empty())
         return;
 
-    const std::filesystem::path outPath = (m_SelectedDir / (stem + ".scene")).lexically_normal();
+    stem += m_DocumentExtension.empty() ? std::filesystem::path(".scene") : m_DocumentExtension;
+    const auto outPath = (m_SelectedDir / stem).lexically_normal();
+    if (!m_DocumentExtension.empty())
+    {
+        std::error_code error;
+        const auto resolved = std::filesystem::weakly_canonical(outPath, error);
+        const auto directory = std::filesystem::canonical(m_SelectedDir, error);
+        if (error || RelativePathUnderRoot(resolved, directory).empty() ||
+            std::filesystem::is_symlink(outPath, error) || std::filesystem::is_directory(outPath, error))
+        {
+            if (m_OverwriteWarningLabel)
+            {
+                m_OverwriteWarningLabel->SetText("Choose a regular file in the selected folder.");
+                m_OverwriteWarningLabel->AddClass("visible");
+            }
+            return;
+        }
+    }
 
     if (m_PendingOverwrite)
     {
@@ -266,7 +308,8 @@ void SaveSceneAsModal::OnSaveClicked()
         if (m_OverwriteWarningLabel)
         {
             m_OverwriteWarningLabel->SetText(
-                "A scene file already exists at this path. Replace the existing file?");
+                m_DocumentExtension.empty() ? "A scene file already exists at this path. Replace the existing file?"
+                                            : "A file already exists at this path. Replace it?");
             m_OverwriteWarningLabel->AddClass("visible");
         }
         if (m_SaveButton)

@@ -1,0 +1,23 @@
+--- a/packages/core/src/editor/signals.ts
++++ b/packages/core/src/editor/signals.ts
+@@ -114,15 +114,13 @@
+
+   function setSelectedIds(ids: Set<string>) {
+     const previous = [...state.selectedIds]
+-    state.selectedIds = ids
+     if (ids.size === 0) state.measurementMode = 'off'
+     const selected = [...ids]
+-    if (
+-      previous.length !== selected.length ||
+-      previous.some((id, index) => id !== selected[index])
+-    ) {
+-      emitEditorEvent('selection:changed', selected, previous)
+-    }
++    if (previous.length === selected.length &&
++      previous.every((id, index) => id === selected[index])) return
++
++    state.selectedIds = ids
++    emitEditorEvent('selection:changed', selected, previous)
+   }
+
+   function setActiveTool(tool: EditorState['activeTool']) {

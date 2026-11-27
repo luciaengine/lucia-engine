@@ -1,5 +1,8 @@
 #include "Packages/PackageManagerController.h"
 
+#include "Packages/OpenPencilPackageOptions.h"
+#include "Editor/Settings/SettingsStore.h"
+
 #include "Assets/Packages/PackageGitSource.h"
 #include "Assets/Packages/PackageManagementActions.h"
 #include "Assets/Packages/PackageMounts.h"
@@ -59,6 +62,10 @@ void PackageManagerController::MountForProject(const std::filesystem::path& proj
     const PackageResolution resolution = PackageResolver::Resolve(projectRoot);
     m_MountedAliases = MountResolvedPackages(am, resolution, EngineCore::GetInstance().GetAssetDbCacheRoot());
     m_Resolution = resolution;
+    m_OpenPencilEnabledAtMount = std::any_of(resolution.MountOrder.begin(), resolution.MountOrder.end(),
+        [](const ResolvedPackage& pkg) {
+            return pkg.SourceKind == PackageSourceKind::Engine && pkg.Manifest.Name == kOpenPencilPackageId;
+        });
     m_ManifestFile = projectRoot / "Packages" / "manifest.json";
     m_NativeModuleErrors.clear();
 
@@ -355,6 +362,21 @@ void PackageManagerController::WirePanels()
     // eject loaded assets under the open scene and swap script ALCs, which is
     // exactly the churn the project-switch path exists to contain.
     PackageManagerActions actions;
+    actions.GetOpenPencilOption = [projectRootOf](const char* key) {
+        auto settings = OpenProjectSettings(projectRootOf());
+        std::string error;
+        settings.Load(&error);
+        bool enabled = true;
+        settings.TryGetBool(key, enabled);
+        return enabled;
+    };
+    actions.SetOpenPencilOption = [projectRootOf](const char* key, bool enabled, std::string& error) {
+        auto settings = OpenProjectSettings(projectRootOf());
+        if (!settings.Load(&error))
+            return false;
+        settings.SetBool(key, enabled);
+        return settings.Save(&error);
+    };
     actions.Toggle = [this](const std::vector<std::string>& packageNames, bool disable, std::string& outError) {
         if (!SetPackageDisabledInProjectManifest(m_ManifestFile, packageNames, disable, outError))
             return false;

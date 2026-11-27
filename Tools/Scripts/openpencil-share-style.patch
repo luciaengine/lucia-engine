@@ -1,0 +1,16 @@
+--- a/src/theme/collaboration/share-button.ts
++++ b/src/theme/collaboration/share-button.ts
+@@ -7,11 +7,11 @@
+   ],
+   variants: {
+     connection: {
+-      idle: 'bg-accent text-on-accent hover:bg-accent/90',
++      idle: 'bg-transparent text-surface hover:bg-hover',
+       joining:
+         'animate-pulse motion-reduce:animate-none border border-warning-border bg-warning-bg text-warning',
+       // Still a share action when connected; your avatar shows the room is live.
+-      connected: 'bg-accent text-on-accent hover:bg-accent/90'
++      connected: 'bg-transparent text-surface hover:bg-hover'
+     }
+   },
+   defaultVariants: { connection: 'idle' }

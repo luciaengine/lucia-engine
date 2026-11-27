@@ -1,0 +1,245 @@
+--- a/Compositor/LuciaWorkspace.swift
++++ b/Compositor/LuciaWorkspace.swift
+@@ -1,13 +1,32 @@
+ #if LUCIA_HOSTED
++import Accelerate
+ import AppKit
+ import SwiftUI
++
++public typealias LuciaTexturePreview = @convention(c) (
++    UnsafePointer<CChar>, UnsafePointer<UInt8>?, UInt32, UInt32, Int
++) -> Void
++import UniformTypeIdentifiers
+ 
+ @MainActor
+ private struct HostedCompositor: View {
+     @State private var session: EditorSession
+     private let projects: ProjectController
+-
+-    init() {
++    private let assetsRoot: URL?
++    private let publishTexture: LuciaTexturePreview
++    private struct LiveTexture {
++        let url: URL
++        let documentID: UUID
++        var publishedRevision: UUID
++        var publishedBrushRevision: Int
++    }
++    @State private var liveTexture: LiveTexture?
++    @State private var exportError: String?
++    @State private var isLinking = false
++
++    init(assetsRoot: URL?, publishTexture: @escaping LuciaTexturePreview) {
++        self.assetsRoot = assetsRoot
++        self.publishTexture = publishTexture
+         let session = EditorSession()
+         _session = State(initialValue: session)
+         projects = ProjectController(session: session)
+@@ -20,13 +39,128 @@
+                 Button("Open…") { Task { await projects.open() } }
+                 Button("Save") { Task { await projects.save() } }.disabled(session.document == nil)
+                 Button("Import…") { session.showsImporter = true }
+-                Spacer()
++                if let liveTexture {
++                    Button("Stop Live Preview", action: stopLivePreview)
++                        .help("Previewing \(liveTexture.url.lastPathComponent) in the scene")
++                } else {
++                    Button("Paint Project PNG…") { Task { await openLiveTexture() } }
++                        .disabled(assetsRoot == nil || isLinking)
++                        .help("Paint a project texture and preview the changes in the scene")
++                }
++                Spacer(minLength: 8)
+                 Button("Export PNG…") { Task { await projects.exportPNG() } }.disabled(session.document == nil)
+             }
+             .padding(8)
+             ContentView(session: session)
+                 .defaultAppStorage(UserDefaults(suiteName: "lucia.workspace.compositor") ?? .standard)
+         }
++        .onChange(of: session.document?.id) {
++            if liveTexture?.documentID != session.document?.id { stopLivePreview() }
++        }
++        .task(id: liveTexture?.documentID) {
++            guard let documentID = liveTexture?.documentID else { return }
++            while !Task.isCancelled && liveTexture?.documentID == documentID {
++                try? await Task.sleep(for: .milliseconds(33))
++                guard !Task.isCancelled else { return }
++                await updateLiveTexture()
++            }
++        }
++        .onDisappear(perform: stopLivePreview)
++        .alert("Live Texture", isPresented: Binding(
++            get: { exportError != nil },
++            set: { if !$0 { exportError = nil } }
++        )) {
++            Button("OK", role: .cancel) {}
++        } message: {
++            Text(exportError ?? "")
++        }
++    }
++
++    private func openLiveTexture() async {
++        guard let assetsRoot else { return }
++        isLinking = true
++        defer { isLinking = false }
++
++        let panel = NSOpenPanel()
++        panel.title = "Paint Project PNG"
++        panel.prompt = "Paint"
++        panel.message = "Painting previews in the scene. Use Export PNG to write a file."
++        panel.allowedContentTypes = [.png]
++        panel.directoryURL = assetsRoot
++
++        guard await panel.begin() == .OK, let url = panel.url else { return }
++        let destination = url.resolvingSymlinksInPath()
++        guard destination.pathComponents.starts(with: assetsRoot.pathComponents) else {
++            exportError = "Choose a PNG inside the project's Assets folder."
++            return
++        }
++        guard await projects.openLiveTexture(destination), let documentID = session.document?.id else { return }
++        stopLivePreview()
++        liveTexture = LiveTexture(url: destination, documentID: documentID,
++                                  publishedRevision: session.history.currentRevision,
++                                  publishedBrushRevision: session.brushRevision)
++    }
++
++    private func stopLivePreview() {
++        if let liveTexture {
++            liveTexture.url.path.withCString { publishTexture($0, nil, 0, 0, 0) }
++        }
++        liveTexture = nil
++    }
++
++    private func updateLiveTexture() async {
++        let revision = session.history.currentRevision
++        let brushRevision = session.brushRevision
++        guard let target = liveTexture, session.document?.id == target.documentID,
++              target.publishedRevision != revision || target.publishedBrushRevision != brushRevision else { return }
++        do {
++            guard let snapshot = try session.projectSnapshot(includingStroke: true) else { return }
++            let frame = try await ImageExporter.shared.liveTextureFrame(snapshot)
++            try Task.checkCancellation()
++            guard liveTexture?.documentID == target.documentID else { return }
++            frame.pixels.withUnsafeBufferPointer { pixels in
++                target.url.path.withCString {
++                    publishTexture($0, pixels.baseAddress, frame.width, frame.height, pixels.count)
++                }
++            }
++            liveTexture?.publishedRevision = revision
++            liveTexture?.publishedBrushRevision = brushRevision
++        } catch is CancellationError {
++            return
++        } catch {
++            guard liveTexture?.documentID == target.documentID else { return }
++            stopLivePreview()
++            exportError = error.localizedDescription
++        }
++    }
++}
++
++
++nonisolated private struct LuciaLiveTextureFrame: Sendable {
++    let pixels: [UInt8]
++    let width: UInt32
++    let height: UInt32
++}
++
++extension ImageExporter {
++    fileprivate func liveTextureFrame(_ snapshot: ProjectSnapshot) throws -> LuciaLiveTextureFrame {
++        let image = try render(snapshot).image
++        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { throw ExportError.render }
++        let rowBytes = image.width * 4
++        var pixels = [UInt8](repeating: 0, count: rowBytes * image.height)
++        try pixels.withUnsafeMutableBytes { storage in
++            let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
++            guard let context = CGContext(data: storage.baseAddress, width: image.width, height: image.height,
++                                          bitsPerComponent: 8, bytesPerRow: rowBytes, space: colorSpace,
++                                          bitmapInfo: bitmapInfo) else { throw ExportError.render }
++            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
++            var source = vImage_Buffer(data: storage.baseAddress, height: vImagePixelCount(image.height),
++                                       width: vImagePixelCount(image.width), rowBytes: rowBytes)
++            var destination = source
++            guard vImageUnpremultiplyData_RGBA8888(&source, &destination, vImage_Flags(kvImageNoFlags)) == kvImageNoError
++            else { throw ExportError.render }
++        }
++        return LuciaLiveTextureFrame(pixels: pixels, width: UInt32(image.width), height: UInt32(image.height))
+     }
+ }
+ 
+@@ -35,12 +169,15 @@
+     static var bundle: Bundle = .main
+ }
+ 
+-@_cdecl("LuciaCreateMediaWorkspace")
+-public func luciaCreateMediaWorkspace(_ bundlePath: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
++@_cdecl("LuciaCreateProjectMediaWorkspace")
++public func luciaCreateMediaWorkspace(_ bundlePath: UnsafePointer<CChar>, _ assetsPath: UnsafePointer<CChar>,
++                                      _ publishTexture: @escaping LuciaTexturePreview) -> UnsafeMutableRawPointer? {
+     MainActor.assumeIsolated {
+         guard let bundle = Bundle(path: String(cString: bundlePath)) else { return nil }
+         WorkspaceResources.bundle = bundle
+-        return Unmanaged.passRetained(NSHostingView(rootView: HostedCompositor())).toOpaque()
++        let path = String(cString: assetsPath)
++        let assetsRoot = path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath()
++        return Unmanaged.passRetained(NSHostingView(rootView: HostedCompositor(assetsRoot: assetsRoot, publishTexture: publishTexture))).toOpaque()
+     }
+ }
+ 
+--- a/Compositor/IO/ProjectController.swift
++++ b/Compositor/IO/ProjectController.swift
+@@ -423,6 +423,27 @@
+         }
+     }
+ 
++    #if LUCIA_HOSTED
++    func openLiveTexture(_ url: URL) async -> Bool {
++        guard begin() else { return false }
++        defer { session.isProjectBusy = false }
++        do {
++            let asset = try await ImageImporter.shared.decode(url)
++            guard await confirmReplacement() else { return false }
++            session.clearProject()
++            stopWatchingProject()
++            session.insert(asset)
++            session.sourceImageURL = url
++            session.history.markSaved()
++            session.tool = .brush
++            return true
++        } catch {
++            await showError("Couldn’t open the project texture", error: error)
++            return false
++        }
++    }
++    #endif
++
+     func newCanvas() async {
+         if let workspace { workspace.newCanvas(); return }
+         guard begin() else { return }
+--- a/Compositor/Document/EditorSession+Projects.swift
++++ b/Compositor/Document/EditorSession+Projects.swift
+@@ -3,11 +3,25 @@
+ 
+ extension EditorSession {
+     func projectSnapshot() -> ProjectSnapshot? {
++        try? projectSnapshot(includingStroke: false)
++    }
++
++    func projectSnapshot(includingStroke: Bool) throws -> ProjectSnapshot? {
+         guard let document else { return nil }
+         var images: [UUID: ImportedImage] = [:]
+         var masks: [UUID: ImportedImage] = [:]
+         var animations: [UUID: GIFAnimation] = [:]
+-        let layers = document.layers.map { layer in
++        let layers = try document.layers.map { original in
++            var layer = original
++            if includingStroke, let stroke = brushStroke, stroke.layer.id == layer.id, !stroke.patches.isEmpty {
++                let result = try stroke.paintSnapshot()
++                if stroke.isMask {
++                    layer.mask = layer.mask?.replacing(result.asset)
++                } else {
++                    layer.asset = result.asset
++                    layer.transform = result.transform
++                }
++            }
+             let asset = savedAsset(for: layer)
+             if let asset { images[layer.id] = asset }
+             if let mask = layer.mask { masks[layer.id] = mask.asset }

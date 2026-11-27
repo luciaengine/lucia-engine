@@ -2,7 +2,16 @@
 
 #include "Platform/WebView.h"
 #include "Platform/Window.h"
+#include "Types/PathUtils.h"
+#include "Logger/Logger.h"
+#include "../MacWindowInput.h"
 #include "WebViewPageStyle_mac.h"
+
+#include <Block.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <vector>
 
 #define GLFW_EXPOSE_NATIVE_COCOA
 #include <GLFW/glfw3.h>
@@ -11,6 +20,7 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 // Private API to enable HTML5 fullscreen in WKWebView (YouTube and other sites).
 // Without this, pages show "Your browser doesn't support fullscreen".
@@ -18,8 +28,203 @@
 - (void)_setFullScreenEnabled:(BOOL)enabled;
 @end
 
+namespace
+{
+template <typename Block>
+std::shared_ptr<void> RetainDialogBlock(Block block)
+{
+    return {reinterpret_cast<void*>(Block_copy(block)), [](void* owned) { Block_release(owned); }};
+}
+}
+
 // Custom navigation delegate to intercept YouTube embed requests and inject proper headers
-@interface YouTubeNavigationDelegate : NSObject <WKNavigationDelegate>
+@interface YouTubeNavigationDelegate : NSObject <WKNavigationDelegate, WKDownloadDelegate>
+@property(nonatomic, strong) NSMapTable<WKDownload*, NSArray<NSURL*>*>* destinations;
+@end
+
+@interface BundledWebAppHandler : NSObject <WKURLSchemeHandler, WKScriptMessageHandlerWithReply, WKUIDelegate>
+{
+@public
+    GameEngine::Platform::DocumentClosePrompt documentClosePrompt;
+    GameEngine::Platform::DocumentSavePrompt documentSavePrompt;
+}
+@property(nonatomic, strong) NSURL* directory;
+@end
+
+@implementation BundledWebAppHandler
+
+- (void)webView:(WKWebView*)webView startURLSchemeTask:(id<WKURLSchemeTask>)task
+{
+    (void)webView;
+    NSURL* request = task.request.URL;
+    NSURL* directory = self.directory;
+    if (!directory || ![request.host isEqualToString:@"editor"] ||
+        ![task.request.HTTPMethod isEqualToString:@"GET"])
+    {
+        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];
+        return;
+    }
+
+    NSString* path = request.path;
+    NSString* relative = path.length > 1 ? [path substringFromIndex:1] : @"index.html";
+    NSURL* file = [[directory URLByAppendingPathComponent:relative] URLByResolvingSymlinksInPath];
+    NSString* prefix = [directory.path stringByAppendingString:@"/"];
+    if (![file.path hasPrefix:prefix])
+    {
+        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorNoPermissionsToReadFile userInfo:nil]];
+        return;
+    }
+
+    NSData* bytes = [NSData dataWithContentsOfURL:file options:NSDataReadingMappedIfSafe error:nullptr];
+    if (!bytes)
+    {
+        [task didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorFileDoesNotExist userInfo:nil]];
+        return;
+    }
+    NSString* extension = file.pathExtension.lowercaseString;
+    UTType* type = [UTType typeWithFilenameExtension:extension];
+    NSString* mime = type.preferredMIMEType;
+    if (!mime)
+        mime = @"application/octet-stream";
+    if ([extension isEqualToString:@"wasm"])
+        mime = @"application/wasm";
+    else if ([extension isEqualToString:@"js"] || [extension isEqualToString:@"mjs"])
+        mime = @"text/javascript";
+    NSHTTPURLResponse* response = [[NSHTTPURLResponse alloc] initWithURL:request
+        statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:@{
+            @"Content-Type": mime,
+            @"Content-Length": [@(bytes.length) stringValue],
+            @"Cross-Origin-Opener-Policy": @"same-origin",
+            @"Cross-Origin-Embedder-Policy": @"require-corp"
+        }];
+    [task didReceiveResponse:response];
+    [task didReceiveData:bytes];
+    [task didFinish];
+}
+
+- (void)webView:(WKWebView*)webView runOpenPanelWithParameters:(WKOpenPanelParameters*)parameters
+    initiatedByFrame:(WKFrameInfo*)frame completionHandler:(void (^)(NSArray<NSURL*>*))completion
+{
+    NSURL* source = frame.request.URL;
+    if (!self.directory || !frame.isMainFrame ||
+        ![source.scheme isEqualToString:@"lucia-app"] || ![source.host isEqualToString:@"editor"])
+    {
+        completion(nil);
+        return;
+    }
+
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = YES;
+    panel.canChooseDirectories = parameters.allowsDirectories;
+    panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
+    void (^finish)(NSModalResponse) = ^(NSModalResponse result) {
+        completion(result == NSModalResponseOK ? panel.URLs : nil);
+    };
+    if (NSWindow* window = webView.window)
+        [panel beginSheetModalForWindow:window completionHandler:finish];
+    else
+        [panel beginWithCompletionHandler:finish];
+}
+
+- (void)userContentController:(WKUserContentController*)controller
+    didReceiveScriptMessage:(WKScriptMessage*)message replyHandler:(void (^)(id, NSString*))reply
+{
+    (void)controller;
+    NSURL* source = message.frameInfo.request.URL;
+    if (!self.directory || !message.frameInfo.isMainFrame ||
+        ![source.scheme isEqualToString:@"lucia-app"] || ![source.host isEqualToString:@"editor"])
+    {
+        reply(nil, @"Only the bundled workspace can save documents.");
+        return;
+    }
+
+    if ([message.name isEqualToString:@"luciaChooseDocumentClose"])
+    {
+        NSString* filename = [message.body isKindOfClass:NSString.class] ? message.body : @"Untitled";
+        if (documentClosePrompt)
+        {
+            auto pending = RetainDialogBlock(reply);
+            documentClosePrompt(filename.UTF8String, [pending](GameEngine::Platform::DocumentCloseChoice choice) {
+                auto complete = reinterpret_cast<void (^)(id, NSString*)>(pending.get());
+                complete([NSString stringWithUTF8String:GameEngine::Platform::DocumentCloseChoiceName(choice)], nil);
+            });
+            return;
+        }
+        NSAlert* alert = [[NSAlert alloc] init];
+        alert.messageText = [NSString stringWithFormat:@"Save OpenPencil changes to “%@”?", filename];
+        alert.informativeText = @"Your changes will be lost if you don’t save them.";
+        [alert addButtonWithTitle:@"Save"];
+        [alert addButtonWithTitle:@"Cancel"];
+        [alert addButtonWithTitle:@"Don’t Save"];
+        [alert.buttons[1] setKeyEquivalent:@"\033"];
+        void (^finish)(NSModalResponse) = ^(NSModalResponse response) {
+            switch (response)
+            {
+            case NSAlertFirstButtonReturn: reply(@"save", nil); break;
+            case NSAlertThirdButtonReturn: reply(@"discard", nil); break;
+            default: reply(@"cancel", nil); break;
+            }
+        };
+        if (NSWindow* window = message.webView.window)
+            [alert beginSheetModalForWindow:window completionHandler:finish];
+        else
+            finish([alert runModal]);
+        return;
+    }
+
+    NSDictionary* payload = [message.body isKindOfClass:NSDictionary.class] ? message.body : nil;
+    NSString* filename = payload[@"filename"];
+    NSString* contents = payload[@"contents"];
+    if (![filename isKindOfClass:NSString.class] || ![contents isKindOfClass:NSString.class])
+    {
+        reply(nil, @"Invalid document data.");
+        return;
+    }
+
+    NSData* bytes = [[NSData alloc] initWithBase64EncodedString:contents options:0];
+    if (!bytes.length)
+    {
+        reply(nil, @"Could not read the document data.");
+        return;
+    }
+
+    void (^saveTo)(NSURL*) = ^(NSURL* url) {
+        if (!url)
+        {
+            reply(NSNull.null, nil);
+            return;
+        }
+        NSError* error = nil;
+        if (![bytes writeToURL:url options:NSDataWritingAtomic error:&error])
+        {
+            reply(nil, error.localizedDescription);
+            return;
+        }
+        reply(url.lastPathComponent, nil);
+    };
+    if (documentSavePrompt)
+    {
+        auto pending = RetainDialogBlock(saveTo);
+        documentSavePrompt(filename.lastPathComponent.UTF8String, [pending](std::filesystem::path path) {
+            auto complete = reinterpret_cast<void (^)(NSURL*)>(pending.get());
+            complete(path.empty() ? nil : [NSURL fileURLWithPath:
+                [NSString stringWithUTF8String:GameEngine::PathToUtf8(path).c_str()]]);
+        });
+        return;
+    }
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = filename.lastPathComponent;
+    [panel beginWithCompletionHandler:^(NSModalResponse result) {
+        saveTo(result == NSModalResponseOK ? panel.URL : nil);
+    }];
+}
+
+- (void)webView:(WKWebView*)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task
+{
+    (void)webView;
+    (void)task;
+}
+
 @end
 
 @interface WebViewFileDragSource : NSObject <NSDraggingSource>
@@ -29,9 +234,88 @@
 @implementation YouTubeNavigationDelegate
 
 - (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
-    // Allow all navigation - the base URL and referrerpolicy should handle referrer
-    // WKWebView should send Referer header based on the base URL of the parent page
+    if ([webView.URL.scheme isEqualToString:@"lucia-app"] && navigationAction.shouldPerformDownload)
+    {
+        decisionHandler(WKNavigationActionPolicyDownload);
+        return;
+    }
     decisionHandler(WKNavigationActionPolicyAllow);
+}
+
+- (void)webView:(WKWebView*)webView navigationAction:(WKNavigationAction*)action
+    didBecomeDownload:(WKDownload*)download
+{
+    (void)webView;
+    (void)action;
+    download.delegate = self;
+}
+
+- (void)download:(WKDownload*)download decideDestinationUsingResponse:(NSURLResponse*)response
+    suggestedFilename:(NSString*)filename completionHandler:(void (^)(NSURL*))completionHandler
+{
+    (void)response;
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = filename.lastPathComponent;
+    [panel beginWithCompletionHandler:^(NSModalResponse result) {
+        if (result != NSModalResponseOK || !panel.URL)
+        {
+            completionHandler(nil);
+            return;
+        }
+
+        // WKDownload requires a new file. Write next to the selected file and replace it
+        // only when WebKit has finished and the save panel approved the destination.
+        NSURL* directory = [[panel.URL URLByDeletingLastPathComponent]
+            URLByAppendingPathComponent:[NSString stringWithFormat:@".lucia-download-%@", NSUUID.UUID.UUIDString]
+            isDirectory:YES];
+        NSError* error = nil;
+        if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:NO
+                                                   attributes:nil error:&error])
+        {
+            NSLog(@"Could not create a temporary web app download: %@", error);
+            completionHandler(nil);
+            return;
+        }
+        NSURL* temporary = [directory URLByAppendingPathComponent:@"download"];
+        if (!self.destinations)
+            self.destinations = [NSMapTable strongToStrongObjectsMapTable];
+        [self.destinations setObject:@[temporary, panel.URL] forKey:download];
+        completionHandler(temporary);
+    }];
+}
+
+- (void)downloadDidFinish:(WKDownload*)download
+{
+    NSArray<NSURL*>* paths = [self.destinations objectForKey:download];
+    [self.destinations removeObjectForKey:download];
+    if (!paths)
+        return;
+
+    NSURL* temporary = paths[0];
+    NSURL* destination = paths[1];
+    NSFileManager* files = NSFileManager.defaultManager;
+    NSError* error = nil;
+    if ([files fileExistsAtPath:destination.path])
+        [files replaceItemAtURL:destination withItemAtURL:temporary backupItemName:nil options:0
+             resultingItemURL:nullptr error:&error];
+    else
+        [files moveItemAtURL:temporary toURL:destination error:&error];
+    if (error)
+    {
+        NSAlert* alert = [NSAlert alertWithError:error];
+        [alert runModal];
+    }
+    [files removeItemAtURL:[temporary URLByDeletingLastPathComponent] error:nullptr];
+}
+
+- (void)download:(WKDownload*)download didFailWithError:(NSError*)error resumeData:(NSData*)resumeData
+{
+    (void)resumeData;
+    NSURL* temporary = [[self.destinations objectForKey:download] firstObject];
+    [self.destinations removeObjectForKey:download];
+    if (temporary)
+        [NSFileManager.defaultManager removeItemAtURL:[temporary URLByDeletingLastPathComponent] error:nullptr];
+    NSLog(@"Web app download failed: %@", error);
 }
 
 - (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
@@ -120,6 +404,8 @@ public:
 
         // Create WKWebView with configuration for YouTube embeds
         WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
+        m_BundledApp = [[BundledWebAppHandler alloc] init];
+        [config setURLSchemeHandler:m_BundledApp forURLScheme:@"lucia-app"];
         // Keep the previous page visible until the next document is complete;
         // painting a partial document can expose empty content and changing scrollbars.
         config.suppressesIncrementalRendering = YES;
@@ -178,6 +464,14 @@ public:
                                                            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                         forMainFrameOnly:NO]; // Inject in all frames
         [userContentController addUserScript:userScript];
+        [userContentController addUserScript:[[WKUserScript alloc]
+            initWithSource:@"if (location.protocol === 'lucia-app:' && location.hostname === 'editor') "
+                            "Object.defineProperty(window, 'luciaNativeMiddlePan', { value: true });"
+            injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
+        [userContentController addScriptMessageHandlerWithReply:m_BundledApp
+            contentWorld:WKContentWorld.pageWorld name:@"luciaSaveDocument"];
+        [userContentController addScriptMessageHandlerWithReply:m_BundledApp
+            contentWorld:WKContentWorld.pageWorld name:@"luciaChooseDocumentClose"];
         config.userContentController = userContentController;
 
         m_WebView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:config];
@@ -222,21 +516,20 @@ public:
         [contentView addSubview:m_WebView];
         [webViewAsView setClipsToBounds:YES];
 
-        // WKWebView swallows mouse events before the engine's input path sees them,
-        // so watch for clicks landing inside the view and forward a notification.
-        WKWebView* webViewRef = m_WebView;
-        std::function<void()>* callbackRef = &m_OnMouseDown;
-        m_MouseDownMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown)
-                                                                   handler:^NSEvent*(NSEvent* event) {
-            NSView* view = (NSView*)webViewRef;
-            if (*callbackRef && view && ![view isHidden] && event.window == [view window]) {
-                NSPoint pointInView = [view convertPoint:[event locationInWindow] fromView:nil];
-                if (NSPointInRect(pointInView, [view bounds])) {
-                    (*callbackRef)();
-                }
-            }
-            return event;
-        }];
+        // WKWebView receives native input before the editor's input router.
+        const NSEventMask mouseEvents = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown |
+            NSEventMaskOtherMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp |
+            NSEventMaskOtherMouseDragged | NSEventMaskOtherMouseUp | NSEventMaskScrollWheel;
+        m_MouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:mouseEvents
+            handler:^NSEvent*(NSEvent* event) {
+                ObserveMouseEvent(event);
+                return event;
+            }];
+        m_WindowResignObserver = [[NSNotificationCenter defaultCenter]
+            addObserverForName:NSWindowDidResignKeyNotification object:window queue:nil
+            usingBlock:^(__unused NSNotification* notification) {
+                EndMouseDrag();
+            }];
 
         m_Initialized = true;
     }
@@ -250,6 +543,7 @@ public:
             return false;
         }
 
+        EndMouseDrag();
         NSView* webViewAsView = (NSView*)m_WebView;
         if (webViewAsView && webViewAsView.layer) {
             webViewAsView.layer.backgroundColor = [[NSColor colorWithRed:39.0/255.0 green:39.0/255.0 blue:39.0/255.0 alpha:1.0] CGColor];
@@ -277,6 +571,19 @@ public:
 
         [m_WebView loadRequest:request];
         return true;
+    }
+
+    bool LoadBundledApp(const std::filesystem::path& directory) override
+    {
+        if (!m_Initialized || !std::filesystem::is_regular_file(directory / "index.html"))
+            return false;
+
+        NSString* path = [NSString stringWithUTF8String:directory.c_str()];
+        if (!path)
+            return false;
+        m_BundledApp.directory = [[NSURL fileURLWithPath:path isDirectory:YES] URLByResolvingSymlinksInPath];
+        m_WebView.UIDelegate = m_BundledApp;
+        return LoadURL("lucia-app://editor/");
     }
 
     bool LoadHTML(const std::string& html, const std::string& baseURL) override {
@@ -338,10 +645,9 @@ public:
             return;
         }
 
-        NSRect frame = [m_WebView frame];
-        frame.size.width = static_cast<CGFloat>(width);
-        frame.size.height = static_cast<CGFloat>(height);
-        [m_WebView setFrame:frame];
+        const NSSize size = NSMakeSize(width, height);
+        if (!NSEqualSizes(m_WebView.frame.size, size))
+            [m_WebView setFrameSize:size];
     }
 
     void SetPosition(int x, int y) override {
@@ -358,9 +664,9 @@ public:
                 NSView* contentView = [window contentView];
                 if (contentView) {
                     NSRect contentRect = [contentView bounds];
-                    frame.origin.x = static_cast<CGFloat>(x);
-                    frame.origin.y = contentRect.size.height - static_cast<CGFloat>(y) - frame.size.height;
-                    [m_WebView setFrame:frame];
+                    const NSPoint origin = NSMakePoint(x, contentRect.size.height - y - frame.size.height);
+                    if (!NSEqualPoints(frame.origin, origin))
+                        [m_WebView setFrameOrigin:origin];
                 }
             }
         }
@@ -370,7 +676,10 @@ public:
         if (!m_Initialized || !m_WebView) {
             return;
         }
-        [m_WebView setHidden:!visible];
+        if (!visible)
+            EndMouseDrag();
+        if (m_WebView.hidden == visible)
+            [m_WebView setHidden:!visible];
     }
 
     bool IsVisible() const override {
@@ -378,6 +687,14 @@ public:
             return false;
         }
         return ![m_WebView isHidden];
+    }
+
+    bool HasNativeDragFramePriority() const override
+    {
+        if (!m_WebView || m_WebView.hidden || !m_WebView.window.isKeyWindow)
+            return false;
+        return (m_PointerDragActive && (NSEvent.pressedMouseButtons & (1u << m_DragButton)) != 0) ||
+            m_ReleaseFramePriority.IsActive(CACurrentMediaTime());
     }
 
     void SetBackgroundColor(unsigned char r, unsigned char g, unsigned char b) override {
@@ -473,13 +790,94 @@ public:
     // Creation fails synchronously here: CreateWebView returns nullptr instead.
     void SetOnUnavailable(std::function<void(const std::string&)> /*callback*/) override {}
 
+    void CaptureSnapshot(std::function<void(WebViewSnapshot)> done) override
+    {
+        if (!m_WebView || m_WebView.hidden || NSIsEmptyRect(m_WebView.bounds))
+        {
+            done({});
+            return;
+        }
+
+        constexpr size_t kMaxSnapshotDimension = 8192;
+        const NSRect bounds = m_WebView.bounds;
+        WKSnapshotConfiguration* configuration = [[[WKSnapshotConfiguration alloc] init] autorelease];
+        configuration.rect = bounds;
+        // Keep the original raster size when it fits in one backdrop texture.
+        const CGFloat backingScale = std::max(m_WebView.window.backingScaleFactor, 1.0);
+        const CGFloat maxPoints = kMaxSnapshotDimension / backingScale;
+        const CGFloat longestSide = std::max(NSWidth(bounds), NSHeight(bounds));
+        if (longestSide > maxPoints)
+            configuration.snapshotWidth = @(std::floor(NSWidth(bounds) * maxPoints / longestSide));
+        [m_WebView takeSnapshotWithConfiguration:configuration completionHandler:^(NSImage* image, NSError* error) {
+            CGImageRef source = error ? nullptr : [image CGImageForProposedRect:nullptr context:nil hints:nil];
+            const size_t width = source ? CGImageGetWidth(source) : 0;
+            const size_t height = source ? CGImageGetHeight(source) : 0;
+            if (!width || !height || width > kMaxSnapshotDimension || height > kMaxSnapshotDimension)
+            {
+                done({});
+                return;
+            }
+
+            WebViewSnapshot snapshot{static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                                     std::vector<uint8_t>(width * height * 4)};
+            CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+            CGContextRef bitmap = CGBitmapContextCreate(snapshot.Rgba.data(), width, height, 8, width * 4,
+                space, static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedLast) | kCGBitmapByteOrder32Big);
+            CGColorSpaceRelease(space);
+            if (!bitmap)
+            {
+                done({});
+                return;
+            }
+            CGContextSetRGBFillColor(bitmap, 0, 0, 0, 1);
+            CGContextFillRect(bitmap, CGRectMake(0, 0, width, height));
+            CGContextDrawImage(bitmap, CGRectMake(0, 0, width, height), source);
+            CGContextRelease(bitmap);
+            done(std::move(snapshot));
+        }];
+    }
+
+    void SetDocumentClosePrompt(DocumentClosePrompt prompt) override
+    {
+        m_BundledApp->documentClosePrompt = std::move(prompt);
+    }
+
+    void SetDocumentSavePrompt(DocumentSavePrompt prompt) override
+    {
+        m_BundledApp->documentSavePrompt = std::move(prompt);
+    }
+
+    void ConfirmBundledAppClose(std::function<void(bool)> done) override
+    {
+        if (!m_WebView || ![m_WebView.URL.scheme isEqualToString:@"lucia-app"])
+        {
+            done(true);
+            return;
+        }
+
+        [m_WebView callAsyncJavaScript:
+            @"return typeof window.luciaPrepareForQuit === 'function' ? await window.luciaPrepareForQuit() : true;"
+            arguments:nil inFrame:nil inContentWorld:WKContentWorld.pageWorld
+            completionHandler:^(id result, NSError* error) {
+                if (error)
+                    NSLog(@"Could not confirm OpenPencil close: %@", error);
+                done(!error && [result isKindOfClass:NSNumber.class] && [result boolValue]);
+            }];
+    }
+
     void Destroy() override {
-        if (m_MouseDownMonitor) {
-            [NSEvent removeMonitor:m_MouseDownMonitor];
-            m_MouseDownMonitor = nil;
+        EndMouseDrag();
+        if (m_WindowResignObserver) {
+            [[NSNotificationCenter defaultCenter] removeObserver:m_WindowResignObserver];
+            m_WindowResignObserver = nil;
+        }
+        if (m_MouseMonitor) {
+            [NSEvent removeMonitor:m_MouseMonitor];
+            m_MouseMonitor = nil;
         }
         if (m_WebView) {
             [m_WebView setNavigationDelegate:nil];
+            m_WebView.UIDelegate = nil;
             [m_WebView removeFromSuperview];
             m_WebView = nil;
         }
@@ -493,14 +891,162 @@ public:
     }
 
 private:
+    struct DragEventSample
+    {
+        CFTimeInterval EventTime;
+        CFTimeInterval DispatchTime;
+        NSPoint PositionInWindow;
+    };
+
+    void DispatchMiddlePan(NSString* phase, NSPoint windowPoint)
+    {
+        if (!m_WebView || ![m_WebView.URL.scheme isEqualToString:@"lucia-app"] ||
+            ![m_WebView.URL.host isEqualToString:@"editor"])
+            return;
+
+        const NSPoint point = [m_WebView convertPoint:windowPoint fromView:nil];
+        const NSRect bounds = m_WebView.bounds;
+        const double y = m_WebView.isFlipped ? point.y - NSMinY(bounds) : NSMaxY(bounds) - point.y;
+        NSString* script = [NSString stringWithFormat:
+            @"window.dispatchEvent(new CustomEvent('lucia-middle-pan', "
+             "{detail:{phase:'%@',x:%.6f,y:%.6f,width:%.6f,height:%.6f}}))",
+            phase, point.x - NSMinX(bounds), y, NSWidth(bounds), NSHeight(bounds)];
+        [m_WebView evaluateJavaScript:script completionHandler:nil];
+    }
+
+    void EndMouseDrag()
+    {
+        if (m_DragButton == 2)
+            DispatchMiddlePan(@"end", NSZeroPoint);
+        m_ReleaseFramePriority.Reset();
+        m_UncoalescedMouseInput.End();
+        const auto button = m_DragButton;
+        m_DragButton = -1;
+        m_PointerDragActive = false;
+        if (m_DragSamples.empty())
+            return;
+
+        // Log timings and axis counts once, keeping the pointer coordinates inside this process.
+        std::string samples;
+        size_t horizontal = 0;
+        size_t vertical = 0;
+        size_t downward = 0;
+        auto previous = m_DragSamples.front().PositionInWindow;
+        for (const auto& [eventTime, dispatchTime, position] : m_DragSamples)
+        {
+            horizontal += position.x != previous.x;
+            vertical += position.y != previous.y;
+            downward += position.y < previous.y;
+            previous = position;
+            if (!samples.empty())
+                samples += ',';
+            samples += std::to_string(static_cast<long long>(eventTime * 1000.0));
+            samples += '/';
+            samples += std::to_string(static_cast<long long>(dispatchTime * 1000.0));
+        }
+        Logger::Log::Info("[BundledWebDrag] epochOffsetMs={} event/dispatch={}",
+                          static_cast<long long>(m_DragEpochOffset * 1000.0), samples);
+        Logger::Log::Info("[BundledWebDrag] button={} samples={} horizontal={} vertical={} downward={}",
+                          button, m_DragSamples.size(), horizontal, vertical, downward);
+        m_DragSamples.clear();
+    }
+
+    void ObserveMouseEvent(NSEvent* event)
+    {
+        const auto type = event.type;
+        const NSInteger button = type == NSEventTypeScrollWheel ? -1 : event.buttonNumber;
+        if (type == NSEventTypeLeftMouseUp || type == NSEventTypeOtherMouseUp)
+        {
+            if (button != m_DragButton)
+                return;
+            const bool settlingBundledDrag = m_PointerDragActive &&
+                event.window == m_WebView.window &&
+                [m_WebView.URL.scheme isEqualToString:@"lucia-app"];
+            const CFTimeInterval releaseTime = CACurrentMediaTime();
+            EndMouseDrag();
+            if (settlingBundledDrag)
+                m_ReleaseFramePriority.Begin(releaseTime);
+            return;
+        }
+        if (type == NSEventTypeLeftMouseDragged || type == NSEventTypeOtherMouseDragged)
+        {
+            if (button != m_DragButton)
+                return;
+            if (event.window != m_WebView.window ||
+                !m_WebView.window.isKeyWindow || m_WebView.hidden)
+            {
+                EndMouseDrag();
+                return;
+            }
+            if (!m_PointerDragActive && [m_WebView.URL.scheme isEqualToString:@"lucia-app"])
+            {
+                // Absolute middle-button samples can use the latest coalesced position.
+                if (button != 2)
+                    m_UncoalescedMouseInput.Begin();
+                if (m_TraceDragInput)
+                    m_DragEpochOffset = NSDate.date.timeIntervalSince1970 - CACurrentMediaTime();
+            }
+            m_PointerDragActive = true;
+            if (button == 2)
+                DispatchMiddlePan(@"move", event.locationInWindow);
+            if (m_TraceDragInput && [m_WebView.URL.scheme isEqualToString:@"lucia-app"] &&
+                m_DragSamples.size() < 1024)
+                m_DragSamples.push_back({event.timestamp, CACurrentMediaTime(), event.locationInWindow});
+            return;
+        }
+
+        const bool overView = m_WebView && !m_WebView.hidden && event.window == m_WebView.window &&
+            NSPointInRect([m_WebView convertPoint:event.locationInWindow fromView:nil], m_WebView.bounds);
+        if (event.type == NSEventTypeScrollWheel)
+        {
+            if (overView && m_WebView.window.isKeyWindow &&
+                [m_WebView.URL.scheme isEqualToString:@"lucia-app"] &&
+                (event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0))
+            {
+                // WebKit presents wheel and momentum panning independently of the editor.
+                m_ReleaseFramePriority.Begin(CACurrentMediaTime());
+            }
+            return;
+        }
+
+        if (type == NSEventTypeLeftMouseDown || (type == NSEventTypeOtherMouseDown && button == 2))
+        {
+            EndMouseDrag();
+            if (overView)
+            {
+                m_DragButton = button;
+                if (button == 2)
+                    DispatchMiddlePan(@"start", event.locationInWindow);
+            }
+            if (overView && [m_WebView.URL.scheme isEqualToString:@"lucia-app"])
+            {
+                // Make time for the first motion before AppKit starts delivering drag events.
+                m_ReleaseFramePriority.Begin(CACurrentMediaTime());
+                if (m_TraceDragInput)
+                    m_DragSamples.reserve(1024);
+            }
+        }
+        if (overView && m_OnMouseDown)
+            m_OnMouseDown();
+    }
+
     Window* m_ParentWindow = nullptr;
     WKWebView* m_WebView = nil;
+    BundledWebAppHandler* m_BundledApp = nil;
     NSView* m_HostView = nil;
     YouTubeNavigationDelegate* m_NavigationDelegate = nil;
     WebViewFileDragSource* m_DragSource = nil;
-    id m_MouseDownMonitor = nil;
+    id m_MouseMonitor = nil;
+    id m_WindowResignObserver = nil;
+    Detail::ScopedUncoalescedMouseInput m_UncoalescedMouseInput;
+    Detail::NativeDragReleaseFramePriority m_ReleaseFramePriority;
+    const bool m_TraceDragInput = std::getenv("GE_TRACE_BUNDLED_WEB_DRAG") != nullptr;
+    CFTimeInterval m_DragEpochOffset = 0.0;
+    std::vector<DragEventSample> m_DragSamples;
     std::function<void()> m_OnMouseDown;
     bool m_Initialized = false;
+    NSInteger m_DragButton = -1;
+    bool m_PointerDragActive = false;
 };
 
 std::unique_ptr<IWebView> CreateWebView(Window* parentWindow, const std::filesystem::path& /*userDataFolder*/) {

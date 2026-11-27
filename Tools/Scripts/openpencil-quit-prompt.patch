@@ -1,0 +1,47 @@
+--- a/src/app/document/io/lucia.ts
++++ b/src/app/document/io/lucia.ts
+@@ -27,3 +27,14 @@
+   })
+   return bridge.postMessage({ filename, contents })
+ }
++
++export function luciaClosePrompt(): ((name: string) => Promise<'save' | 'discard' | 'cancel'>) | undefined {
++  if (typeof window === 'undefined' || window.location.origin !== 'lucia-app://editor') return undefined
++  const host = window as Window & {
++    webkit?: { messageHandlers?: {
++      luciaChooseDocumentClose?: { postMessage(name: string): Promise<'save' | 'discard' | 'cancel'> }
++    } }
++  }
++  const handler = host.webkit?.messageHandlers?.luciaChooseDocumentClose
++  return handler && ((name) => handler.postMessage(name))
++}
+--- a/src/app/tabs/state.ts
++++ b/src/app/tabs/state.ts
+@@ -7,6 +7,7 @@
+ import { confirmAllDocuments } from '@/app/document/close/all'
+ import { confirmDocumentClose, holdsUnkeptEdits } from '@/app/document/close/controller'
+ import { requestDocumentClose } from '@/app/document/close/prompt'
++import { luciaClosePrompt } from '@/app/document/io/lucia'
+ import { setActiveEditorStore } from '@/app/editor/active-store'
+ import { createEditorStore } from '@/app/editor/session'
+ import type { EditorStore } from '@/app/editor/session'
+@@ -244,10 +245,17 @@
+   return tabsRef.value.filter((tab) => tab.kind === 'document').map((tab) => tab.store)
+ }
+
+-export async function prepareForClose(): Promise<boolean> {
+-  const closing = await confirmAllDocuments(documentStores)
++export async function prepareForClose(confirm = requestDocumentClose): Promise<boolean> {
++  const closing = await confirmAllDocuments(documentStores, confirm)
+   if (closing) documentStores().forEach(rememberDocumentView)
+   return closing
++}
++
++const nativeClosePrompt = luciaClosePrompt()
++if (nativeClosePrompt) {
++  const host = window as Window & { luciaPrepareForQuit?: () => Promise<boolean> }
++  host.luciaPrepareForQuit = () =>
++    prepareForClose((document, name) => confirmDocumentClose(document, () => nativeClosePrompt(name)))
+ }
+
+ export async function prepareForReload(): Promise<void> {

@@ -2,6 +2,7 @@
 
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/Controls/DockspaceElement.h"
+#include "UI/Layout/DockingHitTest.h"
 #include "UI/Controls/Mount.h"
 #include "UI/Layout/DockLayoutController.h"
 #include "UI/Layout/Docking.h"
@@ -34,6 +35,35 @@ TEST(Docking, RebuildFromModelBuildsTree) {
 }
 
 
+
+TEST(Docking, ActivePreviewAndGhostUseTheDragOverlayLayer)
+{
+    DockingManager docking;
+    docking.SetRoot(DockNode::MakeLeaf());
+    DockspaceElement dock;
+    dock.BindModel(&docking);
+
+    DockDropTarget target{};
+    target.Kind = DockDropTarget::TargetKind::RootSplit;
+    target.Edge = DockPosition::Right;
+    dock.SetDropPreview(target, 800.0f, 600.0f);
+    const UIElement* preview = dock.FindById(HashStringId("dock-overlay"));
+    ASSERT_NE(preview, nullptr);
+    EXPECT_EQ(preview->GetOverlayLayer(), OverlayLayer::DragPreview);
+
+    dock.ShowDockDragGhost("Panel", 100.0f, 100.0f);
+    const UIElement* ghost = dock.FindById(HashStringId("dock-drag-ghost"));
+    ASSERT_NE(ghost, nullptr);
+    EXPECT_EQ(ghost->GetOverlayLayer(), OverlayLayer::DragPreview);
+
+    dock.SetDropPreview({}, 800.0f, 600.0f);
+    EXPECT_EQ(preview->GetOverlayLayer(), OverlayLayer::None);
+    dock.SetDropPreview(target, 800.0f, 600.0f);
+    dock.ClearDropPreview();
+    EXPECT_EQ(preview->GetOverlayLayer(), OverlayLayer::None);
+    dock.HideDockDragGhost();
+    EXPECT_EQ(dock.FindById(HashStringId("dock-drag-ghost")), nullptr);
+}
 
 TEST(Docking, VerticalSplitAddsColumnClasses) {
     UIRegistration::RegisterBuiltInControls();

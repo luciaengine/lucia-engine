@@ -1,0 +1,66 @@
+:root {
+  color-scheme: dark;
+  background: #24262a;
+  font: 16px system-ui, sans-serif;
+}
+
+main {
+  margin: 2rem auto;
+  padding: 0 1rem;
+  max-width: 50rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+}
+
+form, #room-fields {
+  display: grid;
+  gap: .8rem;
+}
+
+label {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+}
+
+input {
+  min-width: 0;
+  flex: 1;
+}
+
+button, input, select {
+  font: inherit;
+  padding: .4rem .65rem;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .6rem;
+  margin: .75rem 0;
+}
+
+#chat {
+  min-height: 6rem;
+  max-height: 20rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding-left: 1.5rem;
+}
+
+video {
+  background: #111;
+  max-width: 100%;
+  max-height: 24vh;
+}
+
+#local {
+  max-width: 8rem;
+}
+
+[hidden] {
+  display: none;
+}

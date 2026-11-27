@@ -50,3 +50,43 @@ TEST(MacWindowInput, RejectsEventsForAnotherWindowOrButton)
         [window release];
     }
 }
+
+TEST(MacWindowInput, RestoresMouseCoalescingAfterTheDrag)
+{
+    using GameEngine::Platform::Detail::ScopedUncoalescedMouseInput;
+    const BOOL original = NSEvent.mouseCoalescingEnabled;
+
+    NSEvent.mouseCoalescingEnabled = YES;
+    {
+        ScopedUncoalescedMouseInput drag;
+        drag.Begin();
+        drag.Begin();
+        EXPECT_FALSE(NSEvent.mouseCoalescingEnabled);
+        drag.End();
+        EXPECT_TRUE(NSEvent.mouseCoalescingEnabled);
+    }
+
+    NSEvent.mouseCoalescingEnabled = NO;
+    {
+        ScopedUncoalescedMouseInput drag;
+        drag.Begin();
+        EXPECT_FALSE(NSEvent.mouseCoalescingEnabled);
+    }
+    EXPECT_FALSE(NSEvent.mouseCoalescingEnabled);
+    NSEvent.mouseCoalescingEnabled = original;
+}
+
+TEST(MacWindowInput, DragReleasePriorityExpiresAndCanBeCancelled)
+{
+    GameEngine::Platform::Detail::NativeDragReleaseFramePriority release;
+    EXPECT_FALSE(release.IsActive(10.0));
+
+    release.Begin(10.0);
+    EXPECT_TRUE(release.IsActive(10.049));
+    EXPECT_FALSE(release.IsActive(10.051));
+
+    release.Begin(20.0);
+    EXPECT_TRUE(release.IsActive(20.001));
+    release.Reset();
+    EXPECT_FALSE(release.IsActive(20.001));
+}

@@ -57,6 +57,7 @@
 #include "EditorWindowBootstrap.h"
 #include "Docking/WindowDockingController.h"
 #include "Packages/PackageManagerController.h"
+#include "Packages/OpenPencilPackageOptions.h"
 #include "Assets/Packages/PackageCodeModules.h"
 #include "Core/Application.h"
 #include "Core/ApplicationPaths.h"
@@ -109,6 +110,8 @@
 #include "ExternalScriptEditorLauncher.h"
 #include "Scene/DefaultSceneEntities.h"
 #include "Platform/Capabilities.h"
+#include "Platform/Clipboard.h"
+#include "SceneView/SceneViewNoticeOverlay.h"
 #include "Platform/Shell.h"
 
 // Rendering & windowing
@@ -229,6 +232,7 @@
 #include "PlayMode/WindowCursorLock.h"
 #include "PlayMode/RuntimeInputConnection.h"
 #include "Scene/SceneEditorController.h"
+#include "Scene/SceneDocumentManager.h"
 #include "Scene/SceneThumbnailCapture.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -1323,7 +1327,7 @@ void EditorApplication::AttachEditorPluginHost()
         return std::any_of(modules.begin(), modules.end(),
                            [moduleId](const PackageCodeModule& module) { return module.AssemblyName == moduleId; });
     };
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32) || defined(__linux__)
     services.NativeHostForPanel = [this](UIManager* manager) -> Editor::NativePanelHost {
         if (!manager || m_IsShuttingDown ||
             (m_ProjectPickerModal && m_ProjectPickerModal->ShouldSuppressNativeWebView()) ||
@@ -2430,7 +2434,7 @@ bool EditorApplication::Initialize()
             if (((mods & Input::kModSuper) != 0) && key == Input::kKeyCode_Q)
             {
                 // RequestClose() does not run the GLFW close callback; mirror the title-bar flow.
-                if (TryInterceptQuitForDirtyScene())
+                if (TryInterceptQuitForUnsavedChanges())
                     return true;
                 for (auto& w : m_Windows)
                 {
@@ -2447,12 +2451,19 @@ bool EditorApplication::Initialize()
     { return GetPlaySurface(mainWindow); };
     mainCtxRaw->inputConfig = mainInput;
     WindowInputRouter::BindBasicHandlers(mainCtxRaw->inputConfig);
-    mainCtx->window->SetRefreshHandler([this] { Tick(); });
+    mainCtx->window->SetRefreshHandler([this]
+    {
+#if defined(__APPLE__)
+        if (NativeWebDragOwnsFrameLoop())
+            return;
+#endif
+        Tick();
+    });
     // The close arrives in the event pump between frames, so the loop stops before the next frame.
     mainCtx->window->SetCloseRequestedHandler(
         [this]
         {
-            if (TryInterceptQuitForDirtyScene())
+            if (TryInterceptQuitForUnsavedChanges())
                 return true;
             RequestExit();
             return false;
@@ -3133,6 +3144,7 @@ bool EditorApplication::Initialize()
         auto tDockSub = tPhase;
         m_Docking = std::make_unique<DockingManager>();
         m_DefaultDockLayout.reset();
+        m_OpenPencilPackagePanels = {};
         m_PanelStorage.clear();
 
         EditorUI::EditorDockConfig dockCfg{};
@@ -3151,6 +3163,7 @@ bool EditorApplication::Initialize()
         {
             m_Docking = std::make_unique<DockingManager>();
             m_DefaultDockLayout.reset();
+            m_OpenPencilPackagePanels = {};
             m_PanelStorage.clear();
 
             for (const Editor::FallbackDockPanel& entry : Editor::FallbackDockPanels())
@@ -3253,6 +3266,7 @@ bool EditorApplication::Initialize()
         // Panels exist now; give the Package Manager its data source (covers
         // the startup order where packages mounted before the dock was built).
         m_Packages->WirePanels();
+        RefreshOpenPencilPackagePanels();
 
         // Docking model exists: start consuming package panel / editor-chrome
         // stylesheet registrations (EditorSDK phase 2). Package Editor modules
@@ -3336,7 +3350,6 @@ bool EditorApplication::Initialize()
         auto* settingsPanel = FindFirstPanelOfType<SettingsPanel>(m_PanelStorage);
         auto* uiDemoPanel = FindFirstPanelOfType<UIDemoPanel>(m_PanelStorage);
         auto* logPanel = FindFirstPanelOfType<LogPanel>(m_PanelStorage);
-        auto* webPanel = FindFirstPanelOfType<WebPanel>(m_PanelStorage);
         auto* nodeGraphPanel = FindFirstPanelOfType<GraphPanel>(m_PanelStorage);
         auto* monitorsPanel = FindFirstPanelOfType<MonitorsPanel>(m_PanelStorage);
 
@@ -4279,10 +4292,6 @@ bool EditorApplication::Initialize()
                     // EditorVersionControlUi and registered with
                     // Editor::EditorSettingsRegistry; the SettingsPanel renders
                     // it from that descriptor and needs no wiring here.
-                    if (webPanel && main && main->window)
-                    {
-                        webPanel->SetWindow(main->window.get());
-                    }
                     // Wire SettingsPanel to UIManager for AA strength control
                     if (settingsPanel && main && main->ui)
                     {
@@ -4561,6 +4570,28 @@ bool EditorApplication::Initialize()
                         // Load play fullscreen preference from cached prefs.
                         cachedPrefs.TryGetBool("ui.playFullscreen", m_PlayFullscreenOnEnter);
 
+                        toolbarCb.onSessionClicked = [this]() {
+                            if (m_SceneCollaboration.IsStarted())
+                            {
+                                m_SceneCollaboration.Stop();
+                                Editor::ShowSceneViewNotice("Collaboration session ended");
+                            }
+                            else if (m_SceneCollaboration.Start(EngineCore::GetInstance().GetWorkspaceRoot()))
+                            {
+                                Editor::ShowSceneViewNotice("Starting collaboration session");
+                            }
+                            else if (EngineCore::GetInstance().GetWorkspaceRoot().empty())
+                            {
+                                Editor::ShowSceneViewNotice("Open a project before starting a session");
+                            }
+                        };
+                        toolbarCb.onInviteClicked = [this]() {
+                            const auto link = m_SceneCollaboration.InviteLink();
+                            if (link.empty())
+                                return;
+                            Platform::SetClipboardText(link.c_str());
+                            Editor::ShowSceneViewNotice("Invite link copied");
+                        };
                         toolbarCb.onSaveSceneClicked = [this](int mods) {
                             const bool saveAs = ((mods & Input::kModShift) != 0);
                             m_DeferredPreUiActions.EnqueueUnique(
@@ -5092,6 +5123,40 @@ void EditorApplication::ConsumePackageOverlay(const Editor::EditorOverlayDescrip
     Logger::Log::Info("Editor: package overlay '{}' attached to the UI root", descriptor.OverlayId);
 }
 
+void EditorApplication::RefreshOpenPencilPackagePanels()
+{
+    if (!m_Docking || !m_Packages)
+        return;
+
+    using namespace Editor;
+    auto settings = OpenProjectSettings(EngineCore::GetInstance().GetWorkspaceRoot());
+    std::string error;
+    (void)settings.Load(&error);
+    const bool packageEnabled = m_Packages->IsOpenPencilEnabledAtMount();
+    for (size_t index = 0; index < kOpenPencilPackageOptions.size(); ++index)
+    {
+        const auto& option = kOpenPencilPackageOptions[index];
+        bool enabled = true;
+        (void)settings.TryGetBool(option.Setting, enabled);
+        auto*& panel = m_OpenPencilPackagePanels[index];
+        if (!packageEnabled || !enabled)
+        {
+            m_Docking->RemoveTab(option.PanelId);
+            m_Docking->UnregisterPanel(option.PanelId);
+            continue;
+        }
+        if (!panel)
+        {
+            auto owned = EditorPanelRegistry::Get().CreatePanelOfType(option.PanelType);
+            if (!owned)
+                continue;
+            panel = owned.get();
+            m_PanelStorage.push_back(std::move(owned));
+        }
+        m_Docking->RegisterPanel(option.PanelId, panel);
+    }
+}
+
 void EditorApplication::ConsumePackagePanelDescriptor(const Editor::EditorPanelDescriptor& descriptor)
 {
     if (!m_Docking)
@@ -5358,6 +5423,7 @@ void EditorApplication::FinishProjectFolderSwitch(const ProjectSwitch& pending)
 
     // Mount the new project's packages now that the project source points at it.
     m_Packages->MountForProject(projectPath);
+    RefreshOpenPencilPackagePanels();
 
     // Reload layout presets from the newly-opened project. The initial load during Initialize()
     // ran against the startup/default workspace root; without this reload, saves go to the new
@@ -6205,6 +6271,23 @@ void EditorApplication::Update(float64 deltaTime)
     Editor::MainThreadHangWatchdog::NotifyAlive();
     if (!m_IsShuttingDown)
         Editor::EditorPluginRegistry::Get().Update();
+
+    if (!m_IsShuttingDown)
+    {
+        auto& engine = EngineCore::GetInstance();
+        const auto* document = m_SceneEditor ? m_SceneEditor->GetDocument() : nullptr;
+        const auto scene = document ? document->GetScenePath().value_or(std::filesystem::path{}) :
+            std::filesystem::path{};
+        m_SceneCollaboration.Update(engine.GetWorkspaceRoot(), scene, engine.GetPrimaryWorld());
+    }
+
+    if (m_TopToolbar)
+    {
+        m_TopToolbar->SetSessionStarted(m_SceneCollaboration.IsStarted());
+        m_TopToolbar->SetInviteAvailable(m_SceneCollaboration.CanInvite());
+    }
+    if (auto notice = m_SceneCollaboration.TakeNotice(); !notice.empty())
+        Editor::ShowSceneViewNotice(std::move(notice));
 
     EditorWindowContext* mainWindow = m_Windows.empty() ? nullptr : m_Windows[0].get();
     m_FramePhaseRecorder.RecordPreviousFrame({
@@ -7072,7 +7155,7 @@ void EditorApplication::Update(float64 deltaTime)
     m_LastAppUpdateSubPhases.tailMs        = dMs(tUiWindowsEnd, tAppUpdate1);
 }
 
-bool EditorApplication::TryInterceptQuitForDirtyScene()
+bool EditorApplication::TryInterceptQuitForUnsavedChanges()
 {
     const bool sceneDirty   = m_SceneEditor && m_SceneEditor->IsSceneDirty();
     std::vector<GraphPanel*> dirtyGraphs;
@@ -7084,7 +7167,30 @@ bool EditorApplication::TryInterceptQuitForDirtyScene()
     const bool graphDirty  = !dirtyGraphs.empty();
     const bool scriptDirty = sePanel && sePanel->HasUnsavedChanges();
 
-    if (!sceneDirty && !graphDirty && !scriptDirty)
+    if (m_WorkspaceQuitPending)
+        return true;
+
+    using CloseConfirmation = std::function<void(std::function<void(bool)>)>;
+    std::vector<CloseConfirmation> confirmations;
+    for (auto* plugin : Editor::EditorPluginRegistry::Get().GetEnabledPlugins())
+    {
+        if (plugin->HasCloseConfirmation())
+            confirmations.push_back([plugin](std::function<void(bool)> done) { plugin->ConfirmClose(std::move(done)); });
+    }
+    for (const auto& element : m_PanelStorage)
+    {
+        auto* panel = dynamic_cast<WebPanel*>(element.get());
+        if (!panel || !panel->HasBundledAppCloseConfirmation())
+            continue;
+        confirmations.push_back([reference = UIElement::MakeWeakRef(panel)](std::function<void(bool)> done) {
+            if (auto* openPanel = reference.Get())
+                openPanel->ConfirmBundledAppClose(std::move(done));
+            else
+                done(true);
+        });
+    }
+
+    if (!sceneDirty && !graphDirty && !scriptDirty && confirmations.empty())
         return false;
 
     auto focusMainEditorWindow = [this]()
@@ -7101,16 +7207,32 @@ bool EditorApplication::TryInterceptQuitForDirtyScene()
 
     focusMainEditorWindow();
 
-    /* Build a chain: scene → node graph → script editor → quit.
-       Each step calls the next only when the user saves or discards. */
-    auto doQuit = [this]() { RequestExit(); };
+    // Check scene, graphs, scripts, and hosted workspaces in order.
+    auto checkWorkspaces = [this, confirmations = std::move(confirmations)]() {
+        m_WorkspaceQuitPending = true;
+        std::function<void(bool)> complete = [this](bool approved) {
+            m_WorkspaceQuitPending = false;
+            if (approved)
+                RequestExit();
+        };
+        for (auto it = confirmations.rbegin(); it != confirmations.rend(); ++it)
+        {
+            complete = [confirm = *it, next = std::move(complete)](bool approved) {
+                if (approved)
+                    confirm(next);
+                else
+                    next(false);
+            };
+        }
+        complete(true);
+    };
 
-    auto checkScript = [sePanel, scriptDirty, doQuit]()
+    auto checkScript = [sePanel, scriptDirty, checkWorkspaces]()
     {
         if (scriptDirty && sePanel)
-            sePanel->PromptSaveBeforeQuit(doQuit);
+            sePanel->PromptSaveBeforeQuit(checkWorkspaces);
         else
-            doQuit();
+            checkWorkspaces();
     };
 
     std::function<void()> checkGraph = checkScript;
@@ -7544,6 +7666,43 @@ std::string EditorApplication::BuildPerfDumpLine() const
     return std::string(buf);
 }
 
+#if defined(__APPLE__)
+bool EditorApplication::NativeWebDragOwnsFrameLoop() const
+{
+    if (m_IsShuttingDown || m_Windows.size() != 1 || IsFixedFrameRateEnabled() ||
+        (m_PlayMode && m_PlayMode->GetState() != Editor::PlayModeState::Edit) ||
+        (m_MovieRecorder && m_MovieRecorder->IsSessionActive()) ||
+        (m_ProjectPickerModal && m_ProjectPickerModal->ShouldSuppressNativeWebView()) ||
+        (m_SceneEditor && m_SceneEditor->IsAnyModalOpen()) || m_VideoPlayer.IsOpen())
+        return false;
+
+    const auto* context = m_Windows.front().get();
+    if (!context || !context->window || context->window->ShouldClose() || !context->docking ||
+        context->pendingShow)
+        return false;
+
+    for (const auto& [id, panel] : context->docking->GetPanels())
+    {
+        auto* webPanel = dynamic_cast<WebPanel*>(panel);
+        if (webPanel && webPanel->IsHostedBy(context->window.get()) &&
+            context->docking->IsPanelActiveTab(id) && webPanel->HasBundledAppDragFramePriority())
+            return true;
+    }
+    return false;
+}
+
+bool EditorApplication::DeferFrameForNativeEvents()
+{
+    if (!NativeWebDragOwnsFrameLoop())
+        return false;
+
+    // WebKit presents independently. Service AppKit before running another editor or world tick.
+    Platform::Window::WaitOnNextEventPoll(0.008);
+    Editor::MainThreadHangWatchdog::NotifyAlive();
+    return true;
+}
+#endif
+
 void EditorApplication::Render()
 {
     if (m_Windows.empty())
@@ -7643,24 +7802,7 @@ void EditorApplication::Render()
             continue; // skip rendering until valid size
         }
 
-        // When Web panel is not the active tab, move its web view off-screen so it doesn't draw on top of other panels.
-        // Native WKWebView/WebView2 is a subview above GPU UI, so also hide it while any modal is visible
-        // (or fading out) — otherwise the modal renders underneath.
-        // We keep the view "alive" (not hidden) so the page and audio keep playing in the background.
-        if (ctx->docking)
-        {
-            if (auto* webPanel = FindFirstPanelOfType<WebPanel>(m_PanelStorage))
-            {
-                const bool webTabInactive = !ctx->docking->IsPanelActiveTab(EditorPanelIds::Web);
-                const bool projectPickerBlocking =
-                    m_ProjectPickerModal != nullptr && m_ProjectPickerModal->ShouldSuppressNativeWebView();
-                const bool sceneModalBlocking =
-                    m_SceneEditor && m_SceneEditor->IsAnyModalOpen();
-                const bool videoModalBlocking = m_VideoPlayer.IsOpen();
-                webPanel->SetWebViewOffScreen(webTabInactive || projectPickerBlocking
-                    || sceneModalBlocking || videoModalBlocking);
-            }
-        }
+        SyncWebViewStacking(*ctx);
 
         // Keep debug zones up-to-date even when not hovering/dragging
         if (DockOverlay::IsDebugZonesEnabled())
@@ -8002,6 +8144,7 @@ void EditorApplication::OnShutdown()
     // Mark teardown in progress *first* so any OS callbacks (resize/DPI changes)
     // that fire during shutdown cannot re-enter rendering/UI.
     m_IsShuttingDown = true;
+    m_SceneCollaboration.Stop();
     m_DeferredPreUiActions.Clear();
     m_DeferredPostUiActions.Clear();
     // A tool window never attached still registered its ColorPicker context,
@@ -8658,6 +8801,39 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
     }
 }
 
+void EditorApplication::SyncWebViewStacking(EditorWindowContext& ctx)
+{
+    if (!ctx.docking || !ctx.ui)
+        return;
+
+    const bool modalBlocking =
+        (m_ProjectPickerModal && m_ProjectPickerModal->ShouldSuppressNativeWebView()) ||
+        (m_SceneEditor && m_SceneEditor->IsAnyModalOpen()) || m_VideoPlayer.IsOpen();
+    auto* root = ctx.ui->GetRootElement();
+    const auto* dockOverlay = root ? root->FindById("dock-overlay"_sid) : nullptr;
+    const bool dockPreviewOpen = dockOverlay && dockOverlay->GetOverlayLayer() == OverlayLayer::DragPreview;
+    const bool editorOverlayOpen = dockPreviewOpen || (root && std::ranges::any_of(root->GetChildren(),
+        [](const auto& child)
+        {
+            return child && (child->GetOverlayLayer() == OverlayLayer::ContextMenu ||
+                             child->GetOverlayLayer() == OverlayLayer::DragPreview);
+        }));
+
+    // Native WebViews composite above the GPU. A snapshot lets short-lived editor overlays
+    // draw on top while the active page stays alive off-screen.
+    for (const auto& [id, panel] : ctx.docking->GetPanels())
+    {
+        auto* webPanel = dynamic_cast<WebPanel*>(panel);
+        if (!webPanel)
+            continue;
+        const bool activeTab = ctx.docking->IsPanelActiveTab(id);
+        if (activeTab)
+            webPanel->SetWindow(ctx.window.get());
+        if (webPanel->IsHostedBy(ctx.window.get()))
+            webPanel->SetWebViewOffScreen(!activeTab || modalBlocking, editorOverlayOpen);
+    }
+}
+
 void EditorApplication::RenderSingle(EditorWindowContext* ctx)
 {
     Rendering::IDevice* dev = (ctx && ctx->renderCtx) ? ctx->renderCtx->GetDevice() : nullptr;
@@ -8672,6 +8848,7 @@ void EditorApplication::RenderSingle(EditorWindowContext* ctx)
     if (!BeginWindowRenderFrame(ctx, dev))
         return;
 
+    SyncWebViewStacking(*ctx);
     RenderWindowFrame(ctx, dev, /*passiveUi=*/true);
 }
 

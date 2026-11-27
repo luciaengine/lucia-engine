@@ -65,6 +65,8 @@ struct PackageManagerSnapshot
 // outError set on failure; the panel shows the error inline.
 struct PackageManagerActions
 {
+    std::function<bool(const char* key)> GetOpenPencilOption;
+    std::function<bool(const char* key, bool enabled, std::string& outError)> SetOpenPencilOption;
     // Enable/disable via the manifest disabled[] array.
     std::function<bool(const std::vector<std::string>& names, bool disable, std::string& outError)> Toggle;
     // Add from free text: a filesystem path OR a git spec ("git+https://...#ref").

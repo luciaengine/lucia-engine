@@ -592,6 +592,7 @@ set(EDITOR_SOURCES
 	Source/SceneView/SceneViewDropPlacement.cpp
 	Source/SceneView/SceneViewport/SceneViewHoverPill.cpp
 	Source/SceneView/SceneViewport/SceneViewport.cpp
+	Source/Collaboration/SceneCollaborationSession.cpp
 	Source/SceneView/SceneViewport/SceneViewportEdits.cpp
 	Source/SceneView/SceneViewport/SceneViewportRegistry.cpp
 	Source/SceneView/SceneViewNoticeOverlay.cpp
@@ -1895,13 +1896,19 @@ ge_add_engine_package_module(GePkgModule_AiAssistantEditor
 	SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor
 	KIND editor
 	PREBUILT_SUBDIR Binaries/Editor)
-if(APPLE AND NOT GE_MOBILE)
-    ge_add_engine_package_module(GePkgModule_MediaWorkspacesEditor
-        PACKAGE media-workspaces
-        MODULE_NAME MediaWorkspaces.Editor
-        SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/media-workspaces/Editor
-        KIND editor
-        PREBUILT_SUBDIR Binaries/Editor)
+if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    target_sources(EditorSDK PRIVATE
+        Source/MediaWorkspaces/MediaWorkspacePanel.cpp
+        Source/MediaWorkspaces/MediaWorkspacePlugin.cpp)
+    foreach(_ge_workspace IN ITEMS Editroom Compositor)
+        string(TOLOWER "${_ge_workspace}" _ge_workspace_package)
+        ge_add_engine_package_module(GePkgModule_${_ge_workspace}Editor
+            PACKAGE "${_ge_workspace_package}"
+            MODULE_NAME "${_ge_workspace}.Editor"
+            SOURCE_ROOT "${CMAKE_SOURCE_DIR}/Packages/${_ge_workspace_package}/Editor"
+            KIND editor
+            PREBUILT_SUBDIR Binaries/Editor)
+    endforeach()
 endif()
 ge_add_engine_package_module(GePkgModule_LocalizationEditor
 	PACKAGE localization
@@ -2248,13 +2255,73 @@ add_dependencies(Editor EnginePackagePrebuilts)
 # First-party packages (Packages/eztree, ...) staged next to Editor.exe;
 # the package resolver's implicit engine-package scan mounts them per project.
 ge_stage_packages(Editor)
+if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    set(_ge_collaboration_source "${CMAKE_SOURCE_DIR}/Tools/SceneCollaboration")
+    set(_ge_collaboration_dest "$<TARGET_FILE_DIR:Editor>/Tools/SceneCollaboration")
+    if(APPLE)
+        set(_ge_collaboration_dest "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/SceneCollaboration")
+    endif()
+    set(_ge_collaboration_files invite.mjs relay.mjs room.css room.html room.js)
+    list(TRANSFORM _ge_collaboration_files PREPEND "${_ge_collaboration_source}/")
+    set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_collaboration_files}")
+    add_custom_command(TARGET Editor POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_ge_collaboration_dest}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${_ge_collaboration_files} "${_ge_collaboration_dest}"
+        COMMENT "Staging the local collaboration relay"
+        VERBATIM)
+endif()
+
+set(GE_OPENPENCIL_WEB_ROOT "" CACHE PATH "Built OpenPencil web app to bundle with the desktop Editor")
+if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    set(_ge_openpencil_dest "$<TARGET_FILE_DIR:Editor>/Packages/open-pencil/Host")
+
+    set(_ge_openpencil_legacy "$<TARGET_FILE_DIR:Editor>/Tools/OpenPencil")
+    if(APPLE)
+        set(_ge_openpencil_legacy
+            "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil"
+            "${_ge_openpencil_dest}")
+        set(_ge_openpencil_dest "$<TARGET_FILE_DIR:Editor>/../Resources/Packages/open-pencil/Host")
+    endif()
+    set(_ge_openpencil_stage
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_openpencil_dest}" ${_ge_openpencil_legacy})
+    if(GE_OPENPENCIL_WEB_ROOT)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT TARGET PlatformWebViewGtk)
+            message(FATAL_ERROR "Bundled OpenPencil requires WebKitGTK 4.1 (2.40 or newer) with GTK X11 support.")
+        endif()
+        if(NOT EXISTS "${GE_OPENPENCIL_WEB_ROOT}/index.html")
+            message(FATAL_ERROR "GE_OPENPENCIL_WEB_ROOT must contain the built OpenPencil index.html")
+        endif()
+        list(APPEND _ge_openpencil_stage
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory "${GE_OPENPENCIL_WEB_ROOT}" "${_ge_openpencil_dest}")
+    endif()
+
+    if(APPLE)
+        # Bundle content must be staged before the final Editor signature.
+        if(GE_OPENPENCIL_WEB_ROOT)
+            file(GLOB_RECURSE _ge_openpencil_files CONFIGURE_DEPENDS "${GE_OPENPENCIL_WEB_ROOT}/*")
+            set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_openpencil_files}")
+        endif()
+        add_custom_command(TARGET Editor POST_BUILD
+            ${_ge_openpencil_stage}
+            COMMENT "Staging the bundled OpenPencil editor"
+            VERBATIM)
+    else()
+        # Stage even when only the bundle changed and the editor needs no relink.
+        add_custom_target(StageOpenPencil
+            ${_ge_openpencil_stage}
+            COMMENT "Staging the bundled OpenPencil editor"
+            VERBATIM)
+        set_target_properties(StageOpenPencil PROPERTIES FOLDER "Apps/Editor")
+        add_dependencies(Editor StageOpenPencil)
+    endif()
+endif()
 if(APPLE AND NOT GE_MOBILE)
-    set(_ge_workspace_host "$<TARGET_FILE_DIR:Editor>/Packages/media-workspaces/Host")
-    if("editor-workspaces" IN_LIST VCPKG_MANIFEST_FEATURES)
-        set(_ge_workspace_tools "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools")
-        foreach(_ge_workspace IN ITEMS Editroom Compositor)
-            string(TOLOWER "${_ge_workspace}" _ge_workspace_port)
-            set(_ge_workspace_app "${_ge_workspace_tools}/lucia-${_ge_workspace_port}-workspace/${_ge_workspace}.app")
+    foreach(_ge_workspace IN ITEMS Editroom Compositor)
+        string(TOLOWER "${_ge_workspace}" _ge_workspace_package)
+        set(_ge_workspace_host "$<TARGET_FILE_DIR:Editor>/Packages/${_ge_workspace_package}/Host")
+        if("editor-workspaces" IN_LIST VCPKG_MANIFEST_FEATURES)
+            set(_ge_workspace_app
+                "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/lucia-${_ge_workspace_package}-workspace/${_ge_workspace}.app")
             if(NOT EXISTS "${_ge_workspace_app}/Contents/MacOS/${_ge_workspace}")
                 message(FATAL_ERROR "The editor-workspaces feature requires the ${_ge_workspace} host bundle.")
             endif()
@@ -2262,14 +2329,39 @@ if(APPLE AND NOT GE_MOBILE)
                 "${_ge_workspace_app}/Contents/MacOS/${_ge_workspace}")
             add_custom_command(TARGET Editor POST_BUILD
                 COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}/${_ge_workspace}.app"
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "${_ge_workspace_host}"
                 COMMAND /usr/bin/ditto "${_ge_workspace_app}" "${_ge_workspace_host}/${_ge_workspace}.app"
                 COMMENT "Staging ${_ge_workspace} workspace")
-        endforeach()
-    else()
-        add_custom_command(TARGET Editor POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}"
-            COMMENT "Removing disabled media workspace hosts")
+        else()
+            add_custom_command(TARGET Editor POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}"
+                COMMENT "Removing disabled ${_ge_workspace} workspace host")
+        endif()
+    endforeach()
+endif()
+set(GE_MEDIA_WORKSPACE_HOST_ROOT "" CACHE PATH "Directory containing the portable media workspace hosts")
+if(NOT GE_MOBILE AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    if(GE_MEDIA_WORKSPACE_HOST_ROOT AND
+       NOT IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/Compositor" AND
+       NOT IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/Editroom")
+        message(FATAL_ERROR "GE_MEDIA_WORKSPACE_HOST_ROOT must contain a Compositor or Editroom host directory.")
     endif()
+    set(_ge_media_stage)
+    foreach(_ge_workspace IN ITEMS Editroom Compositor)
+        string(TOLOWER "${_ge_workspace}" _ge_workspace_package)
+        set(_ge_workspace_host "$<TARGET_FILE_DIR:Editor>/Packages/${_ge_workspace_package}/Host")
+        list(APPEND _ge_media_stage COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}")
+        if(GE_MEDIA_WORKSPACE_HOST_ROOT AND IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/${_ge_workspace}")
+            list(APPEND _ge_media_stage COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${GE_MEDIA_WORKSPACE_HOST_ROOT}/${_ge_workspace}" "${_ge_workspace_host}/${_ge_workspace}")
+        endif()
+    endforeach()
+    add_custom_target(StageMediaWorkspaceHosts
+        ${_ge_media_stage}
+        COMMENT "Staging portable media workspace hosts"
+        VERBATIM)
+    set_target_properties(StageMediaWorkspaceHosts PROPERTIES FOLDER "Apps/Editor")
+    add_dependencies(Editor StageMediaWorkspaceHosts)
 endif()
 set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_localization_assets}")
 

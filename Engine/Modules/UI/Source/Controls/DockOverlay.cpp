@@ -336,6 +336,7 @@ void DockOverlay::SetTargetZones(const DockDropTarget& target, const DockingMana
     zones.insert(zones.end(), debugLines.begin(), debugLines.end());
     zones.insert(zones.end(), activeZones.begin(), activeZones.end());
 
+    SetOverlayLayer(activeZones.empty() ? OverlayLayer::None : OverlayLayer::DragPreview);
     SetZones(std::move(zones));
 }
 

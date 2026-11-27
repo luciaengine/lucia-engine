@@ -120,6 +120,8 @@ class DockingManager
         m_Panels[id] = content;
     }
 
+    void UnregisterPanel(const std::string& id) { m_Panels.erase(id); }
+
     UIElement* GetPanel(const std::string& id) const
     {
         auto it = m_Panels.find(id);

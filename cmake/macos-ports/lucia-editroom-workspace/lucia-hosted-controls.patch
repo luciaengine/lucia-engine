@@ -1,0 +1,169 @@
+--- a/Editroom/App/LuciaWorkspace.swift
++++ b/Editroom/App/LuciaWorkspace.swift
+@@ -20,6 +20,7 @@
+                 Spacer()
+                 Button("Export…") { model.showExport = true }
+             }
++            .buttonStyle(LuciaMediaButtonStyle())
+             .padding(8)
+             ContentView(model: model)
+                 .defaultAppStorage(UserDefaults(suiteName: "lucia.workspace.editroom") ?? .standard)
+--- a/Editroom/UI/InspectorView.swift
++++ b/Editroom/UI/InspectorView.swift
+@@ -775,10 +775,19 @@
+ 
+     var body: some View {
+         GeometryReader { geo in
++            #if LUCIA_HOSTED
++            let knob = LuciaMediaControls.sliderThumbSize
++            #else
+             let knob: CGFloat = 13
++            #endif
+             let travel = max(1, geo.size.width - knob)
+             let x = CGFloat(min(1, max(0, value))) * travel
+             ZStack(alignment: .leading) {
++                #if LUCIA_HOSTED
++                Capsule().fill(LuciaMediaControls.sliderTrack).frame(height: 3)
++                Capsule().fill(LuciaMediaControls.sliderFill).frame(width: x + knob / 2, height: 3)
++                LuciaMediaControls.sliderThumb().offset(x: x)
++                #else
+                 Capsule().fill(Theme.ink.opacity(0.12)).frame(height: 2)
+                 Capsule().fill(Theme.text).frame(width: x + knob / 2, height: 2)
+                 Circle()
+@@ -787,6 +796,7 @@
+                     .overlay(Circle().strokeBorder(Theme.panel, lineWidth: 3).padding(-3))
+                     .scaleEffect(dragging || hovering ? 1.12 : 1)
+                     .offset(x: x)
++                #endif
+             }
+             .frame(height: geo.size.height)
+             .contentShape(Rectangle())
+--- a/Editroom/App/Shortcuts.swift
++++ b/Editroom/App/Shortcuts.swift
+@@ -188,7 +188,20 @@
+     }
+ 
+     var defaults: [KeyCombo] {
++        #if LUCIA_HOSTED
+         switch self {
++        case .selectTool: return [KeyCombo("a")]
++        case .cutTool: return [KeyCombo("b")]
++        case .split: return [.cmd("b")]
++        case .snapping: return [KeyCombo("n")]
++        case .zoomToFit: return [KeyCombo("z", shift: true)]
++        case .loop: return [.cmd("/", shift: true)]
++        case .skimming: return [KeyCombo("k", shift: true)]
++        default: break
++        }
++        #endif
++
++        return switch self {
+         case .new: [.cmd("n")]
+         case .open: [.cmd("o")]
+         case .save: [.cmd("s")]
+--- a/Editroom/UI/TimelineCanvas.swift
++++ b/Editroom/UI/TimelineCanvas.swift
+@@ -162,6 +162,37 @@
+ 
+     override var isFlipped: Bool { true }
+     override var acceptsFirstResponder: Bool { true }
++
++    #if LUCIA_HOSTED
++    override func keyDown(with event: NSEvent) {
++        if !handleHostedShortcut(event) { super.keyDown(with: event) }
++    }
++
++    override func performKeyEquivalent(with event: NSEvent) -> Bool {
++        if window?.firstResponder === self, event.modifierFlags.contains(.command),
++           handleHostedShortcut(event) { return true }
++        return super.performKeyEquivalent(with: event)
++    }
++
++    private func handleHostedShortcut(_ event: NSEvent) -> Bool {
++        let shortcuts = ShortcutStore.shared
++        guard window?.attachedSheet == nil, shortcuts.recording == nil, !MagicShow.isRunning,
++              let key = KeyCombo(event: event) else { return false }
++
++        if let action = shortcuts.action(for: key) {
++            KeyCommands.perform(action, model)
++            return true
++        }
++        guard !key.command, !key.shift, !key.option, !key.control else { return false }
++        switch key.key {
++        case "j": model.shuttleBackward()
++        case "k": model.pause()
++        case "l": model.play()
++        default: return false
++        }
++        return true
++    }
++    #endif
+     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+ 
+     override func setFrameSize(_ newSize: NSSize) {
+--- a/Editroom/Model/EditorModel.swift
++++ b/Editroom/Model/EditorModel.swift
+@@ -992,7 +992,33 @@
+         mutate { p in p.inPoint = nil; p.outPoint = nil }
+     }
+ 
++    #if LUCIA_HOSTED
++    private var backwardShuttle: Task<Void, Never>?
++
++    func shuttleBackward() {
++        pause()
++        backwardShuttle = Task { [weak self] in
++            while !Task.isCancelled {
++                guard let self, self.playhead > 0 else { break }
++                let frame = 1 / self.project.fps
++                self.playhead = max(0, self.project.snapFrame(self.playhead - frame))
++                self.engine.seek(to: self.playhead, fast: true)
++                try? await Task.sleep(for: .seconds(frame))
++            }
++            if !Task.isCancelled { self?.backwardShuttle = nil }
++        }
++    }
++
++    private func stopBackwardShuttle() {
++        backwardShuttle?.cancel()
++        backwardShuttle = nil
++    }
++    #endif
++
+     func togglePlay() {
++        #if LUCIA_HOSTED
++        if backwardShuttle != nil { stopBackwardShuttle(); return }
++        #endif
+         isPlaying ? pause() : play()
+     }
+ 
+@@ -1021,6 +1047,9 @@
+     static let playFromSkimmerKey = "playFromSkimmer"
+ 
+     func play() {
++        #if LUCIA_HOSTED
++        stopBackwardShuttle()
++        #endif
+         if let s = skimTime {
+             if UserDefaults.standard.object(forKey: Self.playFromSkimmerKey) as? Bool ?? true {
+                 playhead = s
+@@ -1047,6 +1076,9 @@
+     }
+ 
+     func pause() {
++        #if LUCIA_HOSTED
++        stopBackwardShuttle()
++        #endif
+         guard isPlaying else { return }
+         engine.pause()
+         engine.loopSpan = nil
+@@ -1056,6 +1088,9 @@
+     }
+ 
+     func seek(to time: Double) {
++        #if LUCIA_HOSTED
++        stopBackwardShuttle()
++        #endif
+         skimTime = nil
+         settleWork?.cancel()
+         engine.endScrubFrames()
