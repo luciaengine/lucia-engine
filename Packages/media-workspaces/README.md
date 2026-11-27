@@ -60,8 +60,9 @@ when previewing or exporting.
 
 Build the host with Qt 6 Widgets, Multimedia, and Multimedia Widgets. On
 Linux, install the Qt Multimedia playback plugin and use an X11 or XWayland
-session. On Windows, deploy the matching Qt runtime and platform and
-multimedia plugins beside the host DLL. Provide `ffmpeg` and `ffprobe` beside
+session. On Windows, run Qt's `windeployqt --release --no-translations` on
+the staged `Editroom/LuciaMediaWorkspace.dll` to install the matching runtime.
+Provide `ffmpeg` and `ffprobe` beside
 the host or on PATH. Use FFmpeg 7.1 or newer with the `libx264` and AAC encoders.
 
 ```sh

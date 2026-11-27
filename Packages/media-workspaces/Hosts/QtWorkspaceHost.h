@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QWidget>
 
 #include <cstdint>
@@ -14,8 +15,8 @@ using CloseReply = void (*)(void*, int32_t);
 
 inline bool EnsureQtApplication(const QString& workspaceDirectory)
 {
-    QCoreApplication::addLibraryPath(workspaceDirectory);
-    QCoreApplication::addLibraryPath(QDir(workspaceDirectory).filePath(QStringLiteral("plugins")));
+    const QDir workspace(workspaceDirectory);
+    const auto plugins = workspace.filePath(QStringLiteral("plugins"));
     if (!QCoreApplication::instance())
     {
         // Qt owns platform objects that remain active until editor process exit.
@@ -25,6 +26,18 @@ inline bool EnsureQtApplication(const QString& workspaceDirectory)
         static char backend[] = "xcb";
         static char* arguments[] = {name, platform, backend, nullptr};
         static int count = 3;
+#elif defined(_WIN32)
+        // Qt selects its platform plugin during application construction.
+        auto platformDirectory = workspace.filePath(QStringLiteral("platforms"));
+        if (!QFileInfo::exists(QDir(platformDirectory).filePath(QStringLiteral("qwindows.dll"))))
+            platformDirectory = QDir(plugins).filePath(QStringLiteral("platforms"));
+        const bool bundledPlatform = QFileInfo::exists(QDir(platformDirectory).filePath(QStringLiteral("qwindows.dll")));
+        static QByteArray platformPath = platformDirectory.toLocal8Bit();
+        static char platform[] = "-platformpluginpath";
+        static char* arguments[] = {name, platform, platformPath.data(), nullptr};
+        static int count = bundledPlatform ? 3 : 1;
+        if (!bundledPlatform)
+            arguments[1] = nullptr;
 #else
         static char* arguments[] = {name, nullptr};
         static int count = 1;
@@ -34,6 +47,8 @@ inline bool EnsureQtApplication(const QString& workspaceDirectory)
         app->setOrganizationName(QStringLiteral("Lucia Engine"));
         app->setQuitOnLastWindowClosed(false);
     }
+    QCoreApplication::addLibraryPath(workspace.absolutePath());
+    QCoreApplication::addLibraryPath(plugins);
     return qobject_cast<QApplication*>(QCoreApplication::instance()) != nullptr;
 }
 
