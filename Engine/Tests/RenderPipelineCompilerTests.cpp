@@ -276,6 +276,38 @@ TEST(RenderPipelineCompiler, MissingShaderPkgFileIsError)
     EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "could not be loaded")) << IssuesToString(bp);
 }
 
+TEST(RenderPipelineCompiler, RetiredHeightFogPassKeepsLegacyGraphUsable)
+{
+    const std::string json = R"json({
+      "schemaVersion": 2,
+      "resources": {
+        "SceneColor": { "kind": "Texture", "format": "R16G16B16A16_FLOAT" },
+        "HDRHeightFog": { "kind": "Texture", "format": "R16G16B16A16_FLOAT" }
+      },
+      "passes": [
+        { "id": "World", "type": "WorldRender", "colorResolveTarget": "SceneColor" },
+        { "id": "HeightFog", "type": "FullscreenShader",
+          "shaderPkg": "Shaders/height_fog.shaderpkg",
+          "inputs": { "uSceneColor": "SceneColor", "uDepth": "View.DepthResolved" },
+          "output": "HDRHeightFog", "passthroughInput": "uSceneColor" },
+        { "id": "Copy", "type": "FullscreenShader", "shaderPkg": "copy.shaderpkg",
+          "inputs": { "uSrc": "HDRHeightFog" }, "output": "View.Resolve" }
+      ],
+      "outputs": { "FinalColor": "View.Resolve", "SceneHDR": "HDRHeightFog" }
+    })json";
+    RenderPipelineAsset asset(GUID::Null(), std::filesystem::path("test.rendergraph"));
+    asset.LoadFromData(Vector<uint8>(json.begin(), json.end()));
+    const auto bp = RenderPipelineCompiler().Compile(asset, BuildRegistry());
+    EXPECT_FALSE(bp.HasErrors()) << IssuesToString(bp);
+    ASSERT_EQ(bp.passes.size(), 2u);
+    EXPECT_EQ(nlohmann::json::parse(bp.passes.back().passJson).at("inputs").at("uSrc"), "SceneColor");
+    ASSERT_EQ(bp.outputs.size(), 2u);
+    EXPECT_EQ(bp.outputs.back().name, "SceneHDR");
+    EXPECT_EQ(bp.outputs.back().resourceRef, "SceneColor");
+    EXPECT_EQ(RenderPipelineCompiler::ShaderPackagesOf(asset, Rendering::ShaderSourceKind::SpirV),
+        (std::vector<std::string>{"copy.shaderpkg"}));
+}
+
 TEST(RenderPipelineCompiler, ReflectionSkippedWhenResolverUnconfigured)
 {
     // A relative pkg name with no shader path resolver configured (this
