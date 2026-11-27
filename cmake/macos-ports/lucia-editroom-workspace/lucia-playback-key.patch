@@ -1,0 +1,88 @@
+--- a/Editroom/App/LuciaWorkspace.swift
++++ b/Editroom/App/LuciaWorkspace.swift
+@@ -29,6 +29,32 @@
+ }
+
+
++@MainActor
++private final class HostedEditroomView: NSHostingView<HostedEditroom> {
++    private var playbackMonitor: Any?
++
++    func installPlaybackMonitor(for model: EditorModel) {
++        playbackMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak model] event in
++            MainActor.assumeIsolated {
++                guard let self, let model, let window = self.window,
++                      !self.isHiddenOrHasHiddenAncestor, !model.viewerOnly else { return event }
++                if let responder = window.firstResponder as? NSView,
++                   responder !== window.contentView, !responder.isDescendant(of: self) {
++                    return event
++                }
++                return KeyCommands.handleHostedPlayback(event, model: model, window: window) ? nil : event
++            }
++        }
++    }
++
++    func removePlaybackMonitor() {
++        if let playbackMonitor {
++            NSEvent.removeMonitor(playbackMonitor)
++            self.playbackMonitor = nil
++        }
++    }
++}
++
+ private enum WorkspaceResources {
+     static var bundle: Bundle = .main
+ }
+@@ -40,7 +66,8 @@
+         guard let bundle = Bundle(path: String(cString: bundlePath)) else { return nil }
+         WorkspaceResources.bundle = bundle
+         let model = EditorModel()
+-        let view = NSHostingView(rootView: HostedEditroom(model: model))
++        let view = HostedEditroomView(rootView: HostedEditroom(model: model))
++        view.installPlaybackMonitor(for: model)
+         let workspace = LuciaMediaWorkspaceHost(view: view) { model.confirmDiscard(quitting: true, forceSavePrompt: true) }
+         return Unmanaged.passRetained(workspace).toOpaque()
+     }
+@@ -74,6 +101,7 @@
+ public func luciaDestroyMediaWorkspace(_ viewHandle: UnsafeMutableRawPointer) {
+     MainActor.assumeIsolated {
+         let view = Unmanaged<LuciaMediaWorkspaceHost>.fromOpaque(viewHandle).takeRetainedValue().view
++        (view as? HostedEditroomView)?.removePlaybackMonitor()
+         view.removeFromSuperview()
+     }
+ }
+--- a/Editroom/UI/ContentView.swift
++++ b/Editroom/UI/ContentView.swift
+@@ -214,6 +214,20 @@
+         perform(action, model)
+         return true
+     }
++
++    #if LUCIA_HOSTED
++    static func handleHostedPlayback(_ event: NSEvent, model: EditorModel, window: NSWindow) -> Bool {
++        let shortcuts = ShortcutStore.shared
++        guard event.window === window, window.isKeyWindow, window.attachedSheet == nil,
++              NSApp.modalWindow == nil, !(window.firstResponder is NSText),
++              shortcuts.recording == nil, !MagicShow.isRunning,
++              let key = KeyCombo(event: event), shortcuts.action(for: key) == .playPause else { return false }
++        if !event.isARepeat {
++            perform(.playPause, model)
++        }
++        return true
++    }
++    #endif
+
+     static func perform(_ a: ShortcutAction, _ model: EditorModel) {
+         switch a {
+--- a/Editroom/UI/ViewerScreen.swift
++++ b/Editroom/UI/ViewerScreen.swift
+@@ -124,6 +124,9 @@
+
+     override func sendEvent(_ event: NSEvent) {
+         if event.type == .keyDown {
++            if let model, KeyCommands.handleHostedPlayback(event, model: model, window: self) {
++                return
++            }
+             let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+             if event.keyCode == 53 || (modifiers.isEmpty && event.charactersIgnoringModifiers == "f") {
+                 model?.toggleViewerFullScreen()

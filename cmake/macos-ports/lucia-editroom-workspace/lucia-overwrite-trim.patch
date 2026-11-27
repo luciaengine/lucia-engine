@@ -1,0 +1,46 @@
+--- a/Editroom/Model/Project.swift
++++ b/Editroom/Model/Project.swift
+@@ -441,25 +441,18 @@
+         return set.sorted()
+     }
+ 
+-    /// Allowed delta range for dragging a clip edge.
+-    func trimLimits(_ c: Clip, left: Bool, excluding ids: Set<UUID>) -> ClosedRange<Double> {
+-        let others = clips.filter { $0.trackID == c.trackID && !ids.contains($0.id) && $0.id != c.id }
++    /// Source and timeline bounds for an overwrite trim.
++    func trimLimits(_ c: Clip, left: Bool) -> ClosedRange<Double> {
+         let minDur = max(Project.minClip, 1 / fps)
+         if left {
+-            let prevEnd = others.filter { $0.end <= c.start + 1e-6 }.map(\.end).max() ?? 0
+-            var lo = prevEnd - c.start
++            var lo = -c.start
+             if c.playsSource { lo = max(lo, -c.timelineSpan(from: 0, to: c.sourceStart)) }
+             let hi = c.duration - minDur
+             return min(lo, hi)...hi
+-        } else {
+-            let nextStart = others.filter { $0.start >= c.end - 1e-6 }.map(\.start).min() ?? .infinity
+-            var hi = nextStart - c.end
+-            if let limit = sourceLimit(c) {
+-                hi = min(hi, c.timelineSpan(from: c.sourceStart, to: limit) - c.duration)
+-            }
+-            let lo = minDur - c.duration
+-            return lo...max(lo, hi)
+-        }
++        }
++        let lo = minDur - c.duration
++        let hi = sourceLimit(c).map { c.timelineSpan(from: c.sourceStart, to: $0) - c.duration } ?? .infinity
++        return lo...max(lo, hi)
+     }
+ 
+     /// First track of a kind (bottom-up for video, top-down for audio) that is empty across a range.
+--- a/Editroom/UI/TimelineCanvas.swift
++++ b/Editroom/UI/TimelineCanvas.swift
+@@ -816,7 +816,7 @@
+         }
+         var lo = -Double.infinity, hi = Double.infinity
+         for c in originals {
+-            let range = project.trimLimits(c, left: left, excluding: ids)
++            let range = project.trimLimits(c, left: left)
+             lo = max(lo, range.lowerBound)
+             hi = min(hi, range.upperBound)
+         }

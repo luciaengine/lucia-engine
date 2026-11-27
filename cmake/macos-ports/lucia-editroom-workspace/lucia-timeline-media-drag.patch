@@ -1,0 +1,134 @@
+--- a/Editroom/Model/EditorModel.swift
++++ b/Editroom/Model/EditorModel.swift
+@@ -6,10 +6,30 @@
+
+ enum Tool { case move, cut }
+
+-enum DragPayload: Equatable {
++enum DragPayload: Codable, Equatable {
+     case asset(UUID)
+     case solid
+     case text
++}
++
++/// The pasteboard contract between the SwiftUI Media bin and the AppKit timeline.
++enum TimelineMediaDrag {
++    static let pasteboardType = NSPasteboard.PasteboardType("com.luciaengine.editroom.timeline-media")
++
++    static func provider(for payloads: [DragPayload]) -> NSItemProvider {
++        let data = try? JSONEncoder().encode(payloads)
++        let provider = NSItemProvider()
++        provider.registerDataRepresentation(forTypeIdentifier: pasteboardType.rawValue, visibility: .all) { completion in
++            completion(data, nil)
++            return nil
++        }
++        return provider
++    }
++
++    static func payloads(from pasteboard: NSPasteboard) -> [DragPayload] {
++        guard let data = pasteboard.data(forType: pasteboardType) else { return [] }
++        return (try? JSONDecoder().decode([DragPayload].self, from: data)) ?? []
++    }
+ }
+
+ /// Zoom and scroll of the timeline. Kept separate so scrolling doesn't invalidate the whole UI.
+@@ -138,8 +158,6 @@
+
+     private(set) var playhead: Double = 0
+     var tickHandlers: [() -> Void] = []
+-    /// Set while something is being dragged out of the library.
+-    var dragPayload: DragPayload?
+
+     private var undoStack: [Project] = []
+     private var redoStack: [Project] = []
+--- a/Editroom/UI/LibraryView.swift
++++ b/Editroom/UI/LibraryView.swift
+@@ -306,10 +306,7 @@
+             .animation(.easeOut(duration: 0.12), value: hovering)
+             .onTapGesture { model.addAtPlayhead(payload) }
+             .background(MagicAnchor(key: payload == .text ? "addText" : "addSolid"))
+-            .onDrag {
+-                model.dragPayload = payload
+-                return NSItemProvider(object: ("editroom:" + (payload == .text ? "text" : "solid")) as NSString)
+-            }
++            .onDrag { TimelineMediaDrag.provider(for: [payload]) }
+             .help(help)
+     }
+ }
+@@ -327,12 +324,11 @@
+         content
+             .onTapGesture(count: 2) { model.addAtPlayhead(.asset(asset.id)) }
+             .onDrag({
+-                model.dragPayload = .asset(asset.id)
+                 // Dragging one of several picked items takes them all, in the Media panel's order.
+                 let ids = picked && pickedCount > 1
+                     ? model.project.assets.map(\.id).filter { model.mediaSelection.contains($0) }
+                     : [asset.id]
+-                return NSItemProvider(object: ("editroom:" + ids.map(\.uuidString).joined(separator: ",")) as NSString)
++                return TimelineMediaDrag.provider(for: ids.map(DragPayload.asset))
+             }, preview: { content })
+             .contextMenu {
+                 if offline {
+--- a/Editroom/UI/TimelineCanvas.swift
++++ b/Editroom/UI/TimelineCanvas.swift
+@@ -132,7 +132,7 @@
+         playheadView.wantsLayer = true
+         playheadView.layerContentsRedrawPolicy = .onSetNeedsDisplay
+         addSubview(playheadView)
+-        registerForDraggedTypes([.fileURL, .string])
++        registerForDraggedTypes([.fileURL, TimelineMediaDrag.pasteboardType])
+
+         model.objectWillChange.sink { [weak self] _ in self?.needsDisplay = true }.store(in: &bag)
+         model.$editingMarker.receive(on: DispatchQueue.main).sink { [weak self] id in self?.showMarkerPanel(id) }.store(in: &bag)
+@@ -1139,27 +1139,18 @@
+
+     // MARK: Drag & drop
+
+-    /// What's being dragged in from the Media panel: one item, or several picked ones, which land end to end.
+-    private func payloads(from sender: NSDraggingInfo) -> [DragPayload] {
+-        if let s = sender.draggingPasteboard.string(forType: .string), s.hasPrefix("editroom:") {
+-            let body = String(s.dropFirst("editroom:".count))
+-            if body == "solid" { return [.solid] }
+-            if body == "text" { return [.text] }
+-            let ids = body.split(separator: ",").compactMap { UUID(uuidString: String($0)) }
+-            if !ids.isEmpty { return ids.map { .asset($0) } }
+-        }
+-        return model.dragPayload.map { [$0] } ?? []
+-    }
+-
+     private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
+         (sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+     }
+
+     private func updateDrop(_ sender: NSDraggingInfo) -> NSDragOperation {
+         let p = convert(sender.draggingLocation, from: nil)
+-        let hasFiles = sender.draggingPasteboard.types?.contains(.fileURL) ?? false
+-        let payloads = hasFiles ? [] : self.payloads(from: sender)
+-        guard hasFiles || !payloads.isEmpty else { return [] }
++        let payloads = TimelineMediaDrag.payloads(from: sender.draggingPasteboard)
++        let hasFiles = payloads.isEmpty && (sender.draggingPasteboard.types?.contains(.fileURL) ?? false)
++        guard hasFiles || !payloads.isEmpty else {
++            clearDrop()
++            return []
++        }
+
+         let project = model.project
+         let vTracks = project.videoTracks, aTracks = project.audioTracks
+@@ -1231,8 +1222,7 @@
+     override func draggingEnded(_ sender: NSDraggingInfo) { clearDrop() }
+
+     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+-        _ = updateDrop(sender)
+-        guard let info = dropInfo else { return false }
++        guard updateDrop(sender) == .copy, let info = dropInfo else { return false }
+         let urls = fileURLs(from: sender)
+         let pending = ghosts
+         clearDrop()
+@@ -1252,7 +1242,6 @@
+         }
+         guard !pending.isEmpty else { return false }
+         model.insert(pending)
+-        model.dragPayload = nil
+         window?.makeFirstResponder(self)
+         return true
+     }
