@@ -8,6 +8,7 @@
 # - GE_RUNTIME_DEPS_DEST_DIR  : destination directory to copy dependencies into
 # - GE_RUNTIME_DEPS_SEARCH_DIRS (optional): additional search directories (CMake list)
 # - GE_RUNTIME_DEPS_VERBOSE (optional): ON/OFF
+# - GE_RUNTIME_DEPS_USE_SYSTEM_FONTCONFIG (optional): use the host Fontconfig on Linux
 
 if(NOT DEFINED GE_RUNTIME_DEPS_EXECUTABLE OR GE_RUNTIME_DEPS_EXECUTABLE STREQUAL "")
   message(FATAL_ERROR "StageRuntimeDependencies: GE_RUNTIME_DEPS_EXECUTABLE must be set")
@@ -44,6 +45,15 @@ if(UNIX AND NOT APPLE)
       "${GE_RUNTIME_DEPS_DEST_DIR}/libutil.so*")
   if(_ge_staged_glibc)
     file(REMOVE ${_ge_staged_glibc})
+  endif()
+endif()
+
+# Linux Editor loads system Qt and GTK modules in the same process. They need
+# the host Fontconfig, whose newer symbols can be absent in the vcpkg copy.
+if(UNIX AND NOT APPLE AND GE_RUNTIME_DEPS_USE_SYSTEM_FONTCONFIG)
+  file(GLOB _ge_staged_fontconfig "${GE_RUNTIME_DEPS_DEST_DIR}/libfontconfig.so*")
+  if(_ge_staged_fontconfig)
+    file(REMOVE ${_ge_staged_fontconfig})
   endif()
 endif()
 
@@ -137,6 +147,11 @@ if(UNIX AND NOT APPLE)
   list(APPEND _ge_post_exclude_regexes
       ".*/ld-linux[^/]*\\.so(\\..*)?$"
       ".*/lib(anl|c|dl|m|pthread|resolv|rt|util)\\.so(\\..*)?$")
+endif()
+
+if(UNIX AND NOT APPLE AND GE_RUNTIME_DEPS_USE_SYSTEM_FONTCONFIG)
+  list(APPEND _ge_pre_exclude_regexes "^libfontconfig\\.so(\\..*)?$")
+  list(APPEND _ge_post_exclude_regexes ".*/libfontconfig\\.so(\\..*)?$")
 endif()
 
 #

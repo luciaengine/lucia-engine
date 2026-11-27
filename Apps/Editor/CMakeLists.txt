@@ -2245,7 +2245,7 @@ if (TARGET PlatformWebViewGtk)
 endif()
 
 # Stage runtime DLL dependencies (e.g. GameEngine.Native.dll, vcpkg DLLs) next to Editor.exe
-ge_stage_runtime_dependencies(Editor)
+ge_stage_runtime_dependencies(Editor USE_SYSTEM_FONTCONFIG)
 ge_register_application_directory(Editor)
 
 # Prebuilt engine-package modules must exist before Editor's POST_BUILD

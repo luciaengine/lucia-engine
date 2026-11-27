@@ -295,6 +295,48 @@ QString RoomDocument::MediaPath(const QJsonObject& asset) const
     return moved.isFile() ? moved.canonicalFilePath() : QString();
 }
 
+QJsonArray RoomDocument::MissingAssets() const
+{
+    QJsonArray missing;
+    for (const auto& value : Assets())
+        if (MediaPath(value.toObject()).isEmpty())
+            missing.append(value);
+    return missing;
+}
+
+bool RoomDocument::RelinkMissingAsset(const QString& id, const QString& path)
+{
+    const QFileInfo replacement(path);
+    const auto selected = Asset(id);
+    if (!replacement.isFile() || selected.isEmpty() || !MediaPath(selected).isEmpty())
+        return false;
+
+    auto project = Project();
+    auto assets = Assets();
+    for (qsizetype index = 0; index < assets.size(); ++index)
+    {
+        auto asset = assets[index].toObject();
+        if (!MediaPath(asset).isEmpty())
+            continue;
+
+        const auto filename = QFileInfo(asset.value("path").toString()).fileName();
+        const QFileInfo candidate(asset.value("id").toString() == id
+                                      ? replacement.absoluteFilePath()
+                                      : replacement.absoluteDir().filePath(filename));
+        if (!candidate.isFile())
+            continue;
+
+        const auto resolved = candidate.absoluteFilePath();
+        asset.insert("path", resolved);
+        asset.remove("playablePath");
+        asset.remove("relativePath");
+        assets[index] = asset;
+    }
+    project.insert("assets", assets);
+    SetProject(project);
+    return true;
+}
+
 double RoomDocument::Duration() const
 {
     double duration = 0;
