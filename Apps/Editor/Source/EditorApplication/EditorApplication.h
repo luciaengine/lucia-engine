@@ -599,6 +599,8 @@ class EditorApplication : public Application
     void OnPlayModeStateChanged(Editor::PlayModeState state);
     // Gives the editor plugins their host services; they attach on the next Update.
     void AttachEditorPluginHost();
+    void RefreshOpenPencilPackagePanels();
+    std::array<UIElement*, 2> m_OpenPencilPackagePanels{};
 
     // Play mode presentation flags (Game View fullscreen play).
     bool m_PlayFullscreenOnEnter = false; // controlled by top toolbar fullscreen toggle

@@ -1,0 +1,4 @@
+<UIElement>
+  <Checkbox id="OpenPencilOfflineOption" text="OpenPencil offline" />
+  <Checkbox id="OpenPencilOnlineOption" text="OpenPencil Online" />
+</UIElement>

@@ -1,5 +1,7 @@
 #include "Panels/BuiltInPanelTypes.h"
 
+#include "Editor/EditorPaths.h"
+
 #include "Editor/Registries/EditorPanelRegistry.h"
 #include "EditorPanelIds.h"
 #include "Graph/GraphModel.h"
@@ -33,7 +35,6 @@
 #include "Panels/VisualProfilerPanel.h"
 #include "Panels/VramPanel.h"
 #include "Panels/WebPanel.h"
-#include "Editor/EditorPaths.h"
 
 #include <memory>
 
@@ -64,7 +65,7 @@ std::unique_ptr<UIElement> MakeOpenPencilPanel()
 std::unique_ptr<UIElement> MakeLocalOpenPencilPanel()
 {
     return std::make_unique<WebPanel>("OpenPencil", "",
-        GetEditorGlobalPaths().installToolsRoot / "OpenPencil");
+        GetEditorGlobalPaths().installToolsRoot.parent_path() / "Packages" / "open-pencil" / "Host");
 }
 
 std::unique_ptr<UIElement> MakeMaterialGraphPanel()
@@ -136,8 +137,6 @@ constexpr FallbackDockPanel kFallbackDockPanels[] = {
     {EditorPanelIds::Log, "LogPanel"},
     {EditorPanelIds::ScriptErrors, "ScriptErrorsPanel"},
     {EditorPanelIds::Web, "WebPanel"},
-    {"OpenPencil", "OpenPencilPanel"},
-    {"OpenPencilLocal", "LocalOpenPencilPanel"},
     {EditorPanelIds::NodeGraph, "NodeGraphPanel"},
     {EditorPanelIds::Build, "BuildPanel"},
     {EditorPanelIds::Mixer, "MixerPanel"},

@@ -2257,13 +2257,17 @@ add_dependencies(Editor EnginePackagePrebuilts)
 ge_stage_packages(Editor)
 set(GE_OPENPENCIL_WEB_ROOT "" CACHE PATH "Built OpenPencil web app to bundle with the desktop Editor")
 if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
-    set(_ge_openpencil_dest "$<TARGET_FILE_DIR:Editor>/Tools/OpenPencil")
-    if(APPLE)
-        set(_ge_openpencil_dest "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil")
-    endif()
+    set(_ge_openpencil_dest "$<TARGET_FILE_DIR:Editor>/Packages/open-pencil/Host")
 
+    set(_ge_openpencil_legacy "$<TARGET_FILE_DIR:Editor>/Tools/OpenPencil")
+    if(APPLE)
+        set(_ge_openpencil_legacy
+            "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/OpenPencil"
+            "${_ge_openpencil_dest}")
+        set(_ge_openpencil_dest "$<TARGET_FILE_DIR:Editor>/../Resources/Packages/open-pencil/Host")
+    endif()
     set(_ge_openpencil_stage
-        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_openpencil_dest}")
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_openpencil_dest}" ${_ge_openpencil_legacy})
     if(GE_OPENPENCIL_WEB_ROOT)
         if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT TARGET PlatformWebViewGtk)
             message(FATAL_ERROR "Bundled OpenPencil requires WebKitGTK 4.1 (2.40 or newer) with GTK X11 support.")

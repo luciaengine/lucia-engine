@@ -63,6 +63,7 @@ class PackageManagerController
     // root.
     const std::vector<PackageCodeModule>& GetCodeModules() const { return m_CodeModules; }
     const std::vector<std::string>& GetPackageDefines() const { return m_Defines; }
+    bool IsOpenPencilEnabledAtMount() const { return m_OpenPencilEnabledAtMount; }
 
   private:
     // Re-run PackageResolver::Resolve for panel display only (no mount, code
@@ -79,6 +80,7 @@ class PackageManagerController
     const std::vector<DiscoveredPackageModule>& ModulesOf(const std::string& packageName) const;
 
     Dependencies m_Deps;
+    bool m_OpenPencilEnabledAtMount = false;
     std::vector<std::string> m_MountedAliases;
     std::vector<PackageCodeModule> m_CodeModules;
     std::vector<std::string> m_Defines;

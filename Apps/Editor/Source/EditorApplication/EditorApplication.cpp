@@ -57,6 +57,7 @@
 #include "EditorWindowBootstrap.h"
 #include "Docking/WindowDockingController.h"
 #include "Packages/PackageManagerController.h"
+#include "Packages/OpenPencilPackageOptions.h"
 #include "Assets/Packages/PackageCodeModules.h"
 #include "Core/Application.h"
 #include "Core/ApplicationPaths.h"
@@ -3143,6 +3144,7 @@ bool EditorApplication::Initialize()
         auto tDockSub = tPhase;
         m_Docking = std::make_unique<DockingManager>();
         m_DefaultDockLayout.reset();
+        m_OpenPencilPackagePanels = {};
         m_PanelStorage.clear();
 
         EditorUI::EditorDockConfig dockCfg{};
@@ -3161,6 +3163,7 @@ bool EditorApplication::Initialize()
         {
             m_Docking = std::make_unique<DockingManager>();
             m_DefaultDockLayout.reset();
+            m_OpenPencilPackagePanels = {};
             m_PanelStorage.clear();
 
             for (const Editor::FallbackDockPanel& entry : Editor::FallbackDockPanels())
@@ -3263,6 +3266,7 @@ bool EditorApplication::Initialize()
         // Panels exist now; give the Package Manager its data source (covers
         // the startup order where packages mounted before the dock was built).
         m_Packages->WirePanels();
+        RefreshOpenPencilPackagePanels();
 
         // Docking model exists: start consuming package panel / editor-chrome
         // stylesheet registrations (EditorSDK phase 2). Package Editor modules
@@ -5104,6 +5108,40 @@ void EditorApplication::ConsumePackageOverlay(const Editor::EditorOverlayDescrip
     Logger::Log::Info("Editor: package overlay '{}' attached to the UI root", descriptor.OverlayId);
 }
 
+void EditorApplication::RefreshOpenPencilPackagePanels()
+{
+    if (!m_Docking || !m_Packages)
+        return;
+
+    using namespace Editor;
+    auto settings = OpenProjectSettings(EngineCore::GetInstance().GetWorkspaceRoot());
+    std::string error;
+    (void)settings.Load(&error);
+    const bool packageEnabled = m_Packages->IsOpenPencilEnabledAtMount();
+    for (size_t index = 0; index < kOpenPencilPackageOptions.size(); ++index)
+    {
+        const auto& option = kOpenPencilPackageOptions[index];
+        bool enabled = true;
+        (void)settings.TryGetBool(option.Setting, enabled);
+        auto*& panel = m_OpenPencilPackagePanels[index];
+        if (!packageEnabled || !enabled)
+        {
+            m_Docking->RemoveTab(option.PanelId);
+            m_Docking->UnregisterPanel(option.PanelId);
+            continue;
+        }
+        if (!panel)
+        {
+            auto owned = EditorPanelRegistry::Get().CreatePanelOfType(option.PanelType);
+            if (!owned)
+                continue;
+            panel = owned.get();
+            m_PanelStorage.push_back(std::move(owned));
+        }
+        m_Docking->RegisterPanel(option.PanelId, panel);
+    }
+}
+
 void EditorApplication::ConsumePackagePanelDescriptor(const Editor::EditorPanelDescriptor& descriptor)
 {
     if (!m_Docking)
@@ -5370,6 +5408,7 @@ void EditorApplication::FinishProjectFolderSwitch(const ProjectSwitch& pending)
 
     // Mount the new project's packages now that the project source points at it.
     m_Packages->MountForProject(projectPath);
+    RefreshOpenPencilPackagePanels();
 
     // Reload layout presets from the newly-opened project. The initial load during Initialize()
     // ran against the startup/default workspace root; without this reload, saves go to the new

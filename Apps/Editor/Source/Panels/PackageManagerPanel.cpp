@@ -1,5 +1,9 @@
 #include "Panels/PackageManagerPanel.h"
 
+#include "Packages/OpenPencilPackageOptions.h"
+#include "UI/ControlLayoutLoader.h"
+#include "UI/Controls/Checkbox.h"
+
 #include "Editor/Settings/AssetPreviewSettings.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
@@ -575,6 +579,27 @@ void PackageManagerPanel::RebuildDetail(const std::vector<PackageManagerEntry>& 
         }
     }
 
+    if (entry.Name == Editor::kOpenPencilPackageId && entry.SourceKind == "engine" &&
+        m_Actions.GetOpenPencilOption && m_Actions.SetOpenPencilOption)
+    {
+        auto options = Editor::ControlLayoutLoader::Load("UI/controls/OpenPencilPackageOptions/OpenPencilPackageOptions.uxml", {});
+        if (options)
+        {
+            for (const auto& option : Editor::kOpenPencilPackageOptions)
+            {
+                auto* box = dynamic_cast<Checkbox*>(options->FindById(HashStringId(option.CheckboxId)));
+                if (!box)
+                    continue;
+                box->SetValueWithoutNotify(m_Actions.GetOpenPencilOption(option.Setting));
+                box->SetOnValueChanged([this, key = option.Setting](const bool& enabled) {
+                    RunAction([this, key, enabled](std::string& error) {
+                        return m_Actions.SetOpenPencilOption(key, enabled, error);
+                    }, "Reopen the project to apply OpenPencil tab changes.");
+                });
+            }
+            m_DetailContainer->AddChild(std::move(options));
+        }
+    }
     BuildDetailInfo(*m_DetailContainer, entry);
     BuildDetailActions(*m_DetailContainer, entry);
 }
