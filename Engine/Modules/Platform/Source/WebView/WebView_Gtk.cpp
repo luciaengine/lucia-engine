@@ -92,6 +92,9 @@ void RegisterBundledScheme(WebKitWebContext* context)
     g_object_set_data(G_OBJECT(context), kBundledRootKey, context);
 }
 
+constexpr char kDocumentSavePromptKey[] = "lucia-web-document-save-prompt";
+constexpr char kDocumentClosePromptKey[] = "lucia-web-document-close-prompt";
+
 gboolean SaveBundledDocument(WebKitUserContentManager*, JSCValue* payload,
                               WebKitScriptMessageReply* reply, gpointer data)
 {
@@ -116,6 +119,37 @@ gboolean SaveBundledDocument(WebKitUserContentManager*, JSCValue* payload,
     if (!name || length == 0)
     {
         webkit_script_message_reply_return_error_message(reply, "Invalid document data.");
+        return TRUE;
+    }
+
+    auto* prompt = static_cast<DocumentSavePrompt*>(g_object_get_data(G_OBJECT(data), kDocumentSavePromptKey));
+    if (prompt && *prompt)
+    {
+        auto pendingReply = std::shared_ptr<WebKitScriptMessageReply>(
+            webkit_script_message_reply_ref(reply), webkit_script_message_reply_unref);
+        auto pendingContext = std::shared_ptr<JSCContext>(JSC_CONTEXT(g_object_ref(context)), g_object_unref);
+        auto pendingBytes = std::shared_ptr<guchar>(bytes.release(), g_free);
+        (*prompt)(name.get(), [pendingReply, pendingContext, pendingBytes, length](std::filesystem::path path) {
+            if (path.empty())
+            {
+                auto* result = jsc_value_new_null(pendingContext.get());
+                webkit_script_message_reply_return_value(pendingReply.get(), result);
+                g_object_unref(result);
+                return;
+            }
+            GFile* file = g_file_new_for_path(path.c_str());
+            const bool saved = g_file_replace_contents(file, reinterpret_cast<const char*>(pendingBytes.get()),
+                length, nullptr, FALSE, G_FILE_CREATE_NONE, nullptr, nullptr, nullptr);
+            g_object_unref(file);
+            if (!saved)
+            {
+                webkit_script_message_reply_return_error_message(pendingReply.get(), "Could not save the document.");
+                return;
+            }
+            auto* result = jsc_value_new_string(pendingContext.get(), path.filename().c_str());
+            webkit_script_message_reply_return_value(pendingReply.get(), result);
+            g_object_unref(result);
+        });
         return TRUE;
     }
 
@@ -160,6 +194,21 @@ gboolean ChooseBundledDocumentClose(WebKitUserContentManager*, JSCValue* name,
 
     std::unique_ptr<char, decltype(&g_free)> filename(
         jsc_value_is_string(name) ? jsc_value_to_string(name) : nullptr, &g_free);
+    auto* prompt = static_cast<DocumentClosePrompt*>(g_object_get_data(G_OBJECT(data), kDocumentClosePromptKey));
+    if (prompt && *prompt)
+    {
+        auto pendingReply = std::shared_ptr<WebKitScriptMessageReply>(
+            webkit_script_message_reply_ref(reply), webkit_script_message_reply_unref);
+        auto* context = jsc_value_get_context(name);
+        auto pendingContext = std::shared_ptr<JSCContext>(JSC_CONTEXT(g_object_ref(context)), g_object_unref);
+        (*prompt)(filename ? filename.get() : "Untitled", [pendingReply, pendingContext](DocumentCloseChoice choice) {
+            auto* result = jsc_value_new_string(pendingContext.get(), DocumentCloseChoiceName(choice));
+            webkit_script_message_reply_return_value(pendingReply.get(), result);
+            g_object_unref(result);
+        });
+        return TRUE;
+    }
+
     GtkWidget* dialog = gtk_message_dialog_new(nullptr, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
         GTK_BUTTONS_NONE, "Save changes to “%s”?", filename ? filename.get() : "Untitled");
     gtk_dialog_add_buttons(GTK_DIALOG(dialog), "Don’t Save", GTK_RESPONSE_REJECT, "_Cancel",
@@ -327,6 +376,20 @@ public:
     // GTK creation is synchronous: a view that cannot start is never returned.
     void SetOnUnavailable(std::function<void(const std::string&)> /*callback*/) override {}
 
+    void SetDocumentClosePrompt(DocumentClosePrompt prompt) override
+    {
+        m_DocumentClosePrompt = std::move(prompt);
+        if (m_WebView)
+            g_object_set_data(G_OBJECT(m_WebView), kDocumentClosePromptKey, &m_DocumentClosePrompt);
+    }
+
+    void SetDocumentSavePrompt(DocumentSavePrompt prompt) override
+    {
+        m_DocumentSavePrompt = std::move(prompt);
+        if (m_WebView)
+            g_object_set_data(G_OBJECT(m_WebView), kDocumentSavePromptKey, &m_DocumentSavePrompt);
+    }
+
     void ConfirmBundledAppClose(std::function<void(bool)> done) override
     {
         if (!m_Window || !IsBundledUrl(webkit_web_view_get_uri(m_WebView)))
@@ -471,6 +534,8 @@ private:
     WebKitWebView* m_WebView = nullptr;
     WebViewState m_State;
     std::string m_BaseURL;
+    DocumentClosePrompt m_DocumentClosePrompt;
+    DocumentSavePrompt m_DocumentSavePrompt;
     std::function<void()> m_OnMouseDown;
     bool m_LoadFailed = false;
 };

@@ -10,6 +10,23 @@ namespace Platform {
 
 class Window;
 
+enum class DocumentCloseChoice { Save, Discard, Cancel };
+using DocumentSaveReply = std::function<void(std::filesystem::path)>;
+using DocumentSavePrompt = std::function<void(const std::string&, DocumentSaveReply)>;
+using DocumentCloseReply = std::function<void(DocumentCloseChoice)>;
+using DocumentClosePrompt = std::function<void(const std::string&, DocumentCloseReply)>;
+
+inline const char* DocumentCloseChoiceName(DocumentCloseChoice choice)
+{
+    switch (choice)
+    {
+    case DocumentCloseChoice::Save: return "save";
+    case DocumentCloseChoice::Discard: return "discard";
+    case DocumentCloseChoice::Cancel: return "cancel";
+    }
+    return "cancel";
+}
+
 /// What a web view's navigation controls show: the history around the current page, whether a page
 /// is loading, and the page's URL.
 struct WebViewNavigation {
@@ -92,6 +109,12 @@ public:
     // fix (for example the runtime to install). A view whose creation has already failed invokes
     // it at registration. Fired on Windows only: elsewhere CreateWebView returns nullptr instead.
     virtual void SetOnUnavailable(std::function<void(const std::string& message)> callback) = 0;
+
+    /// Asks the host UI for a save destination. An empty path means cancel.
+    virtual void SetDocumentSavePrompt(DocumentSavePrompt /*prompt*/) {}
+
+    /// Routes a bundled page's unsaved-changes prompt through its host UI.
+    virtual void SetDocumentClosePrompt(DocumentClosePrompt /*prompt*/) {}
 
     /// Ask a bundled page to resolve unsaved documents before the editor closes.
     virtual void ConfirmBundledAppClose(std::function<void(bool)> done) { done(true); }

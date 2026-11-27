@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <string_view>
 
 namespace GameEngine
 {
@@ -19,9 +20,9 @@ class Button;
 class SaveSceneAsModal final : public UIElement
 {
   public:
-    SaveSceneAsModal();
+    explicit SaveSceneAsModal(std::string_view idPrefix = {});
 
-    void Show(const std::filesystem::path& initialDirectory);
+    void Show(const std::filesystem::path& initialDirectory, const std::filesystem::path& documentName = {});
     void Hide();
     bool IsVisible() const { return m_Visible; }
 
@@ -48,6 +49,9 @@ class SaveSceneAsModal final : public UIElement
     std::filesystem::path m_SelectedDir;
     std::filesystem::path m_ProjectRoot; // The in-project chooser is confined to this subtree.
     UIElement* m_FolderList = nullptr;    // In-project folder chooser rows; empty when hidden.
+    std::filesystem::path m_DocumentExtension;
+    Label* m_Title = nullptr;
+    Label* m_NameLabel = nullptr;
     TextField* m_NameField = nullptr;
     Label* m_DirLabel = nullptr;
     Label* m_OverwriteWarningLabel = nullptr;

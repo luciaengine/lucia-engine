@@ -2,10 +2,12 @@
 
 #include "Platform/WebView.h"
 #include "Platform/Window.h"
+#include "Types/PathUtils.h"
 #include "Logger/Logger.h"
 #include "../MacWindowInput.h"
 #include "WebViewPageStyle_mac.h"
 
+#include <Block.h>
 #include <cstdlib>
 #include <vector>
 
@@ -24,12 +26,26 @@
 - (void)_setFullScreenEnabled:(BOOL)enabled;
 @end
 
+namespace
+{
+template <typename Block>
+std::shared_ptr<void> RetainDialogBlock(Block block)
+{
+    return {reinterpret_cast<void*>(Block_copy(block)), [](void* owned) { Block_release(owned); }};
+}
+}
+
 // Custom navigation delegate to intercept YouTube embed requests and inject proper headers
 @interface YouTubeNavigationDelegate : NSObject <WKNavigationDelegate, WKDownloadDelegate>
 @property(nonatomic, strong) NSMapTable<WKDownload*, NSArray<NSURL*>*>* destinations;
 @end
 
 @interface BundledWebAppHandler : NSObject <WKURLSchemeHandler, WKScriptMessageHandlerWithReply, WKUIDelegate>
+{
+@public
+    GameEngine::Platform::DocumentClosePrompt documentClosePrompt;
+    GameEngine::Platform::DocumentSavePrompt documentSavePrompt;
+}
 @property(nonatomic, strong) NSURL* directory;
 @end
 
@@ -123,6 +139,15 @@
     if ([message.name isEqualToString:@"luciaChooseDocumentClose"])
     {
         NSString* filename = [message.body isKindOfClass:NSString.class] ? message.body : @"Untitled";
+        if (documentClosePrompt)
+        {
+            auto pending = RetainDialogBlock(reply);
+            documentClosePrompt(filename.UTF8String, [pending](GameEngine::Platform::DocumentCloseChoice choice) {
+                auto complete = reinterpret_cast<void (^)(id, NSString*)>(pending.get());
+                complete([NSString stringWithUTF8String:GameEngine::Platform::DocumentCloseChoiceName(choice)], nil);
+            });
+            return;
+        }
         NSAlert* alert = [[NSAlert alloc] init];
         alert.messageText = [NSString stringWithFormat:@"Save OpenPencil changes to “%@”?", filename];
         alert.informativeText = @"Your changes will be lost if you don’t save them.";
@@ -161,22 +186,34 @@
         return;
     }
 
-    NSSavePanel* panel = [NSSavePanel savePanel];
-    panel.nameFieldStringValue = filename.lastPathComponent;
-    [panel beginWithCompletionHandler:^(NSModalResponse result) {
-        if (result != NSModalResponseOK || !panel.URL)
+    void (^saveTo)(NSURL*) = ^(NSURL* url) {
+        if (!url)
         {
             reply(NSNull.null, nil);
             return;
         }
-
         NSError* error = nil;
-        if (![bytes writeToURL:panel.URL options:NSDataWritingAtomic error:&error])
+        if (![bytes writeToURL:url options:NSDataWritingAtomic error:&error])
         {
             reply(nil, error.localizedDescription);
             return;
         }
-        reply(panel.URL.lastPathComponent, nil);
+        reply(url.lastPathComponent, nil);
+    };
+    if (documentSavePrompt)
+    {
+        auto pending = RetainDialogBlock(saveTo);
+        documentSavePrompt(filename.lastPathComponent.UTF8String, [pending](std::filesystem::path path) {
+            auto complete = reinterpret_cast<void (^)(NSURL*)>(pending.get());
+            complete(path.empty() ? nil : [NSURL fileURLWithPath:
+                [NSString stringWithUTF8String:GameEngine::PathToUtf8(path).c_str()]]);
+        });
+        return;
+    }
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = filename.lastPathComponent;
+    [panel beginWithCompletionHandler:^(NSModalResponse result) {
+        saveTo(result == NSModalResponseOK ? panel.URL : nil);
     }];
 }
 
@@ -750,6 +787,16 @@ public:
 
     // Creation fails synchronously here: CreateWebView returns nullptr instead.
     void SetOnUnavailable(std::function<void(const std::string&)> /*callback*/) override {}
+
+    void SetDocumentClosePrompt(DocumentClosePrompt prompt) override
+    {
+        m_BundledApp->documentClosePrompt = std::move(prompt);
+    }
+
+    void SetDocumentSavePrompt(DocumentSavePrompt prompt) override
+    {
+        m_BundledApp->documentSavePrompt = std::move(prompt);
+    }
 
     void ConfirmBundledAppClose(std::function<void(bool)> done) override
     {

@@ -1,4 +1,6 @@
 #include "Panels/WebPanel.h"
+#include "Panels/SaveSceneChangesModal.h"
+#include "Panels/SaveSceneAsModal.h"
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
@@ -23,6 +25,7 @@
 #include <regex>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <sstream>
 #include <filesystem>
 
@@ -89,6 +92,24 @@ WebPanel::~WebPanel()
 
     if (s_NativeDragPanel == this)
         s_NativeDragPanel = nullptr;
+
+    if (auto* modal = m_BundledSaveModal.Get())
+    {
+        modal->Hide();
+        modal->SetOnSave({});
+        modal->SetOnDontSave({});
+        modal->SetOnCancel({});
+    }
+    if (auto reply = std::exchange(m_BundledSaveReply, {}))
+        reply(Platform::DocumentCloseChoice::Cancel);
+    if (auto* modal = m_BundledSaveAsModal.Get())
+    {
+        modal->Hide();
+        modal->SetOnSave({});
+        modal->SetOnCancel({});
+    }
+    if (auto reply = std::exchange(m_BundledSaveAsReply, {}))
+        reply({});
 
     for (auto& tab : m_Tabs)
     {
@@ -791,7 +812,7 @@ int WebPanel::ConvertTimestampToSeconds(const std::string& timestamp)
 void WebPanel::UpdateWebViewSize()
 {
     Platform::IWebView* view = ActiveView();
-    if (!view || !m_WebViewContainer)
+    if (!view || !m_WebViewContainer || m_BundledSaveReply || m_BundledSaveAsReply)
         return;
 
     float x = m_WebViewContainer->GetLayoutX();
@@ -917,6 +938,83 @@ void WebPanel::ConfirmBundledAppClose(std::function<void(bool)> done)
     ActiveView()->ConfirmBundledAppClose(std::move(done));
 }
 
+void WebPanel::ShowBundledSavePrompt(const std::string& name, Platform::DocumentCloseReply reply)
+{
+    auto* view = ActiveView();
+    auto* manager = GetOwnerManager();
+    auto* root = manager ? manager->GetRootElement() : nullptr;
+    if (!view || !root || m_BundledSaveReply || m_BundledSaveAsReply)
+    {
+        reply(Platform::DocumentCloseChoice::Cancel);
+        return;
+    }
+
+    auto* modal = m_BundledSaveModal.Get();
+    if (!modal)
+    {
+        auto prompt = std::make_unique<SaveSceneChangesModal>("openpencil");
+        modal = prompt.get();
+        modal->SetOnSave([this]() { FinishBundledSavePrompt(Platform::DocumentCloseChoice::Save); });
+        modal->SetOnDontSave([this]() { FinishBundledSavePrompt(Platform::DocumentCloseChoice::Discard); });
+        modal->SetOnCancel([this]() { FinishBundledSavePrompt(Platform::DocumentCloseChoice::Cancel); });
+        m_BundledSaveModal = UIElement::MakeWeakRef(modal);
+        root->AddChild(std::move(prompt));
+    }
+
+    m_BundledSaveReply = std::move(reply);
+    MoveViewOffScreen(*view);
+    modal->Show("Save changes to “" + name + "”?", "Your changes will be lost if you don't save them.");
+}
+
+void WebPanel::FinishBundledSavePrompt(Platform::DocumentCloseChoice choice)
+{
+    auto reply = std::exchange(m_BundledSaveReply, {});
+    if (m_WasVisible)
+        UpdateWebViewSize();
+    if (reply)
+        reply(choice);
+}
+
+void WebPanel::ShowBundledSaveAs(const std::string& name, Platform::DocumentSaveReply reply)
+{
+    auto* view = ActiveView();
+    auto* manager = GetOwnerManager();
+    auto* root = manager ? manager->GetRootElement() : nullptr;
+    std::error_code error;
+    const auto project = std::filesystem::canonical(EngineCore::GetInstance().GetWorkspaceRoot(), error);
+    const auto filename = PathFromUtf8(name).filename();
+    if (!view || !root || error || project.empty() || LowerCaseExtension(filename) != ".fig" ||
+        m_BundledSaveReply || m_BundledSaveAsReply)
+    {
+        reply({});
+        return;
+    }
+
+    auto* modal = m_BundledSaveAsModal.Get();
+    if (!modal)
+    {
+        auto prompt = std::make_unique<SaveSceneAsModal>("openpencil");
+        modal = prompt.get();
+        modal->SetOnSave([this](const std::filesystem::path& path) { FinishBundledSaveAs(path); });
+        modal->SetOnCancel([this]() { FinishBundledSaveAs({}); });
+        m_BundledSaveAsModal = UIElement::MakeWeakRef(modal);
+        root->AddChild(std::move(prompt));
+    }
+
+    m_BundledSaveAsReply = std::move(reply);
+    MoveViewOffScreen(*view);
+    modal->Show(project, filename);
+}
+
+void WebPanel::FinishBundledSaveAs(std::filesystem::path path)
+{
+    auto reply = std::exchange(m_BundledSaveAsReply, {});
+    if (m_WasVisible)
+        UpdateWebViewSize();
+    if (reply)
+        reply(std::move(path));
+}
+
 bool WebPanel::CreateTabWebView(WebTab& tab)
 {
     if (!m_ParentWindow)
@@ -929,6 +1027,15 @@ bool WebPanel::CreateTabWebView(WebTab& tab)
         return false;
     }
 
+    if (!m_BundledApp.empty())
+    {
+        tab.view->SetDocumentSavePrompt([this](const std::string& name, Platform::DocumentSaveReply reply) {
+            ShowBundledSaveAs(name, std::move(reply));
+        });
+        tab.view->SetDocumentClosePrompt([this](const std::string& name, Platform::DocumentCloseReply reply) {
+            ShowBundledSavePrompt(name, std::move(reply));
+        });
+    }
     tab.view->SetOnUnavailable([this](const std::string& message) { OnWebViewUnavailable(message); });
     tab.view->SetBackgroundColor(39, 39, 39);
     // Load minimal dark page so clicking in content area never shows white (blank default)

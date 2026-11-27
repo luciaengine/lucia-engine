@@ -1,0 +1,11 @@
+--- a/src/app/document/close/prompt.ts
++++ b/src/app/document/close/prompt.ts
+@@ -3,2 +3,3 @@
+ import { IS_TAURI } from '@/constants'
++import { luciaClosePrompt } from '@/app/document/io/lucia'
+ 
+@@ -21,2 +22,4 @@
+     confirmDocumentClose(document, async () => {
++      const hostPrompt = luciaClosePrompt()
++      if (hostPrompt) return hostPrompt(documentName)
+       if (IS_TAURI) return chooseNativeDocumentClose(documentName)

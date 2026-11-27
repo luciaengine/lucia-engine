@@ -41,7 +41,7 @@ using Json = nlohmann::json;
 
 std::vector<std::function<void()>> s_WebDialogTasks;
 
-Json SaveBundledDocument(const Json& payload)
+Json SaveBundledDocument(const Json& payload, const std::filesystem::path* chosenPath = nullptr)
 {
     if (!payload.is_object() || !payload.contains("filename") || !payload["filename"].is_string() ||
         !payload.contains("contents") || !payload["contents"].is_string())
@@ -59,7 +59,7 @@ Json SaveBundledDocument(const Json& payload)
         return {{"error", "Invalid document data."}};
 
     const auto name = std::filesystem::path(Utf8ToWide(payload["filename"].get_ref<const std::string&>())).filename();
-    const auto path = SaveFile(name);
+    const auto path = chosenPath ? *chosenPath : SaveFile(name);
     if (path.empty())
         return {{"value", nullptr}};
 
@@ -204,6 +204,9 @@ public:
             m_OnUnavailable(m_Failure);
     }
 
+    void SetDocumentClosePrompt(DocumentClosePrompt prompt) override { m_DocumentClosePrompt = std::move(prompt); }
+    void SetDocumentSavePrompt(DocumentSavePrompt prompt) override { m_DocumentSavePrompt = std::move(prompt); }
+
     void ConfirmBundledAppClose(std::function<void(bool)> done) override
     {
         if (!IsBundledPage())
@@ -321,22 +324,39 @@ private:
         if (m_Handlers->LatestNavigation != navigation || !IsBundledPage())
             return;
 
-        auto handlers = m_Handlers;
-        Json reply;
+        auto send = [handlers = m_Handlers, navigation, id = message["id"]](Json reply) {
+            reply["id"] = id;
+            if (auto* owner = handlers->Owner;
+                owner && handlers->LatestNavigation == navigation && owner->IsBundledPage())
+                owner->m_WebView->PostWebMessageAsJson(Utf8ToWide(reply.dump()).c_str());
+        };
         const auto& payload = message["payload"];
         if (message["kind"] == "save")
-            reply = SaveBundledDocument(payload);
-        else
         {
-            const auto name = payload.is_string() ? payload.get<std::string>() : "Untitled";
-            const int choice = ShowNativeChoiceDialog("OpenPencil", "Save changes to “" + name + "”?",
-                {"Save", "Don't Save", "Cancel"}, 2);
-            reply["value"] = choice == 0 ? "save" : choice == 1 ? "discard" : "cancel";
+            if (m_DocumentSavePrompt && payload.is_object() &&
+                payload.contains("filename") && payload["filename"].is_string())
+            {
+                m_DocumentSavePrompt(payload["filename"].get_ref<const std::string&>(),
+                    [payload, send](std::filesystem::path path) {
+                        send(path.empty() ? Json{{"value", nullptr}} : SaveBundledDocument(payload, &path));
+                    });
+            }
+            else
+                send(SaveBundledDocument(payload));
+            return;
         }
-        reply["id"] = message["id"];
-        if (auto* owner = handlers->Owner;
-            owner && handlers->LatestNavigation == navigation && owner->IsBundledPage())
-            owner->m_WebView->PostWebMessageAsJson(Utf8ToWide(reply.dump()).c_str());
+
+        const auto name = payload.is_string() ? payload.get<std::string>() : "Untitled";
+        if (m_DocumentClosePrompt)
+        {
+            m_DocumentClosePrompt(name, [send](DocumentCloseChoice choice) {
+                send(Json{{"value", DocumentCloseChoiceName(choice)}});
+            });
+            return;
+        }
+        const int choice = ShowNativeChoiceDialog("OpenPencil", "Save changes to “" + name + "”?",
+            {"Save", "Don't Save", "Cancel"}, 2);
+        send(Json{{"value", choice == 0 ? "save" : choice == 1 ? "discard" : "cancel"}});
     }
 
     void OnEnvironmentCreated(ICoreWebView2Environment* environment, const std::string& failure)
@@ -501,6 +521,8 @@ private:
 
     HWND m_Host = nullptr;
     std::shared_ptr<Handlers> m_Handlers;
+    DocumentClosePrompt m_DocumentClosePrompt;
+    DocumentSavePrompt m_DocumentSavePrompt;
     std::shared_ptr<WebViewEnvironment_Win32> m_Environment;
     ComPtr<ICoreWebView2Controller> m_Controller;
     ComPtr<ICoreWebView2> m_WebView;

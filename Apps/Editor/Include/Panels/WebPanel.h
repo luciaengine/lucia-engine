@@ -18,6 +18,8 @@ namespace GameEngine
 {
 struct AssetLoadHandle;
 class UIElement;
+class SaveSceneChangesModal;
+class SaveSceneAsModal;
 class Button;
 class TextField;
 class Label;
@@ -100,6 +102,10 @@ class WebPanel : public DockPanel
     void CloseTab(size_t index);
     void RebuildTabBar();
     void MoveViewOffScreen(Platform::IWebView& view);
+    void ShowBundledSavePrompt(const std::string& name, Platform::DocumentCloseReply reply);
+    void FinishBundledSavePrompt(Platform::DocumentCloseChoice choice);
+    void ShowBundledSaveAs(const std::string& name, Platform::DocumentSaveReply reply);
+    void FinishBundledSaveAs(std::filesystem::path path);
 
   private:
     // Deferred layout bind. m_BindPending covers the whole attempt — the queued action
@@ -131,6 +137,10 @@ class WebPanel : public DockPanel
     const std::string m_StartURL;
     const std::filesystem::path m_BundledApp;
     std::string m_PendingURL;
+    UIElement::WeakRef<SaveSceneChangesModal> m_BundledSaveModal;
+    Platform::DocumentCloseReply m_BundledSaveReply;
+    UIElement::WeakRef<SaveSceneAsModal> m_BundledSaveAsModal;
+    Platform::DocumentSaveReply m_BundledSaveAsReply;
     // The active view's navigation state the controls last showed; empty until they first show one.
     std::optional<Platform::WebViewNavigation> m_ShownNavigation;
     // The page changes the state without a layout pass (a link, a load finishing), so the controls

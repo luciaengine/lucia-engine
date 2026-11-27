@@ -48,6 +48,7 @@ SUMS
     patch -p1 < "$script_directory/openpencil-move-bounds-allocation.patch"
     patch -p1 < "$script_directory/openpencil-pan-frame.patch"
     patch -p1 < "$script_directory/openpencil-native-middle-pan.patch"
+    patch -p1 < "$script_directory/openpencil-lucia-dialogs.patch"
     bun install --frozen-lockfile
     tar -xf ../html-engine.tgz -C packages/html-engine --strip-components 1 \
         package/wasm/html-engine.wasm package/wasm/html-engine.wasm.sha256 package/wasm/THIRD-PARTY-NOTICES.md
