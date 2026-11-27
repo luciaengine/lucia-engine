@@ -13,6 +13,7 @@
 //   2 = GE_PcssBoundedSearchTexels(a.x search texels, a.y cap texels, a.z min texels)
 //   3 = GE_PcssPenumbraTexels(a.x average blocker, a.y receiver depth, a.z depth
 //       span, a.w tan half angle, b.x world per texel, b.y cap world)
+//   4 = GE_PcssMagnificationRadius(a.x radius, a.y cap, a.z texels per screen pixel)
 layout(local_size_x = 1) in;
 
 struct PcssProbeCase
@@ -42,5 +43,7 @@ void main()
             results[i] = vec4(GE_PcssBoundedSearchTexels(c.a.x, c.a.y, c.a.z));
         else if (op == 3u)
             results[i] = vec4(GE_PcssPenumbraTexels(c.a.x, c.a.y, c.a.z, c.a.w, c.b.x, c.b.y));
+        else if (op == 4u)
+            results[i] = vec4(GE_PcssMagnificationRadius(c.a.x, c.a.y, c.a.z));
     }
 }

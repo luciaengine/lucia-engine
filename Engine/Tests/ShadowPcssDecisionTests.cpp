@@ -35,6 +35,7 @@ enum class PcssProbeOp : uint32_t
     KernelProvesLit = 1,
     BoundedSearchTexels = 2,
     PenumbraTexels = 3,
+    MagnificationRadius = 4,
 };
 
 PcssProbeCase OpCase(PcssProbeOp op, std::array<float, 4> a, float b0 = 0.0f, float b1 = 0.0f)
@@ -206,4 +207,21 @@ TEST_F(ShadowPcssDecisionTest, NoBlockerFoundGivesTheMinimumKernel)
     EXPECT_FLOAT_EQ(results[0], 1.0f) << "no blocker: the minimum kernel";
     EXPECT_NEAR(results[1], 2.0f, 1e-4f) << "20 m behind at tan 0.01: 0.2 m, two texels";
     EXPECT_NEAR(results[2], 5.0f, 1e-4f) << "clamped to the 0.5 m cap";
+}
+
+TEST_F(ShadowPcssDecisionTest, MagnifiedTexelsGetABoundedReconstructionRadius)
+{
+    const auto results = Evaluate({
+        OpCase(PcssProbeOp::MagnificationRadius, {1.0f, 4.0f, 0.25f, 0.0f}),
+        OpCase(PcssProbeOp::MagnificationRadius, {1.0f, 4.0f, 0.50f, 0.0f}),
+        OpCase(PcssProbeOp::MagnificationRadius, {1.0f, 4.0f, 0.75f, 0.0f}),
+        OpCase(PcssProbeOp::MagnificationRadius, {1.0f, 1.25f, 0.25f, 0.0f}),
+        OpCase(PcssProbeOp::MagnificationRadius, {2.0f, 4.0f, 0.25f, 0.0f}),
+    });
+    ASSERT_EQ(results.size(), 5u);
+    EXPECT_FLOAT_EQ(results[0], 1.75f);
+    EXPECT_FLOAT_EQ(results[1], 1.375f);
+    EXPECT_FLOAT_EQ(results[2], 1.0f);
+    EXPECT_FLOAT_EQ(results[3], 1.25f);
+    EXPECT_FLOAT_EQ(results[4], 2.0f);
 }

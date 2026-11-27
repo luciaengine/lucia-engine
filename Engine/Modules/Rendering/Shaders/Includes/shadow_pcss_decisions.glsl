@@ -50,4 +50,12 @@ float GE_PcssPenumbraTexels(float avgBlocker, float refDepth, float depthSpanWor
     return penumbraWorld / max(worldPerTexel, 1e-6);
 }
 
+// Reconstruct magnified map texels across neighboring samples. Fade out as
+// the receiver footprint approaches a texel, and honor the kernel cap.
+float GE_PcssMagnificationRadius(float radiusTexels, float capTexels, float texelsPerPixel)
+{
+    float reconstruction = mix(1.75, 1.0, smoothstep(0.25, 0.75, texelsPerPixel));
+    return max(radiusTexels, min(reconstruction, capTexels));
+}
+
 #endif // GE_SHADOW_PCSS_DECISIONS_GLSL
