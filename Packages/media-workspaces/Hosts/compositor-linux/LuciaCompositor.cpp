@@ -11,12 +11,14 @@
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QImage>
+#include <QJsonArray>
+#include <QUuid>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QTimer>
 #include <QtConcurrentRun>
 
-#include "../QtWorkspaceHost.h"
+#include "../CompositorDocumentCommands.h"
 
 #include <cstdint>
 #include <memory>
@@ -57,6 +59,39 @@ public:
     void Place(void* host, double x, double y, double width, double height)
     {
         m_Host.Place(host, x, y, width, height);
+    }
+
+    QJsonObject DocumentCommand(const QJsonObject& request)
+    {
+        const auto document = m_Window.document();
+        return CompositorDocumentCommand(request, document ? document->id.toString(QUuid::WithoutBraces) : QString{},
+            [document](int offset) {
+                QJsonArray layers;
+                for (auto index = document->layers.size() - 1 - offset; index >= 0 && layers.size() < 100; --index)
+                {
+                    const auto& layer = document->layers[index];
+                    layers.append(QJsonObject{{"id", layer.id.toString(QUuid::WithoutBraces)}, {"name", layer.name},
+                                              {"visible", layer.visible}, {"group", layer.group}, {"opacity", layer.opacity}});
+                }
+                return QJsonObject{{"width", document->canvasSize.width()}, {"height", document->canvasSize.height()},
+                                   {"layers", layers}, {"layerCount", document->layers.size()}};
+            },
+            [this](const QSize& size) {
+                m_Window.session().createDocument(size.width(), size.height(), true);
+                m_Window.syncDocumentViews();
+                const auto created = m_Window.document();
+                return created ? created->id.toString(QUuid::WithoutBraces) : QString{};
+            },
+            [this, document](const QString& id, const QString& name) {
+                const QUuid layerId(id);
+                if (layerId.isNull() || !m_Window.session().canEditLayers() ||
+                    std::none_of(document->layers.begin(), document->layers.end(),
+                                 [&layerId](const auto& layer) { return layer.id == layerId; }))
+                    return false;
+                m_Window.session().renameLayer(layerId, name);
+                m_Window.syncDocumentViews(false);
+                return true;
+            });
     }
 
     bool ConfirmClose() { return m_Window.close(); }
@@ -167,6 +202,12 @@ Q_DECL_EXPORT void LuciaPlaceMediaWorkspace(void* workspace, void* host,
 Q_DECL_EXPORT void LuciaConfirmMediaWorkspaceClose(void* workspace, void* context, CloseReply reply)
 {
     reply(context, static_cast<CompositorWorkspace*>(workspace)->ConfirmClose() ? 1 : 0);
+}
+
+Q_DECL_EXPORT void LuciaRunMediaDocumentCommand(void* workspace, const char* request, void* context,
+                                                  DocumentReply reply)
+{
+    RunDocumentCommand(*static_cast<CompositorWorkspace*>(workspace), request, context, reply);
 }
 
 Q_DECL_EXPORT void LuciaPumpMediaWorkspaceEvents()

@@ -20,10 +20,12 @@ if ((git -C $Source rev-parse HEAD) -ne $Revision) {
     throw "Use the pinned CompositorWindows source revision $Revision."
 }
 $Adapter = Join-Path $PSScriptRoot 'LuciaCompositor.cpp'
-$Patch = Join-Path $PSScriptRoot 'lucia-host.patch'
-& git -C $Source apply --unidiff-zero --reverse --check $Patch 2>$null
-if ($LASTEXITCODE -ne 0) {
-    Invoke-Checked git @('-C', $Source, 'apply', '--unidiff-zero', $Patch)
+foreach ($PatchName in @('lucia-host.patch', 'lucia-document-tools.patch')) {
+    $Patch = Join-Path $PSScriptRoot $PatchName
+    & git -C $Source apply --unidiff-zero --reverse --check $Patch 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Checked git @('-C', $Source, 'apply', '--unidiff-zero', $Patch)
+    }
 }
 
 $Qt = Join-Path $Source 'dependencies/qt'

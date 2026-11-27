@@ -26,6 +26,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QShortcut>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSplitter>
@@ -34,11 +35,15 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QToolBar>
+#include <QUndoStack>
+#include <QUuid>
 #include <QUrl>
 #include <QVideoWidget>
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -159,6 +164,23 @@ private:
     std::function<void()> m_Dismiss;
 };
 
+class RoomEdit final : public QUndoCommand
+{
+public:
+    RoomEdit(RoomDocument before, RoomDocument after, std::function<void(const RoomDocument&)> apply)
+        : m_Before(std::move(before)), m_After(std::move(after)), m_Apply(std::move(apply))
+    {
+    }
+
+    void undo() override { m_Apply(m_Before); }
+    void redo() override { m_Apply(m_After); }
+
+private:
+    RoomDocument m_Before;
+    RoomDocument m_After;
+    std::function<void(const RoomDocument&)> m_Apply;
+};
+
 class EditroomWorkspace
 {
 public:
@@ -199,6 +221,13 @@ public:
         auto* layout = new QVBoxLayout(timeline);
         auto* commands = new QToolBar(QStringLiteral("Timeline"), timeline);
         AddAction(commands, "Add to Timeline", QKeySequence(), [this] { AddClip(); });
+        auto* undo = m_History.createUndoAction(commands, QStringLiteral("Undo"));
+        auto* redo = m_History.createRedoAction(commands, QStringLiteral("Redo"));
+        undo->setShortcut(QKeySequence::Undo);
+        redo->setShortcut(QKeySequence::Redo);
+        commands->addAction(undo);
+        commands->addAction(redo);
+        QObject::connect(&m_History, &QUndoStack::cleanChanged, &m_Window, [this] { UpdateTitle(); });
         AddAction(commands, "Split", QKeySequence(QStringLiteral("Ctrl+B")), [this] { Split(); });
         AddAction(commands, "Delete", QKeySequence(Qt::Key_Delete), [this] { Delete(); });
         layout->addWidget(commands);
@@ -266,6 +295,52 @@ public:
         m_Host.Place(host, x, y, width, height);
     }
 
+    QJsonObject DocumentCommand(const QJsonObject& request)
+    {
+        const auto operation = request.value("operation").toString();
+        if (operation == "inspect")
+            return InspectDocument(request.value("offset").toInt());
+        if (request.value("documentId").toString() != m_DocumentId)
+            return DocumentError(QStringLiteral("The Editroom sequence changed. Inspect it again."));
+        const auto id = request.value("itemId").toString();
+        const auto clips = m_Document.Clips();
+
+        if (operation == "add_media")
+        {
+            const auto asset = m_Document.Asset(id);
+            if (asset.isEmpty() || !QFileInfo(m_Document.MediaPath(asset)).isFile() ||
+                !AddMediaClip(id, m_Playhead))
+                return DocumentError(QStringLiteral("The requested media is missing or offline."));
+            const auto updated = m_Document.Clips();
+            QJsonArray inserted;
+            for (qsizetype index = clips.size(); index < updated.size(); ++index)
+                inserted.append(updated[index].toObject().value("id"));
+            return {{"documentId", m_DocumentId}, {"insertedClipIds", inserted}};
+        }
+        if (operation != "split_clip")
+            return DocumentError(QStringLiteral("Editroom supports split_clip and add_media."));
+
+        const auto time = request.value("time").toDouble(-1);
+        const auto clip = std::find_if(clips.begin(), clips.end(), [&id](const QJsonValue& value) {
+            return value.toObject().value("id").toString() == id;
+        });
+        if (id.isEmpty() || clip == clips.end() || !std::isfinite(time) || time < 0 ||
+            !m_Document.Split(clip - clips.begin(), time))
+            return DocumentError(QStringLiteral("Choose an unlocked clip and a time inside it."));
+        Changed();
+        QSet<QString> previous;
+        for (const auto& value : clips)
+            previous.insert(value.toObject().value("id").toString());
+        QJsonArray created;
+        for (const auto& value : m_Document.Clips())
+        {
+            const auto clipId = value.toObject().value("id").toString();
+            if (!previous.contains(clipId))
+                created.append(clipId);
+        }
+        return {{"documentId", m_DocumentId}, {"time", time}, {"newClipIds", created}};
+    }
+
     bool ConfirmClose()
     {
         if (!ConfirmReplace())
@@ -301,15 +376,49 @@ private:
         return QFileInfo(bundled).isExecutable() ? bundled : QStandardPaths::findExecutable(executable);
     }
 
+    QJsonObject InspectDocument(int offset) const
+    {
+        const auto assets = m_Document.Assets();
+        const auto clips = m_Document.Clips();
+        const auto title = m_Path.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(m_Path).completeBaseName();
+        QJsonArray media;
+        QJsonArray timeline;
+        for (qsizetype index = std::max(0, offset); index < assets.size() && media.size() < 100; ++index)
+        {
+            const auto asset = assets[index].toObject();
+            media.append(QJsonObject{{"id", asset.value("id")}, {"name", asset.value("name")},
+                                     {"kind", asset.value("kind")}, {"duration", asset.value("duration")}});
+        }
+        for (qsizetype index = std::max(0, offset); index < clips.size() && timeline.size() < 100; ++index)
+        {
+            const auto clip = clips[index].toObject();
+            timeline.append(QJsonObject{{"id", clip.value("id")},
+                {"name", m_Document.Asset(clip.value("assetID").toString()).value("name").toString(QStringLiteral("Clip"))},
+                {"kind", clip.value("kind")}, {"trackId", clip.value("trackID")}, {"start", clip.value("start")},
+                {"end", clip.value("start").toDouble() + clip.value("duration").toDouble()},
+                {"locked", m_Document.IsTrackLocked(clip.value("trackID").toString())}});
+        }
+        return {{"documentId", m_DocumentId}, {"name", title}, {"playhead", m_Playhead},
+                {"clips", timeline}, {"media", media}, {"clipCount", clips.size()}, {"mediaCount", assets.size()}};
+    }
+
+    void ResetHistory()
+    {
+        m_DocumentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        m_Checkpoint = m_Document;
+        m_History.clear();
+        Refresh();
+    }
+
     void UpdateTitle()
     {
         const auto title = m_Path.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(m_Path).completeBaseName();
-        m_Window.setWindowTitle(title + (m_Dirty ? QStringLiteral(" *") : QString()) + QStringLiteral(" — Editroom"));
+        m_Window.setWindowTitle(title + (!m_History.isClean() ? QStringLiteral(" *") : QString()) + QStringLiteral(" — Editroom"));
     }
 
     bool ConfirmReplace()
     {
-        if (!m_Dirty)
+        if (m_History.isClean())
             return true;
         const auto choice = QMessageBox::question(&m_Window, QStringLiteral("Editroom"),
             QStringLiteral("Save changes to this project?"),
@@ -334,8 +443,7 @@ private:
         ResetPlayback();
         m_Document = RoomDocument();
         m_Path.clear();
-        m_Dirty = false;
-        Refresh();
+        ResetHistory();
     }
 
     void OpenProject()
@@ -354,8 +462,7 @@ private:
         }
         ResetPlayback();
         m_Path = path;
-        m_Dirty = false;
-        Refresh();
+        ResetHistory();
         OfferMissingMedia();
     }
 
@@ -435,7 +542,8 @@ private:
             return false;
         }
         m_Path = path;
-        m_Dirty = false;
+        m_Checkpoint = m_Document;
+        m_History.setClean();
         UpdateTitle();
         return true;
     }
@@ -449,6 +557,7 @@ private:
             return;
         }
         const auto paths = QFileDialog::getOpenFileNames(&m_Window, QStringLiteral("Import Media"));
+        bool imported = false;
         for (const auto& path : paths)
         {
             QProcess process;
@@ -462,9 +571,10 @@ private:
             if (m_Document.Import(path, QJsonDocument::fromJson(process.readAllStandardOutput()).object(), error).isEmpty())
                 ShowError(error);
             else
-                m_Dirty = true;
+                imported = true;
         }
-        Refresh();
+        if (imported)
+            Changed();
     }
 
     void AddClip()
@@ -521,10 +631,13 @@ private:
 
     void Changed()
     {
-        m_Dirty = true;
-        m_PreviewCurrent = false;
-        m_Player.pause();
-        Refresh();
+        m_History.push(new RoomEdit(m_Checkpoint, m_Document, [this](const RoomDocument& document) {
+            m_Document = document;
+            m_Checkpoint = document;
+            m_PreviewCurrent = false;
+            m_Player.pause();
+            Refresh();
+        }));
     }
 
     void Refresh()
@@ -728,6 +841,9 @@ private:
     QMediaPlayer m_Player;
     QProcess m_Renderer;
     RoomDocument m_Document;
+    RoomDocument m_Checkpoint = m_Document;
+    QUndoStack m_History;
+    QString m_DocumentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     std::unique_ptr<Job> m_Render;
     std::unique_ptr<Job> m_Preview;
     QListWidget* m_Media = nullptr;
@@ -737,7 +853,6 @@ private:
     QString m_Path;
     double m_Playhead = 0;
     double m_PreviewStart = 0;
-    bool m_Dirty = false;
     bool m_PreviewCurrent = false;
     bool m_StartPreview = false;
 };
@@ -766,6 +881,12 @@ Q_DECL_EXPORT void LuciaPlaceMediaWorkspace(void* workspace, void* host,
 Q_DECL_EXPORT void LuciaConfirmMediaWorkspaceClose(void* workspace, void* context, LuciaMedia::CloseReply reply)
 {
     reply(context, static_cast<LuciaMedia::EditroomWorkspace*>(workspace)->ConfirmClose() ? 1 : 0);
+}
+
+Q_DECL_EXPORT void LuciaRunMediaDocumentCommand(void* workspace, const char* request, void* context,
+                                                  LuciaMedia::DocumentReply reply)
+{
+    LuciaMedia::RunDocumentCommand(*static_cast<LuciaMedia::EditroomWorkspace*>(workspace), request, context, reply);
 }
 
 Q_DECL_EXPORT void LuciaPumpMediaWorkspaceEvents()

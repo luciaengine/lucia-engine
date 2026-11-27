@@ -1,0 +1,92 @@
+--- a/src/ui/MainWindow.h
++++ b/src/ui/MainWindow.h
+@@ -534,6 +534,9 @@
+     void addFeasibilityDocument();
+     void openPath(const QString&);
+     bool openLuciaTexture(const QString&);
++    const Document* luciaDocument();
++    QString luciaCreateCanvas(int width, int height);
++    bool luciaRenameLayer(const QString& id, const QString& name);
+     void setLuciaWorkspaceDirectory(QString directory) {
+         luciaWorkspaceDirectory_ = std::move(directory);
+         if(auto* update=findChild<QAction*>("checkForUpdatesAction"))update->setVisible(false);
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -262,6 +262,36 @@
+     if(auto* box=findChild<QComboBox*>("cropRatioChoice")){const QSignalBlocker block(box);box->setCurrentText(cropRatioChoice_);}
+     refresh(false,false);
+ }
++const Document* MainWindow::luciaDocument()
++{
++    auto* project = current();
++    return project && project->document ? &*project->document : nullptr;
++}
++
++bool MainWindow::luciaRenameLayer(const QString& id, const QString& name)
++{
++    auto* project = current();
++    if (!project || !project->document || project->projectBusy || project->importing)
++        return false;
++    const auto layerId = id.toStdString();
++    const auto layer = std::ranges::find(project->document->layers, layerId, &Layer::id);
++    if (layer == project->document->layers.end())
++        return false;
++    try
++    {
++        edit("Rename Layer", [&layerId, &name](Document& document) {
++            const auto target = std::ranges::find(document.layers, layerId, &Layer::id);
++            if (target != document.layers.end())
++                target->name = name.toStdString();
++        });
++    }
++    catch (const std::exception&)
++    {
++        return false;
++    }
++    return true;
++}
++
+ void MainWindow::edit(const char*name,const std::function<void(Document&)>&fn,bool rebuildLayers){stopGifPlayback();auto*p=current();if(!p||!p->document||p->importing||p->projectBusy)return;p->history.begin(name,p->document,p->active);try{fn(*p->document);validateDocument(*p->document);p->history.end(p->document,p->active);}catch(...){if(auto s=p->history.cancel()){p->document=std::move(s->document);p->active=std::move(s->activeLayer);}throw;}refresh(true,rebuildLayers);}
+ void MainWindow::setCanvasOnly(bool enabled){
+     // A held canvas gesture owns mouse capture and focus, so hiding chrome now would interrupt it.
+--- a/src/ui/ProjectActions.cpp
++++ b/src/ui/ProjectActions.cpp
+@@ -357,6 +357,38 @@
+     row->addWidget(panel);row->addStretch();outer->addLayout(row);outer->addStretch();raw->page->addWidget(raw->welcome);raw->page->addWidget(raw->canvas);
+     projects_.push_back(std::move(project));const auto index=tabs_->addTab(raw->page,raw->defaultTitle);tabs_->setCurrentIndex(index);switchProject();width->setFocus();return *raw;
+ }
++QString MainWindow::luciaCreateCanvas(int width, int height)
++{
++    auto* project = current();
++    if (!project || project->document || project->importing || project->projectBusy)
++        return {};
++    Document document;
++    document.id = newId();
++    document.width = width;
++    document.height = height;
++    Layer layer;
++    layer.id = newId();
++    layer.name = "Layer 1";
++    layer.transform = {0, 0, double(width), double(height)};
++    document.layers.push_back(layer);
++    try
++    {
++        validateDocument(document);
++    }
++    catch (const std::exception&)
++    {
++        return {};
++    }
++    project->history.begin("New Canvas", std::nullopt, {});
++    project->document = std::move(document);
++    project->active = layer.id;
++    project->selected = {layer.id};
++    project->history.end(project->document, project->active);
++    refresh();
++    project->canvas->fit();
++    return QString::fromStdString(project->document->id);
++}
++
+ EditorProject& MainWindow::addProject(Document document,QString title,bool reuseEmpty){
+     validateDocument(document);
+     const auto restoreNumber=qScopeGuard([this,reuseEmpty,number=nextProjectNumber_]{if(!reuseEmpty)nextProjectNumber_=number;});

@@ -16,6 +16,7 @@ public:
     QString Import(const QString& path, const QJsonObject& probe, QString& error);
     void AddClip(const QString& assetId, double start);
     bool Split(qsizetype index, double time);
+    bool IsTrackLocked(const QString& id) const;
     bool SetClipRange(qsizetype index, double start, double sourceStart, double duration);
     void DeleteClip(qsizetype index);
 

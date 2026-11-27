@@ -7,6 +7,7 @@
 #include <QTemporaryDir>
 
 #include <cstdio>
+#include <limits>
 
 namespace
 {
@@ -47,6 +48,34 @@ int main(int argc, char** argv)
 
     const auto original = document.Clips();
     if (!Check(!document.Split(0, 2) && document.Clips() == original, "An invalid split keeps both linked clips"))
+        return 1;
+    if (!Check(!document.Split(0, std::numeric_limits<double>::quiet_NaN()) && document.Clips() == original,
+               "A non-finite split keeps both linked clips"))
+        return 1;
+
+    const auto lockedPath = directory.filePath(QStringLiteral("locked.room"));
+    if (!document.Save(lockedPath, error))
+        return 1;
+    QFile lockedFile(lockedPath);
+    if (!lockedFile.open(QIODevice::ReadOnly))
+        return 1;
+    auto lockedJson = QJsonDocument::fromJson(lockedFile.readAll()).object();
+    lockedFile.close();
+    auto lockedProject = lockedJson.value("project").toObject();
+    auto audio = lockedProject.value("audioTracks").toArray();
+    auto track = audio.first().toObject();
+    track.insert("locked", true);
+    audio[0] = track;
+    lockedProject.insert("audioTracks", audio);
+    lockedJson.insert("project", lockedProject);
+    if (!lockedFile.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+        lockedFile.write(QJsonDocument(lockedJson).toJson()) < 0)
+        return 1;
+    lockedFile.close();
+
+    LuciaMedia::RoomDocument lockedDocument;
+    if (!Check(lockedDocument.Open(lockedPath, error) && !lockedDocument.Split(0, 0.5) &&
+               lockedDocument.Clips() == original, "A locked audio track keeps both linked clips intact"))
         return 1;
     if (!Check(document.Split(0, 0.5) && document.Clips().size() == 4,
                "Splitting a linked clip splits its audio"))

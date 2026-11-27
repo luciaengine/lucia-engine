@@ -10,12 +10,14 @@
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QImage>
+#include <QJsonArray>
+#include <QUuid>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QTimer>
 #include <QtConcurrentRun>
 
-#include "../QtWorkspaceHost.h"
+#include "../CompositorDocumentCommands.h"
 
 #include <cstdint>
 #include <memory>
@@ -55,6 +57,25 @@ public:
     void Place(void* host, double x, double y, double width, double height)
     {
         m_Host.Place(host, x, y, width, height);
+    }
+
+    QJsonObject DocumentCommand(const QJsonObject& request)
+    {
+        const auto* document = m_Window.luciaDocument();
+        return CompositorDocumentCommand(request, document ? QString::fromStdString(document->id) : QString{},
+            [document](int offset) {
+                QJsonArray layers;
+                for (auto index = std::ssize(document->layers) - 1 - offset; index >= 0 && layers.size() < 100; --index)
+                {
+                    const auto& layer = document->layers[static_cast<size_t>(index)];
+                    layers.append(QJsonObject{{"id", QString::fromStdString(layer.id)}, {"name", QString::fromStdString(layer.name)},
+                                              {"visible", layer.visible}, {"group", layer.group}, {"opacity", layer.opacity}});
+                }
+                return QJsonObject{{"width", document->width}, {"height", document->height},
+                                   {"layers", layers}, {"layerCount", static_cast<qint64>(document->layers.size())}};
+            },
+            [this](const QSize& size) { return m_Window.luciaCreateCanvas(size.width(), size.height()); },
+            [this](const QString& id, const QString& name) { return m_Window.luciaRenameLayer(id, name); });
     }
 
     bool ConfirmClose() { return m_Window.close(); }
@@ -174,6 +195,12 @@ Q_DECL_EXPORT void LuciaPlaceMediaWorkspace(void* workspace, void* host,
 Q_DECL_EXPORT void LuciaConfirmMediaWorkspaceClose(void* workspace, void* context, CloseReply reply)
 {
     reply(context, static_cast<CompositorWorkspace*>(workspace)->ConfirmClose() ? 1 : 0);
+}
+
+Q_DECL_EXPORT void LuciaRunMediaDocumentCommand(void* workspace, const char* request, void* context,
+                                                  DocumentReply reply)
+{
+    RunDocumentCommand(*static_cast<CompositorWorkspace*>(workspace), request, context, reply);
 }
 
 Q_DECL_EXPORT void LuciaPumpMediaWorkspaceEvents()
