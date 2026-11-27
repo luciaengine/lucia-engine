@@ -475,7 +475,7 @@ public:
 
         // WKWebView receives native input before the editor's input router.
         const NSEventMask mouseEvents = NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown |
-            NSEventMaskOtherMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp;
+            NSEventMaskOtherMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp | NSEventMaskScrollWheel;
         m_MouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:mouseEvents
             handler:^NSEvent*(NSEvent* event) {
                 ObserveMouseEvent(event);
@@ -856,6 +856,18 @@ private:
 
         const bool overView = m_WebView && !m_WebView.hidden && event.window == m_WebView.window &&
             NSPointInRect([m_WebView convertPoint:event.locationInWindow fromView:nil], m_WebView.bounds);
+        if (event.type == NSEventTypeScrollWheel)
+        {
+            if (overView && m_WebView.window.isKeyWindow &&
+                [m_WebView.URL.scheme isEqualToString:@"lucia-app"] &&
+                (event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0))
+            {
+                // WebKit presents wheel and momentum panning independently of the editor.
+                m_ReleaseFramePriority.Begin(CACurrentMediaTime());
+            }
+            return;
+        }
+
         if (event.type == NSEventTypeLeftMouseDown)
         {
             EndMouseDrag();
