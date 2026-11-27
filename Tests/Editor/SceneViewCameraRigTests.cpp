@@ -20,6 +20,7 @@
 //      matches the legacy matrix within float noise.
 
 using GameEngine::Editor::CameraRig::BuildViewMatrixLH;
+using GameEngine::Editor::CameraRig::DollyPerspective;
 using GameEngine::Editor::CameraRig::LookDirection;
 using GameEngine::Editor::CameraRig::OrbitCameraPosition;
 using GameEngine::Editor::CameraRig::OrbitPivotFromCamera;
@@ -68,6 +69,45 @@ double ForwardAngularError(const Matrix4x4& view, double yawDeg, double pitchDeg
 }
 
 } // namespace
+
+TEST(SceneViewCameraRig, DollyCrossesTheOldPivotWithoutLosingMovement)
+{
+    constexpr float kNearDistance = 0.125f;
+    constexpr float kInitialDistance = 0.25f;
+    constexpr double kStep = 0.1;
+    constexpr Vec3d kOldPivot{0.0, 0.0, 50000.0};
+
+    const auto approach = DollyPerspective(kOldPivot, 90.0, 0.0, kInitialDistance, -kStep, kNearDistance, 1000.0f);
+    EXPECT_DOUBLE_EQ(approach.Pivot.Z, kOldPivot.Z);
+
+    const auto near = DollyPerspective(approach.Pivot, 90.0, 0.0, approach.Distance, -kStep, kNearDistance, 1000.0f);
+    EXPECT_FLOAT_EQ(near.Distance, kNearDistance);
+    EXPECT_NEAR(near.Position.Z - approach.Position.Z, kStep, 1e-7);
+    EXPECT_NEAR(near.Pivot.Z - near.Position.Z, kNearDistance, 1e-7);
+
+    const auto past = DollyPerspective(near.Pivot, 90.0, 0.0, near.Distance, -kStep, kNearDistance, 1000.0f);
+    EXPECT_GT(past.Position.Z, kOldPivot.Z);
+    EXPECT_NEAR(past.Position.Z - near.Position.Z, kStep, 1e-7);
+    EXPECT_NEAR(past.Pivot.Z - near.Pivot.Z, kStep, 1e-7);
+    EXPECT_FLOAT_EQ(past.Distance, kNearDistance);
+
+    const auto reverse = DollyPerspective(past.Pivot, 90.0, 0.0, past.Distance, kStep, kNearDistance, 1000.0f);
+    EXPECT_DOUBLE_EQ(reverse.Pivot.Z, past.Pivot.Z);
+    EXPECT_NEAR(past.Position.Z - reverse.Position.Z, kStep, 1e-7);
+}
+
+TEST(SceneViewCameraRig, DollyOutHoldsWhenFramedBeyondMaximumDistance)
+{
+    constexpr Vec3d kPivot{0.0, 0.0, 10.0};
+    const auto farther = DollyPerspective(kPivot, 90.0, 0.0, 8.0f, 1.0, 0.125f, 6.0f);
+    EXPECT_FLOAT_EQ(farther.Distance, 8.0f);
+    EXPECT_DOUBLE_EQ(farther.Pivot.Z, kPivot.Z);
+    EXPECT_DOUBLE_EQ(farther.Position.Z, 2.0);
+
+    const auto nearer = DollyPerspective(kPivot, 90.0, 0.0, farther.Distance, -1.0, 0.125f, 6.0f);
+    EXPECT_FLOAT_EQ(nearer.Distance, 7.0f);
+    EXPECT_DOUBLE_EQ(nearer.Position.Z, 3.0);
+}
 
 // ---- Orbit closure at planetary coordinates ---------------------------------
 

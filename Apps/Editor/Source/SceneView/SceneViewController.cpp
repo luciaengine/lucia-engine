@@ -3363,6 +3363,7 @@ void SceneViewController::UpdateDolly(float deltaY)
 
     constexpr float kDollySpeed = 0.01f;
     constexpr float kDollyReferenceDistance = 0.5f;
+    // Keep the input response measurable as the orbit distance approaches the near plane.
     const float dollyScale = std::max(m_CamDistance, kDollyReferenceDistance);
 
     if (m_Is2DMode || m_Orthographic)
@@ -3397,32 +3398,17 @@ void SceneViewController::UpdateDolly(float deltaY)
         m_OrbitPivot[2] = pivot.Z;
     }
 
-    // Scale zoom by distance, but keep a reference floor so the wheel does not
-    // crawl to a stop well above the minimum (multiplicative-only damping).
-    const float prevDistance = m_CamDistance;
-    m_CamDistance += deltaY * kDollySpeed * dollyScale;
-
-    // Clamp distance to reasonable range (user-configurable max; min matches near clip)
-    const float minDist = GetSceneViewMinOrbitDistance(&GetWorld());
-    if (m_CamDistance < minDist)
-        m_CamDistance = minDist;
-    {
-        using GameEngine::Editor::SceneViewSettings;
-        const float maxDist = SceneViewSettings::Get().GetMaxDistance();
-        // No snap below the entry distance — see the orthographic branch above.
-        if (m_CamDistance > maxDist)
-            m_CamDistance = std::max(maxDist, std::min(m_CamDistance, prevDistance));
-    }
-
-    // Update camera position to maintain view of the orbit pivot at the new
-    // distance (double: fp32 would quantize the position to the ULP grid of
-    // |pos| — visible stepping at planetary coordinates).
-    const Vec3d newCam = Editor::CameraRig::OrbitCameraPosition(
-        Vec3d{m_OrbitPivot[0], m_OrbitPivot[1], m_OrbitPivot[2]},
-        m_CamYawDeg, m_CamPitchDeg, m_CamDistance);
-    m_CamPos[0] = newCam.X;
-    m_CamPos[1] = newCam.Y;
-    m_CamPos[2] = newCam.Z;
+    const auto pose = Editor::CameraRig::DollyPerspective(
+        Vec3d{m_OrbitPivot[0], m_OrbitPivot[1], m_OrbitPivot[2]}, m_CamYawDeg, m_CamPitchDeg,
+        m_CamDistance, static_cast<double>(deltaY) * kDollySpeed * dollyScale,
+        GetSceneViewMinOrbitDistance(&GetWorld()), Editor::SceneViewSettings::Get().GetMaxDistance());
+    m_CamDistance = pose.Distance;
+    m_OrbitPivot[0] = pose.Pivot.X;
+    m_OrbitPivot[1] = pose.Pivot.Y;
+    m_OrbitPivot[2] = pose.Pivot.Z;
+    m_CamPos[0] = pose.Position.X;
+    m_CamPos[1] = pose.Position.Y;
+    m_CamPos[2] = pose.Position.Z;
 }
 
 void SceneViewController::FramePerspectiveBounds(const Mathematics::AABB& bounds)
