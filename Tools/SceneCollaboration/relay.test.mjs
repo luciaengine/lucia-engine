@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createCollaborationRelay } from './relay.mjs';
+import { readRoomInvite } from './invite.mjs';
 
 const token = 'integration-test-invite-key';
 
@@ -113,4 +114,13 @@ test('the command-line relay closes cleanly on SIGTERM', { timeout: 5000 }, asyn
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
+});
+
+
+test('an invite fills the room and preserves reserved characters in the token', () => {
+  const key = 'invite-token+with&reserved=#characters';
+  assert.deepEqual(readRoomInvite('#room=studio&token=' + encodeURIComponent(key)), { room: 'studio', token: key });
+  assert.equal(readRoomInvite('#room=studio&room=other&token=' + encodeURIComponent(key)), null);
+  assert.equal(readRoomInvite('#room=../studio&token=' + encodeURIComponent(key)), null);
+  assert.equal(readRoomInvite('#room=studio&token=short'), null);
 });

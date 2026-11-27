@@ -16,7 +16,9 @@ node Tools/SceneCollaboration/relay.mjs
 ```
 
 For other machines, serve the relay through a private HTTPS endpoint. Give the
-invite token to room members. Use a separate relay and token for each project.
+invite privately. Once your editor connects, click **Invite** in the top toolbar
+to copy a link that only asks guests for their display name. The link grants room
+access. Use a separate relay and token for each project.
 Keep the token out of project files. Run the Editor with these environment
 variables to show collaboration cursors:
 

@@ -90,6 +90,8 @@ struct NetworkState
 
 struct Configuration
 {
+    std::string Relay;
+    std::string Room;
     std::string Endpoint;
     std::string Key;
     std::string Name;
@@ -104,11 +106,11 @@ std::optional<Configuration> ReadConfiguration()
     while (!base.empty() && base.back() == '/')
         base.pop_back();
     if (!(base.starts_with("https://") || base.starts_with("http://127.0.0.1:")) ||
-        !IsRoomIdentifier(room) || key.size() < 24 || key.size() > 512 ||
+        base.find_first_of("?#\r\n") != std::string::npos || !IsRoomIdentifier(room) || key.size() < 24 || key.size() > 512 ||
         name.empty() || name.size() > 48 || !HttpClient::IsAvailable())
         return std::nullopt;
 
-    return Configuration{base + "/v1/rooms/" + room, std::move(key), std::move(name)};
+    return Configuration{base, room, base + "/v1/rooms/" + room, std::move(key), std::move(name)};
 }
 } // namespace
 
@@ -277,6 +279,21 @@ void SceneCollaborationSession::Update(const std::filesystem::path& project,
     else
         state.Send("sync", {{"session", state.Session}, {"sequence", ++state.Sequence},
             {"cursor", std::move(cursor)}, {"cursorOnly", true}});
+}
+
+bool SceneCollaborationSession::CanInvite() const
+{
+    return m_State && !m_State->Session.empty() &&
+           Clock::now() - m_State->LastPresence <= kLocalPresenceTimeout;
+}
+
+std::string SceneCollaborationSession::InviteLink() const
+{
+    if (!CanInvite())
+        return {};
+    const auto& config = m_State->Config;
+    return config.Relay + "/#room=" + HttpClient::UrlEncode(config.Room) +
+           "&token=" + HttpClient::UrlEncode(config.Key);
 }
 
 void SceneCollaborationSession::Stop()

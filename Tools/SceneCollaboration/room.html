@@ -11,9 +11,11 @@
   <main>
     <h1>Lucia Collaboration</h1>
     <form id="join">
-      <label>Room <input name="room" value="scene" maxlength="80" required></label>
       <label>Display name <input name="name" maxlength="48" autocomplete="nickname" required></label>
-      <label>Invite token <input name="token" type="password" minlength="24" maxlength="512" required></label>
+      <div id="room-fields">
+        <label>Room <input name="room" value="scene" maxlength="80" required></label>
+        <label>Invite token <input name="token" type="password" minlength="24" maxlength="512" required></label>
+      </div>
       <button>Join</button>
     </form>
     <section id="session" hidden>

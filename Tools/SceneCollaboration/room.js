@@ -1,3 +1,5 @@
+import { readRoomInvite } from './invite.mjs';
+
 const byId = id => document.getElementById(id);
 const joinForm = byId('join');
 const sessionPanel = byId('session');
@@ -5,6 +7,22 @@ const peerPicker = byId('peers');
 const messageForm = byId('message');
 const chat = byId('chat');
 const status = byId('status');
+
+let invite = readRoomInvite(location.hash);
+if (invite) {
+  history.replaceState(null, '', location.pathname + location.search);
+  byId('room-fields').hidden = true;
+  joinForm.elements.room.required = false;
+  joinForm.elements.token.required = false;
+  status.textContent = 'Invited to ' + invite.room;
+}
+
+function clearInvite() {
+  invite = null;
+  byId('room-fields').hidden = false;
+  joinForm.elements.room.required = true;
+  joinForm.elements.token.required = true;
+}
 
 let connection;
 let call;
@@ -194,6 +212,7 @@ async function leave(tellRelay) {
   endCall(false);
   clearIncoming();
   chat.replaceChildren();
+  clearInvite();
   joinForm.hidden = false;
   sessionPanel.hidden = true;
   if (tellRelay && state) {
@@ -207,15 +226,17 @@ joinForm.addEventListener('submit', async event => {
   const button = joinForm.querySelector('button');
   button.disabled = true;
   try {
-    const options = { room: data.get('room'), token: data.get('token') };
+    const options = invite ?? { room: data.get('room'), token: data.get('token') };
     const session = await post(options, 'join', { name: data.get('name'), callable: !!globalThis.RTCPeerConnection });
     connection = { ...options, ...session, sequence: 0, afterChat: 0, afterSignal: 0 };
+    clearInvite();
     joinForm.elements.token.value = '';
     joinForm.hidden = true;
     sessionPanel.hidden = false;
     status.textContent = 'Joined';
     void poll(connection);
   } catch (error) {
+    if (error.status === 401 || error.status === 404) clearInvite();
     status.textContent = error.message;
   } finally {
     button.disabled = false;

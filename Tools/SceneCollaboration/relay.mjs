@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 const companion = new Map([
   ['/', ['text/html; charset=utf-8', new URL('./room.html', import.meta.url)]],
   ['/room.js', ['text/javascript; charset=utf-8', new URL('./room.js', import.meta.url)]],
+  ['/invite.mjs', ['text/javascript; charset=utf-8', new URL('./invite.mjs', import.meta.url)]],
   ['/room.css', ['text/css; charset=utf-8', new URL('./room.css', import.meta.url)]],
 ]);
 

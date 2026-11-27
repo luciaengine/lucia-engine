@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <string>
 
 namespace GameEngine::ECS
 {
@@ -18,6 +19,8 @@ public:
 
     void Update(const std::filesystem::path& project, const std::filesystem::path& scene, ECS::World* world);
     void Stop();
+    bool CanInvite() const;
+    std::string InviteLink() const;
 
 private:
     class State;

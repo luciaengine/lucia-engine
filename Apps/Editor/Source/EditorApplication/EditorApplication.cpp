@@ -109,6 +109,8 @@
 #include "ExternalScriptEditorLauncher.h"
 #include "Scene/DefaultSceneEntities.h"
 #include "Platform/Capabilities.h"
+#include "Platform/Clipboard.h"
+#include "SceneView/SceneViewNoticeOverlay.h"
 #include "Platform/Shell.h"
 
 // Rendering & windowing
@@ -4564,6 +4566,13 @@ bool EditorApplication::Initialize()
                         // Load play fullscreen preference from cached prefs.
                         cachedPrefs.TryGetBool("ui.playFullscreen", m_PlayFullscreenOnEnter);
 
+                        toolbarCb.onInviteClicked = [this]() {
+                            const auto link = m_SceneCollaboration.InviteLink();
+                            if (link.empty())
+                                return;
+                            Platform::SetClipboardText(link.c_str());
+                            Editor::ShowSceneViewNotice("Invite link copied");
+                        };
                         toolbarCb.onSaveSceneClicked = [this](int mods) {
                             const bool saveAs = ((mods & Input::kModShift) != 0);
                             m_DeferredPreUiActions.EnqueueUnique(
@@ -6216,6 +6225,9 @@ void EditorApplication::Update(float64 deltaTime)
         m_SceneCollaboration.Update(engine.GetWorkspaceRoot(), scene.value_or(std::filesystem::path{}),
                                     engine.GetPrimaryWorld());
     }
+
+    if (m_TopToolbar)
+        m_TopToolbar->SetInviteAvailable(m_SceneCollaboration.CanInvite());
 
     EditorWindowContext* mainWindow = m_Windows.empty() ? nullptr : m_Windows[0].get();
     m_FramePhaseRecorder.RecordPreviousFrame({
