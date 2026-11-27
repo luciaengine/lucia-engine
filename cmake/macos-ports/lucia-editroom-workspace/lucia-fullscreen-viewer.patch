@@ -1,0 +1,124 @@
+--- a/Editroom/Model/EditorModel.swift
++++ b/Editroom/Model/EditorModel.swift
+@@ -122,6 +122,9 @@
+     }
+     /// Only the viewer is shown, full screen.
+     @Published private(set) var viewerOnly = false
++    #if LUCIA_HOSTED
++    private var hostedViewerWindow: HostedViewerWindow?
++    #endif
+     @Published private(set) var importCount = 0
+     @Published var importError: String?
+
+@@ -162,6 +165,7 @@
+             self.isPlaying = false
+             self.playhead = self.project.duration
+         }
++        #if !LUCIA_HOSTED
+         NotificationCenter.default.addObserver(forName: NSWindow.didExitFullScreenNotification, object: nil, queue: .main) { [weak self] note in
+             MainActor.assumeIsolated {
+                 // Leaving macOS full screen while the viewer had it: back to the editor.
+@@ -171,6 +175,7 @@
+                 }
+             }
+         }
++        #endif
+         // Back from another app: any media saved over there is opened again.
+         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+             MainActor.assumeIsolated { self?.reloadChangedMedia() }
+@@ -894,9 +899,23 @@
+
+     /// Shows just the viewer, full screen, or goes back to the editor.
+     func toggleViewerFullScreen() {
++        #if LUCIA_HOSTED
++        if let viewer = hostedViewerWindow {
++            hostedViewerWindow = nil
++            viewerOnly = false
++            viewer.dismiss()
++        } else {
++            guard let owner = NSApp.keyWindow, let screen = owner.screen else { return }
++            let viewer = HostedViewerWindow(screen: screen, model: self)
++            hostedViewerWindow = viewer
++            viewerOnly = true
++            viewer.present(over: owner)
++        }
++        #else
+         guard let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }
+         viewerOnly.toggle()
+         if viewerOnly { ViewerScreen.enter(window) } else { ViewerScreen.exit(window) }
++        #endif
+         // The viewer is rebuilt in its new place; give it a frame to show while paused.
+         if !isPlaying {
+             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+--- a/Editroom/UI/ContentView.swift
++++ b/Editroom/UI/ContentView.swift
+@@ -18,7 +18,11 @@
+         GeometryReader { geo in
+             let frame = geo.frame(in: .global)
+             if model.viewerOnly {
++                #if LUCIA_HOSTED
++                Color.clear
++                #else
+                 PreviewView(model: model)
++                #endif
+             } else {
+             VStack(spacing: 0) {
+                 HStack(spacing: 0) {
+--- a/Editroom/UI/ViewerScreen.swift
++++ b/Editroom/UI/ViewerScreen.swift
+@@ -82,3 +82,55 @@
+         path.fill()
+     }
+ }
++
++
++#if LUCIA_HOSTED
++import SwiftUI
++
++/// A borderless playback window on the display that contains the Lucia editor.
++@MainActor
++final class HostedViewerWindow: NSWindow {
++    private weak var model: EditorModel?
++    private var priorPresentation: NSApplication.PresentationOptions = []
++
++    init(screen: NSScreen, model: EditorModel) {
++        self.model = model
++        super.init(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
++        isReleasedWhenClosed = false
++        backgroundColor = .black
++        hasShadow = false
++        collectionBehavior = [.fullScreenAuxiliary]
++        contentView = NSHostingView(rootView: PreviewView(model: model))
++        setFrame(screen.frame, display: false)
++    }
++
++    override var canBecomeKey: Bool { true }
++
++    func present(over owner: NSWindow) {
++        priorPresentation = NSApp.presentationOptions
++        NSApp.presentationOptions = [.hideDock, .hideMenuBar]
++        owner.addChildWindow(self, ordered: .above)
++        makeKeyAndOrderFront(nil)
++    }
++
++    func dismiss() {
++        let owner = parent
++        owner?.removeChildWindow(self)
++        orderOut(nil)
++        contentView = nil
++        NSApp.presentationOptions = priorPresentation
++        owner?.makeKey()
++    }
++
++    override func sendEvent(_ event: NSEvent) {
++        if event.type == .keyDown {
++            let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
++            if event.keyCode == 53 || (modifiers.isEmpty && event.charactersIgnoringModifiers == "f") {
++                model?.toggleViewerFullScreen()
++                return
++            }
++        }
++        super.sendEvent(event)
++    }
++}
++#endif
