@@ -425,6 +425,10 @@ public:
                                                            injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                         forMainFrameOnly:NO]; // Inject in all frames
         [userContentController addUserScript:userScript];
+        [userContentController addUserScript:[[WKUserScript alloc]
+            initWithSource:@"if (location.protocol === 'lucia-app:' && location.hostname === 'editor') "
+                            "Object.defineProperty(window, 'luciaNativeMiddlePan', { value: true });"
+            injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
         [userContentController addScriptMessageHandlerWithReply:m_BundledApp
             contentWorld:WKContentWorld.pageWorld name:@"luciaSaveDocument"];
         [userContentController addScriptMessageHandlerWithReply:m_BundledApp
@@ -798,8 +802,26 @@ private:
         NSPoint PositionInWindow;
     };
 
+    void DispatchMiddlePan(NSString* phase, NSPoint windowPoint)
+    {
+        if (!m_WebView || ![m_WebView.URL.scheme isEqualToString:@"lucia-app"] ||
+            ![m_WebView.URL.host isEqualToString:@"editor"])
+            return;
+
+        const NSPoint point = [m_WebView convertPoint:windowPoint fromView:nil];
+        const NSRect bounds = m_WebView.bounds;
+        const double y = m_WebView.isFlipped ? point.y - NSMinY(bounds) : NSMaxY(bounds) - point.y;
+        NSString* script = [NSString stringWithFormat:
+            @"window.dispatchEvent(new CustomEvent('lucia-middle-pan', "
+             "{detail:{phase:'%@',x:%.6f,y:%.6f,width:%.6f,height:%.6f}}))",
+            phase, point.x - NSMinX(bounds), y, NSWidth(bounds), NSHeight(bounds)];
+        [m_WebView evaluateJavaScript:script completionHandler:nil];
+    }
+
     void EndMouseDrag()
     {
+        if (m_DragButton == 2)
+            DispatchMiddlePan(@"end", NSZeroPoint);
         m_ReleaseFramePriority.Reset();
         m_UncoalescedMouseInput.End();
         const auto button = m_DragButton;
@@ -862,11 +884,15 @@ private:
             }
             if (!m_PointerDragActive && [m_WebView.URL.scheme isEqualToString:@"lucia-app"])
             {
-                m_UncoalescedMouseInput.Begin();
+                // Absolute middle-button samples can use the latest coalesced position.
+                if (button != 2)
+                    m_UncoalescedMouseInput.Begin();
                 if (m_TraceDragInput)
                     m_DragEpochOffset = NSDate.date.timeIntervalSince1970 - CACurrentMediaTime();
             }
             m_PointerDragActive = true;
+            if (button == 2)
+                DispatchMiddlePan(@"move", event.locationInWindow);
             if (m_TraceDragInput && [m_WebView.URL.scheme isEqualToString:@"lucia-app"] &&
                 m_DragSamples.size() < 1024)
                 m_DragSamples.push_back({event.timestamp, CACurrentMediaTime(), event.locationInWindow});
@@ -891,7 +917,11 @@ private:
         {
             EndMouseDrag();
             if (overView)
+            {
                 m_DragButton = button;
+                if (button == 2)
+                    DispatchMiddlePan(@"start", event.locationInWindow);
+            }
             if (overView && [m_WebView.URL.scheme isEqualToString:@"lucia-app"])
             {
                 // Make time for the first motion before AppKit starts delivering drag events.
