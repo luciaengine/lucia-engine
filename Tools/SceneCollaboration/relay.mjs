@@ -242,5 +242,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     roomName: process.env.LUCIA_COLLAB_ROOM,
     directory: process.env.LUCIA_COLLAB_STATE,
   });
+  const stop = () => {
+    relay.close();
+    setTimeout(() => relay.closeAllConnections(), 2000).unref();
+  };
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
   relay.listen(port, host, () => console.log(`Lucia collaboration relay listening on ${host}:${port}`));
 }

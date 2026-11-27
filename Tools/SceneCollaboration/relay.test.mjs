@@ -3,6 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { createCollaborationRelay } from './relay.mjs';
 
@@ -92,5 +94,23 @@ test('field-level revisions refuse conflicting writes and survive a relay restar
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('the command-line relay closes cleanly on SIGTERM', { timeout: 5000 }, async () => {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./relay.mjs', import.meta.url))], {
+    env: { ...process.env, LUCIA_COLLAB_TOKEN: token, LUCIA_COLLAB_PORT: '0',
+      LUCIA_COLLAB_HOST: '127.0.0.1', LUCIA_COLLAB_STATE: '' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  try {
+    const [output] = await once(child.stdout, 'data');
+    assert.match(output.toString(), /relay listening/);
+    const exited = once(child, 'exit');
+    child.kill('SIGTERM');
+    assert.deepEqual(await exited, [0, null]);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
 });
