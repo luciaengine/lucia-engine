@@ -923,6 +923,14 @@ void WebPanel::SetWebViewOffScreen(bool offScreen, bool editorOverlayOpen)
     }
 }
 
+std::string WebPanel::CurrentPageURL() const
+{
+    if (m_ActiveTab >= m_Tabs.size() || !m_Tabs[m_ActiveTab].view)
+        return {};
+    const auto navigation = m_Tabs[m_ActiveTab].view->GetNavigation();
+    return navigation.IsLoading ? std::string{} : navigation.URL;
+}
+
 bool WebPanel::HasBundledAppDragFramePriority()
 {
     if (m_BundledApp.empty())

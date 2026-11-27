@@ -145,6 +145,7 @@ set(EDITOR_SOURCES
     Source/Panels/BuildPanel.cpp
     Source/Panels/BuildPanel/ExportRequirementsSection.cpp
     Source/Panels/BuiltInPanelTypes.cpp
+    Source/Panels/LightTable/LightTablePanel.cpp
     Source/Panels/MovieRecorderPanel.cpp
     Source/Panels/HierarchyPanel.cpp
     Source/Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.cpp

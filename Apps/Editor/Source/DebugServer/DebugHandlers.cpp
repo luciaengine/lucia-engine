@@ -115,6 +115,7 @@
 #include "MediaWorkspaces/MediaWorkspacePanel.h"
 #include "Packages/OpenPencilPackageOptions.h"
 #include "Panels/WebPanel.h"
+#include "Panels/LightTablePanel.h"
 #include "UI/Controls/Label.h"
 #include "Engine/Build/BuildPlatforms.h"
 #include "Engine/Build/PlayerBuildConfig.h"
@@ -2779,6 +2780,7 @@ struct CreativeWorkspace
 constexpr CreativeWorkspace kCreativeWorkspaces[] = {
     {"editroom", "Editroom", "Editroom", "WorkspaceStatus"},
     {"compositor", "Compositor", "Compositor", "WorkspaceStatus"},
+    {"lighttable", "LightTable", "LightTable", "WebErrorLabel"},
     {"openpencil", "OpenPencil", Editor::kOpenPencilPackageOptions.front().PanelId, "WebErrorLabel"},
 };
 
@@ -3530,7 +3532,7 @@ void RegisterDebugHandlers(EditorDebugServer& server,
     {
         const auto* selected = FindCreativeWorkspace(ctx.params);
         if (!selected)
-            return Editor::RefuseRequest("Unknown creative workspace. Use editroom, compositor, or openpencil.");
+            return Editor::RefuseRequest("Unknown creative workspace. Use editroom, compositor, openpencil, or lighttable.");
         if (!app.m_Docking || !app.m_PanelManager || app.m_Windows.empty())
             return Editor::RefuseRequest("The editor layout is not ready.");
         if (!app.m_Docking->GetPanel(selected->PanelId))
@@ -3574,6 +3576,25 @@ void RegisterDebugHandlers(EditorDebugServer& server,
                 return Editor::RefuseRequest("Inspect the active document and provide its id for the edit.");
         }
 
+        if (auto* lightTable = dynamic_cast<Editor::LightTablePanel*>(panel))
+        {
+            const auto origin = lightTable->ConnectedOrigin();
+            if (origin.empty())
+                return Editor::RefuseRequest("Open the configured local catalog in the LightTable panel.");
+            auto job = Editor::SubmitHandlerReplyJob(EngineCore::GetInstance().GetJobSystem(), ctx.id,
+                [origin, request = std::move(request)]() {
+                    return CreativeDocumentResult(Editor::LightTablePanel::RunDocumentCommand(origin, request));
+                });
+            server.EnqueueDeferredResponse(ctx.id, [job = std::move(job)](json& result) {
+                std::string error;
+                if (!Editor::PollHandlerReplyJob(job, result, error))
+                    return false;
+                if (!error.empty())
+                    result = Editor::RefuseRequest(error);
+                return true;
+            }, 600);
+            return EditorDebugServer::DeferredMarker();
+        }
         if (auto* media = dynamic_cast<Editor::MediaWorkspacePanel*>(panel))
             return CreativeDocumentResult(media->RunDocumentCommand(request));
         if (auto* web = dynamic_cast<WebPanel*>(panel); web && workspace->Id == "openpencil")

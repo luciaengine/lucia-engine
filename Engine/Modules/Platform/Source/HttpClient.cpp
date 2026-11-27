@@ -260,6 +260,8 @@ HttpClient::HttpResponse PerformJsonPost(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList.get());
 
     ApplyCommonTransportOptions(curl);
+    if (GameEngine::IsLoopbackUrl(url))
+        curl_easy_setopt(curl, CURLOPT_PROXY, "");
     // A followed redirect would replay every custom header to the new
     // location, and curl withholds only Authorization and Cookie from another
     // host: an X-Api-Key would travel wherever the redirect points, over http
@@ -398,6 +400,8 @@ HttpClient::HttpResponse HttpClient::PostForm(
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
 
     ApplyCommonTransportOptions(curl);
+    if (GameEngine::IsLoopbackUrl(url))
+        curl_easy_setopt(curl, CURLOPT_PROXY, "");
     // curl replays custom headers to a redirect target on any origin: a credential stays put.
     if (std::ranges::any_of(headers, IsCredentialEntry))
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
@@ -517,6 +521,7 @@ HttpClient::HttpResponse HttpClient::Get(
             hopHeaderList = curl_slist_append(hopHeaderList, header.c_str());
         }
         const std::unique_ptr<curl_slist, CurlHeaderListDeleter> headerList(hopHeaderList);
+        curl_easy_setopt(curl.get(), CURLOPT_PROXY, GameEngine::IsLoopbackUrl(hopUrl) ? "" : nullptr);
         curl_easy_setopt(curl.get(), CURLOPT_URL, hopUrl.c_str());
         curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headerList.get());
 

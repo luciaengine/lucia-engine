@@ -71,6 +71,9 @@ class WebPanel : public DockPanel
     bool HasBundledAppCloseConfirmation();
     void ConfirmBundledAppClose(std::function<void(bool)> done);
 
+  protected:
+    std::string CurrentPageURL() const;
+
   private:
     struct WebTab
     {

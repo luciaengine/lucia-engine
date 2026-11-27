@@ -31,7 +31,7 @@ export const tools: ToolDef[] = [
     name: "list_creative_workspaces",
     category: "ui",
     description:
-      "Find Lucia's creative workspaces: Editroom for video editing, Compositor for images and textures, and bundled OpenPencil for design. Returns each workspace's package-panel registration, current dock visibility, and any visible host status message. A registered panel may still be loading or missing its platform host.",
+      "Find Lucia's creative workspaces: Editroom for video editing, Compositor for images and textures, bundled OpenPencil for design, and LightTable for photo catalogs. Returns each workspace's package-panel registration, current dock visibility, and any visible host status message. A registered panel may still be loading or missing its platform host.",
     schema: {},
   }),
 
@@ -39,10 +39,10 @@ export const tools: ToolDef[] = [
     name: "open_creative_workspace",
     category: "ui",
     description:
-      "Show an enabled creative workspace in the current Lucia editor: Editroom, Compositor, or the bundled offline OpenPencil. Preserves its existing dock placement and document. When closed, opens it beside Scene View using the editor's normal docking rules. Use list_creative_workspaces to check the host's status after it opens.",
+      "Show an enabled creative workspace in the current Lucia editor: Editroom, Compositor, the bundled offline OpenPencil, or LightTable. Preserves its existing dock placement and document. When closed, opens it beside Scene View using the editor's normal docking rules. Use list_creative_workspaces to check the host's status after it opens.",
     schema: {
-      workspace: z.enum(["editroom", "compositor", "openpencil"]).describe(
-        "Workspace id: editroom for video, compositor for images and textures, openpencil for design.",
+      workspace: z.enum(["editroom", "compositor", "openpencil", "lighttable"]).describe(
+        "Workspace id: editroom for video, compositor for images and textures, openpencil for design, lighttable for photo catalogs.",
       ),
     },
   }),
@@ -51,9 +51,9 @@ export const tools: ToolDef[] = [
     name: "inspect_creative_document",
     category: "ui",
     description:
-      "Read the active Editroom timeline and media, Compositor layers, or bundled OpenPencil page. Open the workspace and its document first. Returns the document id and item ids needed for a subsequent creative edit.",
+      "Read the active Editroom timeline and media, Compositor layers, bundled OpenPencil page, or LightTable catalog. Open the workspace and its document first. Returns the document id and item ids needed for a subsequent creative edit.",
     schema: {
-      workspace: z.enum(["editroom", "compositor", "openpencil"]),
+      workspace: z.enum(["editroom", "compositor", "openpencil", "lighttable"]),
       offset: z.number().int().min(0).max(1_000_000).optional().describe("First item to return, default 0. Up to 100 items."),
     },
   }),
@@ -62,12 +62,13 @@ export const tools: ToolDef[] = [
     name: "edit_creative_document",
     category: "ui",
     description:
-      "Make one edit through the active workspace's own document and undo history. Inspect first to get the document id and item ids. Compositor or OpenPencil new_document creates a blank design and needs no documentId. For Compositor supply width and height. Editroom split_clip uses itemId (clip) and time (seconds); add_media uses itemId (media) and adds at the playhead. Compositor and OpenPencil rename_layer use itemId and name. OpenPencil create_shape uses shape, x, y, width, height and optional name. The workspace's normal save and autosave behavior applies. Use that workspace's Undo for an edit.",
+      "Make one edit through the active workspace's own document and undo history. Inspect first to get the document id and item ids. Compositor or OpenPencil new_document creates a blank design and needs no documentId. For Compositor supply width and height. Editroom split_clip uses itemId (clip) and time (seconds); add_media uses itemId (media) and adds at the playhead. Compositor and OpenPencil rename_layer use itemId and name. OpenPencil create_shape uses shape, x, y, width, height and optional name. LightTable rate_photo uses itemId and rating (0–5). The workspace's normal save and autosave behavior applies. Use that workspace's Undo for an edit.",
     schema: {
-      workspace: z.enum(["editroom", "compositor", "openpencil"]),
+      workspace: z.enum(["editroom", "compositor", "openpencil", "lighttable"]),
       documentId: z.string().min(1).max(200).optional(),
-      operation: z.enum(["new_document", "split_clip", "add_media", "rename_layer", "create_shape"]),
-      itemId: z.string().min(1).max(200).optional(),
+      operation: z.enum(["new_document", "split_clip", "add_media", "rename_layer", "create_shape", "rate_photo"]),
+      itemId: z.string().min(1).max(4096).optional(),
+      rating: z.number().int().min(0).max(5).optional(),
       time: z.number().finite().nonnegative().optional(),
       name: z.string().trim().min(1).max(256).optional(),
       shape: z.enum(["rectangle", "ellipse"]).optional(),

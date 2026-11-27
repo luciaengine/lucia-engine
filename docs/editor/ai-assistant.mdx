@@ -13,6 +13,12 @@ Open the panel from the **Panels** button at the right end of the top toolbar an
 
 *The panel before the first prompt: the provider dropdown and the model button in the top bar, then the prompt field with the mode control, Session…, and the send button.*
 
+## LightTable photo catalogs
+
+Open **Panels > LightTable** with the local LightTable server running. The panel displays the server at loopback port 8321 by default. If your server uses another port, open its local address in the panel.
+
+To connect the AI Assistant, start Lucia with `LUCIA_LIGHTTABLE_INSTANCE_FILE` set to the absolute path of the running server's `<port>.json` instance file. LightTable creates this file when it starts. The panel then opens that server automatically. Leave its catalog open in the active panel when asking the assistant to list photos or set a star rating. Changes appear in LightTable's history.
+
 ## Providers
 
 | Provider | What it needs | Where it sends your prompt |
