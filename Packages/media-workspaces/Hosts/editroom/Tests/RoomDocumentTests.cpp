@@ -1,6 +1,7 @@
 #include "RoomDocument.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QJsonDocument>
 #include <QTemporaryDir>
@@ -67,6 +68,26 @@ int main(int argc, char** argv)
         directory.filePath(QStringLiteral("filters.txt")), filters, error);
     if (!Check(arguments.contains("-/filter_complex") && filters.contains("adelay=36000S") && filters.contains("overlay="),
                "The render plan preserves video, audio, and the timeline gap"))
+        return 1;
+    const auto second = directory.filePath(QStringLiteral("second.mp4"));
+    if (!QFile::copy(source, second) || reopened.Import(second, probe, error).isEmpty() ||
+        !reopened.Save(path, error))
+        return 1;
+    const auto linkedClips = reopened.Clips();
+    const auto relocated = directory.filePath(QStringLiteral("Relocated"));
+    if (!QDir().mkpath(relocated) ||
+        !QFile::rename(source, QDir(relocated).filePath(QStringLiteral("renamed.mp4"))) ||
+        !QFile::rename(second, QDir(relocated).filePath(QStringLiteral("second.mp4"))) ||
+        !reopened.Open(path, error))
+        return 1;
+    if (!Check(reopened.MissingAssets().size() == 2, "Opening a project identifies missing media") ||
+        !Check(!reopened.RelinkMissingAsset(asset, relocated), "A folder cannot replace a media file") ||
+        !Check(reopened.RelinkMissingAsset(asset, QDir(relocated).filePath(QStringLiteral("renamed.mp4"))),
+               "An explicitly selected replacement relinks the missing asset") ||
+        !Check(reopened.MissingAssets().isEmpty(), "Missing sibling files are relinked from the same folder") ||
+        !Check(reopened.Clips() == linkedClips, "Relinking preserves timeline edits and asset IDs") ||
+        !Check(reopened.Save(path, error) && reopened.Open(path, error) && reopened.MissingAssets().isEmpty(),
+               "Relinked paths persist when the project reopens"))
         return 1;
     return 0;
 }

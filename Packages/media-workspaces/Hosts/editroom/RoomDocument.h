@@ -22,6 +22,8 @@ public:
     QJsonArray Assets() const;
     QJsonArray Clips() const;
     QJsonObject Asset(const QString& id) const;
+    QJsonArray MissingAssets() const;
+    bool RelinkMissingAsset(const QString& id, const QString& path);
     QString MediaPath(const QJsonObject& asset) const;
     double Duration() const;
     QStringList RenderArguments(const QString& output, const QString& manifest, QString& filters, QString& error) const;

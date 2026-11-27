@@ -3,19 +3,29 @@
 
 #include <QAction>
 #include <QAudioOutput>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
+#include <QDrag>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHeaderView>
 #include <QJsonDocument>
+#include <QLabel>
 #include <QListWidget>
 #include <QMainWindow>
 #include <QMediaPlayer>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QProcess>
+#include <QPushButton>
 #include <QSaveFile>
+#include <QShortcut>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSplitter>
@@ -27,6 +37,7 @@
 #include <QUrl>
 #include <QVideoWidget>
 #include <QVBoxLayout>
+#include <QWindow>
 
 #include <functional>
 #include <memory>
@@ -39,6 +50,114 @@ namespace
 constexpr int kStartColumn = 2;
 constexpr int kSourceColumn = 3;
 constexpr int kDurationColumn = 4;
+
+const auto kMediaDragType = QStringLiteral("application/x-lucia-editroom-media");
+
+class MediaList final : public QListWidget
+{
+public:
+    explicit MediaList(QWidget* parent) : QListWidget(parent)
+    {
+        setDragDropMode(QAbstractItemView::DragOnly);
+    }
+
+protected:
+    QStringList mimeTypes() const override { return {kMediaDragType}; }
+
+    QMimeData* mimeData(const QList<QListWidgetItem*>& items) const override
+    {
+        if (items.isEmpty())
+            return nullptr;
+        auto* mime = new QMimeData;
+        mime->setData(kMediaDragType, items.front()->data(Qt::UserRole).toString().toUtf8());
+        return mime;
+    }
+
+    void startDrag(Qt::DropActions) override
+    {
+        const auto items = selectedItems();
+        auto* mime = mimeData(items);
+        if (!mime)
+            return;
+        auto* drag = new QDrag(this);
+        drag->setMimeData(mime);
+        drag->setPixmap(viewport()->grab(visualItemRect(items.front())));
+        drag->exec(Qt::CopyAction);
+        drag->deleteLater();
+    }
+};
+
+class TimelineTable final : public QTableWidget
+{
+public:
+    explicit TimelineTable(QWidget* parent, std::function<bool(const QString&, int)> insert)
+        : QTableWidget(parent), m_Insert(std::move(insert))
+    {
+        setDragDropMode(QAbstractItemView::DropOnly);
+    }
+
+protected:
+    void dragEnterEvent(QDragEnterEvent* event) override { AcceptMedia(event); }
+    void dragMoveEvent(QDragMoveEvent* event) override { AcceptMedia(event); }
+
+    void dropEvent(QDropEvent* event) override
+    {
+        if (!event->mimeData()->hasFormat(kMediaDragType) ||
+            !m_Insert(QString::fromUtf8(event->mimeData()->data(kMediaDragType)),
+                      indexAt(event->position().toPoint()).row()))
+        {
+            event->ignore();
+            return;
+        }
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
+    }
+
+private:
+    static void AcceptMedia(QDropEvent* event)
+    {
+        if (event->mimeData()->hasFormat(kMediaDragType) && (event->possibleActions() & Qt::CopyAction))
+        {
+            event->setDropAction(Qt::CopyAction);
+            event->accept();
+        }
+        else
+            event->ignore();
+    }
+
+    std::function<bool(const QString&, int)> m_Insert;
+};
+
+class FullscreenPreview final : public QVideoWidget
+{
+public:
+    explicit FullscreenPreview(std::function<void()> dismiss, std::function<void()> togglePlayback)
+        : m_Dismiss(std::move(dismiss))
+    {
+        setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+        setObjectName(QStringLiteral("EditroomFullscreenPreview"));
+        setWindowTitle(QStringLiteral("Editroom Fullscreen"));
+        for (const auto key : {Qt::Key_Escape, Qt::Key_F})
+        {
+            auto* close = new QShortcut(QKeySequence(key), this);
+            close->setAutoRepeat(false);
+            connect(close, &QShortcut::activated, this, [this] { m_Dismiss(); });
+        }
+        auto* play = new QShortcut(QKeySequence(Qt::Key_Space), this);
+        play->setAutoRepeat(false);
+        connect(play, &QShortcut::activated, this, std::move(togglePlayback));
+    }
+
+protected:
+    void closeEvent(QCloseEvent* event) override
+    {
+        m_Dismiss();
+        event->accept();
+    }
+
+private:
+    std::function<void()> m_Dismiss;
+};
 
 class EditroomWorkspace
 {
@@ -57,17 +176,18 @@ public:
 
         auto* panes = new QSplitter(Qt::Vertical, &m_Window);
         auto* top = new QSplitter(Qt::Horizontal, panes);
-        m_Media = new QListWidget(top);
+        m_Media = new MediaList(top);
         m_Media->setAccessibleName(QStringLiteral("Media"));
         auto* preview = new QWidget(top);
         auto* previewLayout = new QVBoxLayout(preview);
-        auto* video = new QVideoWidget(preview);
-        previewLayout->addWidget(video, 1);
-        m_Player.setVideoOutput(video);
+        m_Video = new QVideoWidget(preview);
+        previewLayout->addWidget(m_Video, 1);
+        m_Player.setVideoOutput(m_Video);
         m_Player.setAudioOutput(&m_Audio);
         auto* playback = new QToolBar(QStringLiteral("Playback"), preview);
         AddAction(playback, "Play from Start", QKeySequence(), [this] { Play(true); });
         AddAction(playback, "Play / Pause", QKeySequence(Qt::Key_Space), [this] { Play(false); });
+        AddAction(playback, "Fullscreen", QKeySequence(Qt::Key_F), [this] { ToggleFullscreen(); });
         auto* position = new QSlider(Qt::Horizontal, playback);
         position->setAccessibleName(QStringLiteral("Playhead"));
         position->setRange(0, 0);
@@ -82,7 +202,13 @@ public:
         AddAction(commands, "Split", QKeySequence(QStringLiteral("Ctrl+B")), [this] { Split(); });
         AddAction(commands, "Delete", QKeySequence(Qt::Key_Delete), [this] { Delete(); });
         layout->addWidget(commands);
-        m_Clips = new QTableWidget(timeline);
+        m_Clips = new TimelineTable(timeline, [this](const QString& id, int row)
+        {
+            const auto clips = m_Document.Clips();
+            const double start = row >= 0 && row < clips.size()
+                ? clips[row].toObject().value("start").toDouble() : m_Document.Duration();
+            return AddMediaClip(id, start);
+        });
         m_Clips->setColumnCount(5);
         m_Clips->setHorizontalHeaderLabels({"Media", "Track Type", "Start", "Source In", "Duration"});
         m_Clips->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -135,6 +261,8 @@ public:
 
     void Place(void* host, double x, double y, double width, double height)
     {
+        if (!host && m_Fullscreen && m_Fullscreen->isVisible())
+            LeaveFullscreen();
         m_Host.Place(host, x, y, width, height);
     }
 
@@ -153,6 +281,7 @@ private:
     {
         auto* action = toolbar->addAction(QString::fromUtf8(label));
         action->setShortcut(shortcut);
+        action->setAutoRepeat(false);
         QObject::connect(action, &QAction::triggered, &m_Window, std::move(invoke));
     }
 
@@ -227,6 +356,66 @@ private:
         m_Path = path;
         m_Dirty = false;
         Refresh();
+        OfferMissingMedia();
+    }
+
+    void OfferMissingMedia()
+    {
+        auto missing = m_Document.MissingAssets();
+        if (missing.isEmpty())
+            return;
+        QDialog dialog(&m_Window, Qt::Dialog | Qt::FramelessWindowHint);
+        dialog.setObjectName(QStringLiteral("EditroomMissingMedia"));
+        dialog.setWindowTitle(QStringLiteral("Missing Media"));
+        dialog.setMinimumWidth(420);
+        dialog.setStyleSheet(QStringLiteral(
+            "QDialog#EditroomMissingMedia { background: #272727; border: 1px solid #444444; }"
+            "QLabel { color: #E5E5E5; }"
+            "QPushButton { color: #E5E5E5; background: #333333; border: 1px solid #444444;"
+            " border-radius: 5px; padding: 5px 12px; }"
+            "QPushButton:hover, QPushButton:focus { background: #444444; }"));
+        auto* layout = new QVBoxLayout(&dialog);
+        layout->setContentsMargins(16, 16, 16, 16);
+        auto* title = new QLabel(missing.size() == 1 ? QStringLiteral("1 media file is missing")
+            : QStringLiteral("%1 media files are missing").arg(missing.size()), &dialog);
+        auto font = title->font();
+        font.setBold(true);
+        title->setFont(font);
+        layout->addWidget(title);
+        QStringList names;
+        for (const auto& value : missing)
+        {
+            if (names.size() == 6)
+            {
+                names.append(QStringLiteral("…"));
+                break;
+            }
+            names.append(QFileInfo(value.toObject().value("path").toString()).fileName());
+        }
+        auto* message = new QLabel(names.join(QLatin1Char('\n')) +
+            QStringLiteral("\n\nLocate one file to also find the others in the same folder."), &dialog);
+        message->setTextFormat(Qt::PlainText);
+        message->setWordWrap(true);
+        layout->addWidget(message);
+        auto* buttons = new QDialogButtonBox(&dialog);
+        buttons->addButton(QStringLiteral("Not Now"), QDialogButtonBox::RejectRole);
+        buttons->addButton(QStringLiteral("Locate…"), QDialogButtonBox::AcceptRole)->setDefault(true);
+        QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        layout->addWidget(buttons);
+        if (dialog.exec() != QDialog::Accepted)
+            return;
+        while (!missing.isEmpty())
+        {
+            const auto asset = missing.first().toObject();
+            const auto name = QFileInfo(asset.value("path").toString()).fileName();
+            const auto path = QFileDialog::getOpenFileName(&m_Window, QStringLiteral("Locate %1").arg(name),
+                                                           QFileInfo(m_Path).absolutePath());
+            if (path.isEmpty() || !m_Document.RelinkMissingAsset(asset.value("id").toString(), path))
+                return;
+            Changed();
+            missing = m_Document.MissingAssets();
+        }
     }
 
     bool SaveProject()
@@ -283,8 +472,16 @@ private:
         const auto* item = m_Media->currentItem();
         if (!item)
             return;
-        m_Document.AddClip(item->data(Qt::UserRole).toString(), m_Document.Duration());
+        AddMediaClip(item->data(Qt::UserRole).toString(), m_Document.Duration());
+    }
+
+    bool AddMediaClip(const QString& id, double start)
+    {
+        if (m_Document.Asset(id).isEmpty())
+            return false;
+        m_Document.AddClip(id, start);
         Changed();
+        return true;
     }
 
     void Split()
@@ -360,6 +557,33 @@ private:
         }
         if (row >= 0 && row < m_Clips->rowCount())
             m_Clips->selectRow(row);
+    }
+
+    void ToggleFullscreen()
+    {
+        if (m_Fullscreen && m_Fullscreen->isVisible())
+        {
+            LeaveFullscreen();
+            return;
+        }
+
+        if (!m_Fullscreen)
+            m_Fullscreen = std::make_unique<FullscreenPreview>(
+                [this] { LeaveFullscreen(); }, [this] { Play(false); });
+        m_Fullscreen->winId();
+        if (auto* window = m_Fullscreen->windowHandle())
+            window->setScreen(m_Window.screen());
+        m_Player.setVideoOutput(m_Fullscreen.get());
+        m_Fullscreen->showFullScreen();
+        m_Fullscreen->activateWindow();
+    }
+
+    void LeaveFullscreen()
+    {
+        m_Player.setVideoOutput(m_Video);
+        m_Fullscreen->hide();
+        if (m_Window.isVisible())
+            m_Window.activateWindow();
     }
 
     void Play(bool fromStart)
@@ -508,6 +732,8 @@ private:
     std::unique_ptr<Job> m_Preview;
     QListWidget* m_Media = nullptr;
     QTableWidget* m_Clips = nullptr;
+    QVideoWidget* m_Video = nullptr;
+    std::unique_ptr<FullscreenPreview> m_Fullscreen;
     QString m_Path;
     double m_Playhead = 0;
     double m_PreviewStart = 0;

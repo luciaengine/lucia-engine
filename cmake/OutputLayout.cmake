@@ -286,6 +286,8 @@ function(ge_stage_runtime_dependencies target_name)
     message(FATAL_ERROR "ge_stage_runtime_dependencies: target not found: ${target_name}")
   endif()
 
+  cmake_parse_arguments(PARSE_ARGV 1 _ge_runtime "USE_SYSTEM_FONTCONFIG" "" "")
+
   # Only stage runtime dependencies for runnable targets.
   get_target_property(_ge_target_type ${target_name} TYPE)
   if(NOT (_ge_target_type STREQUAL "EXECUTABLE" OR _ge_target_type STREQUAL "MODULE_LIBRARY"))
@@ -391,6 +393,7 @@ function(ge_stage_runtime_dependencies target_name)
         "set(GE_RUNTIME_DEPS_DEST_DIR \"${_ge_dest_dir}\")\n"
         "set(GE_RUNTIME_DEPS_SEARCH_DIRS \"${_ge_search_dirs}\")\n"
         "set(GE_RUNTIME_DEPS_VERBOSE OFF)\n"
+        "set(GE_RUNTIME_DEPS_USE_SYSTEM_FONTCONFIG ${_ge_runtime_USE_SYSTEM_FONTCONFIG})\n"
         "include(\"${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDependencies.cmake\")\n"
   )
   file(GENERATE
