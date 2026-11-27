@@ -1,0 +1,257 @@
+--- a/Editroom/UI/LibraryView.swift
++++ b/Editroom/UI/LibraryView.swift
+@@ -101,7 +101,7 @@
+                         if layout == .thumbnails {
+                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 8, alignment: .top)], spacing: 10) {
+                                 ForEach(shown) { asset in
+-                                    AssetTile(model: model, media: media, asset: asset, snippet: snippet(asset), offline: media.looksOffline(asset), selected: inSelection.contains(asset.id),
++                                    AssetTile(model: model, media: media, asset: asset, order: order, snippet: snippet(asset), offline: media.looksOffline(asset), selected: inSelection.contains(asset.id),
+                                               picked: model.mediaSelection.contains(asset.id), pickedCount: model.mediaSelection.count,
+                                               matchesSequence: model.sequenceMatches(asset))
+                                         .simultaneousGesture(TapGesture().onEnded { model.clickMedia(asset.id, in: order) })
+@@ -110,7 +110,7 @@
+                         } else {
+                             VStack(spacing: 3) {
+                                 ForEach(shown) { asset in
+-                                    AssetRow(model: model, media: media, asset: asset, snippet: snippet(asset), thumbWidth: thumbWidth, offline: media.looksOffline(asset), selected: inSelection.contains(asset.id),
++                                    AssetRow(model: model, media: media, asset: asset, order: order, snippet: snippet(asset), thumbWidth: thumbWidth, offline: media.looksOffline(asset), selected: inSelection.contains(asset.id),
+                                              picked: model.mediaSelection.contains(asset.id), pickedCount: model.mediaSelection.count,
+                                              matchesSequence: model.sequenceMatches(asset))
+                                         // A click picks it (⇧ for a range, ⌘ to add or take away); a double-click adds it.
+@@ -315,21 +315,33 @@
+ private struct AssetActions: ViewModifier {
+     let model: EditorModel
+     let asset: MediaAsset
++    let order: [UUID]
+     let offline: Bool
+     let picked: Bool
+     let pickedCount: Int
+     let matchesSequence: Bool
+ 
++    private func dragPayloads() -> [DragPayload] {
++        let ids = picked && pickedCount > 1
++            ? model.project.assets.map(\.id).filter { model.mediaSelection.contains($0) }
++            : [asset.id]
++        return ids.map(DragPayload.asset)
++    }
++
+     func body(content: Content) -> some View {
+         content
+             .onTapGesture(count: 2) { model.addAtPlayhead(.asset(asset.id)) }
+-            .onDrag({
+-                // Dragging one of several picked items takes them all, in the Media panel's order.
+-                let ids = picked && pickedCount > 1
+-                    ? model.project.assets.map(\.id).filter { model.mediaSelection.contains($0) }
+-                    : [asset.id]
+-                return TimelineMediaDrag.provider(for: ids.map(DragPayload.asset))
+-            }, preview: { content })
++            #if LUCIA_HOSTED
++            .overlay(HostedMediaDragSource(
++                thumbnail: { model.media.posters[asset.id] }, payloads: dragPayloads,
++                click: {
++                    model.clickMedia(asset.id, in: order)
++                }, doubleClick: {
++                    model.addAtPlayhead(.asset(asset.id))
++                }))
++            #else
++            .onDrag({ TimelineMediaDrag.provider(for: dragPayloads()) }, preview: { content })
++            #endif
+             .contextMenu {
+                 if offline {
+                     Button("Locate…") { model.locate(asset.id) }
+@@ -359,10 +371,118 @@
+     }
+ }
+ 
++#if LUCIA_HOSTED
++/// A hosted media item tracks its own pointer and passes its preview to the visible timeline.
++private struct HostedMediaDragSource: NSViewRepresentable {
++    let thumbnail: () -> NSImage?
++    let payloads: () -> [DragPayload]
++    let click: () -> Void
++    let doubleClick: () -> Void
++
++    func makeNSView(context: Context) -> SourceView { SourceView(frame: .zero) }
++
++    func updateNSView(_ view: SourceView, context: Context) {
++        view.thumbnail = thumbnail
++        view.payloads = payloads
++        view.click = click
++        view.doubleClick = doubleClick
++    }
++
++    @MainActor
++    final class SourceView: NSView {
++        private final class Ghost: NSImageView {
++            override func hitTest(_ point: NSPoint) -> NSView? { nil }
++        }
++
++        var thumbnail: (() -> NSImage?)?
++        var payloads: (() -> [DragPayload])?
++        var click: (() -> Void)?
++        var doubleClick: (() -> Void)?
++
++        private var press: CGPoint?
++        private var dragging: [DragPayload] = []
++        private var ghost: Ghost?
++        private weak var target: TimelineCanvas?
++
++        override func hitTest(_ point: NSPoint) -> NSView? {
++            switch NSApp.currentEvent?.type {
++            case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
++                return super.hitTest(point)
++            default:
++                return nil
++            }
++        }
++
++        override var acceptsFirstResponder: Bool { true }
++        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
++
++        override func mouseDown(with event: NSEvent) {
++            cancelDrag()
++            press = event.locationInWindow
++        }
++
++        override func mouseDragged(with event: NSEvent) {
++            guard let press, let window, let container = window.contentView else { return }
++            let pointer = event.locationInWindow
++            if dragging.isEmpty {
++                guard hypot(pointer.x - press.x, pointer.y - press.y) >= 4,
++                      let payloads = payloads?(), !payloads.isEmpty else { return }
++                dragging = payloads
++                if let thumbnail = thumbnail?() {
++                    let preview = Ghost(frame: .zero)
++                    preview.image = thumbnail
++                    preview.imageScaling = .scaleProportionallyUpOrDown
++                    preview.alphaValue = 0.82
++                    container.addSubview(preview, positioned: .above, relativeTo: nil)
++                    ghost = preview
++                }
++            }
++
++            let point = container.convert(pointer, from: nil)
++            let width = min(bounds.width, 104)
++            ghost?.frame = CGRect(x: point.x + 8, y: point.y + 8, width: width, height: width * 9 / 16)
++            let timeline = TimelineCanvas.current
++            if let timeline, timeline.window === window,
++               timeline.updateHostedMediaDrop(dragging, at: pointer) {
++                target = timeline
++            } else {
++                target?.cancelHostedMediaDrop()
++                target = nil
++            }
++        }
++
++        override func mouseUp(with event: NSEvent) {
++            if dragging.isEmpty {
++                if event.clickCount >= 2 { doubleClick?() } else { click?() }
++            } else {
++                target?.finishHostedMediaDrop(dragging, at: event.locationInWindow)
++            }
++            cancelDrag()
++        }
++
++        override func viewWillMove(toWindow newWindow: NSWindow?) {
++            if newWindow !== window { cancelDrag() }
++            super.viewWillMove(toWindow: newWindow)
++        }
++
++        private func cancelDrag() {
++            press = nil
++            target?.cancelHostedMediaDrop()
++            target = nil
++            dragging.removeAll()
++            ghost?.removeFromSuperview()
++            ghost = nil
++        }
++    }
++}
++
++#endif
++
+ private struct AssetRow: View {
+     let model: EditorModel
+     let media: MediaStore
+     let asset: MediaAsset
++    let order: [UUID]
+     /// Where it says what's being searched for.
+     var snippet: (before: String, match: String, after: String)?
+     var thumbWidth: CGFloat = 64
+@@ -424,7 +544,7 @@
+         .onHover { hovering = $0 }
+         .animation(.easeOut(duration: 0.12), value: hovering)
+         .help(details)
+-        .modifier(AssetActions(model: model, asset: asset, offline: offline, picked: picked, pickedCount: pickedCount,
++        .modifier(AssetActions(model: model, asset: asset, order: order, offline: offline, picked: picked, pickedCount: pickedCount,
+                                matchesSequence: matchesSequence))
+     }
+ }
+@@ -442,6 +562,7 @@
+     let model: EditorModel
+     let media: MediaStore
+     let asset: MediaAsset
++    let order: [UUID]
+     var snippet: (before: String, match: String, after: String)?
+     let offline: Bool
+     let selected: Bool
+@@ -483,7 +604,7 @@
+         .contentShape(Rectangle())
+         .onHover { hovering = $0 }
+         .animation(.easeOut(duration: 0.12), value: hovering)
+-        .modifier(AssetActions(model: model, asset: asset, offline: offline, picked: picked, pickedCount: pickedCount,
++        .modifier(AssetActions(model: model, asset: asset, order: order, offline: offline, picked: picked, pickedCount: pickedCount,
+                                matchesSequence: matchesSequence))
+     }
+ }
+--- a/Editroom/UI/TimelineCanvas.swift
++++ b/Editroom/UI/TimelineCanvas.swift
+@@ -1144,14 +1144,17 @@
+     }
+ 
+     private func updateDrop(_ sender: NSDraggingInfo) -> NSDragOperation {
+-        let p = convert(sender.draggingLocation, from: nil)
+         let payloads = TimelineMediaDrag.payloads(from: sender.draggingPasteboard)
+         let hasFiles = payloads.isEmpty && (sender.draggingPasteboard.types?.contains(.fileURL) ?? false)
+         guard hasFiles || !payloads.isEmpty else {
+             clearDrop()
+             return []
+         }
++
++        return previewMediaDrop(at: convert(sender.draggingLocation, from: nil), payloads: payloads)
++    }
+ 
++    private func previewMediaDrop(at p: CGPoint, payloads: [DragPayload]) -> NSDragOperation {
+         let project = model.project
+         let vTracks = project.videoTracks, aTracks = project.audioTracks
+         guard !vTracks.isEmpty, !aTracks.isEmpty else { return [] }
+@@ -1207,8 +1210,29 @@
+         dropInfo = (vTrack, aTrack, start)
+         needsDisplay = true
+         return .copy
++    }
++
++    #if LUCIA_HOSTED
++    func updateHostedMediaDrop(_ payloads: [DragPayload], at locationInWindow: CGPoint) -> Bool {
++        let point = convert(locationInWindow, from: nil)
++        guard visibleRect.contains(point), !payloads.isEmpty else {
++            clearDrop()
++            return false
++        }
++        return previewMediaDrop(at: point, payloads: payloads) == .copy
++    }
++
++    func finishHostedMediaDrop(_ payloads: [DragPayload], at locationInWindow: CGPoint) {
++        guard updateHostedMediaDrop(payloads, at: locationInWindow), !ghosts.isEmpty else { return }
++        let clips = ghosts
++        clearDrop()
++        model.insert(clips)
++        window?.makeFirstResponder(self)
+     }
+ 
++    func cancelHostedMediaDrop() { clearDrop() }
++    #endif
++
+     private func clearDrop() {
+         ghosts = []
+         dropInfo = nil
