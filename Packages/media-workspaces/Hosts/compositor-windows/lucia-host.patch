@@ -1,0 +1,102 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a62b662..42a04bd 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -213,0 +214,11 @@ target_link_libraries(compositor_ui PUBLIC Qt6::Concurrent)
++set(LUCIA_COMPOSITOR_HOST_SOURCE "" CACHE FILEPATH "Lucia hosted Compositor source")
++if(LUCIA_COMPOSITOR_HOST_SOURCE)
++  get_filename_component(_lucia_compositor_adapter "${LUCIA_COMPOSITOR_HOST_SOURCE}" DIRECTORY)
++  add_library(LuciaMediaWorkspace SHARED "${LUCIA_COMPOSITOR_HOST_SOURCE}"
++      "${_lucia_compositor_adapter}/../QtWorkspaceHost.cpp")
++  target_link_libraries(LuciaMediaWorkspace PRIVATE compositor_ui user32)
++  target_compile_options(LuciaMediaWorkspace PRIVATE /W4 /WX /utf-8)
++  add_dependencies(LuciaMediaWorkspace deploy_imaging_runtime)
++  install(TARGETS LuciaMediaWorkspace RUNTIME DESTINATION . COMPONENT LuciaWorkspace)
++endif()
++
+diff --git a/src/ui/AdjustmentActions.cpp b/src/ui/AdjustmentActions.cpp
+index 2250691..ace4af5 100644
+--- a/src/ui/AdjustmentActions.cpp
++++ b/src/ui/AdjustmentActions.cpp
+@@ -145 +145 @@ void MainWindow::removeBackground(){
+-    auto model=QDir(QApplication::applicationDirPath()).filePath("models/birefnet-lite.onnx");
++    auto model=QDir(workspaceDirectory()).filePath("models/birefnet-lite.onnx");
+diff --git a/src/ui/BrushActions.cpp b/src/ui/BrushActions.cpp
+index a56c601..8d390bc 100644
+--- a/src/ui/BrushActions.cpp
++++ b/src/ui/BrushActions.cpp
+@@ -127 +127 @@ bool MainWindow::beginBrush(Point point,Qt::KeyboardModifiers modifiers,std::opt
+-        if(!brushGpu_){auto shader=QDir(QApplication::applicationDirPath()).filePath("shaders/BrushCoverage.hlsl");if(!QFileInfo::exists(shader))shader=QStringLiteral(COMPOSITOR_SOURCE_ROOT)+"/shaders/BrushCoverage.hlsl";try{brushGpu_=std::make_shared<graphics::D3D11BrushCoverage>(std::filesystem::path(shader.toStdWString()),warp_);}catch(const std::exception&e){statusBar()->showMessage(QString("Using software brush: ")+e.what());}}
++        if(!brushGpu_){auto shader=QDir(workspaceDirectory()).filePath("shaders/BrushCoverage.hlsl");if(!QFileInfo::exists(shader))shader=QStringLiteral(COMPOSITOR_SOURCE_ROOT)+"/shaders/BrushCoverage.hlsl";try{brushGpu_=std::make_shared<graphics::D3D11BrushCoverage>(std::filesystem::path(shader.toStdWString()),warp_);}catch(const std::exception&e){statusBar()->showMessage(QString("Using software brush: ")+e.what());}}
+@@ -166,0 +167 @@ void MainWindow::publishBrush(std::shared_ptr<const graphics::GrowingBrushSnapsh
++    ++luciaTextureRevision_;
+@@ -190,0 +192,5 @@ ui::ViewportCompositeJob::Request MainWindow::viewportSnapshot(EditorProject& pr
++std::optional<ui::ViewportCompositeJob::Request> MainWindow::luciaTextureSnapshot(){
++    auto* project=current();
++    if(!project||!project->document)return std::nullopt;
++    return viewportSnapshot(*project,{0,0,double(project->document->width),double(project->document->height),1,true});
++}
+diff --git a/src/ui/FilterActions.cpp b/src/ui/FilterActions.cpp
+index 4288684..b9ac84f 100644
+--- a/src/ui/FilterActions.cpp
++++ b/src/ui/FilterActions.cpp
+@@ -54 +54 @@ std::filesystem::path subjectModelPath(){
+-    auto model=QDir(QApplication::applicationDirPath()).filePath("models/birefnet-lite.onnx");
++    auto model=QDir(workspaceDirectory()).filePath("models/birefnet-lite.onnx");
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+index cf600bc..8253c9e 100644
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -300 +300 @@ void MainWindow::refreshHistoryChrome(EditorProject* project){
+-void MainWindow::refresh(bool render,bool rebuildLayers){if(refreshing_)return;refreshing_=true;auto*p=current();if(p&&p->canvas)p->canvas->invalidateComposite();auto*l=active();const auto layerState=commandState(p);const bool layerEditing=canEditLayers();layers_->setEnabled(p&&p->document&&!layerState.modalDialog&&!layerState.projectBusy&&!layerState.importing);layers_->setSelectionMode(layerEditing?QAbstractItemView::ExtendedSelection:QAbstractItemView::NoSelection);layers_->setEditTriggers(layerEditing?QAbstractItemView::EditKeyPressed:QAbstractItemView::NoEditTriggers);if(!rebuildLayers)if(auto* controller=ui::LayerPanelController::find(layers_))controller->updateSelection();if(p&&p->page){p->page->setCurrentWidget(p->document?static_cast<QWidget*>(p->canvas):p->welcome);p->welcome->setEnabled(!p->importing&&!p->projectBusy);}if(p&&!p->document){p->canvas->setDocumentSize(0,0);p->selected.clear();tabs_->setTabText(tabs_->currentIndex(),p->defaultTitle+(p->history.modified()?" *":""));}if((!p||!p->document)&&rebuildLayers)refreshLayerPanel();if(p&&p->document){if(p->selected.empty()||std::find(p->selected.begin(),p->selected.end(),p->active)==p->selected.end())p->selected={p->active};if(rebuildLayers)refreshLayerPanel();
++void MainWindow::refresh(bool render,bool rebuildLayers){if(refreshing_)return;++luciaTextureRevision_;refreshing_=true;auto*p=current();if(p&&p->canvas)p->canvas->invalidateComposite();auto*l=active();const auto layerState=commandState(p);const bool layerEditing=canEditLayers();layers_->setEnabled(p&&p->document&&!layerState.modalDialog&&!layerState.projectBusy&&!layerState.importing);layers_->setSelectionMode(layerEditing?QAbstractItemView::ExtendedSelection:QAbstractItemView::NoSelection);layers_->setEditTriggers(layerEditing?QAbstractItemView::EditKeyPressed:QAbstractItemView::NoEditTriggers);if(!rebuildLayers)if(auto* controller=ui::LayerPanelController::find(layers_))controller->updateSelection();if(p&&p->page){p->page->setCurrentWidget(p->document?static_cast<QWidget*>(p->canvas):p->welcome);p->welcome->setEnabled(!p->importing&&!p->projectBusy);}if(p&&!p->document){p->canvas->setDocumentSize(0,0);p->selected.clear();tabs_->setTabText(tabs_->currentIndex(),p->defaultTitle+(p->history.modified()?" *":""));}if((!p||!p->document)&&rebuildLayers)refreshLayerPanel();if(p&&p->document){if(p->selected.empty()||std::find(p->selected.begin(),p->selected.end(),p->active)==p->selected.end())p->selected={p->active};if(rebuildLayers)refreshLayerPanel();
+@@ -351,0 +352,18 @@ bool MainWindow::closeProject(int i){
++bool MainWindow::openLuciaTexture(const QString& path){
++    auto image=QImage(path).convertToFormat(QImage::Format_RGBA8888_Premultiplied);
++    if(image.isNull())return false;
++    try{
++        Document document;
++        document.id=newId();document.width=image.width();document.height=image.height();
++        Layer layer;layer.id=newId();layer.name=QFileInfo(path).completeBaseName().toStdString();
++        layer.transform.width=image.width();layer.transform.height=image.height();
++        layer.raster=Raster::fromRgba(image.width(),image.height(),image.constBits(),size_t(image.bytesPerLine()));
++        document.layers.push_back(std::move(layer));
++        addProject(std::move(document),QFileInfo(path).completeBaseName(),true);
++        return true;
++    }catch(const std::exception& error){
++        QMessageBox::warning(this,"Live Texture",QString::fromUtf8(error.what()));
++        return false;
++    }
++}
++
+diff --git a/src/ui/MainWindow.h b/src/ui/MainWindow.h
+index 80ae701..023d5d5 100644
+--- a/src/ui/MainWindow.h
++++ b/src/ui/MainWindow.h
+@@ -9,0 +10 @@
++#include <QCoreApplication>
+@@ -122,0 +124,2 @@ private:
++    uint64_t luciaTextureRevision_{};
++    QString luciaWorkspaceDirectory_;
+@@ -532,0 +536,7 @@ public:
++    bool openLuciaTexture(const QString&);
++    void setLuciaWorkspaceDirectory(QString directory) { luciaWorkspaceDirectory_ = std::move(directory); }
++    QString workspaceDirectory() const {
++        return luciaWorkspaceDirectory_.isEmpty() ? QCoreApplication::applicationDirPath() : luciaWorkspaceDirectory_;
++    }
++    uint64_t luciaTextureRevision() const { return luciaTextureRevision_; }
++    std::optional<ui::ViewportCompositeJob::Request> luciaTextureSnapshot();
+diff --git a/src/ui/RetouchActions.cpp b/src/ui/RetouchActions.cpp
+index bdbc2a9..a267192 100644
+--- a/src/ui/RetouchActions.cpp
++++ b/src/ui/RetouchActions.cpp
+@@ -208 +208 @@ bool MainWindow::beginRetouch(Point point,Qt::KeyboardModifiers modifiers) {
+-            auto shader=QDir(QApplication::applicationDirPath()).filePath("shaders/BrushCoverage.hlsl");
++            auto shader=QDir(workspaceDirectory()).filePath("shaders/BrushCoverage.hlsl");
+diff --git a/src/ui/WandActions.cpp b/src/ui/WandActions.cpp
+index eff1a6e..7448cc2 100644
+--- a/src/ui/WandActions.cpp
++++ b/src/ui/WandActions.cpp
+@@ -25 +25 @@ void MainWindow::runWand(Point point,Qt::KeyboardModifiers modifiers,std::option
+-    auto model=QDir(QApplication::applicationDirPath()).filePath("models/birefnet-lite.onnx");if(!QFileInfo::exists(model))model=QStringLiteral(COMPOSITOR_SOURCE_ROOT)+"/dependencies/imaging/model/birefnet-lite.onnx";
++    auto model=QDir(workspaceDirectory()).filePath("models/birefnet-lite.onnx");if(!QFileInfo::exists(model))model=QStringLiteral(COMPOSITOR_SOURCE_ROOT)+"/dependencies/imaging/model/birefnet-lite.onnx";

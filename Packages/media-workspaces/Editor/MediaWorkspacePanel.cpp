@@ -5,12 +5,15 @@
 #include "Core/Engine.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
+#include "Types/PathUtils.h"
 #include "UI/Controls/Label.h"
 
 #include <filesystem>
 #include <utility>
 
-#if defined(__APPLE__)
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
 #endif
 
@@ -24,12 +27,14 @@ struct MediaWorkspacePanel::Workspace
     using Destroy = void (*)(void*);
     using CloseReply = void (*)(void*, int32_t);
     using Confirm = void (*)(void*, void*, CloseReply);
+    using Pump = void (*)();
 
     void* Image = nullptr;
     void* View = nullptr;
     Place PlaceView = nullptr;
     Destroy DestroyView = nullptr;
     Confirm ConfirmViewClose = nullptr;
+    Pump PumpEvents = nullptr;
     void* HostedWindow = nullptr;
 
     static void UpdateTexturePreview(const char* path, const uint8_t* rgba, uint32_t width,
@@ -42,19 +47,65 @@ struct MediaWorkspacePanel::Workspace
             return;
 
         const auto root = assets->GetRegistry().GetSourceRoot("project");
-        const auto relative = std::filesystem::path(path).lexically_relative(root);
-        if (relative.empty() || relative.is_absolute() || *relative.begin() == "..")
+        const auto source = PathFromUtf8(path);
+        auto relative = RelativePathUnderRoot(source, root);
+        if (relative.empty() && !root.empty())
+        {
+            std::error_code error;
+            const auto canonicalRoot = std::filesystem::canonical(root, error);
+            if (!error)
+                relative = RelativePathUnderRoot(source, canonicalRoot);
+        }
+        if (relative.empty())
             return;
 
         const auto guid = assets->ResolveAssetGuid(relative, "project");
         renderServices->Textures().QueueEditorTexturePreview(guid, width, height, {rgba, size});
     }
 
+    bool Load(const std::filesystem::path& executable)
+    {
+#if defined(_WIN32)
+        Image = LoadLibraryExW(executable.c_str(), nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+        if (!Image)
+        {
+            const auto error = GetLastError();
+            Logger::Log::Warning("Media workspace {} failed to load (Windows error {}).",
+                                 PathToUtf8(executable), error);
+        }
+#elif defined(__APPLE__) || defined(__linux__)
+        Image = dlopen(executable.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
+        if (!Image)
+        {
+            const char* error = dlerror();
+            Logger::Log::Warning("Media workspace {} failed to load: {}", PathToUtf8(executable),
+                                 error ? error : "unknown error");
+        }
+#endif
+        return Image != nullptr;
+    }
+
+    template <typename Function>
+    Function Symbol(const char* name)
+    {
+#if defined(_WIN32)
+        return reinterpret_cast<Function>(GetProcAddress(static_cast<HMODULE>(Image), name));
+#elif defined(__APPLE__) || defined(__linux__)
+        return reinterpret_cast<Function>(dlsym(Image, name));
+#else
+        return nullptr;
+#endif
+    }
+
     ~Workspace()
     {
         if (View)
             DestroyView(View);
-#if defined(__APPLE__)
+#if defined(_WIN32)
+        if (Image)
+            FreeLibrary(static_cast<HMODULE>(Image));
+#elif defined(__APPLE__) || defined(__linux__)
         if (Image)
             dlclose(Image);
 #endif
@@ -108,6 +159,7 @@ void MediaWorkspacePanel::LoadWorkspace()
             return;
         }
     }
+#endif
     auto* assets = EngineCore::GetInstance().TryGetAssetManager();
     const std::filesystem::path root = assets ? assets->GetRegistry().GetSourceRoot(kAssetSourceAlias)
                                               : std::filesystem::path{};
@@ -117,45 +169,55 @@ void MediaWorkspacePanel::LoadWorkspace()
         return;
     }
 
+#if defined(__APPLE__)
     const auto bundle = root.parent_path() / "Host" / (m_Name + ".app");
     const auto executable = bundle / "Contents" / "MacOS" / m_Name;
+#else
+    const auto bundle = root.parent_path() / "Host" / m_Name;
+#if defined(_WIN32)
+    const auto executable = bundle / "LuciaMediaWorkspace.dll";
+#else
+    const auto executable = bundle / "libLuciaMediaWorkspace.so";
+#endif
+#endif
     auto workspace = std::make_unique<Workspace>();
-    workspace->Image = dlopen(executable.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
-    if (!workspace->Image)
+    if (!workspace->Load(executable))
     {
-        if (const char* detail = dlerror())
-            Logger::Log::Warning("{} workspace: {}", m_Name, detail);
-        SetStatus("This build needs the optional macOS Media Workspaces dependency.");
+        SetStatus("This build does not include the " + m_Name + " workspace host.");
         return;
     }
 
-    const auto create = reinterpret_cast<Workspace::Create>(dlsym(workspace->Image, "LuciaCreateProjectMediaWorkspace"));
-    workspace->PlaceView = reinterpret_cast<Workspace::Place>(dlsym(workspace->Image, "LuciaPlaceMediaWorkspace"));
-    workspace->DestroyView = reinterpret_cast<Workspace::Destroy>(dlsym(workspace->Image, "LuciaDestroyMediaWorkspace"));
-    workspace->ConfirmViewClose = reinterpret_cast<Workspace::Confirm>(
-        dlsym(workspace->Image, "LuciaConfirmMediaWorkspaceClose"));
+    const auto create = workspace->Symbol<Workspace::Create>("LuciaCreateProjectMediaWorkspace");
+    workspace->PlaceView = workspace->Symbol<Workspace::Place>("LuciaPlaceMediaWorkspace");
+    workspace->DestroyView = workspace->Symbol<Workspace::Destroy>("LuciaDestroyMediaWorkspace");
+    workspace->ConfirmViewClose = workspace->Symbol<Workspace::Confirm>("LuciaConfirmMediaWorkspaceClose");
+    workspace->PumpEvents = workspace->Symbol<Workspace::Pump>("LuciaPumpMediaWorkspaceEvents");
     if (!create || !workspace->PlaceView || !workspace->DestroyView)
     {
         SetStatus("The workspace host is incompatible with this Editor build.");
         return;
     }
     const auto projectAssets = assets->GetRegistry().GetSourceRoot("project");
-    workspace->View = create(bundle.c_str(), projectAssets.c_str(), Workspace::UpdateTexturePreview);
+    workspace->View = create(PathToUtf8(bundle).c_str(), PathToUtf8(projectAssets).c_str(),
+                             Workspace::UpdateTexturePreview);
     if (!workspace->View)
     {
         SetStatus("The workspace could not start.");
         return;
     }
+#if defined(_WIN32)
+    // Qt keeps process-wide state after the last dock closes.
+    HMODULE pinned = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                       static_cast<LPCWSTR>(workspace->Image), &pinned);
+#endif
     m_Workspace = std::move(workspace);
     SetStatus("");
-#else
-    SetStatus("This workspace requires macOS.");
-#endif
 }
 
 void MediaWorkspacePanel::SyncHost(const NativePanelHost& host)
 {
-    if (m_Mounted && IsLayoutBound() && !m_LoadAttempted)
+    if (m_Mounted && IsLayoutBound() && host.Window && !m_LoadAttempted)
         LoadWorkspace();
     if (!m_Workspace)
         return;
@@ -164,12 +226,16 @@ void MediaWorkspacePanel::SyncHost(const NativePanelHost& host)
     if (!m_Mounted || !bounds || bounds->GetLayoutWidth() <= 0.0f || bounds->GetLayoutHeight() <= 0.0f)
     {
         m_Workspace->PlaceView(m_Workspace->View, nullptr, 0, 0, 0, 0);
+        if (m_Workspace->PumpEvents)
+            m_Workspace->PumpEvents();
         return;
     }
     const double scale = host.UiScale;
     m_Workspace->PlaceView(m_Workspace->View, host.Window,
                            bounds->GetLayoutX() * scale, bounds->GetLayoutY() * scale,
                            bounds->GetLayoutWidth() * scale, bounds->GetLayoutHeight() * scale);
+    if (m_Workspace->PumpEvents)
+        m_Workspace->PumpEvents();
     if (host.Window && m_Workspace->HostedWindow != host.Window)
     {
         m_Workspace->HostedWindow = host.Window;

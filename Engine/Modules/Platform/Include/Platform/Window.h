@@ -71,7 +71,7 @@ class Window
     // Native handle for swapchain/surface creation
     void* GetNativeHandle() const;     // returns GLFWwindow*
     GLFWwindow* GetGLFWHandle() const; // convenience
-    // AppKit window used to host native editor views on macOS.
+    // Native parent for editor views (NSWindow, HWND, or X11 window ID).
     void* GetNativeViewHost() const;
 
     // Window queries

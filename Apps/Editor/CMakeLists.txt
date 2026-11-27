@@ -1895,7 +1895,7 @@ ge_add_engine_package_module(GePkgModule_AiAssistantEditor
 	SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor
 	KIND editor
 	PREBUILT_SUBDIR Binaries/Editor)
-if(APPLE AND NOT GE_MOBILE)
+if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
     ge_add_engine_package_module(GePkgModule_MediaWorkspacesEditor
         PACKAGE media-workspaces
         MODULE_NAME MediaWorkspaces.Editor
@@ -2310,6 +2310,25 @@ if(APPLE AND NOT GE_MOBILE)
             COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}"
             COMMENT "Removing disabled media workspace hosts")
     endif()
+endif()
+set(GE_MEDIA_WORKSPACE_HOST_ROOT "" CACHE PATH "Directory containing the portable media workspace hosts")
+if(NOT GE_MOBILE AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    set(_ge_workspace_host "$<TARGET_FILE_DIR:Editor>/Packages/media-workspaces/Host")
+    set(_ge_media_stage COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}")
+    if(GE_MEDIA_WORKSPACE_HOST_ROOT)
+        if(NOT IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/Compositor" AND
+            NOT IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/Editroom")
+            message(FATAL_ERROR "GE_MEDIA_WORKSPACE_HOST_ROOT must contain a Compositor or Editroom host directory.")
+        endif()
+        list(APPEND _ge_media_stage COMMAND "${CMAKE_COMMAND}" -E copy_directory
+            "${GE_MEDIA_WORKSPACE_HOST_ROOT}" "${_ge_workspace_host}")
+    endif()
+    add_custom_target(StageMediaWorkspaceHosts
+        ${_ge_media_stage}
+        COMMENT "Staging portable media workspace hosts"
+        VERBATIM)
+    set_target_properties(StageMediaWorkspaceHosts PROPERTIES FOLDER "Apps/Editor")
+    add_dependencies(Editor StageMediaWorkspaceHosts)
 endif()
 set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_localization_assets}")
 

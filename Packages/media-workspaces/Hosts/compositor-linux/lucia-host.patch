@@ -1,0 +1,85 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d8268e9..ecfc6c9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -63 +63 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64
+-        URL "${ONNXRUNTIME_ARCHIVE}"
++        URL ${ONNXRUNTIME_ARCHIVE}
+@@ -288,0 +289,25 @@ endif()
++set(LUCIA_COMPOSITOR_HOST_SOURCE "" CACHE FILEPATH "Lucia hosted Compositor source")
++if(LUCIA_COMPOSITOR_HOST_SOURCE)
++    set_target_properties(compositor_core compositor_ui PROPERTIES POSITION_INDEPENDENT_CODE ON)
++    find_package(X11 REQUIRED)
++    get_filename_component(_lucia_compositor_adapter "${LUCIA_COMPOSITOR_HOST_SOURCE}" DIRECTORY)
++    add_library(LuciaMediaWorkspace SHARED "${LUCIA_COMPOSITOR_HOST_SOURCE}"
++        "${_lucia_compositor_adapter}/../QtWorkspaceHost.cpp")
++    target_link_libraries(LuciaMediaWorkspace PRIVATE compositor_ui X11::X11)
++    target_compile_options(LuciaMediaWorkspace PRIVATE -Wall -Wextra -Wpedantic -Werror)
++    set_target_properties(LuciaMediaWorkspace PROPERTIES INSTALL_RPATH "$ORIGIN")
++    install(TARGETS LuciaMediaWorkspace LIBRARY DESTINATION . COMPONENT LuciaWorkspace)
++    if(ONNXRUNTIME_ROOT)
++        install(FILES "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so.1.23.2"
++            DESTINATION . RENAME libonnxruntime.so.1 COMPONENT LuciaWorkspace)
++        install(FILES "${ONNXRUNTIME_ROOT}/LICENSE"
++            DESTINATION . RENAME ONNXRuntime-LICENSE COMPONENT LuciaWorkspace)
++        install(FILES "${ONNXRUNTIME_ROOT}/ThirdPartyNotices.txt"
++            DESTINATION . RENAME ONNXRuntime-ThirdPartyNotices.txt COMPONENT LuciaWorkspace)
++    endif()
++    install(FILES LICENSE DESTINATION . COMPONENT LuciaWorkspace)
++    install(FILES "${SUBJECT_MODEL}" "${DEPTH_MODEL}" DESTINATION models COMPONENT LuciaWorkspace)
++    install(FILES "${SUBJECT_MODEL_LICENSE}" models/DepthMini-NOTICE.txt
++        DESTINATION models COMPONENT LuciaWorkspace)
++endif()
++
+diff --git a/src/core/EditorSession.cpp b/src/core/EditorSession.cpp
+index 1c2b03b..eb54380 100644
+--- a/src/core/EditorSession.cpp
++++ b/src/core/EditorSession.cpp
+@@ -4286,2 +4286 @@ bool EditorSession::flipCanvas(bool horizontally)
+-    if (document_->selection) document_->selection = document_->selection->flipped(
+-        horizontally ? Qt::Horizontal : Qt::Vertical);
++    if (document_->selection) document_->selection = document_->selection->mirrored(horizontally, !horizontally);
+diff --git a/src/ui/CanvasWidget.cpp b/src/ui/CanvasWidget.cpp
+index d0627fc..58920c3 100644
+--- a/src/ui/CanvasWidget.cpp
++++ b/src/ui/CanvasWidget.cpp
+@@ -248,0 +249 @@ void CanvasWidget::invalidateDocument()
++    emit luciaDocumentChanged();
+diff --git a/src/ui/CanvasWidget.h b/src/ui/CanvasWidget.h
+index ceec316..153a303 100644
+--- a/src/ui/CanvasWidget.h
++++ b/src/ui/CanvasWidget.h
+@@ -184,0 +185 @@ signals:
++    void luciaDocumentChanged();
+diff --git a/src/ui/MainWindow.cpp b/src/ui/MainWindow.cpp
+index 9b29c14..b9798b2 100644
+--- a/src/ui/MainWindow.cpp
++++ b/src/ui/MainWindow.cpp
+@@ -7919,0 +7920,21 @@ void MainWindow::exportPng(bool jpegDefault)
++bool MainWindow::openLuciaTexture(const QString &path)
++{
++    QString error;
++    const QImage image = ImageImporter::read(path, &error);
++    EditorSession opened;
++    if (image.isNull() || !opened.insertImage(image, QFileInfo(path).completeBaseName())) {
++        showMessage(this, tr("Could Not Open Texture"), error.isEmpty() ? tr("Could not read the project PNG.") : error);
++        return false;
++    }
++    opened.setDocument(opened.document());
++    if (workspaceTabs_.size() == 1 && !document_) {
++        session_ = std::move(opened);
++        workspaceTabs_[0] = session_;
++        syncDocumentViews();
++    } else {
++        installInNewTab(std::move(opened), QFileInfo(path).completeBaseName());
++    }
++    canvas_->fitCanvas();
++    return true;
++}
++
+diff --git a/src/ui/MainWindow.h b/src/ui/MainWindow.h
+index 5b5ebaa..84a061f 100644
+--- a/src/ui/MainWindow.h
++++ b/src/ui/MainWindow.h
+@@ -62,0 +63 @@ public:
++    bool openLuciaTexture(const QString &path);

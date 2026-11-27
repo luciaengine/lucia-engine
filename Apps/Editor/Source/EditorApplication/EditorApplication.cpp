@@ -1323,7 +1323,7 @@ void EditorApplication::AttachEditorPluginHost()
         return std::any_of(modules.begin(), modules.end(),
                            [moduleId](const PackageCodeModule& module) { return module.AssemblyName == moduleId; });
     };
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32) || defined(__linux__)
     services.NativeHostForPanel = [this](UIManager* manager) -> Editor::NativePanelHost {
         if (!manager || m_IsShuttingDown ||
             (m_ProjectPickerModal && m_ProjectPickerModal->ShouldSuppressNativeWebView()) ||

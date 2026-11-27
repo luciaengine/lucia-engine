@@ -752,6 +752,10 @@ void* Window::GetNativeViewHost() const
 {
 #if defined(__APPLE__)
     return m_Handle ? glfwGetCocoaWindow(m_Handle) : nullptr;
+#elif defined(_WIN32)
+    return m_Handle ? glfwGetWin32Window(m_Handle) : nullptr;
+#elif defined(__linux__) && !defined(__ANDROID__)
+    return m_Handle ? reinterpret_cast<void*>(glfwGetX11Window(m_Handle)) : nullptr;
 #else
     return nullptr;
 #endif
