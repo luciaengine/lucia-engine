@@ -21,6 +21,10 @@
 	position: relative;
 }
 
+.editor-top-toolbar-hidden {
+	display: none;
+}
+
 .play-fullscreen-gameview .editor-top-toolbar {
 	display: none;
 }
