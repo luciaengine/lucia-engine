@@ -297,7 +297,7 @@ void SceneViewport::SetCollaborationCursors(std::span<const CollaborationCursor>
         {
             auto label = std::make_unique<Label>();
             label->AddClass("scene-viewport-collaboration-cursor");
-            label->SetText("▸ " + cursor.Name);
+            label->SetText(cursor.Name);
             auto* widget = label.get();
             AddChild(std::move(label));
             m_CollaborationCursors.push_back({cursor.Id, widget});
