@@ -78,6 +78,18 @@ inline Vec3d OrbitPivotFromCamera(const Vec3d& camPos, double yawDeg, double pit
     return Vec3d{camPos.X + f.X * distance, camPos.Y + f.Y * distance, camPos.Z + f.Z * distance};
 }
 
+// Keep a usable input gain when the perspective pivot is close to the camera.
+inline constexpr float kMinimumNavigationScaleDistance = 0.5f;
+
+inline double PanWorldUnitsPerPixel(float distance, bool orthographic, float viewportHeightPx)
+{
+    if (orthographic && viewportHeightPx > 1.0f)
+        return static_cast<double>(distance) / viewportHeightPx;
+
+    const float scaleDistance = orthographic ? distance : std::max(distance, kMinimumNavigationScaleDistance);
+    return static_cast<double>(scaleDistance) * 0.002;
+}
+
 struct PerspectiveDollyPose
 {
     Vec3d Position;

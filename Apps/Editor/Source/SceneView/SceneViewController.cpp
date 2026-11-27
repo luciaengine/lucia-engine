@@ -3306,12 +3306,8 @@ void SceneViewController::UpdatePan(float deltaX, float deltaY, float viewportHe
     Vec3d up{};
     Editor::CameraRig::PanBasis(m_CamYawDeg, m_CamPitchDeg, right, up);
 
-    // Perspective keeps the tuned distance multiplier. Orthographic panning
-    // needs exact viewport scaling so the world point under the cursor stays
-    // locked while dragging: visibleHeight / inputViewportHeight.
-    double panSpeed = static_cast<double>(m_CamDistance) * 0.002;
-    if ((m_Is2DMode || m_Orthographic) && viewportHeightPx > 1.0f)
-        panSpeed = static_cast<double>(m_CamDistance) / viewportHeightPx;
+    const double panSpeed = Editor::CameraRig::PanWorldUnitsPerPixel(
+        m_CamDistance, m_Is2DMode || m_Orthographic, viewportHeightPx);
 
     // Move camera and orbit pivot together (camera-relative pan)
     const double moveX = -static_cast<double>(deltaX) * panSpeed;
@@ -3362,9 +3358,8 @@ void SceneViewController::UpdateDolly(float deltaY)
         return;
 
     constexpr float kDollySpeed = 0.01f;
-    constexpr float kDollyReferenceDistance = 0.5f;
     // Keep the input response measurable as the orbit distance approaches the near plane.
-    const float dollyScale = std::max(m_CamDistance, kDollyReferenceDistance);
+    const float dollyScale = std::max(m_CamDistance, Editor::CameraRig::kMinimumNavigationScaleDistance);
 
     if (m_Is2DMode || m_Orthographic)
     {

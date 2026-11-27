@@ -287,6 +287,20 @@ TEST(SceneViewCameraRig, SmallSceneViewMatrixMatchesLegacyWithinFloatNoise)
     }
 }
 
+TEST(SceneViewCameraRig, PanKeepsItsGainWhileDollyingPastThePivot)
+{
+    using namespace GameEngine::Editor::CameraRig;
+
+    constexpr float startingDistance = 0.125f;
+    const auto pose = DollyPerspective({0.0, 0.0, 0.0}, 90.0, 0.0, startingDistance, -0.2, 0.01f, 100.0f);
+
+    ASSERT_GT(pose.Position.Z, 0.0);
+    EXPECT_DOUBLE_EQ(PanWorldUnitsPerPixel(startingDistance, false, 1000.0f), 0.001);
+    EXPECT_DOUBLE_EQ(PanWorldUnitsPerPixel(pose.Distance, false, 1000.0f), 0.001);
+    EXPECT_DOUBLE_EQ(PanWorldUnitsPerPixel(10.0f, false, 1000.0f), 0.02);
+    EXPECT_DOUBLE_EQ(PanWorldUnitsPerPixel(startingDistance, true, 1000.0f), 0.000125);
+}
+
 TEST(SceneViewCameraRig, PanBasisMatchesLegacyBasis)
 {
     // Pan feel guard: the double pan basis must match the old fp32 basis.
