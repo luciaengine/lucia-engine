@@ -46,7 +46,7 @@
    ancestor makes the entity inactive. */
 .hierarchy-panel .tree .tree-item .hierarchy-eye {
 	position: absolute;
-	right: 27px;
+	right: 29px;
 	top: 50%;
 	margin-top: -8px;
 	width: 16px;
@@ -91,10 +91,10 @@
 }
 
 /* The title ends before the eye and the lock: the lock takes 8..24 px from the
-   row's right edge and the eye 27..43, so the title's strip is 46 px. The layer
+   row's right edge and the eye 29..45, so the title's strip is 48 px. The layer
    controls sit left of both, so their reserved strips keep their widths here. */
 .hierarchy-panel .tree.tree-row-lock-enabled .tree-item .tree-title {
-	margin-right: 46px;
+	margin-right: 48px;
 }
 
 /* With the eye off, the title ends before the lock only. */
