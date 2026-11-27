@@ -133,6 +133,9 @@ public:
 
     // Destroy the web view and clean up resources
     virtual void Destroy() = 0;
+
+    /// A host-authored script for the current bundled page. The reply is JSON, or empty after failure.
+    virtual void RunBundledScript(const std::string&, std::function<void(std::string)> done) { done({}); }
 };
 
 // Factory function to create a platform-specific web view

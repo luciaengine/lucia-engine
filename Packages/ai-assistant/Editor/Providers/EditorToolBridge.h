@@ -53,7 +53,7 @@ public:
         "create_entity",    "set_component",       "delete_entity",         "undo",      "redo",
         "get_log",          "take_screenshot",     "get_camera",            "look_at",   "focus_view",
         "open_asset",       "save_scene",          "set_play_mode",         "execute_command",
-        "list_creative_workspaces", "open_creative_workspace"};
+        "list_creative_workspaces", "open_creative_workspace", "inspect_creative_document", "edit_creative_document"};
     /// The two tools that reach the rest.
     static constexpr std::string_view kDescribeTool = "describe_editor_tool";
     static constexpr std::string_view kCallTool = "call_editor_tool";

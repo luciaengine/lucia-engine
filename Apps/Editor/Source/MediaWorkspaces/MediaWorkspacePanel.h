@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <nlohmann/json_fwd.hpp>
 
 namespace GameEngine::Editor
 {
@@ -19,6 +20,8 @@ class MediaWorkspacePanel final : public AssetBoundDockPanel
 
     bool HasCloseConfirmation() const;
     void ConfirmClose(std::function<void(bool)> done);
+
+    nlohmann::json RunDocumentCommand(const nlohmann::json& request) const;
 
     void SyncHost(const NativePanelHost& host);
     void OnMountVisibilityChanged(bool visible) override;

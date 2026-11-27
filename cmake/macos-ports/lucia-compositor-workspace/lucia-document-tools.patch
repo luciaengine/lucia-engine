@@ -1,0 +1,59 @@
+--- a/Compositor/LuciaWorkspace.swift
++++ b/Compositor/LuciaWorkspace.swift
+@@ -158,6 +158,48 @@
+ }
+
+
++@MainActor
++private func compositorDocumentCommand(_ session: EditorSession, _ args: [String: Any]) -> [String: Any] {
++    if args["operation"] as? String == "new_document" {
++        guard session.document == nil, !session.isProjectBusy, !session.isImporting else {
++            return ["error": "Close the current canvas in Compositor before creating another."]
++        }
++        guard let width = args["width"] as? Int, let height = args["height"] as? Int,
++              CanvasDocument.validDimension(String(width)) != nil,
++              CanvasDocument.validDimension(String(height)) != nil else {
++            return ["error": "Provide a valid Compositor canvas width and height in pixels."]
++        }
++        session.createDocument(width: width, height: height, emptyLayer: true)
++        guard let document = session.document else { return ["error": "The canvas could not be created."] }
++        return ["documentId": document.id.uuidString]
++    }
++    guard let document = session.document else { return ["error": "Open a Compositor document first."] }
++    let id = document.id.uuidString
++    if args["operation"] as? String == "inspect" {
++        let offset = max(0, args["offset"] as? Int ?? 0)
++        let layers = document.layers.reversed().dropFirst(offset).prefix(100).map { layer -> [String: Any] in
++            ["id": layer.id.uuidString, "name": layer.name, "visible": layer.isVisible,
++             "opacity": layer.opacity, "group": layer.isGroup]
++        }
++        return ["documentId": id, "width": document.width, "height": document.height,
++                "layers": layers, "layerCount": document.layers.count]
++    }
++
++    guard args["documentId"] as? String == id else {
++        return ["error": "The Compositor document changed. Inspect it again."]
++    }
++    guard session.canEditLayers else { return ["error": "Finish the current Compositor edit first."] }
++    guard args["operation"] as? String == "rename_layer",
++          let layerID = (args["itemId"] as? String).flatMap(UUID.init(uuidString:)),
++          document.layers.contains(where: { $0.id == layerID }),
++          let name = (args["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
++          !name.isEmpty, name.count <= 256 else {
++        return ["error": "Provide an existing Compositor layer id and a new name."]
++    }
++    session.renameLayer(layerID, to: name)
++    return ["documentId": id, "itemId": layerID.uuidString, "name": name]
++}
++
+ private enum WorkspaceResources {
+     static var bundle: Bundle = .main
+ }
+@@ -175,6 +217,7 @@
+         let view = NSHostingView(rootView: HostedCompositor(
+             session: session, projects: projects, assetsRoot: assetsRoot, publishTexture: publishTexture))
+         let workspace = LuciaMediaWorkspaceHost(view: view) { await projects.confirmQuit() }
++        workspace.documentCommand = { compositorDocumentCommand(session, $0) }
+         return Unmanaged.passRetained(workspace).toOpaque()
+     }
+ }

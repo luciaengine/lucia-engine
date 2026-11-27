@@ -112,7 +112,9 @@
 #include "EditorPanelIds.h"
 #include "Docking/WindowDockingController.h"
 #include "EditorPanelManager.h"
+#include "MediaWorkspaces/MediaWorkspacePanel.h"
 #include "Packages/OpenPencilPackageOptions.h"
+#include "Panels/WebPanel.h"
 #include "UI/Controls/Label.h"
 #include "Engine/Build/BuildPlatforms.h"
 #include "Engine/Build/PlayerBuildConfig.h"
@@ -2780,6 +2782,24 @@ constexpr CreativeWorkspace kCreativeWorkspaces[] = {
     {"openpencil", "OpenPencil", Editor::kOpenPencilPackageOptions.front().PanelId, "WebErrorLabel"},
 };
 
+const CreativeWorkspace* FindCreativeWorkspace(const json& request)
+{
+    const auto id = request.find("workspace");
+    if (id == request.end() || !id->is_string())
+        return nullptr;
+    const auto found = std::ranges::find(kCreativeWorkspaces, id->get_ref<const std::string&>(), &CreativeWorkspace::Id);
+    return found == std::end(kCreativeWorkspaces) ? nullptr : found;
+}
+
+json CreativeDocumentResult(json result)
+{
+    if (!result.is_object())
+        return Editor::RefuseRequest("The workspace did not respond. Open the workspace and wait for the document to load.");
+    if (const auto error = result.find("error"); error != result.end() && error->is_string())
+        return Editor::RefuseRequest(error->get<std::string>());
+    return result;
+}
+
 json CreativeWorkspaceStatus(const CreativeWorkspace& workspace, DockingManager& docking,
                              const std::vector<std::string>& floatingPanels)
 {
@@ -3508,13 +3528,8 @@ void RegisterDebugHandlers(EditorDebugServer& server,
 
     server.RegisterHandler("open_creative_workspace", [&app](const EditorDebugServer::RequestContext& ctx) -> json
     {
-        const auto id = ctx.params.find("workspace");
-        if (id == ctx.params.end() || !id->is_string())
-            return Editor::RefuseRequest("Provide a workspace id: editroom, compositor, or openpencil.");
-
-        const auto& workspaceId = id->get_ref<const std::string&>();
-        const auto* selected = std::ranges::find(kCreativeWorkspaces, workspaceId, &CreativeWorkspace::Id);
-        if (selected == std::end(kCreativeWorkspaces))
+        const auto* selected = FindCreativeWorkspace(ctx.params);
+        if (!selected)
             return Editor::RefuseRequest("Unknown creative workspace. Use editroom, compositor, or openpencil.");
         if (!app.m_Docking || !app.m_PanelManager || app.m_Windows.empty())
             return Editor::RefuseRequest("The editor layout is not ready.");
@@ -3531,6 +3546,56 @@ void RegisterDebugHandlers(EditorDebugServer& server,
             return Editor::RefuseRequest("The workspace could not be shown in the current layout.", std::move(result));
         return result;
     });
+
+    const auto runCreativeDocument = [&app, &server](const EditorDebugServer::RequestContext& ctx, bool inspect) -> json
+    {
+        const auto* workspace = FindCreativeWorkspace(ctx.params);
+        if (!workspace || !app.m_Docking)
+            return Editor::RefuseRequest("Choose an available creative workspace.");
+        auto* panel = app.m_Docking->GetPanel(workspace->PanelId);
+        if (!panel)
+            return Editor::RefuseRequest("Open the workspace in this project first.");
+        const auto floatingPanels = app.m_DockDnd ? app.m_DockDnd->FloatingFrames().PanelIds()
+                                                  : std::vector<std::string>{};
+        if (!CreativeWorkspaceStatus(*workspace, *app.m_Docking, floatingPanels).value("visible", false))
+            return Editor::RefuseRequest("Bring the workspace to the front before inspecting or editing its document.");
+
+        json request = ctx.params;
+        if (inspect)
+            request["operation"] = "inspect";
+        else
+        {
+            const auto operation = request.find("operation");
+            const auto document = request.find("documentId");
+            if (operation == request.end() || !operation->is_string() || *operation == "inspect")
+                return Editor::RefuseRequest("Provide a creative document edit operation.");
+            if (*operation != "new_document" &&
+                (document == request.end() || !document->is_string() || document->get_ref<const std::string&>().empty()))
+                return Editor::RefuseRequest("Inspect the active document and provide its id for the edit.");
+        }
+
+        if (auto* media = dynamic_cast<Editor::MediaWorkspacePanel*>(panel))
+            return CreativeDocumentResult(media->RunDocumentCommand(request));
+        if (auto* web = dynamic_cast<WebPanel*>(panel); web && workspace->Id == "openpencil")
+        {
+            auto reply = std::make_shared<std::optional<std::string>>();
+            web->RunBundledDocumentCommand(request.dump(),
+                [reply](std::string response) { reply->emplace(std::move(response)); });
+            server.EnqueueDeferredResponse(ctx.id, [reply](json& result) {
+                if (!*reply)
+                    return false;
+                result = CreativeDocumentResult(json::parse(**reply, nullptr, false));
+                return true;
+            }, 300);
+            return EditorDebugServer::DeferredMarker();
+        }
+        return Editor::RefuseRequest("The workspace host does not support this command.");
+    };
+
+    server.RegisterHandler("inspect_creative_document",
+        [runCreativeDocument](const EditorDebugServer::RequestContext& ctx) { return runCreativeDocument(ctx, true); });
+    server.RegisterHandler("edit_creative_document",
+        [runCreativeDocument](const EditorDebugServer::RequestContext& ctx) { return runCreativeDocument(ctx, false); });
 
     // get_panel_tree — resolve a docked panel by name and return its UI subtree.
     // Unlike get_ui_tree with rootId, this finds the actual panel content regardless

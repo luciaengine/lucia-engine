@@ -48,6 +48,37 @@ export const tools: ToolDef[] = [
   }),
 
   proxyTool({
+    name: "inspect_creative_document",
+    category: "ui",
+    description:
+      "Read the active Editroom timeline and media, Compositor layers, or bundled OpenPencil page. Open the workspace and its document first. Returns the document id and item ids needed for a subsequent creative edit.",
+    schema: {
+      workspace: z.enum(["editroom", "compositor", "openpencil"]),
+      offset: z.number().int().min(0).max(1_000_000).optional().describe("First item to return, default 0. Up to 100 items."),
+    },
+  }),
+
+  proxyTool({
+    name: "edit_creative_document",
+    category: "ui",
+    description:
+      "Make one edit through the active workspace's own document and undo history. Inspect first to get the document id and item ids. Compositor or OpenPencil new_document creates a blank design and needs no documentId. For Compositor supply width and height. Editroom split_clip uses itemId (clip) and time (seconds); add_media uses itemId (media) and adds at the playhead. Compositor and OpenPencil rename_layer use itemId and name. OpenPencil create_shape uses shape, x, y, width, height and optional name. The workspace's normal save and autosave behavior applies. Use that workspace's Undo for an edit.",
+    schema: {
+      workspace: z.enum(["editroom", "compositor", "openpencil"]),
+      documentId: z.string().min(1).max(200).optional(),
+      operation: z.enum(["new_document", "split_clip", "add_media", "rename_layer", "create_shape"]),
+      itemId: z.string().min(1).max(200).optional(),
+      time: z.number().finite().nonnegative().optional(),
+      name: z.string().trim().min(1).max(256).optional(),
+      shape: z.enum(["rectangle", "ellipse"]).optional(),
+      x: z.number().finite().min(-1_000_000).max(1_000_000).optional(),
+      y: z.number().finite().min(-1_000_000).max(1_000_000).optional(),
+      width: z.number().finite().positive().max(100_000).optional(),
+      height: z.number().finite().positive().max(100_000).optional(),
+    },
+  }),
+
+  proxyTool({
     name: "dock_panel",
     category: "ui",
     description:

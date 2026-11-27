@@ -49,10 +49,31 @@ struct LuciaMediaButtonStyle: ButtonStyle {
 final class LuciaMediaWorkspaceHost {
     let view: NSView
     let confirmClose: @MainActor () async -> Bool
+    var documentCommand: (([String: Any]) -> [String: Any])?
 
     init(view: NSView, confirmClose: @escaping @MainActor () async -> Bool) {
         self.view = view
         self.confirmClose = confirmClose
+    }
+}
+
+public typealias LuciaMediaDocumentReply = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>) -> Void
+
+@_cdecl("LuciaRunMediaDocumentCommand")
+public func luciaRunMediaDocumentCommand(
+    _ handle: UnsafeMutableRawPointer, _ request: UnsafePointer<CChar>,
+    _ context: UnsafeMutableRawPointer?, _ reply: LuciaMediaDocumentReply
+) {
+    MainActor.assumeIsolated {
+        let workspace = Unmanaged<LuciaMediaWorkspaceHost>.fromOpaque(handle).takeUnretainedValue()
+        let bytes = Data(String(cString: request).utf8)
+        guard let args = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+              let command = workspace.documentCommand,
+              let result = try? JSONSerialization.data(withJSONObject: command(args)) else {
+            "{\"error\":\"The document request could not be handled.\"}".withCString { reply(context, $0) }
+            return
+        }
+        String(decoding: result, as: UTF8.self).withCString { reply(context, $0) }
     }
 }
 

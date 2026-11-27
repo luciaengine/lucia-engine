@@ -54,6 +54,7 @@ SUMS
     patch -p1 < "$script_directory/openpencil-lucia-hierarchy-controls.patch"
     patch -p1 < "$script_directory/openpencil-lucia-visibility-drag.patch"
     patch -p1 < "$script_directory/openpencil-lucia-appearance.patch"
+    patch -p1 < "$script_directory/openpencil-document-tools.patch"
     editor_assets="$script_directory/../../Apps/Editor/Assets"
     editor_icons="$editor_assets/Icons"
     # Export the native theme tokens used by the bundled sidebar.

@@ -207,6 +207,23 @@ public:
     void SetDocumentClosePrompt(DocumentClosePrompt prompt) override { m_DocumentClosePrompt = std::move(prompt); }
     void SetDocumentSavePrompt(DocumentSavePrompt prompt) override { m_DocumentSavePrompt = std::move(prompt); }
 
+    void RunBundledScript(const std::string& script, std::function<void(std::string)> done) override
+    {
+        if (!IsBundledPage())
+        {
+            done({});
+            return;
+        }
+        const HRESULT started = m_WebView->ExecuteScript(Utf8ToWide(script).c_str(),
+            Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+                [done](HRESULT status, LPCWSTR json) -> HRESULT {
+                    done(SUCCEEDED(status) && json ? WideToUtf8(json) : std::string{});
+                    return S_OK;
+                }).Get());
+        if (FAILED(started))
+            done({});
+    }
+
     void ConfirmBundledAppClose(std::function<void(bool)> done) override
     {
         if (!IsBundledPage())
