@@ -1,0 +1,211 @@
+--- a/packages/vue/src/canvas/transform/pan.ts
++++ b/packages/vue/src/canvas/transform/pan.ts
+@@ -6,5 +6,5 @@
+-  const dx = event.clientX - d.startScreenX
+-  const dy = event.clientY - d.startScreenY
+-  editor.state.panX = d.startPanX + dx
+-  editor.state.panY = d.startPanY + dy
+-  editor.requestRepaint()
++  const dx = d.startPanX + event.clientX - d.startScreenX - editor.state.panX
++  const dy = d.startPanY + event.clientY - d.startScreenY - editor.state.panY
++  if (dx === 0 && dy === 0) return
++  editor.setNavigationPhase('pan', performance.now())
++  editor.pan(dx, dy)
+--- a/packages/vue/src/canvas/useCanvasInput.ts
++++ b/packages/vue/src/canvas/useCanvasInput.ts
+@@ -31,0 +32 @@
++import { settleCanvasNavigation } from '#vue/shared/input/pan/navigation'
+@@ -66 +67,2 @@
+-    if (move && drag.value?.type === 'move' && isEnabled()) applyMouseMove(move)
++    if (move && (drag.value?.type === 'move' || drag.value?.type === 'pan') && isEnabled())
++      applyMouseMove(move)
+@@ -298 +300 @@
+-    // Once a free move starts, only the latest position can be drawn in the next frame.
++    // A pan and a free multi-layer move only draw the latest position in the next frame.
+@@ -301,5 +303,6 @@
+-      current?.type === 'move' &&
+-      current.dragStarted &&
+-      current.originals.size > 1 &&
+-      !current.flows?.length &&
+-      !current.autoLayoutParentId
++      current?.type === 'pan' ||
++      (current?.type === 'move' &&
++        current.dragStarted &&
++        current.originals.size > 1 &&
++        !current.flows?.length &&
++        !current.autoLayoutParentId)
+@@ -315,2 +318,4 @@
+-    const coords = getCoords(e)
+-    lastPointer.value = { cx: coords.cx, cy: coords.cy, sx: coords.sx, sy: coords.sy }
++    const current = drag.value
++    if (current?.type === 'pan') transform.handlePanMove(current, e)
++    const position = getCoords(e)
++    lastPointer.value = { cx: position.cx, cy: position.cy, sx: position.sx, sy: position.sy }
+@@ -318 +323 @@
+-      onCursorMove(coords.cx, coords.cy)
++      onCursorMove(position.cx, position.cy)
+@@ -324 +329 @@
+-      const { cx, cy, sx, sy } = coords
++      const { cx, cy, sx, sy } = position
+@@ -327,4 +332,11 @@
+-      hoverCanvasTool({ event: e, ...coords }, toolContext)
+-    }
+-
+-    if (drag.value) moveCanvasDrag(drag.value, e, () => coords, dragMoveContext)
++      hoverCanvasTool({ event: e, ...position }, toolContext)
++    }
++
++    if (current?.type === 'pan') return
++    if (drag.value) moveCanvasDrag(drag.value, e, () => position, dragMoveContext)
++  }
++
++  function endPan() {
++    if (editor.state.navigation.phase !== 'pan') return
++    settleCanvasNavigation(editor)
++    editor.requestRepaint()
+@@ -343 +355,2 @@
+-    } else if (d.type === 'move') handleMoveUp(d, editor)
++    } else if (d.type === 'pan') endPan()
++    else if (d.type === 'move') handleMoveUp(d, editor)
+@@ -377,0 +391 @@
++    if (d?.type === 'pan') endPan()
+--- a/packages/vue/src/shared/input/pan/zoom.ts
++++ b/packages/vue/src/shared/input/pan/zoom.ts
+@@ -50,4 +50,2 @@
+-      if (touchAsMouse) {
+-        onMouseUp()
+-        touchAsMouse = false
+-      }
++      if (touchAsMouse || drag.value?.type === 'pan') onMouseUp()
++      touchAsMouse = false
+@@ -109,8 +107 @@
+-      if (touchAsMouse) {
+-        onMouseMove(syntheticMouse('mousemove', t))
+-      } else if (drag.value?.type === 'pan') {
+-        const d = drag.value
+-        editor.state.panX = d.startPanX + (t.clientX - d.startScreenX)
+-        editor.state.panY = d.startPanY + (t.clientY - d.startScreenY)
+-        editor.requestRepaint()
+-      }
++      if (touchAsMouse || drag.value?.type === 'pan') onMouseMove(syntheticMouse('mousemove', t))
+@@ -125,6 +116,2 @@
+-      if (touchAsMouse) {
+-        onMouseUp()
+-        touchAsMouse = false
+-      } else {
+-        drag.value = null
+-      }
++      if (touchAsMouse || drag.value?.type === 'pan') onMouseUp()
++      touchAsMouse = false
+--- a/packages/vue/src/shared/input/wheel.ts
++++ b/packages/vue/src/shared/input/wheel.ts
+@@ -7 +7,2 @@
+-import { createRafScheduler } from '#vue/shared/input/raf-scheduler'
++import { getRenderScheduler } from '#vue/canvas/surface/render-loop'
++import { settleCanvasNavigation } from '#vue/shared/input/pan/navigation'
+@@ -166,2 +166,0 @@
+-const NAVIGATION_SETTLE_DELAY_MS = 120
+-
+@@ -187,11 +186,2 @@
+-  let settleTimer: ReturnType<typeof setTimeout> | null = null
+-
+-  function scheduleSettle() {
+-    if (settleTimer !== null) clearTimeout(settleTimer)
+-    editor.setNavigationPhase('settling')
+-    settleTimer = setTimeout(() => {
+-      settleTimer = null
+-      editor.setNavigationPhase('idle')
+-      editor.requestRepaint()
+-    }, NAVIGATION_SETTLE_DELAY_MS)
+-  }
++  let wheelInputAt = 0
++  const scheduler = getRenderScheduler(editor)
+@@ -206,0 +197 @@
++    editor.setNavigationPhase(wheelAccum.hasZoom ? 'zoom' : 'pan', wheelInputAt)
+@@ -220,4 +211,2 @@
+-    scheduleSettle()
+-  }
+-
+-  const wheelScheduler = createRafScheduler(flushWheel)
++    settleCanvasNavigation(editor)
++  }
+@@ -242 +231 @@
+-    editor.setNavigationPhase(step.kind, performance.now())
++    wheelInputAt = performance.now()
+@@ -254 +243 @@
+-    wheelScheduler.schedule()
++    scheduler.scheduleInput(flushWheel)
+@@ -267,4 +256,2 @@
+-  onScopeDispose(() => {
+-    if (settleTimer !== null) clearTimeout(settleTimer)
+-  })
+-}
++  onScopeDispose(() => scheduler.cancel(flushWheel))
++}
+--- a/packages/vue/tests/canvas/surface/render-loop.test.ts
++++ b/packages/vue/tests/canvas/surface/render-loop.test.ts
+@@ -1,0 +2 @@
++import { effectScope, ref } from 'vue'
+@@ -5,0 +7 @@
++import { setupWheelPanZoom } from '#vue/shared/input/wheel'
+@@ -215,0 +218,40 @@
++  test('draws accumulated wheel panning in the first available frame', () => {
++    const scheduler = createFrameScheduler()
++    const scope = effectScope()
++    try {
++      const { editor, emit } = createEditor()
++      const canvas = new EventTarget() as HTMLCanvasElement
++      const frames: number[] = []
++      let y = 0
++      editor.pan = (_, dy) => {
++        y += dy
++        emit('repaint:requested')
++      }
++      editor.setHoveredNode = () => {}
++      editor.state.navigation = { phase: 'idle', generation: 0, lastInputAt: 0 }
++      editor.setNavigationPhase = (phase) => { editor.state.navigation.phase = phase }
++      editor.requestRepaint = () => emit('repaint:requested')
++      scope.run(() => setupWheelPanZoom(ref(canvas), editor))
++      createCanvasRenderLoop(editor, () => frames.push(y), { layer: 'scene' })
++
++      for (const deltaY of [4, 6, 10]) {
++        canvas.dispatchEvent(Object.assign(new Event('wheel', { cancelable: true }), {
++          deltaX: 0,
++          deltaY,
++          deltaMode: 0,
++          ctrlKey: false,
++          metaKey: false,
++          shiftKey: false
++        }))
++      }
++
++      expect(scheduler.pendingCount).toBe(1)
++      scheduler.flush()
++      expect(frames).toEqual([-40])
++      expect(scheduler.pendingCount).toBe(0)
++    } finally {
++      scope.stop()
++      scheduler.restore()
++    }
++  })
++
+--- /dev/null
++++ b/packages/vue/src/shared/input/pan/navigation.ts
+@@ -0,0 +1,17 @@
++import type { Editor } from '@open-pencil/core'
++
++const NAVIGATION_SETTLE_DELAY_MS = 120
++const pendingSettles = new WeakMap<Editor, ReturnType<typeof setTimeout>>()
++
++/** Retain the moving viewport's render budget until the pointer has been still briefly. */
++export function settleCanvasNavigation(editor: Editor) {
++  const previous = pendingSettles.get(editor)
++  if (previous !== undefined) clearTimeout(previous)
++  editor.setNavigationPhase('settling')
++  pendingSettles.set(editor, setTimeout(() => {
++    pendingSettles.delete(editor)
++    if (editor.state.navigation.phase !== 'settling') return
++    editor.setNavigationPhase('idle')
++    editor.requestRepaint()
++  }, NAVIGATION_SETTLE_DELAY_MS))
++}
