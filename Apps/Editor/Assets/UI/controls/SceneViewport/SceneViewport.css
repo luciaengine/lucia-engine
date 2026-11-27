@@ -98,3 +98,15 @@
     pointer-events: none;
     z-index: 50;
 }
+
+
+.scene-viewport-collaboration-cursor {
+    position: absolute;
+    z-index: 8;
+    pointer-events: none;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background-color: var(--ui_color_accent);
+    color: var(--ui_color_text);
+    font-size: 12px;
+}

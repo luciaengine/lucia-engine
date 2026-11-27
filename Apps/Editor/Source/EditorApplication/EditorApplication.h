@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Collaboration/SceneCollaborationSession.h"
+
 #include "AssetCore/GUID.h"
 #include "Core/Application.h"
 #include "Core/DeferredActionQueue.h"
@@ -372,6 +374,7 @@ class EditorApplication : public Application
     std::unique_ptr<Editor::MarkupEditorBridge> m_MarkupBridge;
     std::unique_ptr<Editor::TileMapEditorIntegration> m_TileMapEditor;
     std::unique_ptr<Editor::SceneEditorController> m_SceneEditor;
+    Editor::SceneCollaborationSession m_SceneCollaboration;
     std::unique_ptr<Editor::SceneThumbnailCapture> m_SceneThumbnailCapture;
     std::unique_ptr<Editor::PlayModeManager> m_PlayMode;
     // Moves the keyboard focus to the Game View at Play and back at Stop.

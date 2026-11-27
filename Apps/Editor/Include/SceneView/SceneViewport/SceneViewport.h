@@ -9,7 +9,9 @@
 #include "UI/UIElement.h"
 
 #include <cstdint>
+#include <span>
 #include <string>
+#include <vector>
 
 namespace GameEngine::ECS
 {
@@ -24,6 +26,13 @@ class InputSystem;
 namespace GameEngine
 {
 class Label;
+
+struct CollaborationCursor
+{
+    std::string Id;
+    std::string Name;
+    Mathematics::Vector2 Position;
+};
 class SceneViewHoverPill;
 class SceneViewMeasureOverlay;
 class SceneViewRulerOverlay;
@@ -57,6 +66,8 @@ public:
     /// The render coordinator publishes a controller outside the window's own Scene View set under this name;
     /// the window's main and quad controllers keep their fixed names ("scene_main" in the CSS).
     const std::string& GetImageName() const { return m_ImageName; }
+    const std::string& GetSlot() const { return m_Slot; }
+    void SetCollaborationCursors(std::span<const CollaborationCursor> cursors);
 
     /// Sets the measure tool's settings. Turning the tool off ends a measure drag without an entity.
     void SetMeasureSettings(const SceneViewportMeasureSettings& settings);
@@ -145,6 +156,13 @@ private:
     // The slot the children were built for; empty until the first SetSlot.
     std::string m_Slot;
     std::string m_ImageName;
+    struct CursorLabel
+    {
+        std::string Id;
+        Label* Widget = nullptr;
+        Mathematics::Vector2 PixelPosition{-1.0f, -1.0f};
+    };
+    std::vector<CursorLabel> m_CollaborationCursors;
     SceneViewCameraGesture m_CameraGesture;
     bool m_DrivesCamera = false;
     // The last pointer position of a camera drag, in window pixels.

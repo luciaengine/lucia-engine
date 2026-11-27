@@ -592,6 +592,7 @@ set(EDITOR_SOURCES
 	Source/SceneView/SceneViewDropPlacement.cpp
 	Source/SceneView/SceneViewport/SceneViewHoverPill.cpp
 	Source/SceneView/SceneViewport/SceneViewport.cpp
+	Source/Collaboration/SceneCollaborationSession.cpp
 	Source/SceneView/SceneViewport/SceneViewportEdits.cpp
 	Source/SceneView/SceneViewport/SceneViewportRegistry.cpp
 	Source/SceneView/SceneViewNoticeOverlay.cpp

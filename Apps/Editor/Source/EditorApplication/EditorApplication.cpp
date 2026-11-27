@@ -229,6 +229,7 @@
 #include "PlayMode/WindowCursorLock.h"
 #include "PlayMode/RuntimeInputConnection.h"
 #include "Scene/SceneEditorController.h"
+#include "Scene/SceneDocumentManager.h"
 #include "Scene/SceneThumbnailCapture.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -6208,6 +6209,14 @@ void EditorApplication::Update(float64 deltaTime)
     if (!m_IsShuttingDown)
         Editor::EditorPluginRegistry::Get().Update();
 
+    if (!m_IsShuttingDown && m_SceneEditor && m_SceneEditor->GetDocument())
+    {
+        auto& engine = EngineCore::GetInstance();
+        const auto& scene = m_SceneEditor->GetDocument()->GetScenePath();
+        m_SceneCollaboration.Update(engine.GetWorkspaceRoot(), scene.value_or(std::filesystem::path{}),
+                                    engine.GetPrimaryWorld());
+    }
+
     EditorWindowContext* mainWindow = m_Windows.empty() ? nullptr : m_Windows[0].get();
     m_FramePhaseRecorder.RecordPreviousFrame({
         .FrameCount = GetFrameCount(),
@@ -8085,6 +8094,7 @@ void EditorApplication::OnShutdown()
     // Mark teardown in progress *first* so any OS callbacks (resize/DPI changes)
     // that fire during shutdown cannot re-enter rendering/UI.
     m_IsShuttingDown = true;
+    m_SceneCollaboration.Stop();
     m_DeferredPreUiActions.Clear();
     m_DeferredPostUiActions.Clear();
     // A tool window never attached still registered its ColorPicker context,

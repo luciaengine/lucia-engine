@@ -25,6 +25,7 @@
 #include "UI/Controls/Widgets/SceneView/SceneViewRulerOverlay.h"
 #include "UI/Controls/Widgets/ViewportRotationGizmo.h"
 #include "UI/Registration/ElementRegistration.h"
+#include "UI/StyleProperties.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 
@@ -32,6 +33,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -276,6 +278,42 @@ SceneViewport::SceneViewport()
 SceneViewport::~SceneViewport()
 {
     SceneViewportRegistry::Unregister(*this);
+}
+
+void SceneViewport::SetCollaborationCursors(std::span<const CollaborationCursor> cursors)
+{
+    std::erase_if(m_CollaborationCursors, [&](const CursorLabel& marker) {
+        const bool expired = std::none_of(cursors.begin(), cursors.end(),
+            [&](const CollaborationCursor& cursor) { return cursor.Id == marker.Id; });
+        if (expired)
+            RemoveChild(marker.Widget);
+        return expired;
+    });
+    for (const auto& cursor : cursors)
+    {
+        auto marker = std::find_if(m_CollaborationCursors.begin(), m_CollaborationCursors.end(),
+            [&](const CursorLabel& label) { return label.Id == cursor.Id; });
+        if (marker == m_CollaborationCursors.end())
+        {
+            auto label = std::make_unique<Label>();
+            label->AddClass("scene-viewport-collaboration-cursor");
+            label->SetText("▸ " + cursor.Name);
+            auto* widget = label.get();
+            AddChild(std::move(label));
+            m_CollaborationCursors.push_back({cursor.Id, widget});
+            marker = std::prev(m_CollaborationCursors.end());
+        }
+
+        const Mathematics::Vector2 position{
+            std::round(cursor.Position.x * GetLayoutWidth()),
+            std::round(cursor.Position.y * GetLayoutHeight())};
+        if (marker->PixelPosition.x == position.x && marker->PixelPosition.y == position.y)
+            continue;
+        marker->PixelPosition = position;
+        marker->Widget->Style()
+            .Set(GameEngine::Style::PositionLeft, StyleLength::Px(position.x))
+            .Set(GameEngine::Style::PositionTop, StyleLength::Px(position.y));
+    }
 }
 
 void SceneViewport::SetSlot(const std::string& slot)
