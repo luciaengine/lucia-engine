@@ -872,8 +872,13 @@ private:
         {
             EndMouseDrag();
             m_IsPrimaryPressInView = overView;
-            if (overView && m_TraceDragInput && [m_WebView.URL.scheme isEqualToString:@"lucia-app"])
-                m_DragSamples.reserve(1024);
+            if (overView && [m_WebView.URL.scheme isEqualToString:@"lucia-app"])
+            {
+                // Make time for the first motion before AppKit starts delivering drag events.
+                m_ReleaseFramePriority.Begin(CACurrentMediaTime());
+                if (m_TraceDragInput)
+                    m_DragSamples.reserve(1024);
+            }
         }
         if (overView && m_OnMouseDown)
             m_OnMouseDown();

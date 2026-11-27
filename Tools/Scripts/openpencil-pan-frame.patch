@@ -15,25 +15,6 @@
 +++ b/packages/vue/src/canvas/useCanvasInput.ts
 @@ -31,0 +32 @@
 +import { settleCanvasNavigation } from '#vue/shared/input/pan/navigation'
-@@ -66 +67,2 @@
--    if (move && drag.value?.type === 'move' && isEnabled()) applyMouseMove(move)
-+    if (move && (drag.value?.type === 'move' || drag.value?.type === 'pan') && isEnabled())
-+      applyMouseMove(move)
-@@ -298 +300 @@
--    // Once a free move starts, only the latest position can be drawn in the next frame.
-+    // A pan and a free multi-layer move only draw the latest position in the next frame.
-@@ -301,5 +303,6 @@
--      current?.type === 'move' &&
--      current.dragStarted &&
--      current.originals.size > 1 &&
--      !current.flows?.length &&
--      !current.autoLayoutParentId
-+      current?.type === 'pan' ||
-+      (current?.type === 'move' &&
-+        current.dragStarted &&
-+        current.originals.size > 1 &&
-+        !current.flows?.length &&
-+        !current.autoLayoutParentId)
 @@ -315,2 +318,4 @@
 -    const coords = getCoords(e)
 -    lastPointer.value = { cx: coords.cx, cy: coords.cy, sx: coords.sx, sy: coords.sy }
