@@ -2,6 +2,7 @@
 
 #include "Mathematics/Matrix4x4.h"
 
+#include <algorithm>
 #include <cmath>
 
 // Double-precision math for the Scene View camera rig (orbit / pan / dolly /
@@ -75,6 +76,45 @@ inline Vec3d OrbitPivotFromCamera(const Vec3d& camPos, double yawDeg, double pit
 {
     const Vec3d f = LookDirection(yawDeg, pitchDeg);
     return Vec3d{camPos.X + f.X * distance, camPos.Y + f.Y * distance, camPos.Z + f.Z * distance};
+}
+
+// Keep a usable input gain when the perspective pivot is close to the camera.
+inline constexpr float kMinimumNavigationScaleDistance = 0.5f;
+
+inline double PanWorldUnitsPerPixel(float distance, bool orthographic, float viewportHeightPx)
+{
+    if (orthographic && viewportHeightPx > 1.0f)
+        return static_cast<double>(distance) / viewportHeightPx;
+
+    const float scaleDistance = orthographic ? distance : std::max(distance, kMinimumNavigationScaleDistance);
+    return static_cast<double>(scaleDistance) * 0.002;
+}
+
+struct PerspectiveDollyPose
+{
+    Vec3d Position;
+    Vec3d Pivot;
+    float Distance = 0.0f;
+};
+
+inline PerspectiveDollyPose DollyPerspective(const Vec3d& pivot, double yawDeg, double pitchDeg,
+                                              float distance, double distanceDelta,
+                                              float minimumDistance, float maximumDistance)
+{
+    const double requestedDistance = distance + distanceDelta;
+    // Framing can put the camera beyond the configured limit. Let it move inward from there.
+    const double upperDistance = std::max({minimumDistance, maximumDistance, distance});
+    const float nextDistance = static_cast<float>(
+        std::clamp(requestedDistance, static_cast<double>(minimumDistance), upperDistance));
+
+    if (distanceDelta < 0.0 && requestedDistance < minimumDistance)
+    {
+        // Keep the full camera movement and carry the pivot the remaining distance forward.
+        const Vec3d position = OrbitCameraPosition(pivot, yawDeg, pitchDeg, requestedDistance);
+        return {position, OrbitPivotFromCamera(position, yawDeg, pitchDeg, nextDistance), nextDistance};
+    }
+
+    return {OrbitCameraPosition(pivot, yawDeg, pitchDeg, nextDistance), pivot, nextDistance};
 }
 
 // Pan basis used by camera drag-pan: right is the horizontal (XZ) vector
