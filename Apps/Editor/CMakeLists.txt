@@ -2255,6 +2255,22 @@ add_dependencies(Editor EnginePackagePrebuilts)
 # First-party packages (Packages/eztree, ...) staged next to Editor.exe;
 # the package resolver's implicit engine-package scan mounts them per project.
 ge_stage_packages(Editor)
+if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    set(_ge_collaboration_source "${CMAKE_SOURCE_DIR}/Tools/SceneCollaboration")
+    set(_ge_collaboration_dest "$<TARGET_FILE_DIR:Editor>/Tools/SceneCollaboration")
+    if(APPLE)
+        set(_ge_collaboration_dest "$<TARGET_FILE_DIR:Editor>/../Resources/Tools/SceneCollaboration")
+    endif()
+    set(_ge_collaboration_files invite.mjs relay.mjs room.css room.html room.js)
+    list(TRANSFORM _ge_collaboration_files PREPEND "${_ge_collaboration_source}/")
+    set_property(TARGET Editor APPEND PROPERTY LINK_DEPENDS "${_ge_collaboration_files}")
+    add_custom_command(TARGET Editor POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_ge_collaboration_dest}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${_ge_collaboration_files} "${_ge_collaboration_dest}"
+        COMMENT "Staging the local collaboration relay"
+        VERBATIM)
+endif()
+
 set(GE_OPENPENCIL_WEB_ROOT "" CACHE PATH "Built OpenPencil web app to bundle with the desktop Editor")
 if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
     set(_ge_openpencil_dest "$<TARGET_FILE_DIR:Editor>/Packages/open-pencil/Host")

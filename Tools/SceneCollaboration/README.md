@@ -6,7 +6,14 @@ path and viewport mode to see each other's cursor. A cursor represents the
 pointer's position within that viewport. It does not represent a picked world
 position.
 
-Start the relay on loopback with a random invite token:
+Click **Start Session** in the toolbar. If a hosted relay is configured, the
+editor connects to that room. Otherwise it starts a private loopback relay with
+a random invite token and a free port. Click **Invite** when it becomes
+available. Local invites work on the same computer. Click **End Session** to
+stop the local relay. For local sessions, install Node.js or set
+`LUCIA_COLLAB_NODE` to the Node executable.
+
+To run a relay independently, start it on loopback with a random invite token:
 
 ```sh
 export LUCIA_COLLAB_ROOM=studio

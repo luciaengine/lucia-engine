@@ -117,6 +117,37 @@ test('the command-line relay closes cleanly on SIGTERM', { timeout: 5000 }, asyn
 });
 
 
+test('an editor-managed relay opens a private local room and accepts its invite', { timeout: 5000 }, async () => {
+  const script = fileURLToPath(new URL('./relay.mjs', import.meta.url));
+  const child = spawn(process.execPath, [script, '--editor', String(process.pid)], {
+    env: { ...process.env, LUCIA_COLLAB_HOST: 'invalid.invalid', LUCIA_COLLAB_TOKEN: '' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  try {
+    const output = await Promise.race([
+      once(child.stdout, 'data').then(([chunk]) => chunk.toString()),
+      once(child, 'exit').then(([code]) => { throw new Error('Managed relay exited before startup: ' + code); }),
+    ]);
+    const { port, room, token: inviteKey } = JSON.parse(output);
+    assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
+    assert.equal(room, 'scene');
+    assert.ok(/^[A-Za-z0-9_-]{43}$/.test(inviteKey));
+    const endpoint = 'http://127.0.0.1:' + port + '/v1/rooms/' + room + '/join';
+    const send = key => fetch(endpoint, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Guest' }),
+    });
+    assert.equal((await send('wrong')).status, 401);
+    assert.equal((await send(inviteKey)).status, 200);
+    const exited = once(child, 'exit');
+    child.kill('SIGTERM');
+    assert.deepEqual(await exited, [0, null]);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }
+});
+
 test('an invite fills the room and preserves reserved characters in the token', () => {
   const key = 'invite-token+with&reserved=#characters';
   assert.deepEqual(readRoomInvite('#room=studio&token=' + encodeURIComponent(key)), { room: 'studio', token: key });

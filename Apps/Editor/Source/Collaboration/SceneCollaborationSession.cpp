@@ -1,6 +1,9 @@
 #include "Collaboration/SceneCollaborationSession.h"
 
 #include "Core/Engine.h"
+#include "Editor/EditorPaths.h"
+#include "Engine/Build/CancellableShellProcess.h"
+#include "Platform/Process.h"
 #include "JobSystem/JobChannel.h"
 #include "Platform/HttpClient.h"
 #include "SceneView/SceneViewport/SceneViewport.h"
@@ -97,6 +100,39 @@ struct Configuration
     std::string Name;
 };
 
+Configuration MakeConfiguration(std::string relay, std::string room, std::string key, std::string name)
+{
+    std::string endpoint = relay + "/v1/rooms/" + room;
+    return {std::move(relay), std::move(room), std::move(endpoint), std::move(key), std::move(name)};
+}
+
+std::string FindRelayRuntime()
+{
+    if (auto path = Environment("LUCIA_COLLAB_NODE"); !path.empty())
+        return path;
+#if defined(__APPLE__)
+    // Finder launches don't inherit the shell's Node paths.
+    const auto home = PathFromUtf8(Environment("HOME"));
+    for (const auto& candidate : { home / ".local/node/bin/node", std::filesystem::path("/opt/homebrew/bin/node"),
+                                  std::filesystem::path("/usr/local/bin/node") })
+    {
+        std::error_code error;
+        if (std::filesystem::is_regular_file(candidate, error))
+            return PathToUtf8(candidate);
+    }
+#endif
+    return "node";
+}
+
+struct RelayStartup
+{
+    CancellableShellProcess Process;
+    std::atomic<bool> Cancel{false};
+    std::atomic<bool> Exited{false};
+    std::mutex Mutex;
+    std::optional<Configuration> Ready;
+};
+
 std::optional<Configuration> ReadConfiguration()
 {
     auto base = Environment("LUCIA_COLLAB_RELAY");
@@ -110,7 +146,7 @@ std::optional<Configuration> ReadConfiguration()
         name.empty() || name.size() > 48 || !HttpClient::IsAvailable())
         return std::nullopt;
 
-    return Configuration{base, room, base + "/v1/rooms/" + room, std::move(key), std::move(name)};
+    return MakeConfiguration(std::move(base), room, std::move(key), std::move(name));
 }
 } // namespace
 
@@ -210,6 +246,128 @@ public:
     uint64_t Sequence = 0;
 };
 
+class SceneCollaborationSession::LocalRelay
+{
+public:
+    LocalRelay(std::filesystem::path project, const std::filesystem::path& script, std::string name)
+        : Project(std::move(project)),
+          Channel(EngineCore::GetInstance().GetJobSystem(), {.Name = "Local collaboration relay", .MaxRunning = 1}),
+          Startup(std::make_shared<RelayStartup>()),
+          Deadline(Clock::now() + 10s)
+    {
+        const auto shared = Startup;
+        ProcessLaunch launch;
+        launch.Executable = FindRelayRuntime();
+        launch.Arguments = {PathToUtf8(script), "--editor", std::to_string(Platform::GetCurrentProcessId())};
+        // Do not pass a hosted room credential to the owned local relay.
+        launch.Environment = {{"LUCIA_COLLAB_TOKEN", std::nullopt}, {"LUCIA_COLLAB_STATE", std::nullopt}};
+        (void)Channel.Submit([shared, launch = std::move(launch), name = std::move(name)] {
+            if (!shared->Cancel.load())
+            {
+                (void)shared->Process.Run(launch, [shared] { return shared->Cancel.load(); },
+                    [shared, &name](const std::string& line) {
+                        const auto ready = Json::parse(line, nullptr, false);
+                        if (!ready.is_object())
+                            return;
+                        try
+                        {
+                            const int port = ready.value("port", 0);
+                            auto room = ready.value("room", std::string{});
+                            auto token = ready.value("token", std::string{});
+                            if (port <= 0 || port > 65535 || !IsRoomIdentifier(room) || token.size() < 24 ||
+                                token.size() > 512)
+                                return;
+                            std::lock_guard lock(shared->Mutex);
+                            shared->Ready = MakeConfiguration("http://127.0.0.1:" + std::to_string(port),
+                                std::move(room), std::move(token), name);
+                        }
+                        catch (const Json::exception&)
+                        {
+                        }
+                    });
+            }
+            shared->Exited.store(true);
+        });
+    }
+
+    ~LocalRelay()
+    {
+        Startup->Cancel.store(true);
+        Startup->Process.Kill();
+    }
+
+    std::filesystem::path Project;
+    JobSystem::JobChannel Channel;
+    std::shared_ptr<RelayStartup> Startup;
+    Clock::time_point Deadline;
+};
+
+bool SceneCollaborationSession::Start(const std::filesystem::path& project)
+{
+    if (IsStarted() || project.empty())
+        return false;
+    m_Initialized = true;
+    if (auto config = ReadConfiguration())
+    {
+        m_State = std::make_unique<State>(std::move(*config));
+        m_State->InitialProject = project;
+        return true;
+    }
+    if (!HttpClient::IsAvailable())
+    {
+        m_Notice = "Collaboration is unavailable in this build.";
+        return false;
+    }
+
+    const auto script = GetEditorGlobalPaths().installToolsRoot / "SceneCollaboration" / "relay.mjs";
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(script, error))
+    {
+        m_Notice = "This build does not include the local collaboration relay.";
+        return false;
+    }
+
+    auto name = Environment("LUCIA_COLLAB_NAME");
+    if (name.empty() || name.size() > 48)
+        name = "Host";
+    m_LocalRelay = std::make_unique<LocalRelay>(project, script, std::move(name));
+    return true;
+}
+
+void SceneCollaborationSession::PollLocalRelay()
+{
+    if (!m_LocalRelay)
+        return;
+    const auto shared = m_LocalRelay->Startup;
+    if (shared->Exited.load() || (!m_State && Clock::now() >= m_LocalRelay->Deadline))
+    {
+        const bool hadSession = m_State != nullptr;
+        Stop();
+        m_Notice = hadSession ? "The local collaboration relay stopped." :
+            "Could not start a local session. Install Node.js or set LUCIA_COLLAB_NODE to its executable.";
+        return;
+    }
+    if (m_State)
+        return;
+    std::lock_guard lock(shared->Mutex);
+    if (auto ready = std::exchange(shared->Ready, std::nullopt))
+    {
+        m_State = std::make_unique<State>(std::move(*ready));
+        m_State->InitialProject = m_LocalRelay->Project;
+        m_Notice = "Local session started. Its invite works on this computer.";
+    }
+}
+
+bool SceneCollaborationSession::IsStarted() const
+{
+    return m_State != nullptr || m_LocalRelay != nullptr;
+}
+
+std::string SceneCollaborationSession::TakeNotice()
+{
+    return std::exchange(m_Notice, {});
+}
+
 SceneCollaborationSession::SceneCollaborationSession() = default;
 
 SceneCollaborationSession::~SceneCollaborationSession() = default;
@@ -223,6 +381,9 @@ void SceneCollaborationSession::Update(const std::filesystem::path& project,
         if (auto config = ReadConfiguration())
             m_State = std::make_unique<State>(std::move(*config));
     }
+    if (m_LocalRelay && project != m_LocalRelay->Project)
+        Stop();
+    PollLocalRelay();
     if (!m_State || project.empty())
         return;
     auto& state = *m_State;
@@ -298,10 +459,10 @@ std::string SceneCollaborationSession::InviteLink() const
 
 void SceneCollaborationSession::Stop()
 {
-    if (!m_State)
-        return;
-    for (auto* pane : SceneViewportRegistry::GetLive())
-        pane->SetCollaborationCursors({});
+    if (m_State)
+        for (auto* pane : SceneViewportRegistry::GetLive())
+            pane->SetCollaborationCursors({});
     m_State.reset();
+    m_LocalRelay.reset();
 }
 }

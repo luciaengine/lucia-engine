@@ -52,6 +52,7 @@ class EditorTopToolbar final : public UIElement
         std::function<void(const std::string& panelId)> onPanelMenuEntryClicked;
         std::function<void()> onUniversalSearchClicked;
         std::function<void()> onInviteClicked;
+        std::function<void()> onSessionClicked;
         std::function<void()> onSettingsClicked;
         std::function<void()> onNodeGraphClicked;
         std::function<void()> onTilePaletteClicked;
@@ -128,6 +129,7 @@ class EditorTopToolbar final : public UIElement
     /// Show or hide the unsaved-changes indicator on the save button.
     void SetSaveDirty(bool dirty);
     void SetInviteAvailable(bool available);
+    void SetSessionStarted(bool started);
 
     /// Cached button pointers (may be null if not yet wired or not found).
     Button* GetPlayButton() const { return m_PlayButton; }
@@ -150,6 +152,8 @@ class EditorTopToolbar final : public UIElement
     Button* m_FullscreenButton = nullptr;
     Button* m_SaveButton = nullptr;
     Button* m_InviteButton = nullptr;
+    Button* m_SessionButton = nullptr;
+    bool m_SessionStarted = false;
     bool m_InviteAvailable = false;
     Button* m_RecordButton = nullptr;
     Button* m_PlayButton = nullptr;

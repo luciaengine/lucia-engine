@@ -4570,6 +4570,21 @@ bool EditorApplication::Initialize()
                         // Load play fullscreen preference from cached prefs.
                         cachedPrefs.TryGetBool("ui.playFullscreen", m_PlayFullscreenOnEnter);
 
+                        toolbarCb.onSessionClicked = [this]() {
+                            if (m_SceneCollaboration.IsStarted())
+                            {
+                                m_SceneCollaboration.Stop();
+                                Editor::ShowSceneViewNotice("Collaboration session ended");
+                            }
+                            else if (m_SceneCollaboration.Start(EngineCore::GetInstance().GetWorkspaceRoot()))
+                            {
+                                Editor::ShowSceneViewNotice("Starting collaboration session");
+                            }
+                            else if (EngineCore::GetInstance().GetWorkspaceRoot().empty())
+                            {
+                                Editor::ShowSceneViewNotice("Open a project before starting a session");
+                            }
+                        };
                         toolbarCb.onInviteClicked = [this]() {
                             const auto link = m_SceneCollaboration.InviteLink();
                             if (link.empty())
@@ -6257,16 +6272,22 @@ void EditorApplication::Update(float64 deltaTime)
     if (!m_IsShuttingDown)
         Editor::EditorPluginRegistry::Get().Update();
 
-    if (!m_IsShuttingDown && m_SceneEditor && m_SceneEditor->GetDocument())
+    if (!m_IsShuttingDown)
     {
         auto& engine = EngineCore::GetInstance();
-        const auto& scene = m_SceneEditor->GetDocument()->GetScenePath();
-        m_SceneCollaboration.Update(engine.GetWorkspaceRoot(), scene.value_or(std::filesystem::path{}),
-                                    engine.GetPrimaryWorld());
+        const auto* document = m_SceneEditor ? m_SceneEditor->GetDocument() : nullptr;
+        const auto scene = document ? document->GetScenePath().value_or(std::filesystem::path{}) :
+            std::filesystem::path{};
+        m_SceneCollaboration.Update(engine.GetWorkspaceRoot(), scene, engine.GetPrimaryWorld());
     }
 
     if (m_TopToolbar)
+    {
+        m_TopToolbar->SetSessionStarted(m_SceneCollaboration.IsStarted());
         m_TopToolbar->SetInviteAvailable(m_SceneCollaboration.CanInvite());
+    }
+    if (auto notice = m_SceneCollaboration.TakeNotice(); !notice.empty())
+        Editor::ShowSceneViewNotice(std::move(notice));
 
     EditorWindowContext* mainWindow = m_Windows.empty() ? nullptr : m_Windows[0].get();
     m_FramePhaseRecorder.RecordPreviousFrame({

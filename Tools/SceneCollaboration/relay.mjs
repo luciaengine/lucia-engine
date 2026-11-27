@@ -236,12 +236,19 @@ export function createCollaborationRelay({ token, roomName = 'scene', directory,
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const port = Number(process.env.LUCIA_COLLAB_PORT || 8746);
-  const host = process.env.LUCIA_COLLAB_HOST || '127.0.0.1';
+  const managed = process.argv[2] === '--editor';
+  const parentPid = managed ? Number(process.argv[3]) : 0;
+  if (managed && (!Number.isSafeInteger(parentPid) || parentPid <= 0)) {
+    throw new Error('The editor process ID is required');
+  }
+  const port = managed ? 0 : Number(process.env.LUCIA_COLLAB_PORT || 8746);
+  const host = managed ? '127.0.0.1' : (process.env.LUCIA_COLLAB_HOST || '127.0.0.1');
+  const roomName = managed ? 'scene' : (process.env.LUCIA_COLLAB_ROOM || 'scene');
+  const token = managed ? randomBytes(32).toString('base64url') : process.env.LUCIA_COLLAB_TOKEN;
   const relay = createCollaborationRelay({
-    token: process.env.LUCIA_COLLAB_TOKEN,
-    roomName: process.env.LUCIA_COLLAB_ROOM,
-    directory: process.env.LUCIA_COLLAB_STATE,
+    token,
+    roomName,
+    directory: managed ? undefined : process.env.LUCIA_COLLAB_STATE,
   });
   const stop = () => {
     relay.close();
@@ -249,5 +256,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
-  relay.listen(port, host, () => console.log(`Lucia collaboration relay listening on ${host}:${port}`));
+  if (managed) {
+    setInterval(() => {
+      try {
+        if (process.ppid !== parentPid) stop();
+        else process.kill(parentPid, 0);
+      } catch {
+        stop();
+      }
+    }, 1000).unref();
+  }
+  relay.listen(port, host, () => {
+    const actualPort = relay.address().port;
+    if (managed) console.log(JSON.stringify({ port: actualPort, room: roomName, token }));
+    else console.log(`Lucia collaboration relay listening on ${host}:${actualPort}`);
+  });
 }

@@ -284,6 +284,13 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
             btn->RegisterEventHandler(kEventButtonClick, [fn = cb.onUniversalSearchClicked](UIEvent&) { fn(); });
     }
 
+    m_SessionButton = dynamic_cast<Button*>(rootEl->FindById(HashStringId("TopToolbarSession")));
+    if (m_SessionButton && cb.onSessionClicked)
+    {
+        m_SessionButton->SetText(m_SessionStarted ? "End Session" : "Start Session");
+        m_SessionButton->RegisterEventHandler(kEventButtonClick, [fn = cb.onSessionClicked](UIEvent&) { fn(); });
+    }
+
     m_InviteButton = dynamic_cast<Button*>(rootEl->FindById(HashStringId("TopToolbarInvite")));
     if (m_InviteButton && cb.onInviteClicked)
     {
@@ -631,6 +638,15 @@ void EditorTopToolbar::UpdatePlayModeState(Editor::PlayModeState s)
              s == Editor::PlayModeState::ExitingPlay);
         m_StopButton->SetEnabled(enableStop);
     }
+}
+
+void EditorTopToolbar::SetSessionStarted(bool started)
+{
+    if (m_SessionStarted == started)
+        return;
+    m_SessionStarted = started;
+    if (m_SessionButton)
+        m_SessionButton->SetText(started ? "End Session" : "Start Session");
 }
 
 void EditorTopToolbar::SetInviteAvailable(bool available)

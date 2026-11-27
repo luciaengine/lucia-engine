@@ -40,6 +40,7 @@
       <Button id="TopToolbarLog" class="small secondary icon-button alert-circle-icon toolbar-outline-icon" />
       <Button id="TopToolbarTilePalette" class="small secondary icon-button tile-palette-icon" />
       <Button id="TopToolbarRight2" class="small secondary icon-button info-icon toolbar-outline-icon" />
+      <Button id="TopToolbarSession" class="small secondary" text="Start Session" />
       <Button id="TopToolbarInvite" class="small secondary hidden" text="Invite" />
       <Button id="TopToolbarPanelMenu" class="small secondary icon-button menulist-icon toolbar-outline-icon" />
     </UIElement>
