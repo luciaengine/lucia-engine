@@ -2,7 +2,7 @@
   "name": "compositor",
   "version": "0.1.0",
   "displayName": "Compositor",
-  "enabledByDefault": false,
+  "enabledByDefault": true,
   "assets": "",
   "modules": [
     {

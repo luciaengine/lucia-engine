@@ -2,7 +2,7 @@
   "name": "editroom",
   "version": "0.1.0",
   "displayName": "Editroom",
-  "enabledByDefault": false,
+  "enabledByDefault": true,
   "assets": "",
   "modules": [
     {
