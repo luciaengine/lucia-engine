@@ -42,6 +42,89 @@ struct LuciaMediaButtonStyle: ButtonStyle {
         }
     }
 }
+/// Presents workspace confirmations with Lucia chrome over the current editor.
+@MainActor
+enum LuciaMediaDialog {
+    static func run(_ alert: NSAlert, over parent: NSWindow? = nil) -> NSApplication.ModalResponse {
+        let owner = parent ?? NSApp.keyWindow
+        let panel = NSPanel(contentRect: .zero, styleMask: [.titled, .fullSizeContentView],
+                            backing: .buffered, defer: false)
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.isReleasedWhenClosed = false
+
+        let actions = alert.buttons.map(\.title)
+        let defaultIndex = alert.buttons.firstIndex { $0.keyEquivalent == "\r" } ?? 0
+        let cancelIndex = alert.buttons.firstIndex { $0.keyEquivalent == "\u{1b}" || $0.title == "Cancel" }
+        let content = Content(title: alert.messageText, message: alert.informativeText,
+                              actions: actions, defaultIndex: defaultIndex, cancelIndex: cancelIndex) { index in
+            let response = index.map {
+                NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + $0)
+            } ?? .cancel
+            NSApp.stopModal(withCode: response)
+        }
+        let view = NSHostingView(rootView: content)
+        panel.contentView = view
+        panel.setContentSize(view.fittingSize)
+        if let owner {
+            panel.setFrameOrigin(NSPoint(x: owner.frame.midX - panel.frame.width / 2,
+                                         y: owner.frame.midY - panel.frame.height / 2))
+            owner.addChildWindow(panel, ordered: .above)
+        } else {
+            panel.center()
+        }
+        let response = NSApp.runModal(for: panel)
+        owner?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        return response
+    }
+
+    private struct Content: View {
+        let title: String
+        let message: String
+        let actions: [String]
+        let defaultIndex: Int
+        let cancelIndex: Int?
+        let choose: (Int?) -> Void
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                if !message.isEmpty {
+                    Text(message)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.white.opacity(0.74))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: 6) {
+                    Spacer(minLength: 0)
+                    ForEach(actions.indices.reversed(), id: \.self) { index in
+                        let button = Button(actions[index]) { choose(index) }
+                        if index == defaultIndex {
+                            button.keyboardShortcut(.defaultAction)
+                        } else if index == cancelIndex {
+                            button.keyboardShortcut(.cancelAction)
+                        } else {
+                            button
+                        }
+                    }
+                }
+                .buttonStyle(LuciaMediaButtonStyle())
+            }
+            .padding(16)
+            .frame(width: 440, alignment: .leading)
+            .foregroundStyle(Color.white.opacity(0.9))
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(white: 0.14)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.13)))
+            .onExitCommand { choose(cancelIndex) }
+        }
+    }
+}
+
+
 #endif
 
 #if LUCIA_HOSTED

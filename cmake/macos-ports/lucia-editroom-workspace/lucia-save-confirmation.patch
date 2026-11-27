@@ -1,0 +1,17 @@
+--- a/Editroom/UI/EditroomAlert.swift
++++ b/Editroom/UI/EditroomAlert.swift
+@@ -6,10 +6,14 @@
+ final class EditroomAlert: NSAlert {
+     @discardableResult
+     override func runModal() -> NSApplication.ModalResponse {
++        #if LUCIA_HOSTED
++        return LuciaMediaDialog.run(self)
++        #else
+         styleButtons()
+         // NSAlert sets its buttons up again as it opens, so they're styled once more once it's showing.
+         RunLoop.main.perform(inModes: [.modalPanel, .default]) { [weak self] in self?.styleButtons() }
+         return super.runModal()
++        #endif
+     }
+
+     override func beginSheetModal(for sheetWindow: NSWindow, completionHandler handler: ((NSApplication.ModalResponse) -> Void)? = nil) {

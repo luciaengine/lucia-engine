@@ -1,0 +1,15 @@
+--- a/Compositor/IO/ProjectController.swift
++++ b/Compositor/IO/ProjectController.swift
+@@ -497,8 +497,12 @@
+     }
+
+     private func show(_ alert: NSAlert) async -> NSApplication.ModalResponse {
++        #if LUCIA_HOSTED
++        return LuciaMediaDialog.run(alert, over: window)
++        #else
+         if let window { return await alert.beginSheetModal(for: window) }
+         return alert.runModal()
++        #endif
+     }
+
+     private struct Incoming {
