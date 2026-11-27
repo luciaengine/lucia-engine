@@ -1,12 +1,12 @@
 {
-  "name": "media-workspaces",
+  "name": "editroom",
   "version": "0.1.0",
-  "displayName": "Media Workspaces",
+  "displayName": "Editroom",
   "enabledByDefault": false,
-  "assets": "Assets/",
+  "assets": "",
   "modules": [
     {
-      "name": "MediaWorkspaces.Editor",
+      "name": "Editroom.Editor",
       "kind": "Editor",
       "lang": "Cpp",
       "root": "Editor/",

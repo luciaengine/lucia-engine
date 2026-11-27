@@ -1896,12 +1896,18 @@ ge_add_engine_package_module(GePkgModule_AiAssistantEditor
 	KIND editor
 	PREBUILT_SUBDIR Binaries/Editor)
 if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
-    ge_add_engine_package_module(GePkgModule_MediaWorkspacesEditor
-        PACKAGE media-workspaces
-        MODULE_NAME MediaWorkspaces.Editor
-        SOURCE_ROOT ${CMAKE_SOURCE_DIR}/Packages/media-workspaces/Editor
-        KIND editor
-        PREBUILT_SUBDIR Binaries/Editor)
+    target_sources(EditorSDK PRIVATE
+        Source/MediaWorkspaces/MediaWorkspacePanel.cpp
+        Source/MediaWorkspaces/MediaWorkspacePlugin.cpp)
+    foreach(_ge_workspace IN ITEMS Editroom Compositor)
+        string(TOLOWER "${_ge_workspace}" _ge_workspace_package)
+        ge_add_engine_package_module(GePkgModule_${_ge_workspace}Editor
+            PACKAGE "${_ge_workspace_package}"
+            MODULE_NAME "${_ge_workspace}.Editor"
+            SOURCE_ROOT "${CMAKE_SOURCE_DIR}/Packages/${_ge_workspace_package}/Editor"
+            KIND editor
+            PREBUILT_SUBDIR Binaries/Editor)
+    endforeach()
 endif()
 ge_add_engine_package_module(GePkgModule_LocalizationEditor
 	PACKAGE localization
@@ -2289,12 +2295,12 @@ if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
     endif()
 endif()
 if(APPLE AND NOT GE_MOBILE)
-    set(_ge_workspace_host "$<TARGET_FILE_DIR:Editor>/Packages/media-workspaces/Host")
-    if("editor-workspaces" IN_LIST VCPKG_MANIFEST_FEATURES)
-        set(_ge_workspace_tools "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools")
-        foreach(_ge_workspace IN ITEMS Editroom Compositor)
-            string(TOLOWER "${_ge_workspace}" _ge_workspace_port)
-            set(_ge_workspace_app "${_ge_workspace_tools}/lucia-${_ge_workspace_port}-workspace/${_ge_workspace}.app")
+    foreach(_ge_workspace IN ITEMS Editroom Compositor)
+        string(TOLOWER "${_ge_workspace}" _ge_workspace_package)
+        set(_ge_workspace_host "$<TARGET_FILE_DIR:Editor>/Packages/${_ge_workspace_package}/Host")
+        if("editor-workspaces" IN_LIST VCPKG_MANIFEST_FEATURES)
+            set(_ge_workspace_app
+                "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/lucia-${_ge_workspace_package}-workspace/${_ge_workspace}.app")
             if(NOT EXISTS "${_ge_workspace_app}/Contents/MacOS/${_ge_workspace}")
                 message(FATAL_ERROR "The editor-workspaces feature requires the ${_ge_workspace} host bundle.")
             endif()
@@ -2302,27 +2308,33 @@ if(APPLE AND NOT GE_MOBILE)
                 "${_ge_workspace_app}/Contents/MacOS/${_ge_workspace}")
             add_custom_command(TARGET Editor POST_BUILD
                 COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}/${_ge_workspace}.app"
+                COMMAND "${CMAKE_COMMAND}" -E make_directory "${_ge_workspace_host}"
                 COMMAND /usr/bin/ditto "${_ge_workspace_app}" "${_ge_workspace_host}/${_ge_workspace}.app"
                 COMMENT "Staging ${_ge_workspace} workspace")
-        endforeach()
-    else()
-        add_custom_command(TARGET Editor POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}"
-            COMMENT "Removing disabled media workspace hosts")
-    endif()
+        else()
+            add_custom_command(TARGET Editor POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}"
+                COMMENT "Removing disabled ${_ge_workspace} workspace host")
+        endif()
+    endforeach()
 endif()
 set(GE_MEDIA_WORKSPACE_HOST_ROOT "" CACHE PATH "Directory containing the portable media workspace hosts")
 if(NOT GE_MOBILE AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
-    set(_ge_workspace_host "$<TARGET_FILE_DIR:Editor>/Packages/media-workspaces/Host")
-    set(_ge_media_stage COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}")
-    if(GE_MEDIA_WORKSPACE_HOST_ROOT)
-        if(NOT IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/Compositor" AND
-            NOT IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/Editroom")
-            message(FATAL_ERROR "GE_MEDIA_WORKSPACE_HOST_ROOT must contain a Compositor or Editroom host directory.")
-        endif()
-        list(APPEND _ge_media_stage COMMAND "${CMAKE_COMMAND}" -E copy_directory
-            "${GE_MEDIA_WORKSPACE_HOST_ROOT}" "${_ge_workspace_host}")
+    if(GE_MEDIA_WORKSPACE_HOST_ROOT AND
+       NOT IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/Compositor" AND
+       NOT IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/Editroom")
+        message(FATAL_ERROR "GE_MEDIA_WORKSPACE_HOST_ROOT must contain a Compositor or Editroom host directory.")
     endif()
+    set(_ge_media_stage)
+    foreach(_ge_workspace IN ITEMS Editroom Compositor)
+        string(TOLOWER "${_ge_workspace}" _ge_workspace_package)
+        set(_ge_workspace_host "$<TARGET_FILE_DIR:Editor>/Packages/${_ge_workspace_package}/Host")
+        list(APPEND _ge_media_stage COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_ge_workspace_host}")
+        if(GE_MEDIA_WORKSPACE_HOST_ROOT AND IS_DIRECTORY "${GE_MEDIA_WORKSPACE_HOST_ROOT}/${_ge_workspace}")
+            list(APPEND _ge_media_stage COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${GE_MEDIA_WORKSPACE_HOST_ROOT}/${_ge_workspace}" "${_ge_workspace_host}/${_ge_workspace}")
+        endif()
+    endforeach()
     add_custom_target(StageMediaWorkspaceHosts
         ${_ge_media_stage}
         COMMENT "Staging portable media workspace hosts"

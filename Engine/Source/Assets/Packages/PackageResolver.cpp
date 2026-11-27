@@ -375,6 +375,13 @@ PackageResolution PackageResolver::Resolve(const std::filesystem::path& projectR
         located.emplace(name, std::move(pkg));
     }
 
+    // Preserve a project's opt-in to the former combined built-in package.
+    // Per-package disables below still take precedence.
+    const bool enableLegacyMediaWorkspaces =
+        projectManifest.Enabled.contains("media-workspaces") &&
+        !projectManifest.Disabled.contains("media-workspaces") &&
+        !projectManifest.Dependencies.contains("media-workspaces");
+
     // Implicit engine packages (name shadowing already applied above). The
     // staged dir was parsed during discovery; re-parse here is deliberate —
     // TryLoadPackageManifest is cheap and keeps one code path for validation.
@@ -423,8 +430,11 @@ PackageResolution PackageResolver::Resolve(const std::filesystem::path& projectR
             if (std::filesystem::is_directory(authored, authoringEc))
                 pkg.AuthoringRootDir = AssetPaths::NormalizeMountRoot(authored);
         }
-        pkg.Disabled = projectManifest.Disabled.count(name) != 0 ||
-                       (!pkg.Manifest.EnabledByDefault && projectManifest.Enabled.count(name) == 0);
+        const bool enabledByLegacyMediaWorkspaces =
+            enableLegacyMediaWorkspaces && (name == "compositor" || name == "editroom");
+        pkg.Disabled = projectManifest.Disabled.contains(name) ||
+                       (!pkg.Manifest.EnabledByDefault && !projectManifest.Enabled.contains(name) &&
+                        !enabledByLegacyMediaWorkspaces);
         aliasOwners.emplace(pkg.Alias, name);
         located.emplace(name, std::move(pkg));
     }

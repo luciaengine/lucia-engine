@@ -2830,3 +2830,29 @@ TEST(PackageResolver, OptionalEnginePackageRequiresExplicitProjectOptIn)
     EXPECT_TRUE(resolution.MountOrder.empty());
     EXPECT_EQ(resolution.Disabled.size(), 1u);
 }
+
+
+TEST(PackageResolver, MediaWorkspacesOptInPreservesBothIndependentPackages)
+{
+    E2EProject project("ge_media_workspace_migration");
+    const fs::path engineRoot = project.Root / "StagedPackages";
+    WriteTextFile(engineRoot / "compositor" / "package.json",
+                  R"({"name":"compositor","version":"0.1.0","assets":"","enabledByDefault":false})");
+    WriteTextFile(engineRoot / "editroom" / "package.json",
+                  R"({"name":"editroom","version":"0.1.0","assets":"","enabledByDefault":false})");
+    const auto manifestFile = project.Root / "Packages" / "manifest.json";
+    WriteTextFile(manifestFile, R"({"enabled":["media-workspaces"]})");
+
+    auto resolution = PackageResolver::Resolve(project.Root, engineRoot);
+    ASSERT_TRUE(resolution.Errors.empty());
+    ASSERT_EQ(resolution.MountOrder.size(), 2u);
+
+    std::string error;
+    ASSERT_TRUE(SetPackageDisabledInProjectManifest(manifestFile, {"compositor"}, true, error)) << error;
+    resolution = PackageResolver::Resolve(project.Root, engineRoot);
+    ASSERT_TRUE(resolution.Errors.empty());
+    ASSERT_EQ(resolution.MountOrder.size(), 1u);
+    EXPECT_EQ(resolution.MountOrder.front().Manifest.Name, "editroom");
+    ASSERT_EQ(resolution.Disabled.size(), 1u);
+    EXPECT_EQ(resolution.Disabled.front().Manifest.Name, "compositor");
+}

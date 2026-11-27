@@ -24,8 +24,10 @@ media that AVFoundation cannot read.
 Windows and Linux builds can stage media hosts from a prepared directory. Set
 `GE_MEDIA_WORKSPACE_HOST_ROOT` to the absolute path of that directory when
 configuring Lucia. Each workspace has its own folder named `Compositor` or
-`Editroom`. Enable the Media Workspaces package in the project and open the
-corresponding panel from the Window menu.
+`Editroom`. Enable **Compositor**, **Editroom**, or both in the project’s Package Manager,
+then reopen the project and open the corresponding panel from the Window menu.
+Both packages start disabled. Projects that enabled the former Media Workspaces
+package keep both panels available and can disable either independently.
 
 ### Compositor
 

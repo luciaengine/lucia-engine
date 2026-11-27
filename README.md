@@ -23,7 +23,7 @@ Build scenes in the Scene View, organize entities in the Hierarchy, edit compone
 - **Animation** has a dockable [Animation window](docs/editor/animation-window.mdx) with a timeline, Dope Sheet, and curve editor for keyframes and clips.
 - **Lighting** previews [game camera exposure](docs/rendering/exposure.mdx#the-scene-views-exposure) in the Scene View by default. Edit [day-cycle profiles](docs/rendering/day-cycle-profiles.mdx), including the camera exposure curve. Startup and template scenes include authored [bloom](docs/Bloom.html) settings. The Bloom Effect has a separate depth veil opacity control.
 - **Localization** has a dockable [Localization panel](docs/localization.html) for editing string catalogs and importing or exporting PO files.
-- **Media authoring** on Apple Silicon can use optional [Editroom and Compositor panels](Packages/media-workspaces/README.md). Build with the `editor-workspaces` feature and enable the package for the project. Compositor requires macOS 26 or later.
+- **Media authoring** on Apple Silicon can use optional [Editroom and Compositor panels](Packages/media-workspaces/README.md). Build with the `editor-workspaces` feature and enable each package you want to use in the project. Compositor requires macOS 26 or later.
 
 ## Highlights
 

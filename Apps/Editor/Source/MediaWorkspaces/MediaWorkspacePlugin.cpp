@@ -1,4 +1,8 @@
+#include "Editor/MediaWorkspaces/MediaWorkspacePlugin.h"
+
 #include "MediaWorkspacePanel.h"
+
+#include "Assets/AssetRegistry.h"
 
 #include "Editor/Registries/EditorPanelRegistry.h"
 
@@ -14,18 +18,17 @@ namespace
 class MediaWorkspacePlugin final : public IEditorPlugin
 {
   public:
-    const Plugins::PluginDescriptor& GetDescriptor() const override
+    MediaWorkspacePlugin(const char* id, const char* title)
+        : m_Descriptor{id, title, "0.1.0", true}
     {
-        static const Plugins::PluginDescriptor descriptor{
-            "media-workspaces", "Media Workspaces", "0.1.0", true};
-        return descriptor;
     }
+
+    const Plugins::PluginDescriptor& GetDescriptor() const override { return m_Descriptor; }
 
     void OnEditorAttach(const EditorHostServices& host) override
     {
         m_NativeHostForPanel = host.NativeHostForPanel;
-        RegisterPanel("Editroom");
-        RegisterPanel("Compositor");
+        RegisterPanel();
     }
 
     void OnEditorUpdate() override
@@ -73,32 +76,35 @@ class MediaWorkspacePlugin final : public IEditorPlugin
     }
 
   private:
-    void RegisterPanel(const std::string& name)
+    void RegisterPanel()
     {
+        const std::string name = m_Descriptor.DisplayName;
         EditorPanelDescriptor panel;
         panel.PanelId = name;
         panel.Title = name;
-        panel.AssetSourceAlias = MediaWorkspacePanel::kAssetSourceAlias;
+        panel.AssetSourceAlias = kAssetSourceAliasEditor;
         panel.LayoutAssetPath = MediaWorkspacePanel::kLayoutAssetPath;
         panel.StyleAssetPath = MediaWorkspacePanel::kStyleAssetPath;
         panel.DefaultDockAnchorPanelId = "SceneView";
         panel.Factory = [this, name] {
-            auto element = std::make_unique<MediaWorkspacePanel>(name);
+            auto element = std::make_unique<MediaWorkspacePanel>(name, m_Descriptor.Id);
             m_Panels.push_back(UIElement::MakeWeakRef(element.get()));
             return element;
         };
         EditorPanelRegistry::Get().RegisterPanel(std::move(panel));
     }
 
+    Plugins::PluginDescriptor m_Descriptor;
     std::vector<UIElement::WeakRef<MediaWorkspacePanel>> m_Panels;
     std::function<NativePanelHost(UIManager*)> m_NativeHostForPanel;
 };
 
-MediaWorkspacePlugin s_MediaWorkspacePlugin;
-struct RegisterMediaWorkspacePlugin
+} // namespace
+
+IEditorPlugin& GetMediaWorkspaceEditorPlugin(MediaWorkspaceKind kind)
 {
-    RegisterMediaWorkspacePlugin() { EditorPluginRegistry::Get().RegisterPlugin(s_MediaWorkspacePlugin); }
-};
-RegisterMediaWorkspacePlugin s_RegisterMediaWorkspacePlugin;
+    static MediaWorkspacePlugin editroom{"editroom", "Editroom"};
+    static MediaWorkspacePlugin compositor{"compositor", "Compositor"};
+    return kind == MediaWorkspaceKind::Editroom ? editroom : compositor;
 }
 }

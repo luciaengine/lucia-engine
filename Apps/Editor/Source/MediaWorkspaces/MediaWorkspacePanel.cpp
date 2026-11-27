@@ -2,6 +2,7 @@
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
+#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
@@ -112,9 +113,9 @@ struct MediaWorkspacePanel::Workspace
     }
 };
 
-MediaWorkspacePanel::MediaWorkspacePanel(std::string name)
-    : AssetBoundDockPanel(name, kAssetSourceAlias, kLayoutAssetPath, kStyleAssetPath),
-      m_Name(std::move(name))
+MediaWorkspacePanel::MediaWorkspacePanel(std::string name, std::string packageId)
+    : AssetBoundDockPanel(name, std::string(kAssetSourceAliasEditor), kLayoutAssetPath, kStyleAssetPath),
+      m_Name(std::move(name)), m_PackageId(std::move(packageId))
 {
 }
 
@@ -161,19 +162,18 @@ void MediaWorkspacePanel::LoadWorkspace()
     }
 #endif
     auto* assets = EngineCore::GetInstance().TryGetAssetManager();
-    const std::filesystem::path root = assets ? assets->GetRegistry().GetSourceRoot(kAssetSourceAlias)
-                                              : std::filesystem::path{};
-    if (root.empty())
+    if (!assets)
     {
-        SetStatus("The Media Workspaces package is unavailable.");
+        SetStatus("The project assets are unavailable.");
         return;
     }
 
+    const auto hostRoot = ApplicationPaths::GetExecutableDirectory() / "Packages" / m_PackageId / "Host";
 #if defined(__APPLE__)
-    const auto bundle = root.parent_path() / "Host" / (m_Name + ".app");
+    const auto bundle = hostRoot / (m_Name + ".app");
     const auto executable = bundle / "Contents" / "MacOS" / m_Name;
 #else
-    const auto bundle = root.parent_path() / "Host" / m_Name;
+    const auto bundle = hostRoot / m_Name;
 #if defined(_WIN32)
     const auto executable = bundle / "LuciaMediaWorkspace.dll";
 #else
