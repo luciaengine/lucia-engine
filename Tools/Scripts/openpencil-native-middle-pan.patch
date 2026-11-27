@@ -1,0 +1,106 @@
+--- a/packages/vue/src/canvas/useCanvasInput.ts
++++ b/packages/vue/src/canvas/useCanvasInput.ts
+@@ -59,4 +59,6 @@
+ ) {
+   const drag = ref<DragState | null>(null)
++  const usesNativeMiddlePan = typeof window !== 'undefined' && 'luciaNativeMiddlePan' in window
++  let nativeMiddlePanActive = false
+   const frameScheduler = getRenderScheduler(editor)
+   let pendingMove: MouseEvent | null = null
+@@ -254,4 +256,8 @@
+ 
+   function onMouseDown(e: MouseEvent) {
++    if (usesNativeMiddlePan && e.isTrusted && e.button === 1) {
++      e.preventDefault()
++      return
++    }
+     onActivate?.()
+     if (!isEnabled()) return
+@@ -294,5 +300,5 @@
+ 
+   function onMouseMove(e: MouseEvent) {
+-    if (!isEnabled()) return
++    if (!isEnabled() || (nativeMiddlePanActive && e.isTrusted)) return
+     pointerInside.value = true
+     const current = drag.value
+@@ -382,4 +388,5 @@
+ 
+   function cancelPointerInteraction() {
++    nativeMiddlePanActive = false
+     frameScheduler.cancel(flushPendingMove)
+     pendingMove = null
+@@ -394,4 +401,5 @@
+ 
+   function onPointerDown(e: PointerEvent) {
++    if (usesNativeMiddlePan && e.isTrusted && e.button === 1) return
+     if (e.pointerType !== 'mouse' || (e.button !== 0 && e.button !== 1)) return
+     canvasRef.value?.setPointerCapture(e.pointerId)
+@@ -399,5 +407,5 @@
+ 
+   function onPointerUp(e: PointerEvent) {
+-    if (e.pointerType !== 'mouse') return
++    if (e.pointerType !== 'mouse' || (e.button === 1 && nativeMiddlePanActive)) return
+     onMouseUp()
+     if (canvasRef.value?.hasPointerCapture(e.pointerId)) {
+@@ -407,5 +415,5 @@
+ 
+   function onPointerCancel(e: PointerEvent) {
+-    if (e.pointerType !== 'mouse') return
++    if (e.pointerType !== 'mouse' || nativeMiddlePanActive) return
+     cancelPointerInteraction()
+     if (canvasRef.value?.hasPointerCapture(e.pointerId)) {
+@@ -414,4 +422,36 @@
+   }
+ 
++  // AppKit forwards absolute positions before WebKit's gesture handling. The
++  // native view uses screen points while this canvas uses CSS pixels.
++  function onNativeMiddlePan(event: Event) {
++    const detail = (event as CustomEvent<{
++      phase: 'start' | 'move' | 'end'
++      x: number
++      y: number
++      width: number
++      height: number
++    }>).detail
++    if (!detail) return
++    if (detail.phase === 'end') {
++      if (nativeMiddlePanActive && drag.value?.type === 'pan') onMouseUp()
++      nativeMiddlePanActive = false
++      return
++    }
++
++    if (!isEnabled() || detail.width <= 0 || detail.height <= 0) return
++    const clientX = detail.x * window.innerWidth / detail.width
++    const clientY = detail.y * window.innerHeight / detail.height
++    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return
++
++    if (detail.phase === 'start') {
++      if (!canvasRef.value || document.elementFromPoint(clientX, clientY) !== canvasRef.value) return
++      onMouseDown(new MouseEvent('mousedown', { clientX, clientY, button: 1, buttons: 4 }))
++      nativeMiddlePanActive = drag.value?.type === 'pan'
++    } else if (nativeMiddlePanActive && drag.value?.type === 'pan') {
++      onMouseMove(new MouseEvent('mousemove', { clientX, clientY, button: 1, buttons: 4 }))
++    }
++  }
++
++  if (usesNativeMiddlePan) useEventListener(window, 'lucia-middle-pan', onNativeMiddlePan)
+   useEventListener(canvasRef, 'pointerdown', onPointerDown)
+   useEventListener(canvasRef, 'pointerup', onPointerUp)
+@@ -420,5 +460,7 @@
+   useEventListener(canvasRef, 'mousedown', onMouseDown)
+   useEventListener(canvasRef, 'mousemove', onMouseMove)
+-  useEventListener(canvasRef, 'mouseup', onMouseUp)
++  useEventListener(canvasRef, 'mouseup', (event) => {
++    if (!(nativeMiddlePanActive && event.button === 1)) onMouseUp()
++  })
+   useEventListener(window, 'keydown', (event) => {
+     if (guideInput.deleteSelected(event)) return
+@@ -479,6 +521,6 @@
+     window,
+     'mouseup',
+-    () => {
+-      if (drag.value) onMouseUp()
++    (event) => {
++      if (drag.value && !(nativeMiddlePanActive && event.button === 1)) onMouseUp()
+     },
+     { capture: true }

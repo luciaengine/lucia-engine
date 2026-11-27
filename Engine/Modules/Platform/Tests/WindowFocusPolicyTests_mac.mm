@@ -29,4 +29,80 @@ TEST(WindowFocusPolicyMacTests, ApplicationThatTakesNoFocusHidesWhenItBecomesAct
         EXPECT_TRUE([NSApp isHidden]);
     }
 }
+
+TEST(WindowFocusPolicyMacTests, RequestedEventWaitServicesTheMainRunLoop)
+{
+    @autoreleasepool {
+        Window::SetTakesFocus(false);
+        ASSERT_TRUE(Window::Initialize());
+        Window::PollEvents();
+
+        __block bool fired = false;
+        CFRunLoopTimerRef timer = CFRunLoopTimerCreateWithHandler(
+            kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 0.005, 0.0, 0, 0,
+            ^(CFRunLoopTimerRef) { fired = true; });
+        ASSERT_NE(timer, nullptr);
+        CFRunLoopAddTimer(CFRunLoopGetMain(), timer, kCFRunLoopDefaultMode);
+
+        Window::WaitOnNextEventPoll(0.030);
+        Window::PollEvents();
+
+        EXPECT_TRUE(fired);
+        CFRunLoopTimerInvalidate(timer);
+        CFRelease(timer);
+    }
+}
+
+TEST(WindowFocusPolicyMacTests, RequestedEventWaitBoundsDispatchAndCompletesWindowUpdates)
+{
+    @autoreleasepool {
+        Window::SetTakesFocus(false);
+        ASSERT_TRUE(Window::Initialize());
+        Window::PollEvents();
+
+        constexpr NSInteger kTestEvent = 0x4745;
+        constexpr int kQueuedEvents = 6;
+        __block int dispatched = 0;
+        __block bool updated = false;
+        id monitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskApplicationDefined
+                                                          handler:^NSEvent*(NSEvent* event)
+        {
+            if (event.data1 == kTestEvent)
+            {
+                ++dispatched;
+                [NSThread sleepForTimeInterval:0.004];
+            }
+            return event;
+        }];
+        NSNotificationCenter* notifications = [NSNotificationCenter defaultCenter];
+        id observer = [notifications addObserverForName:NSApplicationDidUpdateNotification
+                                                 object:NSApp
+                                                  queue:nil
+                                             usingBlock:^(NSNotification*) { updated |= dispatched > 0; }];
+        // Application-defined test events stay inside this process.
+        for (int index = 0; index < kQueuedEvents; ++index)
+        {
+            NSEvent* wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                              location:NSZeroPoint
+                                         modifierFlags:0
+                                             timestamp:0
+                                          windowNumber:0
+                                               context:nil
+                                               subtype:0
+                                                 data1:kTestEvent
+                                                 data2:0];
+            [NSApp postEvent:wake atStart:NO];
+        }
+
+        Window::WaitOnNextEventPoll(0.010);
+        Window::PollEvents();
+
+        EXPECT_GT(dispatched, 0);
+        EXPECT_LT(dispatched, kQueuedEvents);
+        EXPECT_TRUE(updated);
+        [notifications removeObserver:observer];
+        [NSEvent removeMonitor:monitor];
+        Window::PollEvents();
+    }
+}
 }  // namespace

@@ -490,6 +490,8 @@ void TextureService::ReprovisionAfterDeviceRebuild()
         m_PendingGpuUploads.clear();
         m_PendingTextureBinds.clear();
         m_PendingTextureReupload.clear();
+        m_PendingEditorTexturePreviews.Clear();
+        m_ResidentEditorTexturePreviews.Clear();
         m_TextureLoadsKicked.clear();
         m_MaterialTextureRefs.clear();
         m_TextureToMaterialBindings.clear();
@@ -631,6 +633,12 @@ void TextureService::Shutdown()
     DrainUploadJobs();
     CancelPendingLoads();
     m_CpuTextureSources->Shutdown(m_Device);
+    for (const auto& [guid, preview] : m_ResidentEditorTexturePreviews)
+    {
+        (void)guid;
+        RetireCacheEntry(preview.Original);
+    }
+    m_ResidentEditorTexturePreviews.Clear();
 
     if (m_Device)
     {
@@ -2768,6 +2776,8 @@ void TextureService::FlushPendingUploads()
             HotSwapTexture(g);
     }
 
+    FlushEditorTexturePreviews();
+
     // Retire duplicates left by concurrent registrations (GetBindlessIndex /
     // GetSampler / GetOrUpload). Those entry points run on ECS extraction workers
     // and — under GE_PARALLEL_RECORD — render-graph record workers; the losers
@@ -3184,6 +3194,102 @@ void TextureService::RequestReupload(const GUID& textureGuid)
     }
 }
 
+void TextureService::QueueEditorTexturePreview(const GUID& textureGuid, uint32_t width, uint32_t height,
+                                               std::span<const uint8_t> pixels)
+{
+    if (textureGuid.IsNull())
+        return;
+    if (!pixels.empty() && (height == 0 || width == 0 || pixels.size() % 4 != 0 ||
+                            pixels.size() / 4 % height != 0 || pixels.size() / 4 / height != width))
+        return;
+
+    std::lock_guard lock(m_PendingTexturesMutex);
+    auto& preview = m_PendingEditorTexturePreviews.GetOrInsert(textureGuid);
+    preview.Width = width;
+    preview.Height = height;
+    preview.Pixels.assign(pixels.begin(), pixels.end());
+}
+
+void TextureService::FlushEditorTexturePreviews()
+{
+    FlatMap<GUID, EditorTexturePreview> pending;
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        std::swap(pending, m_PendingEditorTexturePreviews);
+    }
+
+    for (const auto& [guid, preview] : pending)
+    {
+        const auto* current = m_ResidentEditorTexturePreviews.Find(guid);
+        TextureGPUCache::Entry cached;
+        m_TextureGPUCache.TryGet(guid, cached);
+        if (preview.Pixels.empty())
+        {
+            if (current)
+            {
+                const auto original = current->Original;
+                const bool wasBound = current->Texture == cached.Texture;
+                m_ResidentEditorTexturePreviews.Erase(guid);
+                if (wasBound && original.Texture.IsValid())
+                    HotSwapTexture(guid, original);
+                else if (wasBound)
+                    HotSwapTexture(guid);
+                else
+                    RetireCacheEntry(original);
+            }
+            continue;
+        }
+
+        TextureHandle texture;
+        const bool previewWasBound = current && current->Texture == cached.Texture;
+        const bool reuse = previewWasBound && current->Width == preview.Width && current->Height == preview.Height;
+        if (reuse)
+            texture = cached.Texture;
+        else
+        {
+            AssetMetadata metadata{};
+            auto& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
+            if (!registry.TryGetAssetMetadata(guid, metadata))
+                continue;
+
+            Rendering::TextureDesc desc{};
+            desc.width = preview.Width;
+            desc.height = preview.Height;
+            const auto colorSpace = ResolveTextureColorSpace(metadata.Path, TextureColorSpace::SRGB);
+            desc.format = static_cast<uint32_t>(colorSpace == TextureColorSpace::Linear
+                ? Rendering::TextureFormat::RGBA8_UNORM : Rendering::TextureFormat::RGBA8_SRGB);
+            desc.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource) |
+                         static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
+            desc.persistent = true;
+            desc.debugName = "EditorTexturePreview";
+            texture = m_Device->CreateTexture(desc);
+            if (!texture.IsValid())
+                continue;
+        }
+
+        Rendering::TextureUploadEntry upload{texture, preview.Pixels.data(), preview.Width, preview.Height, 1,
+            static_cast<size_t>(preview.Width) * 4, 0,
+            reuse ? Rendering::ResourceState::ShaderResource : Rendering::ResourceState::Undefined};
+        if (!Rendering::UploadTexturesBatched(m_Device, &upload, 1, "EditorTexturePreviewUpload"))
+        {
+            if (!reuse)
+                m_Device->DestroyTexture(texture);
+            continue;
+        }
+        if (!reuse)
+        {
+            const auto original = previewWasBound ? current->Original : cached;
+            HotSwapTexture(guid, {texture, {}}, !previewWasBound);
+            if (m_TextureGPUCache.TryGet(guid, cached) && cached.Texture == texture)
+            {
+                if (current && !previewWasBound)
+                    RetireCacheEntry(current->Original);
+                m_ResidentEditorTexturePreviews.InsertOrAssign(guid, {preview.Width, preview.Height, texture, original});
+            }
+        }
+    }
+}
+
 void TextureService::RequestRecook(const GUID& textureGuid, AssetLoadPriority priority)
 {
     if (textureGuid.IsNull())
@@ -3231,7 +3337,7 @@ TextureGPUCache::Entry TextureService::UploadForHotSwap(const GUID& textureGuid)
     return prepared ? SubmitPreparedUpload(textureGuid, *prepared) : TextureGPUCache::Entry{};
 }
 
-void TextureService::HotSwapTexture(const GUID& textureGuid)
+void TextureService::HotSwapTexture(const GUID& textureGuid, TextureGPUCache::Entry replacement, bool keepPrevious)
 {
     if (textureGuid.IsNull() || !m_Device)
         return;
@@ -3243,7 +3349,7 @@ void TextureService::HotSwapTexture(const GUID& textureGuid)
 
     // Re-upload with the current metadata (color space + swizzle) into a new GPU
     // texture, re-cached under the same GUID.
-    const TextureGPUCache::Entry newEntry = UploadForHotSwap(textureGuid);
+    const TextureGPUCache::Entry newEntry = replacement.Texture.IsValid() ? replacement : UploadForHotSwap(textureGuid);
     if (!newEntry.Texture.IsValid())
     {
         // Upload failed (missing/broken file) — keep the old binding intact.
@@ -3268,6 +3374,8 @@ void TextureService::HotSwapTexture(const GUID& textureGuid)
         RetireCacheEntry(newEntry);
         return;
     }
+
+    m_TextureGPUCache.Set(textureGuid, newEntry);
 
     // Snapshot the materials bound to this texture (the reverse map is guarded by
     // the pending mutex), then atomically repoint each slot to the new handle/index.
@@ -3295,7 +3403,8 @@ void TextureService::HotSwapTexture(const GUID& textureGuid)
     // No material references the old textures now: free their bindless slots and
     // destroy them (the device defers the VkImage teardown past frames-in-flight,
     // same as Evict).
-    RetireCacheEntry(oldEntry);
+    if (!keepPrevious)
+        RetireCacheEntry(oldEntry);
     RetireCacheEntry(oldStream);
 }
 

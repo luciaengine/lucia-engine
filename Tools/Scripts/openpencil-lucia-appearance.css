@@ -1,0 +1,50 @@
+.lucia-embedded [data-test-id="layers-panel"] {
+  --color-panel: var(--ui_color_bg_panel);
+}
+
+/* Rows and viewport share the Hierarchy's font size so name measurements match. */
+.lucia-embedded [data-test-id="layers-tree"] :is([data-slot="viewport"], [data-slot="row"], [data-slot="rename-input"]) {
+  font-size: 0.875rem;
+}
+
+.lucia-embedded [data-test-id="layers-tree"] [data-slot="row"]:not([data-drop-position]) {
+  background-color: var(--ui_color_bg_panel);
+  color: var(--ui_color_text_dim);
+}
+
+.lucia-embedded [data-test-id="layers-tree"] [data-slot="row"]:hover:not([data-drop-position]) {
+  background-color: var(--ui_color_bg_hover_alt);
+  color: var(--ui_color_text_bright);
+}
+
+.lucia-embedded [data-test-id="layers-tree"] [data-slot="row"][data-selected]:not([data-drop-position]) {
+  background-color: var(--ui_color_bg_selected);
+  color: var(--ui_color_text_bright);
+}
+
+.lucia-embedded [data-test-id="layers-tree"] [data-slot="row"][data-hidden] {
+  opacity: 1;
+}
+
+.lucia-embedded [data-test-id="layers-tree"] [data-slot="row"][data-hidden] :is([data-slot="label"], [data-slot="icon"]) {
+  opacity: 0.45;
+}
+
+.lucia-embedded [data-test-id="layers-tree"] [data-slot="action"] {
+  color: var(--ui_icon_tint_standard);
+}
+
+.lucia-embedded [data-test-id="layers-tree"] [data-slot="action"]:is(:hover, :focus-visible) {
+  color: var(--ui_icon_tint_hover);
+}
+
+/* Native Inspector section headings and labels are 13 px at default scale. */
+.lucia-embedded [data-test-id="properties-design-inspector"],
+.lucia-embedded [data-test-id="properties-design-inspector"] :is(.text-2xs, .text-xs, [role="heading"], input, select),
+.lucia-embedded [data-test-id="properties-panel"] :is([role="tab"], [data-test-id="zoom-dropdown-trigger"]) {
+  font-size: 0.8125rem;
+}
+
+.lucia-embedded [data-test-id="properties-design-inspector"] [role="heading"][aria-level="3"] {
+  font-weight: 400;
+}

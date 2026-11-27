@@ -289,6 +289,10 @@ protected:
      */
     virtual void RunPlatformLoop();
 
+    /// After an event poll, an application can let a native interaction hold the main loop.
+    /// Exit and native refresh frames are still handled before this hook is called.
+    virtual bool DeferFrameForNativeEvents() { return false; }
+
     /**
      * @brief The window input chain a gamepad's state and button edges enter.
      *

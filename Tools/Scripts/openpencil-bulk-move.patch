@@ -1,0 +1,120 @@
+--- a/packages/vue/src/controls/constraints/use.ts
++++ b/packages/vue/src/controls/constraints/use.ts
+@@ -34,7 +34,9 @@
+     )
+   })
+   const layerIds = computed(() => new Set(layers.value.map((layer) => layer.id)))
+-  useEditorEvent('node:updated', (id) => {
++  useEditorEvent('node:updated', (id, changes) => {
++    // Position writes do not change which layers own constraints or the constraints they hold.
++    if (Object.keys(changes).every((key) => key === 'x' || key === 'y')) return
+     if (layerIds.value.has(id)) revision.value++
+   })
+   const horizontal = computed<ConstraintValue>(
+--- a/packages/vue/src/editor/selection-state/nodes.ts
++++ b/packages/vue/src/editor/selection-state/nodes.ts
+@@ -1,5 +1,5 @@
+ import { tryOnScopeDispose, watchImmediate } from '@vueuse/core'
+-import { computed, shallowReactive, shallowRef } from 'vue'
++import { computed, effectScope, shallowReactive, shallowRef } from 'vue'
+ import type { ComputedRef, Ref } from 'vue'
+
+ import type { Editor } from '@open-pencil/core'
+@@ -51,7 +51,12 @@
+   function updatePreview(id: string, changes: Partial<SceneNode>) {
+     if (!editor.state.selectedIds.has(id)) return
+     const selected = byId.value.get(id)
+-    if (selected) Object.assign(selected, structuredClone(changes))
++    if (!selected) return
++    if (Object.keys(changes).every((key) => key === 'x' || key === 'y')) {
++      Object.assign(selected, changes)
++    } else {
++      Object.assign(selected, structuredClone(changes))
++    }
+   }
+
+   const dispose = watchImmediate(
+@@ -74,8 +79,41 @@
+   return { nodes, node, dispose }
+ }
+
++interface SharedSelection {
++  state: SelectedNodeState
++  users: number
++}
++
++const selections = new WeakMap<Editor, Map<Readonly<Ref<boolean>> | undefined, SharedSelection>>()
++
+ export function useSelectedNodeState(editor = useEditor()): SelectedNodeState {
+-  const state = createSelectedNodeState(editor, useRetainedActivity())
+-  tryOnScopeDispose(state.dispose)
+-  return state
++  const active = useRetainedActivity()
++  let scopes = selections.get(editor)
++  if (!scopes) {
++    scopes = new Map()
++    selections.set(editor, scopes)
++  }
++
++  let selection = scopes.get(active)
++  if (!selection) {
++    // The first control to subscribe can unmount while the other controls still use this state.
++    const scope = effectScope(true)
++    const state = scope.run(() => createSelectedNodeState(editor, active))!
++    selection = { state: { ...state, dispose: () => scope.stop() }, users: 0 }
++    scopes.set(active, selection)
++  }
++
++  const shared = selection
++  const subscriptions = scopes
++  shared.users++
++  let disposed = false
++  const dispose = () => {
++    if (disposed) return
++    disposed = true
++    if (--shared.users > 0) return
++    shared.state.dispose()
++    subscriptions.delete(active)
++  }
++  tryOnScopeDispose(dispose)
++  return { ...shared.state, dispose }
+ }
+--- a/packages/vue/tests/editor/selection-state/nodes.test.ts
++++ b/packages/vue/tests/editor/selection-state/nodes.test.ts
+@@ -251,7 +251,36 @@
+       fixture.dispose()
+     }
+   })
++
++  test('shares live projections until the last consumer disposes', () => {
++    const fixture = setup()
++    const { editor, first, second } = fixture
++    const firstScope = effectScope()
++    const secondScope = effectScope()
++    try {
++      editor.select([first.id, second.id])
++      const firstConsumer = firstScope.run(() => useSelectedNodeState(editor))!
++      const secondConsumer = secondScope.run(() => useSelectedNodeState(editor))!
++      expect(firstConsumer.nodes.value).toBe(secondConsumer.nodes.value)
++      const projected = secondConsumer.nodes.value.find((node) => node.id === second.id)!
+
++      firstScope.stop()
++      editor.graph.updateNodePositionPreview(second.id, 120, 35)
++      expect(projected.x).toBe(120)
++      expect(projected.y).toBe(35)
++      expect(secondConsumer.nodes.value).toBe(firstConsumer.nodes.value)
++
++      secondScope.stop()
++      editor.graph.updateNodePositionPreview(second.id, 180, 50)
++      expect(projected.x).toBe(120)
++      expect(projected.y).toBe(35)
++    } finally {
++      firstScope.stop()
++      secondScope.stop()
++      fixture.dispose()
++    }
++  })
++
+   test('releases preview subscriptions with the consuming scope', () => {
+     const fixture = setup()
+     const { editor, first } = fixture

@@ -1,0 +1,162 @@
+--- a/packages/core/src/editor/types.ts
++++ b/packages/core/src/editor/types.ts
+@@ -147,6 +147,7 @@
+   currentPageId: string
+   selectedIds: Set<string>
+   marquee: Rect | null
++  marqueePreviewIds: Set<string> | null
+   snapGuides: SnapGuide[]
+   /**
+    * Points the host adds to what the pen and vector edit mode snap to, on the current page
+--- a/packages/core/src/editor/state/view.ts
++++ b/packages/core/src/editor/state/view.ts
+@@ -7,6 +7,7 @@
+     currentPageId: pageId,
+     selectedIds: new Set<string>(),
+     marquee: null,
++    marqueePreviewIds: null,
+     snapGuides: [],
+     snapTargets: { points: [] },
+     guides: createGuideOverlayState(),
+@@ -46,6 +47,7 @@
+     ...source,
+     selectedIds: new Set(source.selectedIds),
+     marquee: structuredClone(source.marquee),
++    marqueePreviewIds: source.marqueePreviewIds ? new Set(source.marqueePreviewIds) : null,
+     snapGuides: structuredClone(source.snapGuides),
+     snapTargets: structuredClone(source.snapTargets),
+     guides: structuredClone(source.guides),
+--- a/src/app/editor/panes/state.ts
++++ b/src/app/editor/panes/state.ts
+@@ -37,6 +37,7 @@
+     measurementMode: 'off',
+     editingTextId: null,
+     marquee: null,
++    marqueePreviewIds: null,
+     snapGuides: [],
+     guides: { preview: null, hovered: null, selected: null, redline: null },
+     rotationPreview: null,
+--- a/packages/core/src/editor/selection/overlays.ts
++++ b/packages/core/src/editor/selection/overlays.ts
+@@ -8,8 +8,9 @@
+ import type { ShapeHandleHover, EditorContext } from '#core/editor/types'
+
+ export function createSelectionOverlayActions(ctx: EditorContext) {
+-  function setMarquee(rect: Rect | null) {
++  function setMarquee(rect: Rect | null, previewIds: Set<string> | null = null) {
+     ctx.state.marquee = rect
++    ctx.state.marqueePreviewIds = previewIds
+     ctx.requestRepaint()
+   }
+
+--- a/packages/core/src/editor/selection.ts
++++ b/packages/core/src/editor/selection.ts
+@@ -1,4 +1,5 @@
+ import { generatedFrameOwner } from '@open-pencil/scene-graph/generated'
++import type { Rect } from '@open-pencil/scene-graph/primitives'
+
+ import { createSelectionContainerActions } from './selection/container'
+ import { createSelectionHitTestActions } from './selection/hit-test'
+@@ -78,6 +79,10 @@
+   const overlayActions = createSelectionOverlayActions(ctx)
+   const readActions = createSelectionReadActions(ctx)
+
++  function previewMarquee(rect: Rect, ids: string[]) {
++    overlayActions.setMarquee(rect, outermost(ids.map(selectable)))
++  }
++
+   return {
+     select,
+     clearSelection,
+@@ -85,6 +90,7 @@
+     selectInverse,
+     ...navigationActions,
+     ...overlayActions,
++    previewMarquee,
+     ...containerActions,
+     ...readActions,
+     ...hitTestActions
+--- a/packages/core/src/canvas/renderer/pipeline.ts
++++ b/packages/core/src/canvas/renderer/pipeline.ts
+@@ -110,7 +110,7 @@
+   render(
+     r,
+     graph,
+-    editChrome ? state.selectedIds : new Set<string>(),
++    editChrome ? (state.marqueePreviewIds ?? state.selectedIds) : new Set<string>(),
+     {
+       playing: !editChrome,
+       playIslands: live ? new Set(playIslandRoots(graph, state.currentPageId)) : undefined,
+--- a/packages/vue/src/canvas/transform/marquee.ts
++++ b/packages/vue/src/canvas/transform/marquee.ts
+@@ -37,8 +37,7 @@
+     if (enclose ? encloses(marquee, bounds) : intersects(marquee, bounds)) hits.push(node.id)
+   }
+
+-  editor.select(hits)
+-  editor.setMarquee(marquee)
++  editor.previewMarquee(marquee, hits)
+ }
+
+ /**
+@@ -51,6 +50,8 @@
+   const zoom = editor.state.zoom
+   const dragged =
+     !!marquee && isPastPointerDragThreshold(0, 0, marquee.width * zoom, marquee.height * zoom)
++  const hits = editor.state.marqueePreviewIds
++  editor.setMarquee(null)
+   if (!dragged && d.selectsSection && container?.type === 'SECTION') editor.select([container.id])
+-  editor.setMarquee(null)
++  else if (hits) editor.select([...hits])
+ }
+--- a/packages/vue/src/canvas/pointer/drag.ts
++++ b/packages/vue/src/canvas/pointer/drag.ts
+@@ -22,6 +22,7 @@
+ /** Drags Escape abandons, leaving the document as it was before the press. */
+ export const ESCAPABLE_DRAGS: ReadonlySet<DragType> = new Set<DragType>([
+   'draw',
++  'marquee',
+   'gradient',
+   'blur-ramp',
+   'rotate',
+@@ -213,5 +214,6 @@
+   discardDrawnPreview(d, editor)
+   if (d.type === 'move') cancelMove(d, editor)
+   else if (d.type === 'rotate' || d.type === 'rotate-selection') cancelRotationDrag(editor, d)
++  else if (d.type === 'marquee') editor.setMarquee(null)
+   else cancelNodeEditDrag(d, editor)
+ }
+--- a/packages/vue/src/canvas/useCanvasInput.ts
++++ b/packages/vue/src/canvas/useCanvasInput.ts
+@@ -468,7 +468,8 @@
+     (event) =>
+       editor.onEditorEvent(event, () => {
+         const type = drag.value?.type
+-        if (type && SELECTION_BOUND_DRAGS.has(type)) cancelPointerInteraction()
++        if (type && (SELECTION_BOUND_DRAGS.has(type) || (type === 'marquee' && event !== 'selection:changed')))
++          cancelPointerInteraction()
+       })
+   )
+   onScopeDispose(() => {
+--- a/tests/e2e/canvas/marquee-visual.spec.ts
++++ b/tests/e2e/canvas/marquee-visual.spec.ts
+@@ -27,7 +27,11 @@
+   await page.mouse.move(box.x + 450, box.y + 350, { steps: 10 })
+   await canvas.waitForRender()
+
+-  expect(await getSelectedIds(page), 'the marquee catches one layer').toBe(1)
++  const previewCount = await page.evaluate(
++    () => window.openPencil?.getStore?.().state.marqueePreviewIds?.size
++  )
++  expect(previewCount, 'the marquee previews one layer').toBe(1)
++  expect(await getSelectedIds(page), 'the selection is committed on release').toBe(0)
+
+   // The marquee's top-left corner against the page, short of the caught layer and its handles.
+   expect(await canvas.screenshotCanvasRegion(95, 130)).toMatchSnapshot('marquee-border.png', {
+@@ -37,5 +41,6 @@
+
+   await page.mouse.up()
+   await canvas.waitForRender()
++  expect(await getSelectedIds(page)).toBe(1)
+   canvas.assertNoErrors()
+ })

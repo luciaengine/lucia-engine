@@ -1,0 +1,25 @@
+--- a/packages/vue/src/shared/input/draw.ts
++++ b/packages/vue/src/shared/input/draw.ts
+@@ -138,6 +138,7 @@
+   const graph = editor.graph
+   const preview = editor.beginNodePreview('Draw dimensions')
+   let finished = false
++  let lastGeometry: Partial<SceneNode> | undefined
+
+   function cancel() {
+     if (finished) return
+@@ -194,7 +195,13 @@
+     snap,
+     nodeId,
+     update: (changes) => {
+-      if (!finished) preview.update(nodeId, changes)
++      if (finished) return
++      if (lastGeometry &&
++          lastGeometry.x === changes.x && lastGeometry.y === changes.y &&
++          lastGeometry.width === changes.width && lastGeometry.height === changes.height &&
++          lastGeometry.rotation === changes.rotation) return
++      preview.update(nodeId, changes)
++      lastGeometry = changes
+     },
+     commit,
+     cancel

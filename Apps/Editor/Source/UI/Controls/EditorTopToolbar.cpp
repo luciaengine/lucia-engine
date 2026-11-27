@@ -284,6 +284,22 @@ void EditorTopToolbar::WireControls(UIElement* rootEl, Platform::Window* window,
             btn->RegisterEventHandler(kEventButtonClick, [fn = cb.onUniversalSearchClicked](UIEvent&) { fn(); });
     }
 
+    m_SessionButton = dynamic_cast<Button*>(rootEl->FindById(HashStringId("TopToolbarSession")));
+    if (m_SessionButton && cb.onSessionClicked)
+    {
+        m_SessionButton->SetText(m_SessionStarted ? "End Session" : "Start Session");
+        m_SessionButton->RegisterEventHandler(kEventButtonClick, [fn = cb.onSessionClicked](UIEvent&) { fn(); });
+    }
+
+    m_InviteButton = dynamic_cast<Button*>(rootEl->FindById(HashStringId("TopToolbarInvite")));
+    if (m_InviteButton && cb.onInviteClicked)
+    {
+        m_InviteButton->SetTooltip("Copy collaboration invite link");
+        m_InviteButton->RegisterEventHandler(kEventButtonClick, [fn = cb.onInviteClicked](UIEvent&) { fn(); });
+        if (m_InviteAvailable)
+            m_InviteButton->RemoveClass("hidden");
+    }
+
     m_GetPanelMenuEntries = cb.getPanelMenuEntries;
     m_OpenPanel = cb.onPanelMenuEntryClicked;
 
@@ -622,6 +638,28 @@ void EditorTopToolbar::UpdatePlayModeState(Editor::PlayModeState s)
              s == Editor::PlayModeState::ExitingPlay);
         m_StopButton->SetEnabled(enableStop);
     }
+}
+
+void EditorTopToolbar::SetSessionStarted(bool started)
+{
+    if (m_SessionStarted == started)
+        return;
+    m_SessionStarted = started;
+    if (m_SessionButton)
+        m_SessionButton->SetText(started ? "End Session" : "Start Session");
+}
+
+void EditorTopToolbar::SetInviteAvailable(bool available)
+{
+    if (m_InviteAvailable == available)
+        return;
+    m_InviteAvailable = available;
+    if (!m_InviteButton)
+        return;
+    if (available)
+        m_InviteButton->RemoveClass("hidden");
+    else
+        m_InviteButton->AddClass("hidden");
 }
 
 void EditorTopToolbar::SetSaveDirty(bool dirty)

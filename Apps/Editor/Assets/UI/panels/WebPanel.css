@@ -160,3 +160,7 @@
   border-radius: 4px;
   overflow: hidden;
 }
+
+.web-panel-bundled-app .web-controls {
+    display: none;
+}

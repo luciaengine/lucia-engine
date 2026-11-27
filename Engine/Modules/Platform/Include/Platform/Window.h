@@ -71,7 +71,7 @@ class Window
     // Native handle for swapchain/surface creation
     void* GetNativeHandle() const;     // returns GLFWwindow*
     GLFWwindow* GetGLFWHandle() const; // convenience
-    // AppKit window used to host native editor views on macOS.
+    // Native parent for editor views (NSWindow, HWND, or X11 window ID).
     void* GetNativeViewHost() const;
 
     // Window queries
@@ -178,6 +178,10 @@ class Window
     // Global event pump
     static bool Initialize();
     static void PollEvents();
+#if defined(__APPLE__) && !defined(GE_PLATFORM_MOBILE)
+    /// Let AppKit service its run loop while waiting for input on the next event poll only.
+    static void WaitOnNextEventPoll(double timeoutSeconds);
+#endif
     static void Terminate();
 
     // Global cursor helpers (best-effort cross-platform; fully implemented on Win32)

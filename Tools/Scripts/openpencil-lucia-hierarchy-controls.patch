@@ -1,0 +1,109 @@
+--- a/src/components/LayerTree/LayerTree.vue
++++ b/src/components/LayerTree/LayerTree.vue
+@@ -61,5 +61,7 @@
+ const storedIconSize = useLocalStorage('lucia-layer-tree-icon-size', 0)
+ const iconOverride = computed(() =>
+-  bundledInLucia && storedIconSize.value > 0 ? Math.min(64, Math.round(storedIconSize.value)) : null
++  bundledInLucia
++    ? Math.max(16, Math.min(64, Math.round(storedIconSize.value || 20)))
++    : null
+ )
+ const { rowHeight, iconSize, indent, nameStart, buttons, badge, badgeTextSize, issueMark } =
+@@ -79,5 +81,5 @@
+   const current = storedIconSize.value > 0 ? storedIconSize.value : iconSize.value
+   // Match the Hierarchy's one icon pixel per forty wheel pixels.
+-  storedIconSize.value = Math.max(12, Math.min(64, current - event.deltaY * unit / 40))
++  storedIconSize.value = Math.max(16, Math.min(64, current - event.deltaY * unit / 40))
+ }
+ 
+@@ -301,4 +303,5 @@
+           v-bind="attrs"
+           class="relative flex min-h-0 flex-1 flex-col overflow-hidden px-1"
++          :class="{ 'lucia-layer-tree': bundledInLucia }"
+           :style="{ '--lucia-layer-icon-size': bundledInLucia ? `${iconSize}px` : undefined }"
+           @wheel="resizeLayerIcons"
+@@ -389,8 +392,13 @@
+           />
+           <div v-if="bundledInLucia" class="flex h-8 shrink-0 items-center gap-2 border-t border-border px-2">
+-            <span class="shrink-0 text-xs text-muted">Icon size</span>
++            <img
++              src="./lucia-row-size.svg"
++              alt=""
++              title="Row size"
++              class="size-4 shrink-0 opacity-70"
++            />
+             <SliderRoot
+               :model-value="[iconSize]"
+-              :min="12"
++              :min="16"
+               :max="64"
+               :step="1"
+@@ -416,2 +424,48 @@
+   </LayerTreeRoot>
+ </template>
++
++<style scoped>
++/* Match the Hierarchy's disclosure glyph and keep row controls available at compact sizes. */
++.lucia-layer-tree :deep([data-slot="disclosure"]) {
++  rotate: none;
++  transform: none;
++  height: 16px;
++  opacity: 0.65;
++}
++.lucia-layer-tree :deep([data-slot="disclosure"]:hover) {
++  opacity: 1;
++}
++.lucia-layer-tree :deep([data-slot="disclosure"] svg) {
++  display: none;
++}
++.lucia-layer-tree :deep([data-slot="disclosure"])::before {
++  content: "";
++  width: 16px;
++  height: 16px;
++  background: currentColor;
++  mask: url("./lucia-layer-arrow-right.svg") center / contain no-repeat;
++}
++.lucia-layer-tree :deep([data-slot="disclosure"][aria-expanded="true"])::before {
++  mask-image: url("./lucia-layer-arrow-down.svg");
++}
++.lucia-layer-tree :deep([dir="rtl"] [data-slot="disclosure"][aria-expanded="false"])::before,
++.lucia-layer-tree:dir(rtl) :deep([data-slot="disclosure"][aria-expanded="false"])::before {
++  transform: scaleX(-1);
++}
++.lucia-layer-tree :deep([data-slot="trailing"]) {
++  padding-inline-end: 8px;
++  background-color: inherit;
++}
++.lucia-layer-tree :deep([data-slot="actions"]) {
++  column-gap: 6px;
++  opacity: 1;
++}
++.lucia-layer-tree :deep([data-slot="action-icon"]) {
++  opacity: 0.7;
++}
++.lucia-layer-tree :deep([data-slot="actions"][data-persistent] [data-slot="action-icon"]),
++.lucia-layer-tree :deep([data-slot="action"]:hover [data-slot="action-icon"]),
++.lucia-layer-tree :deep([data-slot="action"]:focus-visible [data-slot="action-icon"]) {
++  opacity: 1;
++}
++</style>
+--- a/src/components/LayerTree/geometry.ts
++++ b/src/components/LayerTree/geometry.ts
+@@ -28,10 +28,15 @@
+ export function useLayerTreeGeometry(iconOverride = inject(iconSizeKey, null)) {
+   const iconSize = computed(() => iconOverride?.value ?? remToPx(ICON_SIZE_REM))
++  const bundled = computed(() => iconOverride?.value != null)
+   return {
+     iconSize,
+-    rowHeight: computed(() => Math.max(remToPx(ROW_HEIGHT_REM), iconSize.value + 4)),
++    rowHeight: computed(() => {
++      if (!bundled.value) return Math.max(remToPx(ROW_HEIGHT_REM), iconSize.value + 4)
++      // Follow DeriveEditorTreeRowHeightFromIconSize in Lucia's Hierarchy.
++      return iconSize.value + Math.max(0, iconSize.value - 20) * (4 / 44)
++    }),
+     indent: computed(() => remToPx(INDENT_REM)),
+     nameStart: computed(() => remToPx(NAME_START_REM - ICON_SIZE_REM) + iconSize.value),
+-    buttons: computed(() => remToPx(BUTTONS_REM)),
++    buttons: computed(() => bundled.value ? remToPx(BUTTONS_REM) + 8 : remToPx(BUTTONS_REM)),
+     /** Space a variable mode badge takes besides its text. */
+     badge: computed(() => remToPx(BADGE_GAP_REM + BADGE_PADDING_REM) + BADGE_BORDER_PX),

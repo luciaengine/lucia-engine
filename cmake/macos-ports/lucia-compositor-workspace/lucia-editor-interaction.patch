@@ -1,0 +1,45 @@
+--- a/Compositor/Rendering/EditorCanvas.swift
++++ b/Compositor/Rendering/EditorCanvas.swift
+@@ -2386,7 +2386,14 @@
+     override func scrollWheel(with event: NSEvent) {
+         guard transformDrag == nil, cropDrag == nil, !guideDragging, session.brushStroke == nil, session.warpStroke == nil else { return }
+         guard session.document != nil else { return }
+-        if event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option) {
++        let requestsZoom = event.modifierFlags.contains(.command) || event.modifierFlags.contains(.option)
++        #if LUCIA_HOSTED
++        let wheelZooms = !event.hasPreciseScrollingDeltas && event.scrollingDeltaY != 0
++            && !event.modifierFlags.contains(.shift)
++        #else
++        let wheelZooms = false
++        #endif
++        if requestsZoom || wheelZooms {
+             session.zoom(to: session.viewport.zoom * Self.wheelZoomFactor(deltaY: event.scrollingDeltaY,
+                                                                          inverted: event.isDirectionInvertedFromDevice),
+                          anchor: convert(event.locationInWindow, from: nil))
+@@ -2397,7 +2404,7 @@
+             redrawRulers()
+         }
+     }
+-    /// How much an Option- or Command-scroll zooms: in as the wheel turns away from you, out as it turns toward you, as in
++    /// How much a scroll-to-zoom event zooms. A wheel turn away from the user zooms in, and a turn toward the user zooms out.
+     /// Photoshop and every other editor, whichever way macOS's natural scrolling is set. That setting flips the deltas,
+     /// so they're turned back to the way the wheel or fingers actually moved; read as they came, the zoom went backwards
+     /// for anyone with natural scrolling off.
+--- a/Compositor/ContentView.swift
++++ b/Compositor/ContentView.swift
+@@ -201,6 +201,7 @@
+         }
+         .onAppear { applicationDelegate?.showEditor = { openWindow(id: "editor") } }
+         .preferredColorScheme(.dark)
++        #if !LUCIA_HOSTED
+         // Canvas Only (F): the canvas runs up under where the title bar was, so no gray strip is left across the top.
+         // The toolbar itself is hidden and shown by the window (see `toggleCanvasOnly`), which lays its buttons out
+         // again properly; hidden here instead, it came back with the tabs over the window buttons.
+@@ -249,6 +250,7 @@
+                 .padding(.horizontal, 4)
+             }
+         }
++        #endif
+     }
+ 
+     var body: some View {

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lucia Collaboration</title>
+  <link rel="stylesheet" href="/room.css">
+  <script type="module" src="/room.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Lucia Collaboration</h1>
+    <form id="join">
+      <label>Display name <input name="name" maxlength="48" autocomplete="nickname" required></label>
+      <div id="room-fields">
+        <label>Room <input name="room" value="scene" maxlength="80" required></label>
+        <label>Invite token <input name="token" type="password" minlength="24" maxlength="512" required></label>
+      </div>
+      <button>Join</button>
+    </form>
+    <section id="session" hidden>
+      <div class="controls">
+        <label>Call <select id="peers" aria-label="Collaborator"></select></label>
+        <button id="call" type="button">Start call</button>
+        <button id="leave" type="button">Leave room</button>
+      </div>
+      <div class="controls" id="incoming" hidden>
+        <span id="caller"></span>
+        <button id="accept" type="button">Accept</button>
+        <button id="decline" type="button">Decline</button>
+      </div>
+      <section id="media" hidden aria-label="Call">
+        <video id="remote" autoplay playsinline controls></video>
+        <video id="local" autoplay playsinline muted></video>
+        <div class="controls">
+          <button id="mic" type="button" aria-pressed="false">Turn mic on</button>
+          <button id="camera" type="button" aria-pressed="false">Turn camera on</button>
+          <button id="hangup" type="button">End call</button>
+        </div>
+      </section>
+      <ul id="chat" aria-label="Chat" aria-live="polite"></ul>
+      <form id="message">
+        <label>Message <input name="text" maxlength="2000" autocomplete="off" required></label>
+        <button>Send</button>
+      </form>
+    </section>
+    <p id="status" role="status"></p>
+  </main>
+</body>
+</html>

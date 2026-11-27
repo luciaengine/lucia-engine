@@ -21,6 +21,8 @@
 #endif
 
 #if defined(_WIN32)
+#include "WebView/WebViewHost_Win32.h"
+
 #ifndef OEMRESOURCE
 #define OEMRESOURCE
 #endif
@@ -53,6 +55,7 @@ extern "C" {
     void GE_MacOS_FocusWindow(void* nsWindow);
     void GE_MacOS_RefuseApplicationActivation();
     bool GE_MacOS_GetMouseButtonEventPosition(void* nsWindow, int button, double* x, double* y);
+    void GE_MacOS_WaitForEventsAndUpdateWindows(double timeoutSeconds);
     void* GE_MacOS_InstallTitleBarRightClickMonitor(void* nsWindow, void (*callback)(int, int, void*), void* userData);
     void GE_MacOS_RemoveTitleBarRightClickMonitor(void* monitor);
 }
@@ -749,6 +752,10 @@ void* Window::GetNativeViewHost() const
 {
 #if defined(__APPLE__)
     return m_Handle ? glfwGetCocoaWindow(m_Handle) : nullptr;
+#elif defined(_WIN32)
+    return m_Handle ? glfwGetWin32Window(m_Handle) : nullptr;
+#elif defined(__linux__) && !defined(__ANDROID__)
+    return m_Handle ? reinterpret_cast<void*>(glfwGetX11Window(m_Handle)) : nullptr;
 #else
     return nullptr;
 #endif
@@ -1038,7 +1045,17 @@ void Window::SetResizable(bool resizable)
 
 namespace {
 bool pollingWindowEvents = false;
+#if defined(__APPLE__)
+double nextEventWaitSeconds = 0.0;
+#endif
 }
+
+#if defined(__APPLE__)
+void Window::WaitOnNextEventPoll(double timeoutSeconds)
+{
+    nextEventWaitSeconds = timeoutSeconds;
+}
+#endif
 
 void Window::RefreshThunk(GLFWwindow* win)
 {
@@ -1060,8 +1077,19 @@ void Window::PollEvents()
 #if !defined(_WIN32) && !defined(__APPLE__)
     OnDisplayConfigurationChanged();
 #endif
+#if defined(__APPLE__)
+    const double timeoutSeconds = nextEventWaitSeconds;
+    nextEventWaitSeconds = 0.0;
+    if (timeoutSeconds > 0.0)
+        GE_MacOS_WaitForEventsAndUpdateWindows(timeoutSeconds);
+    else
+        glfwPollEvents();
+#else
     glfwPollEvents();
-#if defined(__linux__)
+#endif
+#if defined(_WIN32)
+    PumpWebViewDialogs();
+#elif defined(__linux__)
     PumpWebViewEvents();
 #endif
     if (s_DisplayConfigurationChanged)
@@ -1116,6 +1144,9 @@ void Window::PollGlobalMouseMonitors()
 
 void Window::Terminate()
 {
+#if defined(__APPLE__)
+    nextEventWaitSeconds = 0.0;
+#endif
     if (!s_GlfwInitialized)
         return;
 
@@ -1600,9 +1631,11 @@ void Window::CloseThunk(GLFWwindow* win)
     auto* self = FromGLFW(win);
     if (!self || !self->m_CloseRequestedHandler)
         return;
-    // Handler returns true to cancel this close attempt.
-    if (self->m_CloseRequestedHandler())
-        glfwSetWindowShouldClose(win, GLFW_FALSE);
+    // A close handler can enter a native modal loop or trigger a refresh.
+    // Keep the window open until it accepts the request.
+    glfwSetWindowShouldClose(win, GLFW_FALSE);
+    if (!self->m_CloseRequestedHandler())
+        glfwSetWindowShouldClose(win, GLFW_TRUE);
 }
 
 void Window::DropThunk(GLFWwindow* win, int count, const char** paths)

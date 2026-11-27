@@ -1,0 +1,84 @@
+--- a/src/app/document/io/lucia.ts
++++ b/src/app/document/io/lucia.ts
+@@ -4,0 +5,48 @@
++type CloseChoice = 'save' | 'discard' | 'cancel'
++type NativeMessage = { id: number; value?: unknown; error?: string }
++type LuciaWindow = Window & {
++  webkit?: { messageHandlers?: {
++    luciaSaveDocument?: LuciaSaveBridge
++    luciaChooseDocumentClose?: { postMessage(name: string): Promise<CloseChoice> }
++  } }
++  chrome?: { webview?: {
++    postMessage(message: unknown): void
++    addEventListener(name: 'message', receive: (event: MessageEvent<NativeMessage>) => void): void
++    removeEventListener(name: 'message', receive: (event: MessageEvent<NativeMessage>) => void): void
++  } }
++}
++
++function luciaWebKit() {
++  if (window.location.protocol !== 'lucia-app:' || window.location.host !== 'editor') return undefined
++  return (window as LuciaWindow).webkit?.messageHandlers
++}
++
++function luciaWebView2() {
++  if (window.location.origin !== 'https://lucia-editor.invalid') return undefined
++  return (window as LuciaWindow).chrome?.webview
++}
++
++let nextMessage = 0
++function sendWebView2<T>(
++  host: NonNullable<ReturnType<typeof luciaWebView2>>,
++  kind: string,
++  payload: unknown
++): Promise<T> {
++  const id = ++nextMessage
++  return new Promise((resolve, reject) => {
++    function receive(event: MessageEvent<NativeMessage>) {
++      if (event.data?.id !== id) return
++      host.removeEventListener('message', receive)
++      if (event.data.error) reject(new Error(event.data.error))
++      else resolve(event.data.value as T)
++    }
++    host.addEventListener('message', receive)
++    try {
++      host.postMessage({ id, kind, payload })
++    } catch (error) {
++      host.removeEventListener('message', receive)
++      reject(error)
++    }
++  })
++}
++
+@@ -6,5 +54,3 @@
+-  if (window.location.origin !== 'lucia-app://editor') return undefined
+-  const host = window as Window & {
+-    webkit?: { messageHandlers?: { luciaSaveDocument?: LuciaSaveBridge } }
+-  }
+-  return host.webkit?.messageHandlers?.luciaSaveDocument
++  const host = luciaWebView2()
++  if (host) return { postMessage: (data) => sendWebView2(host, 'save', data) }
++  return luciaWebKit()?.luciaSaveDocument
+@@ -31,8 +77,5 @@
+-export function luciaClosePrompt(): ((name: string) => Promise<'save' | 'discard' | 'cancel'>) | undefined {
+-  if (typeof window === 'undefined' || window.location.origin !== 'lucia-app://editor') return undefined
+-  const host = window as Window & {
+-    webkit?: { messageHandlers?: {
+-      luciaChooseDocumentClose?: { postMessage(name: string): Promise<'save' | 'discard' | 'cancel'> }
+-    } }
+-  }
+-  const handler = host.webkit?.messageHandlers?.luciaChooseDocumentClose
++export function luciaClosePrompt(): ((name: string) => Promise<CloseChoice>) | undefined {
++  if (typeof window === 'undefined') return undefined
++  const host = luciaWebView2()
++  if (host) return (name) => sendWebView2(host, 'confirm', name)
++  const handler = luciaWebKit()?.luciaChooseDocumentClose
+--- a/src/router.ts
++++ b/src/router.ts
+@@ -1 +1 @@
+-import { createRouter, createWebHistory } from 'vue-router'
++import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
+@@ -8 +8,3 @@
+-  history: createWebHistory(),
++  history: window.location.origin === 'https://lucia-editor.invalid'
++    ? createWebHashHistory()
++    : createWebHistory(),

@@ -1,0 +1,16 @@
+{
+  "name": "compositor",
+  "version": "0.1.0",
+  "displayName": "Compositor",
+  "enabledByDefault": true,
+  "assets": "",
+  "modules": [
+    {
+      "name": "Compositor.Editor",
+      "kind": "Editor",
+      "lang": "Cpp",
+      "root": "Editor/",
+      "prebuilt": "Binaries/Editor/"
+    }
+  ]
+}

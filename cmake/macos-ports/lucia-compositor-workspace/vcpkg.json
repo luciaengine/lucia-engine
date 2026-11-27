@@ -4,5 +4,8 @@
   "description": "Compositor native workspace for the Lucia Editor",
   "homepage": "https://github.com/robbietilton/Compositor",
   "license": "MIT",
-  "supports": "osx & arm64"
+  "supports": "osx & arm64",
+  "dependencies": [
+    "lucia-media-controls"
+  ]
 }

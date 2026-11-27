@@ -158,36 +158,6 @@
       "type": "VolumetricFog"
     },
     {
-      "enabled": true,
-      "id": "HeightFog",
-      "inputs": {
-        "uSceneColor": "SceneColor",
-        "uDepth": "View.DepthResolved"
-      },
-      "inputUsages": {
-        "uDepth": "Sampled"
-      },
-      "buffers": {
-        "ViewParams": "ViewParams",
-        "HeightFogParams": "HeightFogParams"
-      },
-      "bufferUsages": {
-        "ViewParams": "ConstantBuffer",
-        "HeightFogParams": "ConstantBuffer"
-      },
-      "output": "HDRHeightFog",
-      "passthroughInput": "uSceneColor",
-      "samplers": {
-        "uDepth": "LinearClamp",
-        "uSceneColor": "LinearClamp"
-      },
-      "shaderPkg": "Shaders/height_fog.shaderpkg",
-      "skipWhen": {
-        "heightFogActive": 0.0
-      },
-      "type": "FullscreenShader"
-    },
-    {
       "bufferUsages": {
         "uExposure": "Storage",
         "ViewParams": "ConstantBuffer"
@@ -199,7 +169,7 @@
       "enabled": true,
       "id": "BloomThreshold",
       "inputs": {
-        "uHDR": "HDRHeightFog",
+        "uHDR": "SceneColor",
         "uDepth": "View.DepthResolved"
       },
       "output": "BloomA",
@@ -261,8 +231,8 @@
       "id": "BloomCombine",
       "inputs": {
         "uBloom": "BloomA",
-        "uHDR": "HDRHeightFog",
-        "uScattering": "HDRHeightFog"
+        "uHDR": "SceneColor",
+        "uScattering": "SceneColor"
       },
       "output": "HDRCombined",
       "passthroughInput": "uHDR",
@@ -578,18 +548,6 @@
       ]
     },
     "HDRFiltered": {
-      "format": "R16G16B16A16_FLOAT",
-      "kind": "Texture",
-      "scope": "PerView",
-      "size": {
-        "variables": {}
-      },
-      "usage": [
-        "RenderTarget",
-        "ShaderResource"
-      ]
-    },
-    "HDRHeightFog": {
       "format": "R16G16B16A16_FLOAT",
       "kind": "Texture",
       "scope": "PerView",

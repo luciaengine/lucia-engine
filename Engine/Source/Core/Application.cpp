@@ -186,7 +186,13 @@ bool Application::PollEventsAndTick() {
     // render twice for one pump.
     const uint64 framesBeforePump = m_FrameCount;
     Platform::Window::PollEvents();
-    if (m_FrameCount != framesBeforePump) return !m_ShouldExit;
+    if (m_ShouldExit || m_FrameCount != framesBeforePump) return !m_ShouldExit;
+    if (DeferFrameForNativeEvents())
+    {
+        // Time spent servicing the native interaction must not become one large simulation step.
+        m_LastFrameTime = std::chrono::high_resolution_clock::now();
+        return !m_ShouldExit;
+    }
     return Tick();
 }
 

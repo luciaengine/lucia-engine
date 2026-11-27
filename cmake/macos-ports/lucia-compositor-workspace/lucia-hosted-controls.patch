@@ -1,0 +1,56 @@
+--- a/Compositor/LuciaWorkspace.swift
++++ b/Compositor/LuciaWorkspace.swift
+@@ -50,6 +50,7 @@
+                 Spacer(minLength: 8)
+                 Button("Export PNG…") { Task { await projects.exportPNG() } }.disabled(session.document == nil)
+             }
++            .buttonStyle(LuciaMediaButtonStyle())
+             .padding(8)
+             ContentView(session: session)
+                 .defaultAppStorage(UserDefaults(suiteName: "lucia.workspace.compositor") ?? .standard)
+--- a/Compositor/UI/AppSlider.swift
++++ b/Compositor/UI/AppSlider.swift
+@@ -45,7 +45,11 @@
+ 
+ /// Where along the track a value sits, and which value a point on the track stands for.
+ enum SliderGeometry {
++    #if LUCIA_HOSTED
++    static let knobSize = CGSize(width: LuciaMediaControls.sliderThumbSize, height: LuciaMediaControls.sliderThumbSize)
++    #else
+     static let knobSize = CGSize(width: 10, height: 18)
++    #endif
+     /// The track's thickness: a color track is a little thicker, so its colors read.
+     static let plainTrack: CGFloat = 3
+     static let colorTrack: CGFloat = 4
+@@ -99,6 +103,9 @@
+     /// Solid while it rests; held, it turns to Liquid Glass and grows a little, as the system's knob does, so the
+     /// track shows through it. A soft shadow, not an outline, keeps it apart from a light track.
+     private var knob: some View {
++        #if LUCIA_HOSTED
++        LuciaMediaControls.sliderThumb(enabled: isEnabled)
++        #else
+         let shape = RoundedRectangle(cornerRadius: SliderGeometry.knobSize.width / 2, style: .continuous)
+         return Group {
+             if grab != nil {
+@@ -110,6 +117,7 @@
+         .frame(width: SliderGeometry.knobSize.width, height: SliderGeometry.knobSize.height)
+         .scaleEffect(grab != nil ? 1.25 : 1)
+         .animation(.easeOut(duration: 0.15), value: grab != nil)
++        #endif
+     }
+ 
+     var body: some View {
+@@ -122,8 +130,13 @@
+                     Capsule().fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+                         .frame(height: thickness)
+                 } else {
++                    #if LUCIA_HOSTED
++                    Capsule().fill(LuciaMediaControls.sliderTrack).frame(height: thickness)
++                    Capsule().fill(LuciaMediaControls.sliderFill).frame(width: SliderGeometry.fillWidth(fraction: fraction, width: width), height: thickness)
++                    #else
+                     Capsule().fill(Color.white.opacity(0.14)).frame(height: thickness)
+                     Capsule().fill(Color.accentColor).frame(width: SliderGeometry.fillWidth(fraction: fraction, width: width), height: thickness)
++                    #endif
+                 }
+                 knob
+                     .offset(x: center - SliderGeometry.knobSize.width / 2)

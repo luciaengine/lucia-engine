@@ -1,0 +1,115 @@
+--- a/packages/vue/src/shared/input/move/snap.ts
++++ b/packages/vue/src/shared/input/move/snap.ts
+@@ -1,8 +1,8 @@
+ import type { Editor } from '@open-pencil/core'
+ import type { SceneNode } from '@open-pencil/scene-graph'
+ import { getAxisAlignedWorldBounds } from '@open-pencil/scene-graph/coordinate'
+-import { computeSelectionBounds } from '@open-pencil/scene-graph/snap'
++import { computeBounds } from '@open-pencil/scene-graph/geometry'
+
+ import { explicitSnapTargets } from '#vue/shared/input/snap/explicit-targets'
+ import {
+   resolveObjectPixelSnap,
+@@ -10,29 +10,18 @@
+   worldDeltaToParentLocal
+ } from '#vue/shared/input/snap/resolve'
+ import type { DragMove } from '#vue/shared/input/types'
+
+-function movingSelection(drag: DragMove, dx: number, dy: number, editor: Editor): SceneNode[] {
+-  const selectedNodes: SceneNode[] = []
++function movingSelectionBounds(drag: DragMove, dx: number, dy: number, editor: Editor) {
++  const boxes = []
+   for (const [id, original] of drag.originals) {
+     const node = editor.graph.getNode(id)
+     if (!node) continue
+-    const bounds = getAxisAlignedWorldBounds(
+-      { ...node, x: original.x, y: original.y },
+-      editor.graph
+-    )
+-    selectedNodes.push({
+-      ...node,
+-      x: bounds.x + dx,
+-      y: bounds.y + dy,
+-      width: bounds.width,
+-      height: bounds.height,
+-      rotation: 0,
+-      flipX: false,
+-      flipY: false
+-    })
++    boxes.push(getAxisAlignedWorldBounds({ ...node, x: original.x, y: original.y }, editor.graph))
+   }
+-  return selectedNodes
++  if (boxes.length === 0) return null
++  const bounds = computeBounds(boxes)
++  return { ...bounds, x: bounds.x + dx, y: bounds.y + dy }
+ }
+
+ function moveParentId(drag: DragMove, editor: Editor): string {
+   const firstId = drag.originals.keys().next().value
+@@ -40,11 +29,12 @@
+   return firstNode?.parentId ?? editor.state.currentPageId
+ }
+
+ function parentTargets(parentId: string, editor: Editor): SceneNode[] {
++  if (!editor.state.snappingPreferences.objects) return []
+   return editor.graph
+     .getChildren(parentId)
+-    .filter((node) => node.visible)
++    .filter((node) => node.visible && !editor.state.selectedIds.has(node.id))
+     .map((node) => worldBoundsNode(node, editor))
+ }
+
+ export function applyMoveSnap(
+@@ -55,10 +45,10 @@
+   disableSnapping = false
+ ): { dx: number; dy: number } {
+   const parentId = moveParentId(drag, editor)
+   const localDelta = worldDeltaToParentLocal({ x: dx, y: dy }, parentId, editor)
+-  const selectionBounds = computeSelectionBounds(movingSelection(drag, dx, dy, editor))
+-  if (!selectionBounds || disableSnapping) {
++  const selectionBounds = disableSnapping ? null : movingSelectionBounds(drag, dx, dy, editor)
++  if (!selectionBounds) {
+     editor.setSnapGuides([])
+     return { dx: localDelta.x, dy: localDelta.y }
+   }
+
+--- a/packages/vue/tests/shared/input/move/threshold.test.ts
++++ b/packages/vue/tests/shared/input/move/threshold.test.ts
+@@ -1,13 +1,14 @@
+-import { describe, expect, test } from 'bun:test'
++import { describe, expect, spyOn, test } from 'bun:test'
+
+ import { createEditor } from '@open-pencil/core'
+
+ import {
+   handleMoveMove,
+   handleMoveUp,
+   MOVE_DRAG_START_THRESHOLD_PX
+ } from '#vue/shared/input/move/drag'
++import { applyMoveSnap } from '#vue/shared/input/move/snap'
+ import { createSelectionMoveDrag } from '#vue/shared/input/select/move'
+ import type { DragMove } from '#vue/shared/input/types'
+
+ function setupMoveDrag(): {
+@@ -74,8 +75,21 @@
+
+     expect(editor.graph.getNode(nodeId)).toMatchObject({ x: 16, y: 28 })
+   })
+
++  test('avoids collecting sibling bounds with object snapping off', () => {
++    const { editor, drag } = setupMoveDrag()
++    editor.state.snappingPreferences = { geometry: true, objects: false, pixelGrid: true }
++    const getChildren = spyOn(editor.graph, 'getChildren')
++    try {
++      expect(applyMoveSnap(drag, 6.25, 7.75, editor)).toEqual({ dx: 6, dy: 8 })
++      expect(getChildren).not.toHaveBeenCalled()
++    } finally {
++      getChildren.mockRestore()
++      editor.dispose()
++    }
++  })
++
+   test('Control bypasses object and pixel snapping during movement', () => {
+     const { editor, drag, nodeId } = setupMoveDrag()
+
+     handleMoveMove(drag, 16.25, 27.75, 110, 200, editor, { ctrlKey: true })

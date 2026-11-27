@@ -3,6 +3,7 @@
 #include "UI/Controls/DockPanel.h"
 
 #include "Platform/WebView.h"
+#include "Rendering/Core/Device.h"
 #include "UI/UIManagerRef.h"
 
 #include <cstddef>
@@ -18,6 +19,8 @@ namespace GameEngine
 {
 struct AssetLoadHandle;
 class UIElement;
+class SaveSceneChangesModal;
+class SaveSceneAsModal;
 class Button;
 class TextField;
 class Label;
@@ -37,7 +40,8 @@ class WebPanel : public DockPanel
     /// last user-entered URL is restored from editor preferences).
     static constexpr const char* kHelpDocsURL = "https://www.openengine.dev/docs/";
 
-    WebPanel();
+    explicit WebPanel(std::string title = "Web", std::string startURL = {},
+                      std::filesystem::path bundledApp = {});
     ~WebPanel() override;
 
     void OnPostLayout() override;
@@ -49,6 +53,7 @@ class WebPanel : public DockPanel
     /// panel binds (and tries to set up) when it is first shown, while
     /// ShowOrActivateWebPanel shows the panel and only then hands it the window.
     void SetWindow(Platform::Window* window);
+    bool IsHostedBy(const Platform::Window* window) const { return m_ParentWindow == window; }
 
     /// Show a URL without disturbing a page the user is browsing: activates an
     /// existing tab already on that URL, reuses a blank tab, or opens a new tab.
@@ -57,7 +62,13 @@ class WebPanel : public DockPanel
 
     // When the panel is not the active dock tab, move the web views off-screen instead of
     // hiding them, so pages stay alive and audio keeps playing in the background.
-    void SetWebViewOffScreen(bool offScreen);
+    void SetWebViewOffScreen(bool offScreen, bool editorOverlayOpen);
+
+    /// The installed app owns the current pointer drag.
+    bool HasBundledAppDragFramePriority();
+
+    bool HasBundledAppCloseConfirmation();
+    void ConfirmBundledAppClose(std::function<void(bool)> done);
 
   private:
     struct WebTab
@@ -92,6 +103,14 @@ class WebPanel : public DockPanel
     void CloseTab(size_t index);
     void RebuildTabBar();
     void MoveViewOffScreen(Platform::IWebView& view);
+    void ShowBundledSavePrompt(const std::string& name, Platform::DocumentCloseReply reply);
+    void FinishBundledSavePrompt(Platform::DocumentCloseChoice choice);
+    void ShowBundledSaveAs(const std::string& name, Platform::DocumentSaveReply reply);
+    void FinishBundledSaveAs(std::filesystem::path path);
+    void UpdateEditorOverlayBackdrop(bool open);
+    void WithBundledDialogBackdrop(std::function<void(WebPanel&)> show);
+    void BindWebViewBackdrop(const Platform::WebViewSnapshot& snapshot);
+    void ClearWebViewBackdrop();
 
   private:
     // Deferred layout bind. m_BindPending covers the whole attempt — the queued action
@@ -120,7 +139,18 @@ class WebPanel : public DockPanel
     std::vector<WebTab> m_Tabs;
     size_t m_ActiveTab = 0;
     Platform::Window* m_ParentWindow = nullptr;
+    const std::string m_StartURL;
+    const std::filesystem::path m_BundledApp;
     std::string m_PendingURL;
+    UIElement::WeakRef<SaveSceneChangesModal> m_BundledSaveModal;
+    Platform::DocumentCloseReply m_BundledSaveReply;
+    UIElement::WeakRef<SaveSceneAsModal> m_BundledSaveAsModal;
+    Platform::DocumentSaveReply m_BundledSaveAsReply;
+    Rendering::TextureHandle m_WebViewBackdrop;
+    std::string m_WebViewBackdropName;
+    Platform::IWebView* m_OverlaySnapshotView = nullptr;
+    uint64_t m_OverlaySnapshotRequest = 0;
+    bool m_OverlayBackdropActive = false;
     // The active view's navigation state the controls last showed; empty until they first show one.
     std::optional<Platform::WebViewNavigation> m_ShownNavigation;
     // The page changes the state without a layout pass (a link, a load finishing), so the controls

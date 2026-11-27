@@ -528,39 +528,9 @@
     },
     {
       "enabled": true,
-      "id": "HeightFog",
-      "inputs": {
-        "uSceneColor": "VolumetricClouds",
-        "uDepth": "View.DepthResolved"
-      },
-      "inputUsages": {
-        "uDepth": "Sampled"
-      },
-      "buffers": {
-        "ViewParams": "ViewParams",
-        "HeightFogParams": "HeightFogParams"
-      },
-      "bufferUsages": {
-        "ViewParams": "ConstantBuffer",
-        "HeightFogParams": "ConstantBuffer"
-      },
-      "output": "HDRHeightFog",
-      "passthroughInput": "uSceneColor",
-      "samplers": {
-        "uDepth": "LinearClamp",
-        "uSceneColor": "LinearClamp"
-      },
-      "shaderPkg": "Shaders/height_fog.shaderpkg",
-      "skipWhen": {
-        "heightFogActive": 0.0
-      },
-      "type": "FullscreenShader"
-    },
-    {
-      "enabled": true,
       "id": "FogGlowFast",
       "inputs": {
-        "uFogged": "HDRHeightFog",
+        "uFogged": "VolumetricClouds",
         "uSceneSource": "FogGlowSceneSource"
       },
       "output": "HDRFogGlowFast",
@@ -2881,18 +2851,6 @@
       ]
     },
     "HDRFogGlow": {
-      "format": "R16G16B16A16_FLOAT",
-      "kind": "Texture",
-      "scope": "PerView",
-      "size": {
-        "variables": {}
-      },
-      "usage": [
-        "RenderTarget",
-        "ShaderResource"
-      ]
-    },
-    "HDRHeightFog": {
       "format": "R16G16B16A16_FLOAT",
       "kind": "Texture",
       "scope": "PerView",

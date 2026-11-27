@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Collaboration/SceneCollaborationSession.h"
+
 #include "AssetCore/GUID.h"
 #include "Core/Application.h"
 #include "Core/DeferredActionQueue.h"
@@ -187,7 +189,8 @@ class EditorApplication : public Application
 
     // Actions callable from native menu handlers
     /// Prompt to save dirty scene, graph and script documents; true when quitting is deferred.
-    bool TryInterceptQuitForDirtyScene();
+    bool TryInterceptQuitForUnsavedChanges();
+    bool m_WorkspaceQuitPending = false;
     void ResetLayoutToDefault();
     /// Show or activate the named panel in the main editor window.
     /// preferredLeafId optionally hints which existing leaf the new tab should join.
@@ -339,6 +342,10 @@ class EditorApplication : public Application
     void OnFilesDropped(EditorWindowContext* ctx, const std::vector<std::filesystem::path>& paths);
 
   private:
+#if defined(__APPLE__)
+    bool NativeWebDragOwnsFrameLoop() const;
+    bool DeferFrameForNativeEvents() override;
+#endif
     // The startup jobs hook (EngineCore::SetStartupJobsHook): creates the main window on
     // the main thread, then begins its render device on a startup-channel job. The result
     // waits in m_StartupMainWindow; it stays null when the window cannot be created.
@@ -367,6 +374,7 @@ class EditorApplication : public Application
     std::unique_ptr<Editor::MarkupEditorBridge> m_MarkupBridge;
     std::unique_ptr<Editor::TileMapEditorIntegration> m_TileMapEditor;
     std::unique_ptr<Editor::SceneEditorController> m_SceneEditor;
+    Editor::SceneCollaborationSession m_SceneCollaboration;
     std::unique_ptr<Editor::SceneThumbnailCapture> m_SceneThumbnailCapture;
     std::unique_ptr<Editor::PlayModeManager> m_PlayMode;
     // Moves the keyboard focus to the Game View at Play and back at Stop.
@@ -591,6 +599,8 @@ class EditorApplication : public Application
     void OnPlayModeStateChanged(Editor::PlayModeState state);
     // Gives the editor plugins their host services; they attach on the next Update.
     void AttachEditorPluginHost();
+    void RefreshOpenPencilPackagePanels();
+    std::array<UIElement*, 2> m_OpenPencilPackagePanels{};
 
     // Play mode presentation flags (Game View fullscreen play).
     bool m_PlayFullscreenOnEnter = false; // controlled by top toolbar fullscreen toggle
@@ -666,6 +676,7 @@ class EditorApplication : public Application
 
     // Helpers
     void RenderSingle(EditorWindowContext* ctx);
+    void SyncWebViewStacking(EditorWindowContext& ctx);
     void RefreshWorldRenderForPassiveFrame(EditorWindowContext* ctx);
 
     struct RenderWindowFrameResult

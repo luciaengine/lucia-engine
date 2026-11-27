@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <gdk/gdkx.h>
 #include <gtk/gtk.h>
@@ -18,6 +19,218 @@
 namespace GameEngine {
 namespace Platform {
 namespace {
+
+constexpr char kBundledScheme[] = "lucia-app";
+constexpr char kBundledOrigin[] = "lucia-app://editor/";
+constexpr char kBundledRootKey[] = "lucia-bundled-web-root";
+
+bool IsBundledUrl(const char* uri)
+{
+    return uri && std::string_view(uri).starts_with(kBundledOrigin);
+}
+
+void ServeBundledAsset(WebKitURISchemeRequest* request, gpointer)
+{
+    auto* webView = webkit_uri_scheme_request_get_web_view(request);
+    const auto* root = webView ? static_cast<const std::filesystem::path*>(
+        g_object_get_data(G_OBJECT(webView), kBundledRootKey)) : nullptr;
+    const char* path = webkit_uri_scheme_request_get_path(request);
+    const char* method = webkit_uri_scheme_request_get_http_method(request);
+    std::unique_ptr<char, decltype(&g_free)> decoded(path ? g_uri_unescape_string(path, nullptr) : nullptr, &g_free);
+    std::error_code error;
+    if (root && IsBundledUrl(webkit_uri_scheme_request_get_uri(request)) &&
+        g_strcmp0(method, "GET") == 0 && decoded && decoded.get()[0] == '/')
+    {
+        const auto relative = std::filesystem::path(decoded.get() + 1);
+        const auto file = std::filesystem::canonical(*root / (relative.empty() ? "index.html" : relative), error);
+        const auto within = file.lexically_relative(*root);
+        if (!error && !within.empty() && !within.is_absolute() && *within.begin() != ".." &&
+            std::filesystem::is_regular_file(file, error))
+        {
+            GFile* source = g_file_new_for_path(file.c_str());
+            GFileInputStream* stream = g_file_read(source, nullptr, nullptr);
+            g_object_unref(source);
+            if (stream)
+            {
+                const auto extension = file.extension();
+                const char* mime = extension == ".wasm" ? "application/wasm" :
+                    (extension == ".js" || extension == ".mjs") ? "text/javascript" : nullptr;
+                std::unique_ptr<char, decltype(&g_free)> guessed(
+                    mime ? nullptr : g_content_type_guess(file.c_str(), nullptr, 0, nullptr), &g_free);
+                std::unique_ptr<char, decltype(&g_free)> mimeType(
+                    guessed ? g_content_type_get_mime_type(guessed.get()) : nullptr, &g_free);
+                WebKitURISchemeResponse* response = webkit_uri_scheme_response_new(G_INPUT_STREAM(stream), -1);
+                const char* contentType = mime ? mime : mimeType ? mimeType.get() : "application/octet-stream";
+                webkit_uri_scheme_response_set_content_type(response, contentType);
+                SoupMessageHeaders* headers = soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
+                soup_message_headers_append(headers, "Content-Type", contentType);
+                soup_message_headers_append(headers, "Content-Security-Policy", "frame-src 'none'");
+                soup_message_headers_append(headers, "Cross-Origin-Opener-Policy", "same-origin");
+                soup_message_headers_append(headers, "Cross-Origin-Embedder-Policy", "require-corp");
+                webkit_uri_scheme_response_set_http_headers(response, headers);
+                webkit_uri_scheme_request_finish_with_response(request, response);
+                g_object_unref(response);
+                g_object_unref(stream);
+                return;
+            }
+        }
+    }
+    GError* failure = g_error_new_literal(G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Bundled web asset not found");
+    webkit_uri_scheme_request_finish_error(request, failure);
+    g_error_free(failure);
+}
+
+void RegisterBundledScheme(WebKitWebContext* context)
+{
+    if (g_object_get_data(G_OBJECT(context), kBundledRootKey))
+        return;
+
+    webkit_web_context_register_uri_scheme(context, kBundledScheme, &ServeBundledAsset, nullptr, nullptr);
+    auto* security = webkit_web_context_get_security_manager(context);
+    webkit_security_manager_register_uri_scheme_as_secure(security, kBundledScheme);
+    webkit_security_manager_register_uri_scheme_as_cors_enabled(security, kBundledScheme);
+    g_object_set_data(G_OBJECT(context), kBundledRootKey, context);
+}
+
+constexpr char kDocumentSavePromptKey[] = "lucia-web-document-save-prompt";
+constexpr char kDocumentClosePromptKey[] = "lucia-web-document-close-prompt";
+
+gboolean SaveBundledDocument(WebKitUserContentManager*, JSCValue* payload,
+                              WebKitScriptMessageReply* reply, gpointer data)
+{
+    if (!IsBundledUrl(webkit_web_view_get_uri(WEBKIT_WEB_VIEW(data))))
+    {
+        webkit_script_message_reply_return_error_message(reply, "The bundled app is unavailable.");
+        return TRUE;
+    }
+
+    auto* context = jsc_value_get_context(payload);
+    auto* filename = jsc_value_is_object(payload) ? jsc_value_object_get_property(payload, "filename") : nullptr;
+    auto* contents = jsc_value_is_object(payload) ? jsc_value_object_get_property(payload, "contents") : nullptr;
+    std::unique_ptr<char, decltype(&g_free)> name(
+        filename && jsc_value_is_string(filename) ? jsc_value_to_string(filename) : nullptr, &g_free);
+    std::unique_ptr<char, decltype(&g_free)> base64(
+        contents && jsc_value_is_string(contents) ? jsc_value_to_string(contents) : nullptr, &g_free);
+    g_clear_object(&filename);
+    g_clear_object(&contents);
+    gsize length = 0;
+    std::unique_ptr<guchar, decltype(&g_free)> bytes(base64 ? g_base64_decode(base64.get(), &length) : nullptr,
+                                                   &g_free);
+    if (!name || length == 0)
+    {
+        webkit_script_message_reply_return_error_message(reply, "Invalid document data.");
+        return TRUE;
+    }
+
+    auto* prompt = static_cast<DocumentSavePrompt*>(g_object_get_data(G_OBJECT(data), kDocumentSavePromptKey));
+    if (prompt && *prompt)
+    {
+        auto pendingReply = std::shared_ptr<WebKitScriptMessageReply>(
+            webkit_script_message_reply_ref(reply), webkit_script_message_reply_unref);
+        auto pendingContext = std::shared_ptr<JSCContext>(JSC_CONTEXT(g_object_ref(context)), g_object_unref);
+        auto pendingBytes = std::shared_ptr<guchar>(bytes.release(), g_free);
+        (*prompt)(name.get(), [pendingReply, pendingContext, pendingBytes, length](std::filesystem::path path) {
+            if (path.empty())
+            {
+                auto* result = jsc_value_new_null(pendingContext.get());
+                webkit_script_message_reply_return_value(pendingReply.get(), result);
+                g_object_unref(result);
+                return;
+            }
+            GFile* file = g_file_new_for_path(path.c_str());
+            const bool saved = g_file_replace_contents(file, reinterpret_cast<const char*>(pendingBytes.get()),
+                length, nullptr, FALSE, G_FILE_CREATE_NONE, nullptr, nullptr, nullptr);
+            g_object_unref(file);
+            if (!saved)
+            {
+                webkit_script_message_reply_return_error_message(pendingReply.get(), "Could not save the document.");
+                return;
+            }
+            auto* result = jsc_value_new_string(pendingContext.get(), path.filename().c_str());
+            webkit_script_message_reply_return_value(pendingReply.get(), result);
+            g_object_unref(result);
+        });
+        return TRUE;
+    }
+
+    GtkWidget* dialog = gtk_file_chooser_dialog_new("Save Document", nullptr, GTK_FILE_CHOOSER_ACTION_SAVE,
+        "_Cancel", GTK_RESPONSE_CANCEL, "_Save", GTK_RESPONSE_ACCEPT, nullptr);
+    auto* chooser = GTK_FILE_CHOOSER(dialog);
+    gtk_file_chooser_set_do_overwrite_confirmation(chooser, TRUE);
+    gtk_file_chooser_set_current_name(chooser, std::filesystem::path(name.get()).filename().c_str());
+    JSCValue* result = nullptr;
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT)
+    {
+        GFile* file = gtk_file_chooser_get_file(chooser);
+        if (file && g_file_replace_contents(file, reinterpret_cast<const char*>(bytes.get()), length, nullptr,
+                                            FALSE, G_FILE_CREATE_NONE, nullptr, nullptr, nullptr))
+        {
+            std::unique_ptr<char, decltype(&g_free)> savedName(g_file_get_basename(file), &g_free);
+            result = jsc_value_new_string(context, savedName.get());
+        }
+        g_clear_object(&file);
+    }
+    else
+        result = jsc_value_new_null(context);
+    gtk_widget_destroy(dialog);
+    if (result)
+    {
+        webkit_script_message_reply_return_value(reply, result);
+        g_object_unref(result);
+    }
+    else
+        webkit_script_message_reply_return_error_message(reply, "Could not save the document.");
+    return TRUE;
+}
+
+gboolean ChooseBundledDocumentClose(WebKitUserContentManager*, JSCValue* name,
+                                     WebKitScriptMessageReply* reply, gpointer data)
+{
+    if (!IsBundledUrl(webkit_web_view_get_uri(WEBKIT_WEB_VIEW(data))))
+    {
+        webkit_script_message_reply_return_error_message(reply, "The bundled app is unavailable.");
+        return TRUE;
+    }
+
+    std::unique_ptr<char, decltype(&g_free)> filename(
+        jsc_value_is_string(name) ? jsc_value_to_string(name) : nullptr, &g_free);
+    auto* prompt = static_cast<DocumentClosePrompt*>(g_object_get_data(G_OBJECT(data), kDocumentClosePromptKey));
+    if (prompt && *prompt)
+    {
+        auto pendingReply = std::shared_ptr<WebKitScriptMessageReply>(
+            webkit_script_message_reply_ref(reply), webkit_script_message_reply_unref);
+        auto* context = jsc_value_get_context(name);
+        auto pendingContext = std::shared_ptr<JSCContext>(JSC_CONTEXT(g_object_ref(context)), g_object_unref);
+        (*prompt)(filename ? filename.get() : "Untitled", [pendingReply, pendingContext](DocumentCloseChoice choice) {
+            auto* result = jsc_value_new_string(pendingContext.get(), DocumentCloseChoiceName(choice));
+            webkit_script_message_reply_return_value(pendingReply.get(), result);
+            g_object_unref(result);
+        });
+        return TRUE;
+    }
+
+    GtkWidget* dialog = gtk_message_dialog_new(nullptr, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+        GTK_BUTTONS_NONE, "Save changes to “%s”?", filename ? filename.get() : "Untitled");
+    gtk_dialog_add_buttons(GTK_DIALOG(dialog), "Don’t Save", GTK_RESPONSE_REJECT, "_Cancel",
+                           GTK_RESPONSE_CANCEL, "_Save", GTK_RESPONSE_ACCEPT, nullptr);
+    gtk_dialog_set_default_response(GTK_DIALOG(dialog), GTK_RESPONSE_CANCEL);
+    const int choice = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    JSCValue* result = jsc_value_new_string(jsc_value_get_context(name),
+        choice == GTK_RESPONSE_ACCEPT ? "save" : choice == GTK_RESPONSE_REJECT ? "discard" : "cancel");
+    webkit_script_message_reply_return_value(reply, result);
+    g_object_unref(result);
+    return TRUE;
+}
+
+void OnBundledCloseResult(GObject* source, GAsyncResult* result, gpointer data)
+{
+    std::unique_ptr<std::function<void(bool)>> done(static_cast<std::function<void(bool)>*>(data));
+    JSCValue* value = webkit_web_view_call_async_javascript_function_finish(WEBKIT_WEB_VIEW(source), result, nullptr);
+    const bool approved = value && jsc_value_is_boolean(value) && jsc_value_to_boolean(value);
+    g_clear_object(&value);
+    (*done)(approved);
+}
 
 /// GTK events run per host frame, at most. A frame that leaves events waiting runs them next frame,
 /// so a busy page cannot stall the editor.
@@ -54,7 +267,9 @@ public:
         : m_ParentWindow(parentWindow)
     {
         m_Window = gtk_window_new(GTK_WINDOW_POPUP);
-        m_WebView = WEBKIT_WEB_VIEW(webkit_web_view_new());
+        auto* manager = webkit_user_content_manager_new();
+        m_WebView = WEBKIT_WEB_VIEW(webkit_web_view_new_with_user_content_manager(manager));
+        g_object_unref(manager);
         gtk_container_add(GTK_CONTAINER(m_Window), GTK_WIDGET(m_WebView));
         gtk_widget_show(GTK_WIDGET(m_WebView));
 
@@ -74,6 +289,32 @@ public:
     ~WebView_Gtk() override { Destroy(); }
 
     bool LoadURL(const std::string& url) override { return m_Window && m_State.LoadURL(url); }
+
+    bool LoadBundledApp(const std::filesystem::path& directory) override
+    {
+        std::error_code error;
+        auto root = std::filesystem::canonical(directory, error);
+        if (!m_Window || error || !std::filesystem::is_regular_file(root / "index.html", error))
+            return false;
+
+        RegisterBundledScheme(webkit_web_view_get_context(m_WebView));
+        if (!g_object_get_data(G_OBJECT(m_WebView), kBundledRootKey))
+        {
+            auto* manager = webkit_web_view_get_user_content_manager(m_WebView);
+            g_signal_connect(manager, "script-message-with-reply-received::luciaSaveDocument",
+                             G_CALLBACK(&SaveBundledDocument), m_WebView);
+            g_signal_connect(manager, "script-message-with-reply-received::luciaChooseDocumentClose",
+                             G_CALLBACK(&ChooseBundledDocumentClose), m_WebView);
+            if (!webkit_user_content_manager_register_script_message_handler_with_reply(
+                    manager, "luciaSaveDocument", nullptr) ||
+                !webkit_user_content_manager_register_script_message_handler_with_reply(
+                    manager, "luciaChooseDocumentClose", nullptr))
+                return false;
+        }
+        g_object_set_data_full(G_OBJECT(m_WebView), kBundledRootKey, new std::filesystem::path(std::move(root)),
+            [](gpointer value) { delete static_cast<std::filesystem::path*>(value); });
+        return LoadURL(kBundledOrigin);
+    }
 
     bool LoadHTML(const std::string& html, const std::string& baseURL) override
     {
@@ -135,6 +376,34 @@ public:
     // GTK creation is synchronous: a view that cannot start is never returned.
     void SetOnUnavailable(std::function<void(const std::string&)> /*callback*/) override {}
 
+    void SetDocumentClosePrompt(DocumentClosePrompt prompt) override
+    {
+        m_DocumentClosePrompt = std::move(prompt);
+        if (m_WebView)
+            g_object_set_data(G_OBJECT(m_WebView), kDocumentClosePromptKey, &m_DocumentClosePrompt);
+    }
+
+    void SetDocumentSavePrompt(DocumentSavePrompt prompt) override
+    {
+        m_DocumentSavePrompt = std::move(prompt);
+        if (m_WebView)
+            g_object_set_data(G_OBJECT(m_WebView), kDocumentSavePromptKey, &m_DocumentSavePrompt);
+    }
+
+    void ConfirmBundledAppClose(std::function<void(bool)> done) override
+    {
+        if (!m_Window || !IsBundledUrl(webkit_web_view_get_uri(m_WebView)))
+        {
+            done(true);
+            return;
+        }
+
+        constexpr char script[] =
+            "return typeof window.luciaPrepareForQuit === 'function' ? await window.luciaPrepareForQuit() : true;";
+        webkit_web_view_call_async_javascript_function(m_WebView, script, -1, nullptr, nullptr, nullptr, nullptr,
+            &OnBundledCloseResult, new std::function<void(bool)>(std::move(done)));
+    }
+
     void Destroy() override
     {
         if (!m_Window)
@@ -145,6 +414,7 @@ public:
         m_State.Detach();
         m_OnMouseDown = nullptr;
         g_signal_handlers_disconnect_by_data(m_WebView, this);
+        g_signal_handlers_disconnect_by_data(webkit_web_view_get_user_content_manager(m_WebView), m_WebView);
         g_signal_handlers_disconnect_by_data(m_Window, this);
 
         // The host window may already be gone, and X11 destroys a child window with its parent.
@@ -264,6 +534,8 @@ private:
     WebKitWebView* m_WebView = nullptr;
     WebViewState m_State;
     std::string m_BaseURL;
+    DocumentClosePrompt m_DocumentClosePrompt;
+    DocumentSavePrompt m_DocumentSavePrompt;
     std::function<void()> m_OnMouseDown;
     bool m_LoadFailed = false;
 };

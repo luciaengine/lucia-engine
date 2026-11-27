@@ -1,0 +1,25 @@
+--- a/Editroom/App/LuciaWorkspace.swift
++++ b/Editroom/App/LuciaWorkspace.swift
+@@ -1,6 +1,10 @@
+ #if LUCIA_HOSTED
+ import AppKit
+ import SwiftUI
++
++public typealias LuciaTexturePreview = @convention(c) (
++    UnsafePointer<CChar>, UnsafePointer<UInt8>?, UInt32, UInt32, Int
++) -> Void
+ 
+ @MainActor
+ private struct HostedEditroom: View {
+@@ -28,8 +32,9 @@
+     static var bundle: Bundle = .main
+ }
+ 
+-@_cdecl("LuciaCreateMediaWorkspace")
+-public func luciaCreateMediaWorkspace(_ bundlePath: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
++@_cdecl("LuciaCreateProjectMediaWorkspace")
++public func luciaCreateMediaWorkspace(_ bundlePath: UnsafePointer<CChar>, _: UnsafePointer<CChar>,
++                                      _: LuciaTexturePreview) -> UnsafeMutableRawPointer? {
+     MainActor.assumeIsolated {
+         guard let bundle = Bundle(path: String(cString: bundlePath)) else { return nil }
+         WorkspaceResources.bundle = bundle

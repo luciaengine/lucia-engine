@@ -155,6 +155,10 @@ On every platform (`cmake --list-presets` lists every configuration):
 - Skip a heavy optional dependency through a [manifest feature](#vcpkg-manifest-features), for example FFmpeg: `-DVCPKG_MANIFEST_FEATURES="physics;nav;ui-extras;tests"`.
 - On an offline machine, prime the binary cache by hand with `./Tools/Scripts/fetch-vcpkg-cache.ps1` (`.sh` on macOS and Linux). Online, the configure fetches the prebuilt archives itself when GitHub CLI is logged in; `GE_NO_CACHE_FETCH=1` turns that off.
 
+To include the offline OpenPencil tab, run `Tools/Scripts/build-openpencil-web.sh <output-directory>` in a Bash environment with Bun 1.3.14 and network access. Configure the desktop Editor with `-DGE_OPENPENCIL_WEB_ROOT=<absolute-output-directory>`. The built tab loads from the installed bundle and can open and save designs offline.
+
+Windows requires the Microsoft Edge WebView2 Runtime. Linux requires WebKitGTK 4.1 version 2.40 or newer and GTK 3 with X11 support. Install `libwebkit2gtk-4.1-dev` and `libgtk-3-dev` on Debian or Ubuntu to build the Linux Editor with the tab. Linux packages need the corresponding runtime libraries and an X11 or XWayland session.
+
 ### Windows
 
 - `vs2026-x64-local` has no unity build, so an edit recompiles only the files it touched; `vs2026-x64-local-unity` compiles faster cold and slower per edit.
