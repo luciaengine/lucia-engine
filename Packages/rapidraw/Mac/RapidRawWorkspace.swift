@@ -277,7 +277,10 @@ public func placeRapidRawWorkspace(_ handle: UnsafeMutableRawPointer, _ window: 
             view.isHidden = true
             return
         }
-        if view.superview !== content { content.addSubview(view, positioned: .above, relativeTo: nil) }
+        if view.superview !== content {
+            view.removeFromSuperview()
+            content.addSubview(view, positioned: .above, relativeTo: nil)
+        }
         let top = content.isFlipped ? y : content.bounds.height - y - height
         let frame = NSRect(x: x, y: top, width: width, height: height)
         if view.frame != frame { view.frame = frame }
