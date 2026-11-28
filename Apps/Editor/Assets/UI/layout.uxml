@@ -53,6 +53,7 @@
         <DockablePanel id="OpenPencilLocal" type="PackagePanel" title="OpenPencil" />
         <DockablePanel id="Editroom" type="PackagePanel" title="Editroom" />
         <DockablePanel id="Compositor" type="PackagePanel" title="Compositor" />
+        <DockablePanel id="RapidRAW" type="PackagePanel" title="RapidRAW" />
         <!-- Graph docks are per kind. NodeGraph keeps its id so saved layouts
              still restore the shader-graph tab. Opened from the panel menu or
              by opening a graph asset. -->

@@ -2780,6 +2780,9 @@ struct CreativeWorkspace
 constexpr CreativeWorkspace kCreativeWorkspaces[] = {
     {"editroom", "Editroom", "Editroom", "WorkspaceStatus"},
     {"compositor", "Compositor", "Compositor", "WorkspaceStatus"},
+#if defined(__APPLE__)
+    {"rapidraw", "RapidRAW", "RapidRAW", "WorkspaceStatus"},
+#endif
     {"lighttable", "LightTable", "LightTable", "WebErrorLabel"},
     {"openpencil", "OpenPencil", Editor::kOpenPencilPackageOptions.front().PanelId, "WebErrorLabel"},
 };
@@ -3532,7 +3535,7 @@ void RegisterDebugHandlers(EditorDebugServer& server,
     {
         const auto* selected = FindCreativeWorkspace(ctx.params);
         if (!selected)
-            return Editor::RefuseRequest("Unknown creative workspace. Use editroom, compositor, openpencil, or lighttable.");
+            return Editor::RefuseRequest("Unknown creative workspace. Use list_creative_workspaces to find available panels.");
         if (!app.m_Docking || !app.m_PanelManager || app.m_Windows.empty())
             return Editor::RefuseRequest("The editor layout is not ready.");
         if (!app.m_Docking->GetPanel(selected->PanelId))
@@ -3571,7 +3574,8 @@ void RegisterDebugHandlers(EditorDebugServer& server,
             const auto document = request.find("documentId");
             if (operation == request.end() || !operation->is_string() || *operation == "inspect")
                 return Editor::RefuseRequest("Provide a creative document edit operation.");
-            if (*operation != "new_document" &&
+            const bool opensRawPhoto = workspace->Id == "rapidraw" && *operation == "open_raw_photo";
+            if (*operation != "new_document" && !opensRawPhoto &&
                 (document == request.end() || !document->is_string() || document->get_ref<const std::string&>().empty()))
                 return Editor::RefuseRequest("Inspect the active document and provide its id for the edit.");
         }
