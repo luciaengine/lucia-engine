@@ -1,4 +1,5 @@
 #include "Panels/BuiltInPanelTypes.h"
+#include "Panels/LightTablePanel.h"
 
 #include "Editor/EditorPaths.h"
 
@@ -110,6 +111,7 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"SettingsPanel", &MakePanel<SettingsPanel>},
     {"DiffPanel", &MakePanel<DiffPanel>},
     {"WebPanel", &MakePanel<WebPanel>},
+    {"LightTablePanel", &MakePanel<LightTablePanel>},
     {"OpenPencilPanel", &MakeOpenPencilPanel},
     {"LocalOpenPencilPanel", &MakeLocalOpenPencilPanel},
     {"BuildPanel", &MakePanel<BuildPanel>},

@@ -37,7 +37,7 @@ bool IsCore(std::string_view name)
            std::end(EditorToolBridge::kCoreTools);
 }
 
-nlohmann::json Function(std::string_view name, std::string_view description, nlohmann::json parameters)
+nlohmann::json ToolFunctionDefinition(std::string_view name, std::string_view description, nlohmann::json parameters)
 {
     return {{"type", "function"},
             {"function", {{"name", name}, {"description", description}, {"parameters", std::move(parameters)}}}};
@@ -105,7 +105,7 @@ nlohmann::json EditorToolBridge::Definitions() const
         if (IsCore(name))
         {
             const auto schema = tool.find("inputSchema");
-            definitions.push_back(Function(name, JsonFields::String(tool, "description"),
+            definitions.push_back(ToolFunctionDefinition(name, JsonFields::String(tool, "description"),
                                            schema != tool.end() && schema->is_object()
                                                ? *schema
                                                : nlohmann::json{{"type", "object"}, {"properties", nlohmann::json::object()}}));
@@ -115,14 +115,14 @@ nlohmann::json EditorToolBridge::Definitions() const
             others += (others.empty() ? "" : ", ") + name;
         }
     }
-    definitions.push_back(Function(
+    definitions.push_back(ToolFunctionDefinition(
         kDescribeTool,
         "Returns the description and JSON Schema of one of the editor's other tools, before you call it with "
         "call_editor_tool. The other tools: " + others + ".",
         {{"type", "object"},
          {"properties", {{"tool", {{"type", "string"}, {"description", "The tool's name."}}}}},
          {"required", {"tool"}}}));
-    definitions.push_back(Function(
+    definitions.push_back(ToolFunctionDefinition(
         kCallTool,
         "Runs one of the editor's other tools (listed in describe_editor_tool) with its arguments.",
         {{"type", "object"},

@@ -13,6 +13,20 @@ Open the panel from the **Panels** button at the right end of the top toolbar an
 
 *The panel before the first prompt: the provider dropdown and the model button in the top bar, then the prompt field with the mode control, Session…, and the send button.*
 
+## RapidRAW photos on macOS
+
+Install [RapidRAW 1.7.1 or later](https://github.com/CyberTimon/RapidRAW/releases) in Applications. In Lucia, open **Window > RapidRAW** and choose **Open RAW**. The panel uses RapidRAW to render the photo and offers exposure, contrast, highlights, shadows, whites, blacks, and saturation controls.
+
+Ask the assistant to adjust the active photo. For example, “Set exposure to +0.5 and lower highlights to −20, then save the adjustments.” The assistant can also open a photo by its path relative to the project Assets folder. **Save Adjustments** writes a `.rrdata` sidecar alongside the original RAW. RapidRAW reads that sidecar when it opens the photo.
+
+To use a copy of RapidRAW stored elsewhere, set `LUCIA_RAPIDRAW_APP` to the absolute path of the app bundle before launching Lucia.
+
+## LightTable photo catalogs
+
+Open **Panels > LightTable** with the local LightTable server running. The panel displays the server at loopback port 8321 by default. If your server uses another port, open its local address in the panel.
+
+To connect the AI Assistant, start Lucia with `LUCIA_LIGHTTABLE_INSTANCE_FILE` set to the absolute path of the running server's `<port>.json` instance file. LightTable creates this file when it starts. The panel then opens that server automatically. Leave its catalog open in the active panel when asking the assistant to list photos or set a star rating. Changes appear in LightTable's history.
+
 ## Providers
 
 | Provider | What it needs | Where it sends your prompt |

@@ -32,6 +32,9 @@ std::string ValidateHeaders(std::string_view url, const std::unordered_map<std::
 /// True when `name` is a credential header (the list ValidateHeaders checks), compared without case.
 bool IsCredentialHeader(std::string_view name);
 
+/// True when the HTTP URL names a loopback host.
+bool IsLoopbackUrl(std::string_view url);
+
 /// True when both URLs have one origin: the same scheme (http or https, the two the backends
 /// speak) and the same host and port as written, compared without case. "http://a" and
 /// "http://a:80" are two origins, so a credential is dropped between them.

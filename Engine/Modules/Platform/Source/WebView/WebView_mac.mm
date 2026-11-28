@@ -847,6 +847,26 @@ public:
         m_BundledApp->documentSavePrompt = std::move(prompt);
     }
 
+    void RunBundledScript(const std::string& script, std::function<void(std::string)> done) override
+    {
+        if (!m_WebView || ![m_WebView.URL.scheme isEqualToString:@"lucia-app"] ||
+            ![m_WebView.URL.host isEqualToString:@"editor"])
+        {
+            done({});
+            return;
+        }
+        [m_WebView evaluateJavaScript:[NSString stringWithUTF8String:script.c_str()]
+            completionHandler:^(id result, NSError* error) {
+                if (error || ![NSJSONSerialization isValidJSONObject:result])
+                {
+                    done({});
+                    return;
+                }
+                NSData* data = [NSJSONSerialization dataWithJSONObject:result options:0 error:nullptr];
+                done(data ? std::string(static_cast<const char*>(data.bytes), data.length) : std::string{});
+            }];
+    }
+
     void ConfirmBundledAppClose(std::function<void(bool)> done) override
     {
         if (!m_WebView || ![m_WebView.URL.scheme isEqualToString:@"lucia-app"])

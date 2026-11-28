@@ -190,10 +190,23 @@ void RoomDocument::AddClip(const QString& assetId, double start)
     SetProject(project);
 }
 
+bool RoomDocument::IsTrackLocked(const QString& id) const
+{
+    const auto project = Project();
+    for (const auto& key : {"videoTracks", "audioTracks"})
+        for (const auto& value : project.value(key).toArray())
+        {
+            const auto track = value.toObject();
+            if (track.value("id").toString() == id)
+                return track.value("locked").toBool();
+        }
+    return false;
+}
+
 bool RoomDocument::Split(qsizetype index, double time)
 {
     auto clips = Clips();
-    if (!InBounds(index, clips))
+    if (!InBounds(index, clips) || !std::isfinite(time))
         return false;
     const auto selected = clips[index].toObject();
     const auto link = selected.value("linkID").toString();
@@ -210,7 +223,8 @@ bool RoomDocument::Split(qsizetype index, double time)
         const auto start = clip.value("start").toDouble();
         const auto duration = clip.value("duration").toDouble();
         const auto elapsed = time - start;
-        if (HasAdvancedRendering(clip) || elapsed < 1.0 / 60 || duration - elapsed < 1.0 / 60)
+        if (IsTrackLocked(clip.value("trackID").toString()) || HasAdvancedRendering(clip) ||
+            elapsed < 1.0 / 60 || duration - elapsed < 1.0 / 60)
             return false;
         auto right = clip;
         right.insert("id", NewId());

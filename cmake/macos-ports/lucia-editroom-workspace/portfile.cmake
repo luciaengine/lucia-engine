@@ -7,7 +7,7 @@ vcpkg_from_github(
     REPO robbietilton/Editroom
     REF 5386a687d5b9a1ad08f0440cc3e0ec705fff7df9
     SHA512 033c2e3dfdff525106cb63524cc0c1dd4f8a5e3ac609943da4eaa451ab5edff81779074dd6e6d122d2ba2df7e03e6409feef46b2c679089b6791be1d6e03abdc
-    PATCHES lucia-workspace.patch lucia-editor-interaction.patch lucia-live-texture.patch lucia-hosted-controls.patch lucia-quit-prompt.patch lucia-fullscreen-viewer.patch lucia-playback-key.patch lucia-timeline-media-drag.patch lucia-hosted-drag-tracking.patch lucia-overwrite-trim.patch
+    PATCHES lucia-workspace.patch lucia-editor-interaction.patch lucia-live-texture.patch lucia-hosted-controls.patch lucia-quit-prompt.patch lucia-fullscreen-viewer.patch lucia-playback-key.patch lucia-timeline-media-drag.patch lucia-hosted-drag-tracking.patch lucia-overwrite-trim.patch lucia-document-tools.patch lucia-save-confirmation.patch
 )
 
 file(COPY_FILE "${CURRENT_INSTALLED_DIR}/share/lucia-media-controls/LuciaMediaControls.swift"

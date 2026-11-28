@@ -7,6 +7,7 @@
 #include "Editor/Registries/EditorPanelRegistry.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -105,6 +106,13 @@ IEditorPlugin& GetMediaWorkspaceEditorPlugin(MediaWorkspaceKind kind)
 {
     static MediaWorkspacePlugin editroom{"editroom", "Editroom"};
     static MediaWorkspacePlugin compositor{"compositor", "Compositor"};
-    return kind == MediaWorkspaceKind::Editroom ? editroom : compositor;
+    static MediaWorkspacePlugin rapidRaw{"rapidraw", "RapidRAW"};
+    switch (kind)
+    {
+    case MediaWorkspaceKind::Editroom: return editroom;
+    case MediaWorkspaceKind::Compositor: return compositor;
+    case MediaWorkspaceKind::RapidRAW: return rapidRaw;
+    }
+    std::abort();
 }
 }

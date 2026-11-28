@@ -1,6 +1,7 @@
 {
   "name": "lucia-media-controls",
   "version-string": "1",
+  "port-version": 2,
   "description": "Shared Lucia styling for the native editor workspaces",
   "license": "MIT",
   "supports": "osx & arm64"

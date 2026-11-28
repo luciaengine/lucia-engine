@@ -242,6 +242,63 @@ try {
         await mcp.stop();
     }
 
+    // Creative workspaces are available through the same bound assistant session.
+    {
+        const mcp = new McpProcess({
+            ...assistantEnv, GE_MCP_TOOLS: 'list_creative_workspaces,open_creative_workspace',
+        });
+        await mcp.initialize();
+        const tools = (await mcp.request('tools/list', {})).result.tools;
+        check('the assistant lists both creative workspace tools',
+              tools.map(t => t.name).sort().join(',') === 'list_creative_workspaces,open_creative_workspace',
+              JSON.stringify(tools.map(t => t.name)));
+        editor.requests.length = 0;
+        await mcp.request('tools/call', { name: 'list_creative_workspaces', arguments: {} });
+        for (const workspace of ['editroom', 'compositor', 'openpencil'])
+            await mcp.request('tools/call', { name: 'open_creative_workspace', arguments: { workspace } });
+        const forwarded = editor.requests.filter(r => r.method === 'open_creative_workspace');
+        check('the assistant forwards the three bundled workspaces',
+              forwarded.map(r => r.params.workspace).join(',') === 'editroom,compositor,openpencil',
+              JSON.stringify(editor.requests));
+        const before = editor.requests.length;
+        const invalid = await mcp.request('tools/call', {
+            name: 'open_creative_workspace', arguments: { workspace: 'openpencil-online' },
+        });
+        check('the assistant refuses a workspace outside the bundled set',
+              !!(invalid.error || invalid.result?.isError) && editor.requests.length === before,
+              JSON.stringify(invalid));
+        await mcp.stop();
+    }
+
+    // Creative document requests stay inside the editor connection.
+    {
+        const mcp = new McpProcess({
+            ...assistantEnv, GE_MCP_TOOLS: 'inspect_creative_document,edit_creative_document',
+        });
+        await mcp.initialize();
+        editor.requests.length = 0;
+        await mcp.request('tools/call', {
+            name: 'inspect_creative_document', arguments: { workspace: 'editroom', offset: 20 },
+        });
+        const edits = [
+            { workspace: 'editroom', documentId: 'timeline', operation: 'split_clip', itemId: 'clip', time: 2 },
+            { workspace: 'compositor', documentId: 'canvas', operation: 'rename_layer', itemId: 'layer', name: 'Mask' },
+            { workspace: 'openpencil', documentId: 'design', operation: 'create_shape',
+              shape: 'ellipse', x: 0, y: 10, width: 320, height: 120 },
+        ];
+        for (const edit of edits)
+            await mcp.request('tools/call', { name: 'edit_creative_document', arguments: edit });
+        const calls = editor.requests.filter(r => r.method !== 'assistant_bind');
+        check('creative inspection and each of the three edit payloads reach the editor',
+              calls.length === 4 && calls[0].method === 'inspect_creative_document' && calls[0].params.offset === 20 &&
+              calls.slice(1).every((r, i) => r.method === 'edit_creative_document' &&
+                Object.entries(edits[i]).every(([key, value]) => r.params[key] === value)),
+              JSON.stringify(calls));
+        check('creative document tools do not perform host-side actions', mcp.hostActions().length === 0,
+              JSON.stringify(mcp.hostActions()));
+        await mcp.stop();
+    }
+
     // A refused binding refuses every call and sends nothing else.
     {
         editor.requests.length = 0;

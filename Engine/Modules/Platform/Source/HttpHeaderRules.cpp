@@ -110,6 +110,11 @@ bool IsCredentialHeader(std::string_view name)
                        [name](std::string_view credential) { return EqualsIgnoreCase(name, credential); });
 }
 
+bool IsLoopbackUrl(std::string_view url)
+{
+    return IsLoopbackHost(UrlHost(url));
+}
+
 bool IsSameOrigin(std::string_view firstUrl, std::string_view secondUrl)
 {
     return StartsWithIgnoreCase(firstUrl, "https://") == StartsWithIgnoreCase(secondUrl, "https://") &&
@@ -133,7 +138,7 @@ std::string ValidateHeaders(std::string_view url, const std::unordered_map<std::
             return "The value of HTTP header '" + name +
                    "' contains CR, LF or NUL; remove the line break from the value";
         }
-        if (IsCredentialHeader(name) && !StartsWithIgnoreCase(url, "https://") && !IsLoopbackHost(UrlHost(url)))
+        if (IsCredentialHeader(name) && !StartsWithIgnoreCase(url, "https://") && !IsLoopbackUrl(url))
         {
             return "HTTP header '" + name +
                    "' carries a credential and is sent only over https or to a loopback host; use an "

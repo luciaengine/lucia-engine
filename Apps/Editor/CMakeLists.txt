@@ -145,6 +145,7 @@ set(EDITOR_SOURCES
     Source/Panels/BuildPanel.cpp
     Source/Panels/BuildPanel/ExportRequirementsSection.cpp
     Source/Panels/BuiltInPanelTypes.cpp
+    Source/Panels/LightTable/LightTablePanel.cpp
     Source/Panels/MovieRecorderPanel.cpp
     Source/Panels/HierarchyPanel.cpp
     Source/Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.cpp
@@ -1900,7 +1901,11 @@ if(NOT GE_MOBILE AND (APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
     target_sources(EditorSDK PRIVATE
         Source/MediaWorkspaces/MediaWorkspacePanel.cpp
         Source/MediaWorkspaces/MediaWorkspacePlugin.cpp)
-    foreach(_ge_workspace IN ITEMS Editroom Compositor)
+    set(_ge_workspace_modules Editroom Compositor)
+    if(APPLE)
+        list(APPEND _ge_workspace_modules RapidRAW)
+    endif()
+    foreach(_ge_workspace IN LISTS _ge_workspace_modules)
         string(TOLOWER "${_ge_workspace}" _ge_workspace_package)
         ge_add_engine_package_module(GePkgModule_${_ge_workspace}Editor
             PACKAGE "${_ge_workspace_package}"
@@ -2338,6 +2343,9 @@ if(APPLE AND NOT GE_MOBILE)
                 COMMENT "Removing disabled ${_ge_workspace} workspace host")
         endif()
     endforeach()
+endif()
+if(APPLE AND NOT GE_MOBILE)
+    include("${CMAKE_SOURCE_DIR}/Packages/rapidraw/Mac/StageRapidRaw.cmake")
 endif()
 set(GE_MEDIA_WORKSPACE_HOST_ROOT "" CACHE PATH "Directory containing the portable media workspace hosts")
 if(NOT GE_MOBILE AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))

@@ -1,4 +1,6 @@
 #include "Panels/WebPanel.h"
+
+#include <nlohmann/json.hpp>
 #include "Panels/SaveSceneChangesModal.h"
 #include "Panels/SaveSceneAsModal.h"
 
@@ -921,12 +923,32 @@ void WebPanel::SetWebViewOffScreen(bool offScreen, bool editorOverlayOpen)
     }
 }
 
+std::string WebPanel::CurrentPageURL() const
+{
+    if (m_ActiveTab >= m_Tabs.size() || !m_Tabs[m_ActiveTab].view)
+        return {};
+    const auto navigation = m_Tabs[m_ActiveTab].view->GetNavigation();
+    return navigation.IsLoading ? std::string{} : navigation.URL;
+}
+
 bool WebPanel::HasBundledAppDragFramePriority()
 {
     if (m_BundledApp.empty())
         return false;
     const Platform::IWebView* view = ActiveView();
     return view && view->HasNativeDragFramePriority();
+}
+
+void WebPanel::RunBundledDocumentCommand(const std::string& request, std::function<void(std::string)> done)
+{
+    auto* view = m_BundledApp.empty() ? nullptr : ActiveView();
+    if (!view)
+    {
+        done({});
+        return;
+    }
+    const auto argument = nlohmann::json(request).dump(-1, ' ', true);
+    view->RunBundledScript("window.luciaDocumentCommand?.(JSON.parse(" + argument + "))", std::move(done));
 }
 
 bool WebPanel::HasBundledAppCloseConfirmation()

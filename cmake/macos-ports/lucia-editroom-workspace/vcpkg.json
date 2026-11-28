@@ -1,7 +1,7 @@
 {
   "name": "lucia-editroom-workspace",
   "version-string": "2026.11.25",
-  "port-version": 5,
+  "port-version": 7,
   "description": "Editroom native workspace for the Lucia Editor",
   "homepage": "https://github.com/robbietilton/Editroom",
   "license": "MIT",

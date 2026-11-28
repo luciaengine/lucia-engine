@@ -1,0 +1,16 @@
+{
+  "name": "rapidraw",
+  "version": "0.1.0",
+  "displayName": "RapidRAW",
+  "enabledByDefault": true,
+  "assets": "",
+  "modules": [
+    {
+      "name": "RapidRAW.Editor",
+      "kind": "Editor",
+      "lang": "Cpp",
+      "root": "Editor/",
+      "prebuilt": "Binaries/Editor/"
+    }
+  ]
+}

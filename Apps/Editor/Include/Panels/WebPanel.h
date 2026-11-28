@@ -67,8 +67,12 @@ class WebPanel : public DockPanel
     /// The installed app owns the current pointer drag.
     bool HasBundledAppDragFramePriority();
 
+    void RunBundledDocumentCommand(const std::string& request, std::function<void(std::string)> done);
     bool HasBundledAppCloseConfirmation();
     void ConfirmBundledAppClose(std::function<void(bool)> done);
+
+  protected:
+    std::string CurrentPageURL() const;
 
   private:
     struct WebTab

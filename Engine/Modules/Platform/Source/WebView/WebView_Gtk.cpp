@@ -390,6 +390,27 @@ public:
             g_object_set_data(G_OBJECT(m_WebView), kDocumentSavePromptKey, &m_DocumentSavePrompt);
     }
 
+    void RunBundledScript(const std::string& script, std::function<void(std::string)> done) override
+    {
+        if (!m_WebView || !IsBundledUrl(webkit_web_view_get_uri(m_WebView)))
+        {
+            done({});
+            return;
+        }
+        webkit_web_view_evaluate_javascript(m_WebView, script.c_str(), -1, nullptr, nullptr, nullptr,
+            [](GObject* source, GAsyncResult* result, gpointer context) {
+                std::unique_ptr<std::function<void(std::string)>> reply(
+                    static_cast<std::function<void(std::string)>*>(context));
+                auto* value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(source), result, nullptr);
+                char* json = value ? jsc_value_to_json(value, 0) : nullptr;
+                std::string text = json ? json : "";
+                g_free(json);
+                if (value)
+                    g_object_unref(value);
+                (*reply)(std::move(text));
+            }, new std::function<void(std::string)>(std::move(done)));
+    }
+
     void ConfirmBundledAppClose(std::function<void(bool)> done) override
     {
         if (!m_Window || !IsBundledUrl(webkit_web_view_get_uri(m_WebView)))

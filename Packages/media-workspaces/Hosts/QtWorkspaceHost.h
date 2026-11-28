@@ -4,6 +4,8 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QWidget>
 
 #include <cstdint>
@@ -12,6 +14,29 @@ namespace LuciaMedia
 {
 using TexturePreview = void (*)(const char*, const uint8_t*, uint32_t, uint32_t, size_t);
 using CloseReply = void (*)(void*, int32_t);
+using DocumentReply = void (*)(void*, const char*);
+
+inline QJsonObject DocumentError(const QString& message)
+{
+    return {{"error", message}};
+}
+
+/// The reply consumes the encoded result before this call returns.
+template<class Workspace>
+void RunDocumentCommand(Workspace& workspace, const char* request, void* context, DocumentReply reply)
+{
+    if (QApplication::activeModalWidget())
+    {
+        reply(context, R"({"error":"Finish the workspace dialog first."})");
+        return;
+    }
+    const auto document = QJsonDocument::fromJson(request);
+    const auto result = document.isObject()
+        ? workspace.DocumentCommand(document.object())
+        : DocumentError(QStringLiteral("Invalid document request."));
+    const auto encoded = QJsonDocument(result).toJson(QJsonDocument::Compact);
+    reply(context, encoded.constData());
+}
 
 inline bool EnsureQtApplication(const QString& workspaceDirectory)
 {

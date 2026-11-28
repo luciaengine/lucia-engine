@@ -3,6 +3,9 @@
 #include "Core/Engine.h"
 #include "Editor/Registries/EditorMenuRegistry.h"
 #include "Editor/Shortcuts/EditorShortcuts.h"
+#if defined(__APPLE__)
+#include "Editor/Settings/SettingsStore.h"
+#endif
 #include "EditorApplication/EditorApplication.h"
 #include "EditorContextMenu/UIContextMenu.h"
 #include "EditorPanelManager.h"
@@ -24,6 +27,16 @@ namespace GameEngine
 namespace
 {
 constexpr uint32_t kCmdWindowLayoutReset = 0x2001;
+#if defined(__APPLE__)
+constexpr uint32_t kCmdWindowToggleLuciaToolbar = 0x2002;
+constexpr char kLuciaToolbarVisiblePreference[] = "ui.luciaToolbarVisible";
+constexpr char kHiddenLuciaToolbarClass[] = "editor-top-toolbar-hidden";
+
+const char* LuciaToolbarMenuTitle(bool visible)
+{
+    return visible ? "Hide Lucia Toolbar" : "Show Lucia Toolbar";
+}
+#endif
 constexpr uint32_t kCmdEditUndo = 0x1001;
 constexpr uint32_t kCmdEditRedo = 0x1002;
 
@@ -82,6 +95,11 @@ bool EditorToolbar::Install(Platform::Window* window, EditorApplication* app)
 
     m_App = app;
     m_Window = window;
+#if defined(__APPLE__)
+    auto preferences = Editor::OpenEditorPreferences();
+    if (preferences.Load())
+        (void)preferences.TryGetBool(kLuciaToolbarVisiblePreference, m_LuciaToolbarVisible);
+#endif
     m_ExitItem = Editor::EditorMenuRegistry::Get().RegisterMenuItem({
         .Path = "File/Exit",
         .Priority = 4,
@@ -97,6 +115,19 @@ bool EditorToolbar::Install(Platform::Window* window, EditorApplication* app)
         if (!m_App)
             return;
         if (cmd == kCmdWindowLayoutReset) m_App->ResetLayoutToDefault();
+#if defined(__APPLE__)
+        else if (cmd == kCmdWindowToggleLuciaToolbar)
+        {
+            m_LuciaToolbarVisible = !m_LuciaToolbarVisible;
+            auto preferences = Editor::OpenEditorPreferences();
+            if (preferences.Load())
+            {
+                preferences.SetBool(kLuciaToolbarVisiblePreference, m_LuciaToolbarVisible);
+                (void)preferences.Save();
+            }
+            m_Toolbar->UpdateItemTitle(cmd, LuciaToolbarMenuTitle(m_LuciaToolbarVisible));
+        }
+#endif
         else if (cmd == kCmdEditUndo) m_App->Undo();
         else if (cmd == kCmdEditRedo) m_App->Redo();
         else if (const auto panel = m_WindowPanelCommands.find(cmd);
@@ -192,6 +223,16 @@ void EditorToolbar::Update(UIElement* root)
         AttachToUI(root);
     if (auto* titleBar = m_TitleBar.Get())
         titleBar->UpdateState(m_Caption);
+
+#if defined(__APPLE__)
+    if (auto* toolbar = root ? root->FindById("EditorTopToolbar"_sid) : nullptr)
+    {
+        if (m_LuciaToolbarVisible && toolbar->HasClass(kHiddenLuciaToolbarClass))
+            toolbar->RemoveClass(kHiddenLuciaToolbarClass);
+        else if (!m_LuciaToolbarVisible && !toolbar->HasClass(kHiddenLuciaToolbarClass))
+            toolbar->AddClass(kHiddenLuciaToolbarClass);
+    }
+#endif
 }
 
 void EditorToolbar::UpdateUndoRedoTitles()
@@ -270,6 +311,10 @@ uint32_t EditorToolbar::FillWindowMenu(uint32_t windowMenu)
             m_WindowPanelCommands.emplace(commandId, entry.panelId);
         }
     }
+#if defined(__APPLE__)
+    m_Toolbar->AddSeparator(windowMenu);
+    AddItem(windowMenu, LuciaToolbarMenuTitle(m_LuciaToolbarVisible), kCmdWindowToggleLuciaToolbar);
+#endif
     const uint32_t layoutMenu = AddSubMenu(windowMenu, "Layout");
     AddItem(layoutMenu, "Reset Layout", kCmdWindowLayoutReset);
     SetItemIcon(kCmdWindowLayoutReset, EditorIcons::kReset);

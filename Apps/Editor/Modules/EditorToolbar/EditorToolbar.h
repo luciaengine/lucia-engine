@@ -72,6 +72,9 @@ class EditorToolbar
     EventSubscription m_ShortcutBindingsSaved;
     std::string m_Caption;
     bool m_RefreshPending = false;
+#if defined(__APPLE__)
+    bool m_LuciaToolbarVisible = true;
+#endif
     std::unordered_map<uint32_t, std::string> m_WindowPanelCommands;
 };
 

@@ -1,0 +1,108 @@
+--- a/src/boot.ts
++++ b/src/boot.ts
+@@ -8,6 +8,7 @@
+
+ import './app.css'
+ import { recordRuntimeError } from '@/app/diagnostics'
++import { installLuciaDocumentTools } from '@/app/document/io/lucia-document-tools'
+ import { installNativeFigArchives } from '@/app/document/io/native-fig'
+ import { preloadCanvasKit } from '@/app/editor/canvas/canvaskit'
+ import { preloadFonts } from '@/app/editor/fonts'
+@@ -48,6 +49,7 @@
+     .use(createOpenOverlaysPlugin())
+     .mount('#app')
+
++  installLuciaDocumentTools()
+   await router.isReady()
+   await nextTick()
+   const failure = bootErrors.stop()
+--- /dev/null
++++ b/src/app/document/io/lucia-document-tools.ts
+@@ -0,0 +1,87 @@
++import { activeTab, createDocumentTab } from '@/app/tabs/state'
++
++type Command = {
++  operation?: string
++  documentId?: string
++  itemId?: string
++  offset?: number
++  name?: string
++  shape?: string
++  x?: number
++  y?: number
++  width?: number
++  height?: number
++}
++
++function documentCommand(request: Command) {
++  if (request.operation === 'new_document') {
++    const tab = createDocumentTab('design')
++    return { documentId: JSON.stringify([tab.id, tab.store.state.currentPageId]) }
++  }
++  const tab = activeTab.value
++  if (tab?.kind !== 'document') return { error: 'Open an OpenPencil design first.' }
++  const store = tab.store
++  const page = store.graph.getNode(store.state.currentPageId)
++  if (!page || store.state.preparation) return { error: 'Wait for the OpenPencil page to load.' }
++  const documentId = JSON.stringify([tab.id, page.id])
++  if (request.operation === 'inspect') {
++    const offset = Number.isInteger(request.offset) ? Math.max(0, request.offset ?? 0) : 0
++    const pending = [...page.childIds].reverse()
++    const layers = []
++    let layerCount = 0
++    while (pending.length) {
++      const id = pending.pop()
++      if (id === undefined) break
++      const node = store.graph.getNode(id)
++      if (!node || node.internalOnly) continue
++      if (layerCount >= offset && layers.length < 100)
++        layers.push({ id, name: node.name, kind: node.type, parentId: node.parentId, locked: node.locked })
++      layerCount++
++      for (let child = node.childIds.length - 1; child >= 0; child--) pending.push(node.childIds[child])
++    }
++    return { documentId, name: store.state.documentName, page: page.name, layers, layerCount }
++  }
++
++  if (request.documentId !== documentId) return { error: 'The OpenPencil tab or page changed. Inspect it again.' }
++  if (store.state.hostRestrictions.readOnly) return { error: 'This OpenPencil design is read-only.' }
++  const name = typeof request.name === 'string' ? request.name.trim() : ''
++  if (name.length > 256) return { error: 'Use a layer name of 256 characters or fewer.' }
++  if (request.operation === 'rename_layer') {
++    const node = typeof request.itemId === 'string' ? store.graph.getNode(request.itemId) : undefined
++    if (!node || node.id === page.id || node.internalOnly || !name)
++      return { error: 'Provide a layer id and a new name.' }
++    let ancestor = node
++    while (ancestor.id !== page.id) {
++      if (ancestor.locked || ancestor.internalOnly) return { error: 'The layer is locked.' }
++      const parent = ancestor.parentId ? store.graph.getNode(ancestor.parentId) : undefined
++      if (!parent) return { error: 'The layer is outside the active page.' }
++      ancestor = parent
++    }
++    store.renameNode(node.id, name)
++    if (store.graph.getNode(node.id)?.name !== name)
++      return { error: 'OpenPencil refused to rename this layer.' }
++    return { documentId, itemId: node.id, name }
++  }
++  if (request.operation === 'create_shape') {
++    const { x, y, width, height, shape } = request
++    if (typeof x !== 'number' || typeof y !== 'number' || typeof width !== 'number' ||
++        typeof height !== 'number' || ![x, y, width, height].every(Number.isFinite) ||
++        Math.abs(x) > 1_000_000 || Math.abs(y) > 1_000_000 ||
++        width <= 0 || height <= 0 || width > 100_000 || height > 100_000 ||
++        (shape !== 'rectangle' && shape !== 'ellipse'))
++      return { error: 'Provide a rectangle or ellipse with valid bounds in page coordinates.' }
++    const itemId = store.createShape(shape === 'ellipse' ? 'ELLIPSE' : 'RECTANGLE',
++      x, y, width, height, page.id, name || undefined)
++    store.requestRender()
++    return { documentId, itemId }
++  }
++  return { error: 'OpenPencil supports rename_layer and create_shape.' }
++}
++
++export function installLuciaDocumentTools() {
++  const isBundled = (location.protocol === 'lucia-app:' && location.host === 'editor') ||
++    location.origin === 'https://lucia-editor.invalid'
++  if (!isBundled) return
++  const host = window as Window & { luciaDocumentCommand?: typeof documentCommand }
++  host.luciaDocumentCommand = documentCommand
++}

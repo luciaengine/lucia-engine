@@ -1,0 +1,72 @@
+--- a/Editroom/App/LuciaWorkspace.swift
++++ b/Editroom/App/LuciaWorkspace.swift
+@@ -55,6 +55,61 @@
+     }
+ }
+
++@MainActor
++private func editroomDocumentCommand(_ model: EditorModel, _ args: [String: Any]) -> [String: Any] {
++    let project = model.project
++    guard let id = (project.videoTracks.first ?? project.audioTracks.first)?.id.uuidString else {
++        return ["error": "Open an Editroom sequence with at least one track."]
++    }
++    if args["operation"] as? String == "inspect" {
++        let offset = max(0, args["offset"] as? Int ?? 0)
++        let clips = project.clips.dropFirst(offset).prefix(100).map { clip -> [String: Any] in
++            ["id": clip.id.uuidString, "name": project.name(of: clip), "kind": clip.kind.rawValue,
++             "trackId": clip.trackID.uuidString, "start": clip.start, "end": clip.end,
++             "locked": project.isLocked(clip.trackID)]
++        }
++        let media = project.assets.dropFirst(offset).prefix(100).map { asset -> [String: Any] in
++            ["id": asset.id.uuidString, "name": asset.name, "kind": asset.kind.rawValue, "duration": asset.duration]
++        }
++        return ["documentId": id, "name": model.title, "playhead": model.playhead, "fps": project.fps,
++                "clips": clips, "media": media, "clipCount": project.clips.count, "mediaCount": project.assets.count]
++    }
++
++    guard args["documentId"] as? String == id else {
++        return ["error": "The Editroom sequence changed. Inspect it again."]
++    }
++    guard let itemId = (args["itemId"] as? String).flatMap(UUID.init(uuidString:)) else {
++        return ["error": "Provide a clip or media id from the active sequence."]
++    }
++    switch args["operation"] as? String {
++    case "add_media":
++        guard let asset = project.asset(itemId), !model.media.looksOffline(asset) else {
++            return ["error": "The requested media is missing or offline."]
++        }
++        model.addAtPlayhead(.asset(itemId))
++        return ["documentId": id, "insertedClipIds": model.selection.map(\.uuidString).sorted()]
++    case "split_clip":
++        guard let clip = project.clip(itemId), let seconds = args["time"] as? Double,
++              seconds.isFinite, seconds > 0, seconds < clip.end else {
++            return ["error": "Provide a clip and a split time inside it."]
++        }
++        let time = project.snapFrame(seconds)
++        let margin = 0.5 / project.fps
++        let linked = project.linked([itemId])
++        guard time > clip.start + margin, time < clip.end - margin,
++              project.clips.filter({ linked.contains($0.id) })
++                  .allSatisfy({ !project.isLocked($0.trackID) }) else {
++            return ["error": "Split inside the clip on unlocked tracks."]
++        }
++        let before = Set(project.clips.map(\.id))
++        model.split(clip: itemId, at: time)
++        return ["documentId": id, "time": time,
++                "newClipIds": Set(model.project.clips.map(\.id)).subtracting(before).map(\.uuidString).sorted()]
++    default:
++        return ["error": "Editroom supports split_clip and add_media."]
++    }
++}
++
+ private enum WorkspaceResources {
+     static var bundle: Bundle = .main
+ }
+@@ -69,6 +124,7 @@
+         let view = HostedEditroomView(rootView: HostedEditroom(model: model))
+         view.installPlaybackMonitor(for: model)
+         let workspace = LuciaMediaWorkspaceHost(view: view) { model.confirmDiscard(quitting: true, forceSavePrompt: true) }
++        workspace.documentCommand = { editroomDocumentCommand(model, $0) }
+         return Unmanaged.passRetained(workspace).toOpaque()
+     }
+ }

@@ -8,6 +8,7 @@ enum class MediaWorkspaceKind
 {
     Editroom,
     Compositor,
+    RapidRAW,
 };
 
 IEditorPlugin& GetMediaWorkspaceEditorPlugin(MediaWorkspaceKind kind);

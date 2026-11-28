@@ -12,6 +12,8 @@
 #include <filesystem>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
 #if defined(_WIN32)
 #include <windows.h>
 #elif defined(__APPLE__) || defined(__linux__)
@@ -29,6 +31,8 @@ struct MediaWorkspacePanel::Workspace
     using CloseReply = void (*)(void*, int32_t);
     using Confirm = void (*)(void*, void*, CloseReply);
     using Pump = void (*)();
+    using DocumentReply = void (*)(void*, const char*);
+    using DocumentCommand = void (*)(void*, const char*, void*, DocumentReply);
 
     void* Image = nullptr;
     void* View = nullptr;
@@ -36,6 +40,7 @@ struct MediaWorkspacePanel::Workspace
     Destroy DestroyView = nullptr;
     Confirm ConfirmViewClose = nullptr;
     Pump PumpEvents = nullptr;
+    DocumentCommand RunDocumentCommand = nullptr;
     void* HostedWindow = nullptr;
 
     static void UpdateTexturePreview(const char* path, const uint8_t* rgba, uint32_t width,
@@ -192,6 +197,7 @@ void MediaWorkspacePanel::LoadWorkspace()
     workspace->DestroyView = workspace->Symbol<Workspace::Destroy>("LuciaDestroyMediaWorkspace");
     workspace->ConfirmViewClose = workspace->Symbol<Workspace::Confirm>("LuciaConfirmMediaWorkspaceClose");
     workspace->PumpEvents = workspace->Symbol<Workspace::Pump>("LuciaPumpMediaWorkspaceEvents");
+    workspace->RunDocumentCommand = workspace->Symbol<Workspace::DocumentCommand>("LuciaRunMediaDocumentCommand");
     if (!create || !workspace->PlaceView || !workspace->DestroyView)
     {
         SetStatus("The workspace host is incompatible with this Editor build.");
@@ -213,6 +219,24 @@ void MediaWorkspacePanel::LoadWorkspace()
 #endif
     m_Workspace = std::move(workspace);
     SetStatus("");
+}
+
+nlohmann::json MediaWorkspacePanel::RunDocumentCommand(const nlohmann::json& request) const
+{
+    if (!m_Workspace)
+        return {{"error", "Open the workspace and wait for its document to load."}};
+    if (!m_Workspace->RunDocumentCommand)
+        return {{"error", "This workspace host does not support assistant document editing."}};
+
+    nlohmann::json result;
+    m_Workspace->RunDocumentCommand(m_Workspace->View, request.dump().c_str(), &result,
+        [](void* context, const char* reply) {
+            if (reply)
+                *static_cast<nlohmann::json*>(context) = nlohmann::json::parse(reply, nullptr, false);
+        });
+    if (!result.is_object())
+        return {{"error", "The workspace did not return a document result."}};
+    return result;
 }
 
 void MediaWorkspacePanel::SyncHost(const NativePanelHost& host)
